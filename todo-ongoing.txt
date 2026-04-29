@@ -48,7 +48,7 @@ Goal: coordinator1 produces an hourly UTC snapshot of swarm state so new session
 
 Status: **active/mature** — `Monitor` + `heartbeat` replaced legacy `CronCreate`; sitreps hourly with empty-hour markers; ~70+ filed; protocol now covers post-compact + post-OOM resume phenomenology. Paired-compaction case (Cairn ↔ stanza synchronized 2026-04-28) validated re-meeting at sub-minute granularity. Per-agent personal-logs convention at `.c2c/personal-logs/<alias>/` established and used.
 
-Next: #342 (active-Monitor visibility — coord can't list its own running heartbeats; bit us with duplicate timer-fires today).
+Next: continue cadence; #342 closed (active-Monitor visibility resolved via TaskList walk before arm).
 
 ### Security: permission/question alias-hijack
 
@@ -119,6 +119,16 @@ Goal: MCP tool surface should be testable, observable, and free of silent-mismat
 Status: **active** — #326 (memory_list shared_with_me=true semantics) closed `e9c39714→a70b32df`. #327 (send-memory handoff DM did not fire on memory_write with shared_with) closed `b7b4997a` with broker.log diagnostic. #331 MCP regression test suite landed `a49480d0`. #332 (mkdir_p ENOENT for missing parent dirs) in progress (test-agent). #346 (`C2C_MCP_AUTO_DRAIN_CHANNEL` default-flip) queued — Max approved straight default-flip 2026-04-28; ~5 LoC code change + 1 test.
 
 Next: ship #346 default-flip; close #332; track for next regression class.
+
+### Relay-crypto E2E (CRIT-1+2)
+
+Project Folder: **todo** (design + closure docs in `.collab/design/2026-04-2*-crit*` cluster)
+
+Goal: relay-side envelope correctness — Ed25519 signatures cover `from_x25519` (CRIT-1), TOFU pin store catches first-contact + register-path divergence (CRIT-2), v2 envelopes reject malformed shape, audit-log surfaces every interesting event.
+
+Status: **CRIT-1 closed; CRIT-2 closed** — Slice A (`1e414fdc`) + Slice B (`5dc0ad6b`) + B-min-version (`f2a929ce`) + audit-log followup (`e5537bd4`) shipped. CRIT-2 closure header at `76a5f989`. Register-path TOFU + audit-log (#443) shipped today via slate's `d3c9f4e0/5ffe42d0/8eaaff93` (jungle PASS). §7.1 parse-time reject (`4351786a`) shipped via birch (fern PASS). relay_e2e_pin_first_seen audit line (`a350be59`) shipped via stanza. Operator surfaces (`relay-pins`, `doctor relay-pin-status`) shipping via `dcea711e` + cedar's in-flight delete/rotate slice.
+
+Next: cross-host divergence test (#444 slate, ~50 LoC) — signed envelope from host A → relay → host B, asserting full pin-flow. Slice C strict-flip (deny v1 envelopes once min-version observed) deferred pending ops sign-off.
 
 ### Public-docs accuracy
 
