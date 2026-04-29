@@ -63,6 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         sqlite3 \
         tini \
         openssh-client \
+        netbase \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home /var/lib/c2c --shell /usr/sbin/nologin c2c \
     && mkdir -p /var/lib/c2c \
