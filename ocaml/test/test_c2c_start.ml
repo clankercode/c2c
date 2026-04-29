@@ -1590,6 +1590,44 @@ let test_prepare_launch_args_extra_args_preserves_flags_around_extra () =
   let last = last_n 1 args in
   check (list string) "extra args at end" [ "--debug" ] last
 
+(* #156: on RESUME (resume_session_id = Some _), kimi-cli treats --prompt as a
+   finite work cycle — it processes the kickoff items, completes them, then exits
+   code=0.  Resumed sessions must NOT be re-kickoffed; prompt_args must be [] on
+   resume even when kickoff_prompt is Some non-empty string. *)
+let test_kimi_resume_omits_prompt_flag () =
+  (* Use a temp dir for the MCP config that KimiAdapter writes at launch-arg
+     construction time.  broker_root is a directory that must exist. *)
+  with_temp_dir @@ fun tmp ->
+  let args =
+    C2c_start.prepare_launch_args
+      ~name:"kimi-test-resume"
+      ~client:"kimi"
+      ~extra_args:[]
+      ~broker_root:tmp
+      ~resume_session_id:"abc-123-uuid"
+      ~kickoff_prompt:"poll inbox; list peers; post hello"
+      ()
+  in
+  check bool "resume: --prompt must NOT appear in args" false
+    (List.mem "--prompt" args)
+
+(* #156: on a fresh spawn (resume_session_id = None), kimi-cli accepts
+   --prompt as the initial instruction set and the session persists normally.
+   Verify that kickoff_prompt IS forwarded as --prompt on fresh launches. *)
+let test_kimi_fresh_includes_prompt_flag () =
+  with_temp_dir @@ fun tmp ->
+  let args =
+    C2c_start.prepare_launch_args
+      ~name:"kimi-test-fresh"
+      ~client:"kimi"
+      ~extra_args:[]
+      ~broker_root:tmp
+      ~kickoff_prompt:"poll inbox; list peers; post hello"
+      ()
+  in
+  check bool "fresh: --prompt must appear in args" true
+    (List.mem "--prompt" args)
+
 (* #471: a plain re-launch (cli_extra_args = []) MUST clear the persisted
    extra_args, not silently inherit them. Otherwise a one-off bad invocation
    (e.g. `c2c start kimi -n NAME -- --prompt "..."` where the host CLI argv
@@ -2964,6 +3002,10 @@ let () =
             `Quick, test_resolve_effective_extra_args_clears_on_plain_relaunch )
         ; ( "resolve_effective_extra_args_replaces_when_cli_provided_471",
             `Quick, test_resolve_effective_extra_args_replaces_when_cli_provided )
+        ; ( "kimi_resume_omits_prompt_flag_156",
+            `Quick, test_kimi_resume_omits_prompt_flag )
+        ; ( "kimi_fresh_includes_prompt_flag_156",
+            `Quick, test_kimi_fresh_includes_prompt_flag )
         ] )
     ; ( "pmodel",
         [ ("parse_pmodel_plain", `Quick, test_parse_pmodel_plain)

@@ -2666,17 +2666,23 @@ let prepare_launch_args ~(name : string) ~(client : string)
            extra_args are NOT consumed by the adapter (prepare_launch_args appends them
            uniformly at the end, so they won't be doubled).
 
-           #158: kickoff is delivered via --prompt so it appears as kimi's first
-           user-turn (naturally visible in TUI scrollback, no notifier race). *)
+           kickoff_prompt is for fresh spawns only; resumes pick up the existing session
+           without re-injection.  On resume (resume_session_id = Some _), kimi-cli
+           interprets --prompt as a finite work cycle — it processes the kickoff items,
+           completes them, then exits code=0, killing the managed session.  Suppress the
+           flag entirely on resume. *)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "kimi") : CLIENT_ADAPTER) in
-        let kickoff_args =
-          match kickoff_prompt with
-          | Some p when p <> "" -> [ "--prompt"; p ]
-          | _ -> []
+        let prompt_args =
+          match resume_session_id with
+          | Some _ -> []  (* resuming — don't re-kickoff; session already has instructions *)
+          | None ->
+            match kickoff_prompt with
+            | Some p when p <> "" -> [ "--prompt"; p ]
+            | _ -> []
         in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
           ~extra_args:extra_args ()
-        @ kickoff_args
+        @ prompt_args
     | "gemini" ->
         (* #406b: GeminiAdapter handles --resume <idx>|latest, --model. No
            dev-channels or PTY auto-answer (Gemini uses settings.json
