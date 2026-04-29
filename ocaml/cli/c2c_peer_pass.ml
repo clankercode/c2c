@@ -496,11 +496,19 @@ let peer_pass_verify_cmd =
            rotate, then optional anti-cheat warn.
            #432 TOFU Finding 4: pin_rotate now verifies internally, so
            the CLI's pre-call verify is redundant for safety but kept for
-           the print_verified user-facing message ladder. *)
+           the print_verified user-facing message ladder.
+
+           #432 TOFU Finding 5: pin_rotate also requires an operator
+           attestation. The CLI is run by a human (or coord-agent) with
+           shell access on the broker host — that's the SPEC-defined
+           operator boundary, so [Cli_local_shell] is the correct
+           attestation here. A future MCP rotate tool would use
+           [Mcp_operator_token <tok>] and require C2C_OPERATOR_AUTH_TOKEN
+           to be set on the broker. *)
         match Peer_review.verify art with
         | Ok true ->
           print_verified ();
-          (match Peer_review.pin_rotate art with
+          (match Peer_review.pin_rotate ~attestation:Peer_review.Cli_local_shell art with
            | Error e ->
              Printf.eprintf "  PIN-ROTATE REJECTED: %s\n%!"
                (Peer_review.verify_error_to_string e);

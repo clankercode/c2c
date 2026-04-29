@@ -226,7 +226,7 @@ let test_rotate_pin_replaces_existing () =
      #432 TOFU Finding 4: pin_rotate now returns a Result with the
      verify_error if signature is invalid. signed_b is properly
      signed via make_signed_artifact, so we expect Ok prior. *)
-  let prior = match Peer_review.pin_rotate ~path signed_b with
+  let prior = match Peer_review.pin_rotate ~path ~attestation:Peer_review.Cli_local_shell signed_b with
     | Ok p -> p
     | Error e -> failwith ("rotation rejected: " ^ Peer_review.verify_error_to_string e)
   in
@@ -252,7 +252,7 @@ let test_rotate_pin_with_no_prior_pin () =
   with_temp_pin_path @@ fun path ->
   let id = make_identity () in
   let signed = make_signed_artifact ~identity:id ~reviewer:"bob" in
-  let prior = match Peer_review.pin_rotate ~path signed with
+  let prior = match Peer_review.pin_rotate ~path ~attestation:Peer_review.Cli_local_shell signed with
     | Ok p -> p
     | Error e -> failwith ("rotation rejected: " ^ Peer_review.verify_error_to_string e)
   in
@@ -297,7 +297,7 @@ let test_pin_rotate_rejects_invalid_signature () =
      failwith ("unexpected verify error: " ^ Peer_review.verify_error_to_string e));
   (* The pin store starts empty — pin_rotate on a tampered artifact
      must return Error AND leave the store empty. *)
-  (match Peer_review.pin_rotate ~path tampered with
+  (match Peer_review.pin_rotate ~path ~attestation:Peer_review.Cli_local_shell tampered with
    | Error Peer_review.Invalid_signature -> ()
    | Error other ->
      failwith ("expected Invalid_signature, got: " ^ Peer_review.verify_error_to_string other)
@@ -320,10 +320,109 @@ let test_pin_rotate_accepts_valid_signature () =
   with_temp_pin_path @@ fun path ->
   let id = make_identity () in
   let signed = make_signed_artifact ~identity:id ~reviewer:"dave" in
-  match Peer_review.pin_rotate ~path signed with
+  match Peer_review.pin_rotate ~path ~attestation:Peer_review.Cli_local_shell signed with
   | Ok None -> ()  (* No prior pin; rotate-as-first. *)
   | Ok (Some _) -> failwith "did not expect prior pin"
   | Error e -> failwith ("rotation rejected unexpectedly: " ^ Peer_review.verify_error_to_string e)
+
+(* [#432 TOFU Finding 5] operator-attestation gate: Mcp_operator_token
+   accepted when C2C_OPERATOR_AUTH_TOKEN env matches. Models the future
+   MCP rotate-tool path. *)
+let test_pin_rotate_mcp_token_accepted_when_env_matches () =
+  with_temp_pin_path @@ fun path ->
+  let id = make_identity () in
+  let signed = make_signed_artifact ~identity:id ~reviewer:"erin" in
+  let prior_env = Sys.getenv_opt "C2C_OPERATOR_AUTH_TOKEN" in
+  Fun.protect
+    ~finally:(fun () ->
+      match prior_env with
+      | Some v -> Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" v
+      | None ->
+        (* No portable unsetenv in stdlib Unix; clear via empty string,
+           which validate_operator_attestation rejects (the empty-string
+           guard inside the validator). *)
+        Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" "")
+    (fun () ->
+      Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" "secret-token-for-test";
+      match
+        Peer_review.pin_rotate ~path
+          ~attestation:(Peer_review.Mcp_operator_token "secret-token-for-test")
+          signed
+      with
+      | Ok None -> ()
+      | Ok (Some _) -> failwith "unexpected prior pin"
+      | Error e ->
+        failwith
+          ("Mcp_operator_token with matching env should be accepted, got: "
+           ^ Peer_review.verify_error_to_string e))
+
+(* [#432 TOFU Finding 5] operator-attestation gate: Mcp_operator_token
+   REJECTED when C2C_OPERATOR_AUTH_TOKEN env does not match. Critical:
+   on reject, NO pin write AND NO audit-log fire — load-bearing
+   security claim. *)
+let test_pin_rotate_mcp_token_rejected_zero_write () =
+  with_temp_pin_path @@ fun path ->
+  let id = make_identity () in
+  let signed = make_signed_artifact ~identity:id ~reviewer:"frank" in
+  let prior_env = Sys.getenv_opt "C2C_OPERATOR_AUTH_TOKEN" in
+  let captured : Peer_review.pin_rotate_log_event list ref = ref [] in
+  let prior_hook = !Peer_review.pin_rotate_log_hook in
+  Fun.protect
+    ~finally:(fun () ->
+      Peer_review.pin_rotate_log_hook := prior_hook;
+      match prior_env with
+      | Some v -> Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" v
+      | None -> Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" "")
+    (fun () ->
+      Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" "real-operator-token";
+      Peer_review.pin_rotate_log_hook := (fun ev -> captured := ev :: !captured);
+      (match
+         Peer_review.pin_rotate ~path
+           ~attestation:(Peer_review.Mcp_operator_token "wrong-token")
+           signed
+       with
+       | Error Peer_review.Operator_unauthorized -> ()
+       | Error other ->
+         failwith
+           ("expected Operator_unauthorized, got: "
+            ^ Peer_review.verify_error_to_string other)
+       | Ok _ ->
+         failwith "pin_rotate accepted Mcp_operator_token with mismatched env — security regression");
+      let store = Peer_review.Trust_pin.load ~path () in
+      (match Peer_review.Trust_pin.find_pin store ~alias:"frank" with
+       | None -> ()
+       | Some _ ->
+         failwith "pin written despite Operator_unauthorized — security regression");
+      check int "audit-log not fired on operator-unauth reject" 0 (List.length !captured))
+
+(* [#432 TOFU Finding 5] operator-attestation gate: Mcp_operator_token
+   REJECTED when C2C_OPERATOR_AUTH_TOKEN env is unset (empty). Default
+   deployments lack the env var; an MCP rotate caller must NOT silently
+   succeed in that environment. *)
+let test_pin_rotate_mcp_token_rejected_when_env_unset () =
+  with_temp_pin_path @@ fun path ->
+  let id = make_identity () in
+  let signed = make_signed_artifact ~identity:id ~reviewer:"gary" in
+  let prior_env = Sys.getenv_opt "C2C_OPERATOR_AUTH_TOKEN" in
+  Fun.protect
+    ~finally:(fun () ->
+      match prior_env with
+      | Some v -> Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" v
+      | None -> Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" "")
+    (fun () ->
+      Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" "";
+      match
+        Peer_review.pin_rotate ~path
+          ~attestation:(Peer_review.Mcp_operator_token "any-token")
+          signed
+      with
+      | Error Peer_review.Operator_unauthorized -> ()
+      | Error other ->
+        failwith
+          ("expected Operator_unauthorized when env unset, got: "
+           ^ Peer_review.verify_error_to_string other)
+      | Ok _ ->
+        failwith "pin_rotate accepted Mcp_operator_token with empty env — security regression")
 
 let test_pin_store_survives_load_save_roundtrip () =
   with_temp_pin_path @@ fun path ->
@@ -370,7 +469,7 @@ let test_pin_rotate_emits_log_event_with_prior () =
    | Ok Peer_review.Pin_first_seen -> ()
    | _ -> failwith "first verify did not pin");
   (* Rotate to id2 — must emit a log event. *)
-  let _ = Peer_review.pin_rotate ~path signed_b in
+  let _ = Peer_review.pin_rotate ~path ~attestation:Peer_review.Cli_local_shell signed_b in
   match List.rev !captured with
   | [ ev ] ->
     check string "log alias" "alice" ev.Peer_review.alias;
@@ -390,7 +489,7 @@ let test_pin_rotate_emits_log_event_no_prior () =
   with_captured_rotate_log @@ fun captured ->
   let id = make_identity () in
   let signed = make_signed_artifact ~identity:id ~reviewer:"bob" in
-  let _ = Peer_review.pin_rotate ~path signed in
+  let _ = Peer_review.pin_rotate ~path ~attestation:Peer_review.Cli_local_shell signed in
   match List.rev !captured with
   | [ ev ] ->
     check string "log alias" "bob" ev.Peer_review.alias;
@@ -440,7 +539,7 @@ let test_pin_rotate_log_writes_json_line_under_pin_dir () =
     close_out oc);
   let id = make_identity () in
   let signed = make_signed_artifact ~identity:id ~reviewer:"dora" in
-  let _ = Peer_review.pin_rotate ~path signed in
+  let _ = Peer_review.pin_rotate ~path ~attestation:Peer_review.Cli_local_shell signed in
   check bool "broker.log created" true (Sys.file_exists log_path);
   let ic = open_in log_path in
   let line =
@@ -500,7 +599,7 @@ let test_concurrent_pin_check_and_rotate_no_lost_update () =
     let signed_to_1 = make_signed_artifact ~identity:id1 ~reviewer:"eve" in
     for i = 1 to n_rounds do
       let target = if i mod 2 = 0 then signed_to_2 else signed_to_1 in
-      let _ = Peer_review.pin_rotate ~path target in
+      let _ = Peer_review.pin_rotate ~path ~attestation:Peer_review.Cli_local_shell target in
       ()
     done;
     exit 0
@@ -851,6 +950,9 @@ let () = Alcotest.run "Peer_review" [
     Alcotest.test_case "rotate-pin with no prior pin" `Quick test_rotate_pin_with_no_prior_pin;
     Alcotest.test_case "[#432 TOFU 4] pin_rotate rejects tampered signature" `Quick test_pin_rotate_rejects_invalid_signature;
     Alcotest.test_case "[#432 TOFU 4] pin_rotate accepts valid signature (success contract)" `Quick test_pin_rotate_accepts_valid_signature;
+    Alcotest.test_case "[#432 TOFU 5] pin_rotate accepts Mcp_operator_token when env matches" `Quick test_pin_rotate_mcp_token_accepted_when_env_matches;
+    Alcotest.test_case "[#432 TOFU 5] pin_rotate rejects Mcp_operator_token + zero pin write + zero audit-log" `Quick test_pin_rotate_mcp_token_rejected_zero_write;
+    Alcotest.test_case "[#432 TOFU 5] pin_rotate rejects Mcp_operator_token when env unset" `Quick test_pin_rotate_mcp_token_rejected_when_env_unset;
     Alcotest.test_case "pin store survives load/save roundtrip" `Quick test_pin_store_survives_load_save_roundtrip;
   ];
   "pin_rotate_audit_log_55", [

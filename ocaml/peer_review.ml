@@ -167,6 +167,18 @@ type verify_error =
   | Reviewer_pk_wrong_length
   | Signature_wrong_length
   | Invalid_signature
+  (* #432 TOFU Finding 5: defense-in-depth gate on [pin_rotate]. Rotation
+     is operator-driven by SPEC; today's only call site is the CLI
+     ([c2c peer-pass verify --rotate-pin]). The audit's concern: a future
+     [mcp__c2c__rotate_pin] tool that lands without an explicit auth gate
+     would expose rotation to any session that can talk to the broker.
+     This variant fires when an attestation is supplied that is NOT
+     accepted by the broker's auth policy (see [validate_operator_attestation]
+     below). The existing CLI path uses [Cli_local_shell] which is
+     unconditionally accepted (local shell access = operator per SPEC);
+     only future MCP-style callers need to set [C2C_OPERATOR_AUTH_TOKEN]
+     and pass [Mcp_operator_token]. *)
+  | Operator_unauthorized
 
 let verify_error_to_string = function
   | Missing_signature -> "missing signature"
@@ -176,6 +188,58 @@ let verify_error_to_string = function
   | Reviewer_pk_wrong_length -> "reviewer public key must be 32 bytes"
   | Signature_wrong_length -> "signature must be 64 bytes"
   | Invalid_signature -> "invalid signature"
+  | Operator_unauthorized ->
+    "pin_rotate operator attestation rejected (set C2C_OPERATOR_AUTH_TOKEN \
+     for non-CLI callers; CLI invocations should use ~attestation:Cli_local_shell)"
+
+(** #432 TOFU Finding 5: operator attestation for [pin_rotate].
+
+    Two intentionally-distinct constructors so that future [pin_rotate]
+    callers — particularly any new MCP/RPC surface — must explicitly
+    declare which auth model applies. The variant name is the gate; a
+    code reviewer seeing [Cli_local_shell] inside an MCP tool handler
+    knows immediately that something is off.
+
+    Why a typed variant rather than a single string token: with a single
+    [string] argument, future MCP authors might pass empty / placeholder
+    values "to make it compile" and miss the security implication. A sum
+    type with named arms forces the author to read what each one means
+    before picking. The two-constructor design also keeps today's CLI
+    cost zero (no operator config burden — local shell access is the
+    documented attestation per SPEC-signed-peer-pass.md:52-53) while
+    making the MCP path require real env-var-backed config.
+
+    [Cli_local_shell]: always accepted. The caller is the [c2c] CLI run
+    by an operator with shell access on the broker host. SPEC defines
+    this as the trust boundary for rotation.
+
+    [Mcp_operator_token tok]: validated against the [C2C_OPERATOR_AUTH_TOKEN]
+    env var. Accepted iff the env var is set non-empty AND equals [tok].
+    Intended for any future caller that does NOT have the implicit local-
+    shell trust (broker MCP handlers, remote relay endpoints, etc.). The
+    operator sets the env var on the broker process; non-operator clients
+    cannot guess the token. *)
+type operator_attestation =
+  | Cli_local_shell
+  | Mcp_operator_token of string
+
+(** Validate the supplied attestation. Returns [Ok ()] on accept, or
+    [Error Operator_unauthorized] on reject. The CLI path is unconditional;
+    the MCP-token path requires both:
+
+    - [C2C_OPERATOR_AUTH_TOKEN] is set non-empty in the broker's env, AND
+    - the supplied token equals the env value (constant-time-ish — same-length
+      string compare; OCaml's [String.equal] is not formally constant-time
+      but the attacker model here is "future MCP rotate tool", not a
+      timing-side-channel adversary).
+
+    Returns Error if the env var is missing, empty, or doesn't match. *)
+let validate_operator_attestation : operator_attestation -> (unit, verify_error) result = function
+  | Cli_local_shell -> Ok ()
+  | Mcp_operator_token tok ->
+    (match Sys.getenv_opt "C2C_OPERATOR_AUTH_TOKEN" with
+     | Some expected when expected <> "" && String.equal expected tok -> Ok ()
+     | _ -> Error Operator_unauthorized)
 
 let verify (art : t) : (bool, verify_error) result =
   if art.signature = "" then Error Missing_signature
@@ -684,11 +748,35 @@ let pin_check ?path (art : t) : pin_check =
     MCP/CLI rotate caller landing without that gate would have left
     the trust pin rotatable by anyone able to construct an artifact
     with a fresh keypair. Now any caller is safe — the verify check
-    is built in. Returns:
-    - [Ok prior_opt] on success (signature valid, pin written/updated).
+    is built in.
+
+    #432 TOFU Finding 5: defense-in-depth operator-attestation gate.
+    The required [~attestation] argument forces every [pin_rotate]
+    caller to declare which auth model applies (see
+    [operator_attestation] above). The CLI passes [Cli_local_shell]
+    (no friction — SPEC says local shell = operator). A hypothetical
+    future MCP rotate tool would have to pass [Mcp_operator_token tok]
+    AND the broker would need [C2C_OPERATOR_AUTH_TOKEN] set to a
+    matching value, OR the rotate is rejected before any verify work.
+
+    Order: the operator gate fires FIRST, then the signature verify,
+    then the pin write + audit log. Rejecting at the gate skips both
+    the (relatively cheap) signature verify and any subsequent state
+    change. The audit log only fires on the success path.
+
+    Returns:
+    - [Ok prior_opt] on success (attestation accepted AND signature
+      valid; pin written/updated).
+    - [Error Operator_unauthorized] when the attestation gate rejects
+      (no pin modified, no audit-log fired, no signature verify even
+      attempted).
     - [Error verify_error] when signature verification fails (no pin
       modified, no audit-log fired). *)
-let pin_rotate ?path (art : t) : (Trust_pin.pin option, verify_error) result =
+let pin_rotate ?path ~(attestation : operator_attestation) (art : t)
+    : (Trust_pin.pin option, verify_error) result =
+  match validate_operator_attestation attestation with
+  | Error e -> Error e
+  | Ok () ->
   match verify art with
   | Error e -> Error e
   | Ok false -> Error Invalid_signature
