@@ -4534,7 +4534,7 @@ let notify_shared_with_recipients
             None)
       shared_with
 
-let channel_notification ?(role : string option = None) ({ from_alias; to_alias; content; deferrable = _ } : message) =
+let channel_notification ?(role : string option = None) ({ from_alias; to_alias; content; deferrable = _; ts; _ } : message) =
   (* The meta JSON keys here are rendered by Claude Code as XML
      attributes on the `<channel …>` tag in the agent transcript.
      They are deliberately named `from` / `to` (not `from_alias` /
@@ -4542,9 +4542,15 @@ let channel_notification ?(role : string option = None) ({ from_alias; to_alias;
      sender" and "the recipient" — agents misread `to_alias=` as
      a sender field on 2026-04-29. The internal record fields
      remain `from_alias` / `to_alias`; only this serialization
-     uses the short attribute names. *)
+     uses the short attribute names. The `ts` field gives UTC HH:MM
+     of the message timestamp, making blocked-agent elapsed-time
+     visible in the `<channel …>` tag. *)
+  let ts_str =
+    let tm = Unix.gmtime ts in
+    Printf.sprintf "%02d:%02d" tm.tm_hour tm.tm_min
+  in
   let meta =
-    let base = [ ("from", `String from_alias); ("to", `String to_alias) ] in
+    let base = [ ("from", `String from_alias); ("to", `String to_alias); ("ts", `String ts_str) ] in
     match role with
     | Some r -> base @ [ ("role", `String r) ]
     | None   -> base

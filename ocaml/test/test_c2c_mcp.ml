@@ -573,6 +573,29 @@ let test_channel_notification_without_role_omits () =
   (* role attribute must be absent (not null, not empty string) when not set *)
   check bool "no role field when None" true (member "role" meta = `Null)
 
+(* #157 — channel_notification meta ts field *)
+let test_channel_notification_ts_utc_hhmm () =
+  (* 1746009600.0 = 2025-04-30 10:40:00 UTC — a known timestamp whose
+     HH:MM string is "10:40".  We verify:
+       (a) ts key is present in meta
+       (b) value is exactly "10:40" (5-char, double-digit fields, colon separator)
+       (c) format matches \d\d:\d\d (no leading junk, no seconds)
+     Mirror of format_c2c_envelope: Printf.sprintf "%02d:%02d" tm.tm_hour tm.tm_min. *)
+  let json =
+    C2c_mcp.channel_notification
+      { from_alias = "jungle-coder"; to_alias = "stanza-coder"; content = "ping"; deferrable = false; reply_via = None; enc_status = None; ts = 1746009600.0; ephemeral = false; message_id = None }
+  in
+  let open Yojson.Safe.Util in
+  let meta = json |> member "params" |> member "meta" in
+  let ts_val = meta |> member "ts" |> to_string in
+  check string "ts is 10:40" "10:40" ts_val;
+  check int "ts length is 5" 5 (String.length ts_val);
+  (* Structural format check: DD:DD *)
+  let is_digit c = c >= '0' && c <= '9' in
+  check bool "ts format is DD:DD" true
+    (is_digit ts_val.[0] && is_digit ts_val.[1]
+     && ts_val.[2] = ':' && is_digit ts_val.[3] && is_digit ts_val.[4])
+
 let test_initialize_returns_mcp_capabilities () =
   with_temp_dir (fun dir ->
       let request =
@@ -11127,6 +11150,8 @@ let () =
             test_channel_notification_with_role
         ; test_case "channel notification without role omits" `Quick
             test_channel_notification_without_role_omits
+        ; test_case "channel notification ts UTC HH:MM (#157)" `Quick
+            test_channel_notification_ts_utc_hhmm
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
         ; test_case "initialize experimental capability values are objects" `Quick
             test_initialize_experimental_capability_values_are_objects
