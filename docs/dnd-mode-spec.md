@@ -109,7 +109,7 @@ sees the accumulated room traffic on next poll.
 
 - Complements `c2c doctor` and statefile: statefile provides the idle
   signal; DND consumes it.
-- Feeds into the GUI (`docs/gui-architecture-prelim.md`): peer cards
+- Feeds into the GUI (`docs/gui-architecture.md`): peer cards
   should render a DND badge.
 
 ---

@@ -213,6 +213,36 @@ export interface PeerDeadEvent {
 | Relay cross-machine view | **Deferred post-v1.** Not a blocker; existing observer feed covers local broker. |
 | Launch command | `bun run tauri dev` from `gui/` after `bun install`. Requires `c2c` in PATH. |
 | First-run onboarding | **Welcome wizard.** On first launch (no alias configured), show a setup wizard: (1) enter alias, (2) `c2c register <alias>`, (3) confirm registered. Guides user into the swarm without CLI knowledge. |
+| Alias / identity model | **Per-host, federated by relay.** N:1 relationship from per-host aliases to a relay-side identity, like ssh keys → GitHub account. |
+| Launch story | **Standalone.** GUI runs system-wide; no managed `c2c start` instance required. Entry points: `c2c gui` and/or `c2c tui`. |
+| Local-only vs relay | **Local-only in v1**, relay added in phase 2. A separate spec doc should enumerate features per phase. |
+| Platform priority | **Linux only for v1.** macOS/Windows later via Tauri. |
+| Theme | **Match `c2c.im`** deep-space dark; design doc to follow as the canonical source. |
+| Install / distribution | `cargo install` works; also publish precompiled binaries on GitHub plus npm wrappers (e.g. `bun i -g c2c.im`, `bun i -g @c2c.im/gui`). |
+| GUI logging | Log Tauri events to `~/.local/share/c2c-gui/gui.log` (always-on, not `--debug`-gated). |
+| Permission dialog (v2) | In scope: agent permission forwarding via c2c plugin first, then GUI renders supervisor-approval modal. |
+| Ownership | **Spin up a dedicated `gui` agent.** Tauri + React + shadcn is human-taste-heavy but webview-driver + screenshots get an agent most of the way. |
+| Compose-box ergonomics | Markdown rendering. `@alias` mentions at the start or end of the body double as recipient targeting (no separate "to" field). `#room` shows a filter-suggestion menu of room names. User-oriented slash commands welcome. Format handling should be flexible (space- or comma-separated mention groups). |
+| Long-history performance | Use best-practice virtualization. Rust backend can read-ahead and prepopulate near-current threads. Provide precise browse affordances for deep history. Define performance criteria and a debug mode that synthesizes large datasets for testing. Use Tauri webview webdriver (gtkwebviewwebdriver) for UI automation. |
+| Statefile reach | Long-term: statefiles for all tier-1 supported clients. Tier-1 set: Claude, Codex, OpenCode (others may be dropped). Claude support likely needs a plugin (also useful for hook/config install). Follow-up slice. |
+| Privileged role | None. Human is just another peer. Future admin controls should be crypto-id-based and equally available to agents. |
+| Multi-repo / system-wide observability | The monitor spine must work system-wide; need an index of every repo where `c2c` has been run so the GUI can enumerate brokers. |
+
+### Open follow-ups
+
+- **Relay-traffic visibility:** unconfirmed whether inbound relay messages
+  appear as local inbox writes (and thus surface in `c2c monitor`). If yes,
+  GUI covers remote traffic for free; if not, a `c2c relay tail` is needed.
+- **Statefile gap:** statefile is OpenCode-only today. Claude Code and Codex
+  agents render as "message-plane alive, no cognitive state" until parity
+  ships.
+
+### Parking lot
+
+Items deferred from v1 scope: native notifications (libnotify /
+UserNotifications), systray + background mode, export-conversation-to-
+markdown, drag-and-drop file send (protocol change — out of scope for v1),
+multi-repo / broker switcher UI.
 
 ---
 
