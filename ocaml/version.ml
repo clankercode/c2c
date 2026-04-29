@@ -14,11 +14,10 @@ let build_date =
 
 let banner ~role ~git_hash =
   Printf.eprintf {|
-  ██████╗██████╗ ██████╗
- ██╔════╝╚════██╗██╔════╝
- ██║      █████╔╝██║
- ██║     ██╔═══╝ ██║
- ╚██████╗███████╗╚██████╗
-  ╚═════╝╚══════╝ ╚═════╝  %s v%s  build=%s  git=%s
+  ╔═══╗  ╔═════╗  ╔═══╗  
+  ║   ║  ║     ║  ║   ║  
+  ║   ║  ╠═════╣  ║   ║  
+  ║   ║  ║     ║  ║   ║  
+  ╚═══╝  ╚═════╝  ╚═══╝  %s v%s  build=%s  git=%s
 
 |} role version build_date git_hash
