@@ -32,7 +32,20 @@ type envelope = {
   enc : string;
   recipients : recipient list;
   sig_b64 : string;
+  envelope_version : int;
+    (** Canonical-blob version: 1 = legacy (does NOT cover [from_x25519]),
+        2 = CRIT-1 fix (covers [from_x25519] when [Some _], omits the
+        ["from_x25519"] key entirely when [None]). Default 1 on parse for
+        back-compat. New OCaml producers emit 2. Verifier accepts both
+        during the transition window (Slice A,
+        [.collab/design/2026-04-29-relay-crypto-crit-fix-plan-cairn.md]).
+        Strict-v2 flip is future Slice C. *)
 }
+
+(** Current envelope version emitted by OCaml producers. Bumped to 2 by
+    Slice A so [from_x25519] is included in the Ed25519-signed canonical
+    blob. *)
+let current_envelope_version = 2
 
 let b64_encode s =
   Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
@@ -76,7 +89,18 @@ let rec json_to_string_sorted (j : Yojson.Safe.t) : string =
   | `Bool b -> string_of_bool b
   | _ -> Yojson.Safe.to_string j
 
-let canonical_json (e : envelope) : string =
+(* Canonical-blob version dispatch (CRIT-1, Slice A).
+
+   v1 (legacy): {enc, from, recipients, room, to, ts}
+   v2 (CRIT-1): v1 fields PLUS "from_x25519" when [from_x25519 = Some _].
+
+   Omit-key-when-None semantics for v2: if [from_x25519 = None] the
+   ["from_x25519"] key is NOT included (NOT included as `Null). This
+   keeps the v2 canonical blob bit-identical to v1 when the sender
+   chooses to omit the field (e.g. plaintext-routed messages),
+   which preserves a clean degradation path and matches what TS
+   verifiers expect when paraphrasing the canonical-blob field-list. *)
+let canonical_json_v1 (e : envelope) : string =
   let rncs =
     `List (
       List.map (fun r ->
@@ -100,6 +124,44 @@ let canonical_json (e : envelope) : string =
     ]
   in
   "{" ^ String.concat "," (List.map (fun (k, v) -> Printf.sprintf "%S:%s" k (json_to_string_sorted v)) fields) ^ "}"
+
+let canonical_json_v2 (e : envelope) : string =
+  let rncs =
+    `List (
+      List.map (fun r ->
+        let fields =
+          [ "alias", `String r.alias ]
+          @ (match r.nonce with Some n -> [ "nonce", `String n ] | None -> [ "nonce", `Null ])
+          @ [ "ciphertext", `String r.ciphertext ]
+        in
+        `Assoc (sort_assoc fields)
+      ) e.recipients
+    )
+  in
+  let base = [
+    "from",      `String e.from_;
+    "to",        (match e.to_ with Some s -> `String s | None -> `Null);
+    "room",      (match e.room with Some s -> `String s | None -> `Null);
+    "ts",        `Intlit (Int64.to_string e.ts);
+    "enc",       `String e.enc;
+    "recipients", rncs;
+  ] in
+  (* Omit-key-when-None: NOT a `Null branch — the key is absent. *)
+  let with_x25519 = match e.from_x25519 with
+    | Some pk -> ("from_x25519", `String pk) :: base
+    | None -> base
+  in
+  let fields = sort_assoc with_x25519 in
+  "{" ^ String.concat "," (List.map (fun (k, v) -> Printf.sprintf "%S:%s" k (json_to_string_sorted v)) fields) ^ "}"
+
+(** Dispatch on [e.envelope_version]: 1 → v1 shape, 2 → v2 shape, anything
+    else → v2 shape (forward-compat: unknown future versions are assumed
+    to at least cover what v2 covers; verifier will sig-fail if the
+    actual canonical shape differs, which is the safe outcome). *)
+let canonical_json (e : envelope) : string =
+  match e.envelope_version with
+  | 1 -> canonical_json_v1 e
+  | _ -> canonical_json_v2 e
 
 let sign_ed25519 ~sk_seed msg =
   match Mirage_crypto_ec.Ed25519.priv_of_octets sk_seed with
@@ -162,6 +224,19 @@ let verify_envelope_sig ~pk (e : envelope) : bool =
     let canon = canonical_json e in
     verify_ed25519 ~pk ~msg:canon ~sig_:sig_bytes
 
+(** Structured verify result for ops-debug. [Err] carries
+    [version_attempted] = the [envelope_version] the verifier dispatched
+    on. Useful when triaging cross-client interop failures during the
+    v1↔v2 transition window. *)
+type verify_result =
+  | Verify_ok
+  | Verify_err of { version_attempted : int }
+
+let verify_envelope_sig_detailed ~pk (e : envelope) : verify_result =
+  if verify_envelope_sig ~pk e
+  then Verify_ok
+  else Verify_err { version_attempted = e.envelope_version }
+
 let encrypt_for_recipient ~pt ~recipient_pk_b64 ~our_sk_seed =
   let nonce = random_nonce () in
   let nonce_b64 = b64_encode nonce in
@@ -211,7 +286,12 @@ let envelope_to_json (e : envelope) : Yojson.Safe.t =
       ; "enc",       `String e.enc
       ; "recipients", `List (List.map recipient_to_json e.recipients)
       ; "sig",       `String e.sig_b64
-    ])
+      (* envelope_version: omit when 1 to keep wire-bytes byte-identical
+         to legacy senders that never knew the field. v2 producers always
+         emit it explicitly. *)
+      ] @ (if e.envelope_version <= 1 then [] else
+             [ "envelope_version", `Int e.envelope_version ])
+    )
 
 let envelope_of_json (j : Yojson.Safe.t) : envelope =
   match j with
@@ -226,7 +306,14 @@ let envelope_of_json (j : Yojson.Safe.t) : envelope =
     let enc = member "enc" j |> to_string in
     let recipients = member "recipients" j |> to_list |> List.map recipient_of_json in
     let sig_b64 = member "sig" j |> to_string in
-    { from_; from_x25519; to_; room; ts; enc; recipients; sig_b64 }
+    (* Default envelope_version to 1 on parse: legacy wire JSON has no
+       such key. New v2 producers emit it explicitly as `Int. *)
+    let envelope_version = match member "envelope_version" j with
+      | `Int n -> n
+      | `Intlit s -> (try int_of_string s with _ -> 1)
+      | _ -> 1
+    in
+    { from_; from_x25519; to_; room; ts; enc; recipients; sig_b64; envelope_version }
   | _ -> failwith "envelope_of_json: expected object"
 
 let find_my_recipient ~(my_alias : string) (recipients : recipient list) =
@@ -260,7 +347,8 @@ let check_pinned_x25519_mismatch ~(pinned_pk : string) ~(claimed_pk : string) : 
   pinned_pk <> claimed_pk
 
 let make_test_envelope ~from_ ~to_ ~room ~ts ~enc ~recipients =
-  { from_; from_x25519 = None; to_; room; ts; enc; recipients; sig_b64 = "" }
+  { from_; from_x25519 = None; to_; room; ts; enc; recipients; sig_b64 = "";
+    envelope_version = current_envelope_version }
 
 let set_sig (e : envelope) ~sk_seed =
   let sig_b64 = sign_envelope ~sk_seed e in

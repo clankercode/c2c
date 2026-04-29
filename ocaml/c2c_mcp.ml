@@ -5449,6 +5449,7 @@ let ts = Unix.gettimeofday () in
                                  enc = "box-x25519-v1";
                                  recipients = [ recipient_entry ];
                                  sig_b64 = "";
+                                 envelope_version = Relay_e2e.current_envelope_version;
                                } in
                                let signed = Relay_e2e.set_sig envelope ~sk_seed:our_ed25519.private_key_seed in
                                `Encrypted (Yojson.Safe.to_string (Relay_e2e.envelope_to_json signed))))

@@ -47,6 +47,7 @@ let test_canonical_json_byte_stability () =
     enc = "box-x25519-v1";
     recipients = [ { alias = "bob"; nonce = Some "nonce123"; ciphertext = "ct123" } ];
     sig_b64 = "sig123";
+    envelope_version = 1;
   } in
   let json1 = canonical_json e in
   let json2 = canonical_json e in
@@ -62,6 +63,7 @@ let test_canonical_json_sorted () =
     enc = "box-x25519-v1";
     recipients = [ { alias = "bob"; nonce = Some "nonce123"; ciphertext = "ct123" } ];
     sig_b64 = "sig123";
+    envelope_version = 1;
   } in
   let json = canonical_json e in
   let enc_pos = try String.index json 'e' with Not_found -> -1 in
@@ -70,7 +72,7 @@ let test_canonical_json_sorted () =
 
 let test_downgrade_detection () =
   let ds = make_downgrade_state () in
-  let e_plain = { from_ = "alice"; from_x25519 = None; to_ = Some "bob"; room = None; ts = 1L; enc = "plain"; recipients = []; sig_b64 = "" } in
+  let e_plain = { from_ = "alice"; from_x25519 = None; to_ = Some "bob"; room = None; ts = 1L; enc = "plain"; recipients = []; sig_b64 = ""; envelope_version = 1 } in
   let (status, ds) = decide_enc_status ds e_plain in
   Alcotest.(check string) "first msg plain -> Plain" (enc_status_to_string status) "plain";
   let e_enc = { e_plain with enc = "box-x25519-v1" } in
@@ -97,6 +99,139 @@ let test_tofu_mismatch () =
   Alcotest.(check bool) "x25519 same = no mismatch" false (check_pinned_x25519_mismatch ~pinned_pk:"xyz" ~claimed_pk:"xyz");
   Alcotest.(check bool) "x25519 diff = mismatch" true (check_pinned_x25519_mismatch ~pinned_pk:"xyz" ~claimed_pk:"uvw")
 
+(* CRIT-1 / Slice A — v1/v2 canonical_json dispatch.
+   Plan: .collab/design/2026-04-29-relay-crypto-crit-fix-plan-cairn.md *)
+
+(* Helper: generate an Ed25519 keypair; return (sk_seed, pk_raw). *)
+let gen_ed25519 () =
+  Mirage_crypto_rng_unix.use_default ();
+  let priv, pub = Mirage_crypto_ec.Ed25519.generate () in
+  let seed = Mirage_crypto_ec.Ed25519.priv_to_octets priv in
+  let pk_raw = Mirage_crypto_ec.Ed25519.pub_to_octets pub in
+  seed, pk_raw
+
+(* CRIT-1 core — v2 envelope binds [from_x25519] in the signed blob.
+   Mutating the field after signing must invalidate the signature. *)
+let test_canonical_v2_includes_from_x25519 () =
+  let seed, pk_raw = gen_ed25519 () in
+  let e = {
+    from_ = "alice";
+    from_x25519 = Some "AAAA-x25519-pubkey-original";
+    to_ = Some "bob";
+    room = None;
+    ts = 1700000000L;
+    enc = "box-x25519-v1";
+    recipients = [ { alias = "bob"; nonce = Some "nonce"; ciphertext = "ct" } ];
+    sig_b64 = "";
+    envelope_version = 2;
+  } in
+  let signed = set_sig e ~sk_seed:seed in
+  Alcotest.(check bool) "v2 sig verifies" true (verify_envelope_sig ~pk:pk_raw signed);
+  (* Mutate from_x25519 (attacker key swap); sig must fail. *)
+  let mutated = { signed with from_x25519 = Some "BBBB-attacker-x25519" } in
+  Alcotest.(check bool) "v2 verify rejects from_x25519 swap" false (verify_envelope_sig ~pk:pk_raw mutated);
+  (* Sanity — also fails if from_x25519 is dropped to None. *)
+  let dropped = { signed with from_x25519 = None } in
+  Alcotest.(check bool) "v2 verify rejects from_x25519 drop" false (verify_envelope_sig ~pk:pk_raw dropped)
+
+(* Back-compat — a v1 envelope (no envelope_version on wire, parsed as
+   1) signs/verifies under v1 canonical_json with the new code. *)
+let test_v1_back_compat_verify () =
+  let seed, pk_raw = gen_ed25519 () in
+  (* Hand-construct a v1-shape envelope (no from_x25519 covered). *)
+  let e = {
+    from_ = "legacy-sender";
+    from_x25519 = None;
+    to_ = Some "bob";
+    room = None;
+    ts = 1700000001L;
+    enc = "box-x25519-v1";
+    recipients = [ { alias = "bob"; nonce = Some "n"; ciphertext = "c" } ];
+    sig_b64 = "";
+    envelope_version = 1;
+  } in
+  let signed = set_sig e ~sk_seed:seed in
+  Alcotest.(check bool) "v1 envelope verifies under new verifier" true (verify_envelope_sig ~pk:pk_raw signed);
+  (* envelope_to_json on a v1 envelope must omit the envelope_version key
+     so legacy wire bytes are unchanged. *)
+  let json = envelope_to_json signed in
+  let has_version_key = match json with
+    | `Assoc fields -> List.mem_assoc "envelope_version" fields
+    | _ -> false
+  in
+  Alcotest.(check bool) "v1 wire JSON omits envelope_version key" false has_version_key;
+  (* envelope_of_json on a v1-shape JSON (no envelope_version key) must
+     default the field to 1 so verify_envelope_sig dispatches v1 shape. *)
+  let v1_wire = `Assoc [
+    "from",       `String "legacy-sender";
+    "to",         `String "bob";
+    "room",       `Null;
+    "ts",         `String "1700000001";
+    "enc",        `String "box-x25519-v1";
+    "recipients", `List [ `Assoc [
+      "alias", `String "bob";
+      "nonce", `String "n";
+      "ciphertext", `String "c";
+    ] ];
+    "sig",        `String signed.sig_b64;
+  ] in
+  let parsed = envelope_of_json v1_wire in
+  Alcotest.(check int) "wire parse defaults envelope_version to 1" 1 parsed.envelope_version;
+  Alcotest.(check bool) "v1 envelope round-trips and verifies" true (verify_envelope_sig ~pk:pk_raw parsed)
+
+(* Cutover-window contract: a v2-signed blob does NOT verify if the
+   verifier ignores the envelope_version (i.e. attempts a v1-shape
+   canonicalize). Documents why the verifier must dispatch on the
+   self-claimed version field. *)
+let test_v2_envelope_rejects_v1_verify_path () =
+  let seed, pk_raw = gen_ed25519 () in
+  let e_v2 = {
+    from_ = "alice";
+    from_x25519 = Some "AAAA-x25519-pk";
+    to_ = Some "bob";
+    room = None;
+    ts = 1700000002L;
+    enc = "box-x25519-v1";
+    recipients = [ { alias = "bob"; nonce = Some "n"; ciphertext = "c" } ];
+    sig_b64 = "";
+    envelope_version = 2;
+  } in
+  let signed_v2 = set_sig e_v2 ~sk_seed:seed in
+  Alcotest.(check bool) "v2 verifies normally" true (verify_envelope_sig ~pk:pk_raw signed_v2);
+  (* Simulate a v1-only verifier: copy with envelope_version forced to
+     1, which dispatches canonical_json to v1 shape (no from_x25519). *)
+  let as_if_v1 = { signed_v2 with envelope_version = 1 } in
+  Alcotest.(check bool) "v2-signed blob fails under v1-shape canonicalize" false (verify_envelope_sig ~pk:pk_raw as_if_v1)
+
+(* Omit-key-when-None semantics: producer with [from_x25519 = None] under
+   v2 — canonical blob does NOT include the "from_x25519" key at all
+   (NOT included as a `Null), and verify still works. *)
+let test_omit_from_x25519_v2_canonicalize () =
+  let seed, pk_raw = gen_ed25519 () in
+  let e = {
+    from_ = "alice";
+    from_x25519 = None;
+    to_ = Some "bob";
+    room = None;
+    ts = 1700000003L;
+    enc = "plain";
+    recipients = [];
+    sig_b64 = "";
+    envelope_version = 2;
+  } in
+  let canon = canonical_json e in
+  Alcotest.(check bool) "v2 canonical omits from_x25519 key when None"
+    false
+    (try ignore (Str.search_forward (Str.regexp_string "from_x25519") canon 0); true
+     with Not_found -> false);
+  let signed = set_sig e ~sk_seed:seed in
+  Alcotest.(check bool) "v2 envelope without from_x25519 verifies" true (verify_envelope_sig ~pk:pk_raw signed);
+  (* Bonus: when [from_x25519 = None], v2 canonical bytes equal v1
+     canonical bytes (both omit the key). This is the clean degradation
+     path mentioned in the design comment. *)
+  let e_v1 = { e with envelope_version = 1 } in
+  Alcotest.(check string) "v2-with-None-from_x25519 == v1 canonical" (canonical_json e_v1) canon
+
 let () =
   Alcotest.run "relay_e2e" [
     "enc_status", [
@@ -121,5 +256,15 @@ let () =
     ];
     "tofu", [
       Alcotest.test_case "TOFU mismatch detection" `Quick test_tofu_mismatch;
+    ];
+    "envelope_v2", [
+      Alcotest.test_case "v2 canonical_json includes from_x25519 (mutate→fail)"
+        `Quick test_canonical_v2_includes_from_x25519;
+      Alcotest.test_case "v1 envelope back-compat verify"
+        `Quick test_v1_back_compat_verify;
+      Alcotest.test_case "v2 sig fails under v1-shape canonicalize"
+        `Quick test_v2_envelope_rejects_v1_verify_path;
+      Alcotest.test_case "v2 with from_x25519=None omits the key"
+        `Quick test_omit_from_x25519_v2_canonicalize;
     ];
   ]

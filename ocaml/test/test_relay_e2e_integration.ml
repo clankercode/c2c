@@ -40,6 +40,7 @@ let test_sign_verify_envelope_roundtrip () =
     enc = "box-x25519-v1";
     recipients = [];
     sig_b64 = "";
+    envelope_version = current_envelope_version;
   } in
   let sig_ = sign_envelope ~sk_seed:seed envelope in
   Alcotest.(check bool) "sig_ is non-empty" true (sig_ <> "");
@@ -77,6 +78,7 @@ let test_full_e2e_two_party () =
       enc = "box-x25519-v1";
       recipients = [{ alias = "bob"; nonce = Some nonce; ciphertext }];
       sig_b64 = "";
+      envelope_version = current_envelope_version;
     } in
     let sig_ = sign_envelope ~sk_seed:alice_id_seed e in
     let e_signed = { e with sig_b64 = sig_ } in
