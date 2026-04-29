@@ -145,10 +145,18 @@ let normalize_aliases aliases =
   |> List.map String.trim
   |> List.filter (fun alias -> alias <> "")
 
+(* #alias-casefold: ACL list maintenance is case-insensitive so granting
+   "Foo" then "foo" doesn't double-row, and revoking "foo" actually
+   removes a previously-granted "Foo". *)
 let grant_aliases aliases existing =
   let acc = ref existing in
   List.iter (fun alias ->
-    if not (List.mem alias !acc) then acc := !acc @ [alias])
+    if not (List.exists
+              (fun a ->
+                C2c_mcp.Broker.alias_casefold a
+                = C2c_mcp.Broker.alias_casefold alias)
+              !acc)
+    then acc := !acc @ [alias])
     (normalize_aliases aliases);
   !acc
 
@@ -156,7 +164,14 @@ let revoke_aliases ?(all_targeted=false) aliases existing =
   if all_targeted then []
   else
     let revoked = normalize_aliases aliases in
-    List.filter (fun alias -> not (List.mem alias revoked)) existing
+    List.filter
+      (fun alias ->
+        not (List.exists
+               (fun r ->
+                 C2c_mcp.Broker.alias_casefold r
+                 = C2c_mcp.Broker.alias_casefold alias)
+               revoked))
+      existing
 
 let current_alias_or_die () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
@@ -292,10 +307,19 @@ let memory_list_cmd =
    - [shared: true] (global), OR
    - the caller's alias appears in [shared_with].
    Returned as a boolean rather than exiting so it's testable. *)
+(* #alias-casefold: self-read and shared_with grantee match are
+   case-insensitive — owner stored as "Foo-bar", current_alias resolved
+   as "foo-bar" must still be allowed onto their own entries; a grant
+   written with one casing must honor a current_alias with another. *)
 let cross_agent_read_allowed ~target_alias ~current_alias ~entry =
-  target_alias = current_alias
+  C2c_mcp.Broker.alias_casefold target_alias
+  = C2c_mcp.Broker.alias_casefold current_alias
   || entry.shared
-  || List.mem current_alias entry.shared_with
+  || List.exists
+       (fun a ->
+         C2c_mcp.Broker.alias_casefold a
+         = C2c_mcp.Broker.alias_casefold current_alias)
+       entry.shared_with
 
 (* Read entry, then enforce privacy. Exits 1 with a helpful message on
    refusal. Caller-owned reads bypass the check entirely. *)

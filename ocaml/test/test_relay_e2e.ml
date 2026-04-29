@@ -93,6 +93,17 @@ let test_find_my_recipient_miss () =
   | Some _ -> Alcotest.fail "should not have found bob"
   | None -> Alcotest.(check unit) "miss ok" () ()
 
+(* #alias-casefold: sender-written recipient entry "Bob" must still
+   resolve when receiver's [my_alias] resolves as "bob". *)
+let test_find_my_recipient_case_insensitive () =
+  let recipients = [
+    { alias = "alice"; nonce = None; ciphertext = "" };
+    { alias = "Bob"; nonce = Some "n"; ciphertext = "ct" };
+  ] in
+  match find_my_recipient ~my_alias:"bob" recipients with
+  | Some r -> Alcotest.(check string) "found Bob via lowercase 'bob'" r.alias "Bob"
+  | None -> Alcotest.fail "expected to find Bob via case-insensitive lookup"
+
 let test_tofu_mismatch () =
   Alcotest.(check bool) "same pk = no mismatch" false (check_pinned_ed25519_mismatch ~pinned_pk:"abc" ~claimed_pk:"abc");
   Alcotest.(check bool) "diff pk = mismatch" true (check_pinned_ed25519_mismatch ~pinned_pk:"abc" ~claimed_pk:"def");
@@ -253,6 +264,7 @@ let () =
     "find_recipient", [
       Alcotest.test_case "find_my_recipient hit" `Quick test_find_my_recipient_hit;
       Alcotest.test_case "find_my_recipient miss" `Quick test_find_my_recipient_miss;
+      Alcotest.test_case "find_my_recipient case-insensitive" `Quick test_find_my_recipient_case_insensitive;
     ];
     "tofu", [
       Alcotest.test_case "TOFU mismatch detection" `Quick test_tofu_mismatch;

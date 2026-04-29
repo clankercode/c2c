@@ -317,7 +317,13 @@ let envelope_of_json (j : Yojson.Safe.t) : envelope =
   | _ -> failwith "envelope_of_json: expected object"
 
 let find_my_recipient ~(my_alias : string) (recipients : recipient list) =
-  List.find_opt (fun r -> r.alias = my_alias) recipients
+  (* #alias-casefold: recipient lookup is case-insensitive so a sender
+     who wrote a recipient entry as "Foo" doesn't brick legitimate
+     decryption when the recipient resolves as "foo". Inlined
+     [String.lowercase_ascii] (matches [C2c_mcp.Broker.alias_casefold]
+     semantics) to preserve the relay layer's Broker-free convention. *)
+  let target = String.lowercase_ascii my_alias in
+  List.find_opt (fun r -> String.lowercase_ascii r.alias = target) recipients
 
 type downgrade_state = {
   seen_encrypted : bool;

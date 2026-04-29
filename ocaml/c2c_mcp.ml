@@ -3267,7 +3267,11 @@ module Broker = struct
        not overwrite. Legacy rooms (members exist, created_by="") stay
        empty and require [~force:true] to delete. *)
     (if current_members = [] && meta.created_by = "" then
-       save_room_meta t ~room_id { meta with created_by = alias });
+       (* #alias-casefold: store [created_by] as canonical-lowercase so
+          legacy mixed-case-storage DoS cannot occur for new rooms. The
+          read-side casefold in [delete_room] still handles legacy rows
+          stored before this change. *)
+       save_room_meta t ~room_id { meta with created_by = alias_casefold alias });
     let updated, should_broadcast =
       with_room_members_lock t ~room_id (fun () ->
         let members = load_room_members t ~room_id in
@@ -3345,7 +3349,13 @@ module Broker = struct
            ("delete_room rejected: room '" ^ room_id
             ^ "' has no recorded creator (legacy room) — pass force=true to delete")
      end
-     else if caller_alias <> meta.created_by then
+     else if alias_casefold caller_alias <> alias_casefold meta.created_by then
+       (* #alias-casefold: legitimate creator stored as "Alice" (legacy)
+          should still be able to delete their own room when their
+          session resolves the alias as "alice". Direction-safe: the
+          attacker cannot impersonate another identity because
+          [send_alias_impersonation_check] (in the MCP handler) already
+          rejects when caller_alias is held by a live different session. *)
        invalid_arg
          ("delete_room rejected: only the creator '" ^ meta.created_by
           ^ "' may delete room '" ^ room_id ^ "'"));
@@ -3445,7 +3455,11 @@ module Broker = struct
         [] invited_members
     in
     save_room_meta t ~room_id
-      { visibility; invited_members = dedup_invited; created_by = caller_alias };
+      (* #alias-casefold: store [created_by] as canonical-lowercase
+         (defense-in-depth, matches the join-time stamp at the other
+         creation site). *)
+      { visibility; invited_members = dedup_invited;
+        created_by = alias_casefold caller_alias };
     let members =
       if auto_join then begin
         let member =

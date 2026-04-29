@@ -812,7 +812,15 @@ let check_pending_reply_cmd =
         Printf.eprintf "error: unknown permission ID\n%!";
       exit 1
   | Some pending ->
-      if List.mem reply_from pending.supervisors then
+      (* #alias-casefold: supervisor list is the authoritative target;
+         compare both sides folded so a supervisor whose stored alias
+         differs in case from [reply_from] is not falsely rejected. *)
+      if List.exists
+           (fun s ->
+             C2c_mcp.Broker.alias_casefold s
+             = C2c_mcp.Broker.alias_casefold reply_from)
+           pending.supervisors
+      then
         if json then
           print_json (`Assoc [
             ("valid", `Bool true);
@@ -5874,7 +5882,14 @@ let clean_stale_classify ~instances_dir ~now (inst : managed_instance_view) =
   List.rev !reasons
 
 let clean_stale_is_protected name =
-  List.mem name clean_stale_protected_aliases
+  (* #alias-casefold: protected-alias safety guard must compare
+     case-insensitively so an instance dir named "Coordinator1" still
+     trips the protection that "coordinator1" does. *)
+  List.exists
+    (fun p ->
+      C2c_mcp.Broker.alias_casefold p
+      = C2c_mcp.Broker.alias_casefold name)
+    clean_stale_protected_aliases
 
 let clean_stale_cmd =
   let dry_run =

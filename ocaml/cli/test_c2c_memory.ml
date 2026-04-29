@@ -230,6 +230,31 @@ let test_revoke_all_targeted_clears_aliases () =
     []
     (C2c_memory.revoke_aliases ~all_targeted:true [] ["alice"; "bob"])
 
+(* #alias-casefold: ACL list maintenance is case-insensitive. *)
+let test_grant_aliases_dedup_case_insensitive () =
+  check (list string) "Foo + foo dedup-cased; existing preserved"
+    ["alice"; "Foo"]
+    (C2c_memory.grant_aliases ["foo"] ["alice"; "Foo"])
+
+let test_revoke_aliases_case_insensitive () =
+  check (list string) "revoke 'foo' removes existing 'Foo'"
+    ["alice"]
+    (C2c_memory.revoke_aliases ["foo"] ["alice"; "Foo"])
+
+let test_self_read_case_insensitive () =
+  let e = { C2c_memory.name = Some "x"; description = None; type_ = None;
+            shared = false; shared_with = []; body = "" } in
+  check bool "owner stored as Foo, current resolved as foo → allowed" true
+    (C2c_memory.cross_agent_read_allowed
+       ~target_alias:"Foo-bar" ~current_alias:"foo-bar" ~entry:e)
+
+let test_shared_with_case_insensitive () =
+  let e = { C2c_memory.name = Some "x"; description = None; type_ = None;
+            shared = false; shared_with = ["Bob"]; body = "" } in
+  check bool "grant for 'Bob' honors current 'bob' → allowed" true
+    (C2c_memory.cross_agent_read_allowed
+       ~target_alias:"alice" ~current_alias:"bob" ~entry:e)
+
 (* list_all_aliases / global shared scan ------------------------------------- *)
 
 let test_list_all_aliases_finds_subdirs () =
@@ -307,6 +332,12 @@ let () =
         ; test_case "revoke removes requested aliases" `Quick test_revoke_aliases_removes_only_requested
         ; test_case "revoke missing alias is idempotent" `Quick test_revoke_aliases_missing_is_idempotent
         ; test_case "revoke all targeted clears aliases" `Quick test_revoke_all_targeted_clears_aliases
+        ; test_case "grant dedup is case-insensitive" `Quick test_grant_aliases_dedup_case_insensitive
+        ; test_case "revoke is case-insensitive" `Quick test_revoke_aliases_case_insensitive
+        ] )
+    ; ( "casefold-privacy",
+        [ test_case "self-read tolerates case skew" `Quick test_self_read_case_insensitive
+        ; test_case "shared_with tolerates case skew" `Quick test_shared_with_case_insensitive
         ] )
     ; ( "global-scan",
         [ test_case "list_all_aliases finds subdirs" `Quick test_list_all_aliases_finds_subdirs

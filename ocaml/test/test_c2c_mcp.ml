@@ -4863,6 +4863,56 @@ let test_delete_room_fails_when_has_members () =
           C2c_mcp.Broker.delete_room broker ~room_id:"lobby"
             ~caller_alias:"storm-ember" ()))
 
+(* #alias-casefold: creator stored canonical-lowercase via casefold-on-write
+   at join time; delete must succeed when caller's [caller_alias] differs in
+   case from the stored [created_by]. *)
+let test_delete_room_creator_check_case_insensitive () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Joiner stamps created_by; casefold-on-write forces lowercase. *)
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"tmp-room"
+          ~alias:"Storm-Ember" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.leave_room broker ~room_id:"tmp-room" ~alias:"Storm-Ember"
+      in
+      (* Caller resolves with a different casing — must still be allowed. *)
+      C2c_mcp.Broker.delete_room broker ~room_id:"tmp-room"
+        ~caller_alias:"STORM-ember" ();
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      check int "room deleted via case-insensitive creator match"
+        0 (List.length rooms))
+
+(* #alias-casefold: legacy room with mixed-case [created_by] (written before
+   casefold-on-write) still permits delete when caller resolves to a
+   different casing — read-side casefold compatibility. *)
+let test_delete_room_legacy_mixed_case_creator () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"legacy-room"
+          ~alias:"alice" ~session_id:"session-a"
+      in
+      let _ =
+        C2c_mcp.Broker.leave_room broker ~room_id:"legacy-room" ~alias:"alice"
+      in
+      (* Manually overwrite room meta to simulate legacy mixed-case storage. *)
+      let meta_path =
+        Filename.concat dir
+          (Filename.concat "rooms" (Filename.concat "legacy-room" "meta.json"))
+      in
+      let oc = open_out meta_path in
+      output_string oc
+        "{\"visibility\":\"public\",\"invited_members\":[],\"created_by\":\"Alice\"}";
+      close_out oc;
+      (* Caller "alice" must still be able to delete the legacy room. *)
+      C2c_mcp.Broker.delete_room broker ~room_id:"legacy-room"
+        ~caller_alias:"alice" ();
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      check int "legacy mixed-case room deleted"
+        0 (List.length rooms))
+
 let test_send_room_appends_history_and_fans_out () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -10377,6 +10427,10 @@ let () =
              test_delete_room_succeeds_when_empty
          ; test_case "delete_room fails when has members" `Quick
              test_delete_room_fails_when_has_members
+         ; test_case "delete_room creator check is case-insensitive" `Quick
+             test_delete_room_creator_check_case_insensitive
+         ; test_case "delete_room legacy mixed-case created_by" `Quick
+             test_delete_room_legacy_mixed_case_creator
          ; test_case "send_room appends history and fans out" `Quick
              test_send_room_appends_history_and_fans_out
          ; test_case "send_room skips sender inbox" `Quick
