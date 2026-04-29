@@ -754,11 +754,35 @@ module Broker = struct
     let now = Unix.gettimeofday () in
     List.filter (fun p -> p.expires_at > now) (load_pending_permissions t)
 
+  (** [#432 Slice C] Capacity bounds for the pending-permissions store.
+      Per-alias and global caps prevent flooded JSON growth (which would
+      degrade every register-time M4 guard scan) and bound a single
+      bad/compromised caller's footprint. Numbers anchored on TTL=600s
+      and ~1-2 in-flight per legitimate caller in a swarm of ~10-15
+      live agents. *)
+  let pending_per_alias_cap = 16
+  let pending_global_cap = 1024
+
+  exception Pending_capacity_exceeded of [`Per_alias of string | `Global]
+
   (** Persist a new pending permission entry. Cross-process safe via
-      [with_pending_lock] (#432). *)
+      [with_pending_lock] (#432 Slice A). Raises
+      [Pending_capacity_exceeded] when [pending_per_alias_cap] /
+      [pending_global_cap] would be exceeded by the new entry (#432
+      Slice C). *)
   let open_pending_permission t p =
     with_pending_lock t (fun () ->
       let entries = get_active_pending_permissions t in
+      let global_count = List.length entries in
+      if global_count >= pending_global_cap then
+        raise (Pending_capacity_exceeded `Global);
+      let per_alias_count =
+        List.length
+          (List.filter (fun e -> e.requester_alias = p.requester_alias)
+             entries)
+      in
+      if per_alias_count >= pending_per_alias_cap then
+        raise (Pending_capacity_exceeded (`Per_alias p.requester_alias));
       save_pending_permissions t (p :: entries))
 
   (** Find a pending permission by perm_id. Returns None if not found or
@@ -5860,18 +5884,52 @@ let ts = Unix.gettimeofday () in
         ; requester_alias = alias; supervisors
         ; created_at = now; expires_at = now +. ttl_seconds }
       in
-      Broker.open_pending_permission broker pending;
-      let content =
-        `Assoc
-          [ ("ok", `Bool true)
-          ; ("perm_id", `String perm_id)
-          ; ("kind", `String (pending_kind_to_string kind))
-          ; ("ttl_seconds", `Float ttl_seconds)
-          ; ("expires_at", `Float pending.expires_at)
-          ]
-        |> Yojson.Safe.to_string
-      in
-      Lwt.return (tool_result ~content ~is_error:false))
+      (try
+         Broker.open_pending_permission broker pending;
+         let content =
+           `Assoc
+             [ ("ok", `Bool true)
+             ; ("perm_id", `String perm_id)
+             ; ("kind", `String (pending_kind_to_string kind))
+             ; ("ttl_seconds", `Float ttl_seconds)
+             ; ("expires_at", `Float pending.expires_at)
+             ]
+           |> Yojson.Safe.to_string
+         in
+         Lwt.return (tool_result ~content ~is_error:false)
+       with Broker.Pending_capacity_exceeded which ->
+         (* [#432 Slice C] capacity-exceeded — log + reject with a
+            specific error so the caller distinguishes "your bucket is
+            full" from generic auth failures. *)
+         let kind_str, log_msg = match which with
+           | `Per_alias a ->
+               Printf.sprintf "per-alias cap reached for alias %S" a,
+               Printf.sprintf "[pending-cap] reject open_pending_reply: per_alias cap reached alias=%S" a
+           | `Global ->
+               Printf.sprintf "global pending-permissions cap reached",
+               "[pending-cap] reject open_pending_reply: global cap reached"
+         in
+         (try
+            let path = Filename.concat (Broker.root broker) "broker.log" in
+            let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+            (try
+               let line =
+                 `Assoc
+                   [ ("ts", `Float (Unix.gettimeofday ()))
+                   ; ("event", `String "pending_cap_reject")
+                   ; ("note", `String log_msg)
+                   ]
+                 |> Yojson.Safe.to_string
+               in
+               output_string oc (line ^ "\n");
+               close_out oc
+             with _ -> close_out_noerr oc)
+          with _ -> ());
+         Lwt.return (tool_result
+           ~content:(Printf.sprintf
+             "open_pending_reply rejected: %s. Wait for in-flight entries to expire (default TTL 600s) or coordinate with the holder."
+             kind_str)
+           ~is_error:true))
   | "check_pending_reply" ->
       let perm_id = string_member "perm_id" arguments in
       (* [#432 Slice B / Finding 4-B2] derive reply_from_alias from the

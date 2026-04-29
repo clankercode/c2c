@@ -363,7 +363,12 @@ module Broker : sig
   val is_provisional : registration -> bool
   val is_provisional_expired : registration -> bool
   val is_unconfirmed : registration -> bool
+  val pending_per_alias_cap : int
+  val pending_global_cap : int
+  exception Pending_capacity_exceeded of [`Per_alias of string | `Global]
   val open_pending_permission : t -> pending_permission -> unit
+  (** May raise [Pending_capacity_exceeded] if the per-alias or global
+      cap would be exceeded by the new entry (#432 Slice C). *)
   val find_pending_permission : t -> string -> pending_permission option
   val remove_pending_permission : t -> string -> unit
   val pending_permission_exists_for_alias : t -> string -> bool

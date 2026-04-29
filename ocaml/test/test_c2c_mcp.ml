@@ -7387,6 +7387,152 @@ let test_check_pending_reply_rejects_unregistered_caller () =
                in
                check bool "isError=true on unregistered caller" true is_error)))
 
+(* [#432 Slice C] per-alias capacity cap. After [pending_per_alias_cap]
+   pending entries are open for a single alias, the next open must be
+   rejected with [Pending_capacity_exceeded (`Per_alias _)]. Bounds a
+   single bad/compromised caller's footprint and the M4 register-guard
+   scan length. *)
+let test_open_pending_permission_per_alias_cap () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let now = Unix.gettimeofday () in
+      let make_entry i =
+        ({ perm_id = Printf.sprintf "perm-cap-%d" i
+         ; kind = C2c_mcp.Permission
+         ; requester_session_id = "session-flooder"
+         ; requester_alias = "flooder"
+         ; supervisors = [ "coord" ]
+         ; created_at = now
+         ; expires_at = now +. 600.0
+         } : C2c_mcp.pending_permission)
+      in
+      (* Open exactly cap entries — must all succeed. *)
+      for i = 0 to C2c_mcp.Broker.pending_per_alias_cap - 1 do
+        C2c_mcp.Broker.open_pending_permission broker (make_entry i)
+      done;
+      (* The (cap+1)-th open must raise. *)
+      let raised =
+        try
+          C2c_mcp.Broker.open_pending_permission broker
+            (make_entry C2c_mcp.Broker.pending_per_alias_cap);
+          None
+        with C2c_mcp.Broker.Pending_capacity_exceeded which -> Some which
+      in
+      check bool "per-alias cap raises Pending_capacity_exceeded" true
+        (raised <> None);
+      (match raised with
+       | Some (`Per_alias a) ->
+           check string "raised with the offending alias" "flooder" a
+       | Some `Global -> fail "expected Per_alias, got Global"
+       | None -> fail "expected exception"))
+
+(* [#432 Slice C] expired entries do not count toward the cap. After
+   N expired entries + (cap-1) live entries, the next open must
+   succeed because the lazy-eviction filter sees only the live ones. *)
+let test_open_pending_permission_expired_dont_count () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let now = Unix.gettimeofday () in
+      (* Pre-load 5 expired entries by writing the JSON file directly.
+         Using literal JSON rather than C2c_mcp.pending_permission_to_json
+         which is not exposed in the .mli. *)
+      let expired_json =
+        `List
+          (List.init 5 (fun i ->
+               `Assoc
+                 [ ("perm_id", `String (Printf.sprintf "perm-expired-%d" i))
+                 ; ("kind", `String "permission")
+                 ; ("requester_session_id", `String "session-old")
+                 ; ("requester_alias", `String "flooder")
+                 ; ("supervisors", `List [`String "coord"])
+                 ; ("created_at", `Float (now -. 1200.0))
+                 ; ("expires_at", `Float (now -. 600.0)) ]))
+      in
+      let path = Filename.concat dir "pending_permissions.json" in
+      let oc = open_out path in
+      output_string oc (Yojson.Safe.to_string expired_json);
+      close_out oc;
+      (* Now open exactly cap fresh entries — all must succeed because
+         the expired ones don't count. *)
+      let make_fresh i =
+        ({ perm_id = Printf.sprintf "perm-fresh-%d" i
+         ; kind = C2c_mcp.Permission
+         ; requester_session_id = "session-flooder"
+         ; requester_alias = "flooder"
+         ; supervisors = [ "coord" ]
+         ; created_at = now
+         ; expires_at = now +. 600.0
+         } : C2c_mcp.pending_permission)
+      in
+      for i = 0 to C2c_mcp.Broker.pending_per_alias_cap - 1 do
+        C2c_mcp.Broker.open_pending_permission broker (make_fresh i)
+      done;
+      (* Verify all cap fresh entries are present (and no expired). *)
+      List.iter
+        (fun i ->
+          let pid = Printf.sprintf "perm-fresh-%d" i in
+          check bool
+            (Printf.sprintf "fresh entry %d present after expired pre-load" i)
+            true
+            (C2c_mcp.Broker.find_pending_permission broker pid <> None))
+        (List.init C2c_mcp.Broker.pending_per_alias_cap (fun i -> i)))
+
+(* [#432 Slice C] MCP handler returns isError=true with explanatory text
+   when per-alias cap is exceeded. *)
+let test_open_pending_reply_handler_returns_error_at_cap () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-flooder"
+        ~alias:"flooder" ~pid:None ~pid_start_time:None ();
+      let now = Unix.gettimeofday () in
+      (* Pre-fill to cap directly via the broker API. *)
+      for i = 0 to C2c_mcp.Broker.pending_per_alias_cap - 1 do
+        C2c_mcp.Broker.open_pending_permission broker
+          { perm_id = Printf.sprintf "perm-prefill-%d" i
+          ; kind = C2c_mcp.Permission
+          ; requester_session_id = "session-flooder"
+          ; requester_alias = "flooder"
+          ; supervisors = [ "coord" ]
+          ; created_at = now
+          ; expires_at = now +. 600.0 }
+      done;
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-flooder";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 432)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "open_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm-overflow")
+                          ; ("kind", `String "permission")
+                          ; ("supervisors", `List [`String "coord"])
+                          ] )
+                    ] )
+              ]
+          in
+          let resp = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir req) in
+          (match resp with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "isError=true at cap" true is_error;
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               check bool "error mentions cap reached" true
+                 (string_contains text "cap reached"))))
+
 (* --- liveness self-heal: respawn-under-new-pid (slice/liveness-respawn-pid) --- *)
 
 (* Pick a pid value that's almost certainly not in the process table.
@@ -8780,6 +8926,12 @@ let () =
               test_check_pending_reply_derives_from_session_not_arg
           ; test_case "[#432 B2] check_pending_reply rejects unregistered caller" `Quick
               test_check_pending_reply_rejects_unregistered_caller
+          ; test_case "[#432 C] open_pending_permission per-alias cap raises" `Quick
+              test_open_pending_permission_per_alias_cap
+          ; test_case "[#432 C] expired entries don't count toward cap" `Quick
+              test_open_pending_permission_expired_dont_count
+          ; test_case "[#432 C] open_pending_reply handler returns isError at cap" `Quick
+              test_open_pending_reply_handler_returns_error_at_cap
           ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
               test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick
