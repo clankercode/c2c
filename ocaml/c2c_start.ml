@@ -1155,6 +1155,27 @@ module type CLIENT_ADAPTER = sig
     unit
 
   val probe_capabilities : binary_path:string -> (string * bool) list
+
+  (** [deliver_kickoff ~name ~alias ~kickoff_text ?broker_root ()] performs
+      whatever per-client side-effects are needed so the supplied kickoff
+      text reaches the freshly-launched session.  Returns a list of
+      [(KEY, VALUE)] env pairs that the caller MUST append to the launch
+      env array (e.g. opencode's [C2C_AUTO_KICKOFF=1] / kickoff-path
+      handshake with its plugin).
+
+      Adapters that have nothing to do (claude — its kickoff is a
+      positional argv passed in [build_start_args]; codex / gemini —
+      no real impl yet, see #143c / #143d) return [Ok []].  The launch
+      loop is expected to call this contract method instead of inlining
+      per-client kickoff branches, so #143b-style follow-ups can extend
+      coverage adapter-by-adapter.  See task #143. *)
+  val deliver_kickoff :
+    name:string ->
+    alias:string ->
+    kickoff_text:string ->
+    ?broker_root:string ->
+    unit ->
+    ((string * string) list, string) result
 end
 
 (* ---------------------------------------------------------------------------
@@ -1352,6 +1373,48 @@ module OpenCodeAdapter : CLIENT_ADAPTER = struct
   let probe_capabilities ~binary_path =
     let plugin_path = Filename.concat (Sys.getcwd ()) ".opencode" // "plugins" // "c2c.ts" in
     ["opencode_plugin", Sys.file_exists plugin_path]
+
+  (* Real impl. Refactored from the inline opencode kickoff sites in
+     [c2c_start.ml:3700] (env-var gate) + [:3913] (file-write gate) per
+     #143.
+
+     Behavior:
+       1. Writes [<inst_dir>/kickoff-prompt.txt] with [kickoff_text].
+       2. Returns the [(C2C_AUTO_KICKOFF, "1")] +
+          [(C2C_KICKOFF_PROMPT_PATH, <path>)] env pairs the launch loop
+          must append to the launch env array, so the c2c plugin in
+          [.opencode/plugins/c2c.ts] picks them up and proactively
+          delivers the prompt if the TUI never fires session.created
+          on its own.
+
+     [instance_dir] is defined later in the file, so we replicate the
+     exact path-resolution it uses (the [C2C_INSTANCES_DIR] env override
+     + [$HOME/.local/share/c2c/instances/<name>] default) inline here. *)
+  let deliver_kickoff ~name ~alias:_ ~kickoff_text
+      ?broker_root:_ () =
+    if kickoff_text = "" then Ok []
+    else
+      let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+      let inst_base =
+        match Sys.getenv_opt "C2C_INSTANCES_DIR" with
+        | Some d when String.trim d <> "" -> String.trim d
+        | _ -> Filename.concat home (".local/share/c2c/instances")
+      in
+      let inst_dir = Filename.concat inst_base name in
+      let path = Filename.concat inst_dir "kickoff-prompt.txt" in
+      try
+        C2c_io.mkdir_p inst_dir;
+        let oc = open_out path in
+        Fun.protect ~finally:(fun () -> close_out oc)
+          (fun () -> output_string oc kickoff_text);
+        Ok [
+          ("C2C_AUTO_KICKOFF", "1");
+          ("C2C_KICKOFF_PROMPT_PATH", path);
+        ]
+      with e ->
+        Error (Printf.sprintf
+                 "OpenCodeAdapter.deliver_kickoff: %s"
+                 (Printexc.to_string e))
 end
 
 let () = Stdlib.Hashtbl.add client_adapters "opencode" (module OpenCodeAdapter)
@@ -2873,6 +2936,15 @@ module ClaudeAdapter : CLIENT_ADAPTER = struct
     (* claude_channel: always available for managed claude sessions.
        pty_inject: checked dynamically via check_pty_inject_capability in probed_capabilities. *)
     [ "claude_channel", true ]
+
+  (* Argv-based delivery is handled in [build_start_args] /
+     [prepare_launch_args] (see the "claude" branch which appends
+     [kickoff_prompt] as a positional argv element).  This contract
+     method exists to satisfy the CLIENT_ADAPTER signature uniformly;
+     we deliberately do NOT re-route claude kickoff through it because
+     positional-argv is already correct. *)
+  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text:_ ?broker_root:_ () =
+    Ok []
 end
 
 module CodexAdapter : CLIENT_ADAPTER = struct
@@ -2916,6 +2988,20 @@ module CodexAdapter : CLIENT_ADAPTER = struct
     (* codex_xml_fd: only if the installed binary supports --xml-input-fd.
        pty_inject: checked dynamically via check_pty_inject_capability in probed_capabilities. *)
     [ "codex_xml_fd", codex_supports_xml_input_fd binary_path ]
+
+  (* Warn-and-skip stub.  Codex has no in-tree kickoff path today; a real
+     impl is filed as #143c (likely via the deliver-daemon XML pipe).
+     We deliberately succeed (no [failwith]) so the launch path is
+     unchanged for codex sessions that didn't have working kickoff
+     before #143 either. *)
+  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text ?broker_root:_ () =
+    if kickoff_text = "" then Ok []
+    else begin
+      prerr_endline
+        "[c2c-start] kickoff not delivered to codex — see task #143c \
+         for a real impl; continuing without kickoff.";
+      Ok []
+    end
 end
 
 module KimiAdapter : CLIENT_ADAPTER = struct
@@ -3000,6 +3086,65 @@ module KimiAdapter : CLIENT_ADAPTER = struct
     (* kimi_wire: always available for managed kimi sessions.
        Wire bridge delivers via JSON-RPC; no PTY access needed. *)
     [ "kimi_wire", true ]
+
+  (* Real impl via [C2c_kimi_notifier.write_notification].
+
+     Caveat (#143 v1): kimi's session-id is created by kimi-cli AFTER it
+     starts and surfaces in [~/.kimi/logs/kimi.log] some seconds later.
+     [deliver_kickoff] is called by the launch loop *before* the kimi
+     process has even forked, so 99% of fresh launches will hit
+     [resolve_active_session_id () = None] and we'll warn-and-skip.
+     A real "deferred kickoff that fires once session-id resolves" is
+     a follow-up slice (#143e); this method is the contract handle for
+     that slice to bolt onto.
+
+     Important: we use [from_alias = "c2c-kickoff"] (not the broker
+     [c2c-system] sender) so the notifier's #475 system-event filter
+     does NOT swallow the kickoff. *)
+  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text ?broker_root:_ () =
+    if kickoff_text = "" then Ok []
+    else
+      match C2c_kimi_notifier.resolve_active_session_id () with
+      | None ->
+        prerr_endline
+          "[c2c-start] kickoff not delivered to kimi — no active \
+           session-id resolved yet (kimi-cli writes 'Created new \
+           session: <uuid>' to ~/.kimi/logs/kimi.log on its first \
+           turn).  Deferred-kickoff wiring is task #143e; continuing \
+           without kickoff.";
+        Ok []
+      | Some session_id ->
+        (try
+           let cwd = Sys.getcwd () in
+           let session_dir =
+             C2c_kimi_notifier.workspace_hash_for_path cwd
+             |> fun wh ->
+             let kimi_share =
+               match Sys.getenv_opt "KIMI_SHARE_DIR" with
+               | Some d when d <> "" -> d
+               | _ ->
+                 (try Sys.getenv "HOME" with Not_found -> "/tmp")
+                 // ".kimi"
+             in
+             kimi_share // "sessions" // wh // session_id
+           in
+           let from_alias = "c2c-kickoff" in
+           let nid =
+             C2c_kimi_notifier.notification_id_for_msg
+               ~from_alias
+               ~ts:(Unix.gettimeofday ())
+               ~content:kickoff_text
+           in
+           C2c_kimi_notifier.write_notification
+             ~session_dir
+             ~notification_id:nid
+             ~from_alias
+             ~body:kickoff_text;
+           Ok []
+         with e ->
+           Error (Printf.sprintf
+                    "KimiAdapter.deliver_kickoff: %s"
+                    (Printexc.to_string e)))
 end
 
 module GeminiAdapter : CLIENT_ADAPTER = struct
@@ -3078,12 +3223,39 @@ module GeminiAdapter : CLIENT_ADAPTER = struct
     (* gemini_mcp: always available for managed gemini sessions.
        The MCP delivery channel is configured by `c2c install gemini`. *)
     [ "gemini_mcp", true ]
+
+  (* Warn-and-skip stub.  Gemini has no in-tree kickoff path today; a
+     real impl is filed as #143d (likely via Gemini's MCP-server message
+     surface).  We deliberately succeed (no [failwith]) so the launch
+     path is unchanged for gemini sessions. *)
+  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text ?broker_root:_ () =
+    if kickoff_text = "" then Ok []
+    else begin
+      prerr_endline
+        "[c2c-start] kickoff not delivered to gemini — see task #143d \
+         for a real impl; continuing without kickoff.";
+      Ok []
+    end
 end
 
 let () = Stdlib.Hashtbl.add client_adapters "claude" (module ClaudeAdapter)
 let () = Stdlib.Hashtbl.add client_adapters "codex" (module CodexAdapter)
 let () = Stdlib.Hashtbl.add client_adapters "kimi" (module KimiAdapter)
 let () = Stdlib.Hashtbl.add client_adapters "gemini" (module GeminiAdapter)
+
+(* #143: top-level helper that dispatches kickoff delivery to the
+   registered [CLIENT_ADAPTER] for [client], or returns [Ok []] if no
+   adapter is registered.  Exposed in [c2c_start.mli] so unit tests can
+   exercise the contract without driving the full launch loop. *)
+let deliver_kickoff_for_client
+    ~(client : string) ~(name : string) ~(alias : string)
+    ~(kickoff_text : string) ?broker_root
+    () : ((string * string) list, string) result =
+  match Stdlib.Hashtbl.find_opt client_adapters client with
+  | None -> Ok []
+  | Some m ->
+    let module A = (val m : CLIENT_ADAPTER) in
+    A.deliver_kickoff ~name ~alias ~kickoff_text ?broker_root ()
 
 let parse_rfc3339_utc s =
   match Ptime.of_rfc3339 s with
@@ -3698,19 +3870,35 @@ let run_outer_loop ~(name : string) ~(client : string)
             Array.append env [| "C2C_COORDINATOR=1" |]
         | _ -> env
       in
-      (* When launching opencode with a kickoff prompt, signal the c2c plugin
-         to proactively create a session and deliver the prompt if the TUI
-         never fires session.created on its own (e.g. under tmux/non-interactive
-         stdin). Use a per-instance path so concurrent launches don't clobber
-         each other's kickoff. See #64. *)
-      let kickoff_inst_path = inst_dir // "kickoff-prompt.txt" in
+      (* #143: route kickoff delivery through [CLIENT_ADAPTER.deliver_kickoff]
+         instead of inlining per-client gates here.  The adapter performs any
+         per-client side-effects (e.g. opencode writes the per-instance
+         [kickoff-prompt.txt] consumed by [.opencode/plugins/c2c.ts]) and
+         returns env pairs we must append to the launch env so the plugin
+         picks up the handshake.  Adapters that don't have a working kickoff
+         path warn-and-skip, returning [Ok []] — the launch path is unchanged
+         for those clients. *)
       let env =
-        if client = "opencode" && Option.is_some kickoff_prompt then
-          Array.append env [|
-            "C2C_AUTO_KICKOFF=1";
-            Printf.sprintf "C2C_KICKOFF_PROMPT_PATH=%s" kickoff_inst_path;
-          |]
-        else env
+        match kickoff_prompt with
+        | None -> env
+        | Some kickoff_text when kickoff_text = "" -> env
+        | Some kickoff_text ->
+          let alias = Option.value alias_override ~default:name in
+          (match
+             deliver_kickoff_for_client
+               ~client ~name ~alias ~kickoff_text ~broker_root ()
+           with
+           | Ok pairs when pairs = [] -> env
+           | Ok pairs ->
+             Array.append env
+               (Array.of_list
+                  (List.map (fun (k, v) ->
+                       Printf.sprintf "%s=%s" k v) pairs))
+           | Error msg ->
+             Printf.eprintf
+               "[c2c-start/%s] kickoff delivery failed: %s\n%!"
+               name msg;
+             env)
       in
       (* For opencode resume: surface the ses_* session id to the plugin via
          C2C_OPENCODE_SESSION_ID so bootstrapRootSession can match and
@@ -3916,16 +4104,11 @@ let run_outer_loop ~(name : string) ~(client : string)
         end
       end);
 
-      (* Write kickoff prompt to the per-instance path set above in C2C_KICKOFF_PROMPT_PATH.
-         Using inst_dir isolates concurrent launches so they can't clobber each other. *)
-      (match kickoff_prompt with
-       | Some prompt when client = "opencode" ->
-           (try
-             let oc = open_out kickoff_inst_path in
-             Fun.protect ~finally:(fun () -> close_out oc)
-               (fun () -> output_string oc prompt)
-           with _ -> ())
-       | _ -> ());
+      (* #143: kickoff file write happens inside
+         [CLIENT_ADAPTER.deliver_kickoff] (see env-pairs construction
+         above); this site previously inlined the opencode-only file
+         write and is now a no-op. *)
+      ();
 
       (* Symlink latest opencode log to client.log *)
       (if client = "opencode" then

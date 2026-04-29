@@ -2567,6 +2567,136 @@ let test_swarm_shim_dir_falls_back_to_xdg () =
     (len_d >= len_s
     && String.sub dir (len_d - len_s) len_s = suffix)
 
+(* ─── #143 deliver_kickoff CLIENT_ADAPTER contract ───────────────────────── *)
+
+(* Override C2C_INSTANCES_DIR to a tempdir so the opencode kickoff write
+   lands under our control rather than ~/.local/share/c2c/instances. *)
+let with_instances_dir_override dir f =
+  let prev = try Some (Sys.getenv "C2C_INSTANCES_DIR") with Not_found -> None in
+  Unix.putenv "C2C_INSTANCES_DIR" dir;
+  Fun.protect
+    ~finally:(fun () ->
+      match prev with
+      | Some v -> Unix.putenv "C2C_INSTANCES_DIR" v
+      | None ->
+        (* No setenv-unset binding in stdlib Unix; reset to empty so the
+           adapter falls through to the HOME default on subsequent tests. *)
+        Unix.putenv "C2C_INSTANCES_DIR" "")
+    f
+
+let read_file path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic)
+    (fun () ->
+      let n = in_channel_length ic in
+      let b = Bytes.create n in
+      really_input ic b 0 n;
+      Bytes.to_string b)
+
+(* Every registered adapter must satisfy [deliver_kickoff].  This is a
+   compile-time guarantee from the [CLIENT_ADAPTER] signature, but we
+   exercise each one at runtime to assert no [failwith] regression
+   (warn-and-skip stubs must succeed) and to lock the contract. *)
+let test_deliver_kickoff_all_adapters_succeed () =
+  with_temp_dir @@ fun tmp ->
+  with_instances_dir_override tmp @@ fun () ->
+  let clients = [ "claude"; "codex"; "opencode"; "kimi"; "gemini" ] in
+  List.iter (fun client ->
+    match
+      C2c_start.deliver_kickoff_for_client
+        ~client
+        ~name:"deliver-kickoff-probe"
+        ~alias:"deliver-kickoff-alias"
+        ~kickoff_text:"Hello kickoff."
+        ()
+    with
+    | Ok _ -> ()
+    | Error msg ->
+      fail (Printf.sprintf
+              "deliver_kickoff for %s returned Error: %s" client msg)
+  ) clients
+
+(* Empty kickoff_text is a documented no-op shortcut: no file write,
+   no env pairs, no warn-and-skip log line. *)
+let test_deliver_kickoff_empty_text_is_noop () =
+  with_temp_dir @@ fun tmp ->
+  with_instances_dir_override tmp @@ fun () ->
+  List.iter (fun client ->
+    match
+      C2c_start.deliver_kickoff_for_client
+        ~client ~name:"probe" ~alias:"probe-alias"
+        ~kickoff_text:"" ()
+    with
+    | Ok pairs ->
+      check int (Printf.sprintf "%s empty kickoff: 0 env pairs" client)
+        0 (List.length pairs)
+    | Error msg ->
+      fail (Printf.sprintf "%s empty kickoff returned Error: %s" client msg)
+  ) [ "claude"; "codex"; "opencode"; "kimi"; "gemini" ]
+
+(* OpenCode is the only adapter with a real impl in #143: it writes the
+   kickoff text under <inst_dir>/kickoff-prompt.txt and returns the
+   C2C_AUTO_KICKOFF + C2C_KICKOFF_PROMPT_PATH env handshake. *)
+let test_deliver_kickoff_opencode_writes_file_and_env () =
+  with_temp_dir @@ fun tmp ->
+  with_instances_dir_override tmp @@ fun () ->
+  let name = "opencode-kickoff-probe" in
+  let kickoff_text = "## Greetings\nProbe kickoff line." in
+  match
+    C2c_start.deliver_kickoff_for_client
+      ~client:"opencode" ~name ~alias:"probe-alias" ~kickoff_text ()
+  with
+  | Error msg -> fail ("opencode deliver_kickoff Error: " ^ msg)
+  | Ok pairs ->
+    let auto = List.assoc_opt "C2C_AUTO_KICKOFF" pairs in
+    let path_pair = List.assoc_opt "C2C_KICKOFF_PROMPT_PATH" pairs in
+    check (option string) "C2C_AUTO_KICKOFF=1" (Some "1") auto;
+    (match path_pair with
+     | None -> fail "C2C_KICKOFF_PROMPT_PATH missing"
+     | Some path ->
+       check bool (Printf.sprintf "kickoff file exists: %s" path)
+         true (Sys.file_exists path);
+       let content = read_file path in
+       check string "kickoff file content matches"
+         kickoff_text content;
+       (* Path lives under the C2C_INSTANCES_DIR override. *)
+       check bool "kickoff path under override dir"
+         true (string_contains path tmp);
+       check bool "kickoff path uses instance name"
+         true (string_contains path name))
+
+(* Claude's deliver_kickoff is a deliberate no-op (positional argv
+   delivery in build_start_args).  Even with a non-empty kickoff_text
+   it must return Ok [] without writing any file. *)
+let test_deliver_kickoff_claude_is_noop () =
+  with_temp_dir @@ fun tmp ->
+  with_instances_dir_override tmp @@ fun () ->
+  match
+    C2c_start.deliver_kickoff_for_client
+      ~client:"claude" ~name:"claude-probe" ~alias:"claude-alias"
+      ~kickoff_text:"text that should NOT be written" ()
+  with
+  | Error msg -> fail ("claude deliver_kickoff Error: " ^ msg)
+  | Ok pairs ->
+    check int "claude returns no env pairs" 0 (List.length pairs);
+    (* Make sure no kickoff-prompt.txt was created under the tmp tree. *)
+    let probe = Filename.concat tmp "claude-probe" in
+    check bool "claude wrote no instance dir" false (Sys.file_exists probe)
+
+(* Unknown / non-adapter clients (crush) get Ok [] so the launch path
+   stays unchanged for them. *)
+let test_deliver_kickoff_unknown_client_returns_empty () =
+  match
+    C2c_start.deliver_kickoff_for_client
+      ~client:"crush" ~name:"x" ~alias:"x"
+      ~kickoff_text:"hi" ()
+  with
+  | Ok pairs ->
+    check int "crush has no adapter: 0 env pairs"
+      0 (List.length pairs)
+  | Error msg ->
+    fail ("crush should not Error: " ^ msg)
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -2930,5 +3060,17 @@ let () =
             `Quick, test_swarm_shim_install_idempotent )
         ; ( "swarm_shim_dir_falls_back_to_xdg",
             `Quick, test_swarm_shim_dir_falls_back_to_xdg )
+        ] )
+    ; ( "deliver_kickoff_contract_143",
+        [ ( "all_adapters_succeed",
+            `Quick, test_deliver_kickoff_all_adapters_succeed )
+        ; ( "empty_text_is_noop",
+            `Quick, test_deliver_kickoff_empty_text_is_noop )
+        ; ( "opencode_writes_file_and_env",
+            `Quick, test_deliver_kickoff_opencode_writes_file_and_env )
+        ; ( "claude_is_noop",
+            `Quick, test_deliver_kickoff_claude_is_noop )
+        ; ( "unknown_client_returns_empty",
+            `Quick, test_deliver_kickoff_unknown_client_returns_empty )
         ] )
     ]

@@ -71,6 +71,29 @@ val clients : (string, client_config) Stdlib.Hashtbl.t
 val supported_clients : string list
 (** List of supported client names. *)
 
+val deliver_kickoff_for_client :
+  client:string ->
+  name:string ->
+  alias:string ->
+  kickoff_text:string ->
+  ?broker_root:string ->
+  unit ->
+  ((string * string) list, string) result
+(** [deliver_kickoff_for_client ~client ~name ~alias ~kickoff_text ?broker_root ()]
+    dispatches to the registered [CLIENT_ADAPTER] for [client] and runs
+    its [deliver_kickoff] contract method.
+
+    Returns the env-pair list the launch loop must append to the launch
+    env (so e.g. opencode's [.opencode/plugins/c2c.ts] receives the
+    [C2C_AUTO_KICKOFF] / [C2C_KICKOFF_PROMPT_PATH] handshake), or
+    [Ok []] for adapters with no env contribution / no working kickoff
+    path.  Returns [Ok []] when [client] has no registered adapter
+    ([crush], legacy [pty]/[tmux] modes — they go through the
+    [clients] hashtable but not the adapter table).
+
+    Per #143 the launch loop calls this helper instead of inlining
+    per-client kickoff branches. *)
+
 (** {1 Paths} *)
 
 val instances_dir : string
