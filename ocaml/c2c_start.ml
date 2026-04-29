@@ -1399,6 +1399,40 @@ let write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path =
   output_string oc "export C2C_GIT_SHIM_ACTIVE=1\n";
   output_string oc (Printf.sprintf "exec %s git -- \"$@\"\n" (q c2c_bin_path))
 
+(* ----------------------------------------------------------------------------
+ * #462 — swarm-wide git-shim install.
+ *
+ * v1 wrote one shim per managed-session instance under
+ * [instance_dir/<name>/bin/git]. v2 adds a single canonical install
+ * shared by every [c2c start <client>] invocation, so the shim is
+ * present uniformly without a write per session.
+ *
+ * Path resolution:
+ *   1. [C2C_GIT_SHIM_DIR] (explicit override, e.g. tests)
+ *   2. [$XDG_STATE_HOME/c2c/bin] (canonical when XDG set)
+ *   3. [$HOME/.local/state/c2c/bin] (XDG default fallback)
+ *
+ * [ensure_swarm_git_shim_installed ()] is idempotent — mkdirs the
+ * directory, rewrites the shim file (cheap, content is small) and
+ * chmods +x. Safe to call on every [c2c start]. Returns the shim
+ * directory so callers can prepend it to PATH.
+ * --------------------------------------------------------------------------- *)
+
+let swarm_git_shim_dir () =
+  match Sys.getenv_opt "C2C_GIT_SHIM_DIR" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ -> C2c_repo_fp.xdg_state_home () // "c2c" // "bin"
+
+let ensure_swarm_git_shim_installed () =
+  let dir = swarm_git_shim_dir () in
+  mkdir_p dir;
+  let shim_bin_path = dir // "git" in
+  let c2c_bin_path = current_c2c_command () in
+  let real_git_path = Git_helpers.find_real_git () in
+  write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path;
+  (try Unix.chmod shim_bin_path 0o755 with _ -> ());
+  dir
+
 let ensure_fifo path =
   (try
      if Sys.file_exists path then
@@ -2353,14 +2387,18 @@ let build_env ?(broker_root_override : string option = None)
   in
   let new_entries = List.map (fun (k, v) -> Printf.sprintf "%s=%s" k v) additions in
   if enable_git_shim then
-    let shim_bin_dir = instance_dir name // "bin" in
+    (* #462: prepend the canonical swarm-wide shim dir, with the
+       per-instance dir as defense-in-depth (covers configurations
+       where the swarm dir was unwritable / removed underfoot). *)
+    let swarm_shim_dir = swarm_git_shim_dir () in
+    let inst_shim_dir = instance_dir name // "bin" in
     let existing_path =
       match Sys.getenv_opt "PATH" with
       | Some path -> path
       | None -> ""
     in
     let path_entry =
-      "PATH=" ^ shim_bin_dir ^
+      "PATH=" ^ swarm_shim_dir ^ ":" ^ inst_shim_dir ^
       (if existing_path <> "" then ":" ^ existing_path else "")
     in
     Array.of_list ((path_entry :: filtered) @ new_entries)
@@ -3452,6 +3490,11 @@ let run_outer_loop ~(name : string) ~(client : string)
       mkdir_p inst_dir;
       capture_and_write_tmux_location name;
       if repo_config_git_attribution () then begin
+        (* #462: install the canonical swarm-wide shim once per
+           [c2c start]. Idempotent; the per-instance shim below
+           remains as defense-in-depth and matches the PATH order
+           used by [build_inner_env]. *)
+        (try ignore (ensure_swarm_git_shim_installed ()) with _ -> ());
         let shim_bin_dir = inst_dir // "bin" in
         mkdir_p shim_bin_dir;
         let shim_bin_path = shim_bin_dir // "git" in

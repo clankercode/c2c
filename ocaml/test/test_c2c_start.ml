@@ -2457,6 +2457,58 @@ let test_format_c2c_envelope_xml_escapes_attributes () =
   check bool "body content NOT escaped (verbatim pass-through)" true
     (string_contains env "plain body")
 
+(* #462 — swarm-wide git-shim install path. *)
+
+let with_env_override key value f =
+  let prev = Sys.getenv_opt key in
+  Unix.putenv key value;
+  Fun.protect
+    ~finally:(fun () ->
+      match prev with
+      | Some v -> Unix.putenv key v
+      | None ->
+          (* No portable unsetenv via Sys/Unix; clear by setting empty.
+             Empty value is treated as unset by [swarm_git_shim_dir]. *)
+          Unix.putenv key "")
+    f
+
+let test_swarm_shim_install_path_uses_override () =
+  with_temp_dir @@ fun dir ->
+  with_env_override "C2C_GIT_SHIM_DIR" dir @@ fun () ->
+  let installed = C2c_start.ensure_swarm_git_shim_installed () in
+  check string "ensure_* returns override dir" dir installed;
+  let shim = Filename.concat dir "git" in
+  check bool "shim file exists at override path" true (Sys.file_exists shim);
+  let st = Unix.stat shim in
+  check bool "shim is executable (0o100 bit set)" true
+    (st.Unix.st_perm land 0o100 <> 0)
+
+let test_swarm_shim_install_idempotent () =
+  with_temp_dir @@ fun dir ->
+  with_env_override "C2C_GIT_SHIM_DIR" dir @@ fun () ->
+  let _ = C2c_start.ensure_swarm_git_shim_installed () in
+  let _ = C2c_start.ensure_swarm_git_shim_installed () in
+  let shim = Filename.concat dir "git" in
+  check bool "shim still present after second install" true
+    (Sys.file_exists shim);
+  let ic = open_in shim in
+  let line = input_line ic in
+  close_in ic;
+  check string "shim shebang preserved" "#!/bin/bash" line
+
+let test_swarm_shim_dir_falls_back_to_xdg () =
+  with_env_override "C2C_GIT_SHIM_DIR" "" @@ fun () ->
+  let dir = C2c_start.swarm_git_shim_dir () in
+  (* Should end with c2c/bin (from XDG_STATE_HOME or HOME fallback). *)
+  let suffix = Filename.concat "c2c" "bin" in
+  let len_d = String.length dir in
+  let len_s = String.length suffix in
+  check bool
+    (Printf.sprintf "shim dir ends with c2c/bin (got %s)" dir)
+    true
+    (len_d >= len_s
+    && String.sub dir (len_d - len_s) len_s = suffix)
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -2806,5 +2858,13 @@ let () =
             `Quick, test_clean_stale_removes_zombies_only )
         ; ( "test_clean_stale_protected_named_aliases",
             `Quick, test_clean_stale_protected_named_aliases )
+        ] )
+    ; ( "git_shim_swarm_install_462",
+        [ ( "swarm_shim_install_path_uses_override",
+            `Quick, test_swarm_shim_install_path_uses_override )
+        ; ( "swarm_shim_install_idempotent",
+            `Quick, test_swarm_shim_install_idempotent )
+        ; ( "swarm_shim_dir_falls_back_to_xdg",
+            `Quick, test_swarm_shim_dir_falls_back_to_xdg )
         ] )
     ]

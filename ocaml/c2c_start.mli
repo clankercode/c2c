@@ -235,6 +235,17 @@ val repo_config_git_attribution : unit -> bool
     Returns [true] if absent (default on). When true, `c2c git` injects
     --author=<alias> <alias@c2c.im> into git calls unless --author is already present. *)
 
+val swarm_git_shim_dir : unit -> string
+(** [swarm_git_shim_dir ()] returns the canonical swarm-wide git-shim
+    install directory (#462). Resolution: [C2C_GIT_SHIM_DIR] override, else
+    [$XDG_STATE_HOME/c2c/bin] (with HOME fallback per
+    [C2c_repo_fp.xdg_state_home]). Pure — does not touch disk. *)
+
+val ensure_swarm_git_shim_installed : unit -> string
+(** [ensure_swarm_git_shim_installed ()] mkdirs [swarm_git_shim_dir ()],
+    writes the git shim there, chmods +x, and returns the directory.
+    Idempotent — safe to call on every [c2c start] invocation. (#462) *)
+
 val repo_config_git_sign : unit -> bool
 (** [repo_config_git_sign ()] reads git_sign from .c2c/config.toml.
     Returns [true] if absent (default on). When true and argv[0]="commit",
