@@ -1539,6 +1539,26 @@ let test_prepare_launch_args_extra_args_preserves_flags_around_extra () =
   let last = last_n 1 args in
   check (list string) "extra args at end" [ "--debug" ] last
 
+(* #471: a plain re-launch (cli_extra_args = []) MUST clear the persisted
+   extra_args, not silently inherit them. Otherwise a one-off bad invocation
+   (e.g. `c2c start kimi -n NAME -- --prompt "..."` where the host CLI argv
+   parser ate `--prompt`) sticks across plain re-launches. *)
+let test_resolve_effective_extra_args_clears_on_plain_relaunch () =
+  let got =
+    C2c_start.resolve_effective_extra_args
+      ~cli_extra_args:[]
+      ~persisted_extra_args:[ "Welcome..." ]
+  in
+  check (list string) "plain re-launch yields empty extra_args" [] got
+
+let test_resolve_effective_extra_args_replaces_when_cli_provided () =
+  let got =
+    C2c_start.resolve_effective_extra_args
+      ~cli_extra_args:[ "--foo"; "bar" ]
+      ~persisted_extra_args:[ "stale" ]
+  in
+  check (list string) "CLI args replace persisted" [ "--foo"; "bar" ] got
+
 let test_cmd_reset_thread_persists_codex_resume_target () =
   let name = Printf.sprintf "codex-reset-%d" (Random.bits ()) in
   with_instance_dir name @@ fun _dir ->
@@ -2725,6 +2745,10 @@ let () =
             `Quick, test_prepare_launch_args_extra_args_empty_by_default )
         ; ( "prepare_launch_args_extra_args_preserves_flags_around_extra",
             `Quick, test_prepare_launch_args_extra_args_preserves_flags_around_extra )
+        ; ( "resolve_effective_extra_args_clears_on_plain_relaunch_471",
+            `Quick, test_resolve_effective_extra_args_clears_on_plain_relaunch )
+        ; ( "resolve_effective_extra_args_replaces_when_cli_provided_471",
+            `Quick, test_resolve_effective_extra_args_replaces_when_cli_provided )
         ] )
     ; ( "pmodel",
         [ ("parse_pmodel_plain", `Quick, test_parse_pmodel_plain)

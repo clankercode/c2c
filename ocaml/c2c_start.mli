@@ -441,6 +441,16 @@ val load_config : string -> instance_config
 val load_config_opt : string -> instance_config option
 (** [load_config_opt name] loads instance config.json; returns [None] if absent. *)
 
+val resolve_effective_extra_args :
+  cli_extra_args:string list ->
+  persisted_extra_args:string list ->
+  string list
+(** [resolve_effective_extra_args ~cli_extra_args ~persisted_extra_args] decides
+    which extra_args list to apply to a (re-)launch. Per #471 (Option A), the
+    CLI list always wins — a plain `c2c start <client> -n NAME` (no `--`) yields
+    [cli_extra_args = []] and we DO NOT silently re-apply [persisted_extra_args].
+    [persisted_extra_args] is accepted for symmetry / future evolution. *)
+
 val persist_headless_thread_id : name:string -> thread_id:string -> unit
 (** [persist_headless_thread_id ~name ~thread_id] updates the managed instance
     config with the lazily handed-off Codex thread id, if the config exists. *)

@@ -2060,6 +2060,24 @@ let load_config_opt (name : string) : instance_config option =
                model_override = gso "model_override";
                agent_name = gso "agent_name" }
 
+(* Resolve effective extra_args on (re-)launch.
+
+   #471: a previous run of `c2c start <client> -n NAME -- ARGS` persists
+   ARGS to the instance config. If the operator next invokes
+   `c2c start <client> -n NAME` with NO trailing `--`, we must NOT silently
+   re-apply the persisted ARGS — that's how a one-off bad invocation
+   ("--prompt eaten by argv parser") becomes a sticky boot loop.
+
+   Option A: a plain re-launch (cli_extra_args = []) always means
+   "no extra args this time". Persisted extra_args are only honored
+   when the operator passes the same `--` ARGS again. To override,
+   pass `-- --foo bar` (replaces) or pass nothing (clears). *)
+let resolve_effective_extra_args
+    ~(cli_extra_args : string list)
+    ~(persisted_extra_args : string list) : string list =
+  ignore persisted_extra_args;
+  cli_extra_args
+
 let load_config (name : string) : instance_config =
   match load_config_opt name with
   | Some cfg -> cfg
@@ -4533,7 +4551,11 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
            exit 1);
         let bo = if binary_override = None then None else binary_override in
         let ao = if alias_override = None then Some ex.alias else alias_override in
-        let ea = if extra_args = [] then ex.extra_args else extra_args in
+        (* #471: do NOT silently inherit persisted extra_args on a plain
+           re-launch. See resolve_effective_extra_args above. *)
+        let ea = resolve_effective_extra_args
+                   ~cli_extra_args:extra_args
+                   ~persisted_extra_args:ex.extra_args in
         let mo = resolve_model_override ~model_override ~role_pmodel_override ~saved_model_override:ex.model_override in
         (* For OpenCode: prefer the ses_* session ID captured by the plugin
            in opencode-session.txt over the UUID stored in instance config.
