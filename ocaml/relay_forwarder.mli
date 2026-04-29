@@ -17,7 +17,7 @@ type forward_outcome =
   | Peer_unauthorized           (** 401 — our identity not registered on peer *)
   | Local_error of string       (** signing / encoding bug; should never happen *)
 
-(** [forward_send ~identity ~self_host ~peer_url ~peer_identity_pk ~from_alias
+(** [forward_send ~identity ~self_host ~peer_url ~from_alias
     ~to_alias ~content ~message_id]
     signs the forward request with [identity] and POSTs it to [peer_url].
 
