@@ -8,7 +8,8 @@ Validates the infrastructure needed for managed-client Docker containers:
   - codex-turn-start-bridge is mounted from host and callable
   - c2c_deliver_inbox.py is present for the deliver daemon fallback
   - Agent can register with the relay broker
-  - Agent can send and receive DMs via the relay
+  - Agent can send DMs to the relay (enqueue verified; delivery depends on
+    whether peer-relay forwarding is configured for the target host)
 
 NOTE: Full end-to-end codex-headless → codex-headless DM exchange requires
 OPENAI_API_KEY to be set. The smoke test verifies infrastructure setup
@@ -17,6 +18,10 @@ are gated on having valid credentials injected via OPENAI_API_KEY.
 
 Deferred to S3+:
   - Real LLM API exchange (requires credentials)
+  - c2c start codex-headless end-to-end inside Docker (bridge handoff, PTY
+    injection, deliver-mode negotiation, session persistence — the full
+    managed-instance startup path is not exercised here; only direct
+    docker-exec registration is verified)
   - Tmux/PTY toast monitoring inside containers
   - OpenCode agent (TUI-only, needs Xvfb + PTY)
 """
@@ -158,16 +163,28 @@ class CodexAgentDockerSmoke(unittest.TestCase):
         )
 
     def test_deliver_script_present(self):
-        """Verify c2c_deliver_inbox.py is present for deliver daemon fallback."""
+        """Verify c2c_deliver_inbox.py is present and produces help output.
+
+        The script does support --help; we verify it exits 0 and produces
+        non-empty help text containing expected keywords (usage, c2c).
+        """
         r = _docker_exec(
             CONTAINER_A1,
             ["python3", "/usr/local/bin/c2c_deliver_inbox.py", "--help"]
         )
-        # The script doesn't have --help but should be executable
+        self.assertEqual(
+            r.returncode, 0,
+            f"c2c_deliver_inbox.py --help failed in {CONTAINER_A1}: {r.stderr}"
+        )
+        output = r.stdout + r.stderr
+        self.assertTrue(
+            len(output) > 20,
+            f"help output suspiciously short in {CONTAINER_A1}: {output!r}"
+        )
         self.assertIn(
             "c2c",
-            r.stdout.lower() + r.stderr.lower(),
-            f"c2c_deliver_inbox.py not working in {CONTAINER_A1}: {r.stderr}"
+            output.lower(),
+            f"help output missing 'c2c' keyword in {CONTAINER_A1}: {output!r}"
         )
 
     def test_c2c_deliver_inbox_shim_exists(self):
@@ -196,8 +213,12 @@ class CodexAgentDockerSmoke(unittest.TestCase):
         """Send codex-a1 → codex-b1@host-b via relay-a.
 
         Uses fully-qualified alias codex-b1@host-b for cross-host routing.
-        Without peer relay forwarding configured, this goes to dead-letter on
-        relay-a. We assert returncode 0 (message queued to relay).
+        Asserts returncode 0 (message successfully enqueued to relay-a's outbox).
+        NOTE: Without peer-relay forwarding configured between host-a and host-b,
+        this message is dead-lettered on relay-a and never reaches relay-b.
+        Delivery to codex-b1 on relay-b requires peer-forwarding to be set up,
+        which is outside S2 scope. This test verifies the send path to the relay
+        works correctly.
         """
         r = _docker_exec(
             CONTAINER_A1,
