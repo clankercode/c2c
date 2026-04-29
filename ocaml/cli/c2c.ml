@@ -6050,6 +6050,191 @@ let monitor_leak = Cmdliner.Cmd.v
              Exits 1 if any alias has more than --threshold monitor processes.")
     monitor_leak_cmd
 
+(* --- subcommand: doctor relay-mesh (#330 V2) ---
+
+   Diagnostic for cross-host relay-mesh state. Reports:
+     - Local relay-name configuration (env vars + recommendation if unset).
+     - Sender/session env vars relevant to cross-host send path.
+     - Recent broker.log entries that reference cross-host outcomes
+       (peer_pass_reject / handoff_attempt / cross_host_*; surfaced
+       as raw JSON lines for the operator to scan).
+     - If `--relay-url URL` is passed (or `C2C_RELAY_URL` env is set),
+       hits the relay's `/health` endpoint and surfaces relay-side fields.
+     - Recommendations when self_host is unset locally.
+
+   Companion to galaxy-coder's #310 mesh test compose and cedar's #330 V1
+   relay-forwarder unit tests; this V2 surface is the operator-side
+   visibility for the same topology. *)
+
+let relay_mesh_cmd =
+  let open Cmdliner in
+  let relay_url_flag =
+    Arg.(value & opt (some string) None & info ["relay-url"] ~docv:"URL"
+           ~doc:"Optional relay HTTP URL. When set, doctor will hit \
+                 <URL>/health and surface relay-side fields (self_host, \
+                 storage backend). Defaults to C2C_RELAY_URL env var.")
+  in
+  let json_flag =
+    Arg.(value & flag & info ["json"]
+           ~doc:"Output a single JSON object instead of human-readable text.")
+  in
+  let log_lines_flag =
+    Arg.(value & opt int 50 & info ["log-lines"] ~docv:"N"
+           ~doc:"Tail this many lines from broker.log when scanning for \
+                 cross-host events (default 50, max 500).")
+  in
+  let+ relay_url = relay_url_flag
+  and+ as_json = json_flag
+  and+ log_lines = log_lines_flag in
+  let log_lines = max 1 (min 500 log_lines) in
+  (* --- gather local state --- *)
+  let env_or_dash k =
+    match Sys.getenv_opt k with
+    | Some v when String.trim v <> "" -> String.trim v
+    | _ -> ""
+  in
+  let relay_name_local = env_or_dash "C2C_RELAY_NAME" in
+  let relay_url_resolved =
+    match relay_url with
+    | Some u -> Some u
+    | None ->
+      let v = env_or_dash "C2C_RELAY_URL" in
+      if v = "" then None else Some v
+  in
+  let sender_alias = env_or_dash "C2C_MCP_AUTO_REGISTER_ALIAS" in
+  let session_id = env_or_dash "C2C_MCP_SESSION_ID" in
+  let broker_root =
+    try C2c_utils.resolve_broker_root () with _ -> "<unresolved>"
+  in
+  let log_path = Filename.concat broker_root "broker.log" in
+  (* Tail last N lines and filter for cross-host hints. *)
+  let tail_lines path n =
+    if not (Sys.file_exists path) then []
+    else
+      try
+        let ic = open_in path in
+        let all = ref [] in
+        (try
+           while true do
+             all := input_line ic :: !all
+           done
+         with End_of_file -> ());
+        close_in_noerr ic;
+        let total = List.length !all in
+        if total <= n then List.rev !all
+        else
+          let drop = total - n in
+          let rec drop_n k xs = match xs, k with
+            | xs, 0 -> xs
+            | _ :: tl, k -> drop_n (k - 1) tl
+            | [], _ -> []
+          in
+          List.rev (drop_n drop (List.rev (List.rev !all)))
+      with _ -> []
+  in
+  let recent = tail_lines log_path log_lines in
+  let cross_host_hits =
+    List.filter (fun line ->
+      let l = String.lowercase_ascii line in
+      let contains s =
+        let rec scan i =
+          if i + String.length s > String.length l then false
+          else if String.sub l i (String.length s) = s then true
+          else scan (i + 1)
+        in scan 0
+      in
+      contains "cross_host" || contains "cross-host"
+      || contains "remote_outbox" || contains "alias@"
+    ) recent
+  in
+  (* --- optional relay /health probe --- *)
+  let relay_health =
+    match relay_url_resolved with
+    | None -> None
+    | Some url ->
+      try
+        let client = Relay.Relay_client.make url in
+        Some (Lwt_main.run (Relay.Relay_client.health client))
+      with _ -> None
+  in
+  (* --- emit --- *)
+  if as_json then begin
+    let kv = [
+      ("ok", `Bool true);
+      ("relay_name_local", `String relay_name_local);
+      ("relay_url", (match relay_url_resolved with Some s -> `String s | None -> `Null));
+      ("sender_alias", `String sender_alias);
+      ("session_id", `String session_id);
+      ("broker_root", `String broker_root);
+      ("broker_log_exists", `Bool (Sys.file_exists log_path));
+      ("cross_host_log_hits", `Int (List.length cross_host_hits));
+      ("cross_host_recent", `List (List.map (fun s -> `String s) cross_host_hits));
+      ("relay_health", (match relay_health with Some j -> j | None -> `Null));
+      ("self_host_unset_recommendation",
+       `Bool (relay_name_local = "" &&
+              (match relay_health with
+               | Some (`Assoc fs) ->
+                 (match List.assoc_opt "self_host" fs with
+                  | Some (`String s) -> String.trim s = ""
+                  | _ -> true)
+               | _ -> true)));
+    ] in
+    print_endline (Yojson.Safe.to_string (`Assoc kv));
+    exit 0
+  end;
+  (* Human output *)
+  Printf.printf "c2c doctor relay-mesh (#330 V2)\n\n";
+  Printf.printf "Local broker:\n";
+  Printf.printf "  broker_root           = %s\n" broker_root;
+  Printf.printf "  broker.log present    = %s\n" (if Sys.file_exists log_path then "yes" else "no (broker has not logged yet)");
+  Printf.printf "\nLocal env:\n";
+  Printf.printf "  C2C_RELAY_NAME        = %s\n"
+    (if relay_name_local = "" then "(unset)" else relay_name_local);
+  Printf.printf "  C2C_RELAY_URL         = %s\n"
+    (match relay_url_resolved with Some s -> s | None -> "(unset)");
+  Printf.printf "  C2C_MCP_AUTO_REGISTER_ALIAS = %s\n"
+    (if sender_alias = "" then "(unset)" else sender_alias);
+  Printf.printf "  C2C_MCP_SESSION_ID    = %s\n"
+    (if session_id = "" then "(unset)" else session_id);
+  (match relay_health with
+   | None ->
+     Printf.printf "\nRelay health probe:\n  skipped (no --relay-url; set C2C_RELAY_URL or pass --relay-url URL)\n"
+   | Some j ->
+     Printf.printf "\nRelay health probe:\n  %s\n" (Yojson.Safe.pretty_to_string j));
+  Printf.printf "\nCross-host activity in broker.log (last %d lines):\n" log_lines;
+  if cross_host_hits = [] then
+    Printf.printf "  (no entries matching cross_host / cross-host / remote_outbox / alias@)\n"
+  else
+    List.iter (fun s -> Printf.printf "  %s\n" s) cross_host_hits;
+  Printf.printf "\nRecommendations:\n";
+  let any_rec = ref false in
+  if relay_name_local = "" then begin
+    any_rec := true;
+    Printf.printf "  * C2C_RELAY_NAME is unset locally. The relay's --relay-name flag\n";
+    Printf.printf "    is set at `c2c relay serve` startup, not in broker env. To verify\n";
+    Printf.printf "    the live relay's self_host, run:\n";
+    Printf.printf "      c2c relay status --relay-url <URL>\n"
+  end;
+  (match relay_url_resolved, relay_health with
+   | Some url, None ->
+     any_rec := true;
+     Printf.printf "  * --relay-url=%s is set but /health probe failed. Check the relay\n" url;
+     Printf.printf "    is running and the URL is reachable.\n"
+   | _ -> ());
+  if cross_host_hits = [] && Sys.file_exists log_path then begin
+    Printf.printf "  * No cross-host events in last %d log lines — either no cross-host\n" log_lines;
+    Printf.printf "    activity yet, or broker.log rotated past them. Bump --log-lines if needed.\n"
+  end;
+  if not !any_rec then Printf.printf "  (none — everything looks plausible)\n";
+  exit 0
+
+let relay_mesh = Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "relay-mesh"
+       ~doc:"Diagnose cross-host relay-mesh state (#330 V2). Reports local \
+             relay-name config, sender/session env, recent cross-host \
+             broker.log entries, and optionally probes a relay /health URL.")
+    relay_mesh_cmd
+
 (* --- subcommand: doctor delivery-mode (#307a) --- *)
 
 let delivery_mode_cmd =
@@ -6206,7 +6391,7 @@ let doctor = Cmdliner.Cmd.group
     ~default:doctor_cmd
     (Cmdliner.Cmd.info "doctor"
        ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
-    [ doctor_docs_drift; monitor_leak; delivery_mode;
+    [ doctor_docs_drift; monitor_leak; delivery_mode; relay_mesh;
       C2c_opencode_plugin_drift.opencode_plugin_drift_cmd ]
 
 (* --- subcommand: stats ---------------------------------------------------- *)
