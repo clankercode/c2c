@@ -2940,7 +2940,15 @@ module KimiAdapter : CLIENT_ADAPTER = struct
 
   let build_start_args ~name ?alias_override ?model_override ?resume_session_id:_
       ?(extra_args = []) () =
-    (* Kimi doesn't support session resume via CLI args.
+    (* KimiAdapter currently starts kimi fresh and does not pass `--session`,
+       even though kimi-cli supports `--session/--resume/-S/-r <UUID>` (verified
+       via `kimi --help`; entry-point at kimi_cli/cli/__init__.py). The
+       `?resume_session_id:_` parameter is intentionally dropped here today.
+       Phase 2 (c2c task #478) will pre-mint a UUID and pass `--session` so we
+       can seed `auto_approve_actions` in the session's state.json before kimi
+       reads it — eliminating the per-MCP-tool approval prompt for `mcp__c2c__*`
+       tools.
+
        Write the per-instance MCP config to the instance dir and prepend the flag.
        extra_args are inspected for an existing --mcp-config-file flag but are NOT
        included in the return — prepare_launch_args appends them uniformly after.
