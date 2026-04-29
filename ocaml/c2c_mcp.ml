@@ -740,7 +740,11 @@ module Broker = struct
      detection (lyra-quill and Lyra-Quill are the same identity). The stored
      alias preserves original case; this only affects lookups.
      Hoisted above [load_registrations] so the case-fold invariant check
-     in [save_registrations] can reach it (#432). *)
+     in [save_registrations] can reach it. Also reachable from earlier
+     callers (e.g. [pending_permission_exists_for_alias]) so every
+     alias-comparison site in this module routes through this helper:
+     the symmetric eviction predicate at L1898, the M4 alias-reuse guard
+     at L848, the hijack guards at L4704+5074, and the pending-perm guard. *)
   let alias_casefold s = String.lowercase_ascii s
 
   let load_registrations t =
@@ -914,11 +918,21 @@ module Broker = struct
 
   (** Check if any active pending permission exists for a given alias.
       Used by M4 alias-reuse guard. Cross-process safe via
-      [with_pending_lock] (#432). *)
+      [with_pending_lock] (#432).
+
+      [#432 follow-up (stanza-coder 2026-04-29)]: case-fold the alias
+      comparison to match the symmetry restored across alias-eviction
+      surfaces (Broker.register eviction at L1898; alias_hijack_conflict
+      at L5074; alias_occupied_guard at L4704). A raw [=] here would
+      have allowed a case-variant attempt to bypass the M4 alias-reuse
+      block — composable with the now-closed hijack-then-evict path
+      via slate's [e3c6aba0]. Closes the symmetry sweep. *)
   let pending_permission_exists_for_alias t alias =
     with_pending_lock t (fun () ->
       let now = Unix.gettimeofday () in
-      List.exists (fun p -> p.requester_alias = alias && p.expires_at > now)
+      let target = alias_casefold alias in
+      List.exists
+        (fun p -> alias_casefold p.requester_alias = target && p.expires_at > now)
         (load_pending_permissions t))
 
   (* [#432 Slice E] In-memory relay-e2e TOFU pins were process-local —
@@ -1847,6 +1861,9 @@ module Broker = struct
         save_registrations t (cleared @ to_keep);
         List.length cleared
       end)
+
+  (* [alias_casefold] hoisted to top of Broker module — see definition
+     above [load_registrations] (#432 follow-up by stanza-coder). *)
 
   (* Suggest a free alias by appending the next prime suffix.
      Case-insensitive: colliding with a case-variant gets a prime suffix. *)

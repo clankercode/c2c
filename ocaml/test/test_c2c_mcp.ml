@@ -8002,6 +8002,41 @@ let test_open_pending_permission_per_alias_cap () =
        | Some `Global -> fail "expected Per_alias, got Global"
        | None -> fail "expected exception"))
 
+(* [#432 follow-up by stanza-coder] [pending_permission_exists_for_alias]
+   compares case-insensitively. Closes the symmetry sweep across all
+   alias-eviction surfaces (Broker.register eviction at L1898;
+   alias_hijack_conflict at L5074; alias_occupied_guard at L4704; this
+   pending-perm guard at L848). Without case-fold here, an attacker
+   could open a pending permission under "Foo-Bar" and the M4 alias-
+   reuse guard at register time would miss case-variant lookups
+   ("foo-bar" / "FOO-BAR"), leaving the pending-perm-takeover path
+   composable with case-variance. *)
+let test_pending_permission_exists_for_alias_is_case_insensitive () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let now = Unix.gettimeofday () in
+      let entry =
+        ({ perm_id = "perm-casefold-1"
+         ; kind = C2c_mcp.Permission
+         ; requester_session_id = "session-victim"
+         ; requester_alias = "Foo-Bar"
+         ; supervisors = [ "coord" ]
+         ; created_at = now
+         ; expires_at = now +. 600.0
+         } : C2c_mcp.pending_permission)
+      in
+      C2c_mcp.Broker.open_pending_permission broker entry;
+      check bool "exact match (Foo-Bar) finds pending perm" true
+        (C2c_mcp.Broker.pending_permission_exists_for_alias broker "Foo-Bar");
+      check bool "lowercase variant (foo-bar) finds pending perm" true
+        (C2c_mcp.Broker.pending_permission_exists_for_alias broker "foo-bar");
+      check bool "uppercase variant (FOO-BAR) finds pending perm" true
+        (C2c_mcp.Broker.pending_permission_exists_for_alias broker "FOO-BAR");
+      check bool "mixed-case variant (FoO-BaR) finds pending perm" true
+        (C2c_mcp.Broker.pending_permission_exists_for_alias broker "FoO-BaR");
+      check bool "unrelated alias does NOT find pending perm" false
+        (C2c_mcp.Broker.pending_permission_exists_for_alias broker "other-alias"))
+
 (* [#432 Slice C] expired entries do not count toward the cap. After
    N expired entries + (cap-1) live entries, the next open must
    succeed because the lazy-eviction filter sees only the live ones. *)
@@ -9823,6 +9858,8 @@ let () =
               test_check_pending_reply_rejects_unregistered_caller
           ; test_case "[#432 C] open_pending_permission per-alias cap raises" `Quick
               test_open_pending_permission_per_alias_cap
+          ; test_case "[#432 follow-up] pending_permission_exists_for_alias is case-insensitive" `Quick
+              test_pending_permission_exists_for_alias_is_case_insensitive
           ; test_case "[#432 C] expired entries don't count toward cap" `Quick
               test_open_pending_permission_expired_dont_count
           ; test_case "[#432 C] open_pending_reply handler returns isError at cap" `Quick
