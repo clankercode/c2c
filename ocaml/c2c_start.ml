@@ -2174,6 +2174,24 @@ let resolve_effective_extra_args
   ignore persisted_extra_args;
   cli_extra_args
 
+(* Resolve effective extra_args on (re-)launch.
+
+   #471: a previous run of `c2c start <client> -n NAME -- ARGS` persists
+   ARGS to the instance config. If the operator next invokes
+   `c2c start <client> -n NAME` with NO trailing `--`, we must NOT silently
+   re-apply the persisted ARGS — that's how a one-off bad invocation
+   ("--prompt eaten by argv parser") becomes a sticky boot loop.
+
+   Option A: a plain re-launch (cli_extra_args = []) always means
+   "no extra args this time". Persisted extra_args are only honored
+   when the operator passes the same `--` ARGS again. To override,
+   pass `-- --foo bar` (replaces) or pass nothing (clears). *)
+let resolve_effective_extra_args
+    ~(cli_extra_args : string list)
+    ~(persisted_extra_args : string list) : string list =
+  ignore persisted_extra_args;
+  cli_extra_args
+
 let load_config (name : string) : instance_config =
   match load_config_opt name with
   | Some cfg -> cfg
