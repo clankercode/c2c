@@ -113,15 +113,8 @@ let atomic_write_string path content =
       try Unix.fsync fd with _ -> ());
   Unix.rename tmp path
 
-let mkdir_p dir =
-  let rec aux p =
-    if Sys.file_exists p then ()
-    else begin
-      aux (Filename.dirname p);
-      try Unix.mkdir p 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
-  aux dir
+(* [mkdir_p] is canonical (#388): delegates to C2c_io.mkdir_p *)
+let mkdir_p = C2c_io.mkdir_p
 
 (* System events (peer-register, room-join broadcasts) are operator-
    visibility signals from c2c-system, NOT user-turn input. If we route

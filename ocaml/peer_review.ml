@@ -606,16 +606,8 @@ module Trust_pin = struct
         | None -> empty
       with _ -> empty
 
-  let mkdir_p d =
-    let rec aux p =
-      if p = "" || p = "/" || p = "." then ()
-      else if Sys.file_exists p then ()
-      else begin
-        aux (Filename.dirname p);
-        try Unix.mkdir p 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-      end
-    in
-    aux d
+  (* [mkdir_p] is canonical (#388): delegates to C2c_io.mkdir_p ~mode:0o700 *)
+  let mkdir_p d = C2c_io.mkdir_p ~mode:0o700 d
 
   (** #409: serialize concurrent save callers via Unix.lockf on a sidecar
       lock file. Without this, two upserters both writing simultaneously

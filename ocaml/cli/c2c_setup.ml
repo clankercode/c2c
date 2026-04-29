@@ -821,15 +821,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
   in
   (* mkdir -p the parent (only matters in --global=false when project_dir
      might not exist; existing-repo case is a no-op). *)
-  (try
-     let parent = Filename.dirname mcp_config_path in
-     let rec mkdir_p d =
-       if Sys.file_exists d then () else begin
-         mkdir_p (Filename.dirname d);
-         mkdir_or_dryrun dry_run d
-       end
-     in
-     mkdir_p parent
+  (try mkdir_p dry_run (Filename.dirname mcp_config_path)
    with Unix.Unix_error _ -> ());
   json_write_file_or_dryrun dry_run mcp_config_path config;
   let settings_path = Filename.concat claude_dir "settings.json" in
@@ -837,15 +829,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
   let script_changed = ref false in
   (try
      let dir = Filename.dirname hook_script in
-     if not (Sys.file_exists dir) then begin
-       let rec mkdir_p d =
-         if Sys.file_exists d then () else begin
-           mkdir_p (Filename.dirname d);
-           mkdir_or_dryrun dry_run d
-         end
-       in
-       mkdir_p dir
-     end;
+     if not (Sys.file_exists dir) then mkdir_p dry_run dir;
      let hook_content = claude_hook_script in
      let existing =
        if Sys.file_exists hook_script then
@@ -1008,14 +992,7 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path =
                 @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
     | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
   in
-  (try
-     let rec mkdir_p d =
-       if Sys.file_exists d then () else begin
-         mkdir_p (Filename.dirname d);
-         mkdir_or_dryrun dry_run d
-       end
-     in
-     mkdir_p (Filename.dirname config_path)
+  (try mkdir_p dry_run (Filename.dirname config_path)
    with Unix.Unix_error _ -> ());
   json_write_file_or_dryrun dry_run config_path config;
   match output_mode with
