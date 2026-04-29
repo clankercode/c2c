@@ -11,12 +11,13 @@ let string_contains haystack needle =
   needle_len = 0 || loop 0
 
 let test_lookup_known () =
-  check (option string) "coder lookup" (Some "role_template_src|---")
-    (Option.map (fun s -> String.sub s 0 14) (Role_templates.lookup "coder"));
-  check (option string) "coordinator lookup" (Some "role_template_src|---")
-    (Option.map (fun s -> String.sub s 0 14) (Role_templates.lookup "coordinator"));
-  check (option string) "subagent lookup" (Some "role_template_src|---")
-    (Option.map (fun s -> String.sub s 0 14) (Role_templates.lookup "subagent"))
+  (* Template bodies start with YAML frontmatter ---, not the OCaml delimiter. *)
+  check (option string) "coder lookup" (Some "---")
+    (Option.map (fun s -> String.sub s 0 3) (Role_templates.lookup "coder"));
+  check (option string) "coordinator lookup" (Some "---")
+    (Option.map (fun s -> String.sub s 0 3) (Role_templates.lookup "coordinator"));
+  check (option string) "subagent lookup" (Some "---")
+    (Option.map (fun s -> String.sub s 0 3) (Role_templates.lookup "subagent"))
 
 let test_lookup_unknown () =
   check (option string) "unknown lookup" None
