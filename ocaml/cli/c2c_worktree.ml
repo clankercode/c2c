@@ -204,10 +204,11 @@ let stale_local_master_warning ~local_master_behind =
          "warning: local master is %d commit(s) behind origin/master — run `git fetch origin && git merge --ff-only origin/master` to sync before manually branching. `c2c worktree start` still branches from origin/master correctly, but agents using `git checkout -b branch master` will get a stale base."
          local_master_behind)
 
-(** [worktree_behind_origin ~wt_path ~threshold] checks if the worktree at [wt_path]
-    is [threshold] or more commits behind origin/master.
+(** [worktree_behind_origin ~wt_path] checks if the worktree at [wt_path]
+    is 5 or more commits behind origin/master.
     Returns a warning message if so, None otherwise. *)
-let worktree_behind_origin ?(threshold=5) ~(wt_path:string) : string option =
+let worktree_behind_origin ~(wt_path:string) : string option =
+  let threshold = 5 in
   let (_code_fetch, _, _) = git_command ~cwd:wt_path ~quiet:true
     [ "fetch"; "origin"; "master" ] in
   let (code, stdout, _) = git_command ~cwd:wt_path
@@ -227,7 +228,7 @@ let check_all_worktree_bases () =
   let all = list_worktrees () in
   let has_warnings = ref false in
   List.iter (fun (_alias, wt_path, _branch) ->
-    match worktree_behind_origin ~threshold:5 ~wt_path with
+    match worktree_behind_origin ~wt_path with
     | Some msg ->
         has_warnings := true;
         Printf.eprintf "%s\n%!" msg
