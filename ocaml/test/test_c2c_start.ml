@@ -1134,6 +1134,19 @@ let test_probed_capabilities_for_kimi () =
   check (list string) "kimi capability set"
     [ "kimi_wire" ] caps
 
+(* #153: kimi-cli's default --max-steps-per-turn is 1000, too low for
+   long-running agentic swarm work. Managed kimi sessions should default
+   to 9999 to match the opencode posture. Assert the flag and value are
+   adjacent in the assembled argv. *)
+let test_prepare_launch_args_kimi_sets_max_steps_per_turn () =
+  let tmp = Filename.temp_dir "c2c-test-kimi-153-" "" in
+  let args =
+    C2c_start.prepare_launch_args ~name:"kimi-153-proof" ~client:"kimi"
+      ~extra_args:[] ~broker_root:tmp ()
+  in
+  check bool "adds --max-steps-per-turn 9999" true
+    (has_adjacent_pair "--max-steps-per-turn" "9999" args)
+
 let test_check_pty_inject_capability_ok_when_yama_zero () =
   let result =
     C2c_start.check_pty_inject_capability
@@ -2801,6 +2814,8 @@ let () =
             `Quick, test_extra_argv_preserves_commas_470 )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
+        ; ( "prepare_launch_args_kimi_sets_max_steps_per_turn",
+            `Quick, test_prepare_launch_args_kimi_sets_max_steps_per_turn )
         ; ( "tmux_shell_command_quotes_argv",
             `Quick, test_tmux_shell_command_quotes_argv )
         ; ( "tmux_message_payload_uses_c2c_envelope",

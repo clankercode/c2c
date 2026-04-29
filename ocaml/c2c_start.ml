@@ -3056,7 +3056,10 @@ module KimiAdapter : CLIENT_ADAPTER = struct
        c2c management, the session stays in afk mode until explicitly toggled
        off. Document this when kimi session-resume lands.
 
-       Research: kimi-permissions audit 2026-04-29 (Option A). *)
+       Research: kimi-permissions audit 2026-04-29 (Option A).
+
+       Max-steps-per-turn raised from kimi-cli default (1000) to 9999 for
+       long-running agentic swarm work; matches opencode posture (#153). *)
     let br = broker_root () in
     let session_args =
       match resume_session_id with
@@ -3065,6 +3068,7 @@ module KimiAdapter : CLIENT_ADAPTER = struct
     in
     let base =
       "--afk" ::
+      "--max-steps-per-turn" :: "9999" ::
       session_args
       @ (match model_override with
          | Some m when String.trim m <> "" -> [ "--model"; m ]
