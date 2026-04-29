@@ -1,6 +1,7 @@
 #!/bin/bash
 # git-shim: refuses git reset --hard <ref> in main tree when it would lose commits;
-# warns (and optionally refuses) git commit on main/master branches.
+# refuses git commit on main/master branches by default (Pattern 16).
+# C2C_COORDINATOR=1 bypasses. C2C_COMMIT_REFUSE=0 restores warn-only.
 #
 # Install: add this dir to PATH, BEFORE the real git.
 # The shim detects "git reset --hard <target>" and checks whether <target>
@@ -115,13 +116,17 @@ main() {
             fi
             ;;
         commit)
-            # git commit — warn (or refuse) on main/master branches in main tree
+            # git commit — refuse on main/master branches in main tree by default.
+            # Non-coordinators must use worktrees for commits.
+            # C2C_COORDINATOR=1 bypasses entirely.
+            # C2C_COMMIT_REFUSE=0 restores the old warn-only behavior (not recommended).
             if is_main_tree && [ "$COORDINATOR" != "1" ]; then
                 if ! is_worktree_branch; then
-                    if [ "${C2C_COMMIT_REFUSE:-0}" = "1" ]; then
+                    if [ "${C2C_COMMIT_REFUSE:-1}" = "1" ]; then
                         echo "fatal: git-shim refused 'git commit' on main/master branch." >&2
                         echo "fatal: non-coordinators must use worktrees for commits." >&2
-                        echo "fatal: set C2C_COORDINATOR=1 to bypass, or C2C_COMMIT_REFUSE=0 to warn only." >&2
+                        echo "fatal: set C2C_COORDINATOR=1 to bypass (coordinators only)." >&2
+                        echo "fatal: set C2C_COMMIT_REFUSE=0 to warn only (not recommended)." >&2
                         exit 128
                     else
                         echo "WARNING: committing directly to main/master branch." >&2
