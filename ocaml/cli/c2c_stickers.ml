@@ -327,32 +327,36 @@ let build_reaction_xml ~from_alias ~target_msg_id ~sticker_id ~emoji ~note =
     note_attr
 
 (* [parse_reaction_content content] parses a reaction DM body and returns
-   Some (reactor_alias, sticker_id, note) if the content is a <c2c event="reaction" .../> tag. *)
-let parse_reaction_content (content : string) : (string * string * string option) option =
+    Some (reactor_alias, sticker_id, target_msg_id, note) if the content is a
+    <c2c event="reaction" .../> tag. *)
+let parse_reaction_content (content : string) : (string * string * string * string option) option =
   if not (String.length content >= 6 &&
           String.sub content 0 6 = "<c2c " &&
           String.length content >= 2 &&
           String.sub content (String.length content - 2) 2 = "/>")
   then None
   else
-    let get_attr name s =
-      let pattern = " " ^ name ^ "=\"" in
-      match String.index s '"' with
-      | first_quote when first_quote >= String.length pattern &&
-                          String.sub s (first_quote - String.length pattern) (String.length pattern) = pattern ->
-          let start = first_quote + 1 in
-          (match String.index_from s start '"' with
-           | end_quote -> Some (String.sub s start (end_quote - start))
-           | exception Not_found -> None)
-      | _ -> None
+    let re = Str.regexp "\\(\\w+\\)=\"\([^\"]*\)\"" in
+    let attrs = Hashtbl.create 4 in
+    let rec loop pos =
+      if pos >= String.length content then ()
+      else if Str.string_match re content pos then
+        let key = Str.matched_group 1 content in
+        let value = Str.matched_group 2 content in
+        Hashtbl.add attrs key value;
+        loop (Str.match_end ())
+      else
+        loop (pos + 1)
     in
-    match get_attr "event" content with
+    loop 0;
+    match Hashtbl.find_opt attrs "event" with
     | Some "reaction" ->
-        (match get_attr "from" content,
-               get_attr "sticker_id" content with
-         | Some reactor_alias, Some sticker_id ->
-             let note = get_attr "note" content in
-             Some (reactor_alias, sticker_id, note)
+        (match Hashtbl.find_opt attrs "from",
+               Hashtbl.find_opt attrs "sticker_id",
+               Hashtbl.find_opt attrs "target_msg_id" with
+         | Some reactor_alias, Some sticker_id, Some target_msg_id ->
+             let note = Hashtbl.find_opt attrs "note" in
+             Some (reactor_alias, sticker_id, target_msg_id, note)
          | _ -> None)
     | _ -> None
 
@@ -604,87 +608,62 @@ let sticker_reactions_cmd =
   in
   let broker_root = C2c_utils.resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root:broker_root in
-  match C2c_mcp.Broker.find_message_by_id broker ~alias:from_alias ~id_prefix:msg_id_or_prefix with
-  | Error msg ->
-      Printf.eprintf "error: %s\n%!" msg; exit 1
-  | Ok entry ->
-      let full_msg_id = match entry.C2c_mcp.Broker.ae_message_id with
-        | Some id -> id
-        | None -> msg_id_or_prefix
-      in
-      (* Scan the owner's archive for incoming reaction DMs addressed to them. *)
-      let regs = C2c_mcp.Broker.list_registrations broker in
-      let my_session_ids = List.filter_map (fun (r : C2c_mcp.registration) ->
-        if r.C2c_mcp.alias = from_alias then Some r.C2c_mcp.session_id else None) regs in
-      let incoming_reactions =
-        List.fold_left (fun acc session_id ->
-          let entries = C2c_mcp.Broker.read_archive broker ~session_id ~limit:500 in
-          let matching = List.filter (fun (e : C2c_mcp.Broker.archive_entry) ->
-            match e.C2c_mcp.Broker.ae_message_id with
-            | None -> false
-            | Some mid ->
-                String.length mid >= String.length msg_id_or_prefix &&
-                String.sub mid 0 (String.length msg_id_or_prefix) = msg_id_or_prefix &&
-                String.exists (fun c -> c = '<') e.C2c_mcp.Broker.ae_content &&
-                String.exists (fun c -> c = '>') e.C2c_mcp.Broker.ae_content
-          ) entries in
-          acc @ matching
-        ) [] my_session_ids
-      in
-      (* Parse reaction entries from archive *)
-      let parsed_incoming = List.filter_map (fun (e : C2c_mcp.Broker.archive_entry) ->
+  (* Scan all inbox archive entries for this user's sessions.
+     Reactions arrive as incoming DMs, so we look in the user's own inbox archive.
+     For each entry, parse_reaction_content extracts the target_msg_id from the
+     reaction body and filters by prefix match. *)
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  let my_session_ids = List.filter_map (fun (r : C2c_mcp.registration) ->
+    if r.C2c_mcp.alias = from_alias then Some r.C2c_mcp.session_id else None) regs in
+  let all_reactions =
+    List.fold_left (fun acc session_id ->
+      let entries = C2c_mcp.Broker.read_archive broker ~session_id ~limit:500 in
+      let matching = List.filter_map (fun (e : C2c_mcp.Broker.archive_entry) ->
         match parse_reaction_content e.C2c_mcp.Broker.ae_content with
-        | Some (reactor_alias, sticker_id, note) ->
-            Some (reactor_alias, sticker_id, note, e.C2c_mcp.Broker.ae_drained_at)
+        | Some (reactor_alias, sticker_id, target_msg_id, note) ->
+            (* Only include if target_msg_id matches the user-supplied prefix *)
+            if String.length target_msg_id >= String.length msg_id_or_prefix &&
+               String.sub target_msg_id 0 (String.length msg_id_or_prefix) = msg_id_or_prefix
+            then Some (reactor_alias, sticker_id, note)
+            else None
         | None -> None
-      ) incoming_reactions
-      in
-      (* Also include own reactions from by-msg-out index *)
-      let own_paths = load_by_msg_index ~alias:from_alias ~msg_id:full_msg_id in
-      let own_reactions = List.filter_map (fun path ->
-        try
-          let j = Yojson.Safe.from_file path in
-          match envelope_of_json j with
-          | Ok env -> Some (env.from_, env.sticker_id, env.note, 0.0)
-          | Error _ -> None
-        with _ -> None
-      ) own_paths
-      in
-      (* Combine and dedupe by reactor_alias *)
-      let all_reactions = own_reactions @ parsed_incoming in
-      let deduped =
-        let seen = Hashtbl.create 16 in
-        List.filter (fun (ra, _, _, _) ->
-          if Hashtbl.mem seen ra then false
-          else (Hashtbl.add seen ra true; true))
-          all_reactions
-      in
-      if deduped = [] then (
-        if json then (
-          Yojson.Safe.pretty_to_channel stdout (`List []);
-          print_newline ()
-        ) else
-          Printf.printf "No reactions to [%s] from %s\n"
-            (String.sub full_msg_id 0 (min 8 (String.length full_msg_id)))
-            entry.C2c_mcp.Broker.ae_from_alias
-      ) else
-        if json then (
-          let items = List.map (fun (reactor_alias, sticker_id, note, _) ->
-            `Assoc [
-              ("from", `String reactor_alias);
-              ("sticker_id", `String sticker_id);
-              ("note", `String (Option.value note ~default:""));
-            ]
-          ) deduped in
-          Yojson.Safe.pretty_to_channel stdout (`List items);
-          print_newline ()
-        ) else
-          List.iter (fun (reactor_alias, sticker_id, note, _) ->
-            let emoji = match List.assoc_opt sticker_id (List.map (fun e -> e.id, e) (load_registry ())) with
-              | Some e -> e.emoji | None -> "?" in
-            Printf.printf "%s %s reacted with %s\n"
-              emoji reactor_alias sticker_id
-          ) deduped
+      ) entries in
+      acc @ matching
+    ) [] my_session_ids
+  in
+  (* Dedupe by reactor_alias *)
+  let deduped =
+    let seen = Hashtbl.create 16 in
+    List.filter (fun (ra, _, _) ->
+      if Hashtbl.mem seen ra then false
+      else (Hashtbl.add seen ra true; true))
+      all_reactions
+  in
+  if deduped = [] then (
+    if json then (
+      Yojson.Safe.pretty_to_channel stdout (`List []);
+      print_newline ()
+    ) else
+      Printf.printf "No reactions to [%s]\n"
+        (String.sub msg_id_or_prefix 0 (min 8 (String.length msg_id_or_prefix)))
+  ) else
+    if json then (
+      let items = List.map (fun (reactor_alias, sticker_id, note) ->
+        `Assoc [
+          ("from", `String reactor_alias);
+          ("sticker_id", `String sticker_id);
+          ("note", `String (Option.value note ~default:""));
+        ]
+      ) deduped in
+      Yojson.Safe.pretty_to_channel stdout (`List items);
+      print_newline ()
+    ) else
+      List.iter (fun (reactor_alias, sticker_id, note) ->
+        let emoji = match List.assoc_opt sticker_id (List.map (fun e -> e.id, e) (load_registry ())) with
+          | Some e -> e.emoji | None -> "?" in
+        Printf.printf "%s %s reacted with %s\n"
+          emoji reactor_alias sticker_id
+      ) deduped
 
 (* --- group --- *)
 

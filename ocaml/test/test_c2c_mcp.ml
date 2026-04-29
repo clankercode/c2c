@@ -9107,6 +9107,80 @@ let test_drained_by_recorded_on_poll_inbox () =
       check string "drained_by recorded" "poll_inbox"
         (List.hd entries).C2c_mcp.Broker.ae_drained_by)
 
+(* --- S2 sticker-react integration tests ----------------------------------- *)
+
+let is_valid_uuid_prefix s =
+  String.length s >= 4
+  && String.for_all (function '0'..'9' | 'a'..'f' | 'A'..'F' | '-' -> true | _ -> false) s
+
+let test_message_id_assigned_on_local_enqueue () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-alice"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-bob"
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
+        ~to_alias:"bob" ~content:"hello bob" ();
+      let drained = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-bob" in
+      check int "drained one message" 1 (List.length drained);
+      let msg = List.hd drained in
+      (* drain_inbox returns message records which have message_id *)
+      (match msg.message_id with
+       | None ->
+           check bool "message_id is Some (not None)" true false
+       | Some mid ->
+           check bool "message_id is non-empty" true (String.length mid > 0);
+           check bool "message_id is valid hex (UUID v4)" true (is_valid_uuid_prefix mid);
+           let archive_path = C2c_mcp.Broker.archive_path broker ~session_id:"session-bob" in
+           check bool "archive file exists" true (Sys.file_exists archive_path);
+           let entries = C2c_mcp.Broker.read_archive broker ~session_id:"session-bob" ~limit:10 in
+           check int "archive has one entry" 1 (List.length entries);
+           match List.hd entries with
+           | e ->
+               (match e.C2c_mcp.Broker.ae_message_id with
+                | None -> check bool "archive entry has message_id (Some)" true false
+                | Some amid ->
+                    check string "archive message_id matches drained message_id" mid amid)
+      ))
+
+let test_reaction_archived_with_target_msg_id () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-alice"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-bob"
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"alice"
+        ~to_alias:"bob" ~content:"original message" ();
+      let drained = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-bob" in
+      check int "drained original" 1 (List.length drained);
+      let orig_msg_id = match (List.hd drained).message_id with
+        | Some id -> id | None -> ""
+      in
+      check bool "original message has message_id" true (orig_msg_id <> "");
+      let reaction_body =
+        Printf.sprintf "<c2c event=\"reaction\" from=\"bob\" target_msg_id=\"%s\" sticker_id=\"thumbsup\"/>"
+          orig_msg_id
+      in
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"bob"
+        ~to_alias:"alice" ~content:reaction_body ();
+      let drained_alice = C2c_mcp.Broker.drain_inbox broker ~session_id:"session-alice" in
+      check int "alice drained reaction" 1 (List.length drained_alice);
+      let reaction_entry = List.hd drained_alice in
+      (* drained message has content field *)
+      check bool "reaction content contains target_msg_id" true
+        (string_contains reaction_entry.content orig_msg_id);
+      let entries = C2c_mcp.Broker.read_archive broker ~session_id:"session-alice" ~limit:10 in
+      check int "archive has 1 entry (reaction)" 1 (List.length entries);
+      let archived = List.hd entries in
+      check string "archived from_alias is bob" "bob" archived.C2c_mcp.Broker.ae_from_alias;
+      check bool "archived content is reaction body" true
+        (string_contains archived.C2c_mcp.Broker.ae_content "event=\"reaction\"");
+      check bool "archived content has target_msg_id" true
+        (string_contains archived.C2c_mcp.Broker.ae_content orig_msg_id)
+  )
+
 let test_drained_by_recorded_on_watcher () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -10284,14 +10358,19 @@ let () =
                test_peer_pass_dm_h2b_rotated_key_rejected
            ; test_case "H2b: first-seen pin allows the DM" `Quick
                test_peer_pass_dm_h2b_first_seen_allowed
-           ; test_case "H2b: artifact sha != claim sha is rejected" `Quick
-               test_peer_pass_dm_h2b_sha_mismatch_rejected
-           ; test_case "H2b: missing artifact still allows the DM" `Quick
-               test_peer_pass_dm_h2b_missing_artifact_allows_dm
-           ; test_case "#432 §3 with_session calls f with resolved session_id" `Quick
-               test_with_session_calls_f_with_resolved_session_id
-           ; test_case "#432 §3 with_session touches session before calling f" `Quick
-               test_with_session_touches_session_before_calling_f
-           ; test_case "#432 §3 with_session forwards session_id_override" `Quick
-               test_with_session_forwards_override
-           ] ) ]
+<<<<<<< HEAD
+            ; test_case "H2b: artifact sha != claim sha is rejected" `Quick
+                test_peer_pass_dm_h2b_sha_mismatch_rejected
+            ; test_case "H2b: missing artifact still allows the DM" `Quick
+                test_peer_pass_dm_h2b_missing_artifact_allows_dm
+            ; test_case "#432 §3 with_session calls f with resolved session_id" `Quick
+                test_with_session_calls_f_with_resolved_session_id
+            ; test_case "#432 §3 with_session touches session before calling f" `Quick
+                test_with_session_touches_session_before_calling_f
+            ; test_case "#432 §3 with_session forwards session_id_override" `Quick
+                test_with_session_forwards_override
+            ; test_case "message_id assigned on local enqueue (#S2 Fix #1)" `Quick
+                test_message_id_assigned_on_local_enqueue
+            ; test_case "reaction DM archived with target_msg_id for discovery (#S2 Fix #3)" `Quick
+                test_reaction_archived_with_target_msg_id
+            ] ) ]
