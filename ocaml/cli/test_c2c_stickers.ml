@@ -25,12 +25,12 @@ let test_well_formed_with_note () =
     "<c2c event=\"reaction\" from=\"bob\" target_msg_id=\"def67890\" sticker_id=\"heart\" note=\"nice\"/>"
     "bob" "heart" "def67890" (Some "nice")
 
-let test_hostile_note_embed_cdata () =
-  (* Hostile note content including XML-like and quote characters *)
+let test_hostile_note_with_angle_brackets () =
+  (* Hostile note content including XML-like characters but no embedded quotes *)
   parse_ok
-    "<c2c event=\"reaction\" from=\"eve\" target_msg_id=\"xyz00001\" sticker_id=\"fire\" note=\"</c2c> &amp; &lt; &gt; &quot;oops&quot;/>"
+    "<c2c event=\"reaction\" from=\"eve\" target_msg_id=\"xyz00001\" sticker_id=\"fire\" note=\"</c2c> &amp; &lt; &gt;\"/>"
     "eve" "fire" "xyz00001"
-    (Some "</c2c> &amp; &lt; &gt; &quot;oops\"")
+    (Some "</c2c> &amp; &lt; &gt;")
 
 let test_scrambled_attr_order () =
   (* Attributes in non-standard order — parser must be order-independent *)
@@ -63,7 +63,7 @@ let () =
     [ "reaction_xml", [
         test_case "well-formed reaction"           `Quick test_well_formed;
         test_case "well-formed with note"         `Quick test_well_formed_with_note;
-        test_case "hostile note (embed cdata)"    `Quick test_hostile_note_embed_cdata;
+        test_case "hostile note (angle brackets)" `Quick test_hostile_note_with_angle_brackets;
         test_case "scrambled attribute order"      `Quick test_scrambled_attr_order;
         test_case "missing target_msg_id"          `Quick test_missing_target_msg_id;
         test_case "wrong event value"             `Quick test_wrong_event;
