@@ -1672,6 +1672,8 @@ let test_cmd_reset_thread_persists_codex_resume_target () =
     ; binary_override = Some "/bin/true"
     ; model_override = None
     ; agent_name = None
+    ; last_exit_code = None
+    ; last_exit_reason = None
     }
   in
   C2c_start.write_config cfg;
@@ -1705,6 +1707,8 @@ let test_last_launch_at_roundtrip () =
     ; binary_override = None
     ; model_override = None
     ; agent_name = None
+    ; last_exit_code = None
+    ; last_exit_reason = None
     }
   in
   C2c_start.write_config cfg;
@@ -1733,6 +1737,8 @@ let test_last_launch_at_backward_compat_missing_field () =
     ; binary_override = None
     ; model_override = None
     ; agent_name = None
+    ; last_exit_code = None
+    ; last_exit_reason = None
     }
   in
   C2c_start.write_config cfg;
@@ -1761,6 +1767,8 @@ let test_sync_instance_alias_updates_matching_session () =
     ; binary_override = None
     ; model_override = None
     ; agent_name = None
+    ; last_exit_code = None
+    ; last_exit_reason = None
     }
   in
   C2c_start.write_config cfg;
@@ -1790,6 +1798,8 @@ let test_sync_instance_alias_ignores_mismatched_session () =
     ; binary_override = None
     ; model_override = None
     ; agent_name = None
+    ; last_exit_code = None
+    ; last_exit_reason = None
     }
   in
   C2c_start.write_config cfg;
@@ -1798,6 +1808,65 @@ let test_sync_instance_alias_ignores_mismatched_session () =
   | None -> fail "expected config after sync"
   | Some saved ->
       check string "alias unchanged" "old-alias" saved.alias
+
+let test_last_exit_code_reason_roundtrip () =
+  let name = "test-exit-roundtrip" in
+  with_instance_dir name @@ fun _dir ->
+  with_temp_dir @@ fun broker_root ->
+  let now = Unix.gettimeofday () in
+  let cfg : C2c_start.instance_config =
+    { name
+    ; client = "kimi"
+    ; session_id = name
+    ; resume_session_id = name
+    ; codex_resume_target = None
+    ; alias = name
+    ; extra_args = []
+    ; created_at = now
+    ; last_launch_at = None
+    ; last_exit_code = Some 143
+    ; last_exit_reason = Some "term"
+    ; broker_root
+    ; auto_join_rooms = "swarm-lounge"
+    ; binary_override = None
+    ; model_override = None
+    ; agent_name = None
+    }
+  in
+  C2c_start.write_config cfg;
+  match C2c_start.load_config_opt name with
+  | None -> fail "expected config after write"
+  | Some saved ->
+      check (option int) "last_exit_code roundtrip" (Some 143) saved.last_exit_code;
+      check (option string) "last_exit_reason roundtrip" (Some "term") saved.last_exit_reason
+
+let test_last_exit_code_reason_backward_compat_missing_field () =
+  let name = "test-exit-compat" in
+  with_instance_dir name @@ fun _dir ->
+  with_temp_dir @@ fun broker_root ->
+  let path = C2c_start.config_path name in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "{\"name\":\"test-exit-compat\",\"client\":\"kimi\",\"session_id\":\"test-exit-compat\",\"resume_session_id\":\"test-exit-compat\",\"alias\":\"test-exit-compat\",\"extra_args\":[],\"created_at\":123.0,\"broker_root\":\"/tmp\",\"auto_join_rooms\":\"swarm-lounge\"}\n");
+  match C2c_start.load_config_opt name with
+  | None -> fail "expected config from legacy json"
+  | Some saved ->
+      check (option int) "missing last_exit_code is None" None saved.last_exit_code;
+      check (option string) "missing last_exit_reason is None" None saved.last_exit_reason
+
+let test_signal_name_mapping () =
+  check string "sigterm" "term" (C2c_start.signal_name Sys.sigterm);
+  check string "sigkill" "kill" (C2c_start.signal_name Sys.sigkill);
+  check string "sighup" "hup" (C2c_start.signal_name Sys.sighup);
+  check string "sigint" "int" (C2c_start.signal_name Sys.sigint);
+  check string "sigusr1" "usr1" (C2c_start.signal_name Sys.sigusr1);
+  check string "sigusr2" "usr2" (C2c_start.signal_name Sys.sigusr2);
+  check string "sigpipe" "pipe" (C2c_start.signal_name Sys.sigpipe);
+  check string "sigalrm" "alrm" (C2c_start.signal_name Sys.sigalrm);
+  check string "sigchld" "chld" (C2c_start.signal_name Sys.sigchld);
+  check string "sigsegv" "segv" (C2c_start.signal_name Sys.sigsegv);
+  check string "sigabrt" "abrt" (C2c_start.signal_name Sys.sigabrt);
+  check string "unknown" "sig99" (C2c_start.signal_name 99)
 
 (* ------------------------------------------------------------------ *)
 (* pmodel parsing                                                      *)
@@ -3149,6 +3218,12 @@ let () =
             `Quick, test_sync_instance_alias_updates_matching_session )
         ; ( "sync_instance_alias_ignores_mismatched_session",
             `Quick, test_sync_instance_alias_ignores_mismatched_session )
+        ; ( "last_exit_code_reason_roundtrip",
+            `Quick, test_last_exit_code_reason_roundtrip )
+        ; ( "last_exit_code_reason_backward_compat_missing_field",
+            `Quick, test_last_exit_code_reason_backward_compat_missing_field )
+        ; ( "signal_name_mapping",
+            `Quick, test_signal_name_mapping )
         ; ( "prepare_launch_args_extra_args_appended_verbatim",
             `Quick, test_prepare_launch_args_extra_args_appended_verbatim )
         ; ( "prepare_launch_args_extra_args_empty_by_default",

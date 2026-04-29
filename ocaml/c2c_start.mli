@@ -40,12 +40,19 @@ type instance_config = {
   extra_args : string list;
   created_at : float;
   last_launch_at : float option;
+  last_exit_code : int option;
+  last_exit_reason : string option;
   broker_root : string;
   auto_join_rooms : string;
   binary_override : string option;
   model_override : string option;
   agent_name : string option;
 }
+
+val signal_name : int -> string
+(** Map a signal number to a short readable name:
+    [SIGTERM] → "term", [SIGKILL] → "kill", [SIGHUP] → "hup", etc.
+    Unknown signals render as "sigN". *)
 
 type tmux_target_info = { tmux_location : string; tmux_pane_id : string }
 

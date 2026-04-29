@@ -1974,6 +1974,20 @@ let start_stderr_tee ~inst_dir ~outer_stderr_fd =
   ) () in
   (pipe_write_fd, stop_write_fd, tee_thread)
 
+let signal_name n =
+  if n = Sys.sigterm then "term"
+  else if n = Sys.sigkill then "kill"
+  else if n = Sys.sighup then "hup"
+  else if n = Sys.sigint then "int"
+  else if n = Sys.sigusr1 then "usr1"
+  else if n = Sys.sigusr2 then "usr2"
+  else if n = Sys.sigpipe then "pipe"
+  else if n = Sys.sigalrm then "alrm"
+  else if n = Sys.sigchld then "chld"
+  else if n = Sys.sigsegv then "segv"
+  else if n = Sys.sigabrt then "abrt"
+  else Printf.sprintf "sig%d" n
+
 (* Append a death record when inner client exits non-zero. *)
 let record_death ~broker_root ~name ~client ~exit_code ~duration_s ~inst_dir =
   let log_path = inst_dir // "stderr.log" in
@@ -2060,6 +2074,8 @@ type instance_config = {
   extra_args : string list;
   created_at : float;
   last_launch_at : float option;
+  last_exit_code : int option;
+  last_exit_reason : string option;
   broker_root : string;
   auto_join_rooms : string;
   binary_override : string option;
@@ -2101,6 +2117,14 @@ let write_config (cfg : instance_config) =
     (match cfg.agent_name with
      | Some n -> [ ("agent_name", `String n) ]
      | None -> [])
+    @
+    (match cfg.last_exit_code with
+     | Some c -> [ ("last_exit_code", `Int c) ]
+     | None -> [])
+    @
+    (match cfg.last_exit_reason with
+     | Some r -> [ ("last_exit_reason", `String r) ]
+     | None -> [])
   in
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc)
@@ -2120,6 +2144,7 @@ let load_config_opt (name : string) : instance_config option =
         let gso k = match List.assoc_opt k a with Some (`String s) -> Some s | _ -> None in
         let gf k = match List.assoc_opt k a with Some (`Float f) -> f | Some (`Int i) -> float_of_int i | _ -> raise Not_found in
         let gfo k = match List.assoc_opt k a with Some (`Float f) -> Some f | Some (`Int i) -> Some (float_of_int i) | _ -> None in
+        let gio k = match List.assoc_opt k a with Some (`Int i) -> Some i | _ -> None in
         let gl k = match List.assoc_opt k a with Some (`List l) -> List.map (function `String s -> s | _ -> raise Not_found) l | _ -> [] in
         Some { name = gs "name"; client = gs "client"; session_id = gs "session_id";
                resume_session_id = gs "resume_session_id"; codex_resume_target = gso "codex_resume_target"; alias = gs "alias";
@@ -2127,7 +2152,9 @@ let load_config_opt (name : string) : instance_config option =
                broker_root = gs "broker_root"; auto_join_rooms = gs "auto_join_rooms";
                binary_override = gso "binary_override";
                model_override = gso "model_override";
-               agent_name = gso "agent_name" }
+               agent_name = gso "agent_name";
+               last_exit_code = gio "last_exit_code";
+               last_exit_reason = gso "last_exit_reason" }
 
 (* Resolve effective extra_args on (re-)launch.
 
@@ -4450,13 +4477,13 @@ let run_outer_loop ~(name : string) ~(client : string)
         with Unix.Unix_error (Unix.EINTR, _, _) -> 0
       in
 
-      let exit_code =
-        if child_pid_opt = 0 then 130
+      let exit_code, exit_reason =
+        if child_pid_opt = 0 then (130, Some "term")
         else
           (try
              let rec wait_for_child () =
                match Unix.waitpid [ Unix.WUNTRACED ] child_pid_opt with
-               | _, Unix.WSIGNALED n -> 128 + n
+               | _, Unix.WSIGNALED n -> (128 + n, Some (signal_name n))
                | _, Unix.WSTOPPED sig_n when sig_n = Sys.sigtstp ->
                    (* Ctrl-Z (SIGTSTP) on the child's foreground pgrp: user
                       wants to suspend. Reclaim the TTY, stop ourselves so
@@ -4480,10 +4507,11 @@ let run_outer_loop ~(name : string) ~(client : string)
                      name sig_n Sys.sigtstp;
                    (try Unix.kill (- child_pid_opt) Sys.sigcont with _ -> ());
                    wait_for_child ()
-               | _, Unix.WEXITED n -> n
+               | _, Unix.WEXITED 0 -> (0, Some "clean")
+               | _, Unix.WEXITED n -> (n, Some (Printf.sprintf "exit:%d" n))
                | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait_for_child ()
              in
-             let code = wait_for_child () in
+             let code, reason = wait_for_child () in
              (* Reclaim the controlling TTY before writing anything. The child held
                 the terminal's foreground pgrp (via tcsetpgrp in the child). On a
                 normal Ctrl-D exit it doesn't release it, so any write the outer makes
@@ -4497,8 +4525,8 @@ let run_outer_loop ~(name : string) ~(client : string)
              kill_inner_target Sys.sigterm child_pid_opt;
              Unix.sleepf 0.5;
              kill_inner_target Sys.sigkill child_pid_opt;
-             code
-           with _ -> 1)
+             (code, reason)
+           with _ -> (1, None))
       in
 
       (* Shutdown sequence for tee thread:
@@ -4556,6 +4584,12 @@ let run_outer_loop ~(name : string) ~(client : string)
       (* Record structured death on non-zero exit *)
       if exit_code <> 0 then
         record_death ~broker_root ~name ~client ~exit_code ~duration_s:elapsed ~inst_dir;
+
+      (* Record exit context in instance config for restart-coord diagnostics *)
+      (match load_config_opt name with
+       | Some cfg ->
+           write_config { cfg with last_exit_code = Some exit_code; last_exit_reason = exit_reason }
+       | None -> ());
 
       let resume_cmd =
         let sid =
@@ -4876,6 +4910,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     model_override;
     agent_name;
     last_launch_at = Some (Unix.gettimeofday ());
+    last_exit_code = None;
+    last_exit_reason = None;
   }
   in
   write_config cfg;
