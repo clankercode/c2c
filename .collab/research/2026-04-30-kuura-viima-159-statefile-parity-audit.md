@@ -124,3 +124,7 @@ New subcommand: `c2c instance edit <name>` opens `$EDITOR` on the JSON, validate
 ---
 
 *Audit completed 2026-04-30. Full source references in `ocaml/c2c_start.ml` lines 2053–2161, 4830–4861, 5005–5022, 5077–5086, 3528–3530.*
+
+## Operator-side dogfood lesson
+
+When testing `sync_instance_alias` live, use a fake session_id — not your own. Running `c2c register --alias NEW` with your live session_id will rewrite your alias system-wide (by design), and you'll need to re-register with your original alias to restore identity. Future testers: isolate with `C2C_MCP_SESSION_ID=test-probe-$(date +%s)`.
