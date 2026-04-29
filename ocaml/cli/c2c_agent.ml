@@ -497,7 +497,7 @@ let run_ephemeral_agent
   end;
   C2c_commands.write_agent_file ~client ~name ~content:rendered;
   if client = "kimi" then
-    C2c_commands.write_kimi_system_prompt ~name ~content:r.C2c_role.body;
+    C2c_commands.write_kimi_system_prompt ~name:role ~content:r.C2c_role.body;
   let mode_str = match mode with Pane -> "pane" | Background -> "background" | Headless -> "headless" in
   Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s timeout=%.0fs mode=%s\n%!"
     role client name caller timeout mode_str;

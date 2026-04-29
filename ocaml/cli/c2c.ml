@@ -7537,8 +7537,8 @@ let start_cmd =
                 if client = "opencode" || client = "claude" then
                   write_agent_file ~client ~name ~content:rendered;
                 if client = "kimi" then begin
-                  write_agent_file ~client ~name ~content:rendered;
-                  write_kimi_system_prompt ~name ~content:role.C2c_role.body;
+                  write_agent_file ~client ~name:agent_name ~content:rendered;
+                  write_kimi_system_prompt ~name:agent_name ~content:role.C2c_role.body;
                 end;
                 let onboarding_preamble =
                   Printf.sprintf

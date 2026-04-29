@@ -2455,6 +2455,34 @@ let test_prepare_launch_args_kimi_fresh_omits_session_flag () =
   check bool "resume_session_id None: --session flag omitted" false
     (List.mem "--session" args)
 
+(* #146-prime: --agent-file path uses role name, not instance name, so that
+   the file written by c2c roles compile (role-scoped) matches the path
+   passed to kimi-cli. *)
+let test_prepare_launch_args_kimi_agent_file_uses_role_name () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"azure-maple" ~client:"kimi"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~agent_name:"coordinator1" ()
+  in
+  (* --agent-file should point to .kimi/agents/coordinator1/agent.yaml *)
+  let idx =
+    try List.find_index (fun a -> a = "--agent-file") args
+    with Not_found -> None
+  in
+  (match idx with
+   | Some _ -> ()
+   | None -> Alcotest.fail "--agent-file flag missing");
+  (match idx with
+   | Some i when i + 1 < List.length args ->
+       let path = List.nth args (i + 1) in
+       check string "agent-file path uses role name"
+         (".kimi/agents/coordinator1/agent.yaml")
+         path
+   | _ ->
+       Alcotest.fail "--agent-file missing or has no value")
+
 (* #392: pure helpers for c2c_mcp's event-tag body-prefix shape.
    Hosted here since test_c2c_mcp.ml has a pre-existing build issue
    that doesn't reproduce in this executable. *)
@@ -2816,6 +2844,8 @@ let () =
             `Quick, test_prepare_launch_args_kimi_resume_passes_session_flag )
         ; ( "fresh_omits_session_flag",
             `Quick, test_prepare_launch_args_kimi_fresh_omits_session_flag )
+        ; ( "agent_file_uses_role_name",
+            `Quick, test_prepare_launch_args_kimi_agent_file_uses_role_name )
         ] )
     ; ( "launch_args",
         [ ( "prepare_launch_args_claude_uses_development_channel_flag",
