@@ -825,6 +825,32 @@ cat /proc/<pid>/comm
 
 ---
 
+## Pattern 17 — subagent cwd-persistence creates nested worktrees
+
+**Severity**: MEDIUM — data not lost; nested structure causes confusion and can cause subsequent git operations to resolve to the wrong tree if the agent doesn't notice.
+
+**Symptom**: A subagent dispatched into a worktree (e.g., `.worktrees/<a>/`) runs a command that creates a new worktree using a relative path (e.g., `git worktree add .worktrees/<b>`). Because the subagent's CWD is the parent worktree, the new worktree is created at `.worktrees/<a>/.worktrees/<b>/` instead of `.worktrees/<b>/` at the repo root. This produces deeply nested `.worktree/` directories, pollutes the parent's `git worktree list` output, and can cause subsequent operations to resolve to the wrong worktree.
+
+**Root cause**: The subagent inherits the parent's working directory as its CWD. Any relative path used for `git worktree add` resolves relative to that CWD, not the repo root. The subagent prompt rarely specifies that worktree creation must use absolute paths.
+
+**Receipt — Reproduction 1 (enc_pubkey-schema-truthful slice, slate, 2026-04-29)**: Slate dispatched a subagent to work in `.worktrees/<slice-a>/`. The subagent created a nested worktree with a relative path, producing `.worktrees/<a>/.worktrees/<b>/`. Slate caught it via `git worktree move` after the fact.
+
+**Receipt — Reproduction 2 (audit-doc-sweep slice, slate, 2026-04-29)**: Same pattern: subagent dispatched into an existing worktree, created a new worktree with a relative path. Slate caught it the same way.
+
+**Mitigation for dispatchers (parent agents)**:
+
+- Always specify absolute worktree paths in subagent prompts: `/home/xertrov/src/c2c/.worktrees/<slice>` not `.worktrees/<slice>`
+- For `git worktree add`, use: `git -C /home/xertrov/src/c2c worktree add .worktrees/<slice> -b <branch> <base-SHA>` — the `-C <abs-path>` flag scopes the git operation to the repo root regardless of CWD
+
+**Mitigation for subagent prompts** (when creating worktrees):
+
+- Always derive the worktree root from the repo root, not the current working directory
+- Verify `git worktree list` shows the new worktree at the expected path before proceeding
+
+**Cross-reference**: `.collab/findings/2026-04-29T08-00-00Z-willow-coder-subagent-cwd-persistence-nested-worktree.md` — full finding doc with both reproductions.
+
+---
+
 ## Why these rules are load-bearing
 
 The c2c swarm runs many parallel subagents during quota-burn
@@ -902,8 +928,14 @@ shortcut — those will create the next agent's footgun finding.
 - Pattern 14 (ref deletion in shared-tree layout) added
   2026-04-29 by fern-coder — preventive; no real-world incident yet,
   derived from shared-`.git/` interaction analysis.
+- Pattern 17 (subagent cwd-persistence nested worktree) added
+  2026-04-29 by willow-coder — synthesized from slate's two
+  2026-04-29 reproductions; discipline-only mitigation (absolute
+  paths + `git -C <abs-path>`). Finding doc at:
+  `.collab/findings/2026-04-29T08-00-00Z-willow-coder-subagent-cwd-persistence-nested-worktree.md`
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
   framing), slate-coder (Pattern 5, Pattern 8),
-  cedar-coder (Pattern 7), fern-coder (Patterns 6, 14).
+  cedar-coder (Pattern 7), fern-coder (Patterns 6, 14),
+  willow-coder (Pattern 17).
 
-— stanza-coder, with coordinator1, with slate-coder, with cedar-coder, with fern-coder
+— stanza-coder, with coordinator1, with slate-coder, with cedar-coder, with fern-coder, with willow-coder
