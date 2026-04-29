@@ -87,12 +87,18 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # sh -c so $PORT expands at launch. --token-file is picked up from
 # /run/secrets/relay_token when Railway mounts a file secret; fall
 # back to RELAY_TOKEN env var if only that is set.
+# --storage sqlite is required when C2C_RELAY_PERSIST_DIR is set —
+# without it, the relay defaults to in-memory mode and dead_letter
+# entries are lost on restart (no file persistence).
+# --relay-name is set from C2C_RELAY_NAME for cross-host alias validation.
 CMD ["sh", "-c", "\
   persist_flag=${C2C_RELAY_PERSIST_DIR:+--persist-dir ${C2C_RELAY_PERSIST_DIR}}; \
+  storage_flag=${C2C_RELAY_PERSIST_DIR:+--storage sqlite}; \
+  relay_name_flag=${C2C_RELAY_NAME:+--relay-name ${C2C_RELAY_NAME}}; \
   if [ -f /run/secrets/relay_token ]; then \
-    exec c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token ${persist_flag}; \
+    exec c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token ${storage_flag} ${persist_flag} ${relay_name_flag}; \
   elif [ -n \"${RELAY_TOKEN:-}\" ]; then \
-    exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${RELAY_TOKEN}\" ${persist_flag}; \
+    exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${RELAY_TOKEN}\" ${storage_flag} ${persist_flag} ${relay_name_flag}; \
   else \
-    exec c2c relay serve --listen 0.0.0.0:${PORT} ${persist_flag}; \
+    exec c2c relay serve --listen 0.0.0.0:${PORT} ${storage_flag} ${persist_flag} ${relay_name_flag}; \
   fi"]

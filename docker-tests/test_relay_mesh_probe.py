@@ -140,9 +140,9 @@ def _send_dm_via_relay(
     Example: _send_dm_via_relay(PEER_A1, "peer-a1", "peer-b2@host-b", RELAY_A_URL)
     """
     return _run_c2c_in(from_peer, [
-        "relay", "dm", "send", to_alias_host,
+        "relay", "dm", "send", to_alias_host, body,
         "--relay-url", relay_url,
-        "--body", body,
+        "--alias", from_alias,
     ])
 
 
