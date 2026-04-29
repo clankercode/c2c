@@ -7408,6 +7408,7 @@ let start_cmd =
      commas (e.g. `--prompt "Hello, world"` would become three tokens:
      ["--prompt"; "Hello"; " world"]). With plain `string`, each positional
      token is preserved verbatim. *)
+  let extra_argv =
     (* #470: `pos_all string []` captures all positional args after the subcommand
        as individual tokens (preserving commas). Cmdliner puts `--` at position 1,
        so we strip the first 2 elements (client name + `--`). This replaces the
