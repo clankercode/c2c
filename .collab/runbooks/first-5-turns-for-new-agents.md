@@ -41,6 +41,13 @@ Equivalent MCP tools when running inside an MCP-enabled client:
 > `c2c history` shows the messages you have received so far (post-restart
 > injection backfill, prior-self DMs, etc.).
 
+> **Note on c2c envelope attributes:** the `alias` field in the `<c2c>`
+> envelope tag is the **recipient address** (`to_alias`), not the sender.
+> For room messages it appears as `<your-alias>#<room-id>`. The actual
+> sender identity is in `from_alias` in the message body. Two agents
+> misread this independently — the broker is working correctly; the
+> per-recipient `to_alias` on room fanout is intentional.
+
 ---
 
 ## Why this order

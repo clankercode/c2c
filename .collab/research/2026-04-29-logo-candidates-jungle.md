@@ -1,186 +1,103 @@
-# C2C Banner Redesign — Candidate Logos
+# C2C Banner Redesign — Round 2 Candidates
 **Date:** 2026-04-29
-**Author:** jungle-coder (round 1 candidates)
+**Author:** jungle-coder
 **Worktree:** `.worktrees/logo-iteration-v2/`
+**Based on:** Round 1 swarm feedback (cairn, birch, cedar, fern, slate, stanza, willow, galaxy)
 
-## Methodology
-- Each candidate is 5-7 lines of terminal output, fits in standard terminal width (80 cols)
-- Candidates avoid Unicode box-drawing chars (╔═╗║╚═╝) — those look like fern's reverted attempt; we want c2c letter identity
-- Focus on lowercase `c2c` as primary shape (brand is `c2c`, not `C2C` acronym)
-- All candidates should work in any terminal font (monospace only assumptions)
+## Swarm Consensus from Round 1
+- **C1 (ANSI Shadow Fixed)** is the gravitational center — 5+ independent picks
+- **Block chars** preferred over pure ASCII for brand weight
+- **Brand IS the story** — `c2c` name is the protocol, explicit flow arrows are noise
+- **Superscript C7** shelved — font-render risk too high across terminal environments
+- **Lowercase `c2c`** is load-bearing per Max's deliberate `a76a2ae9` decision
+- **Recognition > clever** for `--version` context
 
----
-
-## Candidate 1: ANSI Shadow (fixed right-C)
-
-**Goal:** Fix the original's right-C top-right corner. Keep the block-char aesthetic.
-
-```
-  ██████╗██████╗ ██████╗
- ██╔════╝╚════██╗██╔════╝   c2c
- ██║      █████╔╝██║
- ██║     ██╔═══╝ ██║
- ╚██████╗███████╗╚██████╗
-  ╚═════╝╚══════╝ ╚═════╝
-```
-
-**Pros:** Familiar, clean block chars, right-C corner fixed
-**Cons:** Still block-heavy, might feel generic
+## Round 2 Finalists (3 candidates)
 
 ---
 
-## Candidate 2: Lowercase c2c — Clean ASCII
+### R2-A: C1 Lowercase (jungle) ⭐
 
-**Goal:** Readable lowercase `c2c` with clear separation between letters.
+**Rationale:** C1's proportions + lowercase per Max's brand decision + integrated `c2c` text tight to right edge.
 
 ```
-  c----.     2     ,----c
- c/    \   /|\   /    \_
- |      |  / | \  |      |
- \      / <   >  \      /
-  \----/    |     \----/
+ ██████╗██████╗ ██████╗
+██╔════╝╚════██╗██╔════╝   c2c
+██║      █████╔╝██║
+██║     ██╔═══╝ █║
+╚██████╗███████╗╚██████╗
+ ╚═════╝╚══════╝ ╚═════╝
 ```
 
-**Pros:** Clearly reads as `c2c`, flow arrows
-**Cons:** ASCII-heavy, might not feel "designed"
+**Pros:** Brand continuity, fixes right-C corner, lowercase honors Max's decision
+**Cons:** Still 6 lines; `c2c` as text beside art vs integrated
 
 ---
 
-## Candidate 3: Minimalist Three-Line
+### R2-B: F2 Compact Shadow (fern) ⭐
 
-**Goal:** Understated, works in any terminal, zero visual noise.
+**Rationale:** fern's compact block-char take, 7 lines, `c2c` tight to right edge, clean proportions.
 
 ```
-  --     --
-  \  c2c  /
-   `--.  ,--'
+ ███╗ ██╗██╗ ███╗ ██╗
+ ██╔╝ ██║██║ ██╔╝ ██║   c2c
+ ██╔╝ ██║██║ ██╔╝ ██║
+ ██║  ██║██║ ██║  ██║
+ ███╗ ██║██╗███╗ ██║
+ ╚═══╝ ╚═╝╚═╝╚═══╝
 ```
 
-**Pros:** Ultra-minimal, fits anywhere
-**Cons:** Maybe too sparse
+**Pros:** Tight proportions, block-char brand weight, integrated label
+**Cons:** 7 lines (taller than C1's 6)
 
 ---
 
-## Candidate 4: c2c with Flow Arrows
+### R2-C: Sv2-ASCII Boxed Peers (slate + cedar) ⭐
 
-**Goal:** Show the 2-way communication metaphor with directional hints.
+**Rationale:** Most distinctive new direction — `|c| <-2-> |c|` in 3 lines, ASCII-only, symmetric, lowercase naturally, peer-topology visible in <1s.
 
 ```
-  c     2     c
-  |  <->  |
-  |       |
+   .-.     .-.
+   |c| <-2-> |c|
+   '-'     '-'
 ```
 
-**Pros:** Communicates peer-to-peer, compact
-**Cons:** Very minimal
+**Pros:** 3 lines (most compact), pure ASCII (no Unicode risk), peer topology `<-2->` reads as channel, lowercase `c`, symmetric
+**Cons:** ASCII art vs block-char brand weight; no "c2c" text — pure topology
+
+**Note:** This is slate's ASCII refinement of Sv2 using `.` `-` `'` `|` `<` `>` — no Unicode. Stanza's font-matrix checklist (JetBrains Mono, FiraCode, Iosevka, Menlo, DejaVu Mono, xterm fixed, CJK terminals) still applies before final ship if this wins.
 
 ---
 
-## Candidate 5: ANSI Shadow Wide
+## Round 1 Candidates Not Advancing
 
-**Goal:** Wider, airier, the `c2c` feels more open.
-
-```
- ▄▄▄▄▄▄▄▄▄▄▄▄     ▄▄▄▄     ▄▄▄▄▄▄▄▄▄▄▄▄
- █▀▀▀▀▀▀▀▀▀▀▀█   ▄▀  ▀▄   █▀▀▀▀▀▀▀▀▀▀▀█
- █         █       █       █         █
- █   ▄▄▄   █       █   2   █   ▄▄▄   █
- █         █       █       █         █
- ▀▄▄▄▄▄▄▄▄▄▄▄█   ▀▄▄▄▄▄▄▄   █▄▄▄▄▄▄▄▄▄▄█
-```
-
-**Pros:** Wide, airy, clearly 3 elements
-**Cons:** Box-drawing heavy
+| Candidate | Reason Shelved |
+|-----------|---------------|
+| C2 (arrows) | Underscores look like artifacts; arrows = "plumbing diagram" |
+| C3 (ultra-minimal) | Loses brand feel entirely |
+| C4 (flow arrows only) | No c2c letter identity |
+| C7 (superscript) | Font-render risk too high |
+| C9 (pyfiglet) | Less distinctive than F2 in same proportions |
+| F1 (box-drawing) | F2 is stronger execution of same idea |
+| F3 (Y-as-2) | Adds complexity without enough return |
+| F5 (dot-matrix) | Unicode ● less safe than expected |
 
 ---
 
-## Candidate 6: Lean Three-Line
-
-**Goal:** Most minimal, ~3 lines, just the letters.
-
-```
-   c      2      c
-  /\    /--\    /\
-```
-
-**Pros:** Ultra-lean
-**Cons:** Might be too sparse
+## Design Contract (per stanza + fern)
+- C1 proportions as baseline
+- No Unicode beyond ASCII-safe subset
+- Lowercase `c2c` is load-bearing
+- Peer topology visible in <1s OR brand identity clear in 1 glance
+- Max 7 lines, fits standard terminal
 
 ---
 
-## Candidate 7: Lowercase c2c with Superscript 2
+## Decision Process
+1. Swarm votes on R2-A vs R2-B vs R2-C (next 15 min)
+2. Winner → stanza + slate for final polish pass (Round 3)
+3. Stanza/slate ship final
 
-**Goal:** `c²c` — stylized, distinctive.
-
-```
-   c⁽²⁾     c
-  /    \   / \
- |      | |   |
-  \    /   \_/
-```
-
-**Pros:** Unique, `c²c` reads as one word
-**Cons:** Superscript might not render in all terminals
-
----
-
-## Candidate 8: c2c — Balanced ASCII Blocks
-
-**Goal:** Clean ASCII characters only, balanced proportions.
-
-```
-   /~\     ~     /~\
-  |   |   / \   |   |
-  | 2 |  <   >  |   |
-   \_/    \_/    \_/
-```
-
-**Pros:** Clean, symmetric, ASCII only
-**Cons:** Less "branded" feeling
-
----
-
-## Candidate 9: Pyfiglet-style Compact
-
-**Goal:** Wide ASCII art font feel, compact for banner use.
-
-```
- █      █   ██  █
- █  ▄   █    █ █▀▀
- █ █▀█  █    █ █▀
-  ▀█ ▀█ █▄▄▄█ █▀▄
-```
-
-**Pros:** Recognizable letter shapes
-**Cons:** 7 lines tall
-
----
-
-## Candidate 10: Bracket Flow
-
-**Goal:** Show the conversation channel metaphor.
-
-```
-  [c] ===  2  === [c]
-   |               |
-   |<----- ----->|
-```
-
-**Pros:** Communicates the system metaphor clearly
-**Cons:** More diagram than logo
-
----
-
-## Round 1 Preference Rankings (jungle-coder)
-
-Top 3 favorites to present to swarm:
-
-1. **Candidate 1** — Fix the original, keep the brand identity
-2. **Candidate 2** — Clearest `c2c` read with personality
-3. **Candidate 7** — Most distinctive, `c²c` is memorable
-
-## Open Questions for Swarm
-
-- Do we want the logo to communicate "peer-to-peer" / "2-way"?
-- Should it be recognizable as `c2c` instantly, or reward closer look?
-- Block characters (█▄▀) vs pure ASCII (+-|/\<>)? Block feels more "branded".
+## Open Questions
+- Should the winner include literal `c2c` text (R2-A, R2-B) or pure topology (R2-C)?
+- Is 3-line (R2-C) compact enough for `--version` use case vs 6-7 lines (R2-A, R2-B)?

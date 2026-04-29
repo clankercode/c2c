@@ -498,7 +498,7 @@ let sticker_wall_cmd =
         ("to", `String env.to_);
         ("sticker_id", `String env.sticker_id);
         ("note", `String (Option.value env.note ~default:""));
-        ("scope", `String (match env.scope with `Public -> "public" | `Private -> "private"));
+        ("scope", `String (match env.scope with `Public -> "public" | `Private -> "private" | `Both -> "both"));
         ("ts", `String env.ts);
       ]) stickers in
     Yojson.Safe.pretty_to_channel stdout (`List items);
