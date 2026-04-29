@@ -181,6 +181,19 @@ let generate_alias () =
   in
   loop ()
 
+(* easy-pool alias generation — uses C2c_alias_words.easy_pool (~42 nature-themed
+   words). Generates an alias from the restricted pool. Raises if the pool is
+   too small to form a non-identical pair (structurally impossible with 50+ words). *)
+let generate_alias_easy () =
+  let words = C2c_alias_words.easy_pool in
+  let n = Array.length words in
+  let rec loop () =
+    let w1 = words.(Random.int n) in
+    let w2 = words.(Random.int n) in
+    if w1 = w2 then loop () else Printf.sprintf "%s-%s" w1 w2
+  in
+  loop ()
+
 let generate_session_id () =
   let buf = Buffer.create 36 in
   for _ = 1 to 8 do

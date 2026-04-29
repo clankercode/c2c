@@ -5120,6 +5120,14 @@ let init_cmd =
     Arg.(value & opt (some string) None & info ["relay"]
            ~docv:"URL" ~doc:"Configure and register with a relay at this URL. Prints connector start command as next step.")
   in
+  let easy_pool_flag =
+    Arg.(value & flag & info ["easy-pool"]
+           ~doc:"Generate alias from the easy-pool word subset (52 nature-themed English-readable words) instead of the full 128-word pool.")
+  in
+  let require_easy_flag =
+    Arg.(value & flag & info ["require-easy"]
+           ~doc:"Fail if the auto-generated alias is not from the easy pool. Implies --easy-pool. Use when the agent must have a human-readable alias.")
+  in
   let+ json = json_flag
   and+ client_opt = client_opt
   and+ alias_opt = alias_opt_arg
@@ -5127,7 +5135,9 @@ let init_cmd =
   and+ no_setup = no_setup
   and+ supervisor_opt = supervisor_arg
   and+ supervisor_strategy_opt = supervisor_strategy_arg
-  and+ relay_url = relay_url_arg in
+  and+ relay_url = relay_url_arg
+  and+ easy_pool = easy_pool_flag
+  and+ require_easy = require_easy_flag in
   let output_mode = if json then Json else Human in
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
@@ -5167,10 +5177,23 @@ let init_cmd =
     match alias_opt with
     | Some a -> a
     | None ->
-        let a = match client_resolved with
-          | Some c -> C2c_setup.default_alias_for_client c
-          | None -> C2c_setup.generate_alias ()
+        let use_easy = easy_pool || require_easy in
+        let base_gen_fn = if use_easy then C2c_setup.generate_alias_easy else begin
+          match client_resolved with
+          | Some c -> fun () -> C2c_setup.default_alias_for_client c
+          | None -> fun () -> C2c_setup.generate_alias ()
+        end in
+        let rec loop () =
+          let a = base_gen_fn () in
+          if require_easy then
+            (* Verify the generated alias's both words are in the easy pool. *)
+            let w1, w2 = match String.split_on_char '-' a with [w1; w2] -> (w1, w2) | _ -> ("", "") in
+            let easy = C2c_alias_words.easy_pool in
+            let is_easy w = Array.exists (fun e -> e = w) easy in
+            if is_easy w1 && is_easy w2 then a else loop ()
+          else a
         in
+        let a = loop () in
         Printf.eprintf "[c2c register] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
         a
   in
