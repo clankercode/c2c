@@ -695,13 +695,6 @@ module Broker = struct
          | _ -> false)
     }
 
-  (* Lowercase comparison helper: aliases are case-insensitive for collision
-     detection (lyra-quill and Lyra-Quill are the same identity). The stored
-     alias preserves original case; this only affects lookups.
-     Hoisted above [load_registrations] so the case-fold invariant check
-     in [save_registrations] can reach it (#432). *)
-  let alias_casefold s = String.lowercase_ascii s
-
   let load_registrations t =
     ensure_root t;
     match read_json_file (registry_path t) ~default:(`List []) with
@@ -711,71 +704,8 @@ module Broker = struct
         regs
     | _ -> []
 
-  (* #432: invariant — among ALIVE registrations, no two rows may share
-     a case-folded alias. We only WARN (broker.log + stderr) — not
-     reject — so partial-upgrade scenarios where the registry has
-     pre-existing duplicates can heal themselves rather than wedge.
-     Surfacing the duplicate is enough to point the next investigator
-     at the resurrection bug class (galaxy-coder DM-misdelivery shape).
-     Note: [registration_is_alive] depends on /proc + the lease table,
-     so this check fires lazily — a stale row that the OS will GC will
-     also stop tripping the invariant. *)
-  let check_alias_casefold_invariant t regs =
-    (* Inline liveness predicate — [registration_is_alive] is defined
-       further down the module and depends on /proc/lease lookups; we
-       only need a cheap "this row's pid still exists" check here. We
-       intentionally exclude pid=None rows (legacy pidless / human
-       sessions) from the duplicate-check: they cannot meaningfully
-       compete for an alias with a real pidful registration. *)
-    let alive_for_invariant reg =
-      match reg.pid with
-      | None -> false
-      | Some pid -> Sys.file_exists ("/proc/" ^ string_of_int pid)
-    in
-    let alive = List.filter alive_for_invariant regs in
-    let tbl = Hashtbl.create 16 in
-    let dups = ref [] in
-    List.iter
-      (fun r ->
-        let key = String.lowercase_ascii r.alias in
-        match Hashtbl.find_opt tbl key with
-        | None -> Hashtbl.add tbl key r
-        | Some prior -> dups := (key, prior, r) :: !dups)
-      alive;
-    if !dups <> [] then begin
-      try
-        let path = Filename.concat t.root "broker.log" in
-        let ts = Unix.gettimeofday () in
-        List.iter
-          (fun (key, prior, r) ->
-            let line =
-              `Assoc
-                [ ("ts", `Float ts)
-                ; ("event", `String "alias_casefold_invariant_violated")
-                ; ("alias_casefold", `String key)
-                ; ("alias_a", `String prior.alias)
-                ; ("session_id_a", `String prior.session_id)
-                ; ("alias_b", `String r.alias)
-                ; ("session_id_b", `String r.session_id)
-                ]
-              |> Yojson.Safe.to_string
-            in
-            (try
-               let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-               output_string oc (line ^ "\n");
-               close_out oc
-             with _ -> ());
-            Printf.eprintf
-              "[Broker.save_registrations] WARN: case-fold alias collision among alive rows: \
-               alias_casefold=%S (alias_a=%S session_a=%S, alias_b=%S session_b=%S)\n%!"
-              key prior.alias prior.session_id r.alias r.session_id)
-          !dups
-      with _ -> ()
-    end
-
   let save_registrations t regs =
     ensure_root t;
-    check_alias_casefold_invariant t regs;
     write_json_file (registry_path t) (`List (List.map registration_to_json regs))
 
   let pending_permissions_path t = Filename.concat t.root "pending_permissions.json"
@@ -1298,44 +1228,9 @@ module Broker = struct
       t ~session_id
 
   let resolve_live_session_id_by_alias t alias =
-    (* #432: case-insensitive alias match. Mirrors the eviction predicate
-       at register-time (see [alias_casefold] usage at L1572) so a stale
-       row whose alias differs from [alias] only in case is found by both
-       resolver lookups AND eviction sweeps. Without this symmetry, the
-       pid-refresh self-heal below could resurrect a stale row that the
-       new register would have evicted. *)
-    let target = alias_casefold alias in
     let matches =
-      load_registrations t
-      |> List.filter (fun reg -> alias_casefold reg.alias = target)
+      load_registrations t |> List.filter (fun reg -> reg.alias = alias)
     in
-    (* #432: silent multi-match on alive rows is the smoking gun for the
-       galaxy-coder-style misdelivery. Log it so the next investigator
-       has a breadcrumb. *)
-    let alive_count =
-      List.fold_left
-        (fun acc r -> if registration_is_alive r then acc + 1 else acc)
-        0 matches
-    in
-    if alive_count > 1 then begin
-      try
-        let path = Filename.concat t.root "broker.log" in
-        let ts = Unix.gettimeofday () in
-        let line =
-          `Assoc
-            [ ("ts", `Float ts)
-            ; ("event", `String "alias_resolve_multi_match")
-            ; ("alias", `String alias)
-            ; ("alive_count", `Int alive_count)
-            ; ("total_matches", `Int (List.length matches))
-            ]
-          |> Yojson.Safe.to_string
-        in
-        let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-        (try output_string oc (line ^ "\n"); close_out oc
-         with _ -> close_out_noerr oc)
-      with _ -> ()
-    end;
     match matches with
     | [] ->
         if debug_enabled then Printf.eprintf "[DEBUG resolve] alias=%s -> Unknown_alias (no matches)\n%!" alias;
@@ -1645,6 +1540,11 @@ module Broker = struct
         save_registrations t (cleared @ to_keep);
         List.length cleared
       end)
+
+  (* Lowercase comparison helper: aliases are case-insensitive for collision
+     detection (lyra-quill and Lyra-Quill are the same identity). The stored
+     alias preserves original case; this only affects lookups. *)
+  let alias_casefold s = String.lowercase_ascii s
 
   (* Suggest a free alias by appending the next prime suffix.
      Case-insensitive: colliding with a case-variant gets a prime suffix. *)
@@ -4929,21 +4829,16 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
                  let content = (tag_to_body_prefix tag_opt) ^ content in
 let ts = Unix.gettimeofday () in
                   let effective_content =
-                    (* #432: case-insensitive alias matching mirrors
-                       [resolve_live_session_id_by_alias] so the
-                       enc-pubkey lookup cannot disagree with the
-                       inbox-write target. *)
-                    let to_alias_cf = Broker.alias_casefold to_alias in
                     let recipient_reg =
                       Broker.list_registrations broker
-                      |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf)
+                      |> List.find_opt (fun r -> r.alias = to_alias)
                     in
                     match recipient_reg with
                     | Some _ -> `Plain content
                     | None ->
                       let recipient_reg =
                         Broker.list_registrations broker
-                        |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf && r.enc_pubkey <> None)
+                        |> List.find_opt (fun r -> r.alias = to_alias && r.enc_pubkey <> None)
                       in
                       match recipient_reg with
                       | None -> `Plain content
@@ -5071,20 +4966,15 @@ let ts = Unix.gettimeofday () in
                             | Some sid -> Broker.touch_session broker ~session_id:sid
                             | None -> ()));
                         let ts = Unix.gettimeofday () in
-                        (* #432: case-insensitive alias match for sidebar
-                           lookups; otherwise dnd / compacting status can be
-                           read from a different row than the one
-                           [enqueue_message] writes to. *)
-                        let to_alias_cf = Broker.alias_casefold to_alias in
                         let recipient_dnd =
                           match Broker.list_registrations broker
-                                |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf) with
+                                |> List.find_opt (fun r -> r.alias = to_alias) with
                           | Some r -> Broker.is_dnd broker ~session_id:r.session_id
                           | None -> false
                         in
                         let recipient_compacting =
                           match Broker.list_registrations broker
-                                |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf) with
+                                |> List.find_opt (fun r -> r.alias = to_alias) with
                           | Some r ->
                               (match Broker.is_compacting broker ~session_id:r.session_id with
                                | Some c ->
