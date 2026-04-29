@@ -1,17 +1,6 @@
 (* Unit tests for parse_reaction_content *)
 open Alcotest
 
-(* Debug: simple test that just prints result *)
-let test_debug () =
-  let content = "<c2c event=\"reaction\" from=\"alice\" target_msg_id=\"abc12345\" sticker_id=\"thumbsup\"/>" in
-  let result = C2c_stickers.parse_reaction_content content in
-  Alcotest.fail
-    (match result with
-     | None -> "DEBUG: returned None"
-     | Some (ra, sid, tmid, note) ->
-         Printf.sprintf "DEBUG: ra=%S sid=%S tmid=%S note=%S" ra sid tmid
-           (match note with None -> "None" | Some n -> n))
-
 let parse_ok content expected_ra expected_sid expected_tmid expected_note =
   match C2c_stickers.parse_reaction_content content with
   | None -> failwith "parse_reaction_content returned None"
@@ -27,13 +16,9 @@ let parse_fail content =
   | Some _ -> failwith "parse_reaction_content should have returned None"
 
 let test_well_formed () =
-  let content = "<c2c event=\"reaction\" from=\"alice\" target_msg_id=\"abc12345\" sticker_id=\"thumbsup\"/>" in
-  let result = C2c_stickers.parse_reaction_content content in
-  Printf.printf "DEBUG content=%S\n%!" content;
-  (match result with
-   | None -> Alcotest.fail "parse_reaction_content returned None"
-   | Some (ra, sid, tmid, note) ->
-       Printf.printf "DEBUG result: ra=%S sid=%S tmid=%S note=%S\n%!" ra sid tmid (match note with None -> "None" | Some n -> n))
+  parse_ok
+    "<c2c event=\"reaction\" from=\"alice\" target_msg_id=\"abc12345\" sticker_id=\"thumbsup\"/>"
+    "alice" "thumbsup" "abc12345" None
 
 let test_well_formed_with_note () =
   parse_ok

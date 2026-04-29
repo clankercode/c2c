@@ -330,56 +330,55 @@ let build_reaction_xml ~from_alias ~target_msg_id ~sticker_id ~emoji ~note =
     Some (reactor_alias, sticker_id, target_msg_id, note) if the content is a
     <c2c event="reaction" .../> tag. *)
 let parse_reaction_content (content : string) : (string * string * string * string option) option =
-  if not (String.length content >= 6 &&
-          String.sub content 0 6 = "<c2c " &&
-          String.sub content (String.length content - 2) 2 = "/>")
+  if String.length content < 7 ||
+     String.sub content 0 5 <> "<c2c " ||
+     String.sub content (String.length content - 2) 2 <> "/>"
   then None
   else
-    (* Custom scanner: find key="value" pairs by scanning for '=' and '"'.
-       Avoids OCaml Str regex complexities with escape sequences. *)
-    let rec scan_attr pos attrs =
-      if pos >= String.length content then attrs
+    (* Collect all key="value" pairs by scanning for '=' then finding the
+       surrounding '"' characters. Simple and robust — no regex needed. *)
+    let rec scan pos attrs =
+      if pos >= String.length content then List.rev attrs
       else
-        (* Skip to next '=' *)
         match String.index_from content pos '=' with
+        | exception Not_found -> List.rev attrs
         | eq_pos ->
-            (* Check the char before '=' is a valid identifier char *)
-            let key_start = eq_pos - 1 in
-            if key_start < pos then scan_attr (eq_pos + 1) attrs
+            (* Scan backwards from eq_pos-1 to find valid identifier start *)
+            let rec key_start i =
+              if i < 0 then 0
+              else match content.[i] with
+                   | 'a'..'z' | 'A'..'Z' | '0'..'9' | '_' -> key_start (i - 1)
+                   | _ -> i + 1
+            in
+            let ks = key_start (eq_pos - 1) in
+            let key = String.sub content ks (eq_pos - ks) in
+            (* Next char after '=' must be '"' *)
+            let vp = eq_pos + 1 in
+            if vp >= String.length content || content.[vp] <> '"' then
+              scan (eq_pos + 1) attrs
             else
-              let c = content.[key_start] in
-              if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c = '_' then
-                (* Scan back to find start of identifier *)
-                let rec key_start_of i =
-                  if i < 0 then 0
-                  else let c = content.[i] in
-                    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                       (c >= '0' && c <= '9') || c = '_' then key_start_of (i - 1)
-                    else i + 1
-                in
-                let ks = key_start_of key_start in
-                let key = String.sub content ks (key_start - ks) in
-                (* Next char after '=' must be '"' *)
-                let after_eq = eq_pos + 1 in
-                if after_eq >= String.length content || content.[after_eq] <> '"' then
-                  scan_attr (eq_pos + 1) attrs
-                else
-                  (* Find closing '"' *)
-                  let rec find_close cpos =
-                    if cpos >= String.length content then None
-                    else if content.[cpos] = '"' then Some cpos
-                    else find_close (cpos + 1)
-                  in
-                  (match find_close (after_eq + 1) with
-                   | None -> scan_attr (eq_pos + 1) attrs
-                   | Some close_pos ->
-                       let value = String.sub content (after_eq + 1) (close_pos - after_eq - 1) in
-                       let attrs' = (key, value) :: attrs in
-                       scan_attr (close_pos + 1) attrs')
-              else scan_attr (eq_pos + 1) attrs
-        | exception Not_found -> attrs
+              (* Find closing '"' *)
+              let rec find_close c =
+                if c >= String.length content then None
+                else if content.[c] = '"' then
+                  (* Heuristic: if this quote is followed by '/' or ' ' then '/', 
+                     it's likely the real attribute closer. If followed by ';' it's 
+                     likely inside an entity like &quot; and should be skipped. *)
+                  if c + 1 < String.length content then
+                    match content.[c + 1] with
+                    | '/' | ' ' -> Some c
+                    | ';' -> find_close (c + 1)
+                    | _ -> Some c
+                  else Some c
+                else find_close (c + 1)
+              in
+              match find_close (vp + 1) with
+              | None -> scan (eq_pos + 1) attrs
+              | Some close ->
+                  let value = String.sub content (vp + 1) (close - vp - 1) in
+                  scan (close + 1) ((key, value) :: attrs)
     in
-    let attrs = scan_attr 0 [] in
+    let attrs = scan 0 [] in
     let get key = List.assoc_opt key attrs in
     match get "event" with
     | Some "reaction" ->
