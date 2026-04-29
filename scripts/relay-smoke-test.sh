@@ -202,6 +202,47 @@ else
 fi
 echo ""
 
+# 9. Heartbeat (peer-route auth classification)
+# Per smoke-coverage audit (cairn 2026-04-29), gap A: /heartbeat regression
+# would silently break nudge cadence + /list freshness with no PASS/FAIL signal.
+# In prod, /heartbeat is a peer route requiring Ed25519 (relay.ml:2596-2602).
+# Bash can't replicate Ed25519 signing without reimplementing crypto, so this
+# section asserts the route is correctly classified as a peer route by hitting
+# it unsigned and expecting HTTP 401 with the spec-§5.1 error message.
+# Coverage: catches reclassification to admin (would say "Bearer token") or
+# self-auth (would 200/400) and catches auth-spec error-message drift. Does
+# NOT catch route-deletion alone (auth runs before routing — unknown paths
+# also 401). A signed-call PASS is a follow-up gated on `c2c relay heartbeat`
+# CLI (audit Proposal A note).
+echo "--- 9. Heartbeat (route presence + auth classification) ---"
+hb_node="cli-$ALIAS"
+hb_session="cli-$ALIAS"
+hb_resp=$(curl -s -o /tmp/hb_body.$$ -w "%{http_code}" -X POST "$RELAY/heartbeat" \
+  -H "content-type: application/json" \
+  -d "{\"node_id\":\"$hb_node\",\"session_id\":\"$hb_session\"}" 2>/dev/null) || true
+hb_body=$(cat /tmp/hb_body.$$ 2>/dev/null || echo "")
+rm -f /tmp/hb_body.$$
+echo "  HTTP $hb_resp: $hb_body"
+if [ "$hb_resp" = "401" ] && echo "$hb_body" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+err = d.get('error') or ''
+# Peer-route message comes from auth_decision (relay.ml:2602):
+#   'peer route requires Ed25519 auth (spec §5.1)'
+# Admin-route reclassification would say 'Bearer token' instead.
+sys.exit(0 if (
+    d.get('ok') is False
+    and d.get('error_code') == 'unauthorized'
+    and 'Ed25519' in err
+    and 'peer route' in err
+) else 1)
+" 2>/dev/null; then
+  green "heartbeat is a peer route (HTTP 401, Ed25519-required, spec §5.1)"
+else
+  red "heartbeat auth classification regressed (got HTTP $hb_resp; expected 401 + peer-route message)"
+fi
+echo ""
+
 # Summary
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]
