@@ -88,8 +88,11 @@ else
   TOKEN="ka_${payload_hash}_$(date +%s%N)"
 fi
 
-# Build the DM body the reviewer sees.  The reply syntax we expect is
-# any DM whose content contains the token plus "allow" or "deny".
+# Build the DM body the reviewer sees. Slice-5a preferred reply path is
+# `c2c approval-reply <token> {allow|deny [because <reason>]}`. The
+# legacy raw-DM path (c2c send <kimi-alias> "<TOKEN> allow") still works
+# but races the notifier-daemon drain and may not be seen — we keep it
+# in the hint as a fallback for MCP-only flows.
 body="$(cat <<EOF
 [kimi-approval] PreToolUse:
   tool: $tool_name
@@ -97,7 +100,11 @@ body="$(cat <<EOF
   token: $TOKEN
   timeout: ${TIMEOUT}s
 
-Reply with:
+Approve via:
+  c2c approval-reply $TOKEN allow
+  c2c approval-reply $TOKEN deny because <reason>
+
+Legacy fallback (may race drain — prefer approval-reply):
   c2c send <kimi-alias> "$TOKEN allow"
   c2c send <kimi-alias> "$TOKEN deny because <reason>"
 EOF
