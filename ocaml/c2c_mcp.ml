@@ -4873,6 +4873,28 @@ let resolve_session_id ?session_id_override arguments =
             | Some session_id -> session_id
             | None -> invalid_arg "missing session_id"))
 
+(* [#432 §3] [with_session] — kills the 14× resolve+touch boilerplate.
+   Resolves the session id (honoring the `session_id` argument > override
+   > env-derived precedence enforced by [resolve_session_id]), stamps
+   [last_activity_ts] via [Broker.touch_session], then runs [f
+   ~session_id]. The label is `~session_id_override` (required,
+   matching [handle_tool_call]) so the option is forwarded explicitly.
+   [with_session_lwt] is the same combinator with an [_ Lwt.t] return
+   type for handlers in the dispatch chain. *)
+let with_session ~session_id_override broker arguments f =
+  let session_id =
+    resolve_session_id ?session_id_override:session_id_override arguments
+  in
+  Broker.touch_session broker ~session_id;
+  f ~session_id
+
+let with_session_lwt ~session_id_override broker arguments f =
+  let session_id =
+    resolve_session_id ?session_id_override:session_id_override arguments
+  in
+  Broker.touch_session broker ~session_id;
+  f ~session_id
+
 let current_registered_alias ?session_id_override broker =
   match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
   | None -> None
@@ -5719,9 +5741,8 @@ let ts = Unix.gettimeofday () in
           ~content:"poll_inbox: session_id argument does not match caller's MCP session (C2C_MCP_SESSION_ID)"
           ~is_error:true)
       else begin
-      let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
+      with_session_lwt ~session_id_override broker arguments (fun ~session_id ->
       Broker.confirm_registration broker ~session_id;
-      Broker.touch_session broker ~session_id;
       let messages = Broker.drain_inbox ~drained_by:"poll_inbox" broker ~session_id in
       let our_x25519 =
         match List.find_opt (fun r -> r.session_id = session_id) (Broker.list_registrations broker) with
@@ -5746,7 +5767,7 @@ let ts = Unix.gettimeofday () in
         `Assoc base
       in
       let content = `List (List.map process_msg messages) |> Yojson.Safe.to_string in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_result ~content ~is_error:false))
       end
   | "peek_inbox" ->
       (* Like poll_inbox but does not drain. Resolves session_id from
@@ -5929,7 +5950,6 @@ let ts = Unix.gettimeofday () in
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "set_dnd" ->
-      let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
       let on =
         try
           match bool_of_arg (Yojson.Safe.Util.member "on" arguments) with
@@ -5945,7 +5965,7 @@ let ts = Unix.gettimeofday () in
           | _ -> None
         with _ -> None
       in
-      Broker.touch_session broker ~session_id;
+      with_session_lwt ~session_id_override broker arguments (fun ~session_id ->
       let new_dnd = Broker.set_dnd broker ~session_id ~dnd:on ?until:until_epoch () in
       let content =
         (match new_dnd with
@@ -5955,10 +5975,9 @@ let ts = Unix.gettimeofday () in
              `Assoc [ ("ok", `Bool true); ("dnd", `Bool dnd_val) ])
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_result ~content ~is_error:false))
   | "dnd_status" ->
-      let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
-      Broker.touch_session broker ~session_id;
+      with_session_lwt ~session_id_override broker arguments (fun ~session_id ->
       let reg_opt =
         Broker.list_registrations broker
         |> List.find_opt (fun r -> r.session_id = session_id)
@@ -5983,14 +6002,13 @@ let ts = Unix.gettimeofday () in
              `Assoc fields)
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_result ~content ~is_error:false))
   | "join_room" ->
       let room_id = string_member "room_id" arguments in
       (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "join_room")
        | Some alias ->
-           let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
-           Broker.touch_session broker ~session_id;
+           with_session_lwt ~session_id_override broker arguments (fun ~session_id ->
            let members = Broker.join_room broker ~room_id ~alias ~session_id in
            let history_limit =
              match Broker.int_opt_member "history_limit" arguments with
@@ -6022,7 +6040,7 @@ let ts = Unix.gettimeofday () in
                ]
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false))
+           Lwt.return (tool_result ~content ~is_error:false)))
   | "leave_room" ->
       let room_id = string_member "room_id" arguments in
       (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
@@ -6045,8 +6063,7 @@ let ts = Unix.gettimeofday () in
                           alias conflict.session_id)
                      ~is_error:true)
             | None ->
-           let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
-           Broker.touch_session broker ~session_id;
+           with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
            let members = Broker.leave_room broker ~room_id ~alias in
            let content =
              `Assoc
@@ -6061,7 +6078,7 @@ let ts = Unix.gettimeofday () in
                ]
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false)))
+           Lwt.return (tool_result ~content ~is_error:false))))
   | "delete_room" ->
       let room_id = string_member "room_id" arguments in
       let force =
@@ -6132,8 +6149,7 @@ let ts = Unix.gettimeofday () in
                           from_alias conflict.session_id)
                      ~is_error:true)
             | None ->
-                let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
-                Broker.touch_session broker ~session_id;
+                with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
                 let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
                   Broker.send_room ?tag:parsed_tag broker ~from_alias ~room_id ~content
                 in
@@ -6147,7 +6163,7 @@ let ts = Unix.gettimeofday () in
                     ]
                   |> Yojson.Safe.to_string
                 in
-                Lwt.return (tool_ok result_json))))
+                Lwt.return (tool_ok result_json)))))
   | "list_rooms" ->
       let rooms = Broker.list_rooms broker in
       (* H2 rooms-acl: filter invite-only rooms the caller can't see.
@@ -6297,8 +6313,7 @@ let ts = Unix.gettimeofday () in
                           from_alias conflict.session_id)
                      ~is_error:true)
             | None ->
-                let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
-                Broker.touch_session broker ~session_id;
+                with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
                 Broker.send_room_invite broker ~room_id ~from_alias ~invitee_alias;
                 let content =
                   `Assoc
@@ -6308,7 +6323,7 @@ let ts = Unix.gettimeofday () in
                     ]
                   |> Yojson.Safe.to_string
                 in
-                Lwt.return (tool_result ~content ~is_error:false)))
+                Lwt.return (tool_result ~content ~is_error:false))))
   | "set_room_visibility" ->
       let room_id = string_member "room_id" arguments in
       let visibility_str = string_member "visibility" arguments in
@@ -6331,8 +6346,7 @@ let ts = Unix.gettimeofday () in
                           from_alias conflict.session_id)
                      ~is_error:true)
              | None ->
-                 let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
-                 Broker.touch_session broker ~session_id;
+                 with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
                  Broker.set_room_visibility broker ~room_id ~from_alias ~visibility;
                  let content =
                    `Assoc
@@ -6345,7 +6359,7 @@ let ts = Unix.gettimeofday () in
                     ]
                   |> Yojson.Safe.to_string
                  in
-                 Lwt.return (tool_result ~content ~is_error:false)))
+                 Lwt.return (tool_result ~content ~is_error:false))))
   | "open_pending_reply" ->
       let perm_id = string_member "perm_id" arguments in
       let kind_str = string_member "kind" arguments in
@@ -6359,8 +6373,7 @@ let ts = Unix.gettimeofday () in
               items
         | _ -> []
       in
-      let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
-      Broker.touch_session broker ~session_id;
+      with_session_lwt ~session_id_override broker arguments (fun ~session_id ->
       (* [#432 Slice B / Finding 4-B1] reject unregistered callers.
          Previously the handler set requester_alias="" on miss and
          wrote the entry anyway, which (a) is meaningless audit data
@@ -6446,7 +6459,7 @@ let ts = Unix.gettimeofday () in
            ~content:(Printf.sprintf
              "open_pending_reply rejected: %s. Wait for in-flight entries to expire (default TTL 600s) or coordinate with the holder."
              kind_str)
-           ~is_error:true)))
+           ~is_error:true))))
   | "check_pending_reply" ->
       let perm_id = string_member "perm_id" arguments in
       (* [#432 Slice B / Finding 4-B2] derive reply_from_alias from the
@@ -6458,8 +6471,7 @@ let ts = Unix.gettimeofday () in
          The legacy [reply_from_alias] argument is silently ignored if
          provided. The schema (with DEPRECATED marker) is now the
          migration channel. *)
-      let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
-      Broker.touch_session broker ~session_id;
+      with_session_lwt ~session_id_override broker arguments (fun ~session_id ->
       let reply_from_alias =
         match List.find_opt (fun r -> r.session_id = session_id)
                 (Broker.list_registrations broker) with
@@ -6537,7 +6549,7 @@ let ts = Unix.gettimeofday () in
             |> Yojson.Safe.to_string
             in
             Lwt.return (tool_result ~content ~is_error:false)
-          end)
+          end))
   | "set_compact" ->
       (match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
        | None ->

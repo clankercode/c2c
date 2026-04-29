@@ -9606,6 +9606,105 @@ let test_peer_pass_dm_h2b_missing_artifact_allows_dm () =
       let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"h2b-ms-r" in
       check int "missing-artifact peer-pass DM is enqueued" 1 (List.length inbox))
 
+(* ───────────────────── #432 §3 with_session helper ───────────────────── *)
+
+let test_with_session_calls_f_with_resolved_session_id () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"with-session-test-a" ~alias:"alpha-bravo"
+        ~pid:None ~pid_start_time:None ();
+      (* No "session_id" arg — must fall back to override. *)
+      let arguments = `Assoc [] in
+      let observed = ref None in
+      C2c_mcp.with_session
+        ~session_id_override:(Some "with-session-test-a") broker arguments
+        (fun ~session_id -> observed := Some session_id);
+      check (option string) "f received the resolved session_id"
+        (Some "with-session-test-a") !observed;
+      (* Argument override beats the env-derived id (mirrors
+         resolve_session_id's precedence: argument > override > env). *)
+      let observed2 = ref None in
+      let args_with_sid =
+        `Assoc [ ("session_id", `String "with-session-test-a") ]
+      in
+      C2c_mcp.with_session
+        ~session_id_override:(Some "ignored-because-arg-present") broker
+        args_with_sid
+        (fun ~session_id -> observed2 := Some session_id);
+      check (option string) "argument session_id wins over override"
+        (Some "with-session-test-a") !observed2)
+
+let test_with_session_touches_session_before_calling_f () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let sid = "with-session-touch-a" in
+      C2c_mcp.Broker.register broker ~session_id:sid ~alias:"touch-probe"
+        ~pid:None ~pid_start_time:None ();
+      let last_activity_of sid =
+        C2c_mcp.Broker.list_registrations broker
+        |> List.find_opt (fun (r : C2c_mcp.registration) ->
+               r.session_id = sid)
+        |> (function Some r -> r.last_activity_ts | None -> None)
+      in
+      (* Pre-call: register does not stamp last_activity_ts. *)
+      check bool "last_activity_ts unset before with_session" true
+        (last_activity_of sid = None);
+      (* Inside f: touch must already have run, so last_activity_ts is
+         a Some _. We assert this from inside f to nail down ordering. *)
+      let inside = ref None in
+      C2c_mcp.with_session ~session_id_override:(Some sid) broker
+        (`Assoc []) (fun ~session_id ->
+          inside := last_activity_of session_id);
+      (match !inside with
+       | None ->
+           Alcotest.fail
+             "touch_session must run BEFORE f — last_activity_ts was \
+              still None inside f"
+       | Some _ -> ());
+      (* Post-call sanity. *)
+      check bool "last_activity_ts is Some after with_session" true
+        (last_activity_of sid <> None))
+
+let test_with_session_forwards_override () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let sid_a = "with-session-fwd-a" in
+      let sid_b = "with-session-fwd-b" in
+      C2c_mcp.Broker.register broker ~session_id:sid_a ~alias:"alpha"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:sid_b ~alias:"beta"
+        ~pid:None ~pid_start_time:None ();
+      (* No "session_id" argument; override picks the recipient. *)
+      let observed = ref None in
+      C2c_mcp.with_session ~session_id_override:(Some sid_b) broker
+        (`Assoc []) (fun ~session_id -> observed := Some session_id);
+      check (option string)
+        "override sid_b is the resolved session_id when no arg"
+        (Some sid_b) !observed;
+      (* Override is honored even when the override session_id does not
+         match the env-derived one. resolve_session_id's contract:
+         argument > override > env; we verified arg-wins above; here we
+         check override vs env by passing None as override and ensuring
+         no env-derived id is consulted (would raise). The flow we care
+         about: handle_tool_call passes its env-derived id as
+         session_id_override, so a Some _ override always shadows the
+         caller env in the wrapping helper. *)
+      let raised =
+        try
+          C2c_mcp.with_session ~session_id_override:None broker
+            (`Assoc []) (fun ~session_id:_ -> ());
+          false
+        with Invalid_argument _ -> true
+      in
+      (* In a unit-test process there is typically no
+         CLAUDE_SESSION_ID/C2C_MCP_SESSION_ID set, so resolve_session_id
+         falls through to invalid_arg. If the host env happens to set
+         one we accept either outcome — the contract under test is "with
+         override=Some _, override is forwarded", which is checked
+         positively above. *)
+      ignore raised)
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -10152,4 +10251,10 @@ let () =
                test_peer_pass_dm_h2b_sha_mismatch_rejected
            ; test_case "H2b: missing artifact still allows the DM" `Quick
                test_peer_pass_dm_h2b_missing_artifact_allows_dm
+           ; test_case "#432 §3 with_session calls f with resolved session_id" `Quick
+               test_with_session_calls_f_with_resolved_session_id
+           ; test_case "#432 §3 with_session touches session before calling f" `Quick
+               test_with_session_touches_session_before_calling_f
+           ; test_case "#432 §3 with_session forwards session_id_override" `Quick
+               test_with_session_forwards_override
            ] ) ]

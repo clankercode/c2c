@@ -419,6 +419,38 @@ val notify_shared_with_recipients :
 
 val channel_notification : ?role:string option -> message -> Yojson.Safe.t
 val decrypt_message_for_push : message -> alias:string -> message
+
+val resolve_session_id :
+  ?session_id_override:string -> Yojson.Safe.t -> string
+(** [resolve_session_id ?session_id_override arguments] returns the session
+    id from (in order) the [session_id] string field of [arguments], the
+    [session_id_override] (typically the per-RPC env-derived id), or
+    [current_session_id ()]. Raises [Invalid_argument "missing session_id"]
+    when no source resolves. Exposed for [#432 §3] — keeps the resolution
+    contract testable. *)
+
+val with_session :
+  session_id_override:string option ->
+  Broker.t ->
+  Yojson.Safe.t ->
+  (session_id:string -> 'a) ->
+  'a
+(** [with_session ~session_id_override broker arguments f] resolves the
+    session id (see [resolve_session_id]), stamps [last_activity_ts] via
+    [Broker.touch_session], then runs [f ~session_id]. The label is
+    required (option-typed) to mirror [handle_tool_call]'s shape. Pure-OCaml
+    handlers and tests use this combinator; Lwt-returning handlers use
+    [with_session_lwt]. [#432 §3]. *)
+
+val with_session_lwt :
+  session_id_override:string option ->
+  Broker.t ->
+  Yojson.Safe.t ->
+  (session_id:string -> 'a Lwt.t) ->
+  'a Lwt.t
+(** Lwt-returning variant of [with_session]; see that function for the
+    contract. The body [f] is invoked AFTER the touch has been stamped. *)
+
 val session_id_from_env : ?client_type:string -> unit -> string option
 (** Resolve the current broker session id from the ambient client env. Prefers
     explicit c2c-managed ids and falls back to harness-native ids when safe. *)
