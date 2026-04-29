@@ -10358,7 +10358,6 @@ let () =
                test_peer_pass_dm_h2b_rotated_key_rejected
            ; test_case "H2b: first-seen pin allows the DM" `Quick
                test_peer_pass_dm_h2b_first_seen_allowed
-<<<<<<< HEAD
             ; test_case "H2b: artifact sha != claim sha is rejected" `Quick
                 test_peer_pass_dm_h2b_sha_mismatch_rejected
             ; test_case "H2b: missing artifact still allows the DM" `Quick

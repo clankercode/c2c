@@ -3182,7 +3182,7 @@ module Broker = struct
                      with_inbox_lock t ~session_id (fun () ->
                          let current = load_inbox t ~session_id in
                          let next =
-                           current @ [ { from_alias; to_alias = tagged_to; content = prefixed_content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false } ]
+                            current @ [ { from_alias; to_alias = tagged_to; content = prefixed_content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None } ]
                          in
                          save_inbox t ~session_id next);
                      delivered := m.rm_alias :: !delivered
