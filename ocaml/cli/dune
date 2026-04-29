@@ -80,3 +80,6 @@
  (name test_c2c_stickers)
  (modules test_c2c_stickers c2c_stickers c2c_signing_helpers c2c_utils c2c_broker_root_check)
  (libraries c2c_mcp alcotest cmdliner yojson base64 mirage-crypto-rng mirage-crypto-rng.unix unix))
+ (name test_c2c_stickers)
+ (modules test_c2c_stickers c2c_stickers c2c_signing_helpers c2c_utils c2c_broker_root_check)
+ (libraries c2c_mcp alcotest cmdliner yojson base64 mirage-crypto-rng mirage-crypto-rng.unix unix))
