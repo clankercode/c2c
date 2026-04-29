@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # check-broker-log-catalog.sh — enforce broker-log-events.md completeness
 #
-# FAIL conditions:
+# FAIL conditions (either blocks CI):
 #   - any `"event", `String "<name>"` emitter in ocaml/ (excluding tests
 #     + the explicit out-of-scope allow-list below) is missing a catalog
 #     entry in .collab/runbooks/broker-log-events.md
-#   - WARN (rc=0): a catalog entry has no corresponding emitter in
-#     ocaml/ (catalog drift; possibly removed event)
+#   - any catalog entry has no corresponding emitter in ocaml/
+#     (catalog drift; reverse check catches stale entries from
+#     unimplemented features — was WARN pre-2026-04-29)
 #
 # Usage:
 #   ./scripts/check-broker-log-catalog.sh        # check + report
@@ -125,11 +126,12 @@ else
   fi
 
   if [[ ${#stale[@]} -gt 0 ]]; then
-    echo "⚠️  WARN: ${#stale[@]} cataloged event(s) with no source emitter:"
+    echo "❌ FAIL: ${#stale[@]} cataloged event(s) with no source emitter:"
     for c in "${stale[@]}"; do
       echo "   - $c"
     done
-    echo "   (catalog drift; verify the event was intentionally removed)"
+    echo "   (catalog drift; these events have no emitter — do NOT add to catalog"
+    echo "    without also adding the source log function in the same slice)"
     echo ""
   fi
 
@@ -141,9 +143,9 @@ else
     echo ""
   fi
 
-  if [[ ${#missing[@]} -eq 0 ]]; then
+  if [[ ${#missing[@]} -eq 0 && ${#stale[@]} -eq 0 ]]; then
     echo "✅ catalog complete."
   fi
 fi
 
-exit $([[ ${#missing[@]} -eq 0 ]] && echo 0 || echo 1)
+exit $([[ ${#missing[@]} -eq 0 && ${#stale[@]} -eq 0 ]] && echo 0 || echo 1)

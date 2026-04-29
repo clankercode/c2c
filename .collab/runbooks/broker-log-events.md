@@ -31,10 +31,16 @@ introduced it.
 ## Updating this doc
 
 Whenever you add a new emitter that writes to `broker.log`, add an
-entry here in the same commit. The slice peer-PASS rubric checks
-`grep -rn '"event", \`String' ocaml/` against this catalog (#324
-docs-up-to-date check). FAIL any slice that adds an event without a
-catalog entry.
+entry here in the same commit. The `check-broker-log-catalog.sh` script
+(#442) enforces both directions:
+
+- **FAIL**: any `"event", `String "<name>"` emitter in `ocaml/` (production
+  code) is missing a catalog entry.
+- **FAIL**: any catalog entry has no corresponding emitter in `ocaml/`
+  (reverse check catches stale entries from unimplemented features).
+
+WARN is no longer emitted for stale entries — they are a CI gate so
+they don't regress silently.
 
 ---
 
@@ -52,6 +58,7 @@ catalog entry.
 | `peer_pass_pin_rotate_unauth` | HIGH | TOFU rotation reject | #432 TOFU 4 |
 | `version_downgrade_rejected` | CRIT | relay-crypto | CRIT-1 Slice B-min-version |
 | `relay_e2e_pin_mismatch` | CRIT | relay-crypto | CRIT-1 Slice B follow-up |
+| `relay_e2e_register_pin_mismatch` | CRIT | relay-crypto | CRIT-2 |
 | `pending_open` | MED | permission flow | #432 Slice D |
 | `pending_check` | MED | permission flow | #432 Slice D |
 | `pending_cap_reject` | HIGH | permission flow capacity | #432 Slice C |
@@ -389,6 +396,44 @@ also shows `enc_status: "key-changed"`.
 
 **Cross-link**: CRIT-1 Slice B follow-up; pairs with
 `peer_pass_pin_rotate_unauth` for the rotation-attempt side.
+
+---
+
+### `relay_e2e_register_pin_mismatch`
+
+**Severity**: CRIT
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "relay_e2e_register_pin_mismatch",
+  "alias": "<sender-alias>",
+  "key_class": "<ed25519 | x25519>",
+  "pinned_b64": "<b64url-pinned-pubkey>",
+  "claimed_b64": "<b64url-claimed-pubkey>"
+}
+```
+
+**Fires when**: a session attempts to register with a claimed Ed25519 or
+X25519 pubkey that disagrees with the alias's pinned TOFU pubkey in
+`relay_pins.json`. Fires at registration time — BEFORE the session is
+allowed to establish itself. Distinct from `relay_e2e_pin_mismatch`
+(which fires on envelope-path mismatch) — this fires on the
+handshake-path mismatch that would block the session before any envelope
+is processed.
+
+**File**: `ocaml/c2c_mcp.ml` ~line 4290 (`log_relay_e2e_register_pin_mismatch`).
+
+**Operational meaning**: same alias, new pubkey at registration time.
+Either (a) the peer legitimately rotated their identity and needs to
+`pin_rotate` to update the TOFU pin, or (b) an impersonation attempt
+using a previously-known alias with a different key. Compare
+`pinned_b64` against the peer's last-known-good pubkey.
+
+**Cross-link**: CRIT-2; pairs with `relay_e2e_pin_mismatch` for the
+envelope-path sibling event.
 
 ---
 
