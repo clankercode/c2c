@@ -58,27 +58,14 @@ type registration =
    ; confirmed_at : float option
   (** Epoch of first poll_inbox call. None = session registered but never
       drained — still "provisional". *)
-   ; enc_pubkey : string option
-   (** X25519 public key (base64url, 32 bytes) for E2E encryption.
-       Published in the registry so recipients can encrypt DMs.
-       Secret stored in [~/.c2c/keys/<session_id>.x25519] mode 0600.
-       Known v1 limitation (M1 threat model §I1): mode 0600 does not protect
-       against other processes running as the same Unix user (including child
-       agents). OS keyring integration deferred to M3. *)
-   ; ed25519_pubkey : string option
-   (** Ed25519 public key (base64url, 32 bytes) for message signing.
-       Published in the registry so recipients can verify envelope sigs.
-       Secret stored in [<broker_root>/keys/<alias>.ed25519] mode 0600.
-       Proves the owner holds the matching private key via [pubkey_sig]. *)
-   ; pubkey_signed_at : float option
-   (** Epoch when [pubkey_sig] was computed (Unix.gettimeofday at sign time).
-       Used to detect stale pubkeys and for replay-window checks. *)
-   ; pubkey_sig : string option
-   (** Ed25519 sig over canonical message:
-       alias || ed25519_pk || x25519_pk || pubkey_signed_at
-       (unit separator = ASCII 0x1F).
-       Proves the owner of this registration holds both private keys. *)
-    ; compacting : compacting option
+  ; enc_pubkey : string option
+  (** X25519 public key (base64url, 32 bytes) for E2E encryption.
+      Published in the registry so recipients can encrypt DMs.
+      Secret stored in [~/.c2c/keys/<session_id>.x25519] mode 0600.
+      Known v1 limitation (M1 threat model §I1): mode 0600 does not protect
+      against other processes running as the same Unix user (including child
+      agents). OS keyring integration deferred to M3. *)
+  ; compacting : compacting option
   ; last_activity_ts : float option
   (** Epoch of the session's most recent broker interaction. None = Phase 0
       compatibility (session predates this field). *)
@@ -167,7 +154,7 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?role:string option -> unit -> unit
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
