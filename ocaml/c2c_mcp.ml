@@ -5435,15 +5435,11 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
       in
       (* Reserved aliases — always blocked. *)
       if List.mem alias Broker.reserved_system_aliases then
-        Lwt.return (tool_result
-          ~content:(Printf.sprintf
-            "register rejected: '%s' is a reserved system alias and cannot be registered" alias)
-          ~is_error:true)
+        Lwt.return (tool_err (Printf.sprintf
+          "register rejected: '%s' is a reserved system alias and cannot be registered" alias))
       else if not (C2c_name.is_valid alias) then
-        Lwt.return (tool_result
-          ~content:(Printf.sprintf "register rejected: %s"
-            (C2c_name.error_message "alias" alias))
-          ~is_error:true)
+        Lwt.return (tool_err (Printf.sprintf "register rejected: %s"
+          (C2c_name.error_message "alias" alias)))
       else
       let pid =
         match current_client_pid () with
@@ -5556,14 +5552,12 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
              let prior_owner_has_pending =
                Broker.pending_permission_exists_for_alias broker alias
              in
-             if prior_owner_has_pending then
-               Lwt.return (tool_result
-                 ~content:(Printf.sprintf
-                   "register rejected: alias '%s' has pending permission state \
-                    from a prior owner. \
-                    Wait for the pending reply to arrive or for it to timeout before claiming this alias."
-                   alias)
-                ~is_error:true)
+              if prior_owner_has_pending then
+                Lwt.return (tool_err (Printf.sprintf
+                  "register rejected: alias '%s' has pending permission state \
+                   from a prior owner. \
+                   Wait for the pending reply to arrive or for it to timeout before claiming this alias."
+                  alias))
             else begin
               let plugin_version = optional_string_member "plugin_version" arguments in
               let role = optional_string_member "role" arguments in
@@ -5724,10 +5718,8 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
                    with _ -> None
                  in
                  (match parse_send_tag tag_arg with
-                  | Error msg ->
-                    Lwt.return (tool_result
-                                  ~content:(Printf.sprintf "send rejected: %s" msg)
-                                  ~is_error:true)
+                   | Error msg ->
+                     Lwt.return (tool_err (Printf.sprintf "send rejected: %s" msg))
                   | Ok tag_opt ->
                  let content = (tag_to_body_prefix tag_opt) ^ content in
 let ts = Unix.gettimeofday () in
@@ -6147,9 +6139,7 @@ let ts = Unix.gettimeofday () in
         | None -> current_session_id ()
       in
       if req_sid <> None && caller_sid <> None && req_sid <> caller_sid then
-        Lwt.return (tool_result
-          ~content:"poll_inbox: session_id argument does not match caller's MCP session (C2C_MCP_SESSION_ID)"
-          ~is_error:true)
+        Lwt.return (tool_err "poll_inbox: session_id argument does not match caller's MCP session (C2C_MCP_SESSION_ID)")
       else begin
       with_session_lwt ~session_id_override broker arguments (fun ~session_id ->
       Broker.confirm_registration broker ~session_id;
@@ -6385,7 +6375,7 @@ let ts = Unix.gettimeofday () in
              `Assoc [ ("ok", `Bool true); ("dnd", `Bool dnd_val) ])
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false))
+      Lwt.return (tool_ok content))
   | "dnd_status" ->
       with_session_lwt ~session_id_override broker arguments (fun ~session_id ->
       let reg_opt =
@@ -6412,7 +6402,7 @@ let ts = Unix.gettimeofday () in
              `Assoc fields)
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false))
+      Lwt.return (tool_ok content))
   | "join_room" ->
       let room_id = string_member "room_id" arguments in
       (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
@@ -6450,7 +6440,7 @@ let ts = Unix.gettimeofday () in
                ]
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false)))
+           Lwt.return (tool_ok content)))
   | "leave_room" ->
       let room_id = string_member "room_id" arguments in
       (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
@@ -6488,7 +6478,7 @@ let ts = Unix.gettimeofday () in
                ]
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false))))
+           Lwt.return (tool_ok content))))
   | "delete_room" ->
       let room_id = string_member "room_id" arguments in
       let force =
@@ -6524,10 +6514,10 @@ let ts = Unix.gettimeofday () in
            `Assoc [ ("room_id", `String room_id); ("deleted", `Bool true) ]
            |> Yojson.Safe.to_string
          in
-         Lwt.return (tool_result ~content ~is_error:false)
+         Lwt.return (tool_ok content)
        with Invalid_argument msg ->
          let content = `Assoc [ ("error", `String msg) ] |> Yojson.Safe.to_string in
-         Lwt.return (tool_result ~content ~is_error:true)))
+         Lwt.return (tool_err content)))
   | "send_room" ->
       let room_id = string_member "room_id" arguments in
       let content = string_member "content" arguments in
@@ -6540,7 +6530,7 @@ let ts = Unix.gettimeofday () in
       in
       (match parse_send_tag raw_tag with
        | Error msg ->
-           Lwt.return (tool_result ~content:msg ~is_error:true)
+           Lwt.return (tool_err msg)
        | Ok parsed_tag ->
       (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
        | None -> Lwt.return (missing_sender_alias_result "send_room")
@@ -6630,7 +6620,7 @@ let ts = Unix.gettimeofday () in
           (List.map room_info_json filtered)
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_ok content)
   | "my_rooms" ->
       (* Always resolve session_id from env — same isolation contract
          as `history`. A subagent that inherits a parent session_id
@@ -6650,7 +6640,7 @@ let ts = Unix.gettimeofday () in
                (List.map room_info_json rooms)
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false))
+           Lwt.return (tool_ok content))
   | "room_history" ->
       let room_id = string_member "room_id" arguments in
       let limit =
@@ -6690,7 +6680,7 @@ let ts = Unix.gettimeofday () in
           `Assoc [ ("error", `String ("not a member of " ^ room_id)) ]
           |> Yojson.Safe.to_string
         in
-        Lwt.return (tool_result ~content ~is_error:true)
+        Lwt.return (tool_err content)
       else
       let history = Broker.read_room_history broker ~room_id ~limit ~since () in
       let content =
@@ -6705,7 +6695,7 @@ let ts = Unix.gettimeofday () in
              history)
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_ok content)
   | "send_room_invite" ->
       let room_id = string_member "room_id" arguments in
       let invitee_alias = string_member "invitee_alias" arguments in
@@ -6733,7 +6723,7 @@ let ts = Unix.gettimeofday () in
                     ]
                   |> Yojson.Safe.to_string
                 in
-                Lwt.return (tool_result ~content ~is_error:false))))
+                Lwt.return (tool_ok content))))
   | "set_room_visibility" ->
       let room_id = string_member "room_id" arguments in
       let visibility_str = string_member "visibility" arguments in
@@ -6769,7 +6759,7 @@ let ts = Unix.gettimeofday () in
                     ]
                   |> Yojson.Safe.to_string
                  in
-                 Lwt.return (tool_result ~content ~is_error:false))))
+                 Lwt.return (tool_ok content))))
   | "open_pending_reply" ->
       let perm_id = string_member "perm_id" arguments in
       let kind_str = string_member "kind" arguments in
@@ -6793,10 +6783,8 @@ let ts = Unix.gettimeofday () in
          path now mirrors. *)
       (match List.find_opt (fun r -> r.session_id = session_id)
                (Broker.list_registrations broker) with
-       | None ->
-           Lwt.return (tool_result
-             ~content:"open_pending_reply requires the calling session to be registered first (call mcp__c2c__register before opening a pending reply)"
-             ~is_error:true)
+        | None ->
+            Lwt.return (tool_err "open_pending_reply requires the calling session to be registered first (call mcp__c2c__register before opening a pending reply)")
        | Some reg ->
       let alias = reg.alias in
       let ttl_seconds =
@@ -6837,7 +6825,7 @@ let ts = Unix.gettimeofday () in
              ]
            |> Yojson.Safe.to_string
          in
-         Lwt.return (tool_result ~content ~is_error:false)
+         Lwt.return (tool_ok content)
        with Broker.Pending_capacity_exceeded which ->
          (* [#432 Slice C] capacity-exceeded — log + reject with a
             specific error so the caller distinguishes "your bucket is
@@ -6865,12 +6853,10 @@ let ts = Unix.gettimeofday () in
                output_string oc (line ^ "\n");
                close_out oc
              with _ -> close_out_noerr oc)
-          with _ -> ());
-         Lwt.return (tool_result
-           ~content:(Printf.sprintf
-             "open_pending_reply rejected: %s. Wait for in-flight entries to expire (default TTL 600s) or coordinate with the holder."
-             kind_str)
-           ~is_error:true))))
+           with _ -> ());
+          Lwt.return (tool_err (Printf.sprintf
+            "open_pending_reply rejected: %s. Wait for in-flight entries to expire (default TTL 600s) or coordinate with the holder."
+            kind_str)))))
   | "check_pending_reply" ->
       let perm_id = string_member "perm_id" arguments in
       (* [#432 Slice B / Finding 4-B2] derive reply_from_alias from the
@@ -6891,9 +6877,7 @@ let ts = Unix.gettimeofday () in
       in
       let now_ts = Unix.gettimeofday () in
       if reply_from_alias = "" then
-        Lwt.return (tool_result
-          ~content:"check_pending_reply requires the calling session to be registered first"
-          ~is_error:true)
+        Lwt.return (tool_err "check_pending_reply requires the calling session to be registered first")
       else
       (match Broker.find_pending_permission broker perm_id with
       | None ->
@@ -6921,7 +6905,7 @@ let ts = Unix.gettimeofday () in
               ]
             |> Yojson.Safe.to_string
           in
-          Lwt.return (tool_result ~content ~is_error:false)
+          Lwt.return (tool_ok content)
       | Some pending ->
           if List.mem reply_from_alias pending.supervisors then begin
             (* slice/coord-backup-fallthrough: first valid reply wins.
@@ -6950,7 +6934,7 @@ let ts = Unix.gettimeofday () in
                 ]
               |> Yojson.Safe.to_string
             in
-            Lwt.return (tool_result ~content ~is_error:false)
+            Lwt.return (tool_ok content)
           end else begin
             log_pending_check
               ~broker_root:(Broker.root broker)
@@ -6969,12 +6953,12 @@ let ts = Unix.gettimeofday () in
                 ]
             |> Yojson.Safe.to_string
             in
-            Lwt.return (tool_result ~content ~is_error:false)
+            Lwt.return (tool_ok content)
           end))
   | "set_compact" ->
       (match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
        | None ->
-           Lwt.return (tool_result ~content:"{\"error\": \"no session ID; set C2C_MCP_SESSION_ID\"}" ~is_error:true)
+           Lwt.return (tool_err "{\"error\": \"no session ID; set C2C_MCP_SESSION_ID\"}")
        | Some session_id ->
            let reason = optional_string_member "reason" arguments in
            let compacting = Broker.set_compacting broker ~session_id ?reason () in
@@ -6993,18 +6977,18 @@ let ts = Unix.gettimeofday () in
                    ]
                  |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false))
+           Lwt.return (tool_ok content))
   | "clear_compact" ->
       (match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
        | None ->
-           Lwt.return (tool_result ~content:"{\"error\": \"no session ID; set C2C_MCP_SESSION_ID\"}" ~is_error:true)
+           Lwt.return (tool_err "{\"error\": \"no session ID; set C2C_MCP_SESSION_ID\"}")
        | Some session_id ->
            let ok = Broker.clear_compacting broker ~session_id in
            let content =
              `Assoc [ ("ok", `Bool ok) ]
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false))
+           Lwt.return (tool_ok content))
   | "stop_self" ->
       let reason = match optional_string_member "reason" arguments with Some r -> r | None -> "" in
       (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
@@ -7167,7 +7151,7 @@ let ts = Unix.gettimeofday () in
                  (list_md_entries dir)
              end
            in
-           Lwt.return (tool_result ~content:(`List items |> Yojson.Safe.to_string) ~is_error:false))
+            Lwt.return (tool_ok (`List items |> Yojson.Safe.to_string)))
   | "memory_read" ->
       (* memory_base_dir / memory_entry_path lifted top-level (audit §2). *)
       let entry_path = memory_entry_path in
@@ -7209,7 +7193,7 @@ let ts = Unix.gettimeofday () in
        | Some alias ->
            let path = entry_path alias name in
            if not (Sys.file_exists path) then
-             Lwt.return (tool_result ~content:("memory entry not found: " ^ name) ~is_error:true)
+             Lwt.return (tool_err ("memory entry not found: " ^ name))
            else
              let content =
                try
@@ -7219,7 +7203,7 @@ let ts = Unix.gettimeofday () in
                with _ -> ""
              in
              if content = "" then
-               Lwt.return (tool_result ~content:("error reading memory entry: " ^ name) ~is_error:true)
+               Lwt.return (tool_err ("error reading memory entry: " ^ name))
              else
                let (mname, desc, shared, shared_with, body) = parse_frontmatter content in
                (* Privacy guard: cross-agent reads require shared:true OR
@@ -7236,14 +7220,12 @@ let ts = Unix.gettimeofday () in
                  | Some a -> List.mem a shared_with
                  | None -> false
                in
-               if (not is_self) && (not shared) && (not in_shared_with) then
-                 Lwt.return (tool_result
-                   ~content:(Printf.sprintf
-                     "memory entry '%s' in alias '%s' is private. \
-                      Cross-agent reads require shared:true or the caller's \
-                      alias in shared_with."
-                     name alias)
-                   ~is_error:true)
+                if (not is_self) && (not shared) && (not in_shared_with) then
+                  Lwt.return (tool_err (Printf.sprintf
+                    "memory entry '%s' in alias '%s' is private. \
+                     Cross-agent reads require shared:true or the caller's \
+                     alias in shared_with."
+                    name alias))
                else
                  let result = `Assoc [
                    ("alias", `String alias);
@@ -7253,7 +7235,7 @@ let ts = Unix.gettimeofday () in
                    ("shared_with", `List (List.map (fun a -> `String a) shared_with));
                    ("content", `String (String.concat "\n" body))
                  ] |> Yojson.Safe.to_string in
-                 Lwt.return (tool_result ~content:result ~is_error:false))
+                 Lwt.return (tool_ok result))
   | "memory_write" ->
       (* memory_base_dir / memory_entry_path lifted top-level (audit §2). *)
       let entry_path = memory_entry_path in
@@ -7309,10 +7291,10 @@ let ts = Unix.gettimeofday () in
                ; ("notified", `List (List.map (fun a -> `String a) notified))
                ] |> Yojson.Safe.to_string
              in
-             Lwt.return (tool_result ~content:result ~is_error:false)
+             Lwt.return (tool_ok result)
            with _ ->
-             Lwt.return (tool_result ~content:("error writing memory entry: " ^ name) ~is_error:true))
-  | _ -> Lwt.return (tool_result ~content:("unknown tool: " ^ tool_name) ~is_error:true)
+             Lwt.return (tool_err ("error writing memory entry: " ^ name)))
+  | _ -> Lwt.return (tool_err ("unknown tool: " ^ tool_name))
 
 (* Append one structured line to <broker_root>/broker.log for every
    tools/call RPC. Never raises — audit failures must never break the
@@ -7474,7 +7456,7 @@ let handle_request ~broker_root json =
                   Printf.sprintf "argument type error: %s" m
               | _ -> Printexc.to_string exn
             in
-            Lwt.return (tool_result ~content:msg ~is_error:true))
+            Lwt.return (tool_err msg))
       in
       let is_error =
         (try Yojson.Safe.Util.(result |> member "isError" |> to_bool) with _ -> false)
