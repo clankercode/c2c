@@ -27,7 +27,7 @@ c2c broker (receives message from peer)
     ↓
 c2c MCP server (running as Claude Code MCP server)
     ↓ JSON-RPC notification
-notifications/claude/channel { content: "...", meta: { from_alias, to_alias } }
+notifications/claude/channel { content: "...", meta: { from, to } }
     ↓
 Claude Code SDK bridge (extractInboundMessageFields → handleInputPrompt)
     ↓ React state update

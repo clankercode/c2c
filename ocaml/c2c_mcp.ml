@@ -4440,8 +4440,16 @@ let notify_shared_with_recipients
       shared_with
 
 let channel_notification ?(role : string option = None) ({ from_alias; to_alias; content; deferrable = _ } : message) =
+  (* The meta JSON keys here are rendered by Claude Code as XML
+     attributes on the `<channel …>` tag in the agent transcript.
+     They are deliberately named `from` / `to` (not `from_alias` /
+     `to_alias`) because the transcript-visible reading is "the
+     sender" and "the recipient" — agents misread `to_alias=` as
+     a sender field on 2026-04-29. The internal record fields
+     remain `from_alias` / `to_alias`; only this serialization
+     uses the short attribute names. *)
   let meta =
-    let base = [ ("from_alias", `String from_alias); ("to_alias", `String to_alias) ] in
+    let base = [ ("from", `String from_alias); ("to", `String to_alias) ] in
     match role with
     | Some r -> base @ [ ("role", `String r) ]
     | None   -> base

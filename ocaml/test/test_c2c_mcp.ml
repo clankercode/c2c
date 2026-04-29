@@ -429,9 +429,9 @@ let test_channel_notification_matches_claude_channel_shape () =
   check string "method" "notifications/claude/channel" (json |> member "method" |> to_string);
   check string "content" "debate me" (json |> member "params" |> member "content" |> to_string);
   check string "from alias meta" "storm-ember"
-    (json |> member "params" |> member "meta" |> member "from_alias" |> to_string);
+    (json |> member "params" |> member "meta" |> member "from" |> to_string);
   check string "to alias meta" "storm-storm"
-    (json |> member "params" |> member "meta" |> member "to_alias" |> to_string)
+    (json |> member "params" |> member "meta" |> member "to" |> to_string)
 
 let test_channel_notification_empty_content () =
   let json =
@@ -445,9 +445,9 @@ let test_channel_notification_empty_content () =
   check string "content is empty string" ""
     (json |> member "params" |> member "content" |> to_string);
   check string "from alias meta" "storm-ember"
-    (json |> member "params" |> member "meta" |> member "from_alias" |> to_string);
+    (json |> member "params" |> member "meta" |> member "from" |> to_string);
   check string "to alias meta" "storm-storm"
-    (json |> member "params" |> member "meta" |> member "to_alias" |> to_string)
+    (json |> member "params" |> member "meta" |> member "to" |> to_string)
 
 let test_channel_notification_special_chars () =
   let content = "line1\nline2\t\"quoted\" <angle> \xc3\xa9\xc3\xa0\xc3\xbc" in
@@ -561,7 +561,7 @@ let test_channel_notification_with_role () =
   let open Yojson.Safe.Util in
   let meta = json |> member "params" |> member "meta" in
   check string "role in meta" "coordinator" (meta |> member "role" |> to_string);
-  check string "from_alias preserved" "cairn-vigil" (meta |> member "from_alias" |> to_string)
+  check string "from preserved" "cairn-vigil" (meta |> member "from" |> to_string)
 
 let test_channel_notification_without_role_omits () =
   let json =
