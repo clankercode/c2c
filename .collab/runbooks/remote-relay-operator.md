@@ -66,6 +66,9 @@ The remote broker root must be accessible at the SSH target. The standard locati
 ├── inbox/              # per-session message queues
 │   ├── session-id-1.json
 │   └── session-id-2.json
+├── remote-outbox.jsonl  # pending relay deliveries (cleared on success)
+├── remote-outbox.lock   # flock sidecar (do not delete)
+├── remote-outbox-dlq.jsonl  # dead-lettered relay deliveries (see §6)
 ├── archive/            # message archives (optional)
 └── rooms/              # room data (optional)
 ```
@@ -346,6 +349,35 @@ sudo systemctl disable c2c-relay
 ### 5.3 Reverting to pre-remote-relay state
 
 The remote relay feature is **additive** — removing the remote broker flags returns the relay to local-only mode. No data migration is needed. All local registrations, rooms, and messages remain intact.
+
+---
+
+## §6 — Outbox Dead-Letter Queue (`remote-outbox-dlq.jsonl`)
+
+When the relay connector's outbox retry system decides a message can no longer be delivered, it moves the entry to `remote-outbox-dlq.jsonl` in the broker root. This is the local dead-letter record — the relay server also maintains its own in-memory DLQ, but the local file is the operator-visible surface on the **sender's broker**.
+
+**Path**: `<broker_root>/remote-outbox-dlq.jsonl`
+
+**When entries land there**:
+
+| Reason code | Meaning | What to do |
+|---|---|---|
+| `unknown_alias` | Recipient alias has never registered on this relay | Verify the recipient alias; check for a typo (e.g. `coordinator1` vs `coordinator-1`). |
+| `recipient_dead` | Recipient was registered but lease expired (no heartbeat > TTL) | The recipient may have been offline for > TTL. If they come back online, they will re-register and future messages will deliver. |
+| `max_attempts` | Relay returned a permanent error after 60 retry attempts | Same as `unknown_alias` — permanent delivery failure. Check relay health and recipient status. |
+| `max_age` | Entry exceeded 1-hour age limit without delivery | The relay was unavailable for > 1 hour. If the relay is healthy, retry the message manually. |
+
+**To inspect the DLQ**:
+```bash
+cat ~/.local/share/c2c/remote-outbox-dlq.jsonl
+```
+
+**To clear the DLQ** (after addressing the root cause):
+```bash
+rm ~/.local/share/c2c/remote-outbox-dlq.jsonl
+```
+
+**Note**: The DLQ file is append-only. Entries accumulate per failed delivery attempt — a typo alias retrying every 30s produces one new DLQ entry per retry. Entries with the same `(from_alias, to_alias, reason)` are **not** coalesced in v1.
 
 ---
 
