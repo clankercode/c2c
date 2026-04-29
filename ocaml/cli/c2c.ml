@@ -2339,9 +2339,15 @@ let get_tmux_location_cmd =
   let tmux_set = Sys.getenv_opt "TMUX" in
   match pane_id, tmux_set with
   | None, None ->
+      (* Neither TMUX nor TMUX_PANE is set — definitely not in tmux. *)
       Printf.eprintf "error: not running inside a tmux session (TMUX is not set).\n%!";
       exit 1
-  | _ ->
+  | Some _, None ->
+      (* TMUX_PANE survived env -u TMUX (orphaned pane var from a dead session).
+         TMUX is not set so tmux commands will fail. Treat as non-tmux. *)
+      Printf.eprintf "error: not running inside a tmux session (TMUX is not set).\n%!";
+      exit 1
+  | _, Some _ ->
       let cmd = match pane_id with
         | Some p when String.trim p <> "" ->
             Printf.sprintf "tmux display-message -t %s -p '#S:#I.#P'"
@@ -9977,11 +9983,16 @@ let fast_path_get_tmux_location ?(json = false) () =
   let tmux_set = Sys.getenv_opt "TMUX" in
   match pane_id, tmux_set with
   | None, None ->
+      (* Neither TMUX nor TMUX_PANE is set — definitely not in tmux. *)
       Printf.eprintf "error: not running inside a tmux session (TMUX is not set).\n%!";
       exit 1
-  | _ ->
-      (* Always pin to the caller's own pane via -t "$TMUX_PANE" when set,
-         so concurrent invocations across panes don't cross-talk. *)
+  | Some _, None ->
+      (* TMUX_PANE survived env -u TMUX (orphaned pane var from a dead session).
+         TMUX is not set so tmux commands will fail. Treat as non-tmux. *)
+      Printf.eprintf "error: not running inside a tmux session (TMUX is not set).\n%!";
+      exit 1
+  | _, Some _ ->
+      (* TMUX is set — we are in a tmux session. Pin to our own pane. *)
       let cmd = match pane_id with
         | Some p when String.trim p <> "" ->
             (* shell-quote the pane id (tmux pane ids look like %42 — safe but be defensive) *)

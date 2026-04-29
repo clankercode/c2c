@@ -1546,13 +1546,17 @@ let test_codex_supports_server_request_fds_requires_both_flags () =
   check bool "requires response fd too" false
     (C2c_start.codex_supports_server_request_fds events_only)
 
-let rec last_n n lst =
-  let rec aux n acc = function
+(* Take the last n elements of lst, in their original order.
+   Strategy: reverse, take first n, reverse back.
+   The (n <= 0) case returns [] per List.length semantics. *)
+let last_n n lst =
+  let rec take n acc = function
     | [] -> List.rev acc
-    | _ when n <= 0 -> List.rev acc
-    | x :: xs -> aux (n - 1) (x :: acc) xs
+    | x :: xs when n > 0 -> take (n - 1) (x :: acc) xs
+    (* n <= 0 or xs = [] but acc already has the right elements in order *)
+    | _ -> acc
   in
-  aux n [] (List.rev lst)
+  take n [] (List.rev lst)
 
 let test_prepare_launch_args_extra_args_appended_verbatim () =
   let extra = [ "--foo"; "bar"; "--baz" ] in
