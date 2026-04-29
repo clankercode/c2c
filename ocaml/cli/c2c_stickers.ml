@@ -67,6 +67,10 @@ type sticker_envelope = {
   to_ : string;
   sticker_id : string;
   note : string option;
+  target_msg_id : string option;
+    (* v2+: id of the message being reacted to. None for peer-addressed
+       (non-reaction) stickers. v1 envelopes always have this as None and
+       it is NOT included in their canonical blob. *)
   scope : scope;
   ts : string;
   nonce : string;
@@ -94,8 +98,19 @@ let random_nonce_b64 () =
 let canonical_blob env =
   let note_str = match env.note with Some n -> n | None -> "" in
   let scope_str = match env.scope with `Public -> "public" | `Private -> "private" | `Both -> "both" in
-  String.concat "|"
+  let base =
     [ string_of_int env.version; env.from_; env.to_; env.sticker_id; note_str; scope_str; env.ts; env.nonce ]
+  in
+  (* Version-switched: v1 envelopes sign 8 fields exactly as before; v2+
+     envelopes append target_msg_id (empty string when None). v1 envelopes
+     on disk verify byte-for-byte against the legacy blob. *)
+  let fields =
+    if env.version >= 2 then
+      let tgt = match env.target_msg_id with Some s -> s | None -> "" in
+      base @ [ tgt ]
+    else base
+  in
+  String.concat "|" fields
 
 let sign_envelope ~identity env =
   let sender_pk = b64url_nopad identity.Relay_identity.public_key in
@@ -137,6 +152,10 @@ let envelope_to_json env =
     ("signature", `String env.signature);
   ] in
   let fields = match env.note with Some n -> ("note", `String n) :: fields | None -> fields in
+  let fields = match env.target_msg_id with
+    | Some t -> ("target_msg_id", `String t) :: fields
+    | None -> fields
+  in
   `Assoc fields
 
 let envelope_of_json json =
@@ -151,6 +170,7 @@ let envelope_of_json json =
       to_ = get_str fields "to";
       sticker_id = get_str fields "sticker_id";
       note = get_opt_str fields "note";
+      target_msg_id = get_opt_str fields "target_msg_id";
       scope;
       ts = get_str fields "ts";
       nonce = get_str fields "nonce";
@@ -215,14 +235,21 @@ let load_stickers ~alias ?(scope=`Both) () =
 
 (* --- create and store --------------------------------------------------- *)
 
-let create_and_store ~from_ ~to_ ~sticker_id ~note ~scope ~identity =
+let create_and_store ?target_msg_id ~from_ ~to_ ~sticker_id ~note ~scope ~identity () =
   match validate_sticker_id sticker_id with
   | Error e -> Error e
   | Ok () ->
     let ts = now_rfc3339_utc () in
     let nonce = random_nonce_b64 () in
     let sender_pk = b64url_nopad identity.Relay_identity.public_key in
-    let env = { version = 1; from_; to_; sticker_id; note; scope; ts; nonce; sender_pk; signature = "" } in
+    (* Version bumps to 2 only when target_msg_id is explicitly set. Plain
+       peer-addressed stickers stay on v1 so their canonical blob is
+       unchanged from the existing on-disk format. *)
+    let version = match target_msg_id with Some _ -> 2 | None -> 1 in
+    let env = {
+      version; from_; to_; sticker_id; note; target_msg_id;
+      scope; ts; nonce; sender_pk; signature = "";
+    } in
     let env = sign_envelope ~identity env in
     match store_envelope env with
     | Ok () -> Ok env
@@ -314,7 +341,7 @@ let sticker_send_cmd =
   (match note with Some n when String.length n > 280 ->
     (Printf.eprintf "error: note exceeds 280 characters\n%!"; exit 1)
   | _ -> ());
-  (match create_and_store ~from_:from_alias ~to_:peer ~sticker_id ~note ~scope ~identity with
+  (match create_and_store ~from_:from_alias ~to_:peer ~sticker_id ~note ~scope ~identity () with
    | Ok env ->
      let emoji = match List.assoc_opt env.sticker_id (List.map (fun e -> e.id, e) (load_registry ())) with
        | Some e -> e.emoji | None -> "?" in

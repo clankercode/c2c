@@ -7,15 +7,25 @@
 
 (** {1 Types} *)
 
-(** Sticker envelope v1. Signed JSON stored at
+(** Sticker envelope. Signed JSON stored at
     .c2c/stickers/<alias>/received/<ts>-<nonce>.json (private) or
-    .c2c/stickers/public/<from>-<ts>-<nonce>.json (public). *)
+    .c2c/stickers/public/<from>-<ts>-<nonce>.json (public).
+
+    Schema versions:
+    - v1: 8-field canonical blob — peer-addressed stickers only.
+      [target_msg_id] is always [None] and is NOT included in the
+      signed canonical blob.
+    - v2: 9-field canonical blob — adds [target_msg_id] for reactions
+      anchored to a specific message. Empty string when [None]. *)
 type sticker_envelope = {
-  version : int;           (** Always 1 for v1 schema *)
+  version : int;           (** 1 = legacy peer-addressed, 2 = with target_msg_id *)
   from_ : string;          (** Sender alias *)
   to_ : string;            (** Recipient alias *)
   sticker_id : string;      (** Key into registry.json *)
   note : string option;    (** Optional free text, max 280 chars *)
+  target_msg_id : string option;
+    (** v2+: id of the message being reacted to. None for plain
+        peer-addressed stickers. Always None on v1 envelopes. *)
   scope : scope;
   ts : string;             (** RFC3339 UTC timestamp *)
   nonce : string;          (** 16-byte random, base64url-nopad *)
@@ -60,9 +70,12 @@ val validate_sticker_id : string -> (unit, string) result
 
 (** {1 Signing and verification} *)
 
-(** Build the canonical blob for signing:
-    "<from>|<to>|<sticker_id>|<note_or_empty>|<scope>|<ts>|<nonce>"
-    where scope is "public" or "private". *)
+(** Build the canonical blob for signing. Format is version-switched:
+    - v1: "1|<from>|<to>|<sticker_id>|<note_or_empty>|<scope>|<ts>|<nonce>"
+    - v2: "2|<from>|<to>|<sticker_id>|<note_or_empty>|<scope>|<ts>|<nonce>|<target_msg_id_or_empty>"
+    where scope is "public", "private" or "both". v1 envelopes on disk
+    retain their original 8-field blob even after this module supports
+    v2 — back-compat is permanent. *)
 val canonical_blob : sticker_envelope -> string
 
 (** [sign_envelope ~identity env] adds the Ed25519 signature to [env]
@@ -74,18 +87,35 @@ val sign_envelope : identity:Relay_identity.t -> sticker_envelope -> sticker_env
     Returns [Ok true] if valid, [Error msg] if invalid or missing. *)
 val verify_envelope : sticker_envelope -> (bool, string) result
 
+(** [envelope_to_json env] serializes [env] as a JSON object. v1 envelopes
+    omit the [target_msg_id] field; v2 envelopes include it when
+    [Some _]. *)
+val envelope_to_json : sticker_envelope -> Yojson.Safe.t
+
+(** [envelope_of_json json] decodes an envelope. A missing
+    [target_msg_id] field decodes to [None] (forward-compat for v1 files
+    and v2 files written before the field was set). Missing [version]
+    defaults to 1. *)
+val envelope_of_json : Yojson.Safe.t -> (sticker_envelope, string) result
+
 (** {1 Envelope construction and storage} *)
 
-(** [create_and_store ~from_ ~to_ ~sticker_id ~note ~scope ~identity]
+(** [create_and_store ?target_msg_id ~from_ ~to_ ~sticker_id ~note ~scope ~identity ()]
     validates the sticker_id, builds and signs an envelope, and stores it.
-    Returns [Ok envelope] on success, [Error msg] on failure. *)
+    Returns [Ok envelope] on success, [Error msg] on failure.
+
+    If [target_msg_id] is [Some _] the resulting envelope is a v2 reaction
+    envelope. Otherwise it is a v1 peer-addressed sticker, byte-for-byte
+    compatible with envelopes created before the v2 schema landed. *)
 val create_and_store :
+  ?target_msg_id:string ->
   from_:string ->
   to_:string ->
   sticker_id:string ->
   note:string option ->
   scope:scope ->
   identity:Relay_identity.t ->
+  unit ->
   (sticker_envelope, string) result
 
 (** [load_stickers ~alias ?scope ()] loads stickers for [alias].
