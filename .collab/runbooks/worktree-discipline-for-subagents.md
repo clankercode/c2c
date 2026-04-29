@@ -662,6 +662,17 @@ subagent dispatch should include the no-stash directive.
 Pattern 4 (`git checkout HEAD -- <file>`) — destructive ops in
 shared-tree layout that cross worktree boundaries silently.
 
+**Relationship to Pattern 4**: Pattern 4 (mid-slice-stash-loses-
+edits) is the *receipt* of this footgun captured during a specific
+A/B-verify-against-baseline workflow. Pattern 13 generalizes the
+rule: it is *never* safe to `git stash` in a c2c worktree, not just
+mid-slice — because the stash list is `.git/`-scoped and is shared
+across every worktree of the same `.git/`. If you came here from
+Pattern 4 and want the underlying mechanism, this section names
+it. If you came here first and want a concrete loss-of-edits
+receipt, see Pattern 4. Both prescribe the same alternatives
+(commit-fixup or diff-to-tmpfile).
+
 ---
 
 ## Why these rules are load-bearing
