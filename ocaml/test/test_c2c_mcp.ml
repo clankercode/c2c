@@ -4919,6 +4919,99 @@ let test_send_room_does_not_dedup_different_content () =
       check int "room history has 2 sender entries" 2
         (List.length sender_messages))
 
+(* #392 S1: tag-bucketing — history stores bare content, fan-out delivers prefixed.
+   Key invariants:
+   - History never contains a tag prefix (tag is presentation-only, per-recipient)
+   - Fan-out delivers prefixed content to each recipient's inbox
+   - Same bare content with different tags → different prefix in each inbox
+     (dedup-on-bare-content, tested in S2) *)
+let test_send_room_tag_stores_bare_content_fans_out_prefixed () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-alice"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-bob"
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"room1"
+        ~alias:"alice" ~session_id:"s-alice");
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"room1"
+        ~alias:"bob" ~session_id:"s-bob");
+      ignore (C2c_mcp.Broker.drain_inbox broker ~session_id:"s-alice");
+      ignore (C2c_mcp.Broker.drain_inbox broker ~session_id:"s-bob");
+      (* Send with a "fail" tag *)
+      let result =
+        C2c_mcp.Broker.send_room ~tag:"fail" broker
+          ~from_alias:"alice" ~room_id:"room1" ~content:"build broken"
+      in
+      check int "delivered to bob" 1 (List.length result.sr_delivered_to);
+      (* S1a: history stores BARE content (no prefix) *)
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"room1" ~limit:10 ()
+      in
+      let h = List.hd (List.rev history) in
+      check string "history content is bare" "build broken" h.rm_content;
+      check bool "history content has no tag prefix" false
+        (String.sub h.rm_content 0 (min 4 (String.length h.rm_content)) = "🔴");
+      (* S1b: bob's inbox gets PREFIXED content *)
+      let inbox_bob = C2c_mcp.Broker.read_inbox broker ~session_id:"s-bob" in
+      check int "bob has 1 message" 1 (List.length inbox_bob);
+      let msg = List.hd inbox_bob in
+      let fail_prefix = C2c_mcp.tag_to_body_prefix (Some "fail") in
+      check bool "inbox content starts with fail prefix" true
+        (String.length msg.content >= String.length fail_prefix
+         && String.sub msg.content 0 (String.length fail_prefix) = fail_prefix);
+      check bool "inbox content ends with bare body" true
+        (msg.content = fail_prefix ^ "build broken"))
+
+(* #392 S2: dedup-on-bare-content — same bare body, different tag = duplicate.
+   The dedup key is the bare content, not the prefixed content. Re-tagging an
+   already-sent message (e.g. upgrading no-tag → "fail" or "fail" → "urgent")
+   should still be suppressed as a dup, so agents can't DOS a room by re-tagging. *)
+let test_send_room_dedup_on_bare_content_ignores_tag () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"s-sender"
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-recv"
+        ~alias:"receiver" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"room1"
+        ~alias:"sender" ~session_id:"s-sender");
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"room1"
+        ~alias:"receiver" ~session_id:"s-recv");
+      ignore (C2c_mcp.Broker.drain_inbox broker ~session_id:"s-sender");
+      ignore (C2c_mcp.Broker.drain_inbox broker ~session_id:"s-recv");
+      (* Send without a tag *)
+      let r1 =
+        C2c_mcp.Broker.send_room broker
+          ~from_alias:"sender" ~room_id:"room1" ~content:"urgent fix"
+      in
+      check int "first send delivered" 1 (List.length r1.sr_delivered_to);
+      (* Re-send the SAME bare content but with a "fail" tag → dup *)
+      let r2 =
+        C2c_mcp.Broker.send_room ~tag:"fail" broker
+          ~from_alias:"sender" ~room_id:"room1" ~content:"urgent fix"
+      in
+      check int "second send (same bare body, different tag) suppressed" 0
+        (List.length r2.sr_delivered_to);
+      (* Re-send again with "urgent" tag → still dup *)
+      let r3 =
+        C2c_mcp.Broker.send_room ~tag:"urgent" broker
+          ~from_alias:"sender" ~room_id:"room1" ~content:"urgent fix"
+      in
+      check int "third send (urgent tag on same bare body) suppressed" 0
+        (List.length r3.sr_delivered_to);
+      (* Receiver has exactly 1 message (from first send only) *)
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"s-recv" in
+      check int "receiver has exactly 1 message" 1 (List.length inbox);
+      (* History has exactly 1 entry *)
+      let history =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"room1" ~limit:10 ()
+      in
+      let sender_msgs =
+        List.filter (fun (m : C2c_mcp.room_message) -> m.rm_from_alias = "sender") history
+      in
+      check int "history has exactly 1 sender entry" 1 (List.length sender_msgs))
+
 let test_list_rooms_returns_room_with_members () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -9577,9 +9670,13 @@ let () =
              test_send_room_skips_sender_inbox
          ; test_case "send_room deduplicates identical content within window" `Quick
              test_send_room_deduplicates_identical_content_within_window
-         ; test_case "send_room does not dedup different content" `Quick
-             test_send_room_does_not_dedup_different_content
-         ; test_case "list_rooms returns rooms with members" `Quick
+          ; test_case "send_room does not dedup different content" `Quick
+              test_send_room_does_not_dedup_different_content
+          ; test_case "S1: send_room tag stores bare content, fans out prefixed (#392)" `Quick
+              test_send_room_tag_stores_bare_content_fans_out_prefixed
+          ; test_case "S2: send_room dedup ignores tag — same bare body = dup (#392)" `Quick
+              test_send_room_dedup_on_bare_content_ignores_tag
+          ; test_case "list_rooms returns rooms with members" `Quick
              test_list_rooms_returns_room_with_members
           ; test_case "room_history tag survives round-trip" `Quick
               test_room_history_tag_roundtrip
