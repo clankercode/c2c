@@ -2925,12 +2925,34 @@ module KimiAdapter : CLIENT_ADAPTER = struct
     (* Kimi doesn't support session resume via CLI args.
        Write the per-instance MCP config to the instance dir and prepend the flag.
        extra_args are inspected for an existing --mcp-config-file flag but are NOT
-       included in the return — prepare_launch_args appends them uniformly after. *)
+       included in the return — prepare_launch_args appends them uniformly after.
+
+       --afk: managed sessions are agent-driven, no human at the keyboard for this
+       pane. Without it, every MCP tool call (poll_inbox, send, whoami, list, ...)
+       prompts for human approval and blocks agent-to-agent c2c routing
+       indefinitely. `--afk` makes kimi auto-approve all tool calls
+       (`is_auto_approve()` returns True via `is_afk()`) AND auto-dismisses
+       AskUserQuestion prompts — matching the c2c convention "When you are
+       talking to other models, do not use tools like AskUserQuestion".
+
+       Mirrors the Claude managed-session posture (`--dangerously-load-development-channels`)
+       and the precedent set by the now-removed `--yolo` flag in
+       `c2c_wire_bridge.ml:226` (Slice 4). We pick `--afk` over `--yolo`
+       because the AskUserQuestion auto-dismiss is semantically aligned with
+       "managed pane = no human typing here".
+
+       Persistence gotcha: kimi saves `afk=true` to its session state on disk.
+       If an operator later runs `kimi -C` against the same session-id outside
+       c2c management, the session stays in afk mode until explicitly toggled
+       off. Document this when kimi session-resume lands.
+
+       Research: kimi-permissions audit 2026-04-29 (Option A). *)
     let br = broker_root () in
     let base =
-      match model_override with
-      | Some m when String.trim m <> "" -> [ "--model"; m ]
-      | _ -> []
+      "--afk" ::
+      (match model_override with
+       | Some m when String.trim m <> "" -> [ "--model"; m ]
+       | _ -> [])
     in
     if not (has_explicit_kimi_mcp_config extra_args) then begin
       let cfg_path = kimi_mcp_config_path name in
