@@ -62,3 +62,11 @@
  (name test_c2c_utils)
  (modules test_c2c_utils c2c_utils c2c_broker_root_check)
  (libraries c2c_mcp alcotest unix))
+
+; Regression guard for #429 lazy-init (c2c --version <200ms median-of-5).
+; Slate's follow-up suggestion to prevent silent regrowth of startup cost.
+(test
+ (name test_c2c_perf)
+ (modules test_c2c_perf)
+ (libraries alcotest unix)
+ (deps c2c.exe))
