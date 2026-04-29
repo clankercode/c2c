@@ -272,6 +272,23 @@ let test_outbox_enqueued_at_int () =
       true (e.ob_enqueued_at > 1_717_000_000.0 && e.ob_enqueued_at < 1_718_000_000.0)
   )
 
+(* --- outbox lock path and with_outbox_lock --- *)
+
+let test_outbox_lock_path () =
+  let p = Conn.outbox_lock_path "/tmp/broker" in
+  Alcotest.(check string) "lock sidecar path"
+    "/tmp/broker/remote-outbox.lock" p
+
+let test_with_outbox_lock_executes () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    let result = Conn.with_outbox_lock dir (fun () -> 42) in
+    Alcotest.(check int) "lock returns inner function result" 42 result;
+    (* Sidecar file should exist after lock *)
+    Alcotest.(check bool) "lock sidecar created"
+      true (Sys.file_exists (Conn.outbox_lock_path dir))
+  )
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_relay_connector" [
@@ -300,6 +317,8 @@ let () =
     ];
     "outbox", [
       Alcotest.test_case "round-trip + append + clear" `Quick test_outbox_roundtrip;
+      Alcotest.test_case "lock path" `Quick test_outbox_lock_path;
+      Alcotest.test_case "with_outbox_lock executes and returns" `Quick test_with_outbox_lock_executes;
     ];
     "mobile bindings", [
       Alcotest.test_case "add/remove/dedupe" `Quick test_mobile_bindings_add_remove;

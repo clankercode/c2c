@@ -268,10 +268,28 @@ let remove_mobile_binding broker_root ~binding_id =
 
 let outbox_path broker_root = broker_root // "remote-outbox.jsonl"
 let dlq_path broker_root = broker_root // "remote-outbox-dlq.jsonl"
+let outbox_lock_path broker_root = broker_root // "remote-outbox.lock"
 
 (* Constants for retry backstop *)
 let max_attempts = 60       (* ~30min at 30s interval *)
 let max_age_seconds = 3600.0 (* 1 hour *)
+
+(* POSIX fcntl lock on a sidecar — serialises the read+write window in sync
+   against concurrent append_outbox_entry calls from MCP.
+   Without this, sync's write_outbox (which opens with trunc) can clobber
+   entries appended during the HTTP send loop (TOCTOU / silent message loss).
+   Compatible with any other Unix flock holder on the same sidecar. *)
+let with_outbox_lock broker_root f =
+  let fd =
+    Unix.openfile (outbox_lock_path broker_root) [ O_RDWR; O_CREAT ] 0o644
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+      (try Unix.close fd with _ -> ()))
+    (fun () ->
+      Unix.lockf fd Unix.F_LOCK 0;
+      f ())
 
 type outbox_entry = {
   ob_from : string;
@@ -708,7 +726,6 @@ let maintain_ws_connections (t : t) : unit =
 let sync (t : t) : sync_result Lwt.t =
   let client = Relay_client.make ?token:t.token ?identity:t.identity t.relay_url in
   let regs = read_local_registrations t.broker_root in
-  let outbox = read_outbox t.broker_root in
 
   (* 0. Maintain WS connections to mobile bindings *)
   maintain_ws_connections t;
@@ -735,36 +752,43 @@ let sync (t : t) : sync_result Lwt.t =
   in
   t.registered <- new_registered;
 
-  (* 2. Forward outbox entries with retry + DLQ *)
+  (* 2. Forward outbox entries with retry + DLQ — LOCKED to prevent TOCTOU
+     race with append_outbox_entry (MCP send). The window is read_outbox →
+     HTTP sends → write_outbox (trunc). Without the lock, a concurrent
+     append between read and write is silently lost. Lock is exclusive so we
+     also serialise with any other outbox reader/writer. *)
   let outbox_forwarded, outbox_failed, remaining_outbox, dlqed, send_errors =
-    List.fold_left (fun (fwd, failed, remaining, dlqed, errs) entry ->
-      let json = Lwt_main.run (Relay_client.send client
-        ~from_alias:entry.ob_from
-        ~to_alias:entry.ob_to
-        ~content:entry.ob_content
-        ?message_id:entry.ob_msg_id ()) in
-      if json_bool_member ~key:"ok" json then
-        (fwd + 1, failed, remaining, dlqed, errs)
-      else
-        let err_class = classify_error json in
-        let now = Unix.gettimeofday () in
-        let too_old = now -. entry.ob_enqueued_at > max_age_seconds in
-        let over_attempts = entry.ob_attempts >= max_attempts in
-        let detail = Yojson.Safe.to_string json in
-        if err_class = "unknown_alias" || err_class = "recipient_dead" then
-          (* Permanent error: immediate DLQ *)
-          let () = append_dlq_entry t.broker_root entry ~reason:err_class in
-          (fwd, failed + 1, remaining, dlqed + 1, ("send", err_class ^ ": " ^ detail) :: errs)
-        else if over_attempts || too_old then
-          (* Backstop reached: DLQ *)
-          let dlq_reason = if over_attempts then "max_attempts" else "max_age" in
-          let () = append_dlq_entry t.broker_root { entry with ob_last_error = Some err_class } ~reason:dlq_reason in
-          (fwd, failed + 1, remaining, dlqed + 1, ("send", dlq_reason ^ ": " ^ detail) :: errs)
+    with_outbox_lock t.broker_root (fun () ->
+      let outbox = read_outbox t.broker_root in
+      List.fold_left (fun (fwd, failed, remaining, dlqed, errs) entry ->
+        let json = Lwt_main.run (Relay_client.send client
+          ~from_alias:entry.ob_from
+          ~to_alias:entry.ob_to
+          ~content:entry.ob_content
+          ?message_id:entry.ob_msg_id ()) in
+        if json_bool_member ~key:"ok" json then
+          (fwd + 1, failed, remaining, dlqed, errs)
         else
-          (* Retry: increment attempts, update last_error, keep in outbox *)
-          let updated = { entry with ob_attempts = entry.ob_attempts + 1; ob_last_error = Some err_class } in
-          (fwd, failed + 1, updated :: remaining, dlqed, ("send", err_class ^ ": " ^ detail) :: errs)
-    ) (0, 0, [], 0, []) outbox
+          let err_class = classify_error json in
+          let now = Unix.gettimeofday () in
+          let too_old = now -. entry.ob_enqueued_at > max_age_seconds in
+          let over_attempts = entry.ob_attempts >= max_attempts in
+          let detail = Yojson.Safe.to_string json in
+          if err_class = "unknown_alias" || err_class = "recipient_dead" then
+            (* Permanent error: immediate DLQ *)
+            let () = append_dlq_entry t.broker_root entry ~reason:err_class in
+            (fwd, failed + 1, remaining, dlqed + 1, ("send", err_class ^ ": " ^ detail) :: errs)
+          else if over_attempts || too_old then
+            (* Backstop reached: DLQ *)
+            let dlq_reason = if over_attempts then "max_attempts" else "max_age" in
+            let () = append_dlq_entry t.broker_root { entry with ob_last_error = Some err_class } ~reason:dlq_reason in
+            (fwd, failed + 1, remaining, dlqed + 1, ("send", dlq_reason ^ ": " ^ detail) :: errs)
+          else
+            (* Retry: increment attempts, update last_error, keep in outbox *)
+            let updated = { entry with ob_attempts = entry.ob_attempts + 1; ob_last_error = Some err_class } in
+            (fwd, failed + 1, updated :: remaining, dlqed, ("send", err_class ^ ": " ^ detail) :: errs)
+      ) (0, 0, [], 0, []) outbox
+    )
   in
   write_outbox t.broker_root (List.rev remaining_outbox);
 
