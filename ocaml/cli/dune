@@ -71,6 +71,13 @@
  (libraries alcotest unix)
  (deps c2c.exe))
 
+; #157 slice 1: c2c await-reply CLI subcommand (kimi PreToolUse hook backend).
+(test
+ (name test_c2c_await_reply)
+ (modules test_c2c_await_reply)
+ (libraries alcotest yojson unix)
+ (deps c2c.exe))
+
 (test
  (name test_role_templates)
  (modules test_role_templates role_templates)

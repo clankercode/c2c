@@ -4968,6 +4968,106 @@ let peek_inbox_cmd =
           (fun (m : C2c_mcp.message) -> Printf.printf "[%s] %s\n" m.from_alias m.content)
           messages
 
+(* --- subcommand: await-reply ---------------------------------------------- *)
+
+(* [#142 slice 1] Block-and-poll the inbox for a verdict message tagged with
+   a token (e.g. "ka_abc123") containing one of the verdict words
+   "allow" / "deny" (case-insensitive).  Used by the kimi PreToolUse approval
+   hook to translate a reviewer's c2c DM reply into a hook exit code.
+
+   Behaviour:
+   - resolves session id via the same inbox helpers other CLI commands use
+   - polls inbox via [read_inbox] (non-draining) every 1s until a match
+   - on match: prints the verdict ("allow" or "deny") on stdout, exits 0
+   - on timeout: prints nothing on stdout, exits 1
+   - on missing token / inbox unreachable: prints diagnostic to stderr, exit 2
+
+   Why peek (non-draining): leaves the verdict message in the inbox so the
+   recipient agent's normal poll/push delivery still surfaces it — the human
+   on the other end sees what the reviewer wrote.  Repeated matches are
+   harmless: the hook script consumes the first one. *)
+let await_reply_cmd =
+  let token =
+    Cmdliner.Arg.(required & opt (some string) None
+                  & info [ "token"; "t" ] ~docv:"TOKEN"
+                      ~doc:"Token to match (e.g. ka_abc123).  Required.")
+  in
+  let timeout =
+    Cmdliner.Arg.(value & opt float 120.0
+                  & info [ "timeout" ] ~docv:"SECONDS"
+                      ~doc:"Maximum seconds to wait for a verdict.")
+  in
+  let session_id_flag =
+    Cmdliner.Arg.(value & opt (some string) None
+                  & info [ "session-id"; "s" ] ~docv:"ID"
+                      ~doc:"Session ID whose inbox to watch.  Overrides C2C_MCP_SESSION_ID.")
+  in
+  let from_filter =
+    Cmdliner.Arg.(value & opt (some string) None
+                  & info [ "from" ] ~docv:"ALIAS"
+                      ~doc:"Only accept verdicts from this sender alias.")
+  in
+  let poll_interval =
+    Cmdliner.Arg.(value & opt float 1.0
+                  & info [ "poll-interval" ] ~docv:"SECONDS"
+                      ~doc:"Polling cadence (default 1.0).")
+  in
+  let+ token = token
+  and+ timeout = timeout
+  and+ session_id_opt = session_id_flag
+  and+ from_filter = from_filter
+  and+ poll_interval = poll_interval in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let session_id = match session_id_opt with
+    | Some sid -> sid
+    | None -> resolve_session_id_for_inbox broker
+  in
+  let lower_contains haystack needle =
+    let h = String.lowercase_ascii haystack in
+    let n = String.lowercase_ascii needle in
+    let hl = String.length h and nl = String.length n in
+    if nl = 0 then true
+    else if nl > hl then false
+    else
+      let rec scan i =
+        if i + nl > hl then false
+        else if String.sub h i nl = n then true
+        else scan (i + 1)
+      in
+      scan 0
+  in
+  let verdict_of (m : C2c_mcp.message) =
+    if not (lower_contains m.content token) then None
+    else if lower_contains m.content "allow" then Some "allow"
+    else if lower_contains m.content "deny" then Some "deny"
+    else None
+  in
+  let from_match (m : C2c_mcp.message) =
+    match from_filter with None -> true | Some a ->
+      String.lowercase_ascii m.from_alias = String.lowercase_ascii a
+  in
+  let deadline = Unix.gettimeofday () +. timeout in
+  let rec loop () =
+    let messages =
+      try C2c_mcp.Broker.read_inbox broker ~session_id
+      with _ -> []
+    in
+    let candidates = List.filter from_match messages in
+    let hit = List.find_map verdict_of candidates in
+    match hit with
+    | Some v -> print_endline v; exit 0
+    | None ->
+        let now = Unix.gettimeofday () in
+        if now >= deadline then exit 1
+        else begin
+          let remaining = deadline -. now in
+          let nap = if poll_interval < remaining then poll_interval else remaining in
+          (try Unix.sleepf nap with _ -> ());
+          loop ()
+        end
+  in
+  loop ()
+
 (* --- subcommand: setcap --------------------------------------------------- *)
 
 let setcap_cmd =
@@ -4995,6 +5095,7 @@ let setcap = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setcap"
                setcap_cmd
 
 let peek_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "peek-inbox" ~doc:"Peek at your inbox without draining.") peek_inbox_cmd
+let await_reply = Cmdliner.Cmd.v (Cmdliner.Cmd.info "await-reply" ~doc:"Block until a token-tagged verdict (allow/deny) arrives in the inbox; print verdict on stdout and exit 0, exit 1 on timeout.") await_reply_cmd
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
 let sweep = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sweep" ~doc:"Remove dead registrations and orphan inboxes.") sweep_cmd
 let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived inbox messages.") history_cmd
@@ -10399,7 +10500,7 @@ let () =
   let is_agent = is_agent_session () in
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
-    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; send_all; sweep
+    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; send_all; sweep
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
