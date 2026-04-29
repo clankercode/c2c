@@ -201,6 +201,17 @@ module Broker : sig
   val clear_proc_hooks_for_test : unit -> unit
   (** Restore real-/proc behaviour for the proc-scan hooks. *)
 
+  type resolve_result =
+    | Resolved of string
+    | Unknown_alias
+    | All_recipients_dead
+
+  val resolve_live_session_id_by_alias : t -> string -> resolve_result
+  (** Resolve an alias to a live session_id. Case-insensitive (#432):
+      [Foo-Bar] and [foo-bar] match the same registration row. On the
+      [All_recipients_dead] branch, attempts pid-refresh self-heal via
+      /proc scan. *)
+
   val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> ?deferrable:bool -> ?ephemeral:bool -> unit -> unit
   type send_all_result = { sent_to : string list; skipped : (string * string) list }
   val send_all : t -> from_alias:string -> content:string -> exclude_aliases:string list -> send_all_result
