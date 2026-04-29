@@ -420,13 +420,24 @@ let host_acceptable ~self_host = function
   | Some "" | Some "relay" -> true
   | Some h -> (match self_host with Some sh -> h = sh | None -> false)
 
+(* #330: a peer relay known to this relay, for cross-relay forwarding. *)
+type peer_relay_t = {
+  name : string;        (* well-known name, e.g. "relay-b" *)
+  url : string;        (* https://relay-b:9001 *)
+  identity_pk : string; (* Ed25519 pubkey of that relay, for auth *)
+}
+
 (* --- RELAY signature — satisfied by both InMemoryRelay and SqliteRelay --- *)
 
 module type RELAY = sig
   type t
-  val create : ?dedup_window:int -> ?persist_dir:string -> ?self_host:string option -> unit -> t
+  val create : ?dedup_window:int -> ?persist_dir:string -> ?self_host:string option -> ?peer_relays:(string, peer_relay_t) Hashtbl.t -> unit -> t
   (* #379: the relay's own host identity, used to validate alias@host targets. *)
   val self_host : t -> string option
+  (* #330 S1: peer-relay table for cross-relay forwarding. *)
+  val add_peer_relay : t -> peer_relay_t -> unit
+  val peer_relay_of : t -> name:string -> peer_relay_t option
+  val peer_relays_list : t -> peer_relay_t list
   val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
   val alias_of_identity_pk : t -> identity_pk:string -> string option
@@ -514,6 +525,8 @@ module InMemoryRelay : RELAY = struct
     device_pair_pending_mem : (string, device_pair_pending) Hashtbl.t;
     (* #379: this relay's own host identity for alias@host validation *)
     self_host : string option;
+    (* #330 S1: peer relays for cross-relay forwarding *)
+    peer_relays : (string, peer_relay_t) Hashtbl.t;
   }
 
   let room_history_jsonl_path persist_dir room_id =
@@ -552,7 +565,7 @@ module InMemoryRelay : RELAY = struct
        close_out oc
      with _ -> ())
 
-  let create ?(dedup_window = 10000) ?persist_dir ?(self_host=None) () =
+  let create ?(dedup_window = 10000) ?persist_dir ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
     let room_history = Hashtbl.create 16 in
     (* Load persisted room history on startup *)
     Option.iter (fun d -> load_room_history_from_disk d room_history) persist_dir;
@@ -576,6 +589,7 @@ module InMemoryRelay : RELAY = struct
       observer_bindings_mem = Hashtbl.create 64;
       device_pair_pending_mem = Hashtbl.create 64;
       self_host;
+      peer_relays;
     }
 
   let with_lock t f =
@@ -583,6 +597,11 @@ module InMemoryRelay : RELAY = struct
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
 
   let self_host t = t.self_host
+
+  (* #330 S1: peer_relay accessors *)
+  let add_peer_relay t pr = Hashtbl.replace t.peer_relays pr.name pr
+  let peer_relay_of t ~name = Hashtbl.find_opt t.peer_relays name
+  let peer_relays_list t = Hashtbl.fold (fun _ v acc -> v :: acc) t.peer_relays []
 
   let generate_uuid () =
     let random_hex n =
@@ -1274,21 +1293,28 @@ module SqliteRelay : RELAY = struct
     mutex : Mutex.t;
     observer_bindings : ObserverBindings.t;
     self_host : string option;
+    (* #330 S1: peer relays for cross-relay forwarding (in-memory, populated at boot from CLI) *)
+    peer_relays : (string, peer_relay_t) Hashtbl.t;
   }
 
-let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) () =
+let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
     let db_path = Filename.concat persist_dir "c2c_relay.db" in
     let mutex = Mutex.create () in
     let conn = Sqlite3.db_open db_path in
     Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
     Sqlite3.exec conn sqlite_ddl |> ignore;
-    { db_path; dedup_window; mutex; observer_bindings = ObserverBindings.create (); self_host }
+    { db_path; dedup_window; mutex; observer_bindings = ObserverBindings.create (); self_host; peer_relays }
 
   let with_lock t f =
     Mutex.lock t.mutex;
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
 
   let self_host t = t.self_host
+
+  (* #330 S1: peer_relay accessors *)
+  let add_peer_relay t pr = Hashtbl.replace t.peer_relays pr.name pr
+  let peer_relay_of t ~name = Hashtbl.find_opt t.peer_relays name
+  let peer_relays_list t = Hashtbl.fold (fun _ v acc -> v :: acc) t.peer_relays []
 
   let get_lease_row_fields row =
     match row with

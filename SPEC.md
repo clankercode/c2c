@@ -1,49 +1,47 @@
-# SPEC: #422 — decouple alias resolution from broker
-
-## Problem
-
-`resolve_alias_with_broker` in `c2c_rooms.ml` called `Broker.list_registrations broker`
-unconditionally, even when `C2C_MCP_AUTO_REGISTER_ALIAS` is set. The env var path
-was only tried as a fallback if the broker lookup returned nothing. This added
-unnecessary IO in the common case.
+# SPEC: forwarder S1 — peer_relays table + identity bootstrap
 
 ## Goal
 
-Extract a pure-env alias resolver for use as the fallback path, reducing broker
-IO for the common case where the session is registered.
+Add the `peer_relays` table to `Relay.t` so S2 can look up peer relay URLs
+by name and verify their identity pubkeys on ingress.
 
 ## Changes
 
-### `ocaml/cli/c2c_utils.ml`
+### 1. `ocaml/relay.ml` — type + interface
 
-Added `alias_from_env_only () : string option` — pure env read, zero broker IO.
+Add `peer_relay_t` type and accessors to `RELAY` interface:
 
-### `ocaml/cli/c2c_rooms.ml`
+```ocaml
+type peer_relay_t = { name: string; url: string; identity_pk: string }
 
-Refactored `resolve_alias_with_broker` to:
-1. **session-id first** — broker lookup via `C2C_MCP_SESSION_ID` (preserves existing semantics)
-2. **env fallback** — `C2c_utils.alias_from_env_only ()` if session not registered
-3. error if neither resolves
-
-Removed the local duplicate `env_auto_alias_rooms` function.
-
-## Alias Resolution Priority (canonical)
-
+val add_peer_relay : t -> peer_relay_t -> unit
+val peer_relay_of : t -> name:string -> peer_relay_t option
+val peer_relays_list : t -> peer_relay_t list
 ```
-override arg > session_id (C2C_MCP_SESSION_ID → broker) > env (C2C_MCP_AUTO_REGISTER_ALIAS)
-```
+
+Both `InMemoryRelay` and `SqliteRelay` get a `peer_relays : (string, peer_relay_t) Hashtbl.t`
+field (in-memory, populated from CLI flags at boot, not persisted to DB in S1).
+
+### 2. `ocaml/cli/c2c.ml` — CLI flags
+
+Add to `relay_serve_cmd`:
+- `--peer-relay name=URL` (repeatable, accumulates `name->url` entries)
+- `--peer-relay-pubkey name=PK` (repeatable, accumulates `name->pk` entries)
+
+At boot: validate every name in `--peer-relay-pubkey` also appears in `--peer-relay`,
+refuse to start on mismatch.
+
+### 3. `ocaml/relay.ml` — SqliteRelay
+
+`SqliteRelay.create` accepts `?peer_relays:(string, peer_relay_t) Hashtbl.t`.
+In-memory table passed in from CLI at boot; not stored in the SQLite DB.
 
 ## Acceptance Criteria
 
-- [x] `alias_from_env_only` returns `Some` when `C2C_MCP_AUTO_REGISTER_ALIAS` is set and non-empty
-- [x] `alias_from_env_only` returns `None` when unset or whitespace-only
-- [x] `resolve_alias_with_broker` uses session-id resolution first, env fallback second
-- [x] All existing unit tests pass (252 c2c_mcp + 12 worktree + 4 new utils)
-- [x] No semantic change to rooms commands
-- [ ] Peer-PASS (pending)
-
-## Out of Scope
-
-- `memory list/read` — already uses `resolve_alias_arg` (pure env)
-- `worktree list/status` — already broker-free
-- `c2c send` — already has `--from` override
+- [ ] `InMemoryRelay.create ~peer_relays:(Hashtbl.of_list [...])` populates the table
+- [ ] `peer_relay_of r ~name:"relay-b"` returns `Some { url; identity_pk }` when configured
+- [ ] `peer_relays_list` returns all configured peers
+- [ ] Boot with `--peer-relay relay-b=http://... --peer-relay-pubkey relay-b=BASE64PK` succeeds
+- [ ] Boot with `--peer-relay relay-b=http://... --peer-relay-pubkey relay-c=DIFFERENTPK` fails with error
+- [ ] Existing tests pass (no regression)
+- [ ] Unit test: boot relay with two peers, assert table populated, identity persisted across restart (InMemoryRelay)
