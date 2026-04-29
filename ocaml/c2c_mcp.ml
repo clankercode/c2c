@@ -5833,12 +5833,21 @@ let ts = Unix.gettimeofday () in
       in
       let session_id = resolve_session_id ?session_id_override arguments in
       Broker.touch_session broker ~session_id;
-      let alias =
-        match List.find_opt (fun r -> r.session_id = session_id)
-                (Broker.list_registrations broker) with
-        | Some reg -> reg.alias
-        | None -> ""
-      in
+      (* [#432 Slice B / Finding 4-B1] reject unregistered callers.
+         Previously the handler set requester_alias="" on miss and
+         wrote the entry anyway, which (a) is meaningless audit data
+         and (b) creates a small attack surface where an unregistered
+         caller writes pending state for empty-alias namespacing. The
+         CLI surface already rejects unregistered callers; the MCP
+         path now mirrors. *)
+      (match List.find_opt (fun r -> r.session_id = session_id)
+               (Broker.list_registrations broker) with
+       | None ->
+           Lwt.return (tool_result
+             ~content:"open_pending_reply requires the calling session to be registered first (call mcp__c2c__register before opening a pending reply)"
+             ~is_error:true)
+       | Some reg ->
+      let alias = reg.alias in
       let ttl_seconds =
         match Sys.getenv_opt "C2C_PERMISSION_TTL" with
         | Some v ->
@@ -5862,10 +5871,33 @@ let ts = Unix.gettimeofday () in
           ]
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_result ~content ~is_error:false))
   | "check_pending_reply" ->
       let perm_id = string_member "perm_id" arguments in
-      let reply_from_alias = string_member "reply_from_alias" arguments in
+      (* [#432 Slice B / Finding 4-B2] derive reply_from_alias from the
+         calling session's registration, NOT from request arguments.
+         Previously: any agent who knew a perm_id (UUID, but visible in
+         broker.log) plus any supervisor's alias could call this and
+         get back the requester's session_id (info disclosure). Now the
+         broker enforces that the calling session is itself the supervisor.
+         The legacy [reply_from_alias] argument is silently ignored if
+         provided; a separate one-line warning is appended to broker.log
+         so callers can migrate. *)
+      let session_id = resolve_session_id ?session_id_override arguments in
+      Broker.touch_session broker ~session_id;
+      let reply_from_alias =
+        match List.find_opt (fun r -> r.session_id = session_id)
+                (Broker.list_registrations broker) with
+        | Some reg -> reg.alias
+        | None -> ""
+      in
+      (* Legacy callers may still pass [reply_from_alias] as an argument; we
+         silently ignore it. The session-derived alias is authoritative. *)
+      if reply_from_alias = "" then
+        Lwt.return (tool_result
+          ~content:"check_pending_reply requires the calling session to be registered first"
+          ~is_error:true)
+      else
       (match Broker.find_pending_permission broker perm_id with
       | None ->
           let content =

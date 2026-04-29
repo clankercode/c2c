@@ -6903,14 +6903,21 @@ let test_open_pending_reply_via_mcp () =
               check string "kind is permission" "permission" (content |> member "kind" |> to_string)))
 
 let test_check_pending_reply_valid_supervisor_via_mcp () =
+  (* [#432 Slice B] Updated for the auth-fix: reply_from_alias is now
+     derived from the calling session, not the request argument. The
+     test now registers BOTH the requester and the supervisor with
+     distinct sessions, opens the pending entry as the requester, then
+     calls check_pending_reply from the SUPERVISOR's session. *)
   with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-requester"
+        ~alias:"agent-a" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-supervisor"
+        ~alias:"coordinator1" ~pid:None ~pid_start_time:None ();
       Unix.putenv "C2C_MCP_SESSION_ID" "session-requester";
       Fun.protect
         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
         (fun () ->
-          let broker = C2c_mcp.Broker.create ~root:dir in
-          C2c_mcp.Broker.register broker ~session_id:"session-requester"
-            ~alias:"agent-a" ~pid:None ~pid_start_time:None ();
           let open_req =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -6930,6 +6937,10 @@ let test_check_pending_reply_valid_supervisor_via_mcp () =
               ]
           in
           let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir open_req) in
+          (* Switch to the supervisor session — they are the one calling
+             check_pending_reply post-fix. The reply_from_alias arg is
+             still passed (legacy compat) but is silently ignored. *)
+          Unix.putenv "C2C_MCP_SESSION_ID" "session-supervisor";
           let request =
             `Assoc
               [ ("jsonrpc", `String "2.0")
@@ -7210,6 +7221,171 @@ let test_concurrent_open_pending_permission () =
             (Printf.sprintf "entry for child %d preserved (no lost-update)" i)
             true (found <> None))
         (List.init n_children (fun i -> i)))
+(* [#432 Slice B / Finding 4-B1] open_pending_reply must reject callers
+   whose session is not registered. Pre-fix: the handler stored
+   requester_alias="" and wrote the entry anyway — meaningless audit
+   data + a small attack surface where unregistered callers prime the
+   pending-permissions namespace. Post-fix: isError=true, no entry
+   written. *)
+let test_open_pending_reply_rejects_unregistered_caller () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-not-registered";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 91)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "open_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm-unreg-1")
+                          ; ("kind", `String "permission")
+                          ; ("supervisors", `List [`String "coordinator1"])
+                          ] )
+                    ] )
+              ]
+          in
+          let resp = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir req) in
+          (match resp with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "isError=true on unregistered caller" true is_error;
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               check bool "error mentions registration requirement" true
+                 (string_contains text "registered"));
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let entry =
+            C2c_mcp.Broker.find_pending_permission broker "perm-unreg-1"
+          in
+          check bool "no pending entry written for unregistered caller"
+            true (entry = None)))
+
+(* [#432 Slice B / Finding 4-B2] check_pending_reply must derive
+   reply_from_alias from the calling session's registration, NOT from
+   request arguments. Pre-fix: any agent who knew a perm_id (visible in
+   broker.log) could call with any supervisor's alias and get back the
+   requester's session_id (info disclosure). Post-fix: alias derived
+   from the calling session; legacy reply_from_alias arg is silently
+   ignored. *)
+let test_check_pending_reply_derives_from_session_not_arg () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-supervisor"
+        ~alias:"coord-x" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-requester"
+        ~alias:"reqr-x" ~pid:None ~pid_start_time:None ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-requester";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let open_req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 92)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "open_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm-derive-1")
+                          ; ("kind", `String "permission")
+                          ; ("supervisors", `List [`String "coord-x"])
+                          ] )
+                    ] )
+              ]
+          in
+          let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir open_req) in
+          (* The supervisor calls check_pending_reply. The arg
+             reply_from_alias is set to a NON-supervisor alias to
+             simulate a legacy/malicious caller — the broker must
+             ignore the arg and use the session-derived "coord-x". *)
+          Unix.putenv "C2C_MCP_SESSION_ID" "session-supervisor";
+          let check_req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 93)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "check_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm-derive-1")
+                          ; ("reply_from_alias", `String "fake-non-supervisor")
+                          ] )
+                    ] )
+              ]
+          in
+          let resp =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir check_req)
+          in
+          (match resp with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let content_text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let parsed = Yojson.Safe.from_string content_text in
+               let valid =
+                 parsed |> member "valid" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "valid=true (alias derived from session, not arg)"
+                 true valid;
+               let req_sid =
+                 parsed |> member "requester_session_id" |> to_string_option
+                 |> Option.value ~default:""
+               in
+               check string "requester_session_id returned correctly"
+                 "session-requester" req_sid)))
+
+(* [#432 Slice B / Finding 4-B2 companion] check_pending_reply rejects
+   callers whose session is not registered. *)
+let test_check_pending_reply_rejects_unregistered_caller () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-not-registered-2";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 94)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "check_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm-anything")
+                          ; ("reply_from_alias", `String "coordinator1")
+                          ] )
+                    ] )
+              ]
+          in
+          let resp = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir req) in
+          (match resp with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "isError=true on unregistered caller" true is_error)))
 
 (* --- liveness self-heal: respawn-under-new-pid (slice/liveness-respawn-pid) --- *)
 
@@ -8598,6 +8774,12 @@ let () =
               test_register_rejects_alias_with_pending_permission_from_alive_owner
           ; test_case "[#432] open_pending_permission concurrent across forks: no lost-update" `Quick
               test_concurrent_open_pending_permission
+          ; test_case "[#432 B1] open_pending_reply rejects unregistered caller" `Quick
+              test_open_pending_reply_rejects_unregistered_caller
+          ; test_case "[#432 B2] check_pending_reply derives reply_from_alias from calling session" `Quick
+              test_check_pending_reply_derives_from_session_not_arg
+          ; test_case "[#432 B2] check_pending_reply rejects unregistered caller" `Quick
+              test_check_pending_reply_rejects_unregistered_caller
           ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
               test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick
