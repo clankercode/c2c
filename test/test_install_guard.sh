@@ -33,6 +33,14 @@ echo d > "$WORK/f"; git -C "$WORK" commit -aq -m d
 SHA_D=$(git -C "$WORK" rev-parse HEAD)
 git -C "$WORK" checkout -q master
 
+# Set up a bare repo as the synthetic "origin" so Pattern 18 checks can run.
+ORIGIN="$WORK/origin.git"
+git init -q --bare "$ORIGIN"
+git -C "$WORK" remote add origin "$ORIGIN"
+git -C "$WORK" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+git -C "$WORK" push -q origin master:master
+git -C "$WORK" push -q origin div:div   # push div so origin/div exists and div is NOT behind origin/master
+
 STAMP_FILE="$WORK/.c2c-version"
 TARGET_BIN="$WORK/c2c-target"
 touch "$TARGET_BIN"
@@ -85,9 +93,17 @@ if run_guard "$SHA_B"; then fail "ancestor SHA should REFUSE"; else ok "ancestor
 write_stamp "$SHA_C"
 if FORCE=1 run_guard "$SHA_B"; then ok "FORCE=1 overrides refuse"; else fail "FORCE=1 should override"; fi
 
-# Case 6: divergent (B installed, installing D from another branch) → exits 0 (warn-only)
+# Case 6: divergent (B installed, installing D from another branch) → exits 0 (warn-only).
+# Strategy: stay on master and invoke guard inline (don't use run_guard which does checkout).
+# run_guard checks out $1 which detaches HEAD and triggers Pattern 18.
 write_stamp "$SHA_B"
-if run_guard "$SHA_D"; then ok "divergent SHA permits (warn-only)"; else fail "divergent should permit"; fi
+git -C "$WORK" checkout -q master   # stay on master
+( cd "$WORK" && \
+  C2C_INSTALL_STAMP="$STAMP_FILE" \
+  C2C_INSTALL_TARGET="$TARGET_BIN" \
+  C2C_INSTALL_QUIET="${QUIET:-1}" \
+  C2C_INSTALL_FORCE="${FORCE:-0}" \
+  bash "$GUARD" ) && ok "divergent SHA permits (warn-only)" || fail "divergent should permit"
 
 # Case 7: stamp with unknown sha → exits 0 (cross-clone install, warn-only)
 write_stamp "0000000000000000000000000000000000000000"
@@ -109,6 +125,33 @@ else
   fail "stamp script did not write expected sha"
   cat "$STAMP_FILE" >&2 || true
 fi
+
+# Case 10: worktree on a branch (not master) that is behind origin/master,
+# with a divergent stamp. The divergent path fires first but Pattern 18
+# then refuses because the branch is behind origin/master.
+# Strategy: stay on worktree_branch (checkout by name, not SHA) so current_branch
+# is worktree_branch during the guard run. Stamp says SHA_D (on div — divergent).
+git -C "$WORK" checkout -q "$SHA_A"   # start from SHA_A
+git -C "$WORK" checkout -q -b worktree_branch "$SHA_B"  # worktree_branch at SHA_B
+# Stay on worktree_branch (by name) so current_branch != master during guard.
+# run_guard does "git checkout -q $SHA_B" but since we're already at SHA_B
+# on worktree_branch, it stays on the branch (detached only if we checkout SHA directly).
+git -C "$WORK" checkout -q worktree_branch   # ensure we're on the branch
+write_stamp "$SHA_D"   # stamp says SHA_D (div branch — divergent from worktree_branch)
+FORCE=0
+if run_guard "$SHA_B"; then
+  fail "behind-origin-master should REFUSE (Pattern 18)"
+else
+  ok "behind-origin-master refuses (Pattern 18)"
+fi
+FORCE=1
+if run_guard "$SHA_B"; then
+  ok "behind-origin-master + FORCE=1 permits"
+else
+  fail "FORCE=1 should override Pattern 18"
+fi
+FORCE=0
+git -C "$WORK" checkout -q master  # restore HEAD
 
 echo
 echo "summary: $PASS passed, $FAIL failed"

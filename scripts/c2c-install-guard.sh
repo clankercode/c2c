@@ -101,4 +101,24 @@ fi
 # Divergent → warn but proceed (both branches contain commits the other
 # doesn't; either could be "right").
 log "WARN: installing divergent SHA ($new_sha) over ($old_sha by ${old_alias:-?})"
+
+# Pattern 18 (#388): refuse if origin/master has commits this worktree is missing.
+# Skip if on master or origin/master branch (canonical — always current by definition).
+# Check this BEFORE the divergent exit so we refuse stale divergent installs.
+current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [ "$current_branch" != "master" ] && [ "$current_branch" != "origin/master" ]; then
+  commits_behind=$(git rev-list --count HEAD..origin/master 2>/dev/null || echo 0)
+  if [ "$commits_behind" -gt 0 ]; then
+    log "REFUSE: origin/master is $commits_behind commit(s) ahead of HEAD — this binary would be semantically stale."
+    log "  Install would clobber a newer install with a version missing: $(git rev-list --format='%s' HEAD..origin/master 2>/dev/null | head -3 | tr '\n' ' ' | cut -c1-120)"
+    log "  To sync: git fetch origin && git rebase origin/master"
+    log "  To override: C2C_INSTALL_FORCE=1"
+    if [ "${C2C_INSTALL_FORCE:-0}" = "1" ]; then
+      log "C2C_INSTALL_FORCE=1 — overriding origin/master staleness check, proceeding."
+    else
+      exit 1
+    fi
+  fi
+fi
+
 exit 0

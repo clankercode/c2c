@@ -6110,10 +6110,15 @@ let doctor_cmd =
     Cmdliner.Arg.(value & flag & info [ "check-rebase-base" ]
       ~doc:"Check if HEAD is based on origin/master (exit 0 = OK, exit 1 = STALE).")
   in
+  let install_freshness =
+    Cmdliner.Arg.(value & flag & info [ "install-freshness" ]
+      ~doc:"Check if HEAD is fresh vs origin/master (exit 0 = FRESH, exit 1 = BEHIND). Pattern 18.")
+  in
   let+ summary = summary
   and+ json = json
-  and+ check_rebase_base = check_rebase_base in
-  if check_rebase_base then
+  and+ check_rebase_base = check_rebase_base
+  and+ install_freshness = install_freshness in
+  if check_rebase_base then begin
     let git_dir = match git_repo_toplevel () with
       | None ->
           Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
@@ -6133,7 +6138,38 @@ let doctor_cmd =
       Printf.printf "STALE — run: git rebase origin/master\n%!";
       exit 1
     end
-  else
+  end else if install_freshness then begin
+    (* Pattern 18: check if origin/master has commits HEAD is missing.
+       Skip check if on master or origin/master (canonical branch = always current). *)
+    let branch_name = match C2c_worktree.current_branch () with
+      | None ->
+          Printf.eprintf "error: cannot determine current branch (detached HEAD?)\n%!";
+          exit 1
+      | Some b -> b
+    in
+    if branch_name = "master" || branch_name = "origin/master" then begin
+      Printf.printf "FRESH (on %s — always current with origin)\n%!" branch_name;
+      exit 0
+    end;
+    let fetch_rc = Sys.command "git fetch origin master" in
+    if fetch_rc <> 0 then
+      Printf.eprintf "warning: git fetch origin master returned %d (assuming origin is up-to-date)\n%!" fetch_rc;
+    let behind_count =
+      try
+        let ic = Unix.open_process_in "git rev-list --count HEAD..origin/master" in
+        let count_s = input_line ic in
+        let () = close_in ic in
+        int_of_string (String.trim count_s)
+      with _ -> 0
+    in
+    if behind_count > 0 then begin
+      Printf.printf "BEHIND — origin/master is %d commit(s) ahead of HEAD.\n%!" behind_count;
+      exit 1
+    end else begin
+      Printf.printf "FRESH\n%!";
+      exit 0
+    end
+  end else
     let args = [] |> (if summary then fun l -> "--summary" :: l else Fun.id)
                 |> (if json then fun l -> "--json" :: l else Fun.id) in
     match git_repo_toplevel () with
