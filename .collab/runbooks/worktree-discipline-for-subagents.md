@@ -613,6 +613,57 @@ the gap.
 
 ---
 
+## Pattern 13 — `git stash` is destructive in shared-tree layout
+
+**Severity**: HIGH (data loss; same class as Pattern 6 reset-hard).
+
+**Symptom**: A subagent (or non-subagent agent) running `git stash` inside
+its worktree appears to "tidy" its tree, but the stash entry is **shared
+across all worktrees of the same `.git`** — popping it in a different
+worktree, or another agent stashing-popping concurrently, can crash
+peer uncommitted state into the wrong tree, or hide a peer's work
+behind a stash that the original peer never created.
+
+**Why this is a class-1 footgun**:
+
+`git stash` does not respect worktree boundaries. The stash list is
+keyed off `.git/refs/stash` — which is shared across all worktrees that
+share the `.git/` (which is every worktree in the c2c shared-tree
+layout). Two subagents stashing simultaneously, or one popping the
+other's stash by surprise, lose work silently.
+
+**Mitigation** (pre-emptive — never `git stash` in shared-tree):
+
+If you have dirty state and want a checkpoint, use one of:
+
+1. **Commit a fixup** — `git add -A && git commit -m "wip: <reason>"`.
+   Real commit, real SHA, undoable via `git reset --soft HEAD~1` (which
+   is non-destructive — only the index changes).
+2. **Diff to a tmpfile** — `git diff > /tmp/<slice-name>.wip.patch`,
+   then `git checkout .` (only inside YOUR worktree, never broader).
+   Re-apply later via `git apply /tmp/<slice-name>.wip.patch`. The
+   patch is local-to-the-shell, not shared via `.git/`.
+
+**Receipt**: cmd_restart do_exec fix slice (`0bf6d7e7`, cherry-picked
+`344f0445`, 2026-04-29 ~17:30Z). The dispatched subagent ran `git
+stash` once mid-flow and immediately recognized the footgun + `stash
+pop`'d the same `stash#0`. No peer harm (verified via `git stash
+list` showing the entry was the subagent's own and was popped
+cleanly), but a near-miss. Cairn greenlit this Pattern 13 doc slice
+in response.
+
+**Author-side counterpart**: when dispatching subagents, instruct
+them explicitly: *"NEVER `git stash`. Use commit-fixup or diff-to-
+tmpfile for dirty state."* The subagent prompt for this slice is
+itself a receipt — the prompt body for any future stanza-style
+subagent dispatch should include the no-stash directive.
+
+**Class membership**: same as Pattern 6 (`git reset --hard`),
+Pattern 4 (`git checkout HEAD -- <file>`) — destructive ops in
+shared-tree layout that cross worktree boundaries silently.
+
+---
+
 ## Why these rules are load-bearing
 
 The c2c swarm runs many parallel subagents during quota-burn
