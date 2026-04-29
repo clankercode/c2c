@@ -9467,6 +9467,91 @@ let test_slice_bmv_audit_log_emitted_on_reject () =
       check bool "audit-log has pinned_min_envelope_version=2" true
         (contains log_content "\"pinned_min_envelope_version\":2")))
 
+(* CRIT-2 cross-host divergence: full pin-flow against canonical-alias-form
+   senders (alice@hostA → bob@hostB). Sequences three phases against the
+   same broker:
+   (1) v2 first-contact: TOFU pin + min=2 + relay_e2e_pin_first_seen audit;
+   (2) rotated-key v2 from same alias: key-changed reject + pin_mismatch
+       audit + pin not overwritten;
+   (3) v1 with original key: version-downgrade-rejected + downgrade audit
+       + min still 2.
+   Confirms pin store keys on the literal alias string, so alice@hostA and
+   alice@hostB do not collide. *)
+let test_cross_host_divergence_full_pin_flow () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "alice@hostA" and recipient_alias = "bob@hostB" in
+      let (ed_seed1, ed_pk1_raw) = slice_b_gen_ed25519 () in
+      let ed_pk1_b64 = Relay_e2e.b64_encode ed_pk1_raw in
+      let (ed_seed2, ed_pk2_raw) = slice_b_gen_ed25519 () in
+      let ed_pk2_b64 = Relay_e2e.b64_encode ed_pk2_raw in
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let our_x25519 = Some recipient_x in
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let mk ~seed ~pk_b64 ~v =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:seed ~sender_ed_b64:pk_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext:"crit2-xhost" ~envelope_version:v
+      in
+      let read_log () =
+        let log_path = Filename.concat dir "broker.log" in
+        let ic = open_in log_path in
+        let buf = Buffer.create 1024 in
+        (try while true do Buffer.add_channel buf ic 1024 done
+         with End_of_file -> ());
+        close_in ic; Buffer.contents buf
+      in
+      let contains s sub =
+        try ignore (Str.search_forward (Str.regexp_string sub) s 0); true
+        with Not_found -> false
+      in
+      (* Phase 1: TOFU first-contact at v2. *)
+      let (_, status1) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias
+          ~content:(mk ~seed:ed_seed1 ~pk_b64:ed_pk1_b64 ~v:2)
+      in
+      check (option string) "phase1 enc_status=ok" (Some "ok") status1;
+      check (option string) "phase1 pin set to claimed key"
+        (Some ed_pk1_b64) (C2c_mcp.Broker.get_pinned_ed25519 sender_alias);
+      check (option int) "phase1 min_observed_version=2"
+        (Some 2) (C2c_mcp.Broker.get_min_observed_version sender_alias);
+      let log1 = read_log () in
+      check bool "phase1 audit: relay_e2e_pin_first_seen" true
+        (contains log1 "\"event\":\"relay_e2e_pin_first_seen\"");
+      check bool "phase1 audit: alias literal alice@hostA" true
+        (contains log1 (Printf.sprintf "\"alias\":\"%s\"" sender_alias));
+      (* Phase 2: rotated key from same alias → key-changed reject. *)
+      let (_, status2) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias
+          ~content:(mk ~seed:ed_seed2 ~pk_b64:ed_pk2_b64 ~v:2)
+      in
+      check (option string) "phase2 enc_status=key-changed"
+        (Some "key-changed") status2;
+      check (option string) "phase2 pin NOT overwritten by rotated key"
+        (Some ed_pk1_b64) (C2c_mcp.Broker.get_pinned_ed25519 sender_alias);
+      let log2 = read_log () in
+      check bool "phase2 audit: relay_e2e_pin_mismatch" true
+        (contains log2 "\"event\":\"relay_e2e_pin_mismatch\"");
+      (* Phase 3: original key but envelope_version=1 → downgrade reject. *)
+      let (_, status3) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias
+          ~content:(mk ~seed:ed_seed1 ~pk_b64:ed_pk1_b64 ~v:1)
+      in
+      check (option string) "phase3 enc_status=version-downgrade-rejected"
+        (Some "version-downgrade-rejected") status3;
+      check (option int) "phase3 min_observed_version still 2"
+        (Some 2) (C2c_mcp.Broker.get_min_observed_version sender_alias);
+      let log3 = read_log () in
+      check bool "phase3 audit: version_downgrade_rejected" true
+        (contains log3 "\"event\":\"version_downgrade_rejected\"")))
+
 (* --- liveness self-heal: respawn-under-new-pid (slice/liveness-respawn-pid) --- *)
 
 (* Pick a pid value that's almost certainly not in the process table.
@@ -11152,6 +11237,8 @@ let () =
               test_slice_bmv_v1_then_v2_then_v1_rejects
           ; test_case "[CRIT-1 Slice B-min-version] reject emits broker.log audit line" `Quick
               test_slice_bmv_audit_log_emitted_on_reject
+          ; test_case "[CRIT-2] cross-host divergence full pin-flow (TOFU + key-swap + downgrade)" `Quick
+              test_cross_host_divergence_full_pin_flow
           ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
               test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick
