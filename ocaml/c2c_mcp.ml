@@ -6081,7 +6081,7 @@ let ts = Unix.gettimeofday () in
                         | Some pinned when pinned <> recipient_pk_b64 ->
                           `Key_changed to_alias
                         | _ ->
-                          let session_id =
+                          let _session_id =
                             match session_id_override with
                             | Some sid -> sid
                             | None ->
