@@ -263,7 +263,7 @@ let test_outbox_enqueued_at_int () =
     let oc = open_out (Conn.outbox_path dir) in
     Fun.protect ~finally:(fun () -> close_out oc)
       (fun () ->
-        output_string oc "{\"from_alias\":\"alice\",\"to_alias\":\"bob@host\",\"content\":\"hi\",\"attempts\":3,\"enqueued_at\":1717000000}\n");
+        output_string oc "{\"from_alias\":\"alice\",\"to_alias\":\"bob@host\",\"content\":\"hi\",\"attempts\":3,\"enqueued_at\":1717200000}\n");
     let entries = Conn.read_outbox dir in
     Alcotest.(check int) "one entry" 1 (List.length entries);
     let e = List.hd entries in
@@ -303,5 +303,13 @@ let () =
     ];
     "mobile bindings", [
       Alcotest.test_case "add/remove/dedupe" `Quick test_mobile_bindings_add_remove;
+    ];
+    "classify_error", [
+      Alcotest.test_case "error_code dispatch" `Quick test_classify_error;
+    ];
+    "outbox new fields", [
+      Alcotest.test_case "fresh entry has attempts=1, enqueued_at>0" `Quick test_outbox_new_fields;
+      Alcotest.test_case "legacy entry defaults to now (not epoch)" `Quick test_outbox_backward_compat;
+      Alcotest.test_case "enqueued_at parses Int variant" `Quick test_outbox_enqueued_at_int;
     ];
   ]

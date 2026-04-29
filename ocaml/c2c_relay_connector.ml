@@ -379,8 +379,6 @@ let append_dlq_entry broker_root entry ~reason =
     (fun () -> output_string oc line)
 
 (** Classify an error response from the relay/client.
-    Returns the error class string: "unknown_alias" | "recipient_dead" | "connection_error" | "other" *)
-(** Classify an error response from the relay/client.
     The relay's send error response is {{"ok":false,"error_code":"<code>","error":"<msg>"}}.
     HTTP-level connection failures produce {{"ok":false,"error_code":"connection_error","error":"<msg>"}}.
     We check error_code first; unknown codes fall through to "other". *)
