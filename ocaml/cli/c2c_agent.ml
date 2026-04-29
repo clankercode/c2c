@@ -249,7 +249,7 @@ let agent_new_term =
   let interactive = not any_flag_passed && is_interactive_stdin () in
   let (description, role, compatible_clients, theme, auto_join_rooms, selected_snippets) =
     if not interactive then
-      ( Option.value description ~default:"TODO: describe this agent's purpose",
+      ( Option.value description ~default:"_(describe this agent's purpose)_",
         Option.value role_type ~default:"subagent",
         ["all"],
         theme,
@@ -298,8 +298,8 @@ let agent_new_term =
            ---\n\
            You are a %s agent.\n\
            Your responsibilities:\n\
-           - TODO: list primary responsibilities\n\
-           - TODO: add more as needed\n"
+           - _(list primary responsibilities)_\n\
+           - _(add more as needed)_\n"
           description
           role
           (String.concat ", " compatible_clients)
