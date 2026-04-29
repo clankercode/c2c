@@ -306,4 +306,67 @@ In addition to the per-slice tests above:
 
 ---
 
+## Addendum (post-peer-PASS, slate's backstop notes)
+
+### Downgrade-attack mitigation (defense-in-depth)
+
+Slate flagged that the verifier dispatch picks canonical_json
+shape from the envelope's self-claimed `envelope_version`. An
+attacker MITM'ing a known-v2 peer could downgrade their envelope
+to claim `envelope_version = 1` and revert to the v1 signed-
+blob — which excludes `from_x25519`, the very field CRIT-1
+fixes. Same risk for `from_ed25519` once Slice B lands.
+
+**Mitigation**: per-peer min-observed-version pin, persisted in
+the same TOFU store as Slice B's `from_ed25519` pin. Once a
+peer has been observed sending an `envelope_version >= 2`,
+refuse v1 envelopes from them. New CRIT-class slice (call it
+**Slice B-min-version**, or fold into Slice B's TOFU step):
+
+- Add `min_observed_version : int` field to the per-alias pin
+  record (default 1, monotonic-increase).
+- On every successful verify, update the pin's
+  `min_observed_version = max(current, envelope_version)`.
+- Before verify, if `envelope_version < pin.min_observed_version`,
+  reject with audit-log line `event=relay_e2e_downgrade_reject`.
+- Operator-rotation interface: deleting `relay_pins.json`
+  resets the min-observed pin (consistent with #432 Slice E
+  semantic — operator wipe = TOFU first-seen on next message).
+
+**Risk-register update**:
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| MITM downgrade v2→v1 to bypass CRIT-1/2 | medium | high (silent identity spoof on known-v2 peer) | Slice B-min-version (above) |
+
+### Stake-positions on the four open questions
+
+Slate's recommendations (final answers awaiting Cairn/Max sign-
+off, but these become the working assumptions for implementation
+dispatch unless overridden):
+
+1. **TS GUI verifier owner**: defer to Cairn/Max routing.
+   Galaxy is the reasonable first-ask but no firm owner today.
+2. **Soak window length**: **48h**. 24h misses cross-region
+   weekend gaps; 7d delays the strict-v2 flip
+   unnecessarily for what's a single-bit verifier toggle.
+   Crypto-canary 48h is industry-typical.
+3. **Pin-mismatch policy**: **envelope-only reject + audit
+   log + explicit operator `pin_rotate`.** Alias-lock is too
+   aggressive — legit key rotations would hard-lock peers and
+   require manual unstick. Existing TOFU 4/5 + observability
+   infra (#432) already routes that via the audit-log +
+   operator-action pattern.
+4. **`envelope_version` field name**: **explicit
+   `envelope_version: int`**. Two reasons:
+   (a) shape-detect is ambiguous when both new fields are
+   optional — a v2 envelope omitting both is indistinguishable
+   from v1 by shape;
+   (b) coupling on `enc: "box-x25519-v2"` couples encryption
+   suite with canonical-blob version, blocking independent
+   evolution (e.g. swap to AES-GCM later without changing
+   canonical_json shape).
+
+---
+
 🪨🧭 — stanza-coder + slate-coder
