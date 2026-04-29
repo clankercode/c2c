@@ -8354,6 +8354,85 @@ let test_proc_hooks_clear_restores_real_proc () =
       let healed = C2c_mcp.Broker.refresh_pid_if_dead broker ~session_id:synth_sid in
       check bool "refresh did NOT happen post-clear (real /proc has no match)" false healed)
 
+(* #432: case-fold consistency in alias resolution.
+
+   Before #432: register evicted other-session rows with
+   case-INSENSITIVE alias_casefold match (c2c_mcp.ml:1572) but
+   resolve_live_session_id_by_alias filtered with case-SENSITIVE
+   reg.alias = alias (c2c_mcp.ml:1208). A stale row whose alias
+   differed from the new alias only in case was NOT found by resolver
+   lookups but WAS evicted by registration — leaving the resolver
+   blind to a row register would have cleared. Combined with the
+   pid-refresh self-heal at L1228-1244, this could resurrect stale
+   rows. The audit at .collab/research/2026-04-29-stanza-coder-cross-host-routing-audit.md
+   identifies this as the H1' hypothesis shape. *)
+
+let test_resolve_alias_case_insensitive () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let live_pid = Unix.getpid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-foobar"
+        ~alias:"Foo-Bar"
+        ~pid:(Some live_pid)
+        ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time live_pid)
+        ();
+      (* Sender uppercase variant must resolve to the same session. *)
+      (match C2c_mcp.Broker.resolve_live_session_id_by_alias broker "FOO-BAR" with
+       | C2c_mcp.Broker.Resolved sid ->
+           check string "uppercase resolves to registered session" "s-foobar" sid
+       | C2c_mcp.Broker.Unknown_alias ->
+           failwith "expected Resolved, got Unknown_alias"
+       | C2c_mcp.Broker.All_recipients_dead ->
+           failwith "expected Resolved, got All_recipients_dead");
+      (* Mixed-case variant. *)
+      (match C2c_mcp.Broker.resolve_live_session_id_by_alias broker "foo-bar" with
+       | C2c_mcp.Broker.Resolved sid ->
+           check string "lowercase resolves to registered session" "s-foobar" sid
+       | _ -> failwith "expected Resolved for lowercase variant"))
+
+let test_resolve_alias_no_match_when_session_dead () =
+  (* Register a row with a dead pid + alias differing only in case from
+     the lookup; without a fresh process discoverable via the proc
+     hooks, the pid-refresh self-heal must NOT resurrect it. The test
+     drives resolve directly so we bypass enqueue's heal path; the
+     case-fold filter must still reject the dead row as a delivery
+     target. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-stale"
+        ~alias:"Foo-Bar"
+        ~pid:(Some dead_pid)
+        ~pid_start_time:(Some 99)
+        ();
+      (* Pre-flight: the row IS discoverable by case-fold (asymmetric
+         eviction predicate sees it), confirming we built the right
+         test shape. *)
+      (let regs = C2c_mcp.Broker.list_registrations broker in
+       check int "registry has the stale row" 1 (List.length regs));
+      (* Hook the proc scan to return NO live candidate — refresh has
+         nothing to bind to. *)
+      Fun.protect
+        ~finally:C2c_mcp.Broker.clear_proc_hooks_for_test
+        (fun () ->
+          C2c_mcp.Broker.set_proc_hooks_for_test
+            ~scan_pids:(fun () -> [])
+            ~read_environ:(fun _ -> None)
+            ();
+          (* Lookup by case-fold variant. The resolver finds the row
+             (case-insensitive filter) but it's dead; heal fails (no
+             discovery candidate); result must be All_recipients_dead. *)
+          match C2c_mcp.Broker.resolve_live_session_id_by_alias broker "FOO-BAR" with
+          | C2c_mcp.Broker.All_recipients_dead -> ()
+          | C2c_mcp.Broker.Resolved sid ->
+              failwith
+                (Printf.sprintf
+                   "stale row resurrected: resolver returned Resolved %s for case-fold variant"
+                   sid)
+          | C2c_mcp.Broker.Unknown_alias ->
+              failwith "expected All_recipients_dead, got Unknown_alias"))
+
 (* Note: an end-to-end test using the real /proc scan is impractical here.
    /proc/<pid>/environ is a kernel snapshot taken at exec time; calling
    Unix.putenv inside the test process does NOT update it, so the test
@@ -9889,6 +9968,10 @@ let () =
                test_enqueue_self_heals_dead_target_via_resolver_hooks
            ; test_case "proc hooks clear restores real /proc" `Quick
                test_proc_hooks_clear_restores_real_proc
+           ; test_case "#432 resolve alias is case-insensitive" `Quick
+               test_resolve_alias_case_insensitive
+           ; test_case "#432 stale dead row not resurrected by case-fold lookup" `Quick
+               test_resolve_alias_no_match_when_session_dead
            ; test_case "notify_shared_with DMs listed recipients" `Quick
                test_notify_shared_with_dms_listed_recipients
            ; test_case "notify_shared_with skips self in recipients" `Quick
