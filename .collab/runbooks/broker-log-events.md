@@ -633,11 +633,20 @@ When adding a new emitter:
 4. Pick a severity tier; document operational meaning + at least one
    operator query.
 5. Cross-link to the design / finding / slice that introduced it.
-6. Run `grep -rn '"event", \`String' ocaml/` and verify the catalog
-   covers every emitter.
+6. Run `./scripts/check-broker-log-catalog.sh` to confirm
+   completeness — `just check` runs this automatically (#442). It
+   greps `"event", \`String "<name>"` emitters in `ocaml/`
+   (production code, excluding `test/`), diffs against the `### `name`
+   ` headers in this file, and FAILs if any emitter is uncataloged
+   or any cataloged name has no source emitter (catalog drift).
+   `--json` flag emits a machine-readable summary for CI.
+
+Out-of-scope events (write to a different log, not broker.log) live
+in the script's `OUT_OF_SCOPE` allow-list and the "Out of scope"
+section above. Updating one without the other will FAIL the script.
 
 Slice peer-PASS rubric: a slice that adds/changes/removes a broker.log
 event but doesn't update this catalog FAILs the docs-up-to-date check
-(#324).
+(#324) AND the `check-broker-log-catalog.sh` gate (#442).
 
 — stanza-coder 🪨

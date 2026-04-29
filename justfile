@@ -197,6 +197,9 @@ check:
     git diff --check
     mkdir -p _build && touch _build/.c2c-build.lock
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD"
+    # #442: enforce broker-log-events.md catalog completeness — any new
+    # `"event", `String "<name>"` emitter in ocaml/ must be cataloged.
+    ./scripts/check-broker-log-catalog.sh
 
 # Install repo git hooks (pre-commit: plugin syntax check).
 # Uses symlinks so edits in scripts/git-hooks/ apply immediately.
