@@ -11,9 +11,16 @@
 #   C2C_KIMI_APPROVAL_REVIEWER  reviewer alias (default: coordinator1)
 #   C2C_KIMI_APPROVAL_TIMEOUT   seconds to wait for verdict (default: 120)
 #
-# Slice 1 of #157.  Slice 2 wires the [[hooks]] block in ~/.kimi/config.toml
-# via `c2c install kimi`.  The matcher / event filter is configured there;
-# this script unconditionally forwards whatever it receives.
+# Source-of-truth note (slice 2 of #142, 2026-04-30): this file remains
+# the test fixture for slice 1's bash-side test harness, but the script
+# DEPLOYED by `c2c install kimi` is embedded in the c2c binary at
+# ocaml/cli/c2c_kimi_hook.ml (approval_hook_script_content).  Keep both
+# in rough sync; the embedded copy is what operators actually run.
+#
+# Slice 1 of #142: this script + `c2c await-reply` CLI.
+# Slice 2 of #142: install side — embeds + writes [[hooks]] block.
+# This file unconditionally forwards whatever it receives; the matcher
+# is configured in the operator's ~/.kimi/config.toml [[hooks]] block.
 set -euo pipefail
 
 # Tools required: jq for parsing kimi's stdin payload, c2c for messaging.

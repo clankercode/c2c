@@ -363,7 +363,10 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
 (* --- setup: Kimi (JSON) --- *)
 
 let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
-  let config_path = Filename.concat (Sys.getenv "HOME") (".kimi" // "mcp.json") in
+  let home = Sys.getenv "HOME" in
+  let config_path = Filename.concat home (".kimi" // "mcp.json") in
+  let toml_config_path = Filename.concat home (".kimi" // "config.toml") in
+  let hook_install_dir = Filename.concat home (".local" // "bin") in
   let existing =
     if Sys.file_exists config_path then json_read_file config_path
     else `Assoc []
@@ -394,6 +397,21 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
   in
   mkdir_or_dryrun dry_run (Filename.dirname config_path);
   json_write_file_or_dryrun dry_run config_path config;
+  (* Slice 2 of #142: install the PreToolUse approval hook script and
+     append a fully-commented [[hooks]] block to ~/.kimi/config.toml.
+     Idempotent — running `c2c install kimi` twice yields one block. *)
+  let hook_path =
+    C2c_kimi_hook.install_approval_hook_script ~dest_dir:hook_install_dir ~dry_run
+  in
+  let hook_block_status =
+    C2c_kimi_hook.append_toml_block
+      ~config_path:toml_config_path ~hook_path ~dry_run
+  in
+  let hook_block_status_str = match hook_block_status with
+    | `Already_present -> "already_present"
+    | `Appended -> "appended"
+    | `Created -> "created"
+  in
   match output_mode with
   | Json ->
       print_json (`Assoc
@@ -402,6 +420,9 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
         ; ("alias", `String alias_val)
         ; ("broker_root", `String root)
         ; ("config", `String config_path)
+        ; ("hook_script", `String hook_path)
+        ; ("hooks_toml_path", `String toml_config_path)
+        ; ("hooks_toml_block", `String hook_block_status_str)
         ])
   | Human ->
       Printf.printf "Configured Kimi for c2c.\n";
@@ -409,7 +430,12 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
       Printf.printf "  broker root: %s\n" root;
       Printf.printf "  config:      %s\n" config_path;
       Printf.printf "  server:      %s\n" server_path;
-      Printf.printf "\nRestart Kimi to pick up the new MCP server.\n"
+      Printf.printf "  hook script: %s\n" hook_path;
+      Printf.printf "  hooks toml:  %s (%s)\n" toml_config_path hook_block_status_str;
+      Printf.printf "\nRestart Kimi to pick up the new MCP server.\n";
+      Printf.printf "PreToolUse permission forwarding ships fully-commented in %s —\n"
+        toml_config_path;
+      Printf.printf "uncomment ONE [[hooks]] example in that file to opt in.\n"
 
 (* --- setup: Gemini CLI (JSON, user-scope) --- *)
 
