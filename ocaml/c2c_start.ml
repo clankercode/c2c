@@ -1195,12 +1195,21 @@ let () =
     { binary = "opencode"; deliver_client = "opencode";
       needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
-  (* kimi: Wire bridge (kimi --wire JSON-RPC) is the current delivery path.
-     PTY deliver daemon is deprecated. Wire daemon polls broker and delivers
-     via Wire prompt, no PTY access needed. *)
+  (* kimi: delivery moves from wire-bridge to the kimi notification-store
+     push path. The wire-bridge spawns a fully-agentic `kimi --wire`
+     subprocess per delivery batch which registers as the same alias and
+     races the TUI to drain inbox — see finding b6455d8e + research doc
+     2026-04-29T10-27-00Z. The notifier replacement (C2c_kimi_notifier,
+     follow-up slice) writes notification JSON directly into the kimi
+     session's notifications/ dir. Until that ships, kimi delivery is
+     dark — restored by the next slice in this chain.
+
+     The wire-bridge code stays in place for opencode/codex (any future
+     ephemeral-no-TUI runner can opt into wire delivery by setting
+     needs_wire_daemon=true on its client_config). *)
   Stdlib.Hashtbl.add clients "kimi"
     { binary = "kimi"; deliver_client = "kimi";
-      needs_deliver = false; needs_wire_daemon = true; needs_poker = true;
+      needs_deliver = false; needs_wire_daemon = false; needs_poker = true;
       poker_event = Some "heartbeat"; poker_from = Some "kimi-poker";
       extra_env = [] };
   Stdlib.Hashtbl.add clients "crush"
@@ -2884,7 +2893,12 @@ module KimiAdapter : CLIENT_ADAPTER = struct
 
   let binary = "kimi"
   let needs_deliver = false
-  let needs_wire_daemon = true
+  (* Wire-bridge fully deprecated for kimi (root cause: dual-agent bug per
+     finding b6455d8e). Replaced by C2c_kimi_notifier in the follow-up slice;
+     until that lands, kimi delivery is dark. Once the notifier ships, the
+     wire-bridge code (c2c_wire_bridge.ml, c2c_wire_daemon.ml, start_wire_daemon)
+     becomes unreachable and can be deleted in a cleanup slice. *)
+  let needs_wire_daemon = false
   let needs_poker = true
   let poker_event = Some "heartbeat"
   let poker_from = Some "kimi-poker"
