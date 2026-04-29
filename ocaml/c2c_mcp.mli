@@ -133,6 +133,17 @@ module Broker : sig
   val reserved_system_aliases : string list
   (** Aliases that cannot be registered by any peer: ["c2c"; "c2c-system"]. *)
 
+  (** [#432 Slice E] Relay-e2e TOFU pin accessors. Pins are persisted to
+      [<broker_root>/relay_pins.json] (atomic tmp+rename, cross-process
+      flock on [relay_pins.json.lock]) so they survive broker restart.
+      The in-memory Hashtbls are write-through caches; every call below
+      re-reads the disk file under the lock. Exported primarily so tests
+      can validate the persistence contract. *)
+  val get_pinned_x25519 : string -> string option
+  val get_pinned_ed25519 : string -> string option
+  val pin_x25519_sync : alias:string -> pk:string -> [ `Already_pinned | `Mismatch | `New_pin ]
+  val pin_ed25519_sync : alias:string -> pk:string -> [ `Already_pinned | `Mismatch | `New_pin ]
+
   val compute_canonical_alias : alias:string -> broker_root:string -> string
   (** [compute_canonical_alias ~alias ~broker_root] returns "<alias>#<repo>@<host>"
       where repo is derived from broker_root path and host is the short hostname. *)

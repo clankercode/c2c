@@ -851,7 +851,116 @@ module Broker = struct
       List.exists (fun p -> p.requester_alias = alias && p.expires_at > now)
         (load_pending_permissions t))
 
-  let create ~root = { root }
+  (* [#432 Slice E] In-memory relay-e2e TOFU pins were process-local —
+     every broker restart silently downgraded x25519/ed25519
+     first-seen-wins to "first-seen-this-process". Persisted to disk at
+     <broker_root>/relay_pins.json, single file with two keyed
+     sub-objects {"x25519": {alias: pk_b64}, "ed25519": {alias: pk_b64}}.
+     Atomic write via [write_json_file] (tmp+rename); cross-process
+     serialization via flock on [relay_pins.json.lock] (separate from
+     registry / pending-permissions locks). The Hashtbls become a
+     write-through cache: every public API call loads from disk under
+     the lock and saves on mutation, so concurrent broker processes
+     observe each other's pins. *)
+  let relay_pins_root : string option ref = ref None
+
+  let relay_pins_path () =
+    match !relay_pins_root with
+    | Some r -> Filename.concat r "relay_pins.json"
+    | None -> failwith "relay_pins: broker root not set (call Broker.create first)"
+
+  let relay_pins_lock_path () =
+    match !relay_pins_root with
+    | Some r -> Filename.concat r "relay_pins.json.lock"
+    | None -> failwith "relay_pins: broker root not set (call Broker.create first)"
+
+  (** [#432 Slice E] Cross-process flock guarding relay_pins.json. Separate
+      from [registry.json.lock] and [pending_permissions.json.lock] so
+      pin operations don't deadlock against registry/pending paths. POSIX
+      advisory lock (Unix.lockf F_LOCK / F_ULOCK) on a fresh fd per call. *)
+  let with_relay_pins_lock f =
+    let r =
+      match !relay_pins_root with
+      | Some r -> r
+      | None -> failwith "relay_pins: broker root not set"
+    in
+    mkdir_p r;
+    let fd =
+      Unix.openfile (relay_pins_lock_path ())
+        [ O_RDWR; O_CREAT ] 0o644
+    in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+        (try Unix.close fd with _ -> ()))
+      (fun () ->
+        Unix.lockf fd Unix.F_LOCK 0;
+        f ())
+
+  let known_keys_ed25519 : (string, string) Hashtbl.t = Hashtbl.create 64
+  let known_keys_x25519 : (string, string) Hashtbl.t = Hashtbl.create 64
+  let downgrade_states : (string, Relay_e2e.downgrade_state) Hashtbl.t = Hashtbl.create 64
+
+  (** Rehydrate both Hashtbls from disk. Caller MUST hold
+      [with_relay_pins_lock]. *)
+  let load_relay_pins_from_disk () =
+    match !relay_pins_root with
+    | None -> ()
+    | Some _ ->
+      let path = relay_pins_path () in
+      if Sys.file_exists path then begin
+        let json =
+          try Yojson.Safe.from_file path with Yojson.Json_error _ -> `Assoc []
+        in
+        let load_section name tbl =
+          match json with
+          | `Assoc fields ->
+            (match List.assoc_opt name fields with
+             | Some (`Assoc entries) ->
+               Hashtbl.clear tbl;
+               List.iter (fun (alias, v) ->
+                 match v with
+                 | `String pk -> Hashtbl.replace tbl alias pk
+                 | _ -> ()) entries
+             | _ -> ())
+          | _ -> ()
+        in
+        load_section "x25519" known_keys_x25519;
+        load_section "ed25519" known_keys_ed25519
+      end
+
+  (** Serialize both Hashtbls to disk atomically. Caller MUST hold
+      [with_relay_pins_lock]. *)
+  let save_relay_pins_to_disk () =
+    match !relay_pins_root with
+    | None -> ()
+    | Some _ ->
+      let dump tbl =
+        let entries =
+          Hashtbl.fold (fun k v acc -> (k, `String v) :: acc) tbl []
+        in
+        `Assoc entries
+      in
+      let json =
+        `Assoc
+          [ ("x25519", dump known_keys_x25519)
+          ; ("ed25519", dump known_keys_ed25519)
+          ]
+      in
+      write_json_file (relay_pins_path ()) json
+
+  let create ~root =
+    let t = { root } in
+    (* [#432 Slice E] Bind the relay-pins persistence root and load any
+       previously-persisted pins into the in-memory Hashtbls. Idempotent
+       across recreates within the same process: subsequent [create]
+       calls simply re-bind and re-load (which is what tests exercise). *)
+    relay_pins_root := Some root;
+    (try
+       mkdir_p root;
+       with_relay_pins_lock (fun () -> load_relay_pins_from_disk ())
+     with _ -> ());
+    t
   let root t = t.root
 
   let tofu_mutex : (string, Lwt_mutex.t) Hashtbl.t = Hashtbl.create 64
@@ -864,14 +973,28 @@ module Broker = struct
       Hashtbl.add tofu_mutex alias m;
       m
 
-  let known_keys_ed25519 : (string, string) Hashtbl.t = Hashtbl.create 64
-  let known_keys_x25519 : (string, string) Hashtbl.t = Hashtbl.create 64
-  let downgrade_states : (string, Relay_e2e.downgrade_state) Hashtbl.t = Hashtbl.create 64
-
-  let get_pinned_ed25519 alias = Hashtbl.find_opt known_keys_ed25519 alias
-  let set_pinned_ed25519 alias pk = Hashtbl.replace known_keys_ed25519 alias pk
-  let get_pinned_x25519 alias = Hashtbl.find_opt known_keys_x25519 alias
-  let set_pinned_x25519 alias pk = Hashtbl.replace known_keys_x25519 alias pk
+  (* [#432 Slice E] Public read-side accessors load from disk under the
+     flock so concurrent broker processes observe each other's pins. The
+     in-memory Hashtbl acts as a write-through cache; correctness comes
+     from the disk file. *)
+  let get_pinned_ed25519 alias =
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
+      Hashtbl.find_opt known_keys_ed25519 alias)
+  let set_pinned_ed25519 alias pk =
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
+      Hashtbl.replace known_keys_ed25519 alias pk;
+      save_relay_pins_to_disk ())
+  let get_pinned_x25519 alias =
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
+      Hashtbl.find_opt known_keys_x25519 alias)
+  let set_pinned_x25519 alias pk =
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
+      Hashtbl.replace known_keys_x25519 alias pk;
+      save_relay_pins_to_disk ())
   let get_downgrade_state from_alias =
     match Hashtbl.find_opt downgrade_states from_alias with
     | Some ds -> ds
@@ -881,43 +1004,49 @@ module Broker = struct
   let pin_x25519_if_unknown ~alias ~pk =
     let m = get_tofu_mutex alias in
     Lwt_mutex.with_lock m (fun () ->
-      match Hashtbl.find_opt known_keys_x25519 alias with
-      | Some existing when existing <> pk -> Lwt.return `Mismatch
-      | Some _ -> Lwt.return `Already_pinned
-      | None ->
-        Hashtbl.replace known_keys_x25519 alias pk;
-        Lwt.return `New_pin)
+      Lwt.return (with_relay_pins_lock (fun () ->
+        load_relay_pins_from_disk ();
+        match Hashtbl.find_opt known_keys_x25519 alias with
+        | Some existing when existing <> pk -> `Mismatch
+        | Some _ -> `Already_pinned
+        | None ->
+          Hashtbl.replace known_keys_x25519 alias pk;
+          save_relay_pins_to_disk ();
+          `New_pin)))
 
   let pin_ed25519_if_unknown ~alias ~pk =
     let m = get_tofu_mutex alias in
     Lwt_mutex.with_lock m (fun () ->
-      match Hashtbl.find_opt known_keys_ed25519 alias with
-      | Some existing when existing <> pk -> Lwt.return `Mismatch
-      | Some _ -> Lwt.return `Already_pinned
-      | None ->
-        Hashtbl.replace known_keys_ed25519 alias pk;
-        Lwt.return `New_pin)
-
-  let tofu_sync_mutex = Mutex.create ()
+      Lwt.return (with_relay_pins_lock (fun () ->
+        load_relay_pins_from_disk ();
+        match Hashtbl.find_opt known_keys_ed25519 alias with
+        | Some existing when existing <> pk -> `Mismatch
+        | Some _ -> `Already_pinned
+        | None ->
+          Hashtbl.replace known_keys_ed25519 alias pk;
+          save_relay_pins_to_disk ();
+          `New_pin)))
 
   let pin_x25519_sync ~alias ~pk =
-    Mutex.lock tofu_sync_mutex;
-    Fun.protect ~finally:(fun () -> Mutex.unlock tofu_sync_mutex) (fun () ->
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
       match Hashtbl.find_opt known_keys_x25519 alias with
       | Some existing when existing <> pk -> `Mismatch
       | Some _ -> `Already_pinned
       | None ->
         Hashtbl.replace known_keys_x25519 alias pk;
+        save_relay_pins_to_disk ();
         `New_pin)
 
   let pin_ed25519_sync ~alias ~pk =
-    Mutex.lock tofu_sync_mutex;
-    Fun.protect ~finally:(fun () -> Mutex.unlock tofu_sync_mutex) (fun () ->
+    with_relay_pins_lock (fun () ->
+      load_relay_pins_from_disk ();
       match Hashtbl.find_opt known_keys_ed25519 alias with
       | Some existing when existing <> pk -> `Mismatch
       | Some _ -> `Already_pinned
       | None ->
         Hashtbl.replace known_keys_ed25519 alias pk;
+        save_relay_pins_to_disk ();
         `New_pin)
 
   let load_or_create_ed25519_identity () =

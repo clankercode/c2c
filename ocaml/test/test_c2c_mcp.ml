@@ -7902,6 +7902,96 @@ let test_open_pending_reply_handler_returns_error_at_cap () =
                check bool "error mentions cap reached" true
                  (string_contains text "cap reached"))))
 
+(* [#432 Slice E] Relay-e2e TOFU pins were process-local Hashtbls; every
+   broker restart silently reset first-seen-wins for messaging-layer
+   x25519/ed25519 identity. The fix persists both Hashtbls to
+   <broker_root>/relay_pins.json under flock + tmp+rename. The two
+   "persists across recreate" tests below assert the simple round-trip;
+   the concurrent-fork test mirrors Slice A's lost-update guard. *)
+let test_relay_pin_x25519_persists_across_broker_recreate () =
+  with_temp_dir (fun dir ->
+      let broker1 = C2c_mcp.Broker.create ~root:dir in
+      let pk = "x25519-test-pubkey-base64-aaaa" in
+      let r = C2c_mcp.Broker.pin_x25519_sync ~alias:"foo" ~pk in
+      check bool "first pin returns New_pin" true (r = `New_pin);
+      let _ = broker1 in
+      (* Recreate broker handle from same root — simulates restart. The
+         in-memory Hashtbl gets re-loaded from relay_pins.json. *)
+      let _broker2 = C2c_mcp.Broker.create ~root:dir in
+      (match C2c_mcp.Broker.get_pinned_x25519 "foo" with
+       | Some pk' ->
+         check string "x25519 pin survives broker recreate" pk pk'
+       | None ->
+         Alcotest.fail "x25519 pin not persisted across broker recreate"))
+
+let test_relay_pin_ed25519_persists_across_broker_recreate () =
+  with_temp_dir (fun dir ->
+      let broker1 = C2c_mcp.Broker.create ~root:dir in
+      let pk = "ed25519-test-pubkey-base64-bbbb" in
+      let r = C2c_mcp.Broker.pin_ed25519_sync ~alias:"bar" ~pk in
+      check bool "first pin returns New_pin" true (r = `New_pin);
+      let _ = broker1 in
+      let _broker2 = C2c_mcp.Broker.create ~root:dir in
+      (match C2c_mcp.Broker.get_pinned_ed25519 "bar" with
+       | Some pk' ->
+         check string "ed25519 pin survives broker recreate" pk pk'
+       | None ->
+         Alcotest.fail "ed25519 pin not persisted across broker recreate"))
+
+(* [#432 Slice E] Mirrors Slice A's [test_concurrent_open_pending_permission]:
+   N forked children each pin a distinct alias from a fresh broker
+   handle (independent flock state). After all children exit, the
+   parent recreates the broker and confirms every alias is visible. A
+   missing flock would cause read-modify-write interleaving to drop
+   pins; with the lock all N persist. *)
+let test_relay_pin_concurrent_save_no_lost_update () =
+  with_temp_dir (fun dir ->
+      let n_children = 4 in
+      let children =
+        List.init n_children (fun i ->
+            match Unix.fork () with
+            | 0 ->
+                let _child_broker = C2c_mcp.Broker.create ~root:dir in
+                let alias = Printf.sprintf "alias-pin-%d" i in
+                let pk = Printf.sprintf "pk-x25519-child-%d-aaaa" i in
+                let _ = C2c_mcp.Broker.pin_x25519_sync ~alias ~pk in
+                exit 0
+            | pid -> pid)
+      in
+      (* [#432 EINTR fix, mirrors Slice A] Retry waitpid on EINTR; a
+         SIGALRM from a heartbeat-armed test harness landing during a
+         blocking waitpid surfaces as Unix_error(EINTR, ...). *)
+      let rec waitpid_eintr pid =
+        try Unix.waitpid [] pid
+        with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_eintr pid
+      in
+      List.iter
+        (fun pid ->
+          let _, status = waitpid_eintr pid in
+          (match status with
+           | Unix.WEXITED 0 -> ()
+           | Unix.WEXITED rc ->
+               Alcotest.fail (Printf.sprintf "child pid=%d exited rc=%d" pid rc)
+           | Unix.WSIGNALED s ->
+               Alcotest.fail (Printf.sprintf "child pid=%d signaled %d" pid s)
+           | Unix.WSTOPPED s ->
+               Alcotest.fail (Printf.sprintf "child pid=%d stopped %d" pid s)))
+        children;
+      let _parent_broker = C2c_mcp.Broker.create ~root:dir in
+      List.iter
+        (fun i ->
+          let alias = Printf.sprintf "alias-pin-%d" i in
+          let expected_pk = Printf.sprintf "pk-x25519-child-%d-aaaa" i in
+          match C2c_mcp.Broker.get_pinned_x25519 alias with
+          | Some pk ->
+            check string
+              (Printf.sprintf "pin for child %d preserved (no lost-update)" i)
+              expected_pk pk
+          | None ->
+            Alcotest.fail
+              (Printf.sprintf "pin for child %d dropped (lost-update)" i))
+        (List.init n_children (fun i -> i)))
+
 (* --- liveness self-heal: respawn-under-new-pid (slice/liveness-respawn-pid) --- *)
 
 (* Pick a pid value that's almost certainly not in the process table.
@@ -9301,6 +9391,12 @@ let () =
               test_open_pending_permission_expired_dont_count
           ; test_case "[#432 C] open_pending_reply handler returns isError at cap" `Quick
               test_open_pending_reply_handler_returns_error_at_cap
+          ; test_case "[#432 Slice E] relay-e2e x25519 pin persists across broker recreate" `Quick
+              test_relay_pin_x25519_persists_across_broker_recreate
+          ; test_case "[#432 Slice E] relay-e2e ed25519 pin persists across broker recreate" `Quick
+              test_relay_pin_ed25519_persists_across_broker_recreate
+          ; test_case "[#432 Slice E] relay-e2e concurrent pin_save across forks: no lost-update" `Quick
+              test_relay_pin_concurrent_save_no_lost_update
           ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
               test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick
