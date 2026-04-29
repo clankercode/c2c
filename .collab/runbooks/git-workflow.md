@@ -195,6 +195,26 @@ status`, ping them — it may be a forgotten in-progress branch.
 
 ---
 
+### `just` recipes
+
+Canonical `just(1)` targets for c2c development. Run from the repo root.
+
+| Recipe | Purpose |
+|--------|---------|
+| `just` / `just build` | Compile-check only — narrow target list (ocaml/cli/c2c.exe etc). Use for fast iteration. |
+| `just bi` / `just install-all` | **Build + atomic install** all binaries to `~/.local/bin/`. Handles "Text file busy" via flock. |
+| `just check` | Full `dune build` — catches latent broken test exes that `just build` skips. Also runs `scripts/check-broker-log-catalog.sh` for broker.log event catalog completeness (#442). **Run before any peer-PASS request or coord cherry-pick batch.** |
+| `just test` | Full test suite. |
+| `just test-one -k "<pattern>"` | Run tests matching a pattern. |
+| `just gc` / `just worktree-gc` | GC accumulated `.worktrees/` — dry-run by default, `--clean` to remove. |
+| `just --list` | List all available recipes. |
+
+**Install guard (#302)**: `just install-all` refuses to clobber a newer install with an older commit. Override with `C2C_INSTALL_FORCE=1`. Cross-worktree races serialized via flock at `~/.local/bin/.c2c-install.lock`.
+
+**Restart after install**: `c2c restart <name>` to pick up the new binary in your managed session. Soft alternative: `kill -USR1 <opencode-pid>` (OC plugin reconnect) — only to the inner OpenCode pid, NOT the outer-loop wrapper.
+
+---
+
 ## Common failure modes
 
 ### "I worked in the main tree, now my branch checkout clobbers another agent's WIP"
