@@ -56,9 +56,9 @@ def _wait_for_health(port: int, timeout: float = 30.0) -> bool:
     while time.monotonic() < deadline:
         try:
             r = subprocess.run(
-                ["docker", "exec", "c2c-relay-a"
-                 if port == 9000 else "c2c-relay-b",
-                 "sh", "-c",
+                ["docker", "exec",
+                 "c2c-relay-a" if port == 9000 else "c2c-relay-b",
+                 "bash", "-c",
                  f"exec 3<>/dev/tcp/127.0.0.1/{port} && "
                  f"printf 'GET /health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && "
                  f"timeout 2 cat <&3 | grep -q '\"ok\":true'"],
@@ -138,11 +138,7 @@ class DockerExecIntegration(unittest.TestCase):
 
     def test_register_alice_on_relay_a(self):
         """Register alice on relay-a via docker exec."""
-        r = _docker_exec(
-            CONTAINER_A1,
-            ["register", "-a", "alice",
-             "--relay-url", "http://relay-a:9000"]
-        )
+        r = _docker_exec(CONTAINER_A1, ["register", "-a", "alice"])
         self.assertEqual(
             r.returncode, 0,
             f"c2c register alice failed: {r.stderr}\nstdout: {r.stdout}"
@@ -150,33 +146,29 @@ class DockerExecIntegration(unittest.TestCase):
 
     def test_register_bob_on_relay_b(self):
         """Register bob on relay-b via docker exec."""
-        r = _docker_exec(
-            CONTAINER_B1,
-            ["register", "-a", "bob",
-             "--relay-url", "http://relay-b:9001"]
-        )
+        r = _docker_exec(CONTAINER_B1, ["register", "-a", "bob"])
         self.assertEqual(
             r.returncode, 0,
             f"c2c register bob failed: {r.stderr}\nstdout: {r.stdout}"
         )
 
     def test_send_alice_to_bob_via_relay_a(self):
-        """Send alice → bob@relay-b via relay-a (cross-relay DM).
+        """Send alice → bob@host-b via relay-a (cross-relay DM).
 
-        Without peer relay forwarding configured, this goes to dead-letter on
-        relay-a. We assert the send itself succeeds (returncode 0), which
-        validates the docker-exec → c2c send path end-to-end.
+        Uses fully-qualified alias `bob@host-b` because OCaml relay requires
+        the host suffix for cross-host routing. Without peer relay forwarding
+        configured, this goes to dead-letter on relay-a. We assert the send
+        itself succeeds (returncode 0), which validates the docker-exec →
+        c2c send path end-to-end.
         """
         r = _docker_exec(
             CONTAINER_A1,
-            ["send", "bob",
-             "--relay-url", "http://relay-a:9000",
-             "Hello from alice via relay-a"]
+            ["send", "bob@host-b", "Hello from alice via relay-a"]
         )
         # Send should return 0 — the message was queued to the relay
         self.assertEqual(
             r.returncode, 0,
-            f"c2c send alice→bob failed: {r.stderr}\nstdout: {r.stdout}"
+            f"c2c send alice→bob@host-b failed: {r.stderr}\nstdout: {r.stdout}"
         )
 
     def test_poll_bob_inbox_from_relay_b(self):
@@ -191,10 +183,7 @@ class DockerExecIntegration(unittest.TestCase):
         The actual cross-relay forward path is exercised by mesh-test.sh
         once peer relay config is added.
         """
-        r = _docker_exec(
-            CONTAINER_B1,
-            ["poll-inbox", "--json", "--relay-url", "http://relay-b:9001"]
-        )
+        r = _docker_exec(CONTAINER_B1, ["poll-inbox", "--json"])
         self.assertEqual(
             r.returncode, 0,
             f"c2c poll-inbox bob failed: {r.stderr}\nstdout: {r.stdout}"
