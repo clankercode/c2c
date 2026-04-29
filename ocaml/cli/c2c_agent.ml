@@ -275,29 +275,38 @@ let agent_new_term =
     if selected_snippets = [] then "include: []\n"
     else "include: [" ^ String.concat ", " selected_snippets ^ "]\n"
   in
-  let tmpl = Printf.sprintf
-    "---\n\
-     description: %s\n\
-     role: %s\n\
-     compatible_clients: [%s]\n\
-     %s\
-     required_capabilities: []\n\
-     c2c:\n\
-     %s\
-     opencode:\n\
-     %s\
-     ---\n\
-     You are a %s agent.\n\
-     Your responsibilities:\n\
-     - TODO: list primary responsibilities\n\
-     - TODO: add more as needed\n"
-    description
-    role
-    (String.concat ", " compatible_clients)
-    include_yaml
-    auto_join_yaml
-    theme_yaml
-    name
+  (* If the selected role matches a known role class template, expand the
+     full body so the agent gets first-5-turns + heartbeat block + peer-PASS
+     sentence. display_name_hint is left empty — Path B creates a role file
+     for an agent that will set their own display name. Fall back to the
+     simple generic body for unknown role types. *)
+  let tmpl =
+    match Role_templates.render ~role_class:role ~alias:name ~display_name_hint:"" with
+    | Some rendered -> rendered
+    | None ->
+        Printf.sprintf
+          "---\n\
+           description: %s\n\
+           role: %s\n\
+           compatible_clients: [%s]\n\
+           %s\
+           required_capabilities: []\n\
+           c2c:\n\
+           %s\
+           opencode:\n\
+           %s\
+           ---\n\
+           You are a %s agent.\n\
+           Your responsibilities:\n\
+           - TODO: list primary responsibilities\n\
+           - TODO: add more as needed\n"
+          description
+          role
+          (String.concat ", " compatible_clients)
+          include_yaml
+          auto_join_yaml
+          theme_yaml
+          name
   in
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc)

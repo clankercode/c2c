@@ -89,7 +89,7 @@ codegen-role-templates:
     #!/usr/bin/env bash
     set -euo pipefail
     src_dir=.c2c/roles/builtins/templates
-    out=ocaml/cli/role_templates_embedded.ml
+    out=ocaml/cli/role_templates.ml
     delim=role_template_src
     if [ ! -d "$src_dir" ]; then
         echo "error: $src_dir/ not found" >&2
