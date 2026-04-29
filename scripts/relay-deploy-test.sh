@@ -1,11 +1,26 @@
 #!/usr/bin/env bash
-# scripts/relay-deploy-test.sh — local Railway deploy reproducer.
+# scripts/relay-deploy-test.sh — local Railway deploy reproducer + peer-PASS gate.
 #
 # Mimics Railway's relay build + startup path:
 #   1. docker build (compile check)
 #   2. docker run (startup crash check)
-#   3. health endpoint check
-#   4. container logs on failure
+#   3. health endpoint check (HTTP 200)
+#   4. EACCES perm-degrade (identity write failure — must not crash)
+#
+# Exit codes:
+#   0  all steps passed
+#   1  any step failed (build / run / health / EACCES)
+#
+# Deferred items (NOT covered by this script):
+#   - Dead-letter path: needs C2C_RELAY_ADMIN_TOKEN + live relay; covered by
+#     relay-smoke-test.sh step 8 when run against production.
+#   - Multi-container relay mesh: not testable in single-host docker without
+#     compose orchestrator; Railway's own infra tests this.
+#   - Token-auth validation: needs a valid C2C_RELAY_TOKEN and would require
+#     a second container registering against the first; too heavy for a gate.
+#   - Volume persistence: /data written → survive restart requires a
+#     compose-based test with a named volume; deferred to a dedicated
+#     compose-based integration suite.
 #
 # Usage:
 #   ./scripts/relay-deploy-test.sh [--local-port PORT] [GIT_REF]
@@ -13,6 +28,11 @@
 #
 # GIT_REF defaults to HEAD of the current repo.
 set -euo pipefail
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "docker not found — cannot run relay-deploy-test" >&2
+    exit 1
+fi
 
 PORT="${RELAY_DEPLOY_TEST_PORT:-18080}"
 GIT_REF="${1:-HEAD}"

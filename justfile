@@ -326,6 +326,15 @@ relay-up:
 relay-down:
     docker compose down
 
+# Railway deploy-path gate: docker build → run → health → EACCES perm-degrade.
+# Runs the relay inside a docker container exactly as Railway would, asserting
+# it starts cleanly and degrades gracefully under a read-only /data volume.
+# See scripts/relay-deploy-test.sh for deferred items (dead-letter, mesh, token).
+relay-deploy-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exec scripts/relay-deploy-test.sh
+
 relay-reset:
     docker compose down -v
 
