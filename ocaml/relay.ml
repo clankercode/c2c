@@ -945,7 +945,7 @@ module InMemoryRelay : RELAY = struct
           Hashtbl.replace t.room_history room_id [];
         if not already_member then begin
           let ts = Unix.gettimeofday () in
-        let msg_id = Uuidm.to_string (Uuidm.v `V4) in
+        let msg_id = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
           let content = room_join_content alias room_id in
           let hist_msg = `Assoc [
             ("message_id", `String msg_id); ("from_alias", `String room_system_alias);
@@ -1779,7 +1779,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) () =
   let send t ~from_alias ~to_alias ~content ?(message_id=None) =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v `V4) in
+      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let ts = Unix.gettimeofday () in
       let has_row = exec_prepared conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" [`Text to_alias] in
       if not has_row then
@@ -1875,7 +1875,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) () =
       let now = Unix.gettimeofday () in
       let sent_to = ref [] in
       let skipped = ref [] in
-      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v `V4) in
+      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let stmt = Sqlite3.prepare conn "SELECT alias, last_seen, ttl, node_id, session_id FROM leases WHERE alias != ?" in
       Sqlite3.bind_text stmt 1 from_alias |> ignore;
       let rec loop () =
@@ -1934,7 +1934,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) () =
   let send_room t ~from_alias ~room_id ~content ?(message_id=None) ?envelope () =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v `V4) in
+      let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let ts = Unix.gettimeofday () in
       let delivered_to = ref [] in
       let skipped = ref [] in
@@ -3174,11 +3174,11 @@ generateKeys();
         (* #379: write to dead_letter so the rejection is observable and
            retry-on-recovery is possible, matching the pattern used by other
            relay-layer rejections (unknown_alias, recipient_dead). *)
-        let msg_id = Uuidm.to_string (Uuidm.v `V4) in
-        let ts = Unix.gettimeofday () in
-        let dl = `Assoc [
-          ("ts", `Float ts);
-          ("message_id", `String msg_id);
+         let msg_id = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
+         let ts = Unix.gettimeofday () in
+         let dl = `Assoc [
+           ("ts", `Float ts);
+           ("message_id", `String msg_id);
           ("from_alias", `String from_alias);
           ("to_alias", `String to_alias);
           ("content", `String content);
