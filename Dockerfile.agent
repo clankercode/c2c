@@ -57,11 +57,12 @@ COPY --from=builder /home/opam/c2c/_build/default/ocaml/cli/c2c.exe /usr/local/b
 RUN chmod +x /usr/local/bin/c2c
 
 # Python deliver daemon + its runtime dependencies.
-# c2c_deliver_inbox.py imports c2c_poll_inbox and c2c_poker from the repo root,
-# so all three must be present in the container and in PYTHONPATH.
+# c2c_deliver_inbox.py imports c2c_poll_inbox, c2c_poker, and c2c_mcp
+# from the repo root, so all four must be present in the container and in PYTHONPATH.
 COPY c2c_deliver_inbox.py /usr/local/bin/c2c_deliver_inbox.py
 COPY c2c_poll_inbox.py /usr/local/bin/c2c_poll_inbox.py
 COPY c2c_poker.py /usr/local/bin/c2c_poker.py
+COPY c2c_mcp.py /usr/local/bin/c2c_mcp.py
 
 # PTY-capable deliver shim — wraps c2c_deliver_inbox.py via PYTHONPATH.
 # PYTHONPATH must include /usr/local/bin so the import statements resolve.

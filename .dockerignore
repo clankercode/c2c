@@ -41,5 +41,8 @@ venv/
 *.sqlite
 *.sqlite-journal
 
-# Bind-mount volumes (runtime-created, not needed at build time)
+# Bind-mount volumes — created at runtime by docker compose, not needed at
+# build time. Excluding avoids "permission denied reading context" errors
+# when volume subdirectories are owned by other uids (e.g. uid=999 from a
+# prior container run).
 volumes/
