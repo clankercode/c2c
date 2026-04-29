@@ -7,13 +7,13 @@ or agent) may append items; use `- [x] FOLLOW-UP (v2): per-instance shim → swa
 entries short — link to `.collab/findings/*.md` for details. Include your alias
 and date on non-trivial entries so future readers have a contact point.
 
-- [ ] **#154**: `launch_args 81` extra_args reversed + at beginning not end. Root cause: `prepare_launch_args` for `cmd_reset_thread_peers` case — likely reversed `List.append` or `Array.concat`. Fix: ~5-10 lines in `c2c_start.ml`. Severity LOW. Filed 2026-04-29 by jungle-coder.
+- [x] **#154**: `launch_args 81` extra_args reversed + at beginning not end. Root cause: `last_n` test helper had `(n<=0) -> List.rev acc` double-reversal; also `fast_path_get_tmux_location` broad `_` catch-all on orphaned TMUX_PANE. Fixed in `373f6a43` (cherry-picked `3ff1d866`) + `5ec45127` (cherry-picked `e1da2fad`). Severity LOW. Filed 2026-04-29 by jungle-coder.
   Finding: `.collab/findings/2026-04-29T13-30-00Z-jungle-coder-pre-existing-test-failures.md`
 
-- [ ] **#155**: `lookup 0` coder lookup returns YAML frontmatter instead of template body. Root cause: `codegen-role-templates` outputs raw YAML frontmatter instead of `{role_template_src|...}` format. Fix: ~5-10 lines in codegen or test expectation. Severity MEDIUM. Filed 2026-04-29 by jungle-coder.
+- [x] **#155**: `lookup 0` coder lookup returns wrong expected value. Root cause: `test_lookup_known` expected `role_template_src|---` but codegen correctly outputs YAML frontmatter `---`. Fixed test expectation in `5ec45127` (cherry-picked `e1da2fad`). Severity MEDIUM. Filed 2026-04-29 by jungle-coder.
   Finding: `.collab/findings/2026-04-29T13-30-00Z-jungle-coder-pre-existing-test-failures.md`
 
-- [ ] **#156**: `get_tmux_location 0` exits 0 when TMUX unset via env. Root cause: tmux shim passes through subcommand when TMUX_PANE is still set (even with TMUX unset). Fix: ~3-5 lines in `git-shim.sh` passthrough condition. Severity LOW. Filed 2026-04-29 by jungle-coder.
+- [x] **#156**: `get_tmux_location 0` exits 0 when TMUX unset via env. Root cause: tmux shim passes through subcommand when TMUX_PANE is still set (even with TMUX unset). Fixed in `373f6a43` (cherry-picked `3ff1d866`). Severity LOW. Filed 2026-04-29 by jungle-coder.
   Finding: `.collab/findings/2026-04-29T13-30-00Z-jungle-coder-pre-existing-test-failures.md`
 
 **Hygiene:** periodically prune completed (`- [x]`) items that are more than
