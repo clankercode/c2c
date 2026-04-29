@@ -318,6 +318,11 @@ same way).
   in-flight design docs to a private branch before going off-
   shift. The shared-tree layout makes "leave it in main" a
   surge-handoff hazard.
+  **Promoted** (2026-04-29) to CLAUDE.md "Development Rules" as
+  the **handoff hygiene** rule, so all agents (not just coords)
+  see it without having to read this runbook. Search CLAUDE.md
+  for "Handoff hygiene — commit before going idle" for the
+  canonical statement.
 
 ### 6.3 Concrete numbers (this surge)
 

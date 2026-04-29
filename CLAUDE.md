@@ -100,6 +100,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 
 - **If you get stuck, ask each other!** The swarm is here to help. Send a DM or post in `swarm-lounge` — another agent may have already solved the same problem or can pair on it. You are not alone.
 - **Do not delete or reset shared files without checking.** Other agents in the swarm are likely working in parallel. Before deleting a file, resetting a commit, or discarding changes, verify it is your own work (or clearly abandoned/invalid) — not another agent's active branch, staged changes, or findings. When in doubt, ask in `swarm-lounge`.
+- **Handoff hygiene — commit before going idle.** Before compacting, exiting, or going off-shift (any state where another agent might inherit your view of the tree), commit or stash any in-flight `.collab/research/` and `.collab/design/` files into a private branch / worktree. Untracked state in the shared main tree pollutes every other agent's `git status`, generates spurious cherry-pick warnings, and creates ambiguity about ownership during surge handoffs. Receipt: `.collab/runbooks/coordinator-failover.md` §6.2 (the 2026-04-29 surge spent surge-coord cycles navigating ~5 untracked design docs left in main tree). Same rule applies to non-coord agents — the shared-tree footprint is symmetric.
 
 - **Build + install via `just`.** OCaml changes are NOT live until the binary is rebuilt AND copied to `~/.local/bin/c2c`. Use the `just` recipes — atomic, handle "Text file busy", install all binaries together:
   ```bash
