@@ -7408,14 +7408,26 @@ let start_cmd =
      commas (e.g. `--prompt "Hello, world"` would become three tokens:
      ["--prompt"; "Hello"; " world"]). With plain `string`, each positional
      token is preserved verbatim. *)
-  let extra_argv =
-    Cmdliner.Arg.(value & pos_right 1 string [] & info [] ~docv:"ARG"
-      ~doc:"Extra arguments forwarded to the spawned client's argv (e.g. \
-            `c2c start claude -- --print hello` runs claude with `--print hello`). \
-            Tokens are preserved verbatim — commas inside an argument are NOT \
-            split. For CLIENT=tmux, the tail is typed into the target pane \
-            instead of appended to argv. For CLIENT=pty, the first tail arg \
-            is the command to spawn under the PTY (e.g. `c2c start pty -- bash -i`).")
+    (* #470: `pos_all string []` captures all positional args after the subcommand
+       as individual tokens (preserving commas). Cmdliner puts `--` at position 1,
+       so we strip the first 2 elements (client name + `--`). This replaces the
+       broken `pos_right 1 (list string) []` which mangled comma-containing args
+       and included `--` literally in the string. *)
+    let extra_argv_term =
+      Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"ARG"
+        ~doc:"Extra arguments forwarded to the spawned client's argv (e.g. \
+              `c2c start claude -- --print hello` runs claude with `--print hello`). \
+              Tokens are preserved verbatim — commas inside an argument are NOT \
+              split. For CLIENT=tmux, the tail is typed into the target pane instead \
+              of appended to argv. For CLIENT=pty, the first tail arg is the command \
+              to spawn under the PTY (e.g. `c2c start pty -- bash -i`).")
+    in
+    let open Cmdliner.Term.Syntax in
+    let+ extra_argv = extra_argv_term in
+    (* Strip client name (pos 0) and `--` (pos 1); rest is the child's extra argv. *)
+    match extra_argv with
+    | _ :: _ :: rest -> rest
+    | _ -> []
   in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")
@@ -7503,9 +7515,11 @@ let start_cmd =
   and+ foreground_flag = foreground_flag
   and+ relay_url_opt = relay_url_opt
   and+ interval_opt = interval_opt in
-  (* #470: extra_argv is now string list (was string list list when the
-     positional converter was `list string` — that split each token on
-     commas). No flatten needed. *)
+  (* #470: extra_argv is now string list. The positional converter was changed
+     from `pos_right 1 (list string) []` (which split each token on commas, so
+     `c2c start claude -- --prompt "Hello, world"` would arrive as
+     ["--prompt"; "Hello"; " world"]) to `pos_all string []` which preserves
+     each token verbatim; no flatten needed. *)
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->

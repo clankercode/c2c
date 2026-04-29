@@ -223,16 +223,17 @@ let test_prepare_launch_args_forwards_extra_args_for_codex () =
     (has_adjacent_pair "--profile" "myprofile" args)
 
 (* #470 regression guard: the `c2c start` Cmdliner term parses trailing
-   args after `--` via `pos_right 1 string []`. The previous shape
+   args after `--` via `pos_all string []`. The previous shape
    `pos_right 1 (list string) []` used the `list string` converter, which
-   splits each token on commas — so `c2c start claude -- --prompt "Hello, world"`
+   split each token on commas — so `c2c start claude -- --prompt "Hello, world"`
    would arrive as ["--prompt"; "Hello"; " world"] instead of
-   ["--prompt"; "Hello, world"]. This test mirrors the term shape
-   inline so the contract is exercised independently of the (private,
-   inlined) c2c.ml term. *)
+   ["--prompt"; "Hello, world"]. `pos_all string []` preserves each token
+   verbatim; commas inside arguments are NOT split. The first 2 positional
+   elements (client name + `--`) are stripped before the result is used, so
+   the final extra_argv contains only the args after `--`. *)
 let test_extra_argv_preserves_commas_470 () =
   let extra_argv =
-    Cmdliner.Arg.(value & pos_right 1 string [] & info [] ~docv:"ARG" ~doc:"")
+    Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"ARG" ~doc:"")
   in
   let client =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"")
@@ -245,8 +246,9 @@ let test_extra_argv_preserves_commas_470 () =
     let open Cmdliner.Term.Syntax in
     let+ _client = client
     and+ _name = name
-    and+ argv = extra_argv in
-    captured := Some argv
+    and+ all = extra_argv in
+    (* Strip client name (pos 0) and `--` (pos 1) *)
+    captured := Some (match all with _ :: _ :: rest -> rest | _ -> [])
   in
   let cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start") term in
   let argv =
