@@ -61,6 +61,43 @@ run_shim_as_coord() {
     )
 }
 
+# Helper: run git commit through the shim in the main tree
+# Args: <refuse_flag> <coord_bypass>
+# refuse_flag: "1" to set C2C_COMMIT_REFUSE=1, "0" otherwise
+# coord_bypass: "1" to set C2C_COORDINATOR=1, "0" otherwise
+run_shim_commit() {
+    local refuse_flag="$1"
+    local coord_bypass="$2"
+    local msg="shim-test-$$-$(date +%s)"
+    (
+        export PATH="$(dirname "$SHIM"):$PATH"
+        export C2C_GIT_SHIM_MAIN_TREE="$REAL_REPO"
+        unset C2C_COORDINATOR
+        unset C2C_COMMIT_REFUSE
+        [ "$refuse_flag" = "1" ] && export C2C_COMMIT_REFUSE=1
+        [ "$coord_bypass" = "1" ] && export C2C_COORDINATOR=1
+        cd "$REAL_REPO"
+        "$SHIM" commit --allow-empty -m "$msg" 2>&1 || echo "EXIT_CODE:$?"
+    )
+}
+
+# Helper: run git commit through the shim in a worktree (separate main-tree setting)
+# Args: <worktree_dir> <refuse_flag>
+run_shim_commit_in_worktree() {
+    local wtdir="$1"
+    local refuse_flag="$2"
+    local msg="shim-test-wt-$$-$(date +%s)"
+    (
+        export PATH="$(dirname "$SHIM"):$PATH"
+        export C2C_GIT_SHIM_MAIN_TREE="$REAL_REPO"
+        unset C2C_COORDINATOR
+        unset C2C_COMMIT_REFUSE
+        [ "$refuse_flag" = "1" ] && export C2C_COMMIT_REFUSE=1
+        cd "$wtdir"
+        "$SHIM" commit --allow-empty -m "$msg" 2>&1 || echo "EXIT_CODE:$?"
+    )
+}
+
 echo "=== git-shim unit tests ==="
 echo "SHIM=$SHIM"
 echo "REAL_REPO=$REAL_REPO"
@@ -124,6 +161,66 @@ rm -rf "$worktree_dir"
 branch_name="test-shim-$$-$(date +%s)"
 git -C "$CLONE_DIR" worktree add "$worktree_dir" -b "$branch_name" >/dev/null 2>&1
 run_shim "$worktree_dir" reset --hard >/dev/null 2>&1 && pass "worktree reset --hard allowed" || fail "worktree reset --hard should be allowed"
+git -C "$CLONE_DIR" worktree remove "$worktree_dir" --force >/dev/null 2>&1 || true
+rm -rf "$worktree_dir"
+
+# ── Test 8: worktree: git commit passes through without warning ───────
+echo "--- Test 8: worktree commit: no warning, exit 0 ---"
+worktree_dir="$(mktemp -d)"
+rm -rf "$worktree_dir"
+branch_name="test-shim-commit-$$-$(date +%s)"
+git -C "$CLONE_DIR" worktree add "$worktree_dir" -b "$branch_name" >/dev/null 2>&1 || true
+output=$(run_shim_commit_in_worktree "$worktree_dir" 0 2>&1; true)
+ec=$?
+if [ $ec -eq 0 ] && ! echo "$output" | grep -q "WARNING"; then
+    pass "worktree commit: no warning, exit 0"
+else
+    fail "worktree commit should warn-free, got exit=$ec output=$(echo "$output" | head -1)"
+fi
+git -C "$CLONE_DIR" worktree remove "$worktree_dir" --force >/dev/null 2>&1 || true
+rm -rf "$worktree_dir"
+
+# ── Test 9: main tree: git commit warns but allows (non-coord) ──────
+echo "--- Test 9: main tree commit: WARNING printed, exit 0 ---"
+output=$(run_shim_commit 0 0 2>&1; true)
+if echo "$output" | grep -q "WARNING: committing directly to main/master branch"; then
+    pass "main tree commit: WARNING printed"
+else
+    fail "main tree commit should print WARNING, got: $(echo "$output" | head -1)"
+fi
+
+# ── Test 10: main tree + C2C_COORDINATOR=1: silent, exit 0 ───────
+echo "--- Test 10: main tree + C2C_COORDINATOR=1: no warning, exit 0 ---"
+output=$(run_shim_commit 0 1 2>&1; true)
+ec=$?
+if [ $ec -eq 0 ] && ! echo "$output" | grep -q "WARNING"; then
+    pass "main tree + C2C_COORDINATOR=1: no warning"
+else
+    fail "coord bypass should suppress warning, got exit=$ec output=$(echo "$output" | head -1)"
+fi
+
+# ── Test 11: main tree + C2C_COMMIT_REFUSE=1: fatal + exit 128 ─────
+echo "--- Test 11: main tree + C2C_COMMIT_REFUSE=1: refused, exit 128 ---"
+output=$(run_shim_commit 1 0 2>&1; true)
+if echo "$output" | grep -q "fatal: git-shim refused"; then
+    pass "main tree + C2C_COMMIT_REFUSE=1: refused"
+else
+    fail "C2C_COMMIT_REFUSE=1 should refuse, got: $(echo "$output" | head -1)"
+fi
+
+# ── Test 12: worktree branch still allowed even with C2C_COMMIT_REFUSE=1
+echo "--- Test 12: worktree branch + C2C_COMMIT_REFUSE=1: no warning, exit 0 ---"
+worktree_dir="$(mktemp -d)"
+rm -rf "$worktree_dir"
+branch_name="test-shim-commit-refuse-$$-$(date +%s)"
+git -C "$CLONE_DIR" worktree add "$worktree_dir" -b "$branch_name" >/dev/null 2>&1 || true
+output=$(run_shim_commit_in_worktree "$worktree_dir" 1 2>&1; true)
+ec=$?
+if [ $ec -eq 0 ] && ! echo "$output" | grep -q "WARNING"; then
+    pass "worktree + C2C_COMMIT_REFUSE=1: no warning, exit 0"
+else
+    fail "worktree + C2C_COMMIT_REFUSE=1 should pass, got exit=$ec output=$(echo "$output" | head -1)"
+fi
 git -C "$CLONE_DIR" worktree remove "$worktree_dir" --force >/dev/null 2>&1 || true
 rm -rf "$worktree_dir"
 
