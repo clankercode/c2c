@@ -63,7 +63,10 @@ let rec json_to_string_sorted (j : Yojson.Safe.t) : string =
   | `Intlit s -> s
   | `Float f -> string_of_float f
   | `Bool b -> string_of_bool b
-  | _ -> Yojson.Safe.to_string j
+  (* The remaining Yojson variants (Unit, Tuple, Variant, Ou, Arrow,
+     Digest, Custom) cannot appear in our peer_review JSON shapes, but
+     Yojson.Safe.t is an open sum so we keep a catch-all for safety. *)
+  | other -> Yojson.Safe.to_string other
 
 let targets_built_to_json (tb : targets_built) : Yojson.Safe.t =
   `Assoc (sort_assoc [
