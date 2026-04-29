@@ -65,8 +65,27 @@ let generate ?(alias_hint = "") () =
     alias_hint;
   }
 
+(* Once-per-process flag: is ssh-keygen available on PATH? Detected on first
+   call so we don't spam logs on repeated calls when the binary is absent
+   (e.g. Docker image without openssh-client installed). *)
+let ssh_keygen_available_flag : bool Lazy.t =
+  lazy (
+    let rc = Sys.command "command -v ssh-keygen >/dev/null 2>&1" in
+    if rc = 0 then begin
+      Printf.eprintf "[relay_identity] ssh-keygen available — openssh-key export enabled.\n%!";
+      true
+    end else begin
+      Printf.eprintf "[relay_identity] ssh-keygen unavailable — openssh-key export disabled for this session.\n%!";
+      false
+    end
+  )
+
+let ssh_keygen_available () = Lazy.force ssh_keygen_available_flag
+
 let generate_ssh_key ~(priv_path : string) ~(alias : string) =
-  if Sys.file_exists priv_path then Ok ()
+  if not (ssh_keygen_available ()) then
+    Error "ssh-keygen unavailable (run 'command -v ssh-keygen' to verify)"
+  else if Sys.file_exists priv_path then Ok ()
   else
     let dir = Filename.dirname priv_path in
     let tmp_base = Filename.concat dir (Printf.sprintf "c2c_ssh_%s" alias) in
