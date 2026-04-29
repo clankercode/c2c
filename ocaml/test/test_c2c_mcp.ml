@@ -4901,6 +4901,29 @@ let test_list_rooms_returns_room_with_members () =
       check bool "room-beta contains carol" true
         (List.mem "carol" beta.ri_members))
 
+(* #392b: tag round-trips through room history storage.
+   Content with body-prefix → append_room_history → read_room_history →
+   extract_tag_from_content still detects the tag. Validates relay propagation AC:
+   "tag survives alias@host round trip". *)
+let test_room_history_tag_roundtrip () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ = C2c_mcp.Broker.join_room broker ~room_id:"tag-test" ~alias:"sender" ~session_id:"s1" in
+      (* Tagged content as stored after body-prefix is applied at send time.
+         Prefix is from C2c_mcp.tag_to_body_prefix (Some "fail"). *)
+      let tagged_content = "🔴 FAIL: " ^ "build broken on sha abc123" in
+      ignore (C2c_mcp.Broker.append_room_history broker
+        ~room_id:"tag-test" ~from_alias:"sender" ~content:tagged_content);
+      (* Read back and verify the tag is still detectable from stored content *)
+      let history = C2c_mcp.Broker.read_room_history broker ~room_id:"tag-test" ~limit:1 () in
+      match history with
+      | [msg] ->
+          let tag = C2c_mcp.extract_tag_from_content msg.rm_content in
+          Alcotest.(check (option string)) "tag detected after round-trip"
+            (Some "fail") tag
+      | _ -> Alcotest.fail "expected exactly 1 history entry after append"
+    )
+
 let test_room_history_returns_last_n_lines () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -8662,8 +8685,10 @@ let () =
              test_send_room_does_not_dedup_different_content
          ; test_case "list_rooms returns rooms with members" `Quick
              test_list_rooms_returns_room_with_members
-         ; test_case "room_history returns last N lines" `Quick
-             test_room_history_returns_last_n_lines
+          ; test_case "room_history tag survives round-trip" `Quick
+              test_room_history_tag_roundtrip
+          ; test_case "room_history returns last N lines" `Quick
+              test_room_history_returns_last_n_lines
          ; test_case "room_history empty room returns empty" `Quick
              test_room_history_empty_room
          ; test_case "tools/call join_room via MCP" `Quick
