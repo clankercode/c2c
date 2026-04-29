@@ -75,10 +75,9 @@ let local_inbox_path broker_root session_id =
 
 let read_local_registrations broker_root =
   let reg_path = broker_root // "registry.json" in
-  if not (Sys.file_exists reg_path) then []
-  else
-    try
-      let json = Yojson.Safe.from_file reg_path in
+  match C2c_io.read_json_opt reg_path with
+  | None -> []
+  | Some json ->
       let open Yojson.Safe.Util in
       match json with
       | `List regs ->
@@ -93,15 +92,15 @@ let read_local_registrations broker_root =
             | _ -> acc
           ) [] regs
       | _ -> []
-    with _ -> []
 
 let append_to_local_inbox broker_root session_id messages =
   if messages = [] then 0
   else
     let path = local_inbox_path broker_root session_id in
     let existing_json =
-      try Yojson.Safe.from_file path
-      with _ -> `List [] in
+      match C2c_io.read_json_opt path with
+      | None -> `List []
+      | Some json -> json in
     let existing = match existing_json with
       | `List lst -> lst
       | _ -> [] in
@@ -133,10 +132,9 @@ type pseudo_registration = {
 
 let read_pseudo_registrations broker_root =
   let path = pseudo_reg_path broker_root in
-  if not (Sys.file_exists path) then []
-  else
-    try
-      let json = Yojson.Safe.from_file path in
+  match C2c_io.read_json_opt path with
+  | None -> []
+  | Some json ->
       let open Yojson.Safe.Util in
       match json with
       | `Assoc bindings ->
@@ -157,7 +155,6 @@ let read_pseudo_registrations broker_root =
             | _ -> acc
           ) [] bindings
       | _ -> []
-    with _ -> []
 
 let write_pseudo_registrations broker_root entries =
   let path = pseudo_reg_path broker_root in
@@ -210,10 +207,9 @@ type mobile_binding = {
 
 let read_mobile_bindings broker_root =
   let path = mobile_bindings_path broker_root in
-  if not (Sys.file_exists path) then []
-  else
-    try
-      let json = Yojson.Safe.from_file path in
+  match C2c_io.read_json_opt path with
+  | None -> []
+  | Some json ->
       let open Yojson.Safe.Util in
       match json with
       | `List ids ->
@@ -226,7 +222,6 @@ let read_mobile_bindings broker_root =
             | _ -> None)
           ids
       | _ -> []
-    with _ -> []
 
 let write_mobile_bindings broker_root entries =
   let path = mobile_bindings_path broker_root in

@@ -61,3 +61,15 @@ let append_jsonl ?(perm = 0o600) (path : string) (line : string) : unit =
     output_string oc (line ^ "\n");
     close_out oc
   with _ -> ()
+
+(** [read_json_opt path] reads and parses a JSON file, returning [None]
+    on any error (I/O error, missing file, parse failure). Combines
+    [read_file_opt] with [Yojson.Safe.from_string]; callers that need
+    a specific fallback should use [read_file_opt] + their own parse
+    around the returned string. #388 deduplication: replaces scattered
+    [try Yojson.Safe.from_file path with _ -> None] sites. *)
+let read_json_opt (path : string) : Yojson.Safe.t option =
+  match read_file_opt path with
+  | "" -> None
+  | s ->
+    try Some (Yojson.Safe.from_string s) with _ -> None

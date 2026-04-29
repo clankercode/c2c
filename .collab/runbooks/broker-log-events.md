@@ -662,7 +662,7 @@ entries here.
 
 - **CRIT** — security invariant violated, possible active attack:
   `alias_casefold_invariant_violated`, `version_downgrade_rejected`,
-  `relay_e2e_pin_mismatch`. Investigate immediately.
+  `relay_e2e_pin_mismatch`, `relay_e2e_register_pin_mismatch`. Investigate immediately.
 - **HIGH** — security policy enforcement: `peer_pass_reject`,
   `peer_pass_pin_rotate`, `peer_pass_pin_rotate_unauth`,
   `pending_cap_reject`. Review on review cadence; fire-and-investigate

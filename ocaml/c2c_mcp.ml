@@ -4370,25 +4370,19 @@ let log_relay_e2e_pin_first_seen ~broker_root ~alias ~pinned_ed25519_b64 ~ts =
    any envelope is sent. *)
 let log_relay_e2e_register_pin_mismatch ~broker_root ~alias
       ~key_class ~pinned_b64 ~claimed_b64 ~ts =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let line =
-       `Assoc
-         [ ("ts", `Float ts)
-         ; ("event", `String "relay_e2e_register_pin_mismatch")
-         ; ("alias", `String alias)
-         ; ("key_class", `String key_class)
-         ; ("pinned_b64", `String pinned_b64)
-         ; ("claimed_b64", `String claimed_b64)
-         ]
-       |> Yojson.Safe.to_string
-     in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
-   with _ -> ())
+  let line =
+    `Assoc
+      [ ("ts", `Float ts)
+      ; ("event", `String "relay_e2e_register_pin_mismatch")
+      ; ("alias", `String alias)
+      ; ("key_class", `String key_class)
+      ; ("pinned_b64", `String pinned_b64)
+      ; ("claimed_b64", `String claimed_b64)
+      ]
+    |> Yojson.Safe.to_string
+  in
+  try C2c_io.append_jsonl ~perm:0o600 (Filename.concat broker_root "broker.log") line
+  with _ -> ()
 
 (* #432 TOFU 5 observability follow-up: sibling logger for
    pin_rotate REJECT path. Same broker.log file, same shape as

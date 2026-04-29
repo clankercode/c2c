@@ -2001,21 +2001,21 @@ let load_config_opt (name : string) : instance_config option =
   let path = config_path name in
   if not (Sys.file_exists path) then None
   else
-    try
-      let json = Yojson.Safe.from_file path in
-      let a = match json with `Assoc a -> a | _ -> raise Not_found in
-      let gs k = match List.assoc_opt k a with Some (`String s) -> s | _ -> raise Not_found in
-      let gso k = match List.assoc_opt k a with Some (`String s) -> Some s | _ -> None in
-      let gf k = match List.assoc_opt k a with Some (`Float f) -> f | Some (`Int i) -> float_of_int i | _ -> raise Not_found in
-      let gl k = match List.assoc_opt k a with Some (`List l) -> List.map (function `String s -> s | _ -> raise Not_found) l | _ -> [] in
-      Some { name = gs "name"; client = gs "client"; session_id = gs "session_id";
-             resume_session_id = gs "resume_session_id"; codex_resume_target = gso "codex_resume_target"; alias = gs "alias";
-             extra_args = gl "extra_args"; created_at = gf "created_at";
-             broker_root = gs "broker_root"; auto_join_rooms = gs "auto_join_rooms";
-             binary_override = gso "binary_override";
-             model_override = gso "model_override";
-             agent_name = gso "agent_name" }
-    with _ -> None
+    match C2c_io.read_json_opt path with
+    | None -> None
+    | Some json ->
+        let a = match json with `Assoc a -> a | _ -> raise Not_found in
+        let gs k = match List.assoc_opt k a with Some (`String s) -> s | _ -> raise Not_found in
+        let gso k = match List.assoc_opt k a with Some (`String s) -> Some s | _ -> None in
+        let gf k = match List.assoc_opt k a with Some (`Float f) -> f | Some (`Int i) -> float_of_int i | _ -> raise Not_found in
+        let gl k = match List.assoc_opt k a with Some (`List l) -> List.map (function `String s -> s | _ -> raise Not_found) l | _ -> [] in
+        Some { name = gs "name"; client = gs "client"; session_id = gs "session_id";
+               resume_session_id = gs "resume_session_id"; codex_resume_target = gso "codex_resume_target"; alias = gs "alias";
+               extra_args = gl "extra_args"; created_at = gf "created_at";
+               broker_root = gs "broker_root"; auto_join_rooms = gs "auto_join_rooms";
+               binary_override = gso "binary_override";
+               model_override = gso "model_override";
+               agent_name = gso "agent_name" }
 
 let load_config (name : string) : instance_config =
   match load_config_opt name with
