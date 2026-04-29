@@ -51,7 +51,10 @@ type registration =
       not yet handshaked). Set in the initialize handler; consumers
       treat [None] conservatively as "not push-capable". *)
   }
-type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool }
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool; message_id : string option }
+(** [message_id] is set when the message arrived via the relay (which assigns
+    a UUID to every sent message). It is used to anchor sticker reactions:
+    a reaction references the original message via its [message_id]. *)
 (** [ephemeral=true] messages are delivered normally but skipped on the
     archive append in [drain_inbox] / [drain_inbox_push]. The recipient's
     in-memory channel notification + transcript are the only persistent
@@ -734,7 +737,7 @@ module Broker = struct
          with _ -> None)
     }
 
-  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral } =
+  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral; message_id } =
     let base =
       [ ("from_alias", `String from_alias)
       ; ("to_alias", `String to_alias)
@@ -745,9 +748,10 @@ module Broker = struct
     let with_deferrable = if deferrable then base @ [("deferrable", `Bool true)] else base in
     let with_ephemeral = if ephemeral then with_deferrable @ [("ephemeral", `Bool true)] else with_deferrable in
     let with_reply_via = match reply_via with None -> with_ephemeral | Some rv -> with_ephemeral @ [("reply_via", `String rv)] in
+    let with_msg_id = match message_id with None -> with_reply_via | Some mid -> with_reply_via @ [("message_id", `String mid)] in
     match enc_status with
-    | None -> `Assoc with_reply_via
-    | Some es -> `Assoc (with_reply_via @ [("enc_status", `String es)])
+    | None -> `Assoc with_msg_id
+    | Some es -> `Assoc (with_msg_id @ [("enc_status", `String es)])
 
   let message_of_json json =
     let open Yojson.Safe.Util in
@@ -775,6 +779,10 @@ module Broker = struct
         (match json |> member "ephemeral" with
          | `Bool b -> b
          | _ -> false)
+    ; message_id =
+        (match json |> member "message_id" with
+         | `String s when s <> "" -> Some s
+         | _ -> None)
     }
 
   (* Lowercase comparison helper: aliases are case-insensitive for collision
@@ -2171,7 +2179,7 @@ module Broker = struct
             with_inbox_lock t ~session_id (fun () ->
                 let current = load_inbox t ~session_id in
                 let next =
-                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral } ]
+                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral; message_id = None } ]
                 in
                 if debug_enabled then Printf.eprintf "[DEBUG enqueue] inbox_path=%s current_len=%d next_len=%d\n%!"
                   (inbox_path t ~session_id) (List.length current) (List.length next);
@@ -2211,7 +2219,7 @@ module Broker = struct
                         let current = load_inbox t ~session_id in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None } ]
                         in
                         save_inbox t ~session_id next);
                     sent := reg.alias :: !sent
@@ -2294,27 +2302,29 @@ module Broker = struct
                 [ Open_wronly; Open_append; Open_creat ]
                 0o600 (archive_path t ~session_id)
             in
-            Fun.protect
-              ~finally:(fun () -> try close_out oc with _ -> ())
-              (fun () ->
-                let ts = Unix.gettimeofday () in
-                List.iter
-                  (fun ({ from_alias; to_alias; content; deferrable } : message) ->
-                    let base =
-                      [ ("drained_at", `Float ts)
-                      ; ("drained_by", `String drained_by)
-                      ; ("session_id", `String session_id)
-                      ; ("from_alias", `String from_alias)
-                      ; ("to_alias", `String to_alias)
-                      ; ("content", `String content)
-                      ]
-                    in
-                    let record = `Assoc
-                      (if deferrable then base @ [("deferrable", `Bool true)] else base)
-                    in
-                    output_string oc (Yojson.Safe.to_string record);
-                    output_char oc '\n')
-                  messages))
+                Fun.protect
+                  ~finally:(fun () -> try close_out oc with _ -> ())
+                  (fun () ->
+                    let ts = Unix.gettimeofday () in
+                    List.iter
+                      (fun ({ from_alias; to_alias; content; deferrable; message_id } : message) ->
+                        let base =
+                          [ ("drained_at", `Float ts)
+                          ; ("drained_by", `String drained_by)
+                          ; ("session_id", `String session_id)
+                          ; ("from_alias", `String from_alias)
+                          ; ("to_alias", `String to_alias)
+                          ; ("content", `String content)
+                          ]
+                        in
+                        let with_deferrable = if deferrable then base @ [("deferrable", `Bool true)] else base in
+                        let record = match message_id with
+                          | Some mid -> `Assoc (with_deferrable @ [("message_id", `String mid)])
+                          | None -> `Assoc with_deferrable
+                        in
+                        output_string oc (Yojson.Safe.to_string record);
+                        output_char oc '\n')
+                      messages))
 
   type archive_entry =
     { ae_drained_at : float
@@ -2323,6 +2333,11 @@ module Broker = struct
     ; ae_content : string
     ; ae_deferrable : bool
     ; ae_drained_by : string
+    ; ae_message_id : string option
+        (* v2+: relay-assigned message ID for cross-referencing with sticker
+           reactions. None for archives written before this field existed.
+           When present, use the first 8 chars as a short prefix for CLI display
+           (e.g. [abc12345] in poll-inbox output). *)
     }
 
   let archive_entry_of_json json =
@@ -2346,6 +2361,12 @@ module Broker = struct
         (* Older archive records (pre-#387) omit the field; default to
            "unknown" so legacy entries continue to parse. *)
         (try json |> member "drained_by" |> to_string with _ -> "unknown")
+    ; ae_message_id =
+        (* v2 field: older archives omit it. Default None for forward/back
+           compat with pre-message_id archives. *)
+        (match json |> member "message_id" with
+         | `String s when s <> "" -> Some s
+         | _ -> None)
     }
 
   (* Return up to [limit] most-recent archive entries for [session_id],
@@ -3018,6 +3039,9 @@ module Broker = struct
                    | `Float f -> f | `Int i -> float_of_int i | _ -> 0.0)
               ; ephemeral =
                   (match json |> member "ephemeral" with `Bool b -> b | _ -> false)
+              ; message_id =
+                  (match json |> member "message_id" with
+                   | `String s when s <> "" -> Some s | _ -> None)
               }) items
         | _ -> []
       in
@@ -3221,17 +3245,17 @@ module Broker = struct
           let tagged_to = m.rm_alias ^ "#" ^ room_id in
           try
             with_registry_lock t (fun () ->
-                match resolve_live_session_id_by_alias t m.rm_alias with
-                | Resolved session_id ->
-                    with_inbox_lock t ~session_id (fun () ->
-                        let current = load_inbox t ~session_id in
-                        let next =
-                          current @ [ { from_alias; to_alias = tagged_to; content = prefixed_content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false } ]
-                        in
-                        save_inbox t ~session_id next);
-                    delivered := m.rm_alias :: !delivered
-                | All_recipients_dead | Unknown_alias ->
-                    skipped := m.rm_alias :: !skipped)
+                 match resolve_live_session_id_by_alias t m.rm_alias with
+                 | Resolved session_id ->
+                     with_inbox_lock t ~session_id (fun () ->
+                         let current = load_inbox t ~session_id in
+                         let next =
+                           current @ [ { from_alias; to_alias = tagged_to; content = prefixed_content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false } ]
+                         in
+                         save_inbox t ~session_id next);
+                     delivered := m.rm_alias :: !delivered
+                 | All_recipients_dead | Unknown_alias ->
+                     skipped := m.rm_alias :: !skipped)
           with _ ->
             skipped := m.rm_alias :: !skipped
         end)

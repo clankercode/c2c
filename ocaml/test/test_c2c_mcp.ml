@@ -422,7 +422,7 @@ let test_tools_call_history_ignores_session_id_argument () =
 let test_channel_notification_matches_claude_channel_shape () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "debate me"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "debate me"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
   check string "jsonrpc" "2.0" (json |> member "jsonrpc" |> to_string);
@@ -436,7 +436,7 @@ let test_channel_notification_matches_claude_channel_shape () =
 let test_channel_notification_empty_content () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = ""; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = ""; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
   check string "jsonrpc" "2.0" (json |> member "jsonrpc" |> to_string);
@@ -453,7 +453,7 @@ let test_channel_notification_special_chars () =
   let content = "line1\nline2\t\"quoted\" <angle> \xc3\xa9\xc3\xa0\xc3\xbc" in
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
   (* Round-trip through Yojson serialization to verify escaping is valid *)
@@ -468,7 +468,7 @@ let test_channel_notification_special_chars () =
 let test_channel_notification_has_no_id_field () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
   (* JSON-RPC 2.0 notifications MUST NOT include an "id" field *)
@@ -543,7 +543,7 @@ let test_initialize_without_channel_capability () =
 let test_channel_notification_method_is_correct () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
   let method_str = json |> member "method" |> to_string in
@@ -556,7 +556,7 @@ let test_channel_notification_method_is_correct () =
 let test_channel_notification_with_role () =
   let json =
     C2c_mcp.channel_notification ~role:(Some "coordinator")
-      { from_alias = "cairn-vigil"; to_alias = "stanza-coder"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
+      { from_alias = "cairn-vigil"; to_alias = "stanza-coder"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
   let meta = json |> member "params" |> member "meta" in
@@ -566,7 +566,7 @@ let test_channel_notification_with_role () =
 let test_channel_notification_without_role_omits () =
   let json =
     C2c_mcp.channel_notification
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
   let meta = json |> member "params" |> member "meta" in

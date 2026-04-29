@@ -8629,7 +8629,7 @@ let wire_daemon_format_prompt_cmd =
                           ; deferrable = false
                           ; reply_via = None
                           ; enc_status = None
-                          ; ts = 0.0; ephemeral = false }
+                          ; ts = 0.0; ephemeral = false; message_id = None }
         | _ -> None) items
     | _ -> []
   in
@@ -8657,7 +8657,7 @@ let wire_daemon_spool_write_cmd =
                           ; deferrable = false
                           ; reply_via = None
                           ; enc_status = None
-                          ; ts = 0.0; ephemeral = false }
+                          ; ts = 0.0; ephemeral = false; message_id = None }
         | _ -> None) items
     | _ -> []
   in
