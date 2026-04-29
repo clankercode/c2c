@@ -2664,10 +2664,19 @@ let prepare_launch_args ~(name : string) ~(client : string)
         (* KimiAdapter writes the per-instance MCP config and prepends the flag.
            Pass extra_args so the adapter can detect an already-present --mcp-config-file;
            extra_args are NOT consumed by the adapter (prepare_launch_args appends them
-           uniformly at the end, so they won't be doubled). *)
+           uniformly at the end, so they won't be doubled).
+
+           #158: kickoff is delivered via --prompt so it appears as kimi's first
+           user-turn (naturally visible in TUI scrollback, no notifier race). *)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "kimi") : CLIENT_ADAPTER) in
+        let kickoff_args =
+          match kickoff_prompt with
+          | Some p when p <> "" -> [ "--prompt"; p ]
+          | _ -> []
+        in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
           ~extra_args:extra_args ()
+        @ kickoff_args
     | "gemini" ->
         (* #406b: GeminiAdapter handles --resume <idx>|latest, --model. No
            dev-channels or PTY auto-answer (Gemini uses settings.json
@@ -3095,64 +3104,13 @@ module KimiAdapter : CLIENT_ADAPTER = struct
        Wire bridge delivers via JSON-RPC; no PTY access needed. *)
     [ "kimi_wire", true ]
 
-  (* Real impl via [C2c_kimi_notifier.write_notification].
-
-     Caveat (#143 v1): kimi's session-id is created by kimi-cli AFTER it
-     starts and surfaces in [~/.kimi/logs/kimi.log] some seconds later.
-     [deliver_kickoff] is called by the launch loop *before* the kimi
-     process has even forked, so 99% of fresh launches will hit
-     [resolve_active_session_id () = None] and we'll warn-and-skip.
-     A real "deferred kickoff that fires once session-id resolves" is
-     a follow-up slice (#143e); this method is the contract handle for
-     that slice to bolt onto.
-
-     Important: we use [from_alias = "c2c-kickoff"] (not the broker
-     [c2c-system] sender) so the notifier's #475 system-event filter
-     does NOT swallow the kickoff. *)
-  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text ?broker_root:_ () =
-    if kickoff_text = "" then Ok []
-    else
-      match C2c_kimi_notifier.resolve_active_session_id () with
-      | None ->
-        prerr_endline
-          "[c2c-start] kickoff not delivered to kimi — no active \
-           session-id resolved yet (kimi-cli writes 'Created new \
-           session: <uuid>' to ~/.kimi/logs/kimi.log on its first \
-           turn).  Deferred-kickoff wiring is task #143e; continuing \
-           without kickoff.";
-        Ok []
-      | Some session_id ->
-        (try
-           let cwd = Sys.getcwd () in
-           let session_dir =
-             C2c_kimi_notifier.workspace_hash_for_path cwd
-             |> fun wh ->
-             let kimi_share =
-               match Sys.getenv_opt "KIMI_SHARE_DIR" with
-               | Some d when d <> "" -> d
-               | _ ->
-                 (try Sys.getenv "HOME" with Not_found -> "/tmp")
-                 // ".kimi"
-             in
-             kimi_share // "sessions" // wh // session_id
-           in
-           let from_alias = "c2c-kickoff" in
-           let nid =
-             C2c_kimi_notifier.notification_id_for_msg
-               ~from_alias
-               ~ts:(Unix.gettimeofday ())
-               ~content:kickoff_text
-           in
-           C2c_kimi_notifier.write_notification
-             ~session_dir
-             ~notification_id:nid
-             ~from_alias
-             ~body:kickoff_text;
-           Ok []
-         with e ->
-           Error (Printf.sprintf
-                    "KimiAdapter.deliver_kickoff: %s"
-                    (Printexc.to_string e)))
+  (* Kickoff for kimi is delivered via [--prompt] argv injected in
+     [prepare_launch_args] (see the "kimi" branch).  This contract
+     method is intentionally a no-op; the kickoff text surfaces as
+     kimi's first user-turn and is naturally visible in TUI scrollback.
+     See #158. *)
+  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text:_ ?broker_root:_ () =
+    Ok []
 end
 
 module GeminiAdapter : CLIENT_ADAPTER = struct

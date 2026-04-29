@@ -47,32 +47,24 @@ let ensure_state_dir () =
 let workspace_hash_for_path path =
   Digest.to_hex (Digest.string path)
 
-(* Parse the kimi log for the most recent "Created new session: <UUID>" line.
-   Format anchor (kimi-cli 1.39.0+):
-     <ts> | INFO | kimi_cli.cli:_run:<lineno> | - Created new session: <UUID>
-   If kimi-cli changes the format, the regex below + the runbook anchor at
-   .collab/runbooks/kimi-notification-store-delivery.md§"session-id-discovery"
-   need updating in lockstep. *)
-let session_line_re =
-  Str.regexp ".*Created new session: \\([0-9a-fA-F-]+\\)"
+(* #158: read the pinned session UUID from c2c instance config instead of
+   grepping kimi.log.  c2c pre-mints the UUID before exec and persists it in
+   config.json, so the notifier never races the session-creation log line. *)
+let instance_config_path alias =
+  home () // ".local" // "share" // "c2c" // "instances" // alias // "config.json"
 
-let resolve_active_session_id () =
-  let path = kimi_log_path () in
+let read_session_id_from_config alias =
+  let path = instance_config_path alias in
   if not (Sys.file_exists path) then None
   else
     try
-      let ic = open_in path in
-      Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
-        (fun () ->
-          let last = ref None in
-          (try
-             while true do
-               let line = input_line ic in
-               if Str.string_match session_line_re line 0 then
-                 last := Some (Str.matched_group 1 line)
-             done
-           with End_of_file -> ());
-          !last)
+      let json = Yojson.Safe.from_file path in
+      match json with
+      | `Assoc fields ->
+          (match List.assoc_opt "resume_session_id" fields with
+           | Some (`String sid) when String.trim sid <> "" -> Some sid
+           | _ -> None)
+      | _ -> None
     with _ -> None
 
 (* Resolve the session-dir for a given session-id, anchored to cwd. *)
@@ -267,7 +259,7 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
        still drain (messages remain in archive even if kimi can't see them). *)
     let cwd = Sys.getcwd () in
     let session_dir_opt =
-      match resolve_active_session_id () with
+      match read_session_id_from_config alias with
       | Some sid -> Some (session_dir_for ~cwd ~session_id:sid)
       | None -> None
     in

@@ -53,46 +53,53 @@ let test_workspace_hash_matches_kimi_md5 () =
     "f331b46a50c55c2ba466a5fcfa980fc2"
     h
 
-let test_resolve_session_id_missing_log () =
-  (* When KIMI_SHARE_DIR points at an empty dir, no log file → None *)
+let test_resolve_session_id_missing_config () =
+  (* When instance config does not exist → None *)
   let tmp = Filename.temp_file "kimi-test-" "" in
   Sys.remove tmp;
   Unix.mkdir tmp 0o755;
-  let old = Sys.getenv_opt "KIMI_SHARE_DIR" in
-  Unix.putenv "KIMI_SHARE_DIR" tmp;
-  let result = C2c_kimi_notifier.resolve_active_session_id () in
-  (match old with
-   | Some v -> Unix.putenv "KIMI_SHARE_DIR" v
-   | None -> Unix.putenv "KIMI_SHARE_DIR" "");
+  let old_home = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" tmp;
+  let result = C2c_kimi_notifier.read_session_id_from_config "nonexistent-alias" in
+  (match old_home with
+   | Some v -> Unix.putenv "HOME" v
+   | None -> Unix.putenv "HOME" "");
   (try Unix.rmdir tmp with _ -> ());
-  Alcotest.(check (option string)) "no log → None" None result
+  Alcotest.(check (option string)) "no config → None" None result
 
-let test_resolve_session_id_parses_log () =
+let test_resolve_session_id_reads_config () =
   let tmp = Filename.temp_file "kimi-test-" "" in
   Sys.remove tmp;
   Unix.mkdir tmp 0o755;
-  let log_dir = Filename.concat tmp "logs" in
-  Unix.mkdir log_dir 0o755;
-  let log_path = Filename.concat log_dir "kimi.log" in
-  let oc = open_out log_path in
-  output_string oc
-    "2026-04-29 20:23:49.321 | INFO     | kimi_cli.cli:_run:583 |  - Created new session: 93d38a89-6838-4d54-97ad-f960db0db782\n";
-  output_string oc
-    "some other line\n";
-  output_string oc
-    "2026-04-29 20:25:00.000 | INFO     | kimi_cli.cli:_run:583 |  - Created new session: aaaa1234-5678-90ab-cdef-1234567890ab\n";
+  let local_dir = Filename.concat tmp ".local" in
+  Unix.mkdir local_dir 0o755;
+  let share_dir = Filename.concat local_dir "share" in
+  Unix.mkdir share_dir 0o755;
+  let c2c_dir = Filename.concat share_dir "c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let inst_dir = Filename.concat c2c_dir "instances" in
+  Unix.mkdir inst_dir 0o755;
+  let alias_dir = Filename.concat inst_dir "test-kimi" in
+  Unix.mkdir alias_dir 0o755;
+  let config_path = Filename.concat alias_dir "config.json" in
+  let oc = open_out config_path in
+  output_string oc "{\"resume_session_id\":\"aaaa1234-5678-90ab-cdef-1234567890ab\"}\n";
   close_out oc;
-  let old = Sys.getenv_opt "KIMI_SHARE_DIR" in
-  Unix.putenv "KIMI_SHARE_DIR" tmp;
-  let result = C2c_kimi_notifier.resolve_active_session_id () in
-  (match old with
-   | Some v -> Unix.putenv "KIMI_SHARE_DIR" v
-   | None -> Unix.putenv "KIMI_SHARE_DIR" "");
-  (try Sys.remove log_path with _ -> ());
-  (try Unix.rmdir log_dir with _ -> ());
+  let old_home = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" tmp;
+  let result = C2c_kimi_notifier.read_session_id_from_config "test-kimi" in
+  (match old_home with
+   | Some v -> Unix.putenv "HOME" v
+   | None -> Unix.putenv "HOME" "");
+  (try Sys.remove config_path with _ -> ());
+  (try Unix.rmdir alias_dir with _ -> ());
+  (try Unix.rmdir inst_dir with _ -> ());
+  (try Unix.rmdir c2c_dir with _ -> ());
+  (try Unix.rmdir share_dir with _ -> ());
+  (try Unix.rmdir local_dir with _ -> ());
   (try Unix.rmdir tmp with _ -> ());
   Alcotest.(check (option string))
-    "picks the most recent session-id"
+    "reads resume_session_id from config"
     (Some "aaaa1234-5678-90ab-cdef-1234567890ab")
     result
 
@@ -281,8 +288,8 @@ let () =
     ; "workspace_hash",
       [ Alcotest.test_case "matches kimi-cli md5" `Quick test_workspace_hash_matches_kimi_md5 ]
     ; "session_id_resolve",
-      [ Alcotest.test_case "missing log → None" `Quick test_resolve_session_id_missing_log
-      ; Alcotest.test_case "parses log + picks newest" `Quick test_resolve_session_id_parses_log
+      [ Alcotest.test_case "missing config → None" `Quick test_resolve_session_id_missing_config
+      ; Alcotest.test_case "reads config + returns uuid" `Quick test_resolve_session_id_reads_config
       ]
     ; "atomic_write",
       [ Alcotest.test_case "roundtrip content" `Quick test_atomic_write_string_roundtrip ]

@@ -2,8 +2,8 @@
     kimi-cli's file-based notification store. Replaces c2c-kimi-wire-bridge.
 
     Architecture: per-tick, drain broker inbox for [alias], resolve the
-    active kimi TUI session-id (parse [~/.kimi/logs/kimi.log] for the most
-    recent ["Created new session: <UUID>"] line), write [event.json] +
+    active kimi TUI session-id by reading the pinned UUID from c2c instance
+    config (pre-minted before exec by [#158]), write [event.json] +
     [delivery.json] to
     [<KIMI_SHARE_DIR>/sessions/<md5(work_dir_path)>/<session-id>/notifications/<id>/],
     and optionally [tmux send-keys]-wake the kimi pane if it's at idle.
@@ -60,13 +60,10 @@ val run_once :
   tmux_pane:string option ->
   int
 
-(** [resolve_active_session_id ()] parses [~/.kimi/logs/kimi.log] for the
-    most recent ["Created new session: <UUID>"] line and returns the UUID,
-    or [None] if not found. The regex is anchored on a stable kimi-cli
-    log format; if kimi-cli updates the format, the regex needs to be
-    updated in parallel (see runbook anchor in
-    [.collab/runbooks/kimi-delivery-via-notification-store.md]). *)
-val resolve_active_session_id : unit -> string option
+(** [read_session_id_from_config alias] reads the pinned session UUID from
+    [~/.local/share/c2c/instances/<alias>/config.json] (written before exec
+    by [#158]) and returns it, or [None] if not found / unreadable. *)
+val read_session_id_from_config : string -> string option
 
 (** [workspace_hash_for_path path] computes [md5(path)] as kimi-cli does
     (see [kimi_cli/metadata.py:WorkDirMeta.sessions_dir]). *)
