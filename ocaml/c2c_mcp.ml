@@ -4277,6 +4277,38 @@ let log_relay_e2e_pin_first_seen ~broker_root ~alias ~pinned_ed25519_b64 ~ts =
   in
   C2c_io.append_jsonl ~perm:0o600 (Filename.concat broker_root "broker.log") line
 
+(* CRIT-2 register-path observability: structured audit-log line on
+   every register-path TOFU pin-mismatch reject (Ed25519 OR X25519).
+   Sibling of [log_relay_e2e_pin_mismatch] above, distinct event-name
+   ([relay_e2e_register_pin_mismatch]) and an extra [key_class] field
+   ("ed25519" | "x25519") so operators can correlate which pubkey
+   class tripped the reject. Best-effort, swallows errors. Closes
+   the observability gap from the envelope-path Slice B follow-up:
+   that helper covers in-flight envelope mismatches; this one covers
+   the registration-handshake mismatches that block a session before
+   any envelope is sent. *)
+let log_relay_e2e_register_pin_mismatch ~broker_root ~alias
+      ~key_class ~pinned_b64 ~claimed_b64 ~ts =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "relay_e2e_register_pin_mismatch")
+         ; ("alias", `String alias)
+         ; ("key_class", `String key_class)
+         ; ("pinned_b64", `String pinned_b64)
+         ; ("claimed_b64", `String claimed_b64)
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
 (* #432 TOFU 5 observability follow-up: sibling logger for
    pin_rotate REJECT path. Same broker.log file, same shape as
    pending_cap_reject — best-effort, swallows all errors, distinct
@@ -5695,13 +5727,19 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
                         (Some ed_pubkey_b64, Some signed_at, Some sig_b64)
               in
               (* E2E S2: check both TOFU pins before registering.
-                 If either mismatches, reject the registration. *)
+                 If either mismatches, reject the registration.
+                 CRIT-2 register-path observability: on each mismatch
+                 emit a structured broker.log line via
+                 [log_relay_e2e_register_pin_mismatch] so operators can
+                 grep for register-path attacks across the swarm. *)
               let ed25519_mismatch =
                 match ed25519_pubkey with
                 | None -> None
                 | Some ed_pk ->
                     (match Broker.pin_ed25519_sync ~alias ~pk:ed_pk with
-                     | `Mismatch -> Some "ed25519"
+                     | `Mismatch ->
+                         let pinned = Broker.get_pinned_ed25519 alias in
+                         Some ("ed25519", pinned, ed_pk)
                      | `Already_pinned | `New_pin -> None)
               in
               let x25519_mismatch =
@@ -5709,18 +5747,37 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
                 | None -> None
                 | Some xb64 ->
                     (match Broker.pin_x25519_sync ~alias ~pk:xb64 with
-                     | `Mismatch -> Some "x25519"
+                     | `Mismatch ->
+                         let pinned = Broker.get_pinned_x25519 alias in
+                         Some ("x25519", pinned, xb64)
                      | `Already_pinned | `New_pin -> None)
               in
+              let emit_register_pin_mismatch_audit (key_class, pinned_opt, claimed) =
+                match Broker.get_relay_pins_root () with
+                | None -> ()
+                | Some broker_root ->
+                    let pinned_b64 = Option.value pinned_opt ~default:"" in
+                    log_relay_e2e_register_pin_mismatch
+                      ~broker_root
+                      ~alias
+                      ~key_class
+                      ~pinned_b64
+                      ~claimed_b64:claimed
+                      ~ts:(Unix.gettimeofday ())
+              in
               match ed25519_mismatch, x25519_mismatch with
-              | Some ed_k, Some x_k ->
+              | Some ((ed_k, _, _) as ed_info), Some ((x_k, _, _) as x_info) ->
+                  emit_register_pin_mismatch_audit ed_info;
+                  emit_register_pin_mismatch_audit x_info;
                   Lwt.return (tool_result
                     ~content:(Printf.sprintf
                       "register rejected: %s and %s pubkey mismatch — explicit rotation required \
                        (both pubkeys differ from previously pinned values for this alias)"
                       ed_k x_k)
                     ~is_error:true)
-              | Some key_kind, None | None, Some key_kind ->
+              | Some ((key_kind, _, _) as info), None
+              | None, Some ((key_kind, _, _) as info) ->
+                  emit_register_pin_mismatch_audit info;
                   Lwt.return (tool_result
                     ~content:(Printf.sprintf
                       "register rejected: %s pubkey mismatch — explicit rotation required \
