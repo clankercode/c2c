@@ -4872,7 +4872,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           match client, session_id_override with
           | "codex", Some sid -> Some sid
           | "codex", None -> ex.codex_resume_target
-          | _, _ -> ex.codex_resume_target
+          | _, Some _ -> ex.codex_resume_target
+          | _ -> None
         in
         (bo, ao, ea, rs, codex_target, ex.broker_root, model_override, mo)
     | None ->
