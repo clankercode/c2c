@@ -7956,8 +7956,58 @@ let test_coord_fallthrough_no_double_fire () =
       do_tick ();
       let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-backup" in
       check int "exactly one DM after double-tick" 1 (List.length inbox);
-      let lines = parse_broker_log_lines_with_event dir "coord_fallthrough_fired" in
-      check int "exactly one audit line after double-tick" 1 (List.length lines))
+       let lines = parse_broker_log_lines_with_event dir "coord_fallthrough_fired" in
+       check int "exactly one audit line after double-tick" 1 (List.length lines))
+
+(* slice/coord-backup-fallthrough T9: primary (or any supervisor) replies
+   BEFORE idle threshold → backup never DM'd. resolved_at blocks fire. *)
+let test_coord_fallthrough_resolved_blocks_fire () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register the primary/supervisor alias so check_pending_reply succeeds. *)
+      C2c_mcp.Broker.register broker ~session_id:"session-coord"
+        ~alias:"coordinator1" ~pid:None ~pid_start_time:None ();
+      (* Create a pending entry at "now" (elapsed_s=0). *)
+      let p = make_pending ~elapsed_s:0.0 () in
+      C2c_mcp.Broker.open_pending_permission broker p;
+      (* Simulate primary/supervisor reply — stamp resolved_at via
+         check_pending_reply. Do this BEFORE advancing past idle threshold. *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-coord";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "") (fun () ->
+        let request =
+          `Assoc
+            [ ("jsonrpc", `String "2.0")
+            ; ("id", `Int 9109)
+            ; ("method", `String "tools/call")
+            ; ( "params",
+                `Assoc
+                  [ ("name", `String "check_pending_reply")
+                  ; ( "arguments",
+                      `Assoc [ ("perm_id", `String p.perm_id) ] )
+                  ] )
+            ]
+        in
+        let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+        (* Now advance time past the idle threshold (125s > 120s idle). *)
+        let now = Unix.gettimeofday () in
+        let late_now = now +. 125.0 in
+        Coord_fallthrough.tick
+          ~now:late_now
+          ~broker
+          ~broker_root:dir
+          ~chain:[ "stanza-coder" ]
+          ~idle_seconds:120.0
+          ~broadcast_room:"swarm-lounge"
+          ();
+        (* No DM should be enqueued — entry is resolved. *)
+        let inbox =
+          C2c_mcp.Broker.read_inbox broker ~session_id:"session-backup"
+        in
+        check int "no DM after resolved_at stamp" 0 (List.length inbox);
+        let lines =
+          parse_broker_log_lines_with_event dir "coord_fallthrough_fired"
+        in
+        check int "no audit line for resolved entry" 0 (List.length lines)))
 
 (* [#432 Slice D] check_pending_reply for an unknown perm_id emits a
    "pending_check" line with outcome="unknown_perm". *)
@@ -11144,6 +11194,8 @@ let () =
                 test_check_pending_reply_writes_resolved_at
            ; test_case "[coord-backup-scheduler] T6: idempotent under double-tick" `Quick
                 test_coord_fallthrough_no_double_fire
+           ; test_case "[coord-backup-scheduler] T9: resolved blocks backup fire" `Quick
+                test_coord_fallthrough_resolved_blocks_fire
            ; test_case "tools/call set_dnd on:\"true\" string enables DND" `Quick
                 test_tools_call_set_dnd_on_string_true_enables_dnd
            ; test_case "tools/call set_dnd on:\"false\" string disables DND" `Quick
