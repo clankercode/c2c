@@ -1,0 +1,76 @@
+# c2c agent Docker image — managed codex-headless client for e2e mesh testing.
+#
+# Based on Dockerfile.test (python:3.12-slim + c2c binary + pytest).
+# Adds c2c_deliver_inbox.py for the deliver daemon fallback (when the
+# OCaml c2c-deliver-inbox binary is not available).
+#
+# The codex-turn-start-bridge binary is NOT bundled — it is dynamically
+# linked to host libraries and must be mounted from the host at runtime:
+#   docker run -v /home/xertrov/.local/bin/codex-turn-start-bridge:/usr/local/bin/codex-turn-start-bridge:ro
+#
+# Usage:
+#   docker build -f Dockerfile.agent -t c2c-agent:latest .
+#   docker compose -f docker-compose.agent-mesh.yml up -d
+#   pytest tests/e2e/test_codex_headless_agent.py -v
+#   docker compose -f docker-compose.agent-mesh.yml down -v
+#
+# Auth: OPENAI_API_KEY injected at runtime via environment or docker secret.
+
+ARG CACHE_BUST=1
+ARG OCAML_VERSION=5.2
+FROM ocaml/opam:debian-12-ocaml-${OCAML_VERSION} AS builder
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake pkg-config libgmp-dev libssl-dev \
+        libev-dev zlib1g-dev libsqlite3-dev git \
+    && rm -rf /var/lib/apt/lists/*
+USER opam
+
+WORKDIR /home/opam/c2c
+RUN opam update -y \
+ && opam install --yes \
+        dune cmdliner yojson lwt logs cohttp-lwt-unix uuidm sqlite3 \
+        base64 digestif mirage-crypto-ec mirage-crypto-rng mirage-crypto-rng-lwt \
+        tls-lwt ca-certs conduit-lwt-unix x509 ptime hacl-star
+
+COPY dune-project ./
+COPY ocaml ./ocaml
+USER root
+RUN rm -rf /home/opam/c2c/_build && chown -R opam:opam /home/opam/c2c
+USER opam
+RUN opam exec -- dune build --release ocaml/cli/c2c.exe
+
+# ----------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates libgmp10 libssl3 libev4 libsqlite3-0 tini curl openssh-client inotify-tools sudo git \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --home /home/testagent --shell /usr/sbin/nologin testagent \
+    && mkdir -p /home/testagent /var/lib/c2c \
+    && pip install --no-cache-dir pytest pytest-timeout \
+    && rm -rf /var/cache/pip
+
+# c2c main binary (from OCaml builder)
+COPY --from=builder /home/opam/c2c/_build/default/ocaml/cli/c2c.exe /usr/local/bin/c2c
+RUN chmod +x /usr/local/bin/c2c
+
+# Python deliver daemon + its runtime dependencies.
+# c2c_deliver_inbox.py imports c2c_poll_inbox and c2c_poker from the repo root,
+# so all three must be present in the container and in PYTHONPATH.
+COPY c2c_deliver_inbox.py /usr/local/bin/c2c_deliver_inbox.py
+COPY c2c_poll_inbox.py /usr/local/bin/c2c_poll_inbox.py
+COPY c2c_poker.py /usr/local/bin/c2c_poker.py
+
+# PTY-capable deliver shim — wraps c2c_deliver_inbox.py via PYTHONPATH.
+# PYTHONPATH must include /usr/local/bin so the import statements resolve.
+RUN printf '#!/usr/bin/env bash\nset -euo pipefail\nPYTHONPATH=/usr/local/bin exec python3 /usr/local/bin/c2c_deliver_inbox.py "$@"\n' > /usr/local/bin/c2c-deliver-inbox \
+    && chmod +x /usr/local/bin/c2c-deliver-inbox
+
+COPY docker-tests/ /docker-tests/
+
+# tini = PID 1 signal forwarder
+ENTRYPOINT ["/usr/bin/tini", "--"]
+# Default: sleep 3600 (replaced by test harness or docker exec override)
+CMD ["sh", "-c", "echo c2c-agent ready && sleep 3600"]

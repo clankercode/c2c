@@ -1,0 +1,158 @@
+# #406 S2 — codex-headless agent mesh topology.
+#
+# Extends the 2-relay probe topology with real codex-headless agents
+# instead of thin-agent sleep stubs. Validates:
+#   - c2c start codex-headless inside a Docker container
+#   - codex-headless → relay registration
+#   - cross-relay DM delivery
+#
+# Prerequisites:
+#   - codex-turn-start-bridge binary on host at ~/.local/bin/codex-turn-start-bridge
+#   - OPENAI_API_KEY environment variable set (injected to agent containers)
+#
+# The codex-turn-start-bridge binary is mounted read-only from the host because
+# it is dynamically linked to host libraries. We cannot bake it into the image.
+#
+# Usage:
+#   OPENAI_API_KEY=$(cat ~/.openai-api-key) \
+#   docker compose -f docker-compose.agent-mesh.yml up -d --build
+#   pytest tests/e2e/test_codex_headless_agent.py -v
+#   docker compose -f docker-compose.agent-mesh.yml down -v
+#
+# Resource budget: same as 2-relay-probe — ≤600MB total.
+
+services:
+  relay-a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: c2c-relay-a:e2e
+    container_name: c2c-relay-a
+    environment:
+      C2C_RELAY_PERSIST_DIR: /var/lib/c2c/relay-a-state
+      PORT: "9000"
+      C2C_RELAY_NAME: "host-a"
+    volumes:
+      - ./volumes/relay-a:/var/lib/c2c/relay-a-state
+    networks:
+      - c2c-agent-net
+    ports:
+      - "9000:9000"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          pids: 64
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/9000 && printf "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && timeout 2 cat <&3 | grep -q "\"ok\":true"'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  relay-b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: c2c-relay-b:e2e
+    container_name: c2c-relay-b
+    environment:
+      C2C_RELAY_PERSIST_DIR: /var/lib/c2c/relay-b-state
+      PORT: "9001"
+      C2C_RELAY_NAME: "host-b"
+    volumes:
+      - ./volumes/relay-b:/var/lib/c2c/relay-b-state
+    networks:
+      - c2c-agent-net
+    ports:
+      - "9001:9001"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          pids: 64
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/9001 && printf "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && timeout 2 cat <&3 | grep -q "\"ok\":true"'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # codex-headless agent on relay-a
+  codex-a1:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    image: c2c-agent:a1
+    container_name: c2c-codex-a1
+    depends_on:
+      relay-a:
+        condition: service_healthy
+    networks:
+      - c2c-agent-net
+    volumes:
+      # Agent's own broker state — NOT the relay's volume
+      - ./volumes/codex-a1:/var/lib/c2c
+      # Mount codex-turn-start-bridge from host (dynamically linked, host-specific)
+      - /home/xertrov/.local/bin/codex-turn-start-bridge:/usr/local/bin/codex-turn-start-bridge:ro
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          pids: 128
+    environment:
+      C2C_RELAY_URL: http://relay-a:9000
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: codex-a1
+      C2C_MCP_SESSION_ID: codex-a1-session
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_CLI_FORCE: "1"
+      # OPENAI_API_KEY must be set from host environment
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-test-key-for-local-only}"
+    command: ["sh", "-c", "echo c2c-agent ready && sleep 3600"]
+
+  # codex-headless agent on relay-b
+  codex-b1:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    image: c2c-agent:b1
+    container_name: c2c-codex-b1
+    depends_on:
+      relay-b:
+        condition: service_healthy
+    networks:
+      - c2c-agent-net
+    volumes:
+      # Agent's own broker state — NOT the relay's volume
+      - ./volumes/codex-b1:/var/lib/c2c
+      # Mount codex-turn-start-bridge from host
+      - /home/xertrov/.local/bin/codex-turn-start-bridge:/usr/local/bin/codex-turn-start-bridge:ro
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          pids: 128
+    environment:
+      C2C_RELAY_URL: http://relay-b:9001
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: codex-b1
+      C2C_MCP_SESSION_ID: codex-b1-session
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_CLI_FORCE: "1"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-test-key-for-local-only}"
+    command: ["sh", "-c", "echo c2c-agent ready && sleep 3600"]
+
+networks:
+  c2c-agent-net:
+    driver: bridge
