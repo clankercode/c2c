@@ -5929,7 +5929,7 @@ let ts = Unix.gettimeofday () in
            ~content:(Printf.sprintf
              "open_pending_reply rejected: %s. Wait for in-flight entries to expire (default TTL 600s) or coordinate with the holder."
              kind_str)
-           ~is_error:true))
+           ~is_error:true)))
   | "check_pending_reply" ->
       let perm_id = string_member "perm_id" arguments in
       (* [#432 Slice B / Finding 4-B2] derive reply_from_alias from the
