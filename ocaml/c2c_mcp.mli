@@ -94,6 +94,9 @@ type message =
         in-memory channel notification + transcript are the only persistent
         trace post-delivery. Default false. v1 covers local delivery only;
         cross-host ephemeral over the relay is a follow-up (#284). *)
+  ; message_id : string option
+    (** Set when the message arrived via the relay (which assigns a UUID).
+        Used to anchor sticker reactions. *)
   }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
@@ -256,7 +259,7 @@ module Broker : sig
   type sweep_result = { dropped_regs : registration list; deleted_inboxes : string list; preserved_messages : int }
   val sweep : t -> sweep_result
   val dead_letter_path : t -> string
-  type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string; ae_deferrable : bool; ae_drained_by : string }
+  type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string; ae_deferrable : bool; ae_drained_by : string; ae_message_id : string option }
   val archive_path : t -> session_id:string -> string
   val append_archive : ?drained_by:string -> t -> session_id:string -> messages:message list -> unit
   val read_archive : t -> session_id:string -> limit:int -> archive_entry list

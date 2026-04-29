@@ -248,6 +248,7 @@ let test_tmux_message_payload_uses_c2c_envelope () =
     ; enc_status = None
     ; ts = 0.0
     ; ephemeral = false
+    ; message_id = None
     }
   in
   let payload = C2c_start.tmux_message_payload [ msg ] in

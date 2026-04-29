@@ -293,10 +293,10 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
                 (* Emit channel test notification if code exists *)
                 (match C2c_mcp.pop_channel_test_code () with
                  | Some code ->
-                     let test_msg = { C2c_mcp.from_alias = "c2c-system";
-                                      to_alias = sid;
-                                      content = Printf.sprintf "<c2c event=\"channel-test\" code=\"%s\"/>" code;
-                                      deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false } in
+                      let test_msg = { C2c_mcp.from_alias = "c2c-system";
+                                       to_alias = sid;
+                                       content = Printf.sprintf "<c2c event=\"channel-test\" code=\"%s\"/>" code;
+                                       deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None } in
                      emit_notification ~broker_root ~session_id:sid test_msg
                  | None -> Lwt.return_unit)
             | _ -> Lwt.return_unit
