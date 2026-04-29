@@ -161,15 +161,17 @@ def _wait_relay_healthy(container: str, port: int, timeout: int = 90) -> None:
 
 
 def compose_up():
-    # Wipe bind-mounted relay state dirs before bringing up — the host-mounted
-    # volumes/ directories persist across `compose down` runs, so stale SQLite
-    # state (dead_letter entries from prior test runs) would make before/after
-    # counts unreliable.
-    relay_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../docker-tests/ -> top-level worktree
+    # Delete stale SQLite DB files from bind-mounted volumes before bringing up.
+    # chmod 1777 makes the directory world-writable + sticky so the relay
+    # container's c2c user (UID 999) can create the DB file even though
+    # the directory is owned by the host user.
+    relay_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for vol_dir in ["volumes/relay-a", "volumes/relay-b"]:
         vol_path = os.path.join(relay_dir, vol_dir)
-        subprocess.run(["rm", "-rf", vol_path], check=False)  # ok if absent
         os.makedirs(vol_path, exist_ok=True)
+        subprocess.run(["chmod", "1777", vol_path], check=False)
+        for pattern in ["*.db", "*.db-shm", "*.db-wal"]:
+            subprocess.run(["sh", "-c", f"rm -f {vol_path}/{pattern}"], check=False)
     subprocess.run(
         ["docker", "compose", "-f", COMPOSE_FILE,
          "up", "-d", "--build", "--wait", "--wait-timeout", "120"],
