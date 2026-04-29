@@ -61,7 +61,7 @@ let rec json_to_string_sorted (j : Yojson.Safe.t) : string =
   | `Null -> "null"
   | `Int i -> string_of_int i
   | `Intlit s -> s
-  | `Float f -> string_of_float f
+  | `Float f -> Printf.sprintf "%.20g" f
   | `Bool b -> string_of_bool b
   (* The remaining Yojson variants (Unit, Tuple, Variant, Ou, Arrow,
      Digest, Custom) cannot appear in our peer_review JSON shapes, but

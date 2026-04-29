@@ -136,6 +136,13 @@ let validate_build_rc_precondition ~verdict ~build_rc ~no_build_rc =
 let signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
     ~all_targets ~notes ~allow_self ~via_subagent ~build_rc ~no_build_rc =
   validate_signing_allowed ~alias ~sha ~allow_self;
+  (* I2: validate SHA path components before touching the keystore.
+     Malformed input gets a pure-syntactic error rather than a keystore error. *)
+  (match Peer_review.validate_artifact_path_components ~alias ~sha with
+   | Error reason ->
+     Printf.eprintf "error: invalid sha/alias: %s\n%!" reason;
+     exit 124
+   | Ok () -> ());
   validate_build_rc_precondition ~verdict ~build_rc ~no_build_rc;
   let identity = resolve_identity () in
   let final_notes = merge_subagent_into_notes ~via_subagent ~notes in
@@ -203,7 +210,9 @@ let peer_pass_sign_cmd =
   in
   let criteria =
     Cmdliner.Arg.(value & opt (some string) None & info [ "criteria"; "c" ]
-      ~docv:"CRITERIA" ~doc:"Comma-separated list of criteria checked")
+      ~docv:"CRITERIA" ~doc:"Comma-separated list of criteria checked. \
+                       Commas split entries; use ';' or '|' inside a single entry if needed \
+                       (e.g. 'build-clean-IN-slice-worktree-rc=0;pattern-11-verified').")
   in
   let skill_version =
     Cmdliner.Arg.(value & opt (some string) None & info [ "skill-version" ]
@@ -235,7 +244,8 @@ let peer_pass_sign_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "via-subagent" ]
       ~docv:"ID" ~doc:"Record the fresh-slate subagent task id (or short description) \
                        used for the review. Appended to the artifact's notes field \
-                       for auditability when --allow-self is in effect.")
+                       whenever passed; primarily relevant under --allow-self for \
+                       subagent-review auditability.")
   in
   let build_rc =
     Cmdliner.Arg.(value & opt (some int) None & info [ "build-rc" ]
@@ -304,7 +314,9 @@ let peer_pass_send_cmd =
   in
   let criteria =
     Cmdliner.Arg.(value & opt (some string) None & info [ "criteria"; "c" ]
-      ~docv:"CRITERIA" ~doc:"Comma-separated list of criteria checked")
+      ~docv:"CRITERIA" ~doc:"Comma-separated list of criteria checked. \
+                       Commas split entries; use ';' or '|' inside a single entry if needed \
+                       (e.g. 'build-clean-IN-slice-worktree-rc=0;pattern-11-verified').")
   in
   let skill_version =
     Cmdliner.Arg.(value & opt (some string) None & info [ "skill-version" ]
@@ -344,21 +356,28 @@ let peer_pass_send_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "via-subagent" ]
       ~docv:"ID" ~doc:"Record the fresh-slate subagent task id (or short description) \
                        used for the review. Appended to the artifact's notes field \
-                       for auditability when --allow-self is in effect.")
+                       whenever passed; primarily relevant under --allow-self for \
+                       subagent-review auditability.")
   in
   let build_rc =
     Cmdliner.Arg.(value & opt (some int) None & info [ "build-rc" ]
-      ~docv:"N" ~doc:"#427b: capture the slice-worktree build exit code on the \
-                      signed artifact. 0 = clean build in the slice's own \
-                      worktree; non-zero = build failed. Bumps schema to v2. \
-                      PASS without --build-rc is rejected unless --no-build-rc \
-                      is also passed (#427c).")
+      ~docv:"N" ~doc:"#427b: capture the slice-worktree build exit code as a \
+                      structured field on the artifact. 0 = clean build in the \
+                      slice's own worktree (the only value that should accompany \
+                      a PASS verdict per Pattern 8); non-zero = the reviewer ran \
+                      the build but it failed. Bumps the artifact schema to v2. \
+                      Reviewers should also retain a textual \
+                      'build-clean-IN-slice-worktree-rc=N' entry in --criteria \
+                      for backward-readable evidence. PASS without --build-rc \
+                      is rejected unless --no-build-rc is also passed (#427c).")
   in
   let no_build_rc =
     Cmdliner.Arg.(value & flag & info [ "no-build-rc" ]
       ~doc:"#427c: opt out of the PASS-must-carry-build-rc precondition. \
             Use ONLY for legitimate doc-only / runbook / config-only slices \
-            where no compilable target exists.")
+            where no compilable target exists. Recorded in the artifact \
+            notes as 'no-build-rc:doc-only' for audit. Cannot be combined \
+            with --build-rc.")
   in
   let+ to_alias = to_alias
   and+ sha = sha
@@ -404,7 +423,11 @@ let peer_pass_send_cmd =
       ("message", `String content);
     ]))
   else
-    Printf.printf "Signed artifact written to %s\nSent peer-PASS notification to %s\n%!" path to_alias
+    let build_rc_line = match build_rc with
+      | Some n -> Printf.sprintf "  build_exit_code: %d (#427b verified-build)\n" n
+      | None -> ""
+    in
+    Printf.printf "Signed artifact written to %s\nSent peer-PASS notification to %s\n%s%!" path to_alias build_rc_line
 
 (* --- verify command ------------------------------------------------------ *)
 
