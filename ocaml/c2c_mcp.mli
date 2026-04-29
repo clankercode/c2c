@@ -263,6 +263,11 @@ module Broker : sig
   val archive_path : t -> session_id:string -> string
   val append_archive : ?drained_by:string -> t -> session_id:string -> messages:message list -> unit
   val read_archive : t -> session_id:string -> limit:int -> archive_entry list
+  val find_message_by_id : t -> alias:string -> id_prefix:string -> (archive_entry, string) result
+  (** [find_message_by_id t ~alias ~id_prefix] resolves [alias] to a session via
+      the registry, then searches that session's archive for an entry whose
+      [ae_message_id] starts with [id_prefix]. Returns [Ok entry] on unique
+      match, or [Error msg] on ambiguity or missing. *)
   type delivery_mode_sender_count =
     { dms_alias : string
     ; dms_total : int
