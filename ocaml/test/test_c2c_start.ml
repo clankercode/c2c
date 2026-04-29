@@ -2621,6 +2621,23 @@ let test_prepare_launch_args_gemini_empty_resume_treated_as_fresh () =
   check bool "empty session_id: no --resume flag" false
     (List.mem "--resume" args)
 
+(* Option C (MED-3 / #491 follow-up): codex-headless is NOT in client_adapters,
+   so model_override is appended by the non-adapter else branch at
+   prepare_launch_args:2816-2820.  Gemini is in client_adapters so the adapter
+   handles model_override internally (pinned by test_prepare_launch_args_gemini_model_flag).
+   This test pins the non-adapter path so a future #479-style audit cannot
+   re-suspect the same dead-code suspicion and waste cycles re-checking. *)
+let test_prepare_launch_args_codex_headless_model_flag () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"cx-headless-test" ~client:"codex-headless"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~model_override:"codex-gpt-4" ()
+  in
+  check bool "model flag present for codex-headless" true
+    (has_adjacent_pair "--model" "codex-gpt-4" args)
+
 (* #139: KimiAdapter --session resume — wires kimi-cli's native --session flag
    from c2c instance state's resume_session_id, enabling restart-with-context. *)
 
@@ -3093,6 +3110,8 @@ let () =
             `Quick, test_extra_argv_preserves_commas_470 )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
+        ; ( "prepare_launch_args_codex_headless_model_flag",
+            `Quick, test_prepare_launch_args_codex_headless_model_flag )
         ; ( "prepare_launch_args_kimi_sets_max_steps_per_turn",
             `Quick, test_prepare_launch_args_kimi_sets_max_steps_per_turn )
         ; ( "tmux_shell_command_quotes_argv",
