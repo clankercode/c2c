@@ -44,13 +44,7 @@ let debug_log msg =
   if debug_enabled () then
     try
       let path = debug_log_path () in
-      let now = Unix.gettimeofday () in
-      let tm = Unix.gmtime now in
-      let ms = int_of_float ((now -. Float.round now) *. 1000.0) |> abs in
-      let ts = Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ"
-        (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
-        tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec ms
-      in
+      let ts = C2c_time.iso8601_utc_ms (Unix.gettimeofday ()) in
       let oc = open_out_gen [Open_wronly; Open_creat; Open_append] 0o644 path in
       Printf.fprintf oc "%s [%d] %s\n%!" ts (Unix.getpid ()) msg;
       close_out oc

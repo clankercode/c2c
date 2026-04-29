@@ -8,12 +8,7 @@ type signed_proof = {
 let b64url_nopad s =
   Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
-let now_rfc3339_utc () =
-  let t = Unix.gettimeofday () in
-  let tm = Unix.gmtime t in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
-    tm.tm_hour tm.tm_min tm.tm_sec
+let now_rfc3339_utc () = C2c_time.now_iso8601_utc ()
 
 let random_nonce_b64 () =
   Mirage_crypto_rng_unix.use_default ();

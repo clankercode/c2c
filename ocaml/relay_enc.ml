@@ -35,15 +35,7 @@ let ensure_rng () =
     rng_initialized := true
   end
 
-let rfc3339_utc_now () =
-  let t = Unix.gmtime (Unix.time ()) in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (t.Unix.tm_year + 1900)
-    (t.Unix.tm_mon + 1)
-    t.Unix.tm_mday
-    t.Unix.tm_hour
-    t.Unix.tm_min
-    t.Unix.tm_sec
+let rfc3339_utc_now () = C2c_time.iso8601_utc (Unix.time ())
 
 let generate () =
   ensure_rng ();

@@ -8,12 +8,7 @@
  *   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
  *)
 
-let iso8601_now () =
-  let t = Unix.gettimeofday () in
-  let tm = Unix.gmtime t in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
-    tm.tm_hour tm.tm_min tm.tm_sec
+let iso8601_now () = C2c_time.now_iso8601_utc ()
 
 let mkdir_p dir = C2c_io.mkdir_p ~mode:0o700 dir
 

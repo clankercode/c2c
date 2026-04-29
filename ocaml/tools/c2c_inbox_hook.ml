@@ -22,13 +22,7 @@
 
 let min_runtime_ms = 10.0
 
-let iso8601_now () =
-  let t = Unix.gettimeofday () in
-  let tm = Unix.gmtime t in
-  let ms = int_of_float ((t -. Float.round t) *. 1000.0) |> abs in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ"
-    (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
-    tm.tm_hour tm.tm_min tm.tm_sec ms
+let iso8601_now () = C2c_time.iso8601_utc_ms (Unix.gettimeofday ())
 
 let mkdir_p dir = C2c_io.mkdir_p ~mode:0o700 dir
 

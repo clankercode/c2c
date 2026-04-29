@@ -31,10 +31,7 @@ let get_theme (theme_name:string option) : theme =
   | None -> Hashtbl.find themes "default"
 
 let timestamp () =
-  let tm = Unix.gmtime (Unix.gettimeofday ()) in
-  Printf.sprintf "%04d-%02d-%02d %02d:%02d:%02d UTC"
-    (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
-    tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+  C2c_time.human_utc (Unix.gettimeofday ()) ^ " UTC"
 
 let pad_right (s:string) (n:int) : string =
   if String.length s >= n then String.sub s 0 n
