@@ -474,3 +474,127 @@ If yes/yes/yes → drive the 5-test e2e per above.
 If any no → poll_inbox for the latest swarm state + DM Cairn for status.
 
 🪨 — stanza-coder, end of working session pre-compaction
+
+---
+
+## E2E execution results (2026-04-30 ~05:35-05:48 UTC)
+
+After cedar's #489 fix landed on master at `f3967e28`, I drove the
+e2e dogfood per design. Outcome: **mixed PASS/FAIL — structural pass,
+functional fail on two compound architectural mismatches.**
+
+### What worked end-to-end ✅
+
+1. **Cold-start kuura via tmux exec from my Claude session** — used
+   `scripts/c2c_tmux.py exec 0:2.2 -- '<command>'` to send into kuura's
+   outer-shell pane. Pattern works (Max confirmed).
+2. **agent.yaml at correct path** — `~/src/c2c/.kimi/agents/kuura-viima/agent.yaml`
+   landed correctly post-#489. system.md alongside.
+3. **Hook fires on matching tool call** — kimi-cli's PreToolUse
+   evaluates the matcher against `tool_call.function.name` (just the
+   tool name; my finding #161 / corrected: matcher is name-only,
+   NOT name+content). Used `^Shell$` matcher — fires on every Shell
+   call.
+4. **DM with token + tool details arrives at reviewer** — kimi-approval
+   DM body has the canonical shape: `[kimi-approval] PreToolUse: tool:
+   <name>  args: <json>  token: ka_tool_<id>  timeout: 60s` plus the
+   reply hint.
+5. **Token uniqueness** — each tool call mints a distinct
+   `ka_tool_<id>` from kimi's `tool_call.id` (e.g.
+   `ka_tool_uQApmQcQlM3U8h9KSSxtD3EF` and
+   `ka_tool_M5x1YwXbHctwZi2kWVQxXo7f` for two consecutive calls).
+
+### What broke ❌
+
+1. **Drain race**: `c2c await-reply` polls `Broker.read_inbox`
+   (non-draining) every 1s, but kuura's `poll_inbox` MCP call (triggered
+   by the notifier nudge) DRAINS the verdict from the inbox JSON
+   within ~100ms of arrival. await-reply's next poll finds `[]`. Hook
+   fall-closes after timeout.
+
+2. **TUI input queueing**: notifier delivers approval DMs by tmux
+   send-keys to kuura's kimi-cli input box. Token messages queue with
+   operator-typed input (`· 3 queued`). Operator-input semantic is
+   broken — kuura would respond to `<TOKEN> allow` as user instruction,
+   not as approval verdict.
+
+3. **Stale notifier daemon hitting non-kimi pane** (separate, lower
+   severity but real): pane 0:2.4 had a fish shell, but a stale
+   `c2c start kimi -n probe-kickoff-test` (pid 2427864 from 2026-04-25)
+   was still running and sending `[c2c] check inbox` tmux nudges to
+   the pane every time something landed in `probe-kickoff-test`'s
+   inbox. The fish shell saw `[c2c]` as an unknown command. Killed
+   the stale notifier (pid 2427864 → SIGTERM). 0:2.4 now quiet. May
+   be worth a separate finding about notifier-daemon-cleanup-on-session-death.
+
+4. **Test 1 originally failed silently** — first attempt with matcher
+   `^Bash$:.*\b(rm\s+-rf|...)` didn't fire because kimi's matcher
+   only sees the tool NAME, not name+content. Fixed config matcher
+   to `^Shell$`. Retry exposed the drain race + TUI queueing.
+
+### Findings filed
+
+- **`2026-04-30T05-43-00Z-stanza-coder-await-reply-vs-notifier-drain-race.md`**
+  HIGH severity. Two-issue composite (drain race + TUI queueing).
+  Fix is bigger than a small slice — needs a dedicated approval
+  side-channel architecture. Design doc territory.
+
+### What this means for #142
+
+- **Structurally complete on master** (slices 1+2+3+4 + #489 fix
+  + #163 fix all landed and peer-PASSed).
+- **Functionally incomplete in production** — approval round-trip
+  doesn't actually complete because of the two architectural
+  mismatches.
+- **Multi-slice follow-up needed** before declaring #142 done:
+  - Slice 5 (proposed): approval side-channel (file-based or socket-
+    based, separate from broker inbox) + await-reply reads from
+    side-channel + notifier explicitly skips approval-token messages.
+  - Slice 6 (proposed): re-run the e2e dogfood with the side-channel
+    in place, validate Tests 1-5 pass.
+
+### Lessons / patterns from the e2e
+
+1. **Unit-test path coverage isn't enough for protocol-level
+   integration**: slice-1's alcotest harness wrote DIRECTLY to the
+   inbox JSON file in a temp broker root, with no notifier daemon
+   competing. The drain race only manifests with the live daemon
+   active. Protocol-level integration tests (or e2e dogfood like
+   today's) are the only way to catch this class.
+
+2. **The "notification store" delivery layer was supposed to solve
+   this**: per `.collab/runbooks/kimi-notification-store-delivery.md`,
+   kimi's notification store on disk is the canonical inbound delivery
+   path. But somewhere the notifier ALSO does tmux send-keys for at
+   least the wake-prompt nudge. Need to verify whether token messages
+   are going through the wrong path entirely.
+
+3. **`tool_call.function.name` is the matcher field** — the kimi-cli
+   source clarified this in `kimi_cli/soul/toolset.py:163`. Slice 2's
+   example matchers in `c2c_kimi_hook.ml#toml_block_template` (using
+   `^Bash$:.*\b(rm\s+-rf|...)`) are WRONG by design — content filter
+   in matcher position doesn't work. Content-based filtering must
+   happen INSIDE the hook script (read JSON stdin, decide). #161
+   already tracks this doc-clarity issue; the matcher template
+   itself needs a slice to fix.
+
+4. **The "[c2c] check inbox" wake-prompt** — Max requested this be
+   updated to "check inbox and ask for work if idle" but I didn't
+   land that this session (deferred per Max: "you can update it
+   later if you want to test more now"). Source location:
+   `ocaml/c2c_kimi_notifier.ml:235`. Single-line edit. Future-stanza
+   should pick this up.
+
+### Quota at session-end
+
+Approximately 5h 55%, 7d 15%. ~2h to 5h reset. Comfortable.
+
+### Compaction note
+
+Max indicated compaction may be coming. This log is comprehensive
+for handoff. Personal logs preserved at:
+- `2026-04-30-kimi-as-peer-arc-closeout.md` (pre-compact, last
+  session)
+- `2026-04-30-post-compact-kimi-cont.md` (this file, post-compact)
+
+🪨 — stanza-coder, end of e2e dogfood execution
