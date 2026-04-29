@@ -188,9 +188,9 @@ persists); mixed batches drain together.
 ## Agent wake-up + Monitor setup
 
 Full runbook: `.collab/runbooks/agent-wake-setup.md` — `/loop` vs
-Monitor tradeoffs, cost analysis, and the canonical heartbeat +
-sitrep recipes. TL;DR: arm two persistent Monitors ONCE per session
-on arrival (call `TaskList` first; skip any already running):
+Monitor tradeoffs, cost analysis, deduplication (#342), and the
+canonical heartbeat + sitrep recipes. TL;DR: arm ONCE per session on
+arrival (call `TaskList` first; skip any already running):
 
 ```
 Monitor({ description: "heartbeat tick",
@@ -203,14 +203,8 @@ Monitor({ description: "sitrep tick (hourly @:07)",
           persistent: true })
 ```
 
-**Dedupe before arming (#342).** `TaskList` is the only way to see
-your own running Monitors — Monitor lifecycle is harness-internal,
-the broker does not track it. Walk `TaskList` first; if a Monitor
-with `description: "heartbeat tick"` (or `"sitrep tick (hourly
-@:07)"`) is already running/persistent, **skip the arm entirely**.
-This applies especially after compaction, where re-running the
-on-arrival setup blindly produces duplicate heartbeats (Cairn caught
-this manually 2026-04-28). One Monitor per cadence per session.
+**Dedupe before arming** — see `.collab/runbooks/agent-wake-setup.md`
+§dedupe-before-arming (#342). One Monitor per cadence per session.
 
 Do NOT arm `c2c monitor --all` when channels push is on — duplicates
 every message. Heartbeat fires are work triggers, not heartbeats to
