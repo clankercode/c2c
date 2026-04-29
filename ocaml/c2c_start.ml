@@ -2154,6 +2154,25 @@ let load_config (name : string) : instance_config =
       Printf.eprintf "error: config not found for instance '%s'\n%!" name;
       exit 1
 
+(** [#159 Slice C] After a successful broker register with a new alias, scan all
+    instance configs and update any whose [session_id] matches the given
+    [session_id] to use the new [alias]. This prevents stale-alias drift on
+    restart. *)
+let sync_instance_alias ~(session_id : string) ~(alias : string) : unit =
+  let entries =
+    try Array.to_list (Sys.readdir instances_dir) with _ -> []
+  in
+  List.iter
+    (fun name ->
+       let full = Filename.concat instances_dir name in
+       if Sys.is_directory full && Sys.file_exists (Filename.concat full "config.json") then
+         match load_config_opt name with
+         | None -> ()
+         | Some cfg when cfg.session_id = session_id && cfg.alias <> alias ->
+             write_config { cfg with alias }
+         | _ -> ())
+    entries
+
 let persist_headless_thread_id ~(name : string) ~(thread_id : string) : unit =
   match load_config_opt name with
   | None -> ()

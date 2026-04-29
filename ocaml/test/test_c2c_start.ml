@@ -1741,6 +1741,64 @@ let test_last_launch_at_backward_compat_missing_field () =
   | Some saved ->
       check (option (float 0.001)) "last_launch_at None roundtrip" None saved.last_launch_at
 
+let test_sync_instance_alias_updates_matching_session () =
+  let name = Printf.sprintf "sync-alias-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun _dir ->
+  with_temp_dir @@ fun broker_root ->
+  let now = Unix.gettimeofday () in
+  let cfg : C2c_start.instance_config =
+    { name
+    ; client = "kimi"
+    ; session_id = "sess-abc-123"
+    ; resume_session_id = name
+    ; codex_resume_target = None
+    ; alias = "old-alias"
+    ; extra_args = []
+    ; created_at = now
+    ; last_launch_at = None
+    ; broker_root
+    ; auto_join_rooms = "swarm-lounge"
+    ; binary_override = None
+    ; model_override = None
+    ; agent_name = None
+    }
+  in
+  C2c_start.write_config cfg;
+  C2c_start.sync_instance_alias ~session_id:"sess-abc-123" ~alias:"new-alias";
+  match C2c_start.load_config_opt name with
+  | None -> fail "expected config after sync"
+  | Some saved ->
+      check string "alias updated" "new-alias" saved.alias
+
+let test_sync_instance_alias_ignores_mismatched_session () =
+  let name = Printf.sprintf "sync-alias-skip-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun _dir ->
+  with_temp_dir @@ fun broker_root ->
+  let now = Unix.gettimeofday () in
+  let cfg : C2c_start.instance_config =
+    { name
+    ; client = "kimi"
+    ; session_id = "sess-other-456"
+    ; resume_session_id = name
+    ; codex_resume_target = None
+    ; alias = "old-alias"
+    ; extra_args = []
+    ; created_at = now
+    ; last_launch_at = None
+    ; broker_root
+    ; auto_join_rooms = "swarm-lounge"
+    ; binary_override = None
+    ; model_override = None
+    ; agent_name = None
+    }
+  in
+  C2c_start.write_config cfg;
+  C2c_start.sync_instance_alias ~session_id:"sess-abc-123" ~alias:"new-alias";
+  match C2c_start.load_config_opt name with
+  | None -> fail "expected config after sync"
+  | Some saved ->
+      check string "alias unchanged" "old-alias" saved.alias
+
 (* ------------------------------------------------------------------ *)
 (* pmodel parsing                                                      *)
 (* ------------------------------------------------------------------ *)
@@ -3087,6 +3145,10 @@ let () =
             `Quick, test_last_launch_at_roundtrip )
         ; ( "last_launch_at_backward_compat_missing_field",
             `Quick, test_last_launch_at_backward_compat_missing_field )
+        ; ( "sync_instance_alias_updates_matching_session",
+            `Quick, test_sync_instance_alias_updates_matching_session )
+        ; ( "sync_instance_alias_ignores_mismatched_session",
+            `Quick, test_sync_instance_alias_ignores_mismatched_session )
         ; ( "prepare_launch_args_extra_args_appended_verbatim",
             `Quick, test_prepare_launch_args_extra_args_appended_verbatim )
         ; ( "prepare_launch_args_extra_args_empty_by_default",

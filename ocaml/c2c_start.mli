@@ -465,6 +465,11 @@ val load_config : string -> instance_config
 val load_config_opt : string -> instance_config option
 (** [load_config_opt name] loads instance config.json; returns [None] if absent. *)
 
+val sync_instance_alias : session_id:string -> alias:string -> unit
+(** Scan all instance configs and update any whose [session_id] matches the
+    given [session_id] to use the new [alias]. Prevents stale-alias drift on
+    restart. *)
+
 val resolve_effective_extra_args :
   cli_extra_args:string list ->
   persisted_extra_args:string list ->
