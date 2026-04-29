@@ -507,6 +507,12 @@ let xml_escape s =
     s;
   Buffer.contents buf
 
+(** Format a Unix timestamp as UTC HH:MM. Used for ts attributes and
+    channel notification meta. Shared helper to prevent format drift. *)
+let format_ts_hhmm (t : float) : string =
+  let tm = Unix.gmtime t in
+  Printf.sprintf "%02d:%02d" tm.tm_hour tm.tm_min
+
 let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts ~content () =
   let tag_attr = match tag with
     | Some t -> Printf.sprintf " tag=\"%s\"" (xml_escape t)
@@ -517,9 +523,7 @@ let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts ~content
     | None -> ""
   in
   let ts_attr = match ts with
-    | Some t ->
-        let tm = Unix.gmtime t in
-        Printf.sprintf " ts=\"%02d:%02d\"" tm.tm_hour tm.tm_min
+    | Some t -> Printf.sprintf " ts=\"%s\"" (format_ts_hhmm t)
     | None -> ""
   in
   let reply_via_str = xml_escape (Option.value reply_via ~default:"c2c_send") in
@@ -4534,7 +4538,7 @@ let notify_shared_with_recipients
             None)
       shared_with
 
-let channel_notification ?(role : string option = None) ({ from_alias; to_alias; content; deferrable = _; ts; _ } : message) =
+let channel_notification ?(role : string option = None) ({ from_alias; to_alias; content; ts; _ } : message) =
   (* The meta JSON keys here are rendered by Claude Code as XML
      attributes on the `<channel …>` tag in the agent transcript.
      They are deliberately named `from` / `to` (not `from_alias` /
@@ -4545,10 +4549,7 @@ let channel_notification ?(role : string option = None) ({ from_alias; to_alias;
      uses the short attribute names. The `ts` field gives UTC HH:MM
      of the message timestamp, making blocked-agent elapsed-time
      visible in the `<channel …>` tag. *)
-  let ts_str =
-    let tm = Unix.gmtime ts in
-    Printf.sprintf "%02d:%02d" tm.tm_hour tm.tm_min
-  in
+  let ts_str = format_ts_hhmm ts in
   let meta =
     let base = [ ("from", `String from_alias); ("to", `String to_alias); ("ts", `String ts_str) ] in
     match role with
