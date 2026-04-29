@@ -50,3 +50,14 @@ let write_file (path : string) (content : string) : unit =
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
     output_string oc content)
+
+(** [append_jsonl ?perm path line] appends [line ^ "\n"] to [path],
+    creating the file if needed. [perm] defaults to 0o600 (broker-private).
+    Best-effort: any I/O error is silently swallowed. #388 deduplication:
+    converges [open_out_gen \[Open_append; Open_creat; Open_wronly\]] sites. *)
+let append_jsonl ?(perm = 0o600) (path : string) (line : string) : unit =
+  try
+    let oc = open_out_gen [Open_append; Open_creat; Open_wronly] perm path in
+    output_string oc (line ^ "\n");
+    close_out oc
+  with _ -> ()
