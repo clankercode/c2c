@@ -2316,7 +2316,9 @@ let register_cmd =
   in
   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
   C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type:(env_client_type ()) ();
-  C2c_mcp.Broker.write_allowed_signers_entry broker ~alias;
+  (match C2c_mcp.Broker.write_allowed_signers_entry broker ~alias with
+   | Ok () -> ()
+   | Error e -> Printf.eprintf "[allowed_signers] warning: %s\n%!" e);
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->

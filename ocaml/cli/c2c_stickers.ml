@@ -5,19 +5,19 @@ let ( // ) = Filename.concat
 
 (* --- path helpers ------------------------------------------------------- *)
 
-let sticker_dir () =
+let sticker_dir_opt () : string option =
   match Git_helpers.git_common_dir_parent () with
-  | Some parent -> parent // ".c2c" // "stickers"
-  | None -> failwith "not in a git repository"
+  | Some parent -> Some (parent // ".c2c" // "stickers")
+  | None -> None
 
-let received_dir ~alias =
-  sticker_dir () // alias // "received"
+let received_dir ~(alias:string) ~(sticker_dir:string) : string =
+  sticker_dir // alias // "received"
 
-let sent_dir ~alias =
-  sticker_dir () // alias // "sent"
+let sent_dir ~(alias:string) ~(sticker_dir:string) : string =
+  sticker_dir // alias // "sent"
 
-let public_dir () =
-  sticker_dir () // "public"
+let public_dir ~(sticker_dir:string) : string =
+  sticker_dir // "public"
 
 (* shared per-alias signing key helpers (c2c_signing_helpers.ml) *)
 let xdg_state_home = C2c_utils.xdg_state_home
@@ -27,28 +27,28 @@ let per_alias_key_path = C2c_signing_helpers.per_alias_key_path
 
 (* Index path: .c2c/stickers/<reactor>/by-msg-out/<full-msg-id>.json
    Stores the sticker envelope path for each reaction this alias has made. *)
-let by_msg_out_dir ~alias =
-  sticker_dir () // alias // "by-msg-out"
+let by_msg_out_dir ~(alias:string) ~(sticker_dir:string) : string =
+  sticker_dir // alias // "by-msg-out"
 
-let by_msg_out_path ~alias ~msg_id =
-  by_msg_out_dir ~alias // (msg_id ^ ".json")
+let by_msg_out_path ~(alias:string) ~(sticker_dir:string) ~(msg_id:string) : string =
+  by_msg_out_dir ~alias ~sticker_dir // (msg_id ^ ".json")
 
-(* [append_to_by_msg_index ~alias ~msg_id ~envelope_path] appends a reaction
+(* [append_to_by_msg_index ~alias ~sticker_dir ~msg_id ~envelope_path] appends a reaction
    envelope reference to the index. The index is append-only so multiple
    reactions to the same message accumulate. *)
-let append_to_by_msg_index ~alias ~msg_id ~envelope_path =
-  let dir = by_msg_out_dir ~alias in
-  let path = by_msg_out_path ~alias ~msg_id in
+let append_to_by_msg_index ~(alias:string) ~(sticker_dir:string) ~msg_id ~envelope_path =
+  let dir = by_msg_out_dir ~alias ~sticker_dir in
+  let path = by_msg_out_path ~alias ~sticker_dir ~msg_id in
   let () = C2c_utils.mkdir_p dir in
   let line = envelope_path ^ "\n" in
   let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o600 path in
   Fun.protect ~finally:(fun () -> close_out oc)
     (fun () -> output_string oc line)
 
-(* [load_by_msg_index ~alias ~msg_id] reads all envelope paths from the
+(* [load_by_msg_index ~alias ~sticker_dir ~msg_id] reads all envelope paths from the
    reaction index for a given message. Returns [] if no reactions exist. *)
-let load_by_msg_index ~alias ~msg_id =
-  let path = by_msg_out_path ~alias ~msg_id in
+let load_by_msg_index ~(alias:string) ~(sticker_dir:string) ~(msg_id:string) =
+  let path = by_msg_out_path ~alias ~sticker_dir ~msg_id in
   if not (Sys.file_exists path) then []
   else
     let ic = open_in path in
@@ -76,7 +76,10 @@ type registry_entry = {
 }
 
 let load_registry () =
-  let reg_file = sticker_dir () // "registry.json" in
+  let reg_file = match sticker_dir_opt () with
+    | None -> ".c2c/stickers/registry.json"  (* non-git: try path, let try/with return [] on miss *)
+    | Some d -> d // "registry.json"
+  in
   try
     let json = Yojson.Safe.from_file reg_file in
     match json with
@@ -232,49 +235,55 @@ let atomic_write_file path content =
     Ok ()
   with e -> Error (Printexc.to_string e)
 
-let store_envelope env =
-  let dir, filename = match env.scope with
-    | `Private -> received_dir ~alias:env.to_, Printf.sprintf "%s-%s.json" env.ts env.nonce
-    | `Public -> public_dir (), Printf.sprintf "%s-%s-%s.json" env.from_ env.ts env.nonce
-    | `Both -> received_dir ~alias:env.to_, Printf.sprintf "%s-%s.json" env.ts env.nonce
-  in
-  let () = C2c_utils.mkdir_p dir in
-  let json = envelope_to_json env in
-  let content = Yojson.Safe.to_string json ^ "\n" in
-  atomic_write_file (dir // filename) content
+let store_envelope env : (unit, string) result =
+  match sticker_dir_opt () with
+  | None -> Error "not in a git repository"
+  | Some sticker_dir ->
+      let dir, filename = match env.scope with
+        | `Private -> received_dir ~alias:env.to_ ~sticker_dir, Printf.sprintf "%s-%s.json" env.ts env.nonce
+        | `Public -> public_dir ~sticker_dir, Printf.sprintf "%s-%s-%s.json" env.from_ env.ts env.nonce
+        | `Both -> received_dir ~alias:env.to_ ~sticker_dir, Printf.sprintf "%s-%s.json" env.ts env.nonce
+      in
+      let () = C2c_utils.mkdir_p dir in
+      let json = envelope_to_json env in
+      let content = Yojson.Safe.to_string json ^ "\n" in
+      atomic_write_file (dir // filename) content
 
-let load_stickers ~alias ?(scope=`Both) () =
-  let dirs = match scope with
-    | `Both -> [ received_dir ~alias ]
-    | `Public -> [ public_dir () ]
-    | `Private -> [ received_dir ~alias ]
-  in
-  let glob dir =
-    try
-      if not (Sys.file_exists dir) then []
-      else
-        let d = Unix.opendir dir in
-        let rec go acc =
-          try
-            match Unix.readdir d with
-            | entry when entry <> "" && entry <> "." && entry <> ".." ->
-              (try
-                 let path = dir // entry in
-                 let json = Yojson.Safe.from_file path in
-                 match envelope_of_json json with
-                 | Ok env -> go (env :: acc)
-                 | Error _ -> go acc
-               with _ -> go acc)
-            | _ -> go acc
-          with End_of_file -> acc
-        in
-        let results = go [] in
-        Unix.closedir d;
-        results
-    with _ -> []
-  in
-  let stickers = List.concat (List.map glob dirs) in
-  List.sort (fun a b -> String.compare b.ts a.ts) stickers
+let load_stickers ~(alias:string) ?(scope=`Both) () =
+  match sticker_dir_opt () with
+  | None -> []
+  | Some sticker_dir ->
+      let dirs = match scope with
+        | `Both -> [ received_dir ~alias ~sticker_dir ]
+        | `Public -> [ public_dir ~sticker_dir ]
+        | `Private -> [ received_dir ~alias ~sticker_dir ]
+      in
+      let glob dir =
+        try
+          if not (Sys.file_exists dir) then []
+          else
+            let d = Unix.opendir dir in
+            let rec go acc =
+              try
+                match Unix.readdir d with
+                | entry when entry <> "" && entry <> "." && entry <> ".." ->
+                  (try
+                     let path = dir // entry in
+                     let json = Yojson.Safe.from_file path in
+                     match envelope_of_json json with
+                     | Ok env -> go (env :: acc)
+                     | Error _ -> go acc
+                   with _ -> go acc)
+                | _ -> go acc
+              with End_of_file -> acc
+            in
+            let results = go [] in
+            Unix.closedir d;
+            results
+        with _ -> []
+      in
+      let stickers = List.concat (List.map glob dirs) in
+      List.sort (fun a b -> String.compare b.ts a.ts) stickers
 
 (* --- create and store --------------------------------------------------- *)
 
@@ -595,8 +604,12 @@ let sticker_react_cmd =
           exit 1
       | Ok env ->
           (* Append to by-msg index for this reactor *)
-          let envelope_path = (received_dir ~alias:original_sender) // Printf.sprintf "%s-%s.json" env.ts env.nonce in
-          (try append_to_by_msg_index ~alias:from_alias ~msg_id:full_msg_id ~envelope_path with _ -> ());
+          let sticker_dir = match sticker_dir_opt () with
+            | Some d -> d
+            | None -> (Printf.eprintf "error: not in a git repository\n%!"; exit 1)
+          in
+          let envelope_path = received_dir ~alias:original_sender ~sticker_dir // Printf.sprintf "%s-%s.json" env.ts env.nonce in
+          (try append_to_by_msg_index ~alias:from_alias ~sticker_dir ~msg_id:full_msg_id ~envelope_path with _ -> ());
           (* Enqueue DM to original sender with reaction XML *)
           let emoji = match List.assoc_opt env.sticker_id (List.map (fun e -> e.id, e) (load_registry ())) with
             | Some e -> e.emoji | None -> "?" in

@@ -528,7 +528,7 @@ module Broker : sig
       new stamp was written, [false] if that index was already stamped or
       the entry is absent. Cross-process safe via [with_pending_lock]. *)
 
-  val write_allowed_signers_entry : t -> alias:string -> unit
+  val write_allowed_signers_entry : t -> alias:string -> (unit, string) result
 end
 
 val notify_shared_with_recipients :

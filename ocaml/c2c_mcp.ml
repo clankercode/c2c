@@ -1466,9 +1466,15 @@ module Broker = struct
       let id = Relay_identity.generate () in
       match Relay_identity.save id with
       | Ok () -> id
-      | Error e -> failwith ("relay_identity save: " ^ e)
+      | Error e ->
+          (* Save failed (e.g. volume permission denied). Degrade gracefully:
+             log clearly, fall back to in-memory identity for this session. *)
+          Printf.eprintf "[load_or_create_ed25519_identity] PERMISSION DENIED: cannot persist relay identity: %s\n%!" e;
+          Printf.eprintf "[load_or_create_ed25519_identity] Falling back to in-memory identity for this session.\n%!";
+          Printf.eprintf "[load_or_create_ed25519_identity] To fix: chmod the broker root and restart.\n%!";
+          id
 
-  let write_allowed_signers_entry t ~alias =
+  let write_allowed_signers_entry t ~alias : (unit, string) result =
     let keys_dir = Filename.concat t.root "keys" in
     let priv_path = Filename.concat keys_dir (alias ^ ".ed25519") in
     let signers_path = Filename.concat t.root "allowed_signers" in
@@ -1481,30 +1487,35 @@ module Broker = struct
       let ssh_priv_path = priv_path ^ ".ssh" in
       let ssh_pub_path = ssh_priv_path ^ ".pub" in
       if not (Sys.file_exists ssh_pub_path) then
-        failwith (Printf.sprintf "ssh key not found at %s (run load_or_create_at first)" ssh_pub_path);
-      let ic = open_in ssh_pub_path in
-      let len = in_channel_length ic in
-      let ssh_pub_content = really_input_string ic len in
-      close_in ic;
-      let b64_key =
-        match (let parts = List.filter ((<>) "") (String.split_on_char ' ' ssh_pub_content) in List.nth_opt parts 1) with
-        | Some b64 -> String.trim b64
-        | None -> failwith (Printf.sprintf "could not parse ssh pub key from %s" ssh_pub_path)
-      in
-      let now = Unix.gmtime (Unix.time ()) in
-      let date_str =
-        Printf.sprintf "%04d-%02d-%02d"
-          (now.Unix.tm_year + 1900) (now.Unix.tm_mon + 1) now.Unix.tm_mday
-      in
-      let line = Printf.sprintf "%s@c2c.im ssh-ed25519 %s # added %s\n"
-        alias b64_key date_str
-      in
-      (* 0o644: world-readable SSH authorized_keys-style file, intentionally public. *)
-      let oc = open_out_gen [Open_append; Open_creat] 0o644 signers_path in
-      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-        output_string oc line)
+        Error (Printf.sprintf "ssh key not found at %s (run load_or_create_at first)" ssh_pub_path)
+      else
+        let ic = open_in ssh_pub_path in
+        let len = in_channel_length ic in
+        let ssh_pub_content = really_input_string ic len in
+        close_in ic;
+        let b64_key =
+          match (let parts = List.filter ((<>) "") (String.split_on_char ' ' ssh_pub_content) in List.nth_opt parts 1) with
+          | Some b64 -> Ok (String.trim b64)
+          | None -> Error (Printf.sprintf "could not parse ssh pub key from %s" ssh_pub_path)
+        in
+        match b64_key with
+        | Error _ as e -> e
+        | Ok b64_key ->
+            let now = Unix.gmtime (Unix.time ()) in
+            let date_str =
+              Printf.sprintf "%04d-%02d-%02d"
+                (now.Unix.tm_year + 1900) (now.Unix.tm_mon + 1) now.Unix.tm_mday
+            in
+            let line = Printf.sprintf "%s@c2c.im ssh-ed25519 %s # added %s\n"
+              alias b64_key date_str
+            in
+            (* 0o644: world-readable SSH authorized_keys-style file, intentionally public. *)
+            let oc = open_out_gen [Open_append; Open_creat] 0o644 signers_path in
+            Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+              output_string oc line);
+            Ok ()
     with e ->
-      Printf.eprintf "[allowed_signers] warning: could not write entry for %s: %s\n%!" alias (Printexc.to_string e)
+      Error (Printf.sprintf "could not write allowed_signers entry for %s: %s" alias (Printexc.to_string e))
 
   let registry_lock_path t = Filename.concat t.root "registry.json.lock"
 
@@ -1680,10 +1691,10 @@ module Broker = struct
       Unix.utimes path 0.0 (Unix.gettimeofday ())
     with Unix.Unix_error _ -> ()
 
-  let docker_broker_root () =
+  let docker_broker_root () : (string, string) result =
     match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-    | Some root -> root
-    | None -> failwith "C2C_IN_DOCKER=1 requires C2C_MCP_BROKER_ROOT to be set"
+    | Some root -> Ok root
+    | None -> Error "C2C_IN_DOCKER=1 requires C2C_MCP_BROKER_ROOT to be set"
 
   let in_docker_mode () =
     match Sys.getenv_opt "C2C_IN_DOCKER" with
@@ -1694,19 +1705,21 @@ module Broker = struct
     (* When Docker mode is active, use the file-based lease instead of
        /proc/<pid> checks. The lease is touched on every touch_session
        call, so a recent mtime means the session is alive in its container. *)
-    if in_docker_mode () then
-      match reg.pid with
-      | None -> true
-      | Some _pid ->
-          let root = docker_broker_root () in
-          let path = lease_file_path { root } ~session_id:reg.session_id in
-          if not (Sys.file_exists path) then false
-          else
-            (try
-              let stat = Unix.stat path in
-              let age = Unix.gettimeofday () -. stat.st_mtime in
-              age <= docker_lease_ttl
-             with Unix.Unix_error _ -> false)
+     if in_docker_mode () then
+       match reg.pid with
+       | None -> true
+       | Some _pid ->
+           match docker_broker_root () with
+           | Error _ -> true  (* env misconfigured: assume alive rather than false dead *)
+           | Ok root ->
+               let path = lease_file_path { root } ~session_id:reg.session_id in
+               if not (Sys.file_exists path) then false
+               else
+                 (try
+                   let stat = Unix.stat path in
+                   let age = Unix.gettimeofday () -. stat.st_mtime in
+                   age <= docker_lease_ttl
+                  with Unix.Unix_error _ -> false)
     else
       match reg.pid with
       | None -> true
@@ -1734,15 +1747,17 @@ module Broker = struct
       match reg.pid with
       | None -> Unknown
       | Some _pid ->
-          let root = docker_broker_root () in
-          let path = lease_file_path { root } ~session_id:reg.session_id in
-          if not (Sys.file_exists path) then Unknown
-          else
-            (try
-              let stat = Unix.stat path in
-              let age = Unix.gettimeofday () -. stat.st_mtime in
-              if age <= docker_lease_ttl then Alive else Dead
-             with Unix.Unix_error _ -> Unknown)
+          match docker_broker_root () with
+          | Error _ -> Unknown  (* env misconfigured: cannot determine *)
+          | Ok root ->
+              let path = lease_file_path { root } ~session_id:reg.session_id in
+              if not (Sys.file_exists path) then Unknown
+              else
+                (try
+                  let stat = Unix.stat path in
+                  let age = Unix.gettimeofday () -. stat.st_mtime in
+                  if age <= docker_lease_ttl then Alive else Dead
+                 with Unix.Unix_error _ -> Unknown)
     else
       match reg.pid with
       | None -> Unknown
@@ -2325,15 +2340,18 @@ module Broker = struct
        OCaml requires forward declarations for cross-references. *)
     if in_docker_mode () then
       (try
-         let root = docker_broker_root () in
-         let dir = Filename.concat root docker_lease_dir_name in
-         if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
-         let path = Filename.concat dir session_id in
-         (* Use open+O_CREAT to create, then utimes to set mtime *)
-          let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
-          Unix.close fd;
-          Unix.utimes path 0.0 (Unix.gettimeofday ())
-        with Unix.Unix_error _ -> ())
+         (match docker_broker_root () with
+          | Error e ->
+              Printf.eprintf "[touch_session] docker_broker_root error: %s\n%!" e
+          | Ok root ->
+              let dir = Filename.concat root docker_lease_dir_name in
+              if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
+              let path = Filename.concat dir session_id in
+              (* Use open+O_CREAT to create, then utimes to set mtime *)
+              let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
+              Unix.close fd;
+              Unix.utimes path 0.0 (Unix.gettimeofday ()))
+       with Unix.Unix_error _ -> ())
 
   (** True if [alias] contains '@' — indicating a remote alias that cannot be
       resolved via the local registry and must be sent via the relay outbox. *)
@@ -2370,13 +2388,16 @@ module Broker = struct
                touch_session is defined later and OCaml requires forward refs. *)
             (try
                if in_docker_mode () then begin
-                 let root = docker_broker_root () in
-                 let dir = Filename.concat root docker_lease_dir_name in
-                 if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
-                 let path = Filename.concat dir session_id in
-                 let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
-                 Unix.close fd;
-                 Unix.utimes path 0.0 (Unix.gettimeofday ())
+                 (match docker_broker_root () with
+                  | Error e ->
+                      Printf.eprintf "[enqueue_message] docker_broker_root error: %s\n%!" e
+                  | Ok root ->
+                      let dir = Filename.concat root docker_lease_dir_name in
+                      if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
+                      let path = Filename.concat dir session_id in
+                      let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
+                      Unix.close fd;
+                      Unix.utimes path 0.0 (Unix.gettimeofday ()))
                end
              with Unix.Unix_error _ -> ());
             if debug_enabled then Printf.eprintf "[DEBUG enqueue] from=%s to=%s session_id=%s\n%!"
@@ -5929,7 +5950,9 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
               let redelivered =
                 Broker.redeliver_dead_letter_for_session broker ~session_id ~alias
               in
-              Broker.write_allowed_signers_entry broker ~alias;
+              (match Broker.write_allowed_signers_entry broker ~alias with
+               | Ok () -> ()
+               | Error e -> Printf.eprintf "[allowed_signers] warning: %s\n%!" e);
               let response_content =
                 if redelivered > 0 then
                   Printf.sprintf "registered %s (redelivered %d dead-letter message%s)"
