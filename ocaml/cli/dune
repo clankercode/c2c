@@ -57,3 +57,8 @@
  (name test_c2c_peer_pass)
  (modules test_c2c_peer_pass c2c_peer_pass c2c_signing_helpers c2c_utils c2c_broker_root_check)
  (libraries c2c_mcp alcotest cmdliner yojson unix))
+
+(test
+ (name test_c2c_utils)
+ (modules test_c2c_utils c2c_utils c2c_broker_root_check)
+ (libraries c2c_mcp alcotest unix))
