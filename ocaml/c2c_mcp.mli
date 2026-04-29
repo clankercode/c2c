@@ -118,6 +118,14 @@ type pending_permission =
   ; supervisors : string list
   ; created_at : float
   ; expires_at : float
+  ; fallthrough_fired_at : float option list
+    (** slice/coord-backup-fallthrough: per-tier fire timestamps.
+        Indexed parallel to the coord-chain. [Some _] → tier already
+        fired; [None] → still eligible. Empty list on legacy entries. *)
+  ; resolved_at : float option
+    (** slice/coord-backup-fallthrough: stamped by [check_pending_reply]
+        when a supervisor lands a valid reply. Scheduler skips entries
+        with [Some _] so backup tiers don't fire after resolution. *)
   }
 
 val parse_alias_list : string -> string list
@@ -346,6 +354,17 @@ module Broker : sig
   val read_room_history : t -> room_id:string -> limit:int -> ?since:float -> unit -> room_message list
   type send_room_result = { sr_delivered_to : string list; sr_skipped : string list; sr_ts : float }
   val send_room : ?tag:string -> t -> from_alias:string -> room_id:string -> content:string -> send_room_result
+  val fan_out_room_message :
+       ?tag:string
+    -> t
+    -> room_id:string
+    -> from_alias:string
+    -> content:string
+    -> string list * string list
+  (** Enqueue [content] to every current member of [room_id] except
+      [from_alias]. Returns [(delivered, skipped)] aliases. Public for
+      broker-internal fan-outs (system broadcasts, coord-fallthrough
+      tier). Per-recipient inbox rows are non-deferrable. *)
   (** [send_room ?tag t ~from_alias ~room_id ~content] enqueues [content]
       to every member of [room_id] except [from_alias]. When [?tag] is
       supplied (one of "fail", "blocking", "urgent" — see
@@ -394,6 +413,41 @@ module Broker : sig
   val find_pending_permission : t -> string -> pending_permission option
   val remove_pending_permission : t -> string -> unit
   val pending_permission_exists_for_alias : t -> string -> bool
+
+  (** slice/coord-backup-fallthrough: scheduler-facing helpers. *)
+
+  val load_pending_permissions : t -> pending_permission list
+  (** Read the persisted entries WITHOUT filtering expired (the scheduler
+      filters explicitly; expired-and-unresolved are not interesting to
+      it, but we want to see resolved-but-not-yet-removed). Caller must
+      hold [with_pending_lock] for atomicity if mutating after reading. *)
+
+  val save_pending_permissions : t -> pending_permission list -> unit
+  (** Replace the persisted list. Caller must hold [with_pending_lock]. *)
+
+  val with_pending_lock : t -> (unit -> 'a) -> 'a
+  (** Cross-process lock guarding pending_permissions.json. *)
+
+  val mark_pending_resolved : t -> perm_id:string -> ts:float -> bool
+  (** [mark_pending_resolved t ~perm_id ~ts] stamps [resolved_at = Some ts]
+      on the matching entry if it exists and was not already resolved.
+      Returns [true] if the field was newly set, [false] if no-op (already
+      resolved, or perm_id absent). Cross-process safe via
+      [with_pending_lock]. First-writer-wins: a later call with a smaller
+      ts is dropped. *)
+
+  val mark_pending_fallthrough_fired :
+       t
+    -> perm_id:string
+    -> tier_index:int
+    -> ts:float
+    -> bool
+  (** [mark_pending_fallthrough_fired t ~perm_id ~tier_index ~ts] stamps
+      [fallthrough_fired_at] at [tier_index] (0-indexed into the chain;
+      grow the list with [None] padding if needed). Returns [true] if a
+      new stamp was written, [false] if that index was already stamped or
+      the entry is absent. Cross-process safe via [with_pending_lock]. *)
+
   val write_allowed_signers_entry : t -> alias:string -> unit
 end
 

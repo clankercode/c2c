@@ -338,6 +338,12 @@ let run_inner_server ~broker_root =
     ~cadence_minutes:(nudge_cadence_minutes ())
     ~idle_minutes:(nudge_idle_minutes ())
     ();
+  (* slice/coord-backup-fallthrough: dedicated 60s-tick scheduler that
+     escalates pending-permission DMs through the configured
+     [swarm].coord_chain when the primary doesn't ack. Reads config
+     via thunks on every tick — empty chain (default) means the loop
+     runs but every tick is a no-op. *)
+  Coord_fallthrough.start_scheduler ~broker_root ~broker ();
   let negotiated_capabilities_ref = ref (force_capabilities_from_env ()) in
   let emit_notification_fn msg =
     emit_notification ~broker_root ~session_id:(match session_id () with Some s -> s | None -> "") msg

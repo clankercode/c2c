@@ -80,6 +80,19 @@ type pending_permission =
   ; supervisors : string list
   ; created_at : float
   ; expires_at : float
+  (* slice/coord-backup-fallthrough: per-tier fire timestamps. Indexed
+     parallel to the chain-effective supervisors list (see
+     Coord_fallthrough). [Some _] → that tier already fired (used to
+     prevent double-fire across scheduler ticks); [None] → tier is
+     still eligible. Length is independent of supervisors length —
+     scheduler reads coord_chain config at tick time. Persisted as
+     null-or-float in JSON; absent in legacy entries → []. *)
+  ; fallthrough_fired_at : float option list
+  (* slice/coord-backup-fallthrough: when a supervisor's
+     check_pending_reply landed valid=true, the broker stamps this so
+     later fallthrough ticks skip the entry. Late primary reply →
+     stamp; early backup reply → stamp. First valid reply wins. *)
+  ; resolved_at : float option
   }
 
 (** Recursive idempotent mkdir. Creates [d] and all missing parents.
@@ -98,6 +111,16 @@ let rec mkdir_p d =
 let pending_kind_to_string = function Permission -> "permission" | Question -> "question"
 let pending_kind_of_string = function "question" -> Question | _ -> Permission
 
+let float_opt_to_json = function
+  | None -> `Null
+  | Some f -> `Float f
+
+let json_to_float_opt = function
+  | `Null -> None
+  | `Float f -> Some f
+  | `Int i -> Some (float_of_int i)
+  | _ -> None
+
 let pending_permission_to_json p =
   `Assoc
     [ ("perm_id", `String p.perm_id)
@@ -107,10 +130,26 @@ let pending_permission_to_json p =
     ; ("supervisors", `List (List.map (fun s -> `String s) p.supervisors))
     ; ("created_at", `Float p.created_at)
     ; ("expires_at", `Float p.expires_at)
+    ; ("fallthrough_fired_at",
+        `List (List.map float_opt_to_json p.fallthrough_fired_at))
+    ; ("resolved_at", float_opt_to_json p.resolved_at)
     ]
 
 let pending_permission_of_json json =
   let open Yojson.Safe.Util in
+  let fallthrough_fired_at =
+    (* slice/coord-backup-fallthrough: backward-compat — legacy entries
+       written before this slice have no field. Default to []. *)
+    match member "fallthrough_fired_at" json with
+    | `Null -> []
+    | `List xs -> List.map json_to_float_opt xs
+    | _ -> []
+  in
+  let resolved_at =
+    match member "resolved_at" json with
+    | `Null -> None
+    | other -> json_to_float_opt other
+  in
   { perm_id = json |> member "perm_id" |> to_string
   ; kind = json |> member "kind" |> to_string |> pending_kind_of_string
   ; requester_session_id = json |> member "requester_session_id" |> to_string
@@ -118,6 +157,8 @@ let pending_permission_of_json json =
   ; supervisors = json |> member "supervisors" |> to_list |> List.map Yojson.Safe.Util.to_string
   ; created_at = json |> member "created_at" |> to_float
   ; expires_at = json |> member "expires_at" |> to_float
+  ; fallthrough_fired_at
+  ; resolved_at
   }
 
 (* Debug output — gated by C2C_MCP_DEBUG env var *)
@@ -934,6 +975,68 @@ module Broker = struct
       List.exists
         (fun p -> alias_casefold p.requester_alias = target && p.expires_at > now)
         (load_pending_permissions t))
+
+  (* slice/coord-backup-fallthrough: stamp resolved_at on the entry whose
+     perm_id matches. Returns true on first transition None→Some, false
+     on no-op (already resolved or perm_id not found). Cross-process
+     atomic via with_pending_lock. *)
+  let mark_pending_resolved t ~perm_id ~ts =
+    with_pending_lock t (fun () ->
+      let entries = load_pending_permissions t in
+      let changed = ref false in
+      let updated =
+        List.map
+          (fun (p : pending_permission) ->
+            if p.perm_id = perm_id && p.resolved_at = None then begin
+              changed := true;
+              { p with resolved_at = Some ts }
+            end else p)
+          entries
+      in
+      if !changed then save_pending_permissions t updated;
+      !changed)
+
+  (* slice/coord-backup-fallthrough: stamp [fallthrough_fired_at] at
+     [tier_index]. Grows the list with [None] padding so index N is
+     always addressable. Returns true on first transition for that
+     index, false if already stamped (idempotent under double-tick).
+     Cross-process atomic via with_pending_lock. *)
+  let mark_pending_fallthrough_fired t ~perm_id ~tier_index ~ts =
+    with_pending_lock t (fun () ->
+      let entries = load_pending_permissions t in
+      let changed = ref false in
+      let pad_to n xs =
+        let rec aux i acc =
+          if i >= n then List.rev acc
+          else
+            let v = try List.nth xs i with _ -> None in
+            aux (i + 1) (v :: acc)
+        in
+        aux 0 []
+      in
+      let stamp_at xs idx =
+        List.mapi (fun i v -> if i = idx then Some ts else v) xs
+      in
+      let updated =
+        List.map
+          (fun (p : pending_permission) ->
+            if p.perm_id <> perm_id then p
+            else
+              let len = max (List.length p.fallthrough_fired_at)
+                           (tier_index + 1) in
+              let padded = pad_to len p.fallthrough_fired_at in
+              let already =
+                try List.nth padded tier_index <> None with _ -> false
+              in
+              if already then p
+              else begin
+                changed := true;
+                { p with fallthrough_fired_at = stamp_at padded tier_index }
+              end)
+          entries
+      in
+      if !changed then save_pending_permissions t updated;
+      !changed)
 
   (* [#432 Slice E] In-memory relay-e2e TOFU pins were process-local —
      every broker restart silently downgraded x25519/ed25519
@@ -6459,7 +6562,8 @@ let ts = Unix.gettimeofday () in
       let pending : pending_permission =
         { perm_id; kind; requester_session_id = session_id
         ; requester_alias = alias; supervisors
-        ; created_at = now; expires_at = now +. ttl_seconds }
+        ; created_at = now; expires_at = now +. ttl_seconds
+        ; fallthrough_fired_at = []; resolved_at = None }
       in
       (try
          Broker.open_pending_permission broker pending;
@@ -6573,6 +6677,16 @@ let ts = Unix.gettimeofday () in
           Lwt.return (tool_result ~content ~is_error:false)
       | Some pending ->
           if List.mem reply_from_alias pending.supervisors then begin
+            (* slice/coord-backup-fallthrough: first valid reply wins.
+               Stamp resolved_at so the fallthrough scheduler stops
+               firing later tiers for this entry. Idempotent — a later
+               supervisor calling check_pending_reply still gets
+               valid=true (we don't gate the response on resolved_at);
+               only the broker-side fallthrough scheduler uses this
+               flag. *)
+            let _ : bool =
+              Broker.mark_pending_resolved broker ~perm_id ~ts:now_ts
+            in
             log_pending_check
               ~broker_root:(Broker.root broker) ~perm_id ~outcome:"valid"
               ~reply_from_alias

@@ -7655,6 +7655,260 @@ let test_coord_fallthrough_audit_broadcast_tier () =
         (json |> member "backup_alias" |> to_string);
       check int "tier 3" 3 (json |> member "tier" |> to_int))
 
+(* slice/coord-backup-scheduler-impl: helper — open a pending entry
+   with caller-controlled created_at so we can simulate "elapsed past
+   the idle threshold" without sleeping. *)
+let make_pending
+    ?(perm_id = "perm:scheduler-test")
+    ?(requester_alias = "galaxy-coder")
+    ?(supervisors = [ "coordinator1" ])
+    ?(elapsed_s = 0.0)
+    ?(resolved_at = None)
+    ?(fallthrough_fired_at = [])
+    ()
+  : C2c_mcp.pending_permission =
+  let now = Unix.gettimeofday () in
+  { perm_id
+  ; kind = C2c_mcp.Permission
+  ; requester_session_id = "session-galaxy"
+  ; requester_alias
+  ; supervisors
+  ; created_at = now -. elapsed_s
+  ; expires_at = now +. 600.0
+  ; fallthrough_fired_at
+  ; resolved_at
+  }
+
+(* slice/coord-backup-scheduler-impl T1: at idle threshold the
+   scheduler fires the first backup tier — DM enqueued AND
+   fallthrough_fired_at[0] is set. *)
+let test_coord_fallthrough_fires_at_idle_threshold () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register the backup so it counts as Alive. registration_is_alive
+         on a pidless row returns true (Alive collapse), see broker
+         predicate. The backup needs an inbox to receive the DM. *)
+      C2c_mcp.Broker.register broker ~session_id:"session-backup-1"
+        ~alias:"stanza-coder" ~pid:None ~pid_start_time:None ();
+      (* Pre-load a pending entry past the idle threshold. *)
+      let p = make_pending ~elapsed_s:125.0 () in
+      C2c_mcp.Broker.open_pending_permission broker p;
+      Coord_fallthrough.tick
+        ~broker
+        ~broker_root:dir
+        ~chain:[ "stanza-coder" ]
+        ~idle_seconds:120.0
+        ~broadcast_room:"swarm-lounge"
+        ();
+      (* Backup got the DM. *)
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-backup-1" in
+      check int "backup inbox has one DM" 1 (List.length inbox);
+      let m = List.hd inbox in
+      check bool "DM body mentions perm_id" true
+        (string_contains m.C2c_mcp.content p.perm_id);
+      check string "DM from coord-fallthrough sender"
+        Coord_fallthrough.broadcast_sender_alias m.C2c_mcp.from_alias;
+      (* Audit line written. *)
+      let lines = parse_broker_log_lines_with_event dir "coord_fallthrough_fired" in
+      check int "one fallthrough audit line" 1 (List.length lines);
+      let json = List.hd lines in
+      let open Yojson.Safe.Util in
+      check int "tier 1" 1 (json |> member "tier" |> to_int);
+      check string "backup_alias=stanza-coder" "stanza-coder"
+        (json |> member "backup_alias" |> to_string);
+      (* fallthrough_fired_at[0] is set. *)
+      let stored = C2c_mcp.Broker.find_pending_permission broker p.perm_id in
+      (match stored with
+       | None -> fail "pending entry vanished"
+       | Some s ->
+           (match List.nth_opt s.fallthrough_fired_at 0 with
+            | Some (Some _) -> ()
+            | _ -> fail "fallthrough_fired_at[0] not stamped")))
+
+(* slice/coord-backup-scheduler-impl T2: an entry with resolved_at set
+   does not trigger any fallthrough fire, regardless of elapsed time. *)
+let test_coord_fallthrough_resolved_skips () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-backup-1"
+        ~alias:"stanza-coder" ~pid:None ~pid_start_time:None ();
+      let now = Unix.gettimeofday () in
+      let p = make_pending ~elapsed_s:300.0
+                ~resolved_at:(Some (now -. 100.0)) () in
+      C2c_mcp.Broker.open_pending_permission broker p;
+      Coord_fallthrough.tick
+        ~broker
+        ~broker_root:dir
+        ~chain:[ "stanza-coder" ]
+        ~idle_seconds:120.0
+        ~broadcast_room:"swarm-lounge"
+        ();
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-backup-1" in
+      check int "no DM enqueued for resolved entry" 0 (List.length inbox);
+      let lines = parse_broker_log_lines_with_event dir "coord_fallthrough_fired" in
+      check int "no audit line for resolved entry" 0 (List.length lines))
+
+(* slice/coord-backup-scheduler-impl T3 / Cairn answer 2:
+   skip-and-advance — when chain[0] has no live registration, advance
+   to chain[1] in the SAME tick (don't wait next 60s). *)
+let test_coord_fallthrough_skip_and_advance () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Only the second backup has a live registration. *)
+      C2c_mcp.Broker.register broker ~session_id:"session-live-coord"
+        ~alias:"live-coord" ~pid:None ~pid_start_time:None ();
+      let p = make_pending ~elapsed_s:125.0 () in
+      C2c_mcp.Broker.open_pending_permission broker p;
+      Coord_fallthrough.tick
+        ~broker
+        ~broker_root:dir
+        ~chain:[ "offline-coord"; "live-coord" ]
+        ~idle_seconds:120.0
+        ~broadcast_room:"swarm-lounge"
+        ();
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-live-coord" in
+      check int "live-coord got DM same tick" 1 (List.length inbox);
+      (* Offline-coord row was skipped (stamped) but no enqueue
+         happened to it. *)
+      let stored = C2c_mcp.Broker.find_pending_permission broker p.perm_id in
+      (match stored with
+       | None -> fail "pending entry vanished"
+       | Some s ->
+           check int "fired_at has 2 stamps (skip + fire)" 2
+             (List.length s.fallthrough_fired_at);
+           (match s.fallthrough_fired_at with
+            | [ Some _; Some _ ] -> ()
+            | _ -> fail "expected both tier slots stamped"));
+      (* Audit log: only the live-coord fire emits audit. The skipped
+         offline tier does not — silent skip. *)
+      let lines = parse_broker_log_lines_with_event dir "coord_fallthrough_fired" in
+      check int "one audit line (live-coord only)" 1 (List.length lines);
+      let json = List.hd lines in
+      let open Yojson.Safe.Util in
+      check string "backup_alias=live-coord" "live-coord"
+        (json |> member "backup_alias" |> to_string))
+
+(* slice/coord-backup-scheduler-impl T4 / Cairn answer 3: once the
+   entire chain is fired-or-skipped, broadcast to broadcast_room.
+   Audit line has tier=N+1 and backup_alias="<broadcast>". *)
+let test_coord_fallthrough_chain_exhausted_broadcasts () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Set up two live backups + create the broadcast room with the
+         requester as a member so fan_out_room_message has somewhere
+         to land messages we can verify. *)
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"a" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"b" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-watcher"
+        ~alias:"watcher" ~pid:None ~pid_start_time:None ();
+      let _ : C2c_mcp.room_member list =
+        C2c_mcp.Broker.join_room broker
+          ~room_id:"swarm-lounge" ~alias:"watcher"
+          ~session_id:"session-watcher"
+      in
+      (* Past 3*idle (a, b, broadcast) — ensures all three tiers fire
+         in one drain pass. *)
+      let p = make_pending ~elapsed_s:400.0 () in
+      C2c_mcp.Broker.open_pending_permission broker p;
+      Coord_fallthrough.tick
+        ~broker
+        ~broker_root:dir
+        ~chain:[ "a"; "b" ]
+        ~idle_seconds:120.0
+        ~broadcast_room:"swarm-lounge"
+        ();
+      (* Watcher in swarm-lounge got the broadcast. *)
+      let inbox =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-watcher"
+      in
+      check bool "watcher got broadcast" true
+        (List.exists
+           (fun (m : C2c_mcp.message) ->
+             string_contains m.C2c_mcp.content "@coordinator-backup")
+           inbox);
+      (* Audit log: 3 lines — tier 1 (a), tier 2 (b), tier 3
+         (broadcast). *)
+      let lines =
+        parse_broker_log_lines_with_event dir "coord_fallthrough_fired"
+      in
+      check int "three fallthrough audit lines" 3 (List.length lines);
+      let broadcast_line =
+        List.find
+          (fun json ->
+            let open Yojson.Safe.Util in
+            json |> member "backup_alias" |> to_string = "<broadcast>")
+          lines
+      in
+      let open Yojson.Safe.Util in
+      check int "broadcast tier = chain_len+1" 3
+        (broadcast_line |> member "tier" |> to_int))
+
+(* slice/coord-backup-scheduler-impl T5: check_pending_reply with a
+   valid supervisor reply stamps resolved_at on the entry. *)
+let test_check_pending_reply_writes_resolved_at () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-coord";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-coord"
+            ~alias:"coordinator1" ~pid:None ~pid_start_time:None ();
+          let p = make_pending
+                    ~perm_id:"perm:resolved-at-test"
+                    ~supervisors:[ "coordinator1" ] () in
+          C2c_mcp.Broker.open_pending_permission broker p;
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 9100)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "check_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String p.perm_id) ] )
+                    ] )
+              ]
+          in
+          let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          let stored = C2c_mcp.Broker.find_pending_permission broker p.perm_id in
+          (match stored with
+           | None -> fail "pending entry vanished"
+           | Some s ->
+               check bool "resolved_at <> None after valid check" true
+                 (s.resolved_at <> None))))
+
+(* slice/coord-backup-scheduler-impl T6: idempotency — running the
+   scheduler twice past the same threshold fires the backup tier
+   exactly ONCE. The second tick observes fallthrough_fired_at[0]
+   already stamped and skips. *)
+let test_coord_fallthrough_no_double_fire () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-backup"
+        ~alias:"stanza-coder" ~pid:None ~pid_start_time:None ();
+      let p = make_pending ~elapsed_s:125.0 () in
+      C2c_mcp.Broker.open_pending_permission broker p;
+      let do_tick () =
+        Coord_fallthrough.tick
+          ~broker
+          ~broker_root:dir
+          ~chain:[ "stanza-coder" ]
+          ~idle_seconds:120.0
+          ~broadcast_room:"swarm-lounge"
+          ()
+      in
+      do_tick ();
+      do_tick ();
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-backup" in
+      check int "exactly one DM after double-tick" 1 (List.length inbox);
+      let lines = parse_broker_log_lines_with_event dir "coord_fallthrough_fired" in
+      check int "exactly one audit line after double-tick" 1 (List.length lines))
+
 (* [#432 Slice D] check_pending_reply for an unknown perm_id emits a
    "pending_check" line with outcome="unknown_perm". *)
 let test_pending_check_audit_log_outcome () =
@@ -7820,6 +8074,8 @@ let test_concurrent_open_pending_permission () =
                   ; supervisors = [ "coordinator1" ]
                   ; created_at = now
                   ; expires_at = now +. 600.0
+                  ; fallthrough_fired_at = []
+                  ; resolved_at = None
                   }
                 in
                 C2c_mcp.Broker.open_pending_permission child_broker entry;
@@ -8045,6 +8301,8 @@ let test_open_pending_permission_per_alias_cap () =
          ; supervisors = [ "coord" ]
          ; created_at = now
          ; expires_at = now +. 600.0
+         ; fallthrough_fired_at = []
+         ; resolved_at = None
          } : C2c_mcp.pending_permission)
       in
       (* Open exactly cap entries — must all succeed. *)
@@ -8088,6 +8346,8 @@ let test_pending_permission_exists_for_alias_is_case_insensitive () =
          ; supervisors = [ "coord" ]
          ; created_at = now
          ; expires_at = now +. 600.0
+         ; fallthrough_fired_at = []
+         ; resolved_at = None
          } : C2c_mcp.pending_permission)
       in
       C2c_mcp.Broker.open_pending_permission broker entry;
@@ -8138,6 +8398,8 @@ let test_open_pending_permission_expired_dont_count () =
          ; supervisors = [ "coord" ]
          ; created_at = now
          ; expires_at = now +. 600.0
+         ; fallthrough_fired_at = []
+         ; resolved_at = None
          } : C2c_mcp.pending_permission)
       in
       for i = 0 to C2c_mcp.Broker.pending_per_alias_cap - 1 do
@@ -8170,7 +8432,9 @@ let test_open_pending_reply_handler_returns_error_at_cap () =
           ; requester_alias = "flooder"
           ; supervisors = [ "coord" ]
           ; created_at = now
-          ; expires_at = now +. 600.0 }
+          ; expires_at = now +. 600.0
+          ; fallthrough_fired_at = []
+          ; resolved_at = None }
       done;
       Unix.putenv "C2C_MCP_SESSION_ID" "session-flooder";
       Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
@@ -10243,6 +10507,18 @@ let () =
                 test_coord_fallthrough_audit_line_written
            ; test_case "[coord-backup-fallthrough] broadcast-tier audit line shape" `Quick
                 test_coord_fallthrough_audit_broadcast_tier
+           ; test_case "[coord-backup-scheduler] T1: fires backup at idle threshold" `Quick
+                test_coord_fallthrough_fires_at_idle_threshold
+           ; test_case "[coord-backup-scheduler] T2: resolved_at skips fallthrough" `Quick
+                test_coord_fallthrough_resolved_skips
+           ; test_case "[coord-backup-scheduler] T3: skip-and-advance on offline backup" `Quick
+                test_coord_fallthrough_skip_and_advance
+           ; test_case "[coord-backup-scheduler] T4: chain exhausted broadcasts" `Quick
+                test_coord_fallthrough_chain_exhausted_broadcasts
+           ; test_case "[coord-backup-scheduler] T5: check_pending_reply writes resolved_at" `Quick
+                test_check_pending_reply_writes_resolved_at
+           ; test_case "[coord-backup-scheduler] T6: idempotent under double-tick" `Quick
+                test_coord_fallthrough_no_double_fire
            ; test_case "tools/call set_dnd on:\"true\" string enables DND" `Quick
                 test_tools_call_set_dnd_on_string_true_enables_dnd
            ; test_case "tools/call set_dnd on:\"false\" string disables DND" `Quick
