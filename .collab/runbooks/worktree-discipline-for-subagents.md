@@ -450,6 +450,82 @@ between, then commit each individually after green.
 
 ---
 
+## Pattern 11 — commit-message false claims (#432)
+
+**Severity**: MEDIUM peer-PASS-reliability class.
+
+**Symptom**: a slice's commit message body asserts work that the
+diff does not contain. Common shapes:
+
+- "X new tests for Y module" but `git diff` shows no test
+  additions referencing Y.
+- "Touched files: A.ml, B.ml" but only A.ml is in the diff.
+- "Tests pass: N/N" where N exceeds the actual test count.
+- "Closes #XYZ" where XYZ is unrelated to the actual change.
+
+The author may not be deceiving — likely they intended to write
+the tests, drafted the commit message early, and the tests got
+cut at the last minute (quota / dependency / rebase fight). The
+intent is irrelevant; the prose is wrong, and the reviewer
+trusting prose lands buggy code.
+
+**Receipt** (2026-04-29): galaxy-coder's `2f0895ab` (#330 S2
+forwarder) commit body claimed "9 unit tests for
+relay_forwarder.ml (happy path, dup, 5xx, 4xx, 401, unreachable,
+timeout, cross-host no-peer, cross-host with peer)". `git diff
+22875084 2f0895ab -- ocaml/test/` showed only a `with_sqliteRelay_tempdir`
+helper extraction in pre-existing `test_relay_peer_relay.ml`. No
+file references `Relay_forwarder`, `forward_send`, `build_body`,
+or `classify_response`. Slate's fresh-slate reviewer caught it
+by going straight to the test diff rather than trusting prose.
+
+### The rule
+
+When peer-reviewing a slice, after reading the commit body,
+**ground-truth EVERY load-bearing claim against the diff**
+before accepting it:
+
+```bash
+# Confirm test additions exist for new modules
+git diff <base>..<head> -- ocaml/test/
+grep -rn "<NewModuleName>\|<new_fn_name>" ocaml/test/
+
+# Confirm files claimed touched are actually in the diff
+git diff --name-only <base>..<head>
+
+# Confirm test counts on the actual run, not the commit body
+opam exec -- dune build --root <slice-worktree> @runtest --force \
+  | grep "Test Successful in"
+```
+
+Treat any prose claim that doesn't survive grounding as **at
+minimum** a non-blocking note ("commit message says X, diff does
+Y"). Treat it as **FAIL** if the missing claim is load-bearing
+(e.g., test coverage for a new security-class module — `2f0895ab`
+above was security-class with zero new tests for the new module).
+
+### Author-side counterpart
+
+When drafting commit messages, write the prose AFTER the diff
+stabilizes, not before. If the prose claims tests, run the test
+target in the slice worktree and verify the count matches what
+the prose says. If the prose claims files touched, run
+`git diff --name-only` and copy the actual list rather than
+typing from memory.
+
+### Why this matters more under quota-burn
+
+Peer-PASS reviewers under quota-burn pressure tend to skim
+commit prose for the "what was done" summary, then verify
+ON-DIFF for the load-bearing security claims. Test-coverage
+claims are themselves load-bearing for any slice that introduces
+a new module or new security path — without tests, nobody
+(including the author) knows the new code works in the failure
+modes the prose enumerates. The `2f0895ab` slice would have
+PASSed on prose-trust alone; it FAILed on diff-grounding.
+
+---
+
 ## Why these rules are load-bearing
 
 The c2c swarm runs many parallel subagents during quota-burn
