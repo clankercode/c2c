@@ -7511,8 +7511,10 @@ let ts = Unix.gettimeofday () in
    RPC path. Content fields are deliberately omitted to avoid leaking
    message content into a shared log file. *)
 let log_rpc ~broker_root ~tool_name ~is_error =
+  let ts = Unix.gettimeofday () in
   log_broker_event ~broker_root "rpc"
-    [ ("tool", `String tool_name)
+    [ ("ts", `Float ts)
+    ; ("tool", `String tool_name)
     ; ("ok", `Bool (not is_error)) ]
 
 (* --- prompts/list and prompts/get helpers ---------------------------------
