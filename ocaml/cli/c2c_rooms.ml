@@ -17,20 +17,33 @@ let resolve_broker_root () = C2c_utils.resolve_broker_root ()
 
 let resolve_alias_with_broker ?(override : string option) broker =
   let open C2c_mcp in
+  let env_or_error () =
+    (* Final fallback: env alias, then error. Shared between the two
+       branches below so we don't duplicate the error string. *)
+    match C2c_utils.alias_from_env_only () with
+    | Some a -> a
+    | None ->
+        Printf.eprintf
+          "error: cannot determine alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
+        exit 1
+  in
   match override with
   | Some a when String.trim a <> "" -> String.trim a
   | _ ->
-      (* Prefer C2C_MCP_SESSION_ID lookup over C2C_MCP_AUTO_REGISTER_ALIAS.
-         Mirrors the priority in c2c.ml::resolve_alias. *)
-      match Broker.list_registrations broker |> List.find_opt (fun r -> r.session_id = Option.value (C2c_mcp.session_id_from_env ()) ~default:"") with
-      | Some r -> r.alias
-      | None ->
-          (* Session not registered — fall back to env alias (if set). *)
-          (match C2c_utils.alias_from_env_only () with
-          | Some a -> a
-          | None ->
-              Printf.eprintf "error: cannot determine alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
-              exit 1)
+      (* Priority: session_id (broker lookup) > env alias.
+         Mirrors c2c.ml::resolve_alias. When C2C_MCP_SESSION_ID is unset,
+         skip Broker.list_registrations entirely — pure env path is enough
+         (#422 follow-up F1: avoid unnecessary broker IO on the env-only
+         hot path). *)
+      (match C2c_mcp.session_id_from_env () with
+       | None -> env_or_error ()
+       | Some sid ->
+           (match Broker.list_registrations broker
+                  |> List.find_opt (fun r -> r.session_id = sid) with
+            | Some r -> r.alias
+            | None ->
+                (* Session not registered — fall back to env alias. *)
+                env_or_error ()))
 
 let resolve_session_id_for_inbox _broker =
   match C2c_mcp.session_id_from_env () with
