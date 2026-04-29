@@ -4127,11 +4127,29 @@ let run_outer_loop ~(name : string) ~(client : string)
                (try Unix.close read_fd with _ -> ());
                (try Unix.close write_fd with _ -> ())
            | None -> ());
-          (* Start wire-daemon (Kimi Wire bridge delivery, replaces PTY deliver). *)
+          (* Start wire-daemon (Kimi Wire bridge delivery, replaces PTY deliver).
+             Note: kimi flipped needs_wire_daemon=false 2026-04-29 — kimi delivery
+             now lives in start_kimi_notifier below. Wire-bridge code retained for
+             any future ephemeral-no-TUI client that opts in. *)
           (if !wire_pid = None && cfg.needs_wire_daemon then begin
              let alias = Option.value alias_override ~default:name in
              match start_wire_daemon ~name ~alias ~broker_root () with
              | Some p -> wire_pid := Some p
+             | None -> ()
+           end);
+          (* Start kimi-notifier (replaces wire-bridge for kimi).
+             File-based notification push to ~/.kimi/sessions/<wh>/<sid>/notifications/.
+             Optionally tmux send-keys-wakes the kimi pane when idle. See
+             c2c_kimi_notifier.mli + .collab/research/2026-04-29T10-27-00Z-stanza-
+             coder-kimi-notification-store-push-validated.md. *)
+          (if client = "kimi" then begin
+             let alias = Option.value alias_override ~default:name in
+             let tmux_pane = Sys.getenv_opt "TMUX_PANE" in
+             match
+               C2c_kimi_notifier.start_daemon
+                 ~alias ~broker_root ~session_id:name ~tmux_pane ()
+             with
+             | Some _ -> ()
              | None -> ()
            end);
            (* Start poker *)
