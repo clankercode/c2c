@@ -7194,9 +7194,18 @@ let test_concurrent_open_pending_permission () =
                 exit 0
             | pid -> pid)
       in
+      (* [#432 EINTR fix] Wrap waitpid in an EINTR-retry loop. Slate
+         observed a flake where a SIGALRM (heartbeat-armed test
+         harness) landed during the parent's blocking waitpid, surfacing
+         as Unix_error(EINTR, ...). Retry on EINTR — this is the
+         standard pattern for blocking syscalls in OCaml. *)
+      let rec waitpid_eintr pid =
+        try Unix.waitpid [] pid
+        with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_eintr pid
+      in
       List.iter
         (fun pid ->
-          let _, status = Unix.waitpid [] pid in
+          let _, status = waitpid_eintr pid in
           (match status with
            | Unix.WEXITED 0 -> ()
            | Unix.WEXITED rc ->
