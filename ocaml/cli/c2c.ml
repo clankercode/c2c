@@ -6739,6 +6739,15 @@ let prompt_for_role ~alias =
     let line = try input_line stdin with End_of_file -> "" in
     let trimmed = String.trim line in
     if trimmed <> "" then begin
+      (* If the input matches a known role class, expand the full template
+         body so the agent gets first-5-turns + heartbeat block + peer-PASS
+         sentence without the operator needing to write it manually.
+         Fall back to using the raw input as a simple body. *)
+      let body =
+        match Role_templates.render ~role_class:trimmed ~alias ~display_name_hint:"" with
+        | Some rendered -> rendered
+        | None -> trimmed
+      in
       let role = { C2c_role.
         description = "";
         role = "subagent";
@@ -6758,7 +6767,7 @@ let prompt_for_role ~alias =
         claude = [];
         codex = [];
         kimi = [];
-        body = trimmed;
+        body;
       } in
       write_role ~alias ~role;
       Printf.eprintf "[c2c start] Role saved to .c2c/roles/%s.md\n%!" alias;
