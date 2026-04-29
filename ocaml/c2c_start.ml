@@ -3887,6 +3887,36 @@ let run_outer_loop ~(name : string) ~(client : string)
         | _ -> env
       in
 
+      (* #158: Pre-create kimi session dir + empty context.jsonl so
+         Session.find() succeeds and loads our seeded state.json.
+         Empty context.jsonl is the gatekeeper that switches kimi from
+         "create" to "find" mode.  wire.jsonl is left untouched so
+         resumed=False (new-session behaviour).  Only seed state.json
+         when it does not already exist (respect resume). *)
+      (if client = "kimi" then
+         match resume_session_id with
+         | Some sid when String.trim sid <> "" ->
+             let wh = Digest.to_hex (Digest.string (Sys.getcwd ())) in
+             let kimi_share =
+               match Sys.getenv_opt "KIMI_SHARE_DIR" with
+               | Some d when d <> "" -> d
+               | _ -> (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".kimi"
+             in
+             let sdir = kimi_share // "sessions" // wh // sid in
+             mkdir_p sdir;
+             let ctx = sdir // "context.jsonl" in
+             if not (Sys.file_exists ctx) then
+               (let oc = open_out ctx in close_out oc);
+             let state_path = sdir // "state.json" in
+             if not (Sys.file_exists state_path) then
+               (let oc = open_out state_path in
+                Fun.protect ~finally:(fun () -> close_out oc)
+                  (fun () ->
+                     output_string oc
+                       ({|{"version":1,"approval":{"yolo":false,"afk":true,"auto_approve_actions":["run command","edit file outside of working directory"]},"additional_dirs":[],"custom_title":null,"title_generated":false,"title_generate_attempts":0,"plan_mode":false,"plan_session_id":null,"plan_slug":null,"wire_mtime":null,"archived":false,"archived_at":null,"auto_archive_exempt":false,"todos":[]}|}
+                        ^ "\n")))
+         | _ -> ());
+
       (* Launch args *)
       (* cc- wrappers (cc-mm, cc-w, etc.) are profile launchers designed to be called
          directly without extra args. They handle their own session/profile management.
