@@ -29,6 +29,19 @@ type registration =
        Known v1 limitation (M1 threat model): mode 0600 does not protect against
        other processes running as the same Unix user (including child agents).
        OS keyring integration deferred to M3. *)
+   ; ed25519_pubkey : string option
+   (** Ed25519 public key (base64url, 32 bytes) for message signing.
+       Published in the registry so recipients can verify envelope sigs.
+       The matching secret lives in <broker_root>/keys/<alias>.ed25519 mode 0600.
+       Proves the owner holds the matching private key via [pubkey_sig]. *)
+   ; pubkey_signed_at : float option
+   (** Epoch when [pubkey_sig] was computed (Unix.gettimeofday at sign time).
+       Used to detect stale pubkeys and for replay-window checks. *)
+   ; pubkey_sig : string option
+   (** Ed25519 sig over canonical blob:
+       alias || ed25519_pk || x25519_pk || pubkey_signed_at
+       (joined with ASCII 0x1F unit separator).
+       Signed by the Ed25519 private key. Proves the owner holds both private keys. *)
    ; compacting : compacting option
   (** Set when the agent is actively compacting/summarizing. Send-side
       checks this and returns a warning; message is still queued. *)
@@ -583,7 +596,7 @@ module Broker = struct
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; compacting; last_activity_ts; role; compaction_count; automated_delivery } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; ed25519_pubkey; pubkey_signed_at; pubkey_sig; compacting; last_activity_ts; role; compaction_count; automated_delivery } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -642,12 +655,27 @@ module Broker = struct
       | Some pk -> with_confirmed @ [ ("enc_pubkey", `String pk) ]
       | None -> with_confirmed
     in
+    let with_ed25519_pubkey =
+      match ed25519_pubkey with
+      | Some pk -> with_enc_pubkey @ [ ("ed25519_pubkey", `String pk) ]
+      | None -> with_enc_pubkey
+    in
+    let with_pubkey_signed_at =
+      match pubkey_signed_at with
+      | Some ts -> with_ed25519_pubkey @ [ ("pubkey_signed_at", `Float ts) ]
+      | None -> with_ed25519_pubkey
+    in
+    let with_pubkey_sig =
+      match pubkey_sig with
+      | Some s -> with_pubkey_signed_at @ [ ("pubkey_sig", `String s) ]
+      | None -> with_pubkey_signed_at
+    in
     let fields =
       match compacting with
       | Some c ->
           let reason_json = match c.reason with Some r -> `String r | None -> `Null in
-          with_enc_pubkey @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
-      | None -> with_enc_pubkey
+          with_pubkey_sig @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
+      | None -> with_pubkey_sig
     in
     let with_last_activity_ts =
       match last_activity_ts with
@@ -720,6 +748,9 @@ module Broker = struct
     ; plugin_version = str_opt "plugin_version" json
     ; confirmed_at = float_opt_member "confirmed_at" json
     ; enc_pubkey = str_opt "enc_pubkey" json
+    ; ed25519_pubkey = str_opt "ed25519_pubkey" json
+    ; pubkey_signed_at = float_opt_member "pubkey_signed_at" json
+    ; pubkey_sig = str_opt "pubkey_sig" json
     ; compacting = compacting_of_json json
     ; last_activity_ts = float_opt_member "last_activity_ts" json
     ; role = str_opt "role" json
@@ -2070,7 +2101,7 @@ module Broker = struct
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(role = None) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) () =
     if List.mem alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -2103,11 +2134,11 @@ module Broker = struct
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery)
-          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, role, 0, None)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery)
+          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -2119,6 +2150,18 @@ module Broker = struct
           let effective_enc_pubkey = match enc_pubkey with
             | Some _ -> enc_pubkey
             | None -> old_enc_pubkey
+          in
+          let effective_ed25519_pubkey = match ed25519_pubkey with
+            | Some _ -> ed25519_pubkey
+            | None -> old_ed25519_pubkey
+          in
+          let effective_pubkey_signed_at = match pubkey_signed_at with
+            | Some _ -> pubkey_signed_at
+            | None -> old_pubkey_signed_at
+          in
+          let effective_pubkey_sig = match pubkey_sig with
+            | Some _ -> pubkey_sig
+            | None -> old_pubkey_sig
           in
           let effective_role = match role with
             | Some _ -> role
@@ -2132,6 +2175,9 @@ module Broker = struct
           ; plugin_version = effective_plugin_version
           ; confirmed_at = old_confirmed_at
           ; enc_pubkey = effective_enc_pubkey
+          ; ed25519_pubkey = effective_ed25519_pubkey
+          ; pubkey_signed_at = effective_pubkey_signed_at
+          ; pubkey_sig = effective_pubkey_sig
           ; compacting = old_compacting
           ; last_activity_ts = old_last_activity_ts
           ; role = effective_role
@@ -5597,6 +5643,8 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
             else begin
               let plugin_version = optional_string_member "plugin_version" arguments in
               let role = optional_string_member "role" arguments in
+              let broker_root = Broker.root broker in
+              let keys_dir = Filename.concat broker_root "keys" in
               let enc_pubkey =
                 match Relay_enc.load_or_generate ~alias () with
                 | Ok enc -> Some (Relay_enc.public_key_b64 enc)
@@ -5604,9 +5652,86 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
                     Printf.eprintf "[register] warning: could not load X25519 key: %s\n%!" e;
                     None
               in
-              Broker.register broker ~session_id ~alias ~pid ~pid_start_time
-                ~client_type ~plugin_version ~enc_pubkey ~role ();
-              Broker.touch_session broker ~session_id;
+              let ed25519_pubkey, pubkey_signed_at, pubkey_sig =
+                match enc_pubkey with
+                | None -> (None, None, None)
+                | Some x25519_b64 ->
+                    let priv_path = Filename.concat keys_dir (alias ^ ".ed25519") in
+                    let ed_identity_opt =
+                      if Sys.file_exists priv_path then
+                        (* File exists but load failed — permissions error or corruption.
+                           Do not clobber: operator must resolve manually. *)
+                        (match Relay_identity.load ~path:priv_path () with
+                         | Ok id -> Some id
+                         | Error e ->
+                             Printf.eprintf "[register] warning: cannot load Ed25519 key at %s: %s\n%!" priv_path e;
+                             None)
+                      else
+                        (* No such file — lazy-create is safe. *)
+                        (try
+                           let () = mkdir_p ~mode:0o700 keys_dir in
+                           Some (Relay_identity.load_or_create_at ~path:priv_path ~alias_hint:alias)
+                         with e ->
+                           Printf.eprintf "[register] warning: could not create Ed25519 identity at %s: %s\n%!" priv_path (Printexc.to_string e);
+                           None)
+                    in
+                    match ed_identity_opt with
+                    | None -> (None, None, None)
+                    | Some ed_identity ->
+                        let ed_pubkey_b64 = Relay_identity.b64url_encode ed_identity.Relay_identity.public_key in
+                        let signed_at = Unix.gettimeofday () in
+                        let signed_at_str =
+                          let tm = Unix.gmtime signed_at in
+                          Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+                            (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
+                            tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+                        in
+                        let canonical_msg =
+                          Relay_identity.canonical_msg ~ctx:Relay.pubkey_binding_sign_ctx
+                            [ alias; ed_pubkey_b64; x25519_b64; signed_at_str ]
+                        in
+                        let sig_raw = Relay_identity.sign ed_identity canonical_msg in
+                        let sig_b64 = Relay_identity.b64url_encode sig_raw in
+                        (Some ed_pubkey_b64, Some signed_at, Some sig_b64)
+              in
+              (* E2E S2: check both TOFU pins before registering.
+                 If either mismatches, reject the registration. *)
+              let ed25519_mismatch =
+                match ed25519_pubkey with
+                | None -> None
+                | Some ed_pk ->
+                    (match Broker.pin_ed25519_sync ~alias ~pk:ed_pk with
+                     | `Mismatch -> Some "ed25519"
+                     | `Already_pinned | `New_pin -> None)
+              in
+              let x25519_mismatch =
+                match enc_pubkey with
+                | None -> None
+                | Some xb64 ->
+                    (match Broker.pin_x25519_sync ~alias ~pk:xb64 with
+                     | `Mismatch -> Some "x25519"
+                     | `Already_pinned | `New_pin -> None)
+              in
+              match ed25519_mismatch, x25519_mismatch with
+              | Some ed_k, Some x_k ->
+                  Lwt.return (tool_result
+                    ~content:(Printf.sprintf
+                      "register rejected: %s and %s pubkey mismatch — explicit rotation required \
+                       (both pubkeys differ from previously pinned values for this alias)"
+                      ed_k x_k)
+                    ~is_error:true)
+              | Some key_kind, None | None, Some key_kind ->
+                  Lwt.return (tool_result
+                    ~content:(Printf.sprintf
+                      "register rejected: %s pubkey mismatch — explicit rotation required \
+                       (pubkey differs from previously pinned value for this alias)"
+                      key_kind)
+                    ~is_error:true)
+              | None, None ->
+                  Broker.register broker ~session_id ~alias ~pid ~pid_start_time
+                    ~client_type ~plugin_version ~enc_pubkey ~ed25519_pubkey
+                    ~pubkey_signed_at ~pubkey_sig ~role ();
+                  Broker.touch_session broker ~session_id;
               List.iter
                 (fun room_id ->
                   try

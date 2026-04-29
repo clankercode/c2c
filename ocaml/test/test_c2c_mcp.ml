@@ -3027,6 +3027,9 @@ let test_start_time_mismatch_is_not_alive () =
     ; client_type = None; plugin_version = None
     ; confirmed_at = None
     ; enc_pubkey = None
+    ; ed25519_pubkey = None
+    ; pubkey_signed_at = None
+    ; pubkey_sig = None
     ; compacting = None
     ; last_activity_ts = None
     ; role = None
@@ -3053,6 +3056,9 @@ let test_start_time_match_is_alive () =
     ; client_type = None; plugin_version = None
     ; confirmed_at = None
     ; enc_pubkey = None
+    ; ed25519_pubkey = None
+    ; pubkey_signed_at = None
+    ; pubkey_sig = None
     ; compacting = None
     ; last_activity_ts = None
     ; role = None
@@ -3079,6 +3085,9 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; client_type = None; plugin_version = None
     ; confirmed_at = None
     ; enc_pubkey = None
+    ; ed25519_pubkey = None
+    ; pubkey_signed_at = None
+    ; pubkey_sig = None
     ; compacting = None
     ; last_activity_ts = None
     ; role = None
@@ -3088,6 +3097,117 @@ let test_start_time_none_falls_back_to_proc_exists () =
   in
   check bool "pid exists + no stored start_time → alive" true
     (C2c_mcp.Broker.registration_is_alive reg)
+
+(* E2E S2: lazy-create Ed25519 key on first register via handle_tool_call.
+   Verifies: (i) key file created at <broker_root>/keys/<alias>.ed25519 mode 0600,
+   (ii) ed25519_pubkey + pubkey_signed_at + pubkey_sig all populated. *)
+let test_ed25519_lazy_create_on_first_register () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let keys_dir = Filename.concat dir "keys" in
+      let args = `Assoc [ ("alias", `String "lazy-test");
+                           ("enc_pubkey", `String "x25519_dummy_pk_for_lazy_test_b64") ]
+      in
+      let _response = Lwt_main.run (C2c_mcp.handle_tool_call
+        ~broker ~session_id_override:(Some "lazy-sid")
+        ~tool_name:"register" ~arguments:args)
+      in
+      (* (i): key file must exist with mode 0600. *)
+      let key_path = Filename.concat keys_dir "lazy-test.ed25519" in
+      Alcotest.(check bool) "key file created" true (Sys.file_exists key_path);
+      let stat = Unix.stat key_path in
+      let mode = stat.Unix.st_perm in
+      Alcotest.(check bool) "key file mode 0600" true ((mode land 0o777) = 0o600);
+      (* (ii): ed25519_pubkey + pubkey_signed_at + pubkey_sig must be populated. *)
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      match List.find_opt (fun r -> r.C2c_mcp.alias = "lazy-test") regs with
+      | None -> Alcotest.fail "registration not found"
+      | Some r ->
+          (match r.C2c_mcp.ed25519_pubkey with
+           | None -> Alcotest.fail "ed25519_pubkey should be populated (lazy-create fired)"
+           | Some _ -> ());
+          (match r.C2c_mcp.pubkey_signed_at with
+           | None -> Alcotest.fail "pubkey_signed_at should be populated"
+           | Some _ -> ());
+          (match r.C2c_mcp.pubkey_sig with
+           | None -> Alcotest.fail "pubkey_sig should be populated"
+           | Some _ -> ()))
+
+(* E2E S2: when ed25519 pubkey mismatches the TOFU pin, handle_tool_call
+   returns an error without creating a registration.
+   Verifies: (i) error response, (ii) no registration created,
+   (iii) relay_pins.json still holds the original pin. *)
+let test_register_rejects_ed25519_mismatch () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Pre-pin an ed25519 pubkey for alias "mismatch-ed". *)
+      ignore (C2c_mcp.Broker.pin_ed25519_sync ~alias:"mismatch-ed" ~pk:"pk-old-b64");
+      (* Drive register through the handler layer so pin-checking fires.
+         Pass enc_pubkey so handler attempts lazy ed25519 creation — the new key
+         will differ from the pre-pinned pk, triggering mismatch. *)
+      let args = `Assoc [ ("alias", `String "mismatch-ed");
+                           ("enc_pubkey", `String "x25519_dummy_pk_b64") ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_tool_call
+        ~broker ~session_id_override:(Some "mismatch-ed-sid")
+        ~tool_name:"register" ~arguments:args)
+      in
+      let open Yojson.Safe.Util in
+      let is_error = match response |> member "isError" with `Bool b -> b | _ -> false in
+      Alcotest.(check bool) "response is error" true is_error;
+      (* (ii): no registration for "mismatch-ed". *)
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      Alcotest.(check bool) "no registration for mismatched alias" true
+        (List.for_all (fun r -> r.C2c_mcp.alias <> "mismatch-ed") regs);
+      (* (iii): relay_pins.json still pins pk-old under "ed25519" key. *)
+      let pins_path = Filename.concat dir "relay_pins.json" in
+      Alcotest.(check bool) "relay_pins.json exists" true (Sys.file_exists pins_path);
+      let pins_json = Yojson.Safe.from_file pins_path in
+      let ed_pins = match pins_json |> Yojson.Safe.Util.member "ed25519" with
+        | `Assoc l ->
+            (match List.assoc_opt "mismatch-ed" l with
+             | Some (`String s) -> Some s | _ -> None)
+        | _ -> None
+      in
+      Alcotest.(check (option string)) "ed25519 pin still pk-old"
+        (Some "pk-old-b64") ed_pins)
+
+(* E2E S2: when x25519 pubkey mismatches the TOFU pin, handle_tool_call
+   returns an error without creating a registration.
+   Verifies: (i) error response, (ii) no registration created,
+   (iii) relay_pins.json still holds the original x25519 pin. *)
+let test_register_rejects_x25519_mismatch () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Pre-pin an x25519 pubkey for alias "mismatch-x25519". *)
+      ignore (C2c_mcp.Broker.pin_x25519_sync ~alias:"mismatch-x25519" ~pk:"x25519-old-b64");
+      (* Drive register with a DIFFERENT enc_pubkey — triggers x25519 mismatch. *)
+      let args = `Assoc [ ("alias", `String "mismatch-x25519");
+                           ("enc_pubkey", `String "x25519_different_pk_b64") ]
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_tool_call
+        ~broker ~session_id_override:(Some "mismatch-x-sid")
+        ~tool_name:"register" ~arguments:args)
+      in
+      let open Yojson.Safe.Util in
+      let is_error = match response |> member "isError" with `Bool b -> b | _ -> false in
+      Alcotest.(check bool) "response is error" true is_error;
+      (* (ii): no registration for "mismatch-x25519". *)
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      Alcotest.(check bool) "no registration for mismatched alias" true
+        (List.for_all (fun r -> r.C2c_mcp.alias <> "mismatch-x25519") regs);
+      (* (iii): relay_pins.json still pins x25519-old under "x25519" key. *)
+      let pins_path = Filename.concat dir "relay_pins.json" in
+      Alcotest.(check bool) "relay_pins.json exists" true (Sys.file_exists pins_path);
+      let pins_json = Yojson.Safe.from_file pins_path in
+      let x_pins = match pins_json |> Yojson.Safe.Util.member "x25519" with
+        | `Assoc l ->
+            (match List.assoc_opt "mismatch-x25519" l with
+             | Some (`String s) -> Some s | _ -> None)
+        | _ -> None
+      in
+      Alcotest.(check (option string)) "x25519 pin still x25519-old-b64"
+        (Some "x25519-old-b64") x_pins)
 
 let test_concurrent_register_does_not_lose_entries () =
   with_temp_dir (fun dir ->
@@ -11089,9 +11209,15 @@ let () =
              test_start_time_mismatch_is_not_alive
          ; test_case "start_time match is alive" `Quick
              test_start_time_match_is_alive
-         ; test_case "start_time none falls back to /proc exists" `Quick
-             test_start_time_none_falls_back_to_proc_exists
-         ; test_case "join_room creates room and adds member" `Quick
+          ; test_case "start_time none falls back to /proc exists" `Quick
+              test_start_time_none_falls_back_to_proc_exists
+          ; test_case "E2E S2: lazy-create Ed25519 key on first register" `Quick
+              test_ed25519_lazy_create_on_first_register
+          ; test_case "E2E S2: register rejects ed25519 mismatch" `Quick
+              test_register_rejects_ed25519_mismatch
+          ; test_case "E2E S2: register rejects x25519 mismatch" `Quick
+              test_register_rejects_x25519_mismatch
+          ; test_case "join_room creates room and adds member" `Quick
              test_join_room_creates_room_and_adds_member
          ; test_case "join_room is idempotent" `Quick
              test_join_room_is_idempotent

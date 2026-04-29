@@ -58,6 +58,13 @@ let room_set_visibility_sign_ctx = "c2c/v1/room-set-visibility"
 (* S5a: Mobile pair token signing context *)
 let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"
 
+(* E2E S2: pubkey binding sign context.
+   Blob shape: alias || ed_pubkey_b64 || x25519_b64 || signed_at_rfc3339.
+   Diverges from Relay_signed_ops.register_sign_ctx (which includes nonce +
+   relay-url binding) by design — this is a SELF-ATTESTATION of key ownership,
+   not a relay-binding. No replay window enforced at S2; deferred to S3. *)
+let pubkey_binding_sign_ctx = "c2c/v1/pubkey-binding"
+
 (* Parse a header value like
      "Ed25519 alias=foo,ts=1776698000,nonce=AAA,sig=BBB"
    into the four fields. Leading "Ed25519 " prefix is stripped by the caller. *)

@@ -73,3 +73,7 @@ val load : ?path:string -> unit -> (t, string) result
     or generates and saves a fresh one if [path] does not exist.
     Used for per-alias keys stored under [<broker_root>/keys/<alias>.ed25519]. *)
 val load_or_create_at : path:string -> alias_hint:string -> t
+
+(** [b64url_encode s] encodes [s] as base64url-nopad.
+    Alias for [Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet]. *)
+val b64url_encode : string -> string
