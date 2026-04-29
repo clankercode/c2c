@@ -8,6 +8,17 @@ type signed_proof = {
 let b64url_nopad s =
   Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
+(* Sign contexts — must match spec §3.4 *)
+let request_sign_ctx = "c2c/v1/request"
+let register_sign_ctx = "c2c/v1/register"
+let room_send_sign_ctx = "c2c/v1/room-send"
+
+(* Build the canonical request blob per spec §5.1. Fields are joined
+   with 0x1F, prefixed by the SIGN_CTX literal. *)
+let canonical_request_blob ~meth ~path ~query ~body_sha256_b64 ~ts ~nonce =
+  Relay_identity.canonical_msg ~ctx:request_sign_ctx
+    [ String.uppercase_ascii meth; path; query; body_sha256_b64; ts; nonce ]
+
 let now_rfc3339_utc () = C2c_time.now_iso8601_utc ()
 
 let random_nonce_b64 () =
@@ -19,7 +30,7 @@ let sign_register identity ~alias ~relay_url =
   let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
   let ts = now_rfc3339_utc () in
   let nonce = random_nonce_b64 () in
-  let blob = Relay_identity.canonical_msg ~ctx:Relay.register_sign_ctx
+  let blob = Relay_identity.canonical_msg ~ctx:register_sign_ctx
     [ alias; String.lowercase_ascii relay_url; pk_b64; ts; nonce ] in
   let sig_ = Relay_identity.sign identity blob in
   { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
@@ -44,7 +55,7 @@ let sign_send_room identity ~room_id ~from_alias ~content =
   let enc = "none" in
   let ts = now_rfc3339_utc () in
   let nonce = random_nonce_b64 () in
-  let blob = Relay_identity.canonical_msg ~ctx:Relay.room_send_sign_ctx
+  let blob = Relay_identity.canonical_msg ~ctx:room_send_sign_ctx
     [ room_id; from_alias; pk_b64; enc; ct_hash; ts; nonce ] in
   let sig_ = Relay_identity.sign identity blob in
   `Assoc [
@@ -67,7 +78,7 @@ let sign_request identity ~alias ~meth ~path ?(query = "") ~body_str () =
     if body_str = "" then ""
     else b64url_nopad (Digestif.SHA256.to_raw_string (Digestif.SHA256.digest_string body_str))
   in
-  let blob = Relay.canonical_request_blob
+  let blob = canonical_request_blob
     ~meth:(String.uppercase_ascii meth) ~path ~query ~body_sha256_b64:body_hash
     ~ts ~nonce
   in
@@ -109,7 +120,7 @@ let verify_history_envelope ~room_id ~from_alias ~content envelope =
               b64url_nopad (Digestif.SHA256.to_raw_string h)
             in
             let blob = Relay_identity.canonical_msg
-              ~ctx:Relay.room_send_sign_ctx
+              ~ctx:room_send_sign_ctx
               [ room_id; from_alias; sender_pk_b64; enc; ct_hash; ts; nonce ]
             in
             if Relay_identity.verify ~pk:sender_pk ~msg:blob ~sig_

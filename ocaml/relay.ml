@@ -434,6 +434,8 @@ module type RELAY = sig
   val create : ?dedup_window:int -> ?persist_dir:string -> ?self_host:string option -> ?peer_relays:(string, peer_relay_t) Hashtbl.t -> unit -> t
   (* #379: the relay's own host identity, used to validate alias@host targets. *)
   val self_host : t -> string option
+  (* #330 S2: the relay's own Ed25519 identity for signing cross-relay forward requests. *)
+  val relay_identity : t -> Relay_identity.t
   (* #330 S1: peer-relay table for cross-relay forwarding. *)
   val add_peer_relay : t -> peer_relay_t -> unit
   val peer_relay_of : t -> name:string -> peer_relay_t option
@@ -525,6 +527,8 @@ module InMemoryRelay : RELAY = struct
     device_pair_pending_mem : (string, device_pair_pending) Hashtbl.t;
     (* #379: this relay's own host identity for alias@host validation *)
     self_host : string option;
+    (* #330 S2: this relay's own Ed25519 identity for signing forward requests *)
+    identity : Relay_identity.t;
     (* #330 S1: peer relays for cross-relay forwarding *)
     peer_relays : (string, peer_relay_t) Hashtbl.t;
   }
@@ -569,6 +573,13 @@ module InMemoryRelay : RELAY = struct
     let room_history = Hashtbl.create 16 in
     (* Load persisted room history on startup *)
     Option.iter (fun d -> load_room_history_from_disk d room_history) persist_dir;
+    (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
+    let identity_path = Option.map (fun d -> Filename.concat d "relay-server-identity.json") persist_dir in
+    let identity =
+      match identity_path with
+      | Some p -> Relay_identity.load_or_create_at ~path:p ~alias_hint:(Option.value self_host ~default:"relay")
+      | None -> Relay_identity.generate ~alias_hint:(Option.value self_host ~default:"relay") ()
+    in
     { mutex = Mutex.create ();
       leases = Hashtbl.create 16;
       bindings = Hashtbl.create 16;
@@ -589,6 +600,7 @@ module InMemoryRelay : RELAY = struct
       observer_bindings_mem = Hashtbl.create 64;
       device_pair_pending_mem = Hashtbl.create 64;
       self_host;
+      identity;
       peer_relays;
     }
 
@@ -597,6 +609,8 @@ module InMemoryRelay : RELAY = struct
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
 
   let self_host t = t.self_host
+  (* #330 S2: relay identity for cross-relay signing *)
+  let relay_identity t = t.identity
 
   (* #330 S1: peer_relay accessors *)
   let add_peer_relay t pr = Hashtbl.replace t.peer_relays pr.name pr
@@ -1295,6 +1309,8 @@ module SqliteRelay : RELAY = struct
     self_host : string option;
     (* #330 S1: peer relays for cross-relay forwarding (in-memory, populated at boot from CLI) *)
     peer_relays : (string, peer_relay_t) Hashtbl.t;
+    (* #330 S2: this relay's own Ed25519 identity for signing forward requests *)
+    identity : Relay_identity.t;
   }
 
 let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
@@ -1303,13 +1319,22 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
     let conn = Sqlite3.db_open db_path in
     Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
     Sqlite3.exec conn sqlite_ddl |> ignore;
-    { db_path; dedup_window; mutex; observer_bindings = ObserverBindings.create (); self_host; peer_relays }
+    (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
+    let identity_path = if persist_dir = "" then None else Some (Filename.concat persist_dir "relay-server-identity.json") in
+    let identity =
+      match identity_path with
+      | Some p -> Relay_identity.load_or_create_at ~path:p ~alias_hint:(Option.value self_host ~default:"relay")
+      | None -> Relay_identity.generate ~alias_hint:(Option.value self_host ~default:"relay") ()
+    in
+    { db_path; dedup_window; mutex; observer_bindings = ObserverBindings.create (); self_host; peer_relays; identity }
 
   let with_lock t f =
     Mutex.lock t.mutex;
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
 
   let self_host t = t.self_host
+  (* #330 S2: relay identity for cross-relay signing *)
+  let relay_identity t = t.identity
 
   (* #330 S1: peer_relay accessors *)
   let add_peer_relay t pr = Hashtbl.replace t.peer_relays pr.name pr
@@ -2682,6 +2707,8 @@ end = struct
   let respond_not_found body = respond_json ~status:`Not_found body
   let respond_conflict body = respond_json ~status:`Conflict body
   let respond_internal_error body = respond_json ~status:`Internal_server_error body
+  let respond_bad_gateway body = respond_json ~status:`Bad_gateway body
+  let respond_gateway_timeout body = respond_json ~status:`Gateway_timeout body
 
   let respond_html ?(status = `OK) body =
     Cohttp_lwt_unix.Server.respond_string
@@ -3197,23 +3224,144 @@ generateKeys();
       let stripped_to_alias, host_opt = split_alias_host to_alias in
       let self_host = R.self_host relay in
       if not (host_acceptable ~self_host host_opt) then
-        (* #379: write to dead_letter so the rejection is observable and
-           retry-on-recovery is possible, matching the pattern used by other
-           relay-layer rejections (unknown_alias, recipient_dead). *)
-         let msg_id = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
-         let ts = Unix.gettimeofday () in
-         let dl = `Assoc [
-           ("ts", `Float ts);
-           ("message_id", `String msg_id);
-          ("from_alias", `String from_alias);
-          ("to_alias", `String to_alias);
-          ("content", `String content);
-          ("reason", `String "cross_host_not_implemented");
-        ] in
-        R.add_dead_letter relay dl;
-        respond_not_found
-          (json_error_str "cross_host_not_implemented"
-             (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias))
+        (* #330 S2: three-way branch. Pre-bind msg_id and peer_name so the
+           forward-outcome callback can reference them via closure. *)
+        let msg_id = match get_opt_string body "message_id" with
+          | Some m -> m
+          | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
+        in
+        let peer_name, forward_result =
+          match host_opt with
+          | None ->
+              ("", None)
+          | Some h -> (match R.peer_relay_of relay ~name:h with
+                       | None -> ("", None)
+                       | Some p -> (p.name, Some p))
+        in
+        (match forward_result with
+         | None ->
+             (* No known peer — write dead-letter and return synchronously. *)
+             let ts = Unix.gettimeofday () in
+             let dl = `Assoc [
+               ("ts", `Float ts);
+               ("message_id", `String msg_id);
+               ("from_alias", `String from_alias);
+               ("to_alias", `String to_alias);
+               ("content", `String content);
+               ("reason", `String "cross_host_not_implemented");
+               ("phase", `String "forward_out");
+             ] in
+             R.add_dead_letter relay dl;
+             respond_not_found
+               (json_error_str "cross_host_not_implemented"
+                  (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias))
+         | Some peer ->
+             (* Known peer relay — forward the request. *)
+             let identity = R.relay_identity relay in
+             Lwt.bind
+               (Relay_forwarder.forward_send ~identity
+                  ~self_host:(Option.value self_host ~default:"")
+                  ~peer_url:peer.url
+                  ~peer_identity_pk:peer.identity_pk
+                  ~from_alias ~to_alias:stripped_to_alias
+                  ~content ~message_id:msg_id)
+               (fun outcome ->
+                 let open Relay_forwarder in
+                 match outcome with
+                 | Delivered ts ->
+                     respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts])
+                 | Duplicate ts ->
+                     respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts; "duplicate", `Bool true])
+                 | Peer_unreachable reason ->
+                     let dl = `Assoc [
+                       ("ts", `Float (Unix.gettimeofday ()));
+                       ("message_id", `String msg_id);
+                       ("from_alias", `String from_alias);
+                       ("to_alias", `String to_alias);
+                       ("content", `String content);
+                       ("reason", `String "peer_unreachable");
+                       ("phase", `String "forward_out");
+                       ("peer", `String peer_name);
+                     ] in
+                     R.add_dead_letter relay dl;
+                     respond_bad_gateway
+                       (json_error_str "peer_unreachable"
+                          (Printf.sprintf "peer relay %s unreachable: %s" peer_name reason))
+                 | Peer_timeout ->
+                     let dl = `Assoc [
+                       ("ts", `Float (Unix.gettimeofday ()));
+                       ("message_id", `String msg_id);
+                       ("from_alias", `String from_alias);
+                       ("to_alias", `String to_alias);
+                       ("content", `String content);
+                       ("reason", `String "peer_timeout");
+                       ("phase", `String "forward_out");
+                       ("peer", `String peer_name);
+                     ] in
+                     R.add_dead_letter relay dl;
+                     respond_gateway_timeout
+                       (json_error_str "peer_timeout"
+                          (Printf.sprintf "peer relay %s did not respond within 5s" peer_name))
+                 | Peer_5xx (st, body_excerpt) ->
+                     let dl = `Assoc [
+                       ("ts", `Float (Unix.gettimeofday ()));
+                       ("message_id", `String msg_id);
+                       ("from_alias", `String from_alias);
+                       ("to_alias", `String to_alias);
+                       ("content", `String content);
+                       ("reason", `String "peer_5xx");
+                       ("phase", `String "forward_out");
+                       ("peer", `String peer_name);
+                     ] in
+                     R.add_dead_letter relay dl;
+                     respond_bad_gateway
+                       (json_error_str "peer_5xx"
+                          (Printf.sprintf "peer relay %s returned %d: %s" peer_name st body_excerpt))
+                 | Peer_4xx (st, body_excerpt) ->
+                     let dl = `Assoc [
+                       ("ts", `Float (Unix.gettimeofday ()));
+                       ("message_id", `String msg_id);
+                       ("from_alias", `String from_alias);
+                       ("to_alias", `String to_alias);
+                       ("content", `String content);
+                       ("reason", `String "peer_rejected");
+                       ("phase", `String "forward_out");
+                       ("peer", `String peer_name);
+                     ] in
+                     R.add_dead_letter relay dl;
+                     respond_not_found
+                       (json_error_str "peer_rejected"
+                          (Printf.sprintf "peer relay %s rejected request %d: %s" peer_name st body_excerpt))
+                 | Peer_unauthorized ->
+                     let dl = `Assoc [
+                       ("ts", `Float (Unix.gettimeofday ()));
+                       ("message_id", `String msg_id);
+                       ("from_alias", `String from_alias);
+                       ("to_alias", `String to_alias);
+                       ("content", `String content);
+                       ("reason", `String "peer_unauthorized");
+                       ("phase", `String "forward_out");
+                       ("peer", `String peer_name);
+                     ] in
+                     R.add_dead_letter relay dl;
+                     respond_bad_gateway
+                       (json_error_str "peer_unauthorized"
+                          (Printf.sprintf "peer relay %s did not accept our identity" peer_name))
+                 | Local_error err ->
+                     let dl = `Assoc [
+                       ("ts", `Float (Unix.gettimeofday ()));
+                       ("message_id", `String msg_id);
+                       ("from_alias", `String from_alias);
+                       ("to_alias", `String to_alias);
+                       ("content", `String content);
+                       ("reason", `String "forward_local_error");
+                       ("phase", `String "forward_out");
+                       ("peer", `String peer_name);
+                     ] in
+                     R.add_dead_letter relay dl;
+                     respond_internal_error
+                       (json_error_str "forward_local_error"
+                          (Printf.sprintf "local forwarder error: %s" err))))
       else
       match verified_alias with
       | Some v when v <> from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
