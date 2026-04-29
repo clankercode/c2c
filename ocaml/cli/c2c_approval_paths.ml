@@ -139,6 +139,70 @@ let list_pending_tokens ?override_root () =
 let has_verdict ?override_root ~token () =
   Sys.file_exists (verdict_file ?override_root ~token ())
 
+(** List the tokens currently in the approval-verdict dir. *)
+let list_verdict_tokens ?override_root () =
+  let dir = verdict_dir ?override_root () in
+  if not (Sys.file_exists dir) then []
+  else
+    try
+      Sys.readdir dir
+      |> Array.to_list
+      |> List.filter_map (fun name ->
+          if Filename.check_suffix name ".json"
+          then Some (Filename.chop_suffix name ".json")
+          else None)
+      |> List.sort compare
+    with _ -> []
+
+(** Lightweight extraction of an integer field from a JSON payload.
+    Used to read `timeout_at` from the pending payload without pulling
+    in a full JSON parser. *)
+let parse_int_field s field =
+  let needle = "\"" ^ field ^ "\"" in
+  let nlen = String.length needle in
+  let slen = String.length s in
+  let rec find_needle i =
+    if i + nlen > slen then None
+    else if String.sub s i nlen = needle then Some (i + nlen)
+    else find_needle (i + 1)
+  in
+  match find_needle 0 with
+  | None -> None
+  | Some after_key ->
+      let rec skip_to_value j =
+        if j >= slen then None
+        else
+          match s.[j] with
+          | ' ' | '\t' | '\n' | '\r' | ':' -> skip_to_value (j + 1)
+          | '0' .. '9' | '-' -> Some j
+          | _ -> None
+      in
+      (match skip_to_value after_key with
+       | None -> None
+       | Some start ->
+           let rec scan k =
+             if k >= slen then k
+             else
+               match s.[k] with
+               | '0' .. '9' | '-' -> scan (k + 1)
+               | _ -> k
+           in
+           let stop = scan start in
+           if stop = start then None
+           else
+             try Some (int_of_string (String.sub s start (stop - start)))
+             with _ -> None)
+
+(** Read pending file's `timeout_at` integer; None on missing/parse-fail. *)
+let read_pending_timeout_at ?override_root ~token () =
+  match read_pending ?override_root ~token () with
+  | None -> None
+  | Some s -> parse_int_field s "timeout_at"
+
+(** Best-effort mtime of a file; None on missing/error. *)
+let mtime_opt path =
+  try Some (Unix.stat path).Unix.st_mtime with _ -> None
+
 (** Best-effort cleanup of the pending+verdict files for a token. Used
     after await-reply has consumed the verdict. *)
 let cleanup ?override_root ~token () =

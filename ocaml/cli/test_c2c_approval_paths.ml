@@ -211,6 +211,59 @@ let test_read_pending () =
       | None -> Alcotest.fail "read_pending None after write"
       | Some s -> Alcotest.(check string) "round-trip" pl s)
 
+(* slice 5c additions *)
+
+let test_list_verdict_tokens () =
+  with_tmp_dir (fun root ->
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      Alcotest.(check (list string))
+        "empty start" []
+        (C2c_approval_paths.list_verdict_tokens ~override_root:root ());
+      let _ =
+        C2c_approval_paths.write_verdict ~override_root:root
+          ~token:"ka_v1" ~payload:"{\"verdict\":\"allow\"}" ()
+      in
+      let _ =
+        C2c_approval_paths.write_verdict ~override_root:root
+          ~token:"ka_v2" ~payload:"{\"verdict\":\"deny\"}" ()
+      in
+      Alcotest.(check (list string))
+        "two sorted"
+        [ "ka_v1"; "ka_v2" ]
+        (C2c_approval_paths.list_verdict_tokens ~override_root:root ()))
+
+let test_parse_int_field () =
+  Alcotest.(check (option int)) "present"
+    (Some 1234567890)
+    (C2c_approval_paths.parse_int_field
+       "{\"timeout_at\":1234567890,\"x\":1}" "timeout_at");
+  Alcotest.(check (option int)) "missing"
+    None
+    (C2c_approval_paths.parse_int_field "{\"foo\":1}" "timeout_at");
+  Alcotest.(check (option int)) "negative"
+    (Some (-1))
+    (C2c_approval_paths.parse_int_field "{\"x\":-1}" "x");
+  Alcotest.(check (option int)) "string-value not int"
+    None
+    (C2c_approval_paths.parse_int_field "{\"x\":\"abc\"}" "x")
+
+let test_read_pending_timeout_at () =
+  with_tmp_dir (fun root ->
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      let pl =
+        C2c_approval_paths.make_pending_payload
+          ~token:"ka_t" ~agent_alias:"a" ~tool_name:"Shell"
+          ~tool_input:"{}" ~timeout_at:9876 ~reviewer_alias:"r"
+      in
+      let _ =
+        C2c_approval_paths.write_pending ~override_root:root
+          ~token:"ka_t" ~payload:pl ()
+      in
+      Alcotest.(check (option int)) "round-trip"
+        (Some 9876)
+        (C2c_approval_paths.read_pending_timeout_at
+           ~override_root:root ~token:"ka_t" ()))
+
 let () =
   Alcotest.run "c2c_approval_paths"
     [
@@ -232,5 +285,10 @@ let () =
             test_list_pending_tokens;
           Alcotest.test_case "has_verdict" `Quick test_has_verdict;
           Alcotest.test_case "read_pending" `Quick test_read_pending;
+          Alcotest.test_case "list_verdict_tokens" `Quick
+            test_list_verdict_tokens;
+          Alcotest.test_case "parse_int_field" `Quick test_parse_int_field;
+          Alcotest.test_case "read_pending_timeout_at" `Quick
+            test_read_pending_timeout_at;
         ] );
     ]

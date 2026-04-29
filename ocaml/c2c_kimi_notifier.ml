@@ -125,6 +125,57 @@ let mkdir_p = C2c_io.mkdir_p
    gets the guard for free. See #475. *)
 let is_system_event ~from_alias = from_alias = "c2c-system"
 
+(* [#490 slice 5c] Approval-token DM filter.
+   The legacy slice-1 verdict path was `c2c send <kimi> "<TOKEN> allow"`,
+   which lands in kimi's broker inbox + gets drained by this notifier
+   daemon. With the slice-5a verdict-file side-channel as the canonical
+   reply path, those legacy DMs are noise: they don't drive the hook
+   (await-reply reads the verdict file first), and pushing them as
+   notification-store entries / chat-log lines clutters operator
+   scrollback with structured-control-traffic.
+
+   This predicate matches bodies of shape `^\s*ka_<id>\s+(allow|deny)\b`
+   (case-insensitive on the verdict word). When true, the notifier
+   skips chat-log + notification + wake. The message stays drained
+   (broker-side inbox is consumed) which is fine — the hook is not
+   waiting on inbox-DMs in the new architecture; it watches the
+   verdict file. *)
+let is_approval_verdict_body body =
+  let s = String.trim body in
+  let len = String.length s in
+  if len < 5 then false
+  else if not (String.length s >= 3 && String.sub s 0 3 = "ka_") then false
+  else
+    (* Walk past the token: alnum / underscore / dot / hyphen. *)
+    let rec scan_tok i =
+      if i >= len then i
+      else
+        match s.[i] with
+        | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '_' | '.' | '-' -> scan_tok (i + 1)
+        | _ -> i
+    in
+    let after_tok = scan_tok 0 in
+    if after_tok = 0 || after_tok >= len then false
+    else
+      (* Require at least one whitespace separator. *)
+      let rec skip_ws i =
+        if i >= len then i
+        else
+          match s.[i] with
+          | ' ' | '\t' -> skip_ws (i + 1)
+          | _ -> i
+      in
+      let verdict_start = skip_ws after_tok in
+      if verdict_start = after_tok then false
+      else
+        let remain = String.sub s verdict_start (len - verdict_start) in
+        let lc = String.lowercase_ascii remain in
+        let prefixed_with prefix =
+          let pl = String.length prefix in
+          String.length lc >= pl && String.sub lc 0 pl = prefix
+        in
+        prefixed_with "allow" || prefixed_with "deny"
+
 (* ISO-8601 UTC timestamp for the sidecar log, e.g. 2026-04-29T12:34:56Z *)
 let iso8601_utc () =
   let tm = Unix.gmtime (Unix.gettimeofday ()) in
@@ -257,32 +308,46 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
       | None -> None
     in
     let n = List.length msgs in
+    (* [#490 slice 5c] Track whether any message was user-visible — if every
+       message in this drain was an approval-verdict backchannel DM, we
+       suppress the wake too (no point waking kimi for traffic it never
+       sees). *)
+    let any_visible = ref false in
     List.iter
       (fun (msg : C2c_mcp.message) ->
         let from_alias = msg.from_alias in
         let body = msg.content in
         let ts = msg.ts in
         let nid = notification_id_for_msg ~from_alias ~ts ~content:body in
-        match session_dir_opt with
-        | Some sdir ->
-          (* Sidecar log: ALL messages including system events — human scrollback. *)
-          (try write_chat_log ~session_dir:sdir ~from_alias ~body
-           with exn ->
-             Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
-               (Printexc.to_string exn));
-          (* JSON notification store: skip system events to avoid #475 identity confusion. *)
-          (try write_notification ~session_dir:sdir ~notification_id:nid
-                 ~from_alias ~body
-           with exn ->
-             Printf.eprintf "[kimi-notifier] write failed: %s\n%!"
-               (Printexc.to_string exn))
-        | None ->
+        if is_approval_verdict_body body then begin
           Printf.eprintf
-            "[kimi-notifier] no kimi session-id resolved; message archived but undelivered\n%!")
+            "[kimi-notifier] skip approval-verdict DM from %s (#490 side-channel filter): %s\n%!"
+            from_alias
+            (if String.length body > 60 then String.sub body 0 60 ^ "..." else body)
+        end else begin
+          any_visible := true;
+          match session_dir_opt with
+          | Some sdir ->
+            (* Sidecar log: ALL non-verdict messages including system events. *)
+            (try write_chat_log ~session_dir:sdir ~from_alias ~body
+             with exn ->
+               Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+                 (Printexc.to_string exn));
+            (* JSON notification store: skip system events to avoid #475 identity confusion. *)
+            (try write_notification ~session_dir:sdir ~notification_id:nid
+                   ~from_alias ~body
+             with exn ->
+               Printf.eprintf "[kimi-notifier] write failed: %s\n%!"
+                 (Printexc.to_string exn))
+          | None ->
+            Printf.eprintf
+              "[kimi-notifier] no kimi session-id resolved; message archived but undelivered\n%!"
+        end)
       msgs;
-    (* Wake the pane if we have one + pane appears idle. *)
+    (* Wake the pane if we have one + pane appears idle + something visible
+       actually landed. *)
     (match tmux_pane with
-     | Some pane when session_dir_opt <> None ->
+     | Some pane when session_dir_opt <> None && !any_visible ->
        if tmux_pane_is_idle ~pane then tmux_wake ~pane
      | _ -> ());
     n

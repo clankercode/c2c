@@ -5345,6 +5345,92 @@ let approval_show_cmd =
         print_newline ();
       exit 0
 
+(* --- subcommand: approval-gc ---------------------------------------------- *)
+
+(* [#490 slice 5c] Sweep stale pending/verdict files. Pending files are
+   removed when their `timeout_at` is in the past; verdict files are
+   removed when their mtime is older than `--max-verdict-age` seconds
+   (default 1 hour). Dry-run by default; --apply to actually delete. *)
+let approval_gc_cmd =
+  let apply =
+    Cmdliner.Arg.(value & flag & info [ "apply" ]
+                    ~doc:"Actually delete classified-stale files (default: dry-run).")
+  in
+  let max_verdict_age =
+    Cmdliner.Arg.(value & opt int 3600
+                  & info [ "max-verdict-age" ] ~docv:"SECONDS"
+                      ~doc:"Verdict files older than this many seconds are stale (default 3600).")
+  in
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Machine-readable JSON output.")
+  in
+  let+ apply = apply
+  and+ max_verdict_age = max_verdict_age
+  and+ json = json in
+  let now_i = int_of_float (Unix.gettimeofday ()) in
+  let now_f = Unix.gettimeofday () in
+  let pending_tokens = C2c_approval_paths.list_pending_tokens () in
+  let verdict_tokens = C2c_approval_paths.list_verdict_tokens () in
+  let pending_classifications =
+    List.map (fun tok ->
+      let path = C2c_approval_paths.pending_file ~token:tok () in
+      match C2c_approval_paths.read_pending_timeout_at ~token:tok () with
+      | Some t when t <= now_i -> (tok, path, "stale", t)
+      | Some t -> (tok, path, "active", t)
+      | None -> (tok, path, "unknown", 0))
+      pending_tokens
+  in
+  let verdict_classifications =
+    List.map (fun tok ->
+      let path = C2c_approval_paths.verdict_file ~token:tok () in
+      match C2c_approval_paths.mtime_opt path with
+      | Some m when (now_f -. m) >= float_of_int max_verdict_age ->
+          (tok, path, "stale", int_of_float m)
+      | Some m -> (tok, path, "active", int_of_float m)
+      | None -> (tok, path, "unknown", 0))
+      verdict_tokens
+  in
+  let to_remove =
+    (List.filter (fun (_, _, c, _) -> c = "stale") pending_classifications) @
+    (List.filter (fun (_, _, c, _) -> c = "stale") verdict_classifications)
+  in
+  let removed = ref 0 in
+  if apply then
+    List.iter (fun (_, path, _, _) ->
+      try Sys.remove path; incr removed with _ -> ()) to_remove;
+  if json then begin
+    let item_to_json (tok, path, cls, ts) kind =
+      Printf.sprintf "{\"token\":\"%s\",\"path\":\"%s\",\"class\":\"%s\",\"ts\":%d,\"kind\":\"%s\"}"
+        tok path cls ts kind
+    in
+    let p = List.map (fun x -> item_to_json x "pending") pending_classifications in
+    let v = List.map (fun x -> item_to_json x "verdict") verdict_classifications in
+    Printf.printf
+      "{\"applied\":%b,\"removed_count\":%d,\"pending\":[%s],\"verdict\":[%s]}\n%!"
+      apply !removed (String.concat "," p) (String.concat "," v);
+    exit 0
+  end else begin
+    Printf.printf "approval-gc%s (max-verdict-age=%ds, now=%d)\n"
+      (if apply then " --apply" else " (dry-run)") max_verdict_age now_i;
+    Printf.printf "  pending  (%d total): %d stale\n"
+      (List.length pending_classifications)
+      (List.length (List.filter (fun (_, _, c, _) -> c = "stale") pending_classifications));
+    Printf.printf "  verdict  (%d total): %d stale\n"
+      (List.length verdict_classifications)
+      (List.length (List.filter (fun (_, _, c, _) -> c = "stale") verdict_classifications));
+    if to_remove = [] then
+      print_endline "  (nothing to remove)"
+    else begin
+      List.iter (fun (tok, path, _, ts) ->
+        Printf.printf "  STALE %s  ts=%d  %s\n" tok ts path) to_remove;
+      if apply then
+        Printf.printf "  removed=%d\n" !removed
+      else
+        print_endline "  (dry-run; pass --apply to delete)"
+    end;
+    exit 0
+  end
+
 (* --- subcommand: setcap --------------------------------------------------- *)
 
 let setcap_cmd =
@@ -5377,6 +5463,7 @@ let approval_reply = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-reply" ~doc:"Re
 let approval_pending_write = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-pending-write" ~doc:"Bash-callable helper used by the kimi PreToolUse hook to record pending-approval state.") approval_pending_write_cmd
 let approval_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-list" ~doc:"List currently-pending PreToolUse approvals (token + verdict-ready flag).") approval_list_cmd
 let approval_show = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-show" ~doc:"Print the full pending-record JSON for one approval token.") approval_show_cmd
+let approval_gc = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-gc" ~doc:"Sweep stale approval-pending/verdict files (dry-run by default; --apply to delete).") approval_gc_cmd
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
 let sweep = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sweep" ~doc:"Remove dead registrations and orphan inboxes.") sweep_cmd
 let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived inbox messages.") history_cmd
@@ -10799,7 +10886,7 @@ let () =
   let is_agent = is_agent_session () in
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
-    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; approval_pending_write; approval_list; approval_show; send_all; sweep
+    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; approval_pending_write; approval_list; approval_show; approval_gc; send_all; sweep
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]

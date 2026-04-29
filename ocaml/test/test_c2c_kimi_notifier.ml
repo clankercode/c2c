@@ -154,6 +154,28 @@ let test_is_system_event_predicate () =
   Alcotest.(check bool) "case-sensitive (broker uses canonical lowercase)" false
     (C2c_kimi_notifier.is_system_event ~from_alias:"C2C-System")
 
+let test_is_approval_verdict_body () =
+  Alcotest.(check bool) "ka_x allow → true" true
+    (C2c_kimi_notifier.is_approval_verdict_body "ka_abc123 allow");
+  Alcotest.(check bool) "ka_x deny because rm → true" true
+    (C2c_kimi_notifier.is_approval_verdict_body "ka_xyz deny because foo");
+  Alcotest.(check bool) "ka_x ALLOW (uppercase) → true" true
+    (C2c_kimi_notifier.is_approval_verdict_body "ka_call_id_42 ALLOW");
+  Alcotest.(check bool) "leading whitespace ok → true" true
+    (C2c_kimi_notifier.is_approval_verdict_body "   ka_t allow");
+  Alcotest.(check bool) "tab separator → true" true
+    (C2c_kimi_notifier.is_approval_verdict_body "ka_a\tdeny");
+  Alcotest.(check bool) "regular DM → false" false
+    (C2c_kimi_notifier.is_approval_verdict_body "hey, can you check the build?");
+  Alcotest.(check bool) "ka_ alone → false" false
+    (C2c_kimi_notifier.is_approval_verdict_body "ka_");
+  Alcotest.(check bool) "ka_x without verdict → false" false
+    (C2c_kimi_notifier.is_approval_verdict_body "ka_token nothing here");
+  Alcotest.(check bool) "wrong prefix → false" false
+    (C2c_kimi_notifier.is_approval_verdict_body "kb_token allow");
+  Alcotest.(check bool) "empty → false" false
+    (C2c_kimi_notifier.is_approval_verdict_body "")
+
 let with_tmpdir f =
   let tmp = Filename.temp_file "kimi-notif-test-" "" in
   Sys.remove tmp;
@@ -297,6 +319,9 @@ let () =
       [ Alcotest.test_case "is_system_event predicate" `Quick test_is_system_event_predicate
       ; Alcotest.test_case "write_notification skips c2c-system" `Quick test_write_notification_skips_system_events
       ; Alcotest.test_case "write_notification writes real DM" `Quick test_write_notification_writes_real_dm
+      ]
+    ; "approval_verdict_filter_490",
+      [ Alcotest.test_case "is_approval_verdict_body predicate" `Quick test_is_approval_verdict_body
       ]
     ; "chat_log_141",
       [ Alcotest.test_case "creates file with expected line" `Quick test_write_chat_log_creates_file_with_expected_line
