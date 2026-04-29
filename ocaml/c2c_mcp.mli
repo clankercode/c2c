@@ -141,6 +141,15 @@ module Broker : sig
   val reserved_system_aliases : string list
   (** Aliases that cannot be registered by any peer: ["c2c"; "c2c-system"]. *)
 
+  val alias_casefold : string -> string
+  (** Canonical alias case-fold helper (currently [String.lowercase_ascii]).
+      All alias comparisons inside the broker invariant must compare
+      [alias_casefold a = alias_casefold b]. Exported so cross-file callers
+      (cli/c2c.ml supervisor reply auth, cli/c2c_memory.ml privacy ACL,
+      relay_e2e.ml recipient lookup, etc.) can stay aligned with the
+      broker's canonical comparison rather than inlining
+      [String.lowercase_ascii]. *)
+
   (** [#432 Slice E] Relay-e2e TOFU pin accessors. Pins are persisted to
       [<broker_root>/relay_pins.json] (atomic tmp+rename, cross-process
       flock on [relay_pins.json.lock]) so they survive broker restart.
