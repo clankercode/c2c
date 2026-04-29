@@ -28,6 +28,11 @@ __pycache__/
 .venv/
 venv/
 
+# Exception: Python files needed by Dockerfile.agent runtime stage
+!c2c_deliver_inbox.py
+!c2c_poll_inbox.py
+!c2c_poker.py
+
 # Local state
 .git/c2c/
 *.log

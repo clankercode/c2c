@@ -158,8 +158,8 @@ class CodexAgentDockerSmoke(unittest.TestCase):
             r.returncode, 0,
             f"codex-turn-start-bridge --version failed in {CONTAINER_A1}: "
             f"{r.stderr}\n"
-            f"(binary must be mounted from host at "
-            f"/home/xertrov/.local/bin/codex-turn-start-bridge)"
+            f"(set CODEX_BRIDGE_PATH env var to point at your host binary; "
+            f"see docker-compose.agent-mesh.yml volume mount)"
         )
 
     def test_deliver_script_present(self):

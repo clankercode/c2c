@@ -102,7 +102,8 @@ services:
       # Agent's own broker state — NOT the relay's volume
       - ./volumes/codex-a1:/var/lib/c2c
       # Mount codex-turn-start-bridge from host (dynamically linked, host-specific)
-      - /home/xertrov/.local/bin/codex-turn-start-bridge:/usr/local/bin/codex-turn-start-bridge:ro
+      # Override CODEX_BRIDGE_PATH env var to point at your host binary if needed
+      - ${CODEX_BRIDGE_PATH:-/home/xertrov/.local/bin/codex-turn-start-bridge}:/usr/local/bin/codex-turn-start-bridge:ro
     deploy:
       resources:
         limits:
@@ -135,8 +136,9 @@ services:
     volumes:
       # Agent's own broker state — NOT the relay's volume
       - ./volumes/codex-b1:/var/lib/c2c
-      # Mount codex-turn-start-bridge from host
-      - /home/xertrov/.local/bin/codex-turn-start-bridge:/usr/local/bin/codex-turn-start-bridge:ro
+      # Mount codex-turn-start-bridge from host (dynamically linked, host-specific)
+      # Override CODEX_BRIDGE_PATH env var to point at your host binary if needed
+      - ${CODEX_BRIDGE_PATH:-/home/xertrov/.local/bin/codex-turn-start-bridge}:/usr/local/bin/codex-turn-start-bridge:ro
     deploy:
       resources:
         limits:
