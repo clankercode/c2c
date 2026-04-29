@@ -4214,6 +4214,35 @@ let log_version_downgrade_rejected ~broker_root ~alias ~observed ~pinned_min ~ts
       with _ -> close_out_noerr oc)
    with _ -> ())
 
+(* Slice B follow-up: structured audit-log line on every Ed25519 pin
+   mismatch reject. Closes slate's flagged observability gap from the
+   Slice B PASS — the security invariant (reject + pin-unchanged + no
+   plaintext leak) was already enforced and surfaced via [enc_status:
+   "key-changed"], but operators had no broker.log line to correlate
+   suspected attacks across the swarm. Same shape as
+   [log_version_downgrade_rejected] above; best-effort, swallows
+   errors. *)
+let log_relay_e2e_pin_mismatch ~broker_root ~alias
+      ~pinned_ed25519_b64 ~claimed_ed25519_b64 ~ts =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "relay_e2e_pin_mismatch")
+         ; ("alias", `String alias)
+         ; ("pinned_ed25519_b64", `String pinned_ed25519_b64)
+         ; ("claimed_ed25519_b64", `String claimed_ed25519_b64)
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
 (* #432 TOFU 5 observability follow-up: sibling logger for
    pin_rotate REJECT path. Same broker.log file, same shape as
    pending_cap_reject — best-effort, swallows all errors, distinct
@@ -4539,9 +4568,28 @@ let decrypt_envelope ~(our_x25519 : Relay_enc.t option) ~our_ed25519
                         | Some p, Some c -> p <> c
                         | _ -> false
                       in
-                      if mismatch then
+                      if mismatch then begin
+                        (* Slice B follow-up: structured audit-log line on
+                           every Ed25519 pin mismatch reject. Mirrors
+                           [version_downgrade_rejected] from B-min-version.
+                           Closes slate's flagged observability gap from
+                           the Slice B PASS — the security invariant
+                           (reject + pin-unchanged + no plaintext leak) was
+                           already enforced and surfaced via [enc_status:
+                           "key-changed"], but operators had no broker.log
+                           line to correlate suspected attacks. *)
+                        (match Broker.get_relay_pins_root (),
+                               pinned_ed25519_b64, claimed_ed25519_b64 with
+                         | Some broker_root, Some pinned, Some claimed ->
+                           log_relay_e2e_pin_mismatch
+                             ~broker_root
+                             ~alias:env.from_
+                             ~pinned_ed25519_b64:pinned
+                             ~claimed_ed25519_b64:claimed
+                             ~ts:(Unix.gettimeofday ())
+                         | _ -> ());
                         content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                      else
+                      end else
                         let try_decode b64 =
                           match Relay_e2e.b64_decode b64 with
                           | Ok raw when String.length raw = 32 -> Some raw

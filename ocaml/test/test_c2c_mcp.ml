@@ -8857,6 +8857,61 @@ let test_slice_b_tofu_mismatch_rejects () =
         (Some pinned_b64)
         (C2c_mcp.Broker.get_pinned_ed25519 sender_alias)))
 
+(* Slice B follow-up: structured audit-log line on Ed25519 pin mismatch
+   reject. Same fixture as test 3 above but asserts the broker.log line
+   is written with the correct event/alias/pinned/claimed fields. Closes
+   slate's flagged observability gap from the Slice B PASS. *)
+let test_slice_b_followup_pin_mismatch_audit_log () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-mma" and recipient_alias = "recipient-mma" in
+      let pinned_b64 = "PINNED-ed25519-b64-stable-key-aud" in
+      let claimed_b64 = "CLAIMED-ed25519-b64-rotated-key-aud" in
+      (match C2c_mcp.Broker.pin_ed25519_sync ~alias:sender_alias ~pk:pinned_b64 with
+       | `New_pin -> () | _ -> Alcotest.fail "pin");
+      let (real_seed, _) = slice_b_gen_ed25519 () in
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let wire =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:real_seed ~sender_ed_b64:claimed_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext:"x" ~envelope_version:2
+      in
+      let our_x25519 = Some recipient_x in
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let (_, _) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:wire
+      in
+      let log_path = Filename.concat dir "broker.log" in
+      check bool "broker.log written" true (Sys.file_exists log_path);
+      let ic = open_in log_path in
+      let log_content =
+        try
+          let buf = Buffer.create 1024 in
+          (try while true do
+             Buffer.add_channel buf ic 1024
+           done with End_of_file -> ());
+          close_in ic;
+          Buffer.contents buf
+        with e -> close_in ic; raise e
+      in
+      let contains s sub =
+        try ignore (Str.search_forward (Str.regexp_string sub) s 0); true
+        with Not_found -> false
+      in
+      check bool "audit-log has relay_e2e_pin_mismatch event" true
+        (contains log_content "\"event\":\"relay_e2e_pin_mismatch\"");
+      check bool "audit-log carries alias" true
+        (contains log_content (Printf.sprintf "\"alias\":\"%s\"" sender_alias));
+      check bool "audit-log carries pinned_ed25519_b64" true
+        (contains log_content (Printf.sprintf "\"pinned_ed25519_b64\":\"%s\"" pinned_b64));
+      check bool "audit-log carries claimed_ed25519_b64" true
+        (contains log_content (Printf.sprintf "\"claimed_ed25519_b64\":\"%s\"" claimed_b64))))
+
 (* Slice B test 4: legacy v1 envelope (no from_ed25519, envelope_version=1).
    Pre-pin the sender's real ed25519 — verifier falls back to pinned.
    Existing path must still decrypt; pin must NOT be spuriously rewritten
@@ -10757,6 +10812,8 @@ let () =
               test_slice_b_tofu_already_pinned_accepts
           ; test_case "[CRIT-1 Slice B] TOFU pinned/claimed mismatch rejects with key-changed" `Quick
               test_slice_b_tofu_mismatch_rejects
+          ; test_case "[CRIT-1 Slice B followup] pin mismatch emits broker.log audit line" `Quick
+              test_slice_b_followup_pin_mismatch_audit_log
           ; test_case "[CRIT-1 Slice B] TOFU legacy v1 (no from_ed25519) preserves existing path" `Quick
               test_slice_b_tofu_legacy_v1_no_field_accepts_no_tofu_update
           ; test_case "[CRIT-1 Slice B-min-version] v2 first-contact bumps min to 2" `Quick
