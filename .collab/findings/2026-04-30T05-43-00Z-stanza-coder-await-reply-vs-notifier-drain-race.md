@@ -108,3 +108,88 @@ inbox path from slice 4) or me (slice-2 author).
   + token-uniqueness all need round-trip completion to validate)
 
 🪨 — stanza-coder
+
+---
+
+## Update: second architectural mismatch surfaced (2026-04-30 ~05:48 UTC)
+
+Test 1 retry confirmed an additional issue beyond the drain race.
+
+### Symptom #2: token messages queue in operator's TUI input box
+
+When stanza-coder sends `<TOKEN> allow` to kuura-viima, the message
+flows:
+
+```
+stanza c2c send → broker inbox → kimi-notifier daemon detects → tmux
+send-keys "[c2c] check inbox" + bracketed-paste of message body → 
+kuura's kimi-cli input box "queues" the lines as if user typed them
+```
+
+Resulting kuura TUI shows:
+```
+── input · 3 queued ──
+```
+
+The token-bearing message therefore goes into the SAME input pipe
+the operator types into. Kimi-cli treats it as user input, queues
+behind in-flight turn, and (when it eventually fires) processes it
+as a NEW user turn — i.e. kuura would respond to "ka_tool_X allow"
+as if it were a user instruction, not an approval verdict.
+
+Two failure modes from this:
+1. await-reply never sees the verdict (it's stuck in the TUI queue,
+   not in the inbox file in any actionable way).
+2. Even if await-reply timed out, kuura's NEXT turn would surface
+   "<TOKEN> allow" as a user instruction, possibly causing her to
+   re-run tools or act on the directive in an unintended way.
+
+### Why the existing kimi-notification-store path doesn't help
+
+The notification store delivery (`.collab/runbooks/kimi-notification-store-delivery.md`)
+writes inbound c2c messages into kimi's notification dir. That works
+for normal DMs (delivered as awareness, not as user input). But
+the kimi-cli notifier daemon is using tmux send-keys for at least
+SOME inbound paths (the "[c2c] check inbox" nudge confirmation by
+Max + the queued message body confirmed by pane peek).
+
+Need to confirm: does the notifier ALWAYS send-keys, or only on the
+nudge-prompt? If ONLY nudge-prompt, where does the message body
+come from in kuura's input queue?
+
+(Speculation: the pane shows `· 3 queued` likely means the 3
+"[c2c] check inbox" nudges from 3 separate inbound DMs got queued.
+The DM body itself goes through the notification store path. So
+the queueing is just the nudge prompts, but the prompts trigger
+kimi to call poll_inbox which DRAINS the message, removing it
+from where await-reply was looking.)
+
+### Composite root cause
+
+The two issues compose: notifier nudges trigger poll_inbox draining,
+which removes the verdict from where await-reply polls. Even if
+await-reply found the message in time, the operator-typed mental
+model breaks (token messages shouldn't be operator instructions).
+
+### Comprehensive fix path
+
+Approval mechanism MUST be a separate side-channel from normal DM
+delivery:
+
+1. Hook script writes pending-approval state to a dedicated file
+   (e.g. `.git/c2c/hook-approvals/<token>.json`).
+2. Reviewer's reply is sent as a special message type that goes
+   through a separate broker action (not poll_inbox-drained).
+3. await-reply reads from the dedicated file path, not from the
+   inbox.
+4. Notifier daemon explicitly skips approval-token messages in its
+   drain-and-deliver path.
+
+Or: keep the broker inbox path BUT have the broker recognize approval
+tokens and deliver them ONLY to await-reply (not to poll_inbox or
+TUI nudge).
+
+This is bigger than a small slice. Probably a coordinator-routed
+follow-up arc. Filing as a separate long-form design doc would help.
+
+🪨 — stanza-coder
