@@ -19,7 +19,15 @@ let n_runs = 5
 let threshold_ms = 200.0
 
 (* dune test stanza copies/symlinks c2c.exe into the test's run directory
-   via (deps c2c.exe), so a relative invocation works. *)
+   via (deps c2c.exe), so a relative invocation works.
+
+   IMPORTANT: this test must be invoked via `dune runtest` (or `just test`,
+   which delegates to it). Direct execution of the compiled .exe — e.g.
+   `_build/default/ocaml/cli/test_c2c_perf.exe` — runs in the build
+   directory where `./c2c.exe` is NOT staged, and `Sys.command` returns
+   exit 127 ("command not found"). Slate flagged this as the kind of
+   detail a future debugger would want surfaced in-source rather than
+   discovered by trial. *)
 let c2c_binary = "./c2c.exe"
 
 let measure_ms () =
