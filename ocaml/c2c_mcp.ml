@@ -2412,6 +2412,35 @@ module Broker = struct
                 in
                 List.rev (drop_n drop all)))
 
+  (* [find_message_by_id t ~alias ~id_prefix] searches the archive for the
+     session registered under [alias] for an entry whose [ae_message_id]
+     starts with [id_prefix]. Returns [Ok entry] on unique match, [Error msg]
+     on ambiguity or missing. Used by sticker-react to anchor reactions to
+     the original message being reacted to. *)
+  let find_message_by_id t ~alias ~id_prefix =
+    let regs = load_registrations t in
+    let matches = List.filter (fun (r : registration) -> r.alias = alias) regs in
+    match matches with
+    | [] -> Error ("alias not found: " ^ alias)
+    | [ r ] ->
+        let entries = read_archive t ~session_id:r.session_id ~limit:500 in
+        let matching =
+          List.filter (fun e ->
+            match e.ae_message_id with
+            | Some mid -> String.length mid >= String.length id_prefix &&
+                          String.sub mid 0 (String.length id_prefix) = id_prefix
+            | None -> false
+          ) entries
+        in
+        (match matching with
+         | [] -> Error ("no message found with id prefix: " ^ id_prefix)
+         | [ e ] -> Ok e
+         | _ ->
+             let prefixes = List.map (fun e -> Option.value e.ae_message_id ~default:"") matching in
+             Error ("ambiguous id prefix '" ^ id_prefix ^ "' matches multiple: " ^
+                    String.concat ", " (List.map (fun s -> String.sub s 0 (min 8 (String.length s))) prefixes)))
+    | _ -> Error ("alias '" ^ alias ^ "' matches multiple sessions — use session_id directly")
+
   (* #307a: histogram-compute over recent archive entries for a session.
      Counts inbound messages by deferrable flag and groups by sender.
      Filters: drop entries older than [min_ts] when set; cap to most

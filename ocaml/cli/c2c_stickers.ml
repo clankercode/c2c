@@ -23,6 +23,47 @@ let public_dir () =
 let xdg_state_home = C2c_utils.xdg_state_home
 let per_alias_key_path = C2c_signing_helpers.per_alias_key_path
 
+(* --- by-msg index for reactions ---------------------------------------- *)
+
+(* Index path: .c2c/stickers/<reactor>/by-msg-out/<full-msg-id>.json
+   Stores the sticker envelope path for each reaction this alias has made. *)
+let by_msg_out_dir ~alias =
+  sticker_dir () // alias // "by-msg-out"
+
+let by_msg_out_path ~alias ~msg_id =
+  by_msg_out_dir ~alias // (msg_id ^ ".json")
+
+(* [append_to_by_msg_index ~alias ~msg_id ~envelope_path] appends a reaction
+   envelope reference to the index. The index is append-only so multiple
+   reactions to the same message accumulate. *)
+let append_to_by_msg_index ~alias ~msg_id ~envelope_path =
+  let dir = by_msg_out_dir ~alias in
+  let path = by_msg_out_path ~alias ~msg_id in
+  let () = C2c_utils.mkdir_p dir in
+  let line = envelope_path ^ "\n" in
+  let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o600 path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc line)
+
+(* [load_by_msg_index ~alias ~msg_id] reads all envelope paths from the
+   reaction index for a given message. Returns [] if no reactions exist. *)
+let load_by_msg_index ~alias ~msg_id =
+  let path = by_msg_out_path ~alias ~msg_id in
+  if not (Sys.file_exists path) then []
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () ->
+        let rec loop acc =
+          match input_line ic with
+          | exception End_of_file -> List.rev acc
+          | line ->
+              let line = String.trim line in
+              if line = "" then loop acc
+              else loop (line :: acc)
+        in
+        loop [])
+
 (* --- registry ----------------------------------------------------------- *)
 
 type registry_entry = {
@@ -266,6 +307,20 @@ let format_sticker env =
   Printf.sprintf "%s %s sent %s to %s at %s%s\n"
     emoji env.from_ env.sticker_id env.to_ ts_str note_str
 
+(* --- reaction XML builder ----------------------------------------------- *)
+
+(* [build_reaction_xml ~from_alias ~target_msg_id ~sticker_id ~emoji ~note]
+   builds the c2c event body for a reaction DM to be sent to the original
+   message sender. The target recipient is derived from the archive entry
+   (the original sender), not passed explicitly. *)
+let build_reaction_xml ~from_alias ~target_msg_id ~sticker_id ~emoji ~note =
+  let note_attr = match note with
+    | Some n -> Printf.sprintf " note=\"%s\"" (String.map (fun c -> if c = '"' then '\'' else c) n)
+    | None -> ""
+  in
+  Printf.sprintf "<c2c event=\"reaction\" from=\"%s\" target_msg_id=\"%s\" sticker_id=\"%s\"%s/>"
+    from_alias target_msg_id sticker_id note_attr
+
 (* --- CLI commands ------------------------------------------------------- *)
 
 let json_flag =
@@ -411,6 +466,152 @@ let sticker_verify_cmd =
    with e ->
      Printf.printf "INVALID: could not read file: %s\n" (Printexc.to_string e))
 
+(* --- sticker react command ---------------------------------------------- *)
+
+let sticker_react_cmd =
+  let msg_id_or_prefix =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info []
+      ~docv:"MSG-ID"
+      ~doc:"Message ID or 8-char prefix to react to. Use 'c2c history' to find message IDs.")
+  in
+  let sticker_id =
+    Cmdliner.Arg.(required & pos 1 (some string) None & info []
+      ~docv:"STICKER" ~doc:"Sticker id to react with (run 'c2c sticker list').")
+  in
+  let note =
+    let doc = "Optional note (max 280 chars)" in
+    Cmdliner.Arg.(value & opt (some string) None & info [ "note" ] ~docv:"NOTE" ~doc)
+  in
+  let json = json_flag in
+  let+ msg_id_or_prefix = msg_id_or_prefix
+  and+ sticker_id = sticker_id
+  and+ note = note
+  and+ json = json in
+  (match note with Some n when String.length n > 280 ->
+    (Printf.eprintf "error: note exceeds 280 characters\n%!"; exit 1)
+  | _ -> ());
+  let from_alias = match resolve_current_alias () with
+    | Some a -> a
+    | None -> (Printf.eprintf "error: no alias set. Set C2C_MCP_AUTO_REGISTER_ALIAS or run 'c2c register' first.\n%!"; exit 1)
+  in
+  let identity =
+    match per_alias_key_path ~alias:from_alias with
+    | Some path when Sys.file_exists path ->
+        Relay_identity.load_or_create_at ~path ~alias_hint:from_alias
+    | _ ->
+        Printf.eprintf "error: no per-alias key at <broker>/keys/%s.ed25519. Re-run 'c2c register' to generate.\n%!"
+          from_alias;
+        exit 1
+  in
+  (match validate_sticker_id sticker_id with
+   | Error e -> Printf.eprintf "error: %s\n%!" e; exit 1
+   | Ok () -> ());
+  let broker_root = C2c_utils.resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  match C2c_mcp.Broker.find_message_by_id broker ~alias:from_alias ~id_prefix:msg_id_or_prefix with
+  | Error msg ->
+      Printf.eprintf "error: %s\n%!" msg;
+      Printf.eprintf "(Hint: poll your inbox with 'c2c poll-inbox' first to receive messages.)\n%!";
+      exit 1
+  | Ok entry ->
+      let original_sender = entry.C2c_mcp.Broker.ae_from_alias in
+      let full_msg_id = match entry.C2c_mcp.Broker.ae_message_id with
+        | Some id -> id
+        | None -> msg_id_or_prefix
+      in
+      (* Build the reaction envelope with target_msg_id *)
+      match create_and_store ~target_msg_id:full_msg_id
+        ~from_:from_alias ~to_:original_sender ~sticker_id ~note
+        ~scope:`Private ~identity () with
+      | Error msg ->
+          Printf.eprintf "error: %s\n%!" msg;
+          exit 1
+      | Ok env ->
+          (* Append to by-msg index for this reactor *)
+          let envelope_path = (received_dir ~alias:original_sender) // Printf.sprintf "%s-%s.json" env.ts env.nonce in
+          (try append_to_by_msg_index ~alias:from_alias ~msg_id:full_msg_id ~envelope_path with _ -> ());
+          (* Enqueue DM to original sender with reaction XML *)
+          let emoji = match List.assoc_opt env.sticker_id (List.map (fun e -> e.id, e) (load_registry ())) with
+            | Some e -> e.emoji | None -> "?" in
+          let reaction_xml = build_reaction_xml ~from_alias ~target_msg_id:full_msg_id
+            ~sticker_id:env.sticker_id ~emoji ~note in
+          (try C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias:original_sender
+            ~content:reaction_xml ()
+           with Invalid_argument msg ->
+             Printf.eprintf "error: reaction enqueued locally but DM to %s failed: %s\n%!" original_sender msg);
+          if json then (
+            Yojson.Safe.pretty_to_channel stdout (`Assoc [
+              ("ok", `Bool true);
+              ("envelope_path", `String envelope_path);
+              ("to", `String original_sender);
+              ("target_msg_id", `String full_msg_id);
+              ("dm_enqueued", `Bool true);
+            ]);
+            print_newline ()
+          ) else
+            Printf.printf "%s %s reacted to [%s] from %s\n" emoji from_alias
+              (String.sub full_msg_id 0 (min 8 (String.length full_msg_id))) original_sender
+
+(* --- sticker reactions command ------------------------------------------- *)
+
+let sticker_reactions_cmd =
+  let msg_id_or_prefix =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info []
+      ~docv:"MSG-ID"
+      ~doc:"Message ID or 8-char prefix to show reactions for.")
+  in
+  let json = json_flag in
+  let+ msg_id_or_prefix = msg_id_or_prefix
+  and+ json = json in
+  let from_alias = match resolve_current_alias () with
+    | Some a -> a
+    | None -> (Printf.eprintf "error: no alias set. Set C2C_MCP_AUTO_REGISTER_ALIAS or run 'c2c register' first.\n%!"; exit 1)
+  in
+  let broker_root = C2c_utils.resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  match C2c_mcp.Broker.find_message_by_id broker ~alias:from_alias ~id_prefix:msg_id_or_prefix with
+  | Error msg ->
+      Printf.eprintf "error: %s\n%!" msg; exit 1
+  | Ok entry ->
+      let full_msg_id = match entry.C2c_mcp.Broker.ae_message_id with
+        | Some id -> id
+        | None -> msg_id_or_prefix
+      in
+      let index_paths = load_by_msg_index ~alias:from_alias ~msg_id:full_msg_id in
+      if index_paths = [] then (
+        if json then (
+          Yojson.Safe.pretty_to_channel stdout (`List []);
+          print_newline ()
+        ) else
+          Printf.printf "No reactions to [%s] from %s\n"
+            (String.sub full_msg_id 0 (min 8 (String.length full_msg_id)))
+            entry.C2c_mcp.Broker.ae_from_alias
+      ) else
+        let reactions = List.filter_map (fun path ->
+          try
+            let j = Yojson.Safe.from_file path in
+            match envelope_of_json j with Ok env -> Some env | Error _ -> None
+          with _ -> None
+        ) index_paths in
+        if json then (
+          let items = List.map (fun env ->
+            `Assoc [
+              ("from", `String env.from_);
+              ("sticker_id", `String env.sticker_id);
+              ("note", `String (Option.value env.note ~default:""));
+              ("ts", `String env.ts);
+            ]
+          ) reactions in
+          Yojson.Safe.pretty_to_channel stdout (`List items);
+          print_newline ()
+        ) else
+          List.iter (fun env ->
+            let emoji = match List.assoc_opt env.sticker_id (List.map (fun e -> e.id, e) (load_registry ())) with
+              | Some e -> e.emoji | None -> "?" in
+            Printf.printf "%s %s reacted with %s at %s\n"
+              emoji env.from_ env.sticker_id env.ts
+          ) reactions
+
 (* --- group --- *)
 
 let sticker_group =
@@ -420,4 +621,6 @@ let sticker_group =
     [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List available sticker kinds.") sticker_list_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a sticker to a peer.") sticker_send_cmd
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "wall" ~doc:"Show stickers received by an alias.") sticker_wall_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "verify" ~doc:"Verify a sticker's signature.") sticker_verify_cmd ]
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "verify" ~doc:"Verify a sticker's signature.") sticker_verify_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "react" ~doc:"React to a message with a sticker.") sticker_react_cmd
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "reactions" ~doc:"Show reactions to a message.") sticker_reactions_cmd ]
