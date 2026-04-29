@@ -1260,8 +1260,13 @@ const C2CDelivery: Plugin = async (ctx) => {
     return Array.isArray(msgs) ? (msgs as Msg[]) : [];
   }
 
-  /** Peek at inbox without draining — returns any permission reply for permId, or null. */
+  /** Peek at inbox without draining — returns any permission reply for permId, or null.
+   *  Checks two sources:
+   *  1. Broker inbox (live) — highest priority
+   *  2. Spool file — drainInbox may have moved the message there before timeout.
+   *     If so, we still want to find it rather than falsely timing out. */
   async function peekInboxForPermission(permId: string): Promise<string | null> {
+    // 1. Check broker inbox
     try {
       const stdout = (await runC2c([
         "peek-inbox",
@@ -1276,8 +1281,19 @@ const C2CDelivery: Plugin = async (ctx) => {
         }
       }
     } catch {
-      // ignore errors, will fall through to timeout
+      // fall through: broker inbox unavailable or empty, check spool
     }
+
+    // 2. Check spool — drainInbox may have moved the coordinator's reply there
+    //    before we could read it from the broker inbox.
+    const spooled = readSpool();
+    for (const msg of spooled) {
+      const reply = extractPermissionReply(msg.content);
+      if (reply && reply.permId === permId) {
+        return reply.decision;
+      }
+    }
+
     return null;
   }
 

@@ -100,6 +100,13 @@ if len(sys.argv) >= 2 and sys.argv[1] == "poll-inbox":
     print(json.dumps({"session_id": session_id, "messages": messages}))
     sys.exit(0)
 
+# peek-inbox: read inbox WITHOUT draining (non-destructive)
+if len(sys.argv) >= 2 and sys.argv[1] == "peek-inbox":
+    messages = _read_inbox()
+    session_id = os.environ.get("C2C_MCP_SESSION_ID", "")
+    print(json.dumps({"session_id": session_id, "messages": messages}))
+    sys.exit(0)
+
 if len(sys.argv) >= 3 and sys.argv[1] == "oc-plugin" and sys.argv[2] == "drain-inbox-to-spool":
     # Parse --spool-path and --json flags.
     args = sys.argv[3:]
