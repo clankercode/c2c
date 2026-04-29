@@ -157,6 +157,12 @@ verify against a baseline:
 Recovery if you've already lost edits: `git fsck --lost-found`
 exposes dangling blobs/commits. Manual reapply.
 
+**See also**: Pattern 13 generalizes the underlying mechanism
+(stash list is `.git/`-scoped and shared across all worktrees of
+the same `.git/`) to all stash usage, not just mid-slice A/B
+verification — and lists the prescribed alternatives (commit-
+fixup, diff-to-tmpfile) more explicitly.
+
 ---
 
 ## Pattern 5 — hot-test-file cherry-pick collision (#384)
