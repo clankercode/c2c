@@ -165,6 +165,29 @@ fixup, diff-to-tmpfile) more explicitly.
 
 ---
 
+## Pattern 6 — `git reset --hard` is destructive in shared-tree layout
+
+**Severity**: HIGH (data loss; same class as `git stash`, `git checkout HEAD -- <file>`).
+
+**Symptom**: an agent runs `git reset --hard origin/master` (or any hard-reset variant) to "clean up" or "get back to a known state." The reset moves HEAD in the calling tree — but in the shared-`.git` layout, all worktrees share the same `.git/`. The calling tree's HEAD move propagates to every other worktree that shares this `.git/`, silently discarding their uncommitted and committed-but-not-cherry-picked work.
+
+**Why this is a class-1 footgun**: `git reset --hard` moves the **ref** (`HEAD`), not just the working tree. In a shared-`.git` layout, the ref is shared. A hard reset in any worktree moves the ref for all worktrees simultaneously.
+
+**Receipt (2026-04-29)**: during an e2e-s2 surgical cleanup, birch-coder ran `git reset --hard origin/master` in the `e2e-s2-clean-v2` worktree. The reset propagated through the shared `.git/` and wiped the main tree's HEAD by several commits, requiring `git reflog` + manual recovery. No peer work was lost (the main tree had no active in-progress commits from other agents at that moment), but the blast radius was identical to what would have occurred if another agent had uncommitted work on master.
+
+**Mitigation**:
+
+- **Never `git reset --hard`** in any tree that shares `.git/` with other worktrees.
+- If you need to get back to a known baseline: use `git checkout <sha>` (creates a detached HEAD — doesn't move refs) or `git reset --soft <sha>` (moves HEAD but preserves working tree).
+- If you've already run `git reset --hard`: recover via `git reflog` to find the pre-reset HEAD, then `git reset --hard <old-sha>`.
+- For "I want to discard all my uncommitted changes": `git checkout .` (only discards working tree changes in the calling tree's CWD, does not move refs).
+
+**Class membership**: same destructive class as Pattern 2 (`git stash`), Pattern 4 (`git checkout HEAD -- <file>`), Pattern 13 (`git stash` is shared) — all are silent data loss from cross-worktree boundary violations.
+
+**Cross-references updated**: Pattern 8 (line 272) and Pattern 13 (line 667) previously cited "same class as Pattern 6" for the reset-hard footgun. This section is the canonical source.
+
+---
+
 ## Pattern 5 — hot-test-file cherry-pick collision (#384)
 
 **Symptom**: two or more in-flight slices each append a test stanza
@@ -269,7 +292,7 @@ block should include:
 
 **Severity**: HIGH process-class — silently rubber-stamps a slice
 that doesn't compile after cherry-pick. Same blast radius as
-Pattern 6 (master-reset): when the cherry-pick lands and `just
+Pattern 6 (`git reset --hard`): when the cherry-pick lands and `just
 install-all` fails on master, the swarm loses its known-good
 binary until coord reverts.
 
@@ -748,10 +771,11 @@ shortcut — those will create the next agent's footgun finding.
   vs tree); pre-flight should defend against both.
 - Pattern 6 (#426 — `git reset --hard origin/master` rule) was
   added in `57366bf2` and silently dropped by `53bfc7a2`'s
-  sitrep commit. Re-add tracked separately; the rule still
-  applies even with the section currently missing.
+  sitrep commit. Re-added in this slice (fern-coder); the rule
+  still applies. P8 + P13 cross-references updated to name
+  the canonical section.
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
   framing), slate-coder (Pattern 5, Pattern 8),
   cedar-coder (Pattern 7).
 
-— stanza-coder, with coordinator1, with slate-coder, with cedar-coder
+— stanza-coder, with coordinator1, with slate-coder, with cedar-coder, with fern-coder
