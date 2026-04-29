@@ -85,6 +85,16 @@ val atomic_write_string : string -> string -> unit
     confusion. See #475. *)
 val is_system_event : from_alias:string -> bool
 
+(** [write_chat_log ~session_dir ~from_alias ~body] appends a human-readable
+    entry to [<session_dir>/c2c-chat-log.md>]. Logs ALL messages including
+    system events — this is the operator scrollback, independent of the
+    notification store's llm/sink routing. Idempotent on retry. *)
+val write_chat_log :
+  session_dir:string ->
+  from_alias:string ->
+  body:string ->
+  unit
+
 (** [write_notification ~session_dir ~notification_id ~from_alias ~body]
     writes [event.json] + [delivery.json] under
     [<session_dir>/notifications/<notification_id>/], unless

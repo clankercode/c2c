@@ -140,6 +140,38 @@ let mkdir_p dir =
    gets the guard for free. See #475. *)
 let is_system_event ~from_alias = from_alias = "c2c-system"
 
+(* ISO-8601 UTC timestamp for the sidecar log, e.g. 2026-04-29T12:34:56Z *)
+let iso8601_utc () =
+  let tm = Unix.gmtime (Unix.gettimeofday ()) in
+  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+    (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
+    tm.tm_hour tm.tm_min tm.tm_sec
+
+(* Append a human-readable entry to the session's c2c-chat-log.md.
+   This is the operator scrollback — it logs EVERYTHING including system
+   events, so a human inspecting tail -f sees the full swarm traffic.
+   Idempotent on retry: duplicate appends are visible but harmless. *)
+let write_chat_log ~session_dir ~from_alias ~body =
+  let path = session_dir // "c2c-chat-log.md" in
+  let ts = iso8601_utc () in
+  (* Indent multi-line bodies so they read cleanly in tail -f. *)
+  let indented_body =
+    let lines = String.split_on_char '\n' body in
+    match lines with
+    | [] -> ""
+    | [single] -> single
+    | first :: rest ->
+      first ^ "\n" ^ String.concat "\n" (List.map (fun l -> "    " ^ l) rest)
+  in
+  let entry = Printf.sprintf "[%s] FROM %s: %s\n\n" ts from_alias indented_body in
+  let fd =
+    Unix.openfile path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ] 0o644
+  in
+  Fun.protect ~finally:(fun () -> Unix.close fd)
+    (fun () ->
+       let (_ : int) = Unix.write_substring fd entry 0 (String.length entry) in
+       ())
+
 let write_notification
     ~session_dir
     ~notification_id
@@ -248,6 +280,12 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
         let nid = notification_id_for_msg ~from_alias ~ts ~content:body in
         match session_dir_opt with
         | Some sdir ->
+          (* Sidecar log: ALL messages including system events — human scrollback. *)
+          (try write_chat_log ~session_dir:sdir ~from_alias ~body
+           with exn ->
+             Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+               (Printexc.to_string exn));
+          (* JSON notification store: skip system events to avoid #475 identity confusion. *)
           (try write_notification ~session_dir:sdir ~notification_id:nid
                  ~from_alias ~body
            with exn ->

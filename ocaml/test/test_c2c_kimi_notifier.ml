@@ -185,6 +185,93 @@ let test_write_notification_writes_real_dm () =
       Alcotest.(check bool) "event.json written" true (Sys.file_exists event_path);
       Alcotest.(check bool) "delivery.json written" true (Sys.file_exists delivery_path))
 
+(* Helper: check whether substring [needle] occurs in [haystack]. *)
+let contains haystack needle =
+  let re = Str.regexp_string needle in
+  try ignore (Str.search_forward re haystack 0); true
+  with Not_found -> false
+
+(* #141: sidecar chat log — operator-visible scrollback for ALL c2c messages. *)
+let test_write_chat_log_creates_file_with_expected_line () =
+  with_tmpdir (fun sdir ->
+      C2c_kimi_notifier.write_chat_log
+        ~session_dir:sdir
+        ~from_alias:"stanza-coder"
+        ~body:"hello kimi";
+      let path = Filename.concat sdir "c2c-chat-log.md" in
+      Alcotest.(check bool) "chat log created" true (Sys.file_exists path);
+      let ic = open_in path in
+      let content =
+        Fun.protect ~finally:(fun () -> close_in ic)
+          (fun () ->
+             let buf = Buffer.create 256 in
+             (try while true do Buffer.add_channel buf ic 1 done with End_of_file -> ());
+             Buffer.contents buf)
+      in
+      Alcotest.(check bool) "contains FROM stanza-coder"
+        true (contains content "FROM stanza-coder:");
+      Alcotest.(check bool) "contains body"
+        true (contains content "hello kimi"))
+
+let test_write_chat_log_includes_system_events () =
+  with_tmpdir (fun sdir ->
+      C2c_kimi_notifier.write_chat_log
+        ~session_dir:sdir
+        ~from_alias:"c2c-system"
+        ~body:"lumi-ember joined swarm-lounge";
+      let path = Filename.concat sdir "c2c-chat-log.md" in
+      let ic = open_in path in
+      let content =
+        Fun.protect ~finally:(fun () -> close_in ic)
+          (fun () ->
+             let buf = Buffer.create 256 in
+             (try while true do Buffer.add_channel buf ic 1 done with End_of_file -> ());
+             Buffer.contents buf)
+      in
+      Alcotest.(check bool) "system event logged in sidecar"
+        true (contains content "FROM c2c-system:"))
+
+let test_write_chat_log_multiline_body () =
+  with_tmpdir (fun sdir ->
+      let body = "line one\nline two\nline three" in
+      C2c_kimi_notifier.write_chat_log
+        ~session_dir:sdir
+        ~from_alias:"coordinator1"
+        ~body;
+      let path = Filename.concat sdir "c2c-chat-log.md" in
+      let ic = open_in path in
+      let content =
+        Fun.protect ~finally:(fun () -> close_in ic)
+          (fun () ->
+             let buf = Buffer.create 256 in
+             (try while true do Buffer.add_channel buf ic 1 done with End_of_file -> ());
+             Buffer.contents buf)
+      in
+      Alcotest.(check bool) "first line unindented"
+        true (contains content "line one");
+      Alcotest.(check bool) "continuation indented"
+        true (contains content "    line two");
+      Alcotest.(check bool) "third line indented"
+        true (contains content "    line three"))
+
+let test_write_chat_log_appends () =
+  with_tmpdir (fun sdir ->
+      C2c_kimi_notifier.write_chat_log ~session_dir:sdir ~from_alias:"a" ~body:"first";
+      C2c_kimi_notifier.write_chat_log ~session_dir:sdir ~from_alias:"b" ~body:"second";
+      let path = Filename.concat sdir "c2c-chat-log.md" in
+      let ic = open_in path in
+      let content =
+        Fun.protect ~finally:(fun () -> close_in ic)
+          (fun () ->
+             let buf = Buffer.create 256 in
+             (try while true do Buffer.add_channel buf ic 1 done with End_of_file -> ());
+             Buffer.contents buf)
+      in
+      Alcotest.(check bool) "contains first entry"
+        true (contains content "FROM a:");
+      Alcotest.(check bool) "contains second entry"
+        true (contains content "FROM b:"))
+
 let () =
   Alcotest.run "c2c_kimi_notifier"
     [ "notification_id",
@@ -203,5 +290,11 @@ let () =
       [ Alcotest.test_case "is_system_event predicate" `Quick test_is_system_event_predicate
       ; Alcotest.test_case "write_notification skips c2c-system" `Quick test_write_notification_skips_system_events
       ; Alcotest.test_case "write_notification writes real DM" `Quick test_write_notification_writes_real_dm
+      ]
+    ; "chat_log_141",
+      [ Alcotest.test_case "creates file with expected line" `Quick test_write_chat_log_creates_file_with_expected_line
+      ; Alcotest.test_case "includes system events" `Quick test_write_chat_log_includes_system_events
+      ; Alcotest.test_case "multiline body indented" `Quick test_write_chat_log_multiline_body
+      ; Alcotest.test_case "appends multiple entries" `Quick test_write_chat_log_appends
       ]
     ]
