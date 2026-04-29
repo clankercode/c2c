@@ -3663,6 +3663,96 @@ let () =
       ~prior_first_seen:event.prior_first_seen
       ~ts:event.ts)
 
+(* #432 Slice D: pending-permission decision audit log. Two events on
+   broker.log — [pending_open] (after Broker.open_pending_permission
+   succeeds) and [pending_check] (after every check_pending_reply
+   outcome decision: valid / invalid_non_supervisor / unknown_perm /
+   expired). Closes Finding 5 of the 2026-04-29 audit
+   (.collab/research/2026-04-29-stanza-coder-pending-permissions-audit.md):
+   today broker.log records {ts, tool, ok} per RPC, so we know *that*
+   the call fired but not perm_id, kind, supervisors, requester, or
+   outcome — forensics ("who approved what for whom") was impossible.
+
+   Privacy: perm_id and requester_session_id are bearer-shaped (anyone
+   who knows the perm_id can call check_pending_reply and read out the
+   requester's session_id; Finding 4 hole). Hash both with SHA-256
+   truncated to 16 hex chars — collision-free at this volume, still
+   correlatable across the open/check pair for the same request.
+   Aliases stay plaintext (mcp__c2c__list exposes them anyway).
+   kind / outcome / ttl_seconds plaintext — bookkeeping.
+
+   Write path: synchronous, best-effort, swallows all errors.
+   Mirrors log_peer_pass_pin_rotate above exactly — failed audit
+   write must not break a working pending-reply RPC. Piggybacks on
+   broker.log rotation (#61), no new knobs. *)
+let short_hash s =
+  let h = Digestif.SHA256.digest_string s |> Digestif.SHA256.to_hex in
+  String.sub h 0 16
+
+let log_pending_open
+    ~broker_root ~perm_id ~kind ~requester_session_id ~requester_alias
+    ~supervisors ~ttl_seconds ~ts =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "pending_open")
+         ; ("perm_id_hash", `String (short_hash perm_id))
+         ; ("kind", `String kind)
+         ; ("requester_session_hash", `String (short_hash requester_session_id))
+         ; ("requester_alias", `String requester_alias)
+         ; ("supervisors", `List (List.map (fun s -> `String s) supervisors))
+         ; ("ttl_seconds", `Float ttl_seconds)
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
+let log_pending_check
+    ~broker_root ~perm_id ~outcome ~reply_from_alias
+    ?kind ?requester_alias ?requester_session_id ?supervisors ~ts () =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let base =
+       [ ("ts", `Float ts)
+       ; ("event", `String "pending_check")
+       ; ("perm_id_hash", `String (short_hash perm_id))
+       ; ("reply_from_alias", `String reply_from_alias)
+       ; ("outcome", `String outcome)
+       ]
+     in
+     let with_kind = match kind with
+       | Some k -> base @ [ ("kind", `String k) ] | None -> base
+     in
+     let with_alias = match requester_alias with
+       | Some a -> with_kind @ [ ("requester_alias", `String a) ]
+       | None -> with_kind
+     in
+     let with_session = match requester_session_id with
+       | Some sid ->
+           with_alias @ [ ("requester_session_hash", `String (short_hash sid)) ]
+       | None -> with_alias
+     in
+     let with_sup = match supervisors with
+       | Some sups ->
+           with_session
+           @ [ ("supervisors", `List (List.map (fun s -> `String s) sups)) ]
+       | None -> with_session
+     in
+     let line = `Assoc with_sup |> Yojson.Safe.to_string in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
 let notify_shared_with_recipients
     ~broker ~from_alias ~name ?description ~shared ~shared_with () =
   if shared && shared_with <> [] then []
@@ -5995,6 +6085,19 @@ let ts = Unix.gettimeofday () in
       in
       (try
          Broker.open_pending_permission broker pending;
+         (* [#432 Slice D] decision audit log: emit a pending_open entry
+            right after the broker write succeeds. Hashed perm_id +
+            session_id; plaintext alias/supervisors. Best-effort write;
+            failures are swallowed inside log_pending_open. *)
+         log_pending_open
+           ~broker_root:(Broker.root broker)
+           ~perm_id
+           ~kind:(pending_kind_to_string kind)
+           ~requester_session_id:session_id
+           ~requester_alias:alias
+           ~supervisors
+           ~ttl_seconds
+           ~ts:now;
          let content =
            `Assoc
              [ ("ok", `Bool true)
@@ -6048,8 +6151,8 @@ let ts = Unix.gettimeofday () in
          get back the requester's session_id (info disclosure). Now the
          broker enforces that the calling session is itself the supervisor.
          The legacy [reply_from_alias] argument is silently ignored if
-         provided; a separate one-line warning is appended to broker.log
-         so callers can migrate. *)
+         provided. The schema (with DEPRECATED marker) is now the
+         migration channel. *)
       let session_id = resolve_session_id ?session_id_override arguments in
       Broker.touch_session broker ~session_id;
       let reply_from_alias =
@@ -6058,11 +6161,7 @@ let ts = Unix.gettimeofday () in
         | Some reg -> reg.alias
         | None -> ""
       in
-      (* Legacy callers may still pass [reply_from_alias] as an argument; we
-         silently ignore it. The session-derived alias is authoritative.
-         The schema in `tool_definitions` still permits the field for
-         backward compatibility, with a DEPRECATED marker on the
-         description. *)
+      let now_ts = Unix.gettimeofday () in
       if reply_from_alias = "" then
         Lwt.return (tool_result
           ~content:"check_pending_reply requires the calling session to be registered first"
@@ -6070,17 +6169,41 @@ let ts = Unix.gettimeofday () in
       else
       (match Broker.find_pending_permission broker perm_id with
       | None ->
+          (* Distinguish expired vs unknown for the audit log: scan the
+             unfiltered persisted list. find_pending_permission returns
+             None for both expired and absent — but the audit story
+             ("did this perm_id ever exist?") differs. *)
+          let outcome =
+            let all = Broker.load_pending_permissions broker in
+            if List.exists (fun p -> p.perm_id = perm_id) all
+            then "expired" else "unknown_perm"
+          in
+          log_pending_check
+            ~broker_root:(Broker.root broker) ~perm_id ~outcome ~reply_from_alias
+            ~ts:now_ts ();
+          let err_msg = match outcome with
+            | "expired" -> "permission ID expired"
+            | _ -> "unknown permission ID"
+          in
           let content =
             `Assoc
               [ ("valid", `Bool false)
               ; ("requester_session_id", `Null)
-              ; ("error", `String "unknown permission ID")
+              ; ("error", `String err_msg)
               ]
             |> Yojson.Safe.to_string
           in
           Lwt.return (tool_result ~content ~is_error:false)
       | Some pending ->
-          if List.mem reply_from_alias pending.supervisors then
+          if List.mem reply_from_alias pending.supervisors then begin
+            log_pending_check
+              ~broker_root:(Broker.root broker) ~perm_id ~outcome:"valid"
+              ~reply_from_alias
+              ~kind:(pending_kind_to_string pending.kind)
+              ~requester_alias:pending.requester_alias
+              ~requester_session_id:pending.requester_session_id
+              ~supervisors:pending.supervisors
+              ~ts:now_ts ();
             let content =
               `Assoc
                 [ ("valid", `Bool true)
@@ -6090,7 +6213,16 @@ let ts = Unix.gettimeofday () in
               |> Yojson.Safe.to_string
             in
             Lwt.return (tool_result ~content ~is_error:false)
-          else
+          end else begin
+            log_pending_check
+              ~broker_root:(Broker.root broker)
+              ~perm_id ~outcome:"invalid_non_supervisor"
+              ~reply_from_alias
+              ~kind:(pending_kind_to_string pending.kind)
+              ~requester_alias:pending.requester_alias
+              ~requester_session_id:pending.requester_session_id
+              ~supervisors:pending.supervisors
+              ~ts:now_ts ();
             let content =
               `Assoc
                 [ ("valid", `Bool false)
@@ -6099,7 +6231,8 @@ let ts = Unix.gettimeofday () in
                 ]
             |> Yojson.Safe.to_string
             in
-            Lwt.return (tool_result ~content ~is_error:false))
+            Lwt.return (tool_result ~content ~is_error:false)
+          end)
   | "set_compact" ->
       (match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
        | None ->

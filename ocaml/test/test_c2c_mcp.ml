@@ -7294,6 +7294,147 @@ let test_check_pending_reply_non_supervisor_via_mcp () =
               check bool "error mentions non-supervisor" true
                 (string_contains error_str "reply from non-supervisor")))
 
+(* [#432 Slice D] Decision audit log — broker.log gains a
+   "pending_open" JSONL line per successful open_pending_reply RPC.
+   perm_id and requester_session_id are hashed (16 hex chars);
+   aliases + supervisors stay plaintext. *)
+let read_broker_log_lines dir =
+  let path = Filename.concat dir "broker.log" in
+  if not (Sys.file_exists path) then []
+  else
+    let ic = open_in path in
+    let rec loop acc =
+      try loop (input_line ic :: acc)
+      with End_of_file -> close_in_noerr ic; List.rev acc
+    in
+    loop []
+
+let parse_broker_log_lines_with_event dir event =
+  read_broker_log_lines dir
+  |> List.filter_map (fun line ->
+      try
+        let json = Yojson.Safe.from_string line in
+        let open Yojson.Safe.Util in
+        match json |> member "event" with
+        | `String e when e = event -> Some json
+        | _ -> None
+      with _ -> None)
+
+let is_hex16 s =
+  String.length s = 16
+  && String.for_all
+       (function '0'..'9' | 'a'..'f' -> true | _ -> false) s
+
+let test_pending_open_audit_log_written () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-requester-d1";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-requester-d1"
+            ~alias:"stanza-coder" ~pid:None ~pid_start_time:None ();
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 9001)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "open_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm:audit:slice-d-1")
+                          ; ("kind", `String "permission")
+                          ; ( "supervisors",
+                              `List [ `String "coordinator1"; `String "lyra-quill" ] )
+                          ] )
+                    ] )
+              ]
+          in
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          (match response with
+           | None -> fail "expected tools/call response"
+           | Some _ -> ());
+          let lines = parse_broker_log_lines_with_event dir "pending_open" in
+          check int "exactly one pending_open line" 1 (List.length lines);
+          let json = List.hd lines in
+          let open Yojson.Safe.Util in
+          let perm_id_hash = json |> member "perm_id_hash" |> to_string in
+          check bool "perm_id_hash is 16 hex" true (is_hex16 perm_id_hash);
+          let session_hash = json |> member "requester_session_hash" |> to_string in
+          check bool "requester_session_hash is 16 hex" true (is_hex16 session_hash);
+          check string "kind plaintext" "permission"
+            (json |> member "kind" |> to_string);
+          check string "requester_alias plaintext" "stanza-coder"
+            (json |> member "requester_alias" |> to_string);
+          let sups =
+            json |> member "supervisors" |> to_list |> List.map to_string
+          in
+          check (list string) "supervisors plaintext"
+            [ "coordinator1"; "lyra-quill" ] sups;
+          (* Privacy: raw perm_id and raw session_id MUST NOT appear in the line. *)
+          let raw_line =
+            List.hd (read_broker_log_lines dir
+                     |> List.filter (fun l -> string_contains l "pending_open"))
+          in
+          check bool "raw perm_id absent" false
+            (string_contains raw_line "perm:audit:slice-d-1");
+          check bool "raw session_id absent" false
+            (string_contains raw_line "session-requester-d1")))
+
+(* [#432 Slice D] check_pending_reply for an unknown perm_id emits a
+   "pending_check" line with outcome="unknown_perm". *)
+let test_pending_check_audit_log_outcome () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-requester-d2";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-requester-d2"
+            ~alias:"stanza-coder" ~pid:None ~pid_start_time:None ();
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 9002)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "check_pending_reply")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("perm_id", `String "perm:audit:slice-d-unknown")
+                          ; ("reply_from_alias", `String "coordinator1")
+                          ] )
+                    ] )
+              ]
+          in
+          let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          let lines = parse_broker_log_lines_with_event dir "pending_check" in
+          check int "exactly one pending_check line" 1 (List.length lines);
+          let json = List.hd lines in
+          let open Yojson.Safe.Util in
+          check string "outcome unknown_perm" "unknown_perm"
+            (json |> member "outcome" |> to_string);
+          (* Post-#432 Slice B: reply_from_alias is derived from the
+             calling session's registration, not from request args.
+             session-requester-d2 was registered as "stanza-coder", so
+             that's what the audit line records — confirming the
+             alias-binding fix is reflected in audit data. *)
+          check string "reply_from_alias plaintext (session-derived)"
+            "stanza-coder"
+            (json |> member "reply_from_alias" |> to_string);
+          let perm_id_hash = json |> member "perm_id_hash" |> to_string in
+          check bool "perm_id_hash is 16 hex" true (is_hex16 perm_id_hash);
+          (* Raw perm_id MUST NOT appear in the line. *)
+          let raw_line =
+            List.hd (read_broker_log_lines dir
+                     |> List.filter (fun l -> string_contains l "pending_check"))
+          in
+          check bool "raw perm_id absent" false
+            (string_contains raw_line "perm:audit:slice-d-unknown")))
+
 (* M4: alias-reuse guard — registration is blocked when the alias has an
    active pending permission from a prior owner, even if that owner is dead.
    The prior owner may be alive or dead; the pending state is the blocker. *)
@@ -9452,6 +9593,10 @@ let () =
               test_check_pending_reply_unknown_perm_id_via_mcp
            ; test_case "check_pending_reply non-supervisor via MCP" `Quick
                 test_check_pending_reply_non_supervisor_via_mcp
+           ; test_case "[#432 Slice D] open_pending_reply writes pending_open audit line" `Quick
+                test_pending_open_audit_log_written
+           ; test_case "[#432 Slice D] check_pending_reply unknown_perm outcome audit line" `Quick
+                test_pending_check_audit_log_outcome
            ; test_case "tools/call set_dnd on:\"true\" string enables DND" `Quick
                 test_tools_call_set_dnd_on_string_true_enables_dnd
            ; test_case "tools/call set_dnd on:\"false\" string disables DND" `Quick
