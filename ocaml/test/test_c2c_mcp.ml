@@ -2078,6 +2078,120 @@ let test_tools_call_register_alias_collision_exhausted () =
               check bool "no suggested_alias when exhausted" true
                 (parsed |> member "suggested_alias" |> to_string_option = None)))
 
+(* #432 follow-up (slate-coder 2026-04-29): the MCP register tool's
+   alias_hijack_conflict guard must compare aliases case-insensitively.
+   Pre-fix, an attacker could register "foo-bar" against a victim
+   holding "Foo-Bar" — the hijack guard's raw `=` would miss the
+   collision, but the eviction predicate at L1898 is case-fold and
+   would still evict the victim, hijacking inbox + identity.
+   See
+   .collab/findings/2026-04-29T14-25-00Z-slate-coder-alias-casefold-guard-asymmetry-takeover.md. *)
+let test_tools_call_register_rejects_alias_hijack_casefold_asymmetry () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Victim registers original-case alias with a live PID *)
+      C2c_mcp.Broker.register broker ~session_id:"session-victim"
+        ~alias:"Foo-Bar" ~pid:(Some live_pid) ~pid_start_time:None ();
+      (* Queue a message on the victim's inbox so we can detect any
+         migration that would happen if the guard was bypassed and
+         eviction (which IS case-fold) ran against the victim row. *)
+      C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"third-party" ~to_alias:"Foo-Bar"
+        ~content:"victim-only message" ();
+      let victim_inbox_path =
+        Filename.concat dir "session-victim.inbox.json"
+      in
+      let victim_inbox_before =
+        if Sys.file_exists victim_inbox_path then
+          Some (let ic = open_in victim_inbox_path in
+                let len = in_channel_length ic in
+                let s = really_input_string ic len in
+                close_in ic; s)
+        else None
+      in
+      check bool "victim inbox file exists pre-attack" true
+        (victim_inbox_before <> None);
+      (* Attacker uses a different session_id and the lower-case form. *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-attacker";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 4329)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ( "arguments",
+                        `Assoc [ ("alias", `String "foo-bar") ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          (match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError"
+                 |> to_bool_option |> Option.value ~default:false
+               in
+               check bool "casefold-asymmetry hijack rejected (isError=true)"
+                 true is_error;
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               check bool "error mentions contested alias" true
+                 (string_contains text "foo-bar");
+               check bool "error mentions victim's holder session" true
+                 (string_contains text "session-victim");
+               let parsed = Yojson.Safe.from_string text in
+               let collision =
+                 parsed |> member "collision" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "collision flag set" true collision);
+          (* Victim row in the registry is UNCHANGED — same session_id,
+             original-case alias preserved. *)
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let open C2c_mcp in
+          let victim =
+            List.find_opt (fun r -> r.session_id = "session-victim") regs
+          in
+          check bool "victim registration preserved" true (victim <> None);
+          check string "victim alias unchanged (original case)" "Foo-Bar"
+            (Option.get victim).alias;
+          let attacker =
+            List.find_opt (fun r -> r.session_id = "session-attacker") regs
+          in
+          check bool "attacker did NOT register" true (attacker = None);
+          (* Victim's inbox file is byte-for-byte unchanged — no
+             migration to attacker's session occurred. *)
+          let victim_inbox_after =
+            if Sys.file_exists victim_inbox_path then
+              Some (let ic = open_in victim_inbox_path in
+                    let len = in_channel_length ic in
+                    let s = really_input_string ic len in
+                    close_in ic; s)
+            else None
+          in
+          check bool "victim inbox file still exists post-attack" true
+            (victim_inbox_after <> None);
+          check bool "victim inbox unchanged (no migration to attacker)" true
+            (victim_inbox_before = victim_inbox_after);
+          (* Attacker's inbox file does NOT exist — nothing was migrated. *)
+          let attacker_inbox_path =
+            Filename.concat dir "session-attacker.inbox.json"
+          in
+          check bool "no inbox file created for attacker session" false
+            (Sys.file_exists attacker_inbox_path)))
+
 (* register should allow re-registering the same alias under the same
    session_id (PID refresh after a restart). *)
 let test_tools_call_register_allows_own_alias_refresh () =
@@ -9596,6 +9710,8 @@ let () =
              test_tools_call_register_no_alias_falls_back_to_env
           ; test_case "tools/call register rejects alias hijack from alive session" `Quick
               test_tools_call_register_rejects_alias_hijack
+          ; test_case "tools/call register rejects alias hijack via casefold asymmetry (#432 followup)" `Quick
+              test_tools_call_register_rejects_alias_hijack_casefold_asymmetry
           ; test_case "M4: register rejects alias with pending permission from prior owner" `Quick
               test_register_rejects_alias_with_pending_permission_from_alive_owner
           ; test_case "[#432] open_pending_permission concurrent across forks: no lost-update" `Quick

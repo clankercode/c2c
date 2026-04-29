@@ -4705,11 +4705,16 @@ let auto_register_impl ~broker_root ?session_id_override () =
         (* #345: exclude pid=None for the reasons documented at Guard 3
            below — this is the highest-impact post-OOM-resume site, where
            a pidless zombie row from the prior crashed session would
-           otherwise block the legitimate fresh-session resume. *)
+           otherwise block the legitimate fresh-session resume.
+           #432 follow-up (slate-coder 2026-04-29): compare case-folded
+           aliases here too — same asymmetric-guard exploit shape as the
+           MCP register tool's [alias_hijack_conflict]. See
+           .collab/findings/2026-04-29T14-25-00Z-slate-coder-alias-casefold-guard-asymmetry-takeover.md. *)
+        let target = Broker.alias_casefold alias in
         List.exists
           (fun reg ->
             Option.is_some reg.pid
-            && reg.alias = alias
+            && Broker.alias_casefold reg.alias = target
             && reg.session_id <> session_id
             && Broker.registration_is_alive reg
             && reg.pid <> pid)
@@ -5067,9 +5072,17 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
          pid is set and process exists but pid_start_time is missing (conservative:
          can't verify PID reuse, so protect the alias). *)
       let alias_hijack_conflict =
+        (* #432 follow-up (slate-coder 2026-04-29): compare case-folded
+           aliases. The eviction predicate at L1898 is case-fold, so a
+           raw `=` here was an asymmetric guard — an attacker could
+           register `slate-coder` against a victim holding `Slate-Coder`
+           and the eviction would still fire, hijacking the victim's
+           inbox. See
+           .collab/findings/2026-04-29T14-25-00Z-slate-coder-alias-casefold-guard-asymmetry-takeover.md. *)
+        let target = Broker.alias_casefold alias in
         List.find_opt
           (fun reg ->
-            reg.alias = alias
+            Broker.alias_casefold reg.alias = target
             && reg.session_id <> session_id
             && Option.is_some reg.pid
             && Broker.registration_is_alive reg)
