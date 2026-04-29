@@ -66,7 +66,7 @@ let test_sign_send_envelope_accepted () =
     Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet
       (Digestif.SHA256.to_raw_string h)
   in
-  let blob = Relay_identity.canonical_msg ~ctx:room_send_sign_ctx
+  let blob = Relay_identity.canonical_msg ~ctx:Relay_signed_ops.room_send_sign_ctx
     [ "lounge"; "alice"; sender_pk; enc; ct_hash; ts; nonce ] in
   let sig_ = decode_exn sig_b64 in
   Alcotest.(check bool) "send envelope verifies" true

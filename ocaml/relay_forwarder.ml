@@ -65,7 +65,7 @@ let sign_forward_request ~identity ~self_host ~from_alias ~body_str =
 
     @param peer_url Full URL of the peer relay (e.g. "https://relay-b:9001")
     @param peer_identity_pk Ed25519 public key of the peer relay for logging *)
-let forward_send ~identity ~self_host ~peer_url ~peer_identity_pk
+let forward_send ~identity ~self_host ~peer_url
     ~from_alias ~to_alias ~content ~message_id =
   let body = build_body ~self_host ~from_alias ~to_alias ~content ~message_id in
   let body_str = Yojson.Safe.to_string body in

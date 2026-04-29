@@ -67,3 +67,13 @@ val verify_history_envelope :
 val sign_request :
   Relay_identity.t -> alias:string -> meth:string -> path:string ->
   ?query:string -> body_str:string -> unit -> string
+
+(** Sign-context constants — must match spec §3.4 *)
+val request_sign_ctx : string
+val register_sign_ctx : string
+val room_send_sign_ctx : string
+
+(** Build the canonical request blob per spec §5.1. *)
+val canonical_request_blob :
+  meth:string -> path:string -> query:string ->
+  body_sha256_b64:string -> ts:string -> nonce:string -> string

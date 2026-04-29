@@ -20,18 +20,14 @@ let register_ts_past_window = 120.0
 let register_ts_future_window = 30.0
 let register_nonce_ttl = 600.0
 
-let register_sign_ctx = "c2c/v1/register"
-
 (* Per-request auth (spec §5.1): 30s past / 5s future, 2 min nonce TTL *)
 let request_ts_past_window = 30.0
 let request_ts_future_window = 5.0
 let request_nonce_ttl = 120.0
-let request_sign_ctx = "c2c/v1/request"
 
 (* Layer 4 room ops (spec §4.1/§4.2): use the register ts window + nonce TTL. *)
 let room_join_sign_ctx = "c2c/v1/room-join"
 let room_leave_sign_ctx = "c2c/v1/room-leave"
-let room_send_sign_ctx = "c2c/v1/room-send"
 
 (* Layer 4 envelope error codes (spec §9). *)
 let relay_err_unsupported_enc = "unsupported_enc"
@@ -87,12 +83,6 @@ let parse_ed25519_auth_params s =
   | _, Error e, _, _
   | _, _, Error e, _
   | _, _, _, Error e -> Error e
-
-(* Build the canonical request blob per spec §5.1. Fields are joined
-   with 0x1F, prefixed by the SIGN_CTX literal. *)
-let canonical_request_blob ~meth ~path ~query ~body_sha256_b64 ~ts ~nonce =
-  Relay_identity.canonical_msg ~ctx:request_sign_ctx
-    [ String.uppercase_ascii meth; path; query; body_sha256_b64; ts; nonce ]
 
 (* Sort query params by key ascending, re-encode as k=v&k=v. Matches what
    a client would sign. Empty query → "". *)
@@ -3160,7 +3150,7 @@ generateKeys();
                   respond_bad_request (json_error_str code "nonce already seen within TTL")
                 | Ok () ->
                   let signed =
-                    Relay_identity.canonical_msg ~ctx:register_sign_ctx
+                    Relay_identity.canonical_msg ~ctx:Relay_signed_ops.register_sign_ctx
                       [ alias; String.lowercase_ascii relay_url;
                         identity_pk_b64; timestamp_str; nonce_b64 ]
                   in
@@ -3262,7 +3252,6 @@ generateKeys();
                (Relay_forwarder.forward_send ~identity
                   ~self_host:(Option.value self_host ~default:"")
                   ~peer_url:peer.url
-                  ~peer_identity_pk:peer.identity_pk
                   ~from_alias ~to_alias:stripped_to_alias
                   ~content ~message_id:msg_id)
                (fun outcome ->
@@ -3702,7 +3691,7 @@ generateKeys();
                        | _ ->
                          let ct_hash = body_sha256_b64 ct_bytes in
                          let blob =
-                           Relay_identity.canonical_msg ~ctx:room_send_sign_ctx
+                           Relay_identity.canonical_msg ~ctx:Relay_signed_ops.room_send_sign_ctx
                              [ room_id; from_alias; sender_pk_b64; enc;
                                ct_hash; ts; nonce ]
                          in
@@ -4132,9 +4121,9 @@ generateKeys();
                    | Ok sig_ when String.length sig_ <> 64 ->
                      Error (relay_err_signature_invalid, "sig must be 64 bytes")
                    | Ok sig_ ->
-                     let blob =
-                       canonical_request_blob ~meth ~path ~query
-                         ~body_sha256_b64 ~ts:ts_str ~nonce
+                      let blob =
+                        Relay_signed_ops.canonical_request_blob ~meth ~path ~query
+                          ~body_sha256_b64 ~ts:ts_str ~nonce
                      in
                      if Relay_identity.verify ~pk ~msg:blob ~sig_ then
                        Ok (Some alias)

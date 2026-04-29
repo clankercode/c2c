@@ -95,14 +95,14 @@ let test_signed_register_blob_roundtrips () =
     ~alphabet:Base64.uri_safe_alphabet id.public_key in
   let ts = "2026-04-21T00:05:30Z" in
   let nonce = "YWJjZGVmZ2hpams" in
-  let signed = Relay_identity.canonical_msg ~ctx:register_sign_ctx
+  let signed = Relay_identity.canonical_msg ~ctx:Relay_signed_ops.register_sign_ctx
     [ "coder1"; String.lowercase_ascii relay_url;
       identity_pk_b64; ts; nonce ] in
   let sig_ = Relay_identity.sign id signed in
   Alcotest.(check bool) "signature verifies" true
     (Relay_identity.verify ~pk:id.public_key ~msg:signed ~sig_);
   (* mutation: tamper with alias, verification should fail *)
-  let tampered = Relay_identity.canonical_msg ~ctx:register_sign_ctx
+  let tampered = Relay_identity.canonical_msg ~ctx:Relay_signed_ops.register_sign_ctx
     [ "mallory"; String.lowercase_ascii relay_url;
       identity_pk_b64; ts; nonce ] in
   Alcotest.(check bool) "tampered blob rejected" false
@@ -146,14 +146,14 @@ let test_request_blob_roundtrip () =
   let ts = "1776698000" in
   let nonce = "cmFuZG9tbm9uY2U" in
   let blob =
-    canonical_request_blob ~meth:"POST" ~path:"/send"
+    Relay_signed_ops.canonical_request_blob ~meth:"POST" ~path:"/send"
       ~query:"" ~body_sha256_b64:"hashhash" ~ts ~nonce
   in
   let sig_ = Relay_identity.sign id blob in
   Alcotest.(check bool) "request sig verifies" true
     (Relay_identity.verify ~pk:id.public_key ~msg:blob ~sig_);
   let tampered =
-    canonical_request_blob ~meth:"GET" ~path:"/send"
+    Relay_signed_ops.canonical_request_blob ~meth:"GET" ~path:"/send"
       ~query:"" ~body_sha256_b64:"hashhash" ~ts ~nonce
   in
   Alcotest.(check bool) "mutation on method rejected" false
@@ -214,22 +214,22 @@ let test_room_send_blob_roundtrips () =
   let ct_hash = body_sha256_b64 ct in
   let ts = "2026-04-21T03:00:00Z" in
   let nonce = "sn-1" in
-  let blob = Relay_identity.canonical_msg ~ctx:room_send_sign_ctx
+  let blob = Relay_identity.canonical_msg ~ctx:Relay_signed_ops.room_send_sign_ctx
     [ "lounge"; "alice"; pk_b64; "none"; ct_hash; ts; nonce ] in
   let sig_ = Relay_identity.sign id blob in
   Alcotest.(check bool) "send envelope sig verifies" true
     (Relay_identity.verify ~pk:id.public_key ~msg:blob ~sig_);
   (* Tampered ct hash: signature must fail. *)
-  let tampered = Relay_identity.canonical_msg ~ctx:room_send_sign_ctx
+  let tampered = Relay_identity.canonical_msg ~ctx:Relay_signed_ops.room_send_sign_ctx
     [ "lounge"; "alice"; pk_b64; "none"; body_sha256_b64 "different"; ts; nonce ] in
   Alcotest.(check bool) "ct tampering rejected" false
     (Relay_identity.verify ~pk:id.public_key ~msg:tampered ~sig_)
 
 let test_room_send_ctx_distinct () =
-  Alcotest.(check string) "send ctx" "c2c/v1/room-send" room_send_sign_ctx;
+  Alcotest.(check string) "send ctx" "c2c/v1/room-send" Relay_signed_ops.room_send_sign_ctx;
   Alcotest.(check bool) "distinct from join/leave" true
-    (room_send_sign_ctx <> room_join_sign_ctx
-     && room_send_sign_ctx <> room_leave_sign_ctx)
+    (Relay_signed_ops.room_send_sign_ctx <> room_join_sign_ctx
+     && Relay_signed_ops.room_send_sign_ctx <> room_leave_sign_ctx)
 
 let test_unsupported_enc_code () =
   Alcotest.(check string) "unsupported_enc code"

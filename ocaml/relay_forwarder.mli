@@ -36,9 +36,19 @@ val forward_send :
   identity:Relay_identity.t ->
   self_host:string ->
   peer_url:string ->
-  peer_identity_pk:string ->
   from_alias:string ->
   to_alias:string ->
   content:string ->
   message_id:string ->
   forward_outcome Lwt.t
+
+(** [build_body ~self_host ~from_alias ~to_alias ~content ~message_id]
+    constructs the forward-request body JSON per the wire spec.
+    Exposed for unit testing. *)
+val build_body :
+  self_host:string -> from_alias:string -> to_alias:string ->
+  content:string -> message_id:string -> Yojson.Safe.t
+
+(** [classify_response ~status ~body] maps an HTTP response to a
+    forward_outcome.  Exposed for unit testing. *)
+val classify_response : status:int -> body:string -> forward_outcome
