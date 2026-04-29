@@ -3808,6 +3808,11 @@ let tool_definitions =
   then base_tool_definitions @ [ debug_tool_definition ]
   else base_tool_definitions
 
+(* Required-string variant: raises [Invalid_argument] on missing or
+   wrong-typed field. The pure option-returning equivalent lives in
+   [Json_util.string_member]; this wrapper adds the strict
+   raise-on-missing semantic that JSON-RPC tool dispatchers want. Audit
+   #388 — single source of truth for the option-returning side. *)
 let string_member name json =
   let open Yojson.Safe.Util in
   match json |> member name with
@@ -3861,15 +3866,15 @@ let string_member_any names json =
   in
   find names
 
+(* Option-returning variant with trim-to-None semantics. Defers to
+   [Json_util.string_member] for the pure accessor; this thin wrapper
+   adds the "treat whitespace-only as missing" policy that tool
+   dispatchers expect. Audit #388 — converged with [c2c_start.ml]'s
+   former local copy via [Json_util]. *)
 let optional_string_member name json =
-  let open Yojson.Safe.Util in
-  try
-    match json |> member name with
-    | `Null -> None
-    | value ->
-        let text = to_string value in
-        if String.trim text = "" then None else Some text
-  with _ -> None
+  match Json_util.string_member name json with
+  | Some text when String.trim text <> "" -> Some text
+  | _ -> None
 
 let optional_member name json =
   let open Yojson.Safe.Util in

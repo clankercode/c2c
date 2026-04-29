@@ -2913,14 +2913,13 @@ let parse_rfc3339_utc s =
 let opencode_statefile_path (name : string) : string =
   instance_dir name // "oc-plugin-state.json"
 
-let assoc_opt name = function
-  | `Assoc fields -> List.assoc_opt name fields
-  | _ -> None
+(* Delegate to canonical option-returning JSON helpers (audit #388 —
+   converged with the formerly-local copies in [c2c_mcp.ml]). The
+   semantics are identical: [Some s] iff the field is a JSON string;
+   [None] for missing keys, non-objects, or non-string values. *)
+let assoc_opt = Json_util.assoc_opt
 
-let string_member name json =
-  match assoc_opt name json with
-  | Some (`String value) -> Some value
-  | _ -> None
+let string_member = Json_util.string_member
 
 let opencode_plugin_active ~name ~now ~freshness_window_s =
   let path = opencode_statefile_path name in
