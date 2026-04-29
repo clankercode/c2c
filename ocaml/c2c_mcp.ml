@@ -2206,7 +2206,37 @@ module Broker = struct
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
 
-  let append_dead_letter t ~session_id ~messages =
+  (* #433: emit a structured `dead_letter_write` line in broker.log for
+     every message dropped into dead-letter.jsonl. Without this, `c2c
+     tail-log` is silent on dead-letter writes — contradicting the
+     "log silent failures" rule. Best-effort: any IO error is swallowed
+     (broker.log emission must never block the dead-letter write itself).
+     The reason field defaults to "inbox_sweep" since that is the only
+     current caller (sweep loop on a vanished session); future callers
+     can pass a different reason to distinguish e.g. cross-host rejects. *)
+  let log_dead_letter_write t ~reason ~session_id ~msg =
+    (try
+       let path = Filename.concat t.root "broker.log" in
+       let line =
+         `Assoc
+           [ ("ts", `Float (Unix.gettimeofday ()))
+           ; ("event", `String "dead_letter_write")
+           ; ("reason", `String reason)
+           ; ("from_session_id", `String session_id)
+           ; ("from_alias", `String msg.from_alias)
+           ; ("to_alias", `String msg.to_alias)
+           ; ("msg_ts", `Float msg.ts)
+           ]
+         |> Yojson.Safe.to_string
+       in
+       let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+       (try
+          output_string oc (line ^ "\n");
+          close_out oc
+        with _ -> close_out_noerr oc)
+     with _ -> ())
+
+  let append_dead_letter ?(reason = "inbox_sweep") t ~session_id ~messages =
     match messages with
     | [] -> ()
     | _ ->
@@ -2233,7 +2263,8 @@ module Broker = struct
                         ]
                     in
                     output_string oc (Yojson.Safe.to_string record);
-                    output_char oc '\n')
+                    output_char oc '\n';
+                    log_dead_letter_write t ~reason ~session_id ~msg)
                   messages))
 
   let inbox_file_session_id name =

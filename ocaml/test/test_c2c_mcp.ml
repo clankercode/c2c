@@ -3772,6 +3772,65 @@ let test_sweep_empty_orphan_writes_no_dead_letter () =
       check bool "no dead-letter noise for empty orphan" false
         (Sys.file_exists dead_letter))
 
+(* #433: every dead-letter write must emit a `dead_letter_write` line in
+   broker.log so `c2c tail-log` surfaces the silent-failure trail. The
+   audit "broker-log-coverage-audit-cairn 2026-04-29" caught this HIGH
+   gap — sweep was preserving messages to dead-letter.jsonl but tail-log
+   showed nothing, contradicting the dogfooding rule that silent failures
+   must be observable. *)
+let test_sweep_dead_letter_write_emits_broker_log_event () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-live" ~alias:"storm-live"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      write_file (Filename.concat dir "ghost-sid.inbox.json")
+        {|[{"from_alias":"storm-ember","to_alias":"storm-storm","content":"alpha"},{"from_alias":"storm-beacon","to_alias":"storm-storm","content":"beta"}]|};
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "two messages preserved" 2 result.preserved_messages;
+      let log_path = Filename.concat dir "broker.log" in
+      check bool "broker.log written" true (Sys.file_exists log_path);
+      let lines =
+        let ic = open_in log_path in
+        Fun.protect
+          ~finally:(fun () -> close_in ic)
+          (fun () ->
+            let acc = ref [] in
+            (try
+               while true do
+                 let line = input_line ic |> String.trim in
+                 if line <> "" then acc := line :: !acc
+               done
+             with End_of_file -> ());
+            List.rev !acc)
+      in
+      let dl_events =
+        List.filter
+          (fun line ->
+            try
+              let json = Yojson.Safe.from_string line in
+              let open Yojson.Safe.Util in
+              json |> member "event" |> to_string = "dead_letter_write"
+            with _ -> false)
+          lines
+      in
+      check int "two dead_letter_write events" 2 (List.length dl_events);
+      let has_alpha_event =
+        List.exists
+          (fun line ->
+            try
+              let json = Yojson.Safe.from_string line in
+              let open Yojson.Safe.Util in
+              json |> member "event" |> to_string = "dead_letter_write"
+              && json |> member "reason" |> to_string = "inbox_sweep"
+              && json |> member "from_alias" |> to_string = "storm-ember"
+              && json |> member "to_alias" |> to_string = "storm-storm"
+              && json |> member "from_session_id" |> to_string = "ghost-sid"
+            with _ -> false)
+          dl_events
+      in
+      check bool "alpha event has reason+aliases+sid" true has_alpha_event)
+
 (* Provisional sweep: a pid=None, confirmed_at=None reg with a recent registered_at
    is NOT swept until the timeout has elapsed. *)
 let test_sweep_preserves_fresh_provisional_reg () =
@@ -9037,6 +9096,8 @@ let () =
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick
              test_sweep_empty_orphan_writes_no_dead_letter
+         ; test_case "#433 sweep dead-letter write emits broker.log event" `Quick
+             test_sweep_dead_letter_write_emits_broker_log_event
          ; test_case "sweep preserves fresh provisional reg" `Quick
              test_sweep_preserves_fresh_provisional_reg
          ; test_case "sweep drops expired provisional reg" `Quick
