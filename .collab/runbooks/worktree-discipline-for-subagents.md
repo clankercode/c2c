@@ -823,6 +823,29 @@ cat /proc/<pid>/comm
 
 **Cross-reference**: #469 (prctl(PR_SET_NAME) at fork-child startup).
 
+## Pattern 18 — install-ancestry staleness on non-master worktrees (#388)
+
+**Severity**: MEDIUM (data integrity — could install an older binary over a semantically newer one).
+
+**Symptom**: an agent working in a slice worktree builds and installs a binary, but origin/master has advanced since the worktree was created. The installed binary is semantically behind origin/master — a subsequent agent on master could overwrite a newer install with an older one.
+
+**Mechanism**: `c2c-install-guard.sh` checks after all existing ancestry checks (same/ancestor/descendant/divergent). If `current_branch` is not `master` or `origin/master`, it runs `git rev-list --count HEAD..origin/master`. If the count is non-zero, the install is refused.
+
+```
+[c2c install-guard] REFUSE: origin/master is N commit(s) ahead of HEAD —
+  this binary would be semantically stale.
+  To sync: git fetch origin && git rebase origin/master
+  To override: C2C_INSTALL_FORCE=1
+```
+
+**OCaml inline check**: `c2c doctor --install-freshness` runs the same logic and exits 0 (FRESH) or 1 (BEHIND), providing an operator-side verification independent of the install flow.
+
+**Canonical branch exception**: `master` and `origin/master` are always considered current by definition — the check is skipped on those branches.
+
+**Mitigation**: keep worktrees rebased on origin/master, or use `C2C_INSTALL_FORCE=1` when you intentionally want a stale install.
+
+**Cross-reference**: #388 (install-ancestry guard), `c2c doctor --install-freshness`.
+
 ---
 
 ## Pattern 17 — agent cwd-persistence creates nested worktrees

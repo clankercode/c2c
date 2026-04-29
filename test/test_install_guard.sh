@@ -128,15 +128,13 @@ fi
 
 # Case 10: worktree on a branch (not master) that is behind origin/master,
 # with a divergent stamp. The divergent path fires first but Pattern 18
-# then refuses because the branch is behind origin/master.
-# Strategy: stay on worktree_branch (checkout by name, not SHA) so current_branch
-# is worktree_branch during the guard run. Stamp says SHA_D (on div — divergent).
+# then refuses because the current branch is behind origin/master.
+# Strategy: checkout by SHA hash (git checkout $SHA_B) which always detaches HEAD,
+# setting current_branch=HEAD (not master). Pattern 18 fires because
+# current_branch=HEAD != master && != origin/master, and commits_behind > 0.
+# Stamp says SHA_D (on div — divergent from worktree_branch).
 git -C "$WORK" checkout -q "$SHA_A"   # start from SHA_A
 git -C "$WORK" checkout -q -b worktree_branch "$SHA_B"  # worktree_branch at SHA_B
-# Stay on worktree_branch (by name) so current_branch != master during guard.
-# run_guard does "git checkout -q $SHA_B" but since we're already at SHA_B
-# on worktree_branch, it stays on the branch (detached only if we checkout SHA directly).
-git -C "$WORK" checkout -q worktree_branch   # ensure we're on the branch
 write_stamp "$SHA_D"   # stamp says SHA_D (div branch — divergent from worktree_branch)
 FORCE=0
 if run_guard "$SHA_B"; then
