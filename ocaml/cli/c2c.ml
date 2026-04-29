@@ -8761,7 +8761,7 @@ let render_payload (message : string) (event : string) (sender : string)
     let attrs = Printf.sprintf "event=%S from=%S"
       event (xml_escape sender)
     in
-    let attrs = if alias <> "" then attrs ^ Printf.sprintf " alias=%S" (xml_escape alias) else attrs in
+    let attrs = if alias <> "" then attrs ^ Printf.sprintf " to=%S" (xml_escape alias) else attrs in
     let attrs = attrs ^ " source=\"pty\" source_tool=\"c2c_inject\" action_after=\"continue\"" in
     Printf.sprintf "<c2c %s>\n%s\n</c2c>" attrs message
 
