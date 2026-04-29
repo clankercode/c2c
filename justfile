@@ -200,10 +200,20 @@ check:
 
 # Install repo git hooks (pre-commit: plugin syntax check).
 # Uses symlinks so edits in scripts/git-hooks/ apply immediately.
+#
+# #436: must install into the repo-LOCAL hooks dir, NOT a global one.
+# `git rev-parse --git-path hooks` honors `core.hooksPath`, which can
+# be set globally (e.g. ~/.config/git/hooks) by other tooling — that
+# silently redirected `just bi`'s hooks to the user's global path on
+# fresh clones, breaking the repo-local pre-push coordinator gate.
+# `--git-common-dir` returns the actual .git/ regardless of any
+# hooksPath config, and is worktree-friendly (returns the main
+# tree's .git/ for worktrees too — that's what we want; one set of
+# hooks shared across all worktrees of a repo).
 install-git-hooks:
     #!/usr/bin/env bash
     set -euo pipefail
-    hooks_dir="$(git rev-parse --git-path hooks)"
+    hooks_dir="$(git rev-parse --git-common-dir)/hooks"
     mkdir -p "$hooks_dir"
     for src in scripts/git-hooks/*; do
         name="$(basename "$src")"
