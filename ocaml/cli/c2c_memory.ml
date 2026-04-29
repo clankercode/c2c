@@ -67,19 +67,11 @@ let entry_filename alias name =
     name in
   Filename.concat (memory_base_dir alias) (safe ^ ".md")
 
-let read_file path =
-  try
-    let ic = open_in path in
-    Fun.protect ~finally:(fun () -> close_in ic)
-      (fun () -> really_input_string ic (in_channel_length ic))
-  with
-  | Sys_error _ -> ""
-  | End_of_file -> ""
-
-let write_file path content =
-  let oc = open_out path in
-  Fun.protect ~finally:(fun () -> close_out oc)
-    (fun () -> output_string oc content)
+(* #388: delegates to C2c_io (library-level, reachable from tests).
+   read_file_opt returns "" on any I/O error, matching the original
+   local semantics. *)
+let read_file = C2c_io.read_file_opt
+let write_file = C2c_io.write_file
 
 type entry = {
   name : string option;

@@ -39,6 +39,14 @@ let alias_from_env_only () =
   | Some v when String.trim v <> "" -> Some (String.trim v)
   | _ -> None
 
+(** Canonical whole-file read/write helpers (#388). Delegates to
+    [C2c_io] — single source of truth, reachable from the library and
+    the executable. Re-exported here so call-sites already using
+    [C2c_utils.*] don't need a second [open]. *)
+let read_file = C2c_io.read_file
+let read_file_opt = C2c_io.read_file_opt
+let write_file = C2c_io.write_file
+
 (** [atomic_write_json path json] writes json to a temp file then atomically
     renames to [path], ensuring readers never see a partial write.
     The payload is followed by a newline. *)

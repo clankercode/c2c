@@ -27,3 +27,26 @@ let rec mkdir_p ?(mode = 0o755) dir =
     mkdir_p ~mode (Filename.dirname dir);
     try Unix.mkdir dir mode with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
+
+(** [read_file path] slurps the entire contents of [path] as a string.
+    Raises [Sys_error] / [End_of_file] on I/O failure. Canonical helper
+    (#388) — converges duplicates across c2c_stats, c2c_memory, c2c_mcp,
+    and c2c.ml. *)
+let read_file (path : string) : string =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    really_input_string ic (in_channel_length ic))
+
+(** [read_file_opt path] returns [path]'s contents or [""] on any I/O
+    error. Convenience wrapper for "best effort" reads where callers
+    treat missing/unreadable files as empty. *)
+let read_file_opt (path : string) : string =
+  try read_file path with _ -> ""
+
+(** [write_file path content] writes [content] to [path], truncating any
+    existing file. Non-atomic; callers wanting crash-safety should use
+    [C2c_utils.atomic_write_json] or write-to-tmp + [Unix.rename]. *)
+let write_file (path : string) (content : string) : unit =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc content)

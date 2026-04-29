@@ -7958,12 +7958,9 @@ let read_tty_link (pid : int) (fd : string) : string option =
     Some (Unix.readlink path)
   with _ -> None
 
-(** Read a file's contents as a string. *)
-let read_file (path : string) : string =
-  let ic = open_in path in
-  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-    let n = in_channel_length ic in
-    really_input_string ic n)
+(** Read a file's contents as a string.
+    #388: delegates to C2c_utils (re-exported from C2c_io). *)
+let read_file = C2c_utils.read_file
 
 (** Find the pts number for a given PID by checking its stdio fds. *)
 let resolve_pts_from_pid (pid : int) : string option =

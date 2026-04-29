@@ -282,15 +282,9 @@ let sitrep_stub ~now =
 
 let mkdir_p = C2c_mcp.mkdir_p
 
-let read_file path =
-  let ic = open_in path in
-  Fun.protect ~finally:(fun () -> close_in ic) @@ fun () ->
-  really_input_string ic (in_channel_length ic)
-
-let write_file path content =
-  let oc = open_out path in
-  Fun.protect ~finally:(fun () -> close_out oc) @@ fun () ->
-  output_string oc content
+(* #388: delegates to C2c_io (library-level, reachable from tests) *)
+let read_file = C2c_io.read_file
+let write_file = C2c_io.write_file
 
 let find_sub ~needle haystack =
   let hay_len = String.length haystack in
