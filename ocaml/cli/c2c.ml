@@ -7530,13 +7530,16 @@ let start_cmd =
             match render_role_for_client ?model_override role ~client ~name:agent_name with
             | Some rendered ->
                 let effective_alias = Option.value role.C2c_role.c2c_alias ~default:agent_name in
-                (* write_agent_file: opencode/claude only. These clients natively
-                   read .md agent files with YAML frontmatter. Kimi uses YAML
-                   AgentSpec (agent.yaml); codex has no user agent file surface.
-                   Ref: .collab/design/2026-04-29-kuura-viima-143b-write-agent-file-parity.md
-                   TODO(#146-prime): design KimiAgentSpec_renderer. *)
+                (* write_agent_file: opencode/claude write .md with YAML frontmatter.
+                   Kimi writes AgentSpec YAML (agent.yaml) + system.md.
+                   Codex has no user agent file surface.
+                   Ref: .collab/design/2026-04-29-kuura-viima-143b-write-agent-file-parity.md *)
                 if client = "opencode" || client = "claude" then
                   write_agent_file ~client ~name ~content:rendered;
+                if client = "kimi" then begin
+                  write_agent_file ~client ~name ~content:rendered;
+                  write_kimi_system_prompt ~name ~content:role.C2c_role.body;
+                end;
                 let onboarding_preamble =
                   Printf.sprintf
                     "You are now running as %s. Complete these startup steps:\n\

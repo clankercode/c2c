@@ -2680,9 +2680,14 @@ let prepare_launch_args ~(name : string) ~(client : string)
             | Some p when p <> "" -> [ "--prompt"; p ]
             | _ -> []
         in
+        let agent_file_args =
+          match agent_name with
+          | Some n -> [ "--agent-file"; C2c_role.kimi_agent_yaml_path ~name:n ]
+          | None -> []
+        in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
           ~extra_args:extra_args ()
-        @ prompt_args
+        @ prompt_args @ agent_file_args
     | "gemini" ->
         (* #406b: GeminiAdapter handles --resume <idx>|latest, --model. No
            dev-channels or PTY auto-answer (Gemini uses settings.json

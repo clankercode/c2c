@@ -49,11 +49,14 @@ module Codex_renderer : sig
 end
 
 module Kimi_renderer : sig
-  val render : ?resolved_pmodel:string -> t -> string
+  val render : ?resolved_pmodel:string -> name:string -> t -> string
 end
 
 val canonical_roles_dir : unit -> string
 val client_agent_dir : client:string -> string
+val kimi_agent_dir : name:string -> string
+val kimi_agent_yaml_path : name:string -> string
+val kimi_system_md_path : name:string -> string
 val resolve_agent_path : name:string -> client:string -> string
 val role_class_to_room : string -> string option
 

@@ -85,11 +85,12 @@ let test_codex_renderer () =
   contains ~msg:"codex: codex section present" ~pattern:"codex:" output
 
 let test_kimi_renderer () =
-  let output = C2c_role.Kimi_renderer.render role_input in
-  contains ~msg:"kimi: description field present" ~pattern:"description: Test role for regression" output;
-  contains ~msg:"kimi: role field present" ~pattern:"role: primary" output;
-  contains ~msg:"kimi: c2c commented" ~pattern:"# c2c:" output;
-  contains ~msg:"kimi: kimi section present" ~pattern:"kimi:" output
+  let output = C2c_role.Kimi_renderer.render role_input ~name:"test-role" in
+  contains ~msg:"kimi: version present" ~pattern:"version: 1" output;
+  contains ~msg:"kimi: agent section present" ~pattern:"agent:" output;
+  contains ~msg:"kimi: name present" ~pattern:"name: test-role" output;
+  contains ~msg:"kimi: system_prompt_path present" ~pattern:"system_prompt_path: ./system.md" output;
+  contains ~msg:"kimi: extend default present" ~pattern:"extend: default" output
 
 let test_roundtrip_opencode () =
   let rendered = C2c_role.OpenCode_renderer.render role_input in
@@ -114,8 +115,9 @@ let test_pronouns_render_codex () =
   contains ~msg:"codex: pronouns field present" ~pattern:"pronouns: she/her" output
 
 let test_pronouns_render_kimi () =
-  let output = C2c_role.Kimi_renderer.render role_input_with_pronouns in
-  contains ~msg:"kimi: pronouns field present" ~pattern:"pronouns: she/her" output
+  let output = C2c_role.Kimi_renderer.render role_input_with_pronouns ~name:"test-pronouns" in
+  contains ~msg:"kimi: name present" ~pattern:"name: test-pronouns" output;
+  contains ~msg:"kimi: when_to_use from description" ~pattern:"when_to_use: Role with pronouns" output
 
 let test_pronouns_roundtrip () =
   let rendered = C2c_role.OpenCode_renderer.render role_input_with_pronouns in
@@ -353,7 +355,7 @@ let test_model_codex_multi_client_suppressed () =
 
 let test_model_kimi_multi_client_suppressed () =
   let r = C2c_role.parse_string role_multi_client_with_model in
-  let output = C2c_role.Kimi_renderer.render r in
+  let output = C2c_role.Kimi_renderer.render r ~name:"test" in
   Alcotest.(check bool) "kimi multi-client: model SUPPRESSED" true
     (try ignore (Str.search_forward (Str.regexp_string "model:") output 0); false with Not_found -> true)
 

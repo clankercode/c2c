@@ -134,10 +134,20 @@ let filter_commands ~cmds =
 let ( // ) a b = Filename.concat a b
 
 let agent_file_path ~(client : string) ~(name : string) : string =
-  client_agent_dir ~client // (name ^ ".md")
+  match client with
+  | "kimi" -> C2c_role.kimi_agent_yaml_path ~name
+  | _ -> client_agent_dir ~client // (name ^ ".md")
 
 let write_agent_file ~(client : string) ~(name : string) ~(content : string) : unit =
   let path = agent_file_path ~client ~name in
+  let dir = Filename.dirname path in
+  mkdir_p dir;
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc content; output_char oc '\n')
+
+let write_kimi_system_prompt ~(name : string) ~(content : string) : unit =
+  let path = C2c_role.kimi_system_md_path ~name in
   let dir = Filename.dirname path in
   mkdir_p dir;
   let oc = open_out path in
@@ -158,5 +168,5 @@ let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~(
   | "opencode" -> Some (OpenCode_renderer.render ?resolved_pmodel r)
   | "claude" -> Some (Claude_renderer.render ?resolved_pmodel r ~name)
   | "codex" -> Some (Codex_renderer.render ?resolved_pmodel r)
-  | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r)
+  | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r ~name)
   | _ -> None

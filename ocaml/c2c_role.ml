@@ -476,26 +476,43 @@ module Codex_renderer = struct
 end
 
 module Kimi_renderer = struct
-  let render ?resolved_pmodel (r : t) =
+  let render ?resolved_pmodel ~name (r : t) =
     let lines = ref [] in
-    lines := ("description: " ^ yaml_scalar r.description) :: !lines;
-    lines := ("role: " ^ r.role) :: !lines;
-    (match r.pronouns with Some p -> lines := ("pronouns: " ^ yaml_scalar p) :: !lines | None -> ());
+    lines := "version: 1" :: !lines;
+    lines := "agent:" :: !lines;
+    lines := ("  name: " ^ yaml_scalar name) :: !lines;
+    lines := "  system_prompt_path: ./system.md" :: !lines;
     let single_client = List.length r.compatible_clients = 1 in
     let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
-    (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
-    emit_c2c_section lines ~comment:"# " r;
-    if r.kimi <> [] then begin
-      lines := "kimi:" :: !lines;
-      List.iter (fun (k, v) ->
-        let field_name = if String.length k > 5 && String.sub k 0 5 = "kimi." then
-                          String.sub k 5 (String.length k - 5)
-                        else k in
-        lines := ("  " ^ field_name ^ ": " ^ yaml_scalar v) :: !lines
-      ) r.kimi;
-    end;
-    let fm = String.concat "\n" (List.rev !lines) in
-    "---\n" ^ fm ^ "\n---\n\n" ^ r.body
+    (match model_to_emit with Some m -> lines := ("  model: " ^ m) :: !lines | None -> ());
+    (match r.description with "" -> () | d -> lines := ("  when_to_use: " ^ yaml_scalar d) :: !lines);
+    lines := "  extend: default" :: !lines;
+    (* Map c2c role's kimi custom fields to AgentSpec tool fields. *)
+    let tool_fields = ref [] in
+    List.iter (fun (k, v) ->
+      match k with
+      | "kimi.tools" | "tools" ->
+          let items = String.split_on_char ',' v |> List.map String.trim |> List.filter (fun s -> s <> "") in
+          if items <> [] then
+            tool_fields := ("  tools:", List.map (fun item -> "    - " ^ yaml_scalar item) items) :: !tool_fields
+      | "kimi.allowed_tools" | "allowed_tools" ->
+          let items = String.split_on_char ',' v |> List.map String.trim |> List.filter (fun s -> s <> "") in
+          if items <> [] then
+            tool_fields := ("  allowed_tools:", List.map (fun item -> "    - " ^ yaml_scalar item) items) :: !tool_fields
+      | "kimi.exclude_tools" | "exclude_tools" ->
+          let items = String.split_on_char ',' v |> List.map String.trim |> List.filter (fun s -> s <> "") in
+          if items <> [] then
+            tool_fields := ("  exclude_tools:", List.map (fun item -> "    - " ^ yaml_scalar item) items) :: !tool_fields
+      | _ -> ()
+    ) r.kimi;
+    (match !tool_fields with
+     | [] -> ()
+     | fields ->
+         List.iter (fun (header, items) ->
+           lines := header :: !lines;
+           List.iter (fun item -> lines := item :: !lines) items
+         ) fields);
+    String.concat "\n" (List.rev !lines)
 end
 
 let render_for_client ?resolved_pmodel (r : t) ~(client : string) ~(name : string) : string option =
@@ -503,7 +520,7 @@ let render_for_client ?resolved_pmodel (r : t) ~(client : string) ~(name : strin
   | "opencode" -> Some (OpenCode_renderer.render ?resolved_pmodel r)
   | "claude" -> Some (Claude_renderer.render ?resolved_pmodel r ~name)
   | "codex" -> Some (Codex_renderer.render ?resolved_pmodel r)
-  | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r)
+  | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r ~name)
   | _ -> None
 
 (* --- Path resolution ------------------------------------------------------- *)
@@ -520,6 +537,15 @@ let client_agent_dir ~(client : string) : string =
   | "codex" -> ".codex" // "agents"
   | "kimi" -> ".kimi" // "agents"
   | _ -> ".c2c" // "agents"
+
+let kimi_agent_dir ~(name : string) : string =
+  client_agent_dir ~client:"kimi" // name
+
+let kimi_agent_yaml_path ~(name : string) : string =
+  kimi_agent_dir ~name // "agent.yaml"
+
+let kimi_system_md_path ~(name : string) : string =
+  kimi_agent_dir ~name // "system.md"
 
 let resolve_agent_path ~(name : string) ~(client : string) : string =
   let canonical = canonical_roles_dir () // (name ^ ".md") in

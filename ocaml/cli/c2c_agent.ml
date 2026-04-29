@@ -496,6 +496,8 @@ let run_ephemeral_agent
     exit 0
   end;
   C2c_commands.write_agent_file ~client ~name ~content:rendered;
+  if client = "kimi" then
+    C2c_commands.write_kimi_system_prompt ~name ~content:r.C2c_role.body;
   let mode_str = match mode with Pane -> "pane" | Background -> "background" | Headless -> "headless" in
   Printf.printf "c2c agent run: role=%s client=%s name=%s caller=%s timeout=%.0fs mode=%s\n%!"
     role client name caller timeout mode_str;
@@ -865,7 +867,10 @@ let roles_compile_term =
                         let oc = open_out out_path in
                         Fun.protect ~finally:(fun () -> close_out oc)
                           (fun () -> output_string oc rendered; output_char oc '\n');
-                        Printf.printf "  [roles compile] %s -> %s\n" path out_path)))
+                        Printf.printf "  [roles compile] %s -> %s\n" path out_path;
+                        if target = "kimi" then
+                          (C2c_commands.write_kimi_system_prompt ~name ~content:role.C2c_role.body;
+                           Printf.printf "  [roles compile] %s -> %s\n" path (C2c_role.kimi_system_md_path ~name)))))
         | None ->
             Printf.eprintf "  [roles compile] skip %s: client '%s' not supported\n" name target
       ) targets
@@ -962,7 +967,10 @@ let roles_default_term =
                     let oc = open_out out_path in
                     Fun.protect ~finally:(fun () -> close_out oc)
                       (fun () -> output_string oc rendered; output_char oc '\n');
-                    Printf.printf "  [roles compile] %s -> %s\n" path out_path))
+                    Printf.printf "  [roles compile] %s -> %s\n" path out_path;
+                    if target = "kimi" then
+                      (C2c_commands.write_kimi_system_prompt ~name ~content:role.C2c_role.body;
+                       Printf.printf "  [roles compile] %s -> %s\n" path (C2c_role.kimi_system_md_path ~name))))
         | None ->
             Printf.eprintf "  [roles compile] skip %s: client '%s' not supported\n" name target
       ) all_targets
