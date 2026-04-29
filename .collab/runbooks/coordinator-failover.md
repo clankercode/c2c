@@ -172,6 +172,7 @@ When primary coord returns:
 | Stuck mid-tool-call | last_activity_ts old, pane has spinner | `Ctrl-c` then heartbeat. Last resort: kill + restart. |
 | Dead pid in registry | `kill -0 $pid` fails | `c2c refresh-peer coordinator1 --pid <new>` if alive elsewhere; else takeover. |
 | Quota exhaust | tmux footer shows 0% remaining (Claude) or 100% used (Codex inverted) | Wait for reset window. Coord can't act. |
+| Agent operating outside worktree protocol | `git log origin/master..HEAD` shows non-slice commits on master; main tree `git status` has untracked peer work | Freeze. Post in swarm-lounge. Identify affected agent. Revert if needed. Cross-ref: `worktree-discipline-for-subagents.md` Patterns 1–4, 6, 13 (shared-tree destructive ops). |
 
 Append new rows here as they're encountered.
 
@@ -203,6 +204,12 @@ Append new rows here as they're encountered.
 - [ ] Add `c2c failover-status` doctor check that reports last
       sitrep time, coord last_activity_ts, and recovery agent
       reachability.
+- [ ] Probe toolkit: recovery agent should know that `opencode` and
+      `codex` are fallback launchers when `kimi` is broken. Today
+      (2026-04-29) the kimi launch path failed during surge; a
+      broken kimi blocks any surge workflow that needs a child probe.
+      Document `c2c start opencode` / `c2c start codex` as
+      alternatives in the §4.1 diagnose script block.
 
 ---
 
@@ -290,6 +297,9 @@ same way).
   either be heart-beating or explicitly hand off succession to
   the next agent in the chain. As of this writing: lyra is still
   null. Worth a §1.x update with detection-of-recovery-agent.
+
+**Succession-tier-N agents are ACTIVE on coord-down, not just available.**
+The phrase "succession order" in §1 is frequently misread as "a waiting list of agents to check in order." It is not. When coordinator1 goes down, the agent in position N of the succession list is not "on standby" — they are the **active coordinator** until either the primary returns or they explicitly hand off to the next tier. "Available" implies passive; "active" is the correct frame. An agent who is registered-but-null (lyra-quill in today's surge) is not "排在第三" — they have forfeited their slot by not maintaining presence, and the next agent in the chain is active immediately. This is the same "active, not standby" framing that governs military succession protocols. The practical effect: any agent in the chain who is alive and responsive should act as coord the moment they detect the vacancy, without waiting for a formal handoff from a higher-tier agent who may never come back online.
 
 - **`c2c_tmux.py peek` falls back to "last-known target" when the
   alias is no longer in any pane.** Stanza got back stale
