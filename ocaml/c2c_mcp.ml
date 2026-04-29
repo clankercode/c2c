@@ -3821,11 +3821,11 @@ let base_tool_definitions =
         ; arr_prop "supervisors" "List of supervisor aliases that can answer."
         ]
   ; tool_definition ~name:"check_pending_reply"
-      ~description:"Validate that a received reply is authorized for a pending permission/request."
-      ~required:["perm_id"; "reply_from_alias"]
+      ~description:"Validate that a received reply is authorized for a pending permission/request. The reply-from alias is derived from the calling MCP session's registration; the legacy [reply_from_alias] argument is silently ignored (kept on the schema for backward compatibility — see #432 Slice B)."
+      ~required:["perm_id"]
       ~properties:
         [ prop "perm_id" "Permission/request ID from the reply."
-        ; prop "reply_from_alias" "Alias the reply claims to be from."
+        ; prop "reply_from_alias" "DEPRECATED — legacy field, silently ignored. The broker derives the reply alias from the calling MCP session's registration (#432 Slice B)."
         ]
   ; tool_definition ~name:"set_compact"
       ~description:"Mark this session as compacting (context summarization in progress). Set by PreCompact hooks so senders receive a warning. Returns {compacting: {started_at, reason}}."
@@ -5892,7 +5892,10 @@ let ts = Unix.gettimeofday () in
         | None -> ""
       in
       (* Legacy callers may still pass [reply_from_alias] as an argument; we
-         silently ignore it. The session-derived alias is authoritative. *)
+         silently ignore it. The session-derived alias is authoritative.
+         The schema in `tool_definitions` still permits the field for
+         backward compatibility, with a DEPRECATED marker on the
+         description. *)
       if reply_from_alias = "" then
         Lwt.return (tool_result
           ~content:"check_pending_reply requires the calling session to be registered first"
