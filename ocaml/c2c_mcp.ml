@@ -5565,12 +5565,14 @@ let ts = Unix.gettimeofday () in
       Broker.confirm_registration broker ~session_id;
       Broker.touch_session broker ~session_id;
       let messages = Broker.drain_inbox ~drained_by:"poll_inbox" broker ~session_id in
-      let our_alias =
+      let our_x25519 =
         match List.find_opt (fun r -> r.session_id = session_id) (Broker.list_registrations broker) with
-        | Some reg -> reg.alias
-        | None -> "unknown"
+        | None -> None
+        | Some reg ->
+            (match Relay_enc.load_or_generate ~alias:reg.alias () with
+             | Ok k -> Some k
+             | Error _ -> None)
       in
-      let our_x25519 = match Relay_enc.load_or_generate ~alias:our_alias () with Ok k -> Some k | Error _ -> None in
       let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
       let process_msg ({ from_alias; to_alias; content; deferrable } : message) =
         let (decrypted, enc_status) =
