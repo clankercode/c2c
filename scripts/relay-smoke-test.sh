@@ -243,6 +243,35 @@ else
 fi
 echo ""
 
+# 10. send_all broadcast loopback (gap D from cairn audit)
+#
+# With one registered alias, /send_all should ack `ok` and (per current
+# relay semantics) the broadcast lands in our own inbox as a
+# self-loopback — this guards the 1:N broadcast fan-out path. A
+# regression here would silently break broadcast/room-adjacent semantics
+# and ship undetected to prod. See
+# .collab/research/2026-04-29-smoke-coverage-audit-cairn.md proposal D.
+echo "--- 10. send_all broadcast loopback ---"
+SA_PROBE="smoke send_all probe $(date +%s)"
+sa_out=$(c2c relay dm send-all "$SA_PROBE" --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+echo "$sa_out"
+if echo "$sa_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
+  green "send_all ack ok"
+  # Poll inbox; loopback semantic depends on relay behavior. Accept
+  # either (a) message landed (self-loopback included) as hard PASS, or
+  # (b) message absent (sender excluded) as info — both are defensible
+  # spec choices. The ack itself is the regression-catcher.
+  sa_poll=$(c2c relay dm poll --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+  if echo "$sa_poll" | grep -qF "$SA_PROBE"; then
+    green "send_all delivered to self-loopback"
+  else
+    info "send_all not in own inbox (relay may exclude sender — non-fatal)"
+  fi
+else
+  red "send_all failed (broadcast fan-out regressed?)"
+fi
+echo ""
+
 # Summary
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]

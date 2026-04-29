@@ -4206,7 +4206,7 @@ let relay_register_cmd =
 (* c2c relay dm — cross-host direct messages (§8.3) *)
 let relay_dm_cmd =
   let subcmd =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"send|poll" ~doc:"DM subcommand: send or poll.")
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"send|poll|send-all" ~doc:"DM subcommand: send, poll, or send-all (broadcast 1:N).")
   in
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
@@ -4215,10 +4215,10 @@ let relay_dm_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let alias =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Your alias (required for poll).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Your alias (required for poll and send-all).")
   in
   let words =
-    Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"For send: <to-alias> <message...>")
+    Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"For send: <to-alias> <message...>; for send-all: <message...>")
   in
   let no_warn_substitution =
     Cmdliner.Arg.(value & flag & info [ "no-warn-substitution" ]
@@ -4303,6 +4303,55 @@ let relay_dm_cmd =
             | `Assoc fields ->
                 (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
             | _ -> exit 1)
+       | "send-all" ->
+           (* Broadcast (1:N) — POST /send_all with Ed25519 auth header.
+              Used by relay smoke tests (gap D) to verify the broadcast
+              fan-out path on the deployed relay. Loopback: with a single
+              registered alias, sender's own message lands in their inbox
+              (when send_all does NOT exclude the sender), or skipped (when
+              it does). The smoke script asserts on relay's `ok` ack +
+              archive material; semantic of self-loopback is whatever the
+              relay's send_all implementation decides — tested empirically. *)
+           (match words with
+            | [] ->
+                Printf.eprintf "error: usage: dm send-all <message...>\n%!";
+                exit 1
+            | msg_words ->
+                let from_alias = match alias with
+                  | Some a -> a
+                  | None ->
+                      Printf.eprintf "error: --alias required for dm send-all\n%!";
+                      exit 1
+                in
+                let content = String.concat " " msg_words in
+                let _ =
+                  if (not no_warn_substitution) && likes_shell_substitution content
+                  then Printf.eprintf
+                    "warning: message body appears to contain a shell substitution pattern \
+                     (e.g. $(...) or `...`).\n\
+                     If this was intended literally, re-send with --no-warn-substitution.\n%!"
+                  else ()
+                in
+                let body = `Assoc [
+                  ("from_alias", `String from_alias);
+                  ("content", `String content);
+                ] in
+                let body_str = Yojson.Safe.to_string body in
+                let result = (match Relay_identity.load () with
+                  | Ok id ->
+                      let auth = Relay_signed_ops.sign_request id ~alias:from_alias
+                        ~meth:"POST" ~path:"/send_all" ~body_str () in
+                      Lwt_main.run (Relay.Relay_client.request client
+                        ~meth:`POST ~path:"/send_all" ~body
+                        ~auth_override:auth ())
+                  | Error _ ->
+                      Lwt_main.run (Relay.Relay_client.request client
+                        ~meth:`POST ~path:"/send_all" ~body ())) in
+                print_endline (Yojson.Safe.pretty_to_string result);
+                (match result with
+                 | `Assoc fields ->
+                     (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+                 | _ -> exit 1))
        | other ->
            Printf.eprintf "error: unknown dm subcommand: %s\n%!" other;
            exit 1)
