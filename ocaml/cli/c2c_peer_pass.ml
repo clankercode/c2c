@@ -112,11 +112,42 @@ let merge_subagent_into_notes ~via_subagent ~notes =
       if base = "" then tag else Printf.sprintf "%s; %s" base tag
   | _ -> base
 
+(* #427c: PASS verdicts MUST carry a structured build-rc unless the
+   slice author opts out via --no-build-rc (legitimate doc-only / runbook
+   slices where there's no compile target). FAIL verdicts are unaffected
+   (a FAIL by definition records that something didn't work; the rc, if
+   any, is part of the FAIL evidence not a precondition). *)
+let validate_build_rc_precondition ~verdict ~build_rc ~no_build_rc =
+  let resolved_verdict = Option.value verdict ~default:"PASS" in
+  if resolved_verdict = "PASS" && build_rc = None && not no_build_rc then begin
+    Printf.eprintf
+      "error: PASS peer-pass artifacts must carry --build-rc N (the exit code \
+       from a build run IN the slice's own worktree, per Pattern 8 / #427b).\n\
+       \n\
+       Pass --build-rc 0 after `cd .worktrees/<slice>/ && just build` returns 0,\n\
+       or pass --no-build-rc when the slice has no compilable target (pure\n\
+       documentation / runbook / configuration changes that need no build\n\
+       verification).\n\
+       \n\
+       See `.collab/skills/review-and-fix.md` Step 4 for the rubric.\n%!";
+    exit 124
+  end
+
 let signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-    ~all_targets ~notes ~allow_self ~via_subagent ~build_rc =
+    ~all_targets ~notes ~allow_self ~via_subagent ~build_rc ~no_build_rc =
   validate_signing_allowed ~alias ~sha ~allow_self;
+  validate_build_rc_precondition ~verdict ~build_rc ~no_build_rc;
   let identity = resolve_identity () in
   let final_notes = merge_subagent_into_notes ~via_subagent ~notes in
+  (* #427c: when --no-build-rc is used on a PASS, augment the notes so
+     the audit trail records that the precondition was explicitly waived
+     (vs accidentally omitted on an old binary that didn't enforce it). *)
+  let final_notes =
+    if no_build_rc && build_rc = None then
+      let tag = "no-build-rc:doc-only" in
+      if final_notes = "" then tag else Printf.sprintf "%s; %s" final_notes tag
+    else final_notes
+  in
   (* #427b: schema-version bump from 1 → 2 only when build_rc is set, so
      legacy v1 artifacts continue signing/verifying byte-identically. *)
   let version = match build_rc with Some _ -> 2 | None -> 1 in
@@ -215,7 +246,16 @@ let peer_pass_sign_cmd =
                       the build but it failed. Bumps the artifact schema to v2. \
                       Reviewers should also retain a textual \
                       'build-clean-IN-slice-worktree-rc=N' entry in --criteria \
-                      for backward-readable evidence.")
+                      for backward-readable evidence. PASS without --build-rc \
+                      is rejected unless --no-build-rc is also passed (#427c).")
+  in
+  let no_build_rc =
+    Cmdliner.Arg.(value & flag & info [ "no-build-rc" ]
+      ~doc:"#427c: opt out of the PASS-must-carry-build-rc precondition. \
+            Use ONLY for legitimate doc-only / runbook / config-only slices \
+            where no compilable target exists. Recorded in the artifact \
+            notes as 'no-build-rc:doc-only' for audit. Cannot be combined \
+            with --build-rc.")
   in
   let+ sha = sha
   and+ verdict = verdict
@@ -227,11 +267,16 @@ let peer_pass_sign_cmd =
   and+ json = json
   and+ allow_self = allow_self
   and+ via_subagent = via_subagent
-  and+ build_rc = build_rc in
+  and+ build_rc = build_rc
+  and+ no_build_rc = no_build_rc in
+  if build_rc <> None && no_build_rc then begin
+    Printf.eprintf "error: --build-rc and --no-build-rc are mutually exclusive\n%!";
+    exit 124
+  end;
   let alias = resolve_current_alias () in
   let signed =
     signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-      ~all_targets ~notes ~allow_self ~via_subagent ~build_rc
+      ~all_targets ~notes ~allow_self ~via_subagent ~build_rc ~no_build_rc
   in
   let path = write_artifact ~sha ~alias signed in
   if json then
@@ -305,7 +350,15 @@ let peer_pass_send_cmd =
     Cmdliner.Arg.(value & opt (some int) None & info [ "build-rc" ]
       ~docv:"N" ~doc:"#427b: capture the slice-worktree build exit code on the \
                       signed artifact. 0 = clean build in the slice's own \
-                      worktree; non-zero = build failed. Bumps schema to v2.")
+                      worktree; non-zero = build failed. Bumps schema to v2. \
+                      PASS without --build-rc is rejected unless --no-build-rc \
+                      is also passed (#427c).")
+  in
+  let no_build_rc =
+    Cmdliner.Arg.(value & flag & info [ "no-build-rc" ]
+      ~doc:"#427c: opt out of the PASS-must-carry-build-rc precondition. \
+            Use ONLY for legitimate doc-only / runbook / config-only slices \
+            where no compilable target exists.")
   in
   let+ to_alias = to_alias
   and+ sha = sha
@@ -320,11 +373,18 @@ let peer_pass_send_cmd =
   and+ json = json
   and+ allow_self = allow_self
   and+ via_subagent = via_subagent
-  and+ build_rc = build_rc in
+  and+ build_rc = build_rc
+  and+ no_build_rc = no_build_rc in
+  (* Mutex check at the CLI level (defensive — the precondition validator
+     also catches it but the user gets a friendlier message here). *)
+  if build_rc <> None && no_build_rc then begin
+    Printf.eprintf "error: --build-rc and --no-build-rc are mutually exclusive\n%!";
+    exit 124
+  end;
   let alias = resolve_current_alias () in
   let signed =
     signed_artifact ~alias ~sha ~verdict ~criteria ~skill_version ~commit_range
-      ~all_targets ~notes ~allow_self ~via_subagent ~build_rc
+      ~all_targets ~notes ~allow_self ~via_subagent ~build_rc ~no_build_rc
   in
   let path = write_artifact ~sha ~alias signed in
   let content = peer_pass_message ~reviewer:alias ~sha ?branch ?worktree () in

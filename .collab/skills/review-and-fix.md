@@ -178,8 +178,14 @@ Optional:
   is in scope of the Ed25519 signature so tampering invalidates
   verification. Reviewers should also retain the textual
   `build-clean-IN-slice-worktree-rc=0` entry in `--criteria` for
-  backward-readable evidence. Without `--build-rc`, the artifact stays v1
-  (back-compat with all pre-#427b tooling).
+  backward-readable evidence. **Per #427c, PASS without `--build-rc` is
+  rejected (exit 124) unless `--no-build-rc` is also passed.**
+- `--no-build-rc` — **#427c opt-out for legitimate doc-only / runbook /
+  config-only slices** where no compilable target exists. Mutually
+  exclusive with `--build-rc`. Recorded in the artifact's `notes`
+  field as `no-build-rc:doc-only` for audit. Use sparingly: most
+  slices DO have a build, even when the change feels small (e.g. a
+  CLI flag wired into existing OCaml).
 - `--all-targets` — mark all binaries (c2c, c2c_mcp_server, c2c_inbox_hook)
   as built and verified
 - `--notes` — free-text notes
