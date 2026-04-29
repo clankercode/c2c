@@ -144,6 +144,64 @@ else
 fi
 echo ""
 
+# 8. Cross-host rejection + dead-letter row (regression guard for #379 / 492c052b)
+#
+# Sends to <alias>@unknown-relay-host and asserts the relay rejects with
+# error="cross_host_not_implemented" (rather than silent-drop). When an
+# admin bearer is available (C2C_RELAY_ADMIN_TOKEN), additionally asserts
+# a dead_letter row materialised via GET /dead_letter.
+#
+# Catches the silent-drop bug class fixed in 492c052b / 4450cf56:
+# pre-fix, b@hostZ was dropped instead of dead-lettered, so a regression
+# would be invisible without this probe. Until forwarder S2 lands, the
+# correct behavior IS rejection — once forwarding is implemented this
+# section's expectations need to flip.
+echo "--- 8. Cross-host rejection + dead-letter ---"
+CROSS_HOST_TARGET="$ALIAS@unknown-relay-host.invalid"
+ch_out=$(c2c relay dm send "$CROSS_HOST_TARGET" "smoke cross-host probe" \
+           --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+echo "$ch_out"
+if echo "$ch_out" | python3 -c "import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+# Relay returns {ok:false, error_code:'cross_host_not_implemented', error:'<msg>'};
+# accept either field for forward-compat.
+code = d.get('error_code') or d.get('error', '')
+sys.exit(0 if 'cross_host_not_implemented' in str(code) else 1)" 2>/dev/null; then
+  green "cross-host send rejected with cross_host_not_implemented (#379 silent-drop guard)"
+else
+  red "cross-host send did not reject as expected — silent-drop regression? (#379 / 492c052b)"
+fi
+
+# dead_letter visibility: admin-bearer endpoint, so this is conditional.
+# When C2C_RELAY_ADMIN_TOKEN is unset, degrade to info — the rejection
+# shape check above is the real regression-catcher and stands alone.
+if [ -n "${C2C_RELAY_ADMIN_TOKEN:-}" ]; then
+  dl_out=$(curl -sf -H "Authorization: Bearer $C2C_RELAY_ADMIN_TOKEN" \
+                 "$RELAY/dead_letter" 2>&1) || true
+  if ALIAS="$ALIAS" echo "$dl_out" | ALIAS="$ALIAS" python3 -c "import json,sys,os
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+entries = d.get('dead_letter', d if isinstance(d, list) else [])
+alias = os.environ.get('ALIAS', '')
+hits = [e for e in entries
+        if isinstance(e, dict)
+        and e.get('reason') == 'cross_host_not_implemented'
+        and alias in str(e.get('to_alias', ''))]
+sys.exit(0 if hits else 1)" 2>/dev/null; then
+    green "dead_letter row visible for cross-host rejection"
+  else
+    red "dead_letter row missing — fix 492c052b regressed?"
+  fi
+else
+  info "dead_letter row check skipped (set C2C_RELAY_ADMIN_TOKEN to enable)"
+fi
+echo ""
+
 # Summary
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]
