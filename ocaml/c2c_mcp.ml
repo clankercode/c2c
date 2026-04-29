@@ -6409,25 +6409,19 @@ let ts = Unix.gettimeofday () in
               swarm. The fix: refuse if the supplied name names an instance
               whose registered session_id is NOT the calling session's. The
               tool name is "stop_SELF"; cross-instance termination must go
-              through a CLI/admin path, not the MCP surface. *)
-           let caller_sid =
-             match session_id_override with
-             | Some sid -> Some sid
-             | None -> current_session_id ()
-           in
-           let other_alive_session_holds_name =
-             match caller_sid with
-             | None -> None  (* no session context — let legacy/system calls through *)
-             | Some current_sid ->
-                 List.find_opt
-                   (fun reg ->
-                     reg.alias = name
-                     && reg.session_id <> current_sid
-                     && reg.pid <> None
-                     && Broker.registration_is_alive reg)
-                   (Broker.list_registrations broker)
-           in
-           (match other_alive_session_holds_name with
+              through a CLI/admin path, not the MCP surface.
+
+              The send_alias_impersonation_check helper implements exactly
+              this predicate (alias-match, different-session, has-pid, alive)
+              and folds in the legacy/system "no session context — let
+              through" short-circuit via its first match arm
+              (None current_sid -> None). Using the helper here unifies
+              stop_self with delete_room / leave_room / send / send_room /
+              send_room_invite / set_room_visibility, which all already
+              call it. Reduces duplication and ensures any future change
+              to the predicate (e.g. case-fold consistency, pidless-zombie
+              policy) lands at one site. *)
+           (match send_alias_impersonation_check ?session_id_override broker name with
             | Some conflict ->
                 Lwt.return
                   (tool_result
