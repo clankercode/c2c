@@ -96,11 +96,12 @@ class DockerExecIntegration(unittest.TestCase):
         if r.returncode != 0:
             raise unittest.SkipTest(f"compose config failed: {r.stderr}")
 
-        # Bring up the stack
-        print("\n[setup] docker compose up -d --build...")
+        # Bring up the stack (omit --build — runtime images already exist.
+        # Build is only needed when source changes; tests exercise existing images.)
+        print("\n[setup] docker compose up -d ...")
         r = subprocess.run(
-            COMPOSE_CMD + ["up", "-d", "--build"],
-            cwd=REPO, capture_output=True, text=True, timeout=300.0
+            COMPOSE_CMD + ["up", "-d"],
+            cwd=REPO, capture_output=True, text=True, timeout=120.0
         )
         if r.returncode != 0:
             raise unittest.SkipTest(f"compose up failed: {r.stderr}")
@@ -129,10 +130,12 @@ class DockerExecIntegration(unittest.TestCase):
 
     def test_c2c_binary_exists_in_thin_agent(self):
         """Verify the c2c binary is reachable inside the thin-agent container."""
-        r = _docker_exec(CONTAINER_A1, ["--version"])
+        # Use --help (which contains "c2c") since OCaml --version outputs
+        # just the version string without the program name (e.g. "0.8.0 2026-04-29T...")
+        r = _docker_exec(CONTAINER_A1, ["--help"])
         self.assertEqual(
             r.returncode, 0,
-            f"c2c --version failed in {CONTAINER_A1}: {r.stderr}"
+            f"c2c --help failed in {CONTAINER_A1}: {r.stderr}"
         )
         self.assertIn("c2c", r.stdout.lower())
 
