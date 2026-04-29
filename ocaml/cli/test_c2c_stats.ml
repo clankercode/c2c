@@ -135,8 +135,8 @@ let with_codex_fixture f =
   Unix.putenv "HOME" tmpdir;
   Fun.protect
     ~finally:(fun () ->
-      (match old_home with Some h -> Unix.putenv "HOME" h | None -> ()));
-  f ~db_path
+      (match old_home with Some h -> Unix.putenv "HOME" h | None -> ()))
+    (fun () -> f ~db_path)
 
 let with_opencode_fixture f =
   with_temp_dir @@ fun tmpdir ->
@@ -162,31 +162,33 @@ let with_opencode_fixture f =
   Unix.putenv "HOME" tmpdir;
   Fun.protect
     ~finally:(fun () ->
-      (match old_home with Some h -> Unix.putenv "HOME" h | None -> ()));
-  f ~alias:"test-opencode"
+      (match old_home with Some h -> Unix.putenv "HOME" h | None -> ()))
+    (fun () -> f ~alias:"test-opencode")
 
 let test_get_claude_code_tokens_by_uuid () =
   with_claude_code_fixture @@ fun ~uuid ~alias:_ ~tmpdir ->
   let old_home = Sys.getenv_opt "HOME" in
   Unix.putenv "HOME" tmpdir;
   Fun.protect
-    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ());
+    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ())
+    (fun () ->
   let data = C2c_stats.get_claude_code_tokens ~session_id:uuid in
   check (string) "token_source" "claude-code" (Option.value data.C2c_stats.token_source ~default:"");
   check (option int) "tokens_in" (Some 50000) data.C2c_stats.tokens_in;
   check (option int) "tokens_out" (Some 100000) data.C2c_stats.tokens_out;
-  check (option int) "cost_cents" (Some 1250) (Option.map (fun c -> int_of_float (c *. 100.0)) data.C2c_stats.cost_usd)
+  check (option int) "cost_cents" (Some 1250) (Option.map (fun c -> int_of_float (c *. 100.0)) data.C2c_stats.cost_usd))
 
 let test_get_claude_code_tokens_by_alias_fallback () =
   with_claude_code_fixture @@ fun ~uuid ~alias ~tmpdir ->
   let old_home = Sys.getenv_opt "HOME" in
   Unix.putenv "HOME" tmpdir;
   Fun.protect
-    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ());
+    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ())
+    (fun () ->
   (* Use alias name as session_id (the fallback path) *)
   let data = C2c_stats.get_claude_code_tokens ~session_id:alias in
   check (string) "token_source" "claude-code" (Option.value data.C2c_stats.token_source ~default:"");
-  check (option int) "tokens_in" (Some 50000) data.C2c_stats.tokens_in
+  check (option int) "tokens_in" (Some 50000) data.C2c_stats.tokens_in)
 
 let test_get_codex_tokens () =
   with_codex_fixture @@ fun ~db_path ->
@@ -195,12 +197,13 @@ let test_get_codex_tokens () =
   let top = Filename.dirname (Filename.dirname db_path) in
   Unix.putenv "HOME" top;
   Fun.protect
-    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ());
+    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ())
+    (fun () ->
   let data = C2c_stats.get_codex_tokens ~session_id:"test-codex-session" in
   check (string) "token_source" "codex" (Option.value data.C2c_stats.token_source ~default:"");
   check (option int) "tokens (combined)" (Some 98765) data.C2c_stats.tokens_in;
   check bool "tokens_out is None" true (data.C2c_stats.tokens_out = None);
-  check bool "cost is None" true (data.C2c_stats.cost_usd = None)
+  check bool "cost is None" true (data.C2c_stats.cost_usd = None))
 
 let test_get_opencode_tokens () =
   with_opencode_fixture @@ fun ~alias ->
