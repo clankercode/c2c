@@ -12,7 +12,17 @@
    - token isolation: a message that mentions the wrong token is ignored
      (await-reply still times out). *)
 
-let c2c_binary = "./c2c.exe"
+(* Resolve c2c.exe relative to this test binary so the test works whether
+   it's invoked via `dune runtest` (which stages c2c.exe alongside this
+   test via the [(deps c2c.exe)] dune stanza) OR directly as
+   `_build/default/ocaml/cli/test_c2c_await_reply.exe` (which inherits
+   the invoker's cwd, NOT the build dir, so a `./c2c.exe` literal would
+   resolve to a non-existent path -> exit 127). #158, stanza-coder
+   2026-04-30, after jungle-coder caught the relative-path issue during
+   slice-1 review of #157. *)
+let c2c_binary =
+  let exe = Sys.executable_name in
+  Filename.concat (Filename.dirname exe) "c2c.exe"
 
 let mk_tmp_broker_root () =
   let dir = Filename.temp_file "c2c-await-reply-test-" "" in
