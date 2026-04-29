@@ -24,8 +24,8 @@ runbook unifies the rules.
    path-resolution heuristics — Edit can resolve to the main tree.
 4. **No destructive git ops**: `git stash`, `git checkout HEAD --
    <file>`, `git restore`, `git reset --hard`, `git clean -f`,
-   `git checkout .`. All of these can nuke peer-unstaged work
-   silently.
+   `git checkout .`, `git branch -D`, `git update-ref -d`. All of
+   these can nuke peer-unstaged work or branch identity silently.
 5. **If a build breaks or a test fails unexpectedly**: the first
    question is "who else is touching this file?" — not
    "let me reset the tree." Send a DM. Coordinate.
@@ -701,6 +701,60 @@ Pattern 4 and want the underlying mechanism, this section names
 it. If you came here first and want a concrete loss-of-edits
 receipt, see Pattern 4. Both prescribe the same alternatives
 (commit-fixup or diff-to-tmpfile).
+
+---
+
+## Pattern 14 — ref deletion in shared-tree layout
+
+**Severity**: HIGH (data loss; distinct from Pattern 6's working-tree
+destruction).
+
+**Symptom**: `git branch -D <branch>` or `git update-ref -d
+refs/heads/<branch>` DELETES the ref from ALL worktrees
+simultaneously. If another agent's worktree is checked out on that
+branch, their HEAD becomes a detached commit with the branch ref
+permanently gone. No warning, no confirmation.
+
+**Why this is a class-1 footgun**:
+
+Refs (`refs/heads/`, `refs/stash`) are stored under `.git/refs/`
+which is shared across all worktrees sharing the same `.git/`. Unlike
+`git reset --hard` (Pattern 6) which destroys working-tree content,
+ref deletion destroys BRANCH IDENTITY — the ability to name and return
+to a commit via a symbolic name.
+
+**Mitigation** (pre-emptive — never `branch -D` or `update-ref -d`
+in shared-tree):
+
+Before running branch deletion, check for worktrees currently on that
+branch:
+
+```bash
+git for-each-ref refs/heads/ --format='%(refname:short)' \
+  | xargs -I{} git worktree list | grep {} || echo "no worktrees on this branch"
+```
+
+If any are found, coordinate in `swarm-lounge` before proceeding. Use
+`git branch -d` (fails if unmerged) instead of `-D` for safe deletion
+that refuses to delete without a merge base. If you must delete a
+stale ref with no other worktrees on it, `git branch -d` is the
+safe variant.
+
+**Caveat on `git gc`**: Raw `git gc --prune=now` can aggressively
+prune objects needed by other worktrees (though git's reference
+counting usually prevents actual loss). Always use `c2c worktree gc`
+(#313) which respects worktree state, not raw `git gc`. This runbook
+does not make `git gc` its own pattern; the safe interface is
+`c2c worktree gc`.
+
+**Class membership**: Pattern 6 (`git reset --hard`) destroys
+working-tree content. Pattern 14 destroys branch identity. Both are
+destructive ops scoped to shared `.git/` state, not individual
+worktrees.
+
+**Receipt**: 2026-04-29 fern-coder (`git reset --hard` on master,
+Pattern 6 incident) is the proximate cause; this pattern names the
+analogous ref-deletion hazard that Pattern 6 doesn't cover.
 
 ---
 
