@@ -1,0 +1,215 @@
+# #330 V3 — 2-relay mesh probe topology.
+#
+# Target: two independent relays (relay-a, relay-b) with thin shell-driven
+# peers — validates the cross-host dead-letter contract BEFORE the forwarder
+# transport (S1) is implemented. Once forwarder lands, assertions flip from
+# "expect dead_letter" to "expect delivered".
+#
+# Topology:
+#   peer-a1 ─┐          ┌─ peer-b1
+#            ├──→ relay-a ←── relay-b ←┤
+#   peer-a2 ─┘          └─ peer-b2
+#
+# Each relay has its own broker volume. Cross-host DMs (peer-a → peer-b@host-b)
+# go via relay-a's ingress → dead-letter (no forwarder yet).
+#
+# WARNING: Do NOT run this alongside the live swarm on a memory-constrained
+# host. Total RAM budget: ≤ 600 MB (relay × 2 @ 80 MB + peers × 4 @ 40 MB
+# + pytest driver @ 80 MB + 320 MB headroom). See OOM postmortem at
+# .sitreps/2026/04/28/03.md
+#
+# Usage:
+#   docker compose -f docker-compose.2-relay-probe.yml up -d --build
+#   pytest docker-tests/test_relay_mesh_probe.py -v
+#   docker compose -f docker-compose.2-relay-probe.yml down -v
+
+services:
+  relay-a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: c2c-relay-a:e2e
+    container_name: c2c-relay-a
+    environment:
+      C2C_RELAY_PERSIST_DIR: /var/lib/c2c
+      PORT: "9000"
+      C2C_RELAY_NAME: "host-a"
+    networks:
+      - c2c-mesh-net
+    ports:
+      - "9000:9000"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          pids: 64
+        reservations:
+          memory: 32m
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/9000 && printf "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && timeout 2 cat <&3 | grep -q "\"ok\":true"'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  relay-b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: c2c-relay-b:e2e
+    container_name: c2c-relay-b
+    environment:
+      C2C_RELAY_PERSIST_DIR: /var/lib/c2c
+      PORT: "9001"
+      C2C_RELAY_NAME: "host-b"
+    networks:
+      - c2c-mesh-net
+    ports:
+      - "9001:9001"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          pids: 64
+        reservations:
+          memory: 32m
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/9001 && printf "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && timeout 2 cat <&3 | grep -q "\"ok\":true"'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  peer-a1:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-peer-a1
+    depends_on:
+      relay-a:
+        condition: service_healthy
+    volumes:
+      - broker-a1:/var/lib/c2c
+    networks:
+      - c2c-mesh-net
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+          pids: 64
+        reservations:
+          memory: 32m
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_URL: http://relay-a:9000
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: peer-a1
+      C2C_MCP_SESSION_ID: peer-a1-session
+      C2C_CLI_FORCE: "1"
+    command: ["sleep", "3600"]
+
+  peer-a2:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-peer-a2
+    depends_on:
+      relay-a:
+        condition: service_healthy
+    volumes:
+      - broker-a2:/var/lib/c2c
+    networks:
+      - c2c-mesh-net
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+          pids: 64
+        reservations:
+          memory: 32m
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_URL: http://relay-a:9000
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: peer-a2
+      C2C_MCP_SESSION_ID: peer-a2-session
+      C2C_CLI_FORCE: "1"
+    command: ["sleep", "3600"]
+
+  peer-b1:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-peer-b1
+    depends_on:
+      relay-b:
+        condition: service_healthy
+    volumes:
+      - broker-b1:/var/lib/c2c
+    networks:
+      - c2c-mesh-net
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+          pids: 64
+        reservations:
+          memory: 32m
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_URL: http://relay-b:9001
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: peer-b1
+      C2C_MCP_SESSION_ID: peer-b1-session
+      C2C_CLI_FORCE: "1"
+    command: ["sleep", "3600"]
+
+  peer-b2:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-peer-b2
+    depends_on:
+      relay-b:
+        condition: service_healthy
+    volumes:
+      - broker-b2:/var/lib/c2c
+    networks:
+      - c2c-mesh-net
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+          pids: 64
+        reservations:
+          memory: 32m
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_URL: http://relay-b:9001
+      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_IN_DOCKER: "1"
+      C2C_MCP_AUTO_REGISTER_ALIAS: peer-b2
+      C2C_MCP_SESSION_ID: peer-b2-session
+      C2C_CLI_FORCE: "1"
+    command: ["sleep", "3600"]
+
+networks:
+  c2c-mesh-net:
+    driver: bridge
+
+volumes:
+  broker-a1:
+  broker-a2:
+  broker-b1:
+  broker-b2:
