@@ -134,6 +134,56 @@ let test_atomic_write_string_roundtrip () =
      c2c start kimi <name>
      ps -p <daemon-pid> -o comm   # → "c2c-kimi-notif"
    PR_SET_NAME truncates to 16 bytes incl. NUL, so 15-char name is safe. *)
+(* #475: c2c-system events must NOT reach the kimi llm-sink — they cause
+   identity-confusion when kimi reads "<alias> joined swarm-lounge" as a
+   user-turn DM. *)
+let test_is_system_event_predicate () =
+  Alcotest.(check bool) "c2c-system → true" true
+    (C2c_kimi_notifier.is_system_event ~from_alias:"c2c-system");
+  Alcotest.(check bool) "regular alias → false" false
+    (C2c_kimi_notifier.is_system_event ~from_alias:"stanza-coder");
+  Alcotest.(check bool) "empty alias → false" false
+    (C2c_kimi_notifier.is_system_event ~from_alias:"");
+  Alcotest.(check bool) "case-sensitive (broker uses canonical lowercase)" false
+    (C2c_kimi_notifier.is_system_event ~from_alias:"C2C-System")
+
+let with_tmpdir f =
+  let tmp = Filename.temp_file "kimi-notif-test-" "" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o755;
+  Fun.protect ~finally:(fun () ->
+      let rec rmrf p =
+        if Sys.is_directory p then begin
+          Array.iter (fun c -> rmrf (Filename.concat p c)) (Sys.readdir p);
+          (try Unix.rmdir p with _ -> ())
+        end else (try Sys.remove p with _ -> ())
+      in
+      rmrf tmp)
+    (fun () -> f tmp)
+
+let test_write_notification_skips_system_events () =
+  with_tmpdir (fun sdir ->
+      C2c_kimi_notifier.write_notification
+        ~session_dir:sdir
+        ~notification_id:"abc123def456"
+        ~from_alias:"c2c-system"
+        ~body:"lumi-ember registered";
+      let ndir = Filename.concat (Filename.concat sdir "notifications") "abc123def456" in
+      Alcotest.(check bool) "no notification dir created for system event"
+        false (Sys.file_exists ndir))
+
+let test_write_notification_writes_real_dm () =
+  with_tmpdir (fun sdir ->
+      C2c_kimi_notifier.write_notification
+        ~session_dir:sdir
+        ~notification_id:"realdm123456"
+        ~from_alias:"stanza-coder"
+        ~body:"hello kimi";
+      let ndir = Filename.concat (Filename.concat sdir "notifications") "realdm123456" in
+      let event_path = Filename.concat ndir "event.json" in
+      let delivery_path = Filename.concat ndir "delivery.json" in
+      Alcotest.(check bool) "event.json written" true (Sys.file_exists event_path);
+      Alcotest.(check bool) "delivery.json written" true (Sys.file_exists delivery_path))
 
 let () =
   Alcotest.run "c2c_kimi_notifier"
@@ -149,4 +199,9 @@ let () =
       ]
     ; "atomic_write",
       [ Alcotest.test_case "roundtrip content" `Quick test_atomic_write_string_roundtrip ]
+    ; "system_event_filter_475",
+      [ Alcotest.test_case "is_system_event predicate" `Quick test_is_system_event_predicate
+      ; Alcotest.test_case "write_notification skips c2c-system" `Quick test_write_notification_skips_system_events
+      ; Alcotest.test_case "write_notification writes real DM" `Quick test_write_notification_writes_real_dm
+      ]
     ]

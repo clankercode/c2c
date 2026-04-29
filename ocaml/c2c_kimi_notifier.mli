@@ -78,6 +78,25 @@ val workspace_hash_for_path : string -> string
     (wrapped in [try]) for filesystems where it returns EINVAL; the
     atomic-rename guarantee is preserved either way. *)
 val atomic_write_string : string -> string -> unit
+(** [is_system_event ~from_alias] returns [true] when [from_alias] is the
+    canonical broker system sender ([c2c-system]) — used to gate out
+    peer-register / room-join broadcasts from the kimi llm-sink, which
+    would otherwise surface as user-turn input and cause identity-
+    confusion. See #475. *)
+val is_system_event : from_alias:string -> bool
+
+(** [write_notification ~session_dir ~notification_id ~from_alias ~body]
+    writes [event.json] + [delivery.json] under
+    [<session_dir>/notifications/<notification_id>/], unless
+    [is_system_event ~from_alias] is true — in which case the write is
+    skipped (system events are operator-visibility only, never injected
+    into the kimi user-turn stream). Exposed for unit tests. *)
+val write_notification :
+  session_dir:string ->
+  notification_id:string ->
+  from_alias:string ->
+  body:string ->
+  unit
 
 (** [notification_id_for_msg ~from_alias ~ts ~content] returns a
     deterministic 12-char id (lowercase hex) that maps the same broker

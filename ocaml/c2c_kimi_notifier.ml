@@ -131,11 +131,27 @@ let mkdir_p dir =
   in
   aux dir
 
+(* System events (peer-register, room-join broadcasts) are operator-
+   visibility signals from c2c-system, NOT user-turn input. If we route
+   them through the kimi notification-store llm sink, kimi reads them as
+   if a user typed them — causing identity-confusion (e.g. "<alias>
+   joined swarm-lounge" makes kimi think it just registered as <alias>).
+   Filter at the writer so every entry path (run_once, future callers)
+   gets the guard for free. See #475. *)
+let is_system_event ~from_alias = from_alias = "c2c-system"
+
 let write_notification
     ~session_dir
     ~notification_id
     ~from_alias
     ~body =
+  if is_system_event ~from_alias then begin
+    Printf.eprintf
+      "[kimi-notifier] skip system event from %s (#475 identity-confusion guard): %s\n%!"
+      from_alias
+      (if String.length body > 60 then String.sub body 0 60 ^ "..." else body);
+    ()
+  end else
   let ndir = session_dir // "notifications" // notification_id in
   mkdir_p ndir;
   let event_path = ndir // "event.json" in
