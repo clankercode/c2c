@@ -46,7 +46,7 @@
 (test
  (name test_c2c_start)
  (modules test_c2c_start)
- (libraries c2c_mcp alcotest yojson unix)
+ (libraries c2c_mcp alcotest cmdliner yojson unix)
  (deps %{exe:../cli/c2c.exe}))
 
 (test

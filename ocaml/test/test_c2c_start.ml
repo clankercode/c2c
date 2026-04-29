@@ -222,6 +222,44 @@ let test_prepare_launch_args_forwards_extra_args_for_codex () =
   check bool "forwards --profile" true
     (has_adjacent_pair "--profile" "myprofile" args)
 
+(* #470 regression guard: the `c2c start` Cmdliner term parses trailing
+   args after `--` via `pos_right 1 string []`. The previous shape
+   `pos_right 1 (list string) []` used the `list string` converter, which
+   splits each token on commas — so `c2c start claude -- --prompt "Hello, world"`
+   would arrive as ["--prompt"; "Hello"; " world"] instead of
+   ["--prompt"; "Hello, world"]. This test mirrors the term shape
+   inline so the contract is exercised independently of the (private,
+   inlined) c2c.ml term. *)
+let test_extra_argv_preserves_commas_470 () =
+  let extra_argv =
+    Cmdliner.Arg.(value & pos_right 1 string [] & info [] ~docv:"ARG" ~doc:"")
+  in
+  let client =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"")
+  in
+  let name =
+    Cmdliner.Arg.(value & opt (some string) None & info ["name"; "n"] ~docv:"NAME" ~doc:"")
+  in
+  let captured = ref None in
+  let term =
+    let open Cmdliner.Term.Syntax in
+    let+ _client = client
+    and+ _name = name
+    and+ argv = extra_argv in
+    captured := Some argv
+  in
+  let cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start") term in
+  let argv =
+    [| "c2c"; "start"; "claude"; "-n"; "kimi-470";
+       "--"; "--prompt"; "Hello, world"; "--flag=a,b,c"; "plain" |]
+  in
+  let _ = Cmdliner.Cmd.eval ~argv cmd in
+  let got = match !captured with Some a -> a | None -> [] in
+  check (list string)
+    "comma-containing tokens preserved verbatim (no list-string split)"
+    [ "--prompt"; "Hello, world"; "--flag=a,b,c"; "plain" ]
+    got
+
 let test_prepare_launch_args_adds_model_flag_for_opencode () =
   let args =
     C2c_start.prepare_launch_args ~name:"oc-proof" ~client:"opencode"
@@ -2599,6 +2637,8 @@ let () =
             `Quick, test_prepare_launch_args_forwards_extra_args_for_opencode )
         ; ( "prepare_launch_args_forwards_extra_args_for_codex",
             `Quick, test_prepare_launch_args_forwards_extra_args_for_codex )
+        ; ( "extra_argv_preserves_commas_470",
+            `Quick, test_extra_argv_preserves_commas_470 )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "tmux_shell_command_quotes_argv",

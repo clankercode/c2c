@@ -7258,14 +7258,21 @@ let start_cmd =
   in
   (* Trailing args after `--`: appended verbatim to the client's argv.
      e.g. `c2c start claude -- --foo bar` runs claude with `--foo bar`;
-     `c2c start pty -- bash -i` runs bash with `-i`. *)
+     `c2c start pty -- bash -i` runs bash with `-i`.
+
+     #470: use `string` (not `list string`) — the `list` Cmdliner converter
+     splits each token on commas, which mangles arguments that contain
+     commas (e.g. `--prompt "Hello, world"` would become three tokens:
+     ["--prompt"; "Hello"; " world"]). With plain `string`, each positional
+     token is preserved verbatim. *)
   let extra_argv =
-    Cmdliner.Arg.(value & pos_right 1 (list string) [] & info [] ~docv:"ARG"
+    Cmdliner.Arg.(value & pos_right 1 string [] & info [] ~docv:"ARG"
       ~doc:"Extra arguments forwarded to the spawned client's argv (e.g. \
             `c2c start claude -- --print hello` runs claude with `--print hello`). \
-            For CLIENT=tmux, the tail is typed into the target pane instead of \
-            appended to argv. For CLIENT=pty, the first tail arg is the command \
-            to spawn under the PTY (e.g. `c2c start pty -- bash -i`).")
+            Tokens are preserved verbatim — commas inside an argument are NOT \
+            split. For CLIENT=tmux, the tail is typed into the target pane \
+            instead of appended to argv. For CLIENT=pty, the first tail arg \
+            is the command to spawn under the PTY (e.g. `c2c start pty -- bash -i`).")
   in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")
@@ -7353,7 +7360,9 @@ let start_cmd =
   and+ foreground_flag = foreground_flag
   and+ relay_url_opt = relay_url_opt
   and+ interval_opt = interval_opt in
-  let extra_argv = List.concat extra_argv in
+  (* #470: extra_argv is now string list (was string list list when the
+     positional converter was `list string` — that split each token on
+     commas). No flatten needed. *)
   let kickoff_prompt_text =
     match kickoff_prompt_text_raw, kickoff_prompt_file with
     | Some _, Some _ ->
