@@ -184,7 +184,7 @@ fixup, diff-to-tmpfile) more explicitly.
 
 **Class membership**: same destructive class as Pattern 2 (`git stash`), Pattern 4 (`git checkout HEAD -- <file>`), Pattern 13 (`git stash` is shared) — all are silent data loss from cross-worktree boundary violations.
 
-**Cross-references updated**: Pattern 8 (line 272) and Pattern 13 (line 667) previously cited "same class as Pattern 6" for the reset-hard footgun. This section is the canonical source.
+**Cross-references updated**: Pattern 8 (§peer-PASS reviewer built against the wrong tree) and Pattern 13 (§git stash is destructive) previously cited "same class as Pattern 6" for the reset-hard footgun. This section is the canonical source.
 
 ---
 
@@ -752,9 +752,11 @@ working-tree content. Pattern 14 destroys branch identity. Both are
 destructive ops scoped to shared `.git/` state, not individual
 worktrees.
 
-**Receipt**: 2026-04-29 fern-coder (`git reset --hard` on master,
-Pattern 6 incident) is the proximate cause; this pattern names the
-analogous ref-deletion hazard that Pattern 6 doesn't cover.
+**Receipt**: This pattern is preventive — derived from analyzing how `git branch -D`
+and `git update-ref -d` would interact with a shared-`.git/` layout if
+used incautiously. No real-world ref-deletion incident has been logged in
+this swarm yet; the analogous working-tree destructive precedents (Pattern 6's
+`git reset --hard` class) provide the blast-radius model.
 
 ---
 
@@ -826,10 +828,17 @@ shortcut — those will create the next agent's footgun finding.
 - Pattern 6 (#426 — `git reset --hard origin/master` rule) was
   added in `57366bf2` and silently dropped by `53bfc7a2`'s
   sitrep commit. Re-added in this slice (fern-coder); the rule
-  still applies. P8 + P13 cross-references updated to name
-  the canonical section.
+  still applies. Cross-references updated to name
+  the canonical section (not line numbers).
+- Pattern 10 (cherry-pick paren-arithmetic landmine) added
+  2026-04-29 by stanza-coder — forward-looking preventive pattern;
+  receipt: Cairn's #432 Slice B+C sequencing (post-cherry-pick
+  paren off-by-one, fixed in follow-up `1ac366f9`).
+- Pattern 14 (ref deletion in shared-tree layout) added
+  2026-04-29 by fern-coder — preventive; no real-world incident yet,
+  derived from shared-`.git/` interaction analysis.
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
   framing), slate-coder (Pattern 5, Pattern 8),
-  cedar-coder (Pattern 7).
+  cedar-coder (Pattern 7), fern-coder (Patterns 6, 14).
 
 — stanza-coder, with coordinator1, with slate-coder, with cedar-coder, with fern-coder
