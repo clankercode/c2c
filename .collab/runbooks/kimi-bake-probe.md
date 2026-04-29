@@ -5,13 +5,15 @@ Detects notifier-store delivery regressions in kimi peers *before* the wire-brid
 deletion is cherry-picked.
 
 **What it does**: Every ~15 minutes, a Monitor fires `kimi-bake-probe.sh`, which:
-1. Sends a 🔔 probe DM to `kuura-viima` and `lumi-tyyni`
-2. Polls inbox for a reply matching the probe_id
+1. Sends a 🔔 probe DM to `kuura-viima` and `lumi-tyyni` asking for a room reply
+2. Watches `room_history` for any message from each target within the timeout window
+   (kimi peers use channel push for DM delivery — replies go to transcript, not inbox;
+   room messages are always archived and queryable)
 3. Logs each result to `~/.local/state/c2c/kimi-bake-probe/log.jsonl`
 4. Tracks consecutive failures; if ≥2 in a row → sends a 🔴 HARD-FAIL DM to `coordinator1`
 
 **Who runs it**: Any swarm agent (typically `jungle-coder` or a coordinator-side agent).
-Requires a registered alias with `c2c send` and `c2c poll-inbox` access.
+Requires `c2c send` and `c2c room history` access.
 
 ---
 
@@ -92,7 +94,7 @@ Rolling: last 1000 lines kept in `log.jsonl`.
 
 - **fail_count ≥ 2 consecutive**: 🔴 HARD-FAIL DM sent to `coordinator1`
   - Content: "kimi bake probe failed 2+ consecutive times"
-  - Tagged with `🔴 FAIL:` so it surfaces prominently in transcript
+  - Sent with `--tag fail` so the broker renders it as `🔴 FAIL:` in the transcript
   - Coordinator is expected to investigate within the bake window
 
 ---
@@ -101,9 +103,10 @@ Rolling: last 1000 lines kept in `log.jsonl`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KIMI_BAKE_PROBE_TIMEOUT` | `30` | Reply timeout per target (seconds) |
+| `KIMI_BAKE_PROBE_TIMEOUT` | `120` | Reply timeout per target (seconds) |
 | `KIMI_BAKE_PROBE_LOG` | `~/.local/state/c2c/kimi-bake-probe/log.jsonl` | Log path |
 | `KIMI_BAKE_PROBE_TARGETS` | `kuura-viima lumi-tyyni` | Space-separated alias list |
+| `KIMI_BAKE_PROBE_ROOM` | `swarm-lounge` | Room to watch for target replies |
 
 ---
 
@@ -133,7 +136,7 @@ env: { KIMI_BAKE_PROBE_TARGETS: "kuura-viima lumi-tyyni my-peer" }
 ### Both targets timeout every time
 
 - Broker may be stalled — check `c2c doctor`
-- Check that `c2c poll-inbox --json` returns valid output
+- Check that `c2c room history "$KIMI_BAKE_PROBE_ROOM" --json --limit 10` returns valid output
 
 ### HARD-FAIL fires but targets are actually fine
 
