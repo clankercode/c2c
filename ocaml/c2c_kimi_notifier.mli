@@ -72,6 +72,13 @@ val resolve_active_session_id : unit -> string option
     (see [kimi_cli/metadata.py:WorkDirMeta.sessions_dir]). *)
 val workspace_hash_for_path : string -> string
 
+(** [atomic_write_string path content] writes [content] to a sibling
+    temp file in the same directory as [path], fsyncs the temp fd, then
+    renames into place. Exposed for unit tests. The fsync is best-effort
+    (wrapped in [try]) for filesystems where it returns EINVAL; the
+    atomic-rename guarantee is preserved either way. *)
+val atomic_write_string : string -> string -> unit
+
 (** [notification_id_for_msg ~from_alias ~ts ~content] returns a
     deterministic 12-char id (lowercase hex) that maps the same broker
     message to the same notification id across c2c retries — so the kimi

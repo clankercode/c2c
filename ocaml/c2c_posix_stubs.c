@@ -10,6 +10,27 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <pty.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
+
+/* prctl(PR_SET_NAME, ...): rename the calling thread's "comm" field
+   (visible in `ps` and /proc/<pid>/comm). PR_SET_NAME truncates to
+   16 bytes including NUL — OS-level safe, no buffer-overrun risk.
+   On non-Linux this is a no-op (no <sys/prctl.h> available). The
+   return code is intentionally ignored: prctl never fails on Linux
+   for PR_SET_NAME with a valid string, and on other platforms the
+   call doesn't happen. */
+CAMLprim value caml_c2c_set_proc_name(value vname)
+{
+    CAMLparam1(vname);
+#ifdef __linux__
+    (void)prctl(PR_SET_NAME, (unsigned long)String_val(vname), 0, 0, 0);
+#else
+    (void)vname;
+#endif
+    CAMLreturn(Val_unit);
+}
 
 /* setpgid(2): place the calling process in a new process group.
    OCaml 5.x's Unix module does not expose setpgid, so we bind it here. */

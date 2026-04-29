@@ -96,6 +96,45 @@ let test_resolve_session_id_parses_log () =
     (Some "aaaa1234-5678-90ab-cdef-1234567890ab")
     result
 
+(* #465: atomic_write_string should produce a stable file with the exact
+   content. The fsync added in this slice is best-effort and not directly
+   observable, but the contract — write atomically, content readable
+   after — is what callers rely on. *)
+let test_atomic_write_string_roundtrip () =
+  let tmp = Filename.temp_file "c2c-aw-" "" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o755;
+  let dest = Filename.concat tmp "out.json" in
+  let content = "{\"version\":1,\"id\":\"abc123\"}" in
+  C2c_kimi_notifier.atomic_write_string dest content;
+  Alcotest.(check bool) "destination exists" true (Sys.file_exists dest);
+  let ic = open_in dest in
+  let got =
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () ->
+        let buf = Buffer.create 64 in
+        (try
+           while true do
+             Buffer.add_channel buf ic 1
+           done
+         with End_of_file -> ());
+        Buffer.contents buf)
+  in
+  Alcotest.(check string) "content roundtrips" content got;
+  (* Cleanup: dest, then any stray .tmp siblings, then the dir. *)
+  (try Sys.remove dest with _ -> ());
+  (try
+     Array.iter
+       (fun f -> try Sys.remove (Filename.concat tmp f) with _ -> ())
+       (Sys.readdir tmp)
+   with _ -> ());
+  (try Unix.rmdir tmp with _ -> ())
+
+(* #469 prctl smoke test deferred to dogfood validation; manual verification:
+     c2c start kimi <name>
+     ps -p <daemon-pid> -o comm   # → "c2c-kimi-notif"
+   PR_SET_NAME truncates to 16 bytes incl. NUL, so 15-char name is safe. *)
+
 let () =
   Alcotest.run "c2c_kimi_notifier"
     [ "notification_id",
@@ -108,4 +147,6 @@ let () =
       [ Alcotest.test_case "missing log → None" `Quick test_resolve_session_id_missing_log
       ; Alcotest.test_case "parses log + picks newest" `Quick test_resolve_session_id_parses_log
       ]
+    ; "atomic_write",
+      [ Alcotest.test_case "roundtrip content" `Quick test_atomic_write_string_roundtrip ]
     ]

@@ -97,13 +97,28 @@ let json_string s =
 
 let now () = Unix.gettimeofday ()
 
-(* Atomic write: write to .tmp then rename. *)
+(* prctl(PR_SET_NAME, ...) binding — rename the calling thread's "comm"
+   field (visible in `ps`, `/proc/<pid>/comm`). Linux-only; no-op on
+   other platforms. Implementation in [ocaml/c2c_posix_stubs.c]. *)
+external set_proc_name : string -> unit = "caml_c2c_set_proc_name"
+
+(* Atomic write: write to .tmp, fsync, close, then rename.
+   The explicit fsync before rename ensures the temp-file's data
+   blocks are durably on disk before the directory entry is updated;
+   without it, on some filesystems a crash between rename + flush
+   leaves a zero-length destination file. The [try/with] is for
+   portability — some filesystems return EINVAL for fsync on small
+   tmp files; the atomic-rename guarantee is preserved either way. *)
 let atomic_write_string path content =
   let dir = Filename.dirname path in
   let tmp = Filename.temp_file ~temp_dir:dir "c2c-notif-" ".tmp" in
   let oc = open_out tmp in
   Fun.protect ~finally:(fun () -> try close_out oc with _ -> ())
-    (fun () -> output_string oc content);
+    (fun () ->
+      output_string oc content;
+      flush oc;
+      let fd = Unix.descr_of_out_channel oc in
+      try Unix.fsync fd with _ -> ());
   Unix.rename tmp path
 
 let mkdir_p dir =
@@ -264,6 +279,11 @@ let start_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval=2.0) () =
     match Unix.fork () with
     | 0 ->
       ignore (Unix.setsid ());
+      (* Rename our "comm" field so `ps` / `/proc/<pid>/comm` distinguish
+         the daemon from the c2c-start wrapper that forked it. PR_SET_NAME
+         truncates to 16 bytes including NUL ("c2c-kimi-notifier" is 17
+         chars but kernel will truncate safely). #469. *)
+      (try set_proc_name "c2c-kimi-notif" with _ -> ());
       let log_fd =
         Unix.openfile logfile
           [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o644
