@@ -94,11 +94,15 @@ Runtime writebacks:
 
 ## 5. Recommendations + prioritized follow-up slices
 
-### Slice A: `last_launch_at` timestamp (XS, ~5 LoC)
-Add `last_launch_at: float` to `instance_config`. Update in `run_outer_loop` before `write_config`. Enables `c2c instances` to show "last launched" column and nudge scheduler to skip recently-launched sessions.
+### Slice A: `last_launch_at` timestamp (XS, ~5 LoC) ✅ DONE
+Add `last_launch_at: float option` to `instance_config`. Update in `run_outer_loop` before `write_config`. Enables `c2c instances` to show "last launched" column and nudge scheduler to skip recently-launched sessions.
 
-### Slice B: `persist_codex_resume_target` dead-code audit (XS, ~10 LoC)
-Either wire the call site (codex bridge needs to hand off thread-id like headless does) or delete the function and update the mli docstring. Current state is misleading — the function looks like it should be called but isn't.
+**Implementation:** `14f7c497` — field added to type, write_config, load_config_opt, mli. Set to `Some (Unix.gettimeofday ())` on spawn. Backward compatible: missing field loads as `None`. Two tests added (roundtrip + backward-compat).
+
+### Slice B: `persist_codex_resume_target` dead-code audit (XS, ~10 LoC) ✅ DONE
+Removed dead function and mli val. Codex resume target is correctly written only by `cmd_reset_thread` and `cmd_restart` with explicit `session_id_override`. The phantom bridge-driven persistence path no longer exists.
+
+**Implementation:** `14f7c497` — function + mli val removed. No callers found in codebase.
 
 ### Slice C: Alias writeback on `c2c register --alias` (S, ~30 LoC)
 When operator runs `c2c register --alias NEW_ALIAS`, scan `~/.local/share/c2c/instances/` and update any configs where `cfg.alias = old_alias` to `NEW_ALIAS`. Prevents identity drift on restart.
