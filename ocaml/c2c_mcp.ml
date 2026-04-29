@@ -130,16 +130,25 @@ let debug_enabled =
 
 let server_version = Version.version
 
+(* #429a: replace the ~796ms shell-out at module-load with the
+   compile-time-baked SHA from #420. The previous body forked
+   `git rev-parse --short HEAD` every time c2c_mcp.ml was linked
+   (which is every CLI invocation, not just MCP). Per the #429
+   init-cost investigation, this single binding was the largest
+   single contributor to `c2c --version` wall-clock — ~796ms for
+   a value that's already embedded in the binary at build time
+   via the Version_git_sha dune rule.
+
+   Behavior preserved: RAILWAY_GIT_COMMIT_SHA env override still
+   wins for prod-build identification when set; otherwise
+   Version.git_sha (8-char compile-time hash) is used. The
+   "unknown" fallback now propagates from Version_git_sha when
+   the build itself couldn't get a hash (source tarballs, sandboxed
+   builds without git, etc). *)
 let server_git_hash =
   match Sys.getenv_opt "RAILWAY_GIT_COMMIT_SHA" with
   | Some sha when String.length sha >= 7 -> String.sub sha 0 7
-  | _ ->
-    (try
-      let ic = Unix.open_process_in "git rev-parse --short HEAD 2>/dev/null" in
-      let line = input_line ic in
-      ignore (Unix.close_process_in ic);
-      String.trim line
-    with _ -> "unknown")
+  | _ -> Version.git_sha
 
 let server_features =
   [ "liveness"
@@ -205,7 +214,22 @@ let best_effort_file_sha256 path =
         |> Digestif.SHA256.to_hex)
   with _ -> "unknown"
 
-let server_runtime_identity =
+(* #429b: lazy-wrap server_runtime_identity. The SHA-256 of the c2c
+   binary (~23 MB) takes ~690ms CPU at module-load time. Per the
+   #429 init-cost investigation, this was the second-largest single
+   contributor to `c2c --version` wall-clock — a value used ONLY by
+   the MCP server_info tool (mcp__c2c__server_info / initialize),
+   never by any CLI subcommand.
+
+   Wrapping in `lazy` defers the SHA-256 computation until first
+   reference. The MCP handler forces it on the first server_info
+   call (i.e. immediately after `initialize`), so MCP startup pays
+   the cost once, but every CLI invocation skips it.
+
+   Behavior preserved post-force: identical JSON shape, same fields,
+   same values. Pre-force (e.g. on the CLI fast-path), the value is
+   never observed and the cost is never paid. *)
+let server_runtime_identity_lazy = lazy (
   let executable = best_effort_server_executable () in
   let executable_mtime =
     try `Float (Unix.stat executable).st_mtime with _ -> `Null
@@ -218,15 +242,28 @@ let server_runtime_identity =
     ; ("executable_mtime", executable_mtime)
     ; ("executable_sha256", `String (best_effort_file_sha256 executable))
     ]
+)
 
-let server_info =
+(* #429b: server_info itself is also `lazy` because runtime_identity
+   feeds it. Forcing server_info forces both fields. The MCP handler
+   pattern is: pattern-match on Lazy.force server_info_lazy at the
+   `initialize` site (or wherever server_info is consumed). *)
+let server_info_lazy = lazy (
   `Assoc
     [ ("name", `String "c2c")
     ; ("version", `String server_version)
     ; ("git_hash", `String server_git_hash)
     ; ("features", `List (List.map (fun f -> `String f) server_features))
-    ; ("runtime_identity", server_runtime_identity)
+    ; ("runtime_identity", Lazy.force server_runtime_identity_lazy)
     ]
+)
+
+(* Existing readers of `server_info` (CLI server-info subcommand,
+   MCP initialize, MCP server_info tool, fast-path) call this thunk
+   instead of accessing a top-level JSON value. The cost moves from
+   module-load to first-reference; on the CLI fast-path that's
+   never paid. *)
+let server_info () = Lazy.force server_info_lazy
 
 let supported_protocol_version = "2024-11-05"
 let capabilities =
@@ -5272,7 +5309,7 @@ let ts = Unix.gettimeofday () in
       in
       Lwt.return (tool_result ~content ~is_error:false)
   | "server_info" ->
-      let content = Yojson.Safe.to_string server_info in
+      let content = Yojson.Safe.to_string (server_info ()) in
       Lwt.return (tool_result ~content ~is_error:false)
   | "sweep" ->
       let { Broker.dropped_regs; deleted_inboxes; preserved_messages } =
@@ -6308,7 +6345,7 @@ let handle_request ~broker_root json =
       let result =
         `Assoc
           [ ("protocolVersion", `String supported_protocol_version)
-          ; ("serverInfo", server_info)
+          ; ("serverInfo", server_info ())
           ; ("instructions", instructions)
           ; ("capabilities", capabilities)
           ]

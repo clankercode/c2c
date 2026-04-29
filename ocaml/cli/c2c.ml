@@ -2414,7 +2414,7 @@ let tail_log_cmd =
 let server_info_cmd =
   let+ json = json_flag in
   let output_mode = if json then Json else Human in
-  let info = C2c_mcp.server_info in
+  let info = C2c_mcp.server_info () in
   match output_mode with
   | Json -> print_json info
   | Human ->
@@ -9633,7 +9633,7 @@ let fast_path_commands () =
   if !is_all then print_section (safety_to_label Tier4) tier4
 
 let fast_path_server_info ~json () =
-  let info = C2c_mcp.server_info in
+  let info = C2c_mcp.server_info () in
   if json then
     print_json info
   else

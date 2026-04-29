@@ -1,6 +1,9 @@
 val server_version : string
 val server_git_hash : string
-val server_info : Yojson.Safe.t
+val server_info : unit -> Yojson.Safe.t
+(** [#429b] Lazy server_info — first call forces SHA-256 of the running
+    binary (~690ms) and caches the result. CLI subcommands that don't
+    need server_info never pay the cost. *)
 
 val mkdir_p : ?mode:int -> string -> unit
 (** Re-export of the canonical [C2c_io.mkdir_p]. Kept for source-compat
