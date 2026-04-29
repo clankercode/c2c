@@ -26,46 +26,18 @@ let print_json json =
 
 (* --- path helpers ---------------------------------------------------------- *)
 
-(* C2C_MEMORY_ROOT_OVERRIDE: test hook — when set, replaces .c2c/memory as the
-   memory root. Production agents never set this; the in-repo path is canonical. *)
-let memory_root () =
-  match Sys.getenv_opt "C2C_MEMORY_ROOT_OVERRIDE" with
-  | Some d when String.trim d <> "" -> String.trim d
-  | _ ->
-      let git_dir =
-        let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
-        try
-          let line = input_line ic in
-          ignore (Unix.close_process_in ic);
-          Some line
-        with _ -> ignore (Unix.close_process_in ic); None
-      in
-      let base = match git_dir with
-        | Some d -> Filename.dirname d
-        | None -> Sys.getcwd ()
-      in
-      Filename.concat (Filename.concat base ".c2c") "memory"
-
-let memory_base_dir alias =
-  Filename.concat (memory_root ()) alias
+(* Path helpers live in C2c_mcp (broker library) — single source of truth
+   shared with the broker's memory_list / memory_read / memory_write
+   handlers. Re-exported here so existing call sites + tests don't have
+   to qualify. The C2C_MEMORY_ROOT_OVERRIDE test hook lives upstream. *)
+let memory_root = C2c_mcp.memory_root
+let memory_base_dir = C2c_mcp.memory_base_dir
+let entry_filename = C2c_mcp.memory_entry_path
 
 let ensure_memory_dir alias =
   let dir = memory_base_dir alias in
   C2c_mcp.mkdir_p dir;
   dir
-
-(* --- entry file helpers ---------------------------------------------------- *)
-
-let entry_filename alias name =
-  let safe = String.map (fun c ->
-    match c with
-    | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
-    | _ ->
-        let code = Char.code c in
-        if (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code = 95 || code = 45
-        then c else '_')
-    name in
-  Filename.concat (memory_base_dir alias) (safe ^ ".md")
 
 (* #388: delegates to C2c_io (library-level, reachable from tests).
    read_file_opt returns "" on any I/O error, matching the original

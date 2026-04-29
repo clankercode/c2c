@@ -153,6 +153,18 @@ val parse_alias_list : string -> string list
     for resilience. Whitespace and surrounding quotes are stripped, empty
     entries dropped. Used by memory frontmatter parsers in CLI + MCP. *)
 
+val memory_root : unit -> string
+(** [memory_root ()] returns the [.c2c/memory] root path. Honors
+    [C2C_MEMORY_ROOT_OVERRIDE] (test hook); otherwise resolves via
+    [git rev-parse --git-common-dir] dirname / [.c2c] / [memory]. *)
+
+val memory_base_dir : string -> string
+(** [memory_base_dir alias] = [memory_root () / alias]. *)
+
+val memory_entry_path : string -> string -> string
+(** [memory_entry_path alias name] = [memory_base_dir alias / safe(name).md]
+    where [safe] replaces unsafe filename chars with ['_']. *)
+
 module Broker : sig
   type t
   val create : root:string -> t

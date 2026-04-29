@@ -355,23 +355,32 @@ let tool_err content = tool_result ~content ~is_error:true
 let default_permission_ttl_s = 600.0
 
 (* Shared memory-helpers used by memory_list / memory_read / memory_write
-   (audit 2026-04-29 §2). Previously duplicated three times inside
-   handle_tool_call (~75 LOC). The first dup also tripped warning 26 on an
-   unused [entry_path]. Lifted here so all three handlers share one source. *)
+   handlers AND by the CLI memory commands (cli/c2c_memory.ml re-exports).
+   Single source of truth for [.c2c/memory/<alias>/<name>.md] resolution.
+
+   [C2C_MEMORY_ROOT_OVERRIDE]: test hook — when set (and non-empty after
+   trim), replaces the [.c2c/memory] root. Production agents never set
+   this; the in-repo path is canonical. *)
+let memory_root () =
+  match Sys.getenv_opt "C2C_MEMORY_ROOT_OVERRIDE" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ ->
+      let git_dir =
+        let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
+        try
+          let line = input_line ic in
+          ignore (Unix.close_process_in ic);
+          Some line
+        with _ -> ignore (Unix.close_process_in ic); None
+      in
+      let base = match git_dir with
+        | Some d -> Filename.dirname d
+        | None -> Sys.getcwd ()
+      in
+      Filename.concat (Filename.concat base ".c2c") "memory"
+
 let memory_base_dir alias =
-  let git_dir =
-    let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
-    try
-      let line = input_line ic in
-      ignore (Unix.close_process_in ic);
-      Some line
-    with _ -> ignore (Unix.close_process_in ic); None
-  in
-  let base = match git_dir with
-    | Some d -> Filename.dirname d
-    | None -> Sys.getcwd ()
-  in
-  Filename.concat (Filename.concat base ".c2c") "memory" |> fun d -> Filename.concat d alias
+  Filename.concat (memory_root ()) alias
 
 let memory_entry_path alias name =
   let safe = Stdlib.String.map (fun c ->
@@ -7343,9 +7352,6 @@ let ts = Unix.gettimeofday () in
            in
             Lwt.return (tool_result ~content ~is_error:(not ok))))
   | "memory_list" ->
-      (* memory_base_dir / memory_entry_path now lifted top-level (audit §2);
-         memory_list never used entry_path locally — that was the warning-26
-         source. *)
       (* parse_alias_list lifted to top-level (#296). *)
       let parse_frontmatter content =
         let lines = String.split_on_char '\n' content in
@@ -7434,7 +7440,6 @@ let ts = Unix.gettimeofday () in
            in
             Lwt.return (tool_ok (`List items |> Yojson.Safe.to_string)))
   | "memory_read" ->
-      (* memory_base_dir / memory_entry_path lifted top-level (audit §2). *)
       let entry_path = memory_entry_path in
       (* parse_alias_list lifted to top-level (#296). *)
       let parse_frontmatter content =
@@ -7518,7 +7523,6 @@ let ts = Unix.gettimeofday () in
                  ] |> Yojson.Safe.to_string in
                  Lwt.return (tool_ok result))
   | "memory_write" ->
-      (* memory_base_dir / memory_entry_path lifted top-level (audit §2). *)
       let entry_path = memory_entry_path in
       let name = string_member "name" arguments in
       let desc = optional_string_member "description" arguments in
