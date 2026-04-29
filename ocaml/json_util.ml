@@ -53,3 +53,13 @@ let bool_member name json =
   match assoc_opt name json with
   | Some (`Bool b) -> Some b
   | _ -> None
+
+(** [jsonrpc_error ~id ~code ~message] builds a JSON-RPC 2.0 error response.
+    [id] is passed verbatim so callers can mirror back the request id or use
+    [`Null] when the request id is unavailable (e.g. parse errors). *)
+let jsonrpc_error ~id ~code ~message =
+  `Assoc
+    [ ("jsonrpc", `String "2.0")
+    ; ("id", id)
+    ; ("error", `Assoc [ ("code", `Int code); ("message", `String message) ])
+    ]

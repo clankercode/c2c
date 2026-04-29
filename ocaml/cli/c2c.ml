@@ -5521,13 +5521,6 @@ let serve_cmd =
     let* () = Lwt_io.write_line Lwt_io.stdout body in
     Lwt_io.flush Lwt_io.stdout
   in
-  let jsonrpc_error ~id ~code ~message =
-    `Assoc
-      [ ("jsonrpc", `String "2.0")
-      ; ("id", id)
-      ; ("error", `Assoc [ ("code", `Int code); ("message", `String message) ])
-      ]
-  in
   let rec loop ~negotiated_capabilities =
     let* msg = read_message () in
     match msg with
@@ -5536,7 +5529,7 @@ let serve_cmd =
         let json = try Ok (Yojson.Safe.from_string line) with _ -> Error () in
         match json with
         | Error () ->
-            let* () = write_message (jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
+            let* () = write_message (Json_util.jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
             loop ~negotiated_capabilities
         | Ok request ->
             let negotiated_capabilities =

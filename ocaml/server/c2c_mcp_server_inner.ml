@@ -140,13 +140,6 @@ let write_message json =
   let* () = Lwt_io.write_line Lwt_io.stdout body in
   Lwt_io.flush Lwt_io.stdout
 
-let jsonrpc_error ~id ~code ~message =
-  `Assoc
-    [ ("jsonrpc", `String "2.0")
-    ; ("id", id)
-    ; ("error", `Assoc [ ("code", `Int code); ("message", `String message) ])
-    ]
-
 (* Continuous inbox delivery: background thread that watches the inbox file and emits
    notifications for new messages while the session runs. The watcher only drains
    when channel_capable_ref is true — i.e. the client negotiated
@@ -247,7 +240,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
       match json with
       | Error () ->
           debug_log "parse error";
-          let* () = write_message (jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
+          let* () = write_message (Json_util.jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
           loop ~broker_root ~negotiated_capabilities_ref
       | Ok request ->
           let method_name =

@@ -322,14 +322,7 @@ let instructions =
     "C2C is a peer-to-peer messaging broker between Claude sessions. To receive messages reliably, call the `poll_inbox` tool at the start of each turn (and again after any send) — it drains and returns any queued messages as a JSON array. Inbound messages are ALSO emitted as notifications/claude/channel for clients launched with --dangerously-load-development-channels server:c2c, but most sessions do not surface that custom notification method; poll_inbox is the flag-independent path. Use `register` once per session, `list` to see peers, `send` to enqueue a message to a peer alias, `whoami` to confirm your own alias."
 
 let jsonrpc_response ~id result =
-  `Assoc [ ("jsonrpc", `String "2.0"); ("id", id); ("result", result) ]
-
-let jsonrpc_error ~id ~code ~message =
-  `Assoc
-    [ ("jsonrpc", `String "2.0")
-    ; ("id", id)
-    ; ("error", `Assoc [ ("code", `Int code); ("message", `String message) ])
-    ]
+   `Assoc [ ("jsonrpc", `String "2.0"); ("id", id); ("result", result) ]
 
 let tool_result ~content ~is_error =
   `Assoc
@@ -7521,11 +7514,11 @@ let handle_request ~broker_root json =
            let prompt_msg = `Assoc [("role", `String "user"); ("content", `Assoc [("type", `String "text"); ("text", `String content)])] in
            Lwt.return_some (jsonrpc_response ~id (`Assoc [("description", `String description); ("messages", `List [prompt_msg])]))
        | None ->
-           Lwt.return_some (jsonrpc_error ~id ~code:(-32602) ~message:("Unknown skill: " ^ name)))
+           Lwt.return_some (Json_util.jsonrpc_error ~id ~code:(-32602) ~message:("Unknown skill: " ^ name)))
   | Some id, "ping" ->
       (* MCP protocol keepalive — must respond with empty result, not an error.
          Claude Code sends periodic pings; an error response triggers "server unhealthy"
          and causes the 3-5min disconnect cycle observed in coder2-expert's session. *)
       Lwt.return_some (jsonrpc_response ~id (`Assoc []))
   | Some id, _ ->
-      Lwt.return_some (jsonrpc_error ~id ~code:(-32601) ~message:("Unknown method: " ^ method_))
+      Lwt.return_some (Json_util.jsonrpc_error ~id ~code:(-32601) ~message:("Unknown method: " ^ method_))
