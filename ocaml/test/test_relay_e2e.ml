@@ -344,6 +344,26 @@ let test_envelope_json_roundtrip_from_ed25519 () =
   Alcotest.(check (option string)) "v1 from_ed25519 round-trips as None"
     None parsed_v1.from_ed25519
 
+(* §7.1: v2 envelope without from_ed25519 must be rejected at parse time.
+   This prevents an attacker from stripping the field to bypass TOFU. *)
+let test_v2_without_from_ed25519_rejected () =
+  (* Manually construct v2 JSON without from_ed25519 field. *)
+  let v2_without_ed_json_str = "{\"from\":\"alice\",\"from_x25519\":\"x25519-pk\",\"to\":\"bob\",\"room\":null,\"ts\":1700000014,\"enc\":\"box-x25519-v1\",\"recipients\":[],\"sig\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"envelope_version\":2}" in
+  let json = Yojson.Safe.from_string v2_without_ed_json_str in
+  Alcotest.(check bool) "v2 without from_ed25519 raises"
+    true
+    (try ignore (Relay_e2e.envelope_of_json json); false
+     with Failure msg ->
+       (try ignore (Str.search_forward (Str.regexp_string "v2 envelope missing from_ed25519") msg 0); true
+        with Not_found -> false)
+     | _ -> false);
+  (* v1 without from_ed25519 is still accepted (legacy compat). *)
+  let v1_json_str = "{\"from\":\"alice\",\"to\":\"bob\",\"room\":null,\"ts\":1700000015,\"enc\":\"plain\",\"recipients\":[],\"sig\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}" in
+  let v1_json = Yojson.Safe.from_string v1_json_str in
+  Alcotest.(check bool) "v1 without from_ed25519 still accepted" true
+    (try ignore (Relay_e2e.envelope_of_json v1_json); true
+     with _ -> false)
+
 let () =
   Alcotest.run "relay_e2e" [
     "enc_status", [
@@ -385,5 +405,7 @@ let () =
         `Quick test_omit_from_ed25519_v2_canonicalize;
       Alcotest.test_case "envelope_to_json/of_json round-trips from_ed25519"
         `Quick test_envelope_json_roundtrip_from_ed25519;
+      Alcotest.test_case "§7.1 v2 without from_ed25519 rejected at parse"
+        `Quick test_v2_without_from_ed25519_rejected;
     ];
   ]

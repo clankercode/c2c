@@ -343,6 +343,14 @@ let envelope_of_json (j : Yojson.Safe.t) : envelope =
       | `Intlit s -> (try int_of_string s with _ -> 1)
       | _ -> 1
     in
+    (* §7.1: v2 envelopes MUST carry from_ed25519. Rejecting missing-field
+       v2 envelopes closes the attack surface where an attacker strips the field
+       to bypass TOFU (the field is what binds the Ed25519 identity to the
+       envelope for signature verification). v1 envelopes are exempt (legacy compat). *)
+    let () =
+      if envelope_version >= 2 && from_ed25519 = None then
+        failwith "envelope_of_json: v2 envelope missing from_ed25519"
+    in
     { from_; from_x25519; from_ed25519; to_; room; ts; enc; recipients; sig_b64; envelope_version }
   | _ -> failwith "envelope_of_json: expected object"
 
