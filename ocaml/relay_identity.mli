@@ -50,6 +50,9 @@ val verify : pk:string -> msg:string -> sig_:string -> bool
     prefixed with the per-purpose SIGN_CTX literal. *)
 val canonical_msg : ctx:string -> string list -> string
 
+(** [b64url_encode] — base64url-nopad encoding, matching the wire format. *)
+val b64url_encode : string -> string
+
 (** [to_json t] / [of_json j] — JSON serialization of [t].
 
     Binary fields are base64url-nopad. Mode 0600 enforced by

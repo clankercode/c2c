@@ -2913,6 +2913,9 @@ let test_start_time_mismatch_is_not_alive () =
     ; client_type = None; plugin_version = None
     ; confirmed_at = None
     ; enc_pubkey = None
+    ; ed25519_pubkey = None
+    ; pubkey_signed_at = None
+    ; pubkey_sig = None
     ; compacting = None
     ; last_activity_ts = None
     ; role = None
@@ -2939,6 +2942,9 @@ let test_start_time_match_is_alive () =
     ; client_type = None; plugin_version = None
     ; confirmed_at = None
     ; enc_pubkey = None
+    ; ed25519_pubkey = None
+    ; pubkey_signed_at = None
+    ; pubkey_sig = None
     ; compacting = None
     ; last_activity_ts = None
     ; role = None
@@ -2965,6 +2971,9 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; client_type = None; plugin_version = None
     ; confirmed_at = None
     ; enc_pubkey = None
+    ; ed25519_pubkey = None
+    ; pubkey_signed_at = None
+    ; pubkey_sig = None
     ; compacting = None
     ; last_activity_ts = None
     ; role = None
