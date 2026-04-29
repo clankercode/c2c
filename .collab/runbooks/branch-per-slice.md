@@ -86,6 +86,105 @@ They will either merge the dependency first or arrange a branch layering.
 
 ---
 
+## Chain-slice base selection
+
+The canonical "branch from `origin/master`" rule (CLAUDE.md "Git workflow")
+is written for **independent slices** that don't structurally depend on
+prior local-only commits. For sequential **chain-slices** — slice 1 →
+slice 2 → slice 3, where each slice extends the previous one's surface —
+that rule produces a stale base when `origin/master` lags local master,
+because origin will not yet contain the prerequisite slice's code.
+
+c2c's coordinator-gated push policy deliberately keeps `origin/master`
+behind local master (every push triggers a ~15min Railway build, real
+$). Gaps of 80+ commits between origin and local master are normal during
+active swarm operation. Branching from origin in this state for a chain-
+slice means your worktree is missing the prerequisite — your slice
+either won't compile, or (worse) will silently omit the prerequisite-
+dependent edits and pass internal review while creating a contradiction
+once cherry-picks compose.
+
+### Three patterns
+
+**Pattern A — Independent slice (canonical):**
+Branch from `origin/master`. The slice does not depend on prior local-
+only commits.
+
+```bash
+git fetch origin
+git worktree add .worktrees/<slice-name> -b <slice-name> origin/master
+```
+
+**Pattern B — Chain-slice with prerequisite on local master:**
+The prerequisite slice has been cherry-picked onto local master. Branch
+from local master tip (which contains the prerequisite) — NOT
+`origin/master`.
+
+```bash
+# Verify prerequisite is on local master
+git log master --oneline | grep -E "<prereq-sha>|<prereq-task#>"
+
+# Branch from local master
+git worktree add .worktrees/<slice-name> -b <slice-name> master
+```
+
+The brief author MUST flag this base explicitly:
+- ❌ "Worktree from `origin/master`" (canonical-rule wording)
+- ✅ "Worktree from local master tip (currently `<sha>`, contains
+  prereq slice N-1) — NOT `origin/master` which is N commits behind"
+
+OR state the prerequisite SHAs and let the implementer compute the base:
+- ✅ "Branch base must contain SHA `<prereq-sha>` (prereq slice N-1).
+  Branch from local master tip after confirming it's there with
+  `git log master --oneline | grep <prereq-sha>`."
+
+**Pattern C — Prerequisite still in flight (not yet cherry-picked):**
+DM coordinator first. Either (a) wait for the prerequisite to land on
+local master before starting your slice, or (b) coordinator arranges
+branch layering (your branch off prereq's branch, not off master).
+
+```
+DM coordinator:
+  "Slice N depends on slice N-1's content (SHA <prereq-sha> on
+  branch <prereq-branch>). Should I wait for cherry-pick, or
+  branch off the prereq branch?"
+```
+
+### Decision tree
+
+```
+Does my slice's diff reference / modify code that's only present
+in another local-only commit?
+
+├─ NO  → Pattern A (origin/master). Canonical rule applies.
+│
+└─ YES → Is that commit on local master?
+         │
+         ├─ YES → Pattern B (local master tip). MUST flag base
+         │       explicitly in brief.
+         │
+         └─ NO  → Pattern C. DM coordinator before starting.
+```
+
+### Reviewer responsibility
+
+The build-clean-IN-slice-worktree check (Pattern 8 / #427) DOES catch
+the chain-slice footgun — when a slice's branch base is missing the
+prerequisite, criterion-FAIL fires on whatever literal/symbol the slice
+was supposed to modify. The system stays safe; the cost is the round-
+trip burn of a cross-session peer-review.
+
+Brief discipline (flag the base explicitly in the brief) is the
+upstream fix that prevents the round-trip in the first place.
+
+Receipt: `.collab/findings/2026-04-30T04-40-00Z-stanza-coder-chain-slice-branch-base-footgun.md`
+(slice 3 of #142 hit this 2026-04-30; fern-coder branched from
+`origin/master` per canonical wording, but slice 2 + #158 pre-mint
+were local-only, so the load-bearing seed-JSON literal didn't exist
+in her tree).
+
+---
+
 ## What to do with `per-agent-worktrees`
 
 `per-agent-worktrees` is vestigial. As of 2026-04-25 it diverged from master by
