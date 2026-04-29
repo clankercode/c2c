@@ -11,9 +11,7 @@ let resolve_poker_script_path ~(broker_root : string) : string option =
 let resolve_terminal ~(pid : int) : (int * string) option =
   None
 
-let start ~(name : string) ~(pid : int) ?(interval : float = 180.0)
-    ?(event : string = "heartbeat") ?(sender : string = "c2c-poker")
-    ?(alias : string = "") ~(broker_root : string) : int option =
+let start ~(name : string) ~(pid : int) ~(interval : float) ~(event : string) ~(sender : string) ~(alias : string) ~(broker_root : string) : int option =
   match resolve_poker_script_path ~broker_root with
   | None -> None
   | Some script ->
