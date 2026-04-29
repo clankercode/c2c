@@ -2380,6 +2380,30 @@ let test_prepare_launch_args_gemini_empty_resume_treated_as_fresh () =
   check bool "empty session_id: no --resume flag" false
     (List.mem "--resume" args)
 
+(* #139: KimiAdapter --session resume — wires kimi-cli's native --session flag
+   from c2c instance state's resume_session_id, enabling restart-with-context. *)
+
+let test_prepare_launch_args_kimi_resume_passes_session_flag () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"kimi-resume" ~client:"kimi"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"abc-123" ()
+  in
+  check bool "resume_session_id Some: --session <uuid> appears" true
+    (has_adjacent_pair "--session" "abc-123" args)
+
+let test_prepare_launch_args_kimi_fresh_omits_session_flag () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"kimi-fresh" ~client:"kimi"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "resume_session_id None: --session flag omitted" false
+    (List.mem "--session" args)
+
 (* #392: pure helpers for c2c_mcp's event-tag body-prefix shape.
    Hosted here since test_c2c_mcp.ml has a pre-existing build issue
    that doesn't reproduce in this executable. *)
@@ -2735,6 +2759,12 @@ let () =
             `Quick, test_prepare_launch_args_gemini_model_flag )
         ; ( "empty_resume_treated_as_fresh",
             `Quick, test_prepare_launch_args_gemini_empty_resume_treated_as_fresh )
+        ] )
+    ; ( "kimi_adapter",
+        [ ( "resume_passes_session_flag",
+            `Quick, test_prepare_launch_args_kimi_resume_passes_session_flag )
+        ; ( "fresh_omits_session_flag",
+            `Quick, test_prepare_launch_args_kimi_fresh_omits_session_flag )
         ] )
     ; ( "launch_args",
         [ ( "prepare_launch_args_claude_uses_development_channel_flag",

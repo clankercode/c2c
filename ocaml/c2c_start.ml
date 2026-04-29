@@ -3024,16 +3024,14 @@ module KimiAdapter : CLIENT_ADAPTER = struct
   let extra_env = []
   let session_id_env = Some "KIMI_SESSION_ID"
 
-  let build_start_args ~name ?alias_override ?model_override ?resume_session_id:_
+  let build_start_args ~name ?alias_override ?model_override ?resume_session_id
       ?(extra_args = []) () =
-    (* KimiAdapter currently starts kimi fresh and does not pass `--session`,
-       even though kimi-cli supports `--session/--resume/-S/-r <UUID>` (verified
-       via `kimi --help`; entry-point at kimi_cli/cli/__init__.py). The
-       `?resume_session_id:_` parameter is intentionally dropped here today.
-       Phase 2 (c2c task #478) will pre-mint a UUID and pass `--session` so we
-       can seed `auto_approve_actions` in the session's state.json before kimi
-       reads it — eliminating the per-MCP-tool approval prompt for `mcp__c2c__*`
-       tools.
+    (* #139: --session is now passed when resume_session_id is Some, enabling
+       restart-with-context. Used by `c2c restart kimi -n <alias>` to preserve
+       agent state across restarts. kimi-cli supports
+       `--session/-S/--resume/-r <UUID>` natively; we use --session to match
+       the c2c instance-state field name. When resume_session_id is None or
+       empty, kimi creates a fresh session as before.
 
        Write the per-instance MCP config to the instance dir and prepend the flag.
        extra_args are inspected for an existing --mcp-config-file flag but are NOT
@@ -3060,11 +3058,17 @@ module KimiAdapter : CLIENT_ADAPTER = struct
 
        Research: kimi-permissions audit 2026-04-29 (Option A). *)
     let br = broker_root () in
+    let session_args =
+      match resume_session_id with
+      | Some sid when String.trim sid <> "" -> [ "--session"; sid ]
+      | _ -> []
+    in
     let base =
       "--afk" ::
-      (match model_override with
-       | Some m when String.trim m <> "" -> [ "--model"; m ]
-       | _ -> [])
+      session_args
+      @ (match model_override with
+         | Some m when String.trim m <> "" -> [ "--model"; m ]
+         | _ -> [])
     in
     if not (has_explicit_kimi_mcp_config extra_args) then begin
       let cfg_path = kimi_mcp_config_path name in
