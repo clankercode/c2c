@@ -66,15 +66,9 @@ let sign_forward_request ~identity ~self_host ~from_alias ~body_str =
     @param peer_url Full URL of the peer relay (e.g. "https://relay-b:9001") *)
 let forward_send ~identity ~self_host ~peer_url
     ~from_alias ~to_alias ~content ~message_id =
-  Printf.eprintf "[forward_send] peer_url=%S\n%!" peer_url;
   let body = build_body ~self_host ~from_alias ~to_alias ~content ~message_id in
   let body_str = Yojson.Safe.to_string body in
   let uri = Uri.of_string (peer_url ^ "/forward") in
-  Printf.eprintf "[forward_send] uri scheme=%S host=%S port=%s path=%s\n%!"
-    (Uri.scheme uri |> Option.value ~default:"NONE")
-    (Uri.host uri |> Option.value ~default:"NONE")
-    (match Uri.port uri with Some p -> string_of_int p | None -> "NONE")
-    (Uri.path uri);
   let headers = Cohttp.Header.init_with "Content-Type" "application/json" in
   let auth_value = sign_forward_request ~identity ~self_host ~from_alias ~body_str in
   let headers = Cohttp.Header.add headers "Authorization" auth_value in
@@ -90,11 +84,7 @@ let forward_send ~identity ~self_host ~peer_url
   ) (function
     | Lwt_unix.Timeout -> Lwt.return Peer_timeout
     | Unix.Unix_error (e, _, _) ->
-        Printf.eprintf "[forward_send] Unix_error: %s\n%!" (Unix.error_message e);
         Lwt.return (Peer_unreachable (Unix.error_message e))
     | e ->
-        Printf.eprintf "[forward_send] exception: %s\n[forward_send] backtrace: %s\n%!"
-          (Printexc.to_string e)
-          (Printexc.get_backtrace ());
         Lwt.return (Local_error (Printexc.to_string e))
   )
