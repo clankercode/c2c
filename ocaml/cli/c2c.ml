@@ -6416,6 +6416,153 @@ let relay_mesh = Cmdliner.Cmd.v
              broker.log entries, and optionally probes a relay /health URL.")
     relay_mesh_cmd
 
+(* --- subcommand: doctor relay-pin-status -----------------------------------
+
+   Operator visibility into the broker's TOFU pin store
+   ([<broker_root>/relay_pins.json]). One flat row per alias with the
+   pinned Ed25519 (CRIT-1 Slice B), pinned X25519, and pinned
+   min-observed-envelope-version (Slice B-min-version). Supports
+   `--alias <a>` to filter and `--json` for machine consumption.
+
+   This is read-only — no write surface; the only way to mutate the pin
+   store is through the broker's existing pin paths (operator-attested
+   `pin_rotate`, `pin_x25519_sync` / `pin_ed25519_sync` on receive,
+   nuclear delete-relay-pins.json). *)
+
+let relay_pin_status_cmd =
+  let open Cmdliner in
+  let alias_flag =
+    Arg.(value & opt (some string) None & info ["alias"; "a"] ~docv:"ALIAS"
+           ~doc:"Filter to a single alias.")
+  in
+  let json_flag =
+    Arg.(value & flag & info ["json"]
+           ~doc:"Output JSON instead of a flat ASCII table.")
+  in
+  let truncate_flag =
+    Arg.(value & opt int 14 & info ["truncate"] ~docv:"N"
+           ~doc:"Truncate b64 pubkeys to N chars in the table (default 14). \
+                 Set 0 to disable truncation. Ignored under --json (full b64 \
+                 always emitted).")
+  in
+  let+ alias_filter = alias_flag
+  and+ as_json = json_flag
+  and+ truncate = truncate_flag in
+  let truncate = max 0 truncate in
+  let broker_root =
+    try C2c_utils.resolve_broker_root () with _ -> "<unresolved>"
+  in
+  let pins_path = Filename.concat broker_root "relay_pins.json" in
+  let json =
+    if not (Sys.file_exists pins_path) then `Assoc []
+    else
+      try Yojson.Safe.from_file pins_path
+      with Yojson.Json_error _ -> `Assoc []
+  in
+  let section name =
+    match json with
+    | `Assoc fields ->
+      (match List.assoc_opt name fields with
+       | Some (`Assoc entries) -> entries
+       | _ -> [])
+    | _ -> []
+  in
+  let ed25519 = section "ed25519" in
+  let x25519 = section "x25519" in
+  let min_versions = section "min_observed_envelope_versions" in
+  (* Union of aliases across all three sections. *)
+  let aliases =
+    let collect acc xs = List.fold_left (fun a (k, _) -> k :: a) acc xs in
+    let raw = collect (collect (collect [] ed25519) x25519) min_versions in
+    List.sort_uniq String.compare raw
+  in
+  let aliases = match alias_filter with
+    | None -> aliases
+    | Some target -> List.filter (fun a -> a = target) aliases
+  in
+  let lookup_str entries k =
+    match List.assoc_opt k entries with
+    | Some (`String s) -> Some s
+    | _ -> None
+  in
+  let lookup_int entries k =
+    match List.assoc_opt k entries with
+    | Some (`Int n) -> Some n
+    | Some (`Intlit s) -> (try Some (int_of_string s) with _ -> None)
+    | _ -> None
+  in
+  let truncate_b64 s =
+    if truncate = 0 || String.length s <= truncate then s
+    else (String.sub s 0 truncate) ^ "+"
+  in
+  let dash_or s = match s with Some v -> v | None -> "-" in
+  if as_json then begin
+    let rows =
+      List.map (fun a ->
+        let ed = lookup_str ed25519 a in
+        let x = lookup_str x25519 a in
+        let mv = lookup_int min_versions a in
+        `Assoc [
+          ("alias", `String a);
+          ("ed25519_b64", (match ed with Some s -> `String s | None -> `Null));
+          ("x25519_b64", (match x with Some s -> `String s | None -> `Null));
+          ("min_observed_envelope_version",
+            (match mv with Some n -> `Int n | None -> `Null));
+        ]) aliases
+    in
+    let envelope = `Assoc [
+      ("broker_root", `String broker_root);
+      ("relay_pins_path", `String pins_path);
+      ("relay_pins_exists", `Bool (Sys.file_exists pins_path));
+      ("alias_count", `Int (List.length aliases));
+      ("pins", `List rows);
+    ] in
+    print_endline (Yojson.Safe.pretty_to_string envelope);
+    exit 0
+  end else begin
+    Printf.printf "c2c doctor relay-pin-status\n\n";
+    Printf.printf "broker_root: %s\n" broker_root;
+    Printf.printf "relay_pins:  %s%s\n\n" pins_path
+      (if Sys.file_exists pins_path then "" else "  (file missing — empty store)");
+    if aliases = [] then begin
+      (match alias_filter with
+       | Some a -> Printf.printf "  no pins for alias %s\n" a
+       | None -> Printf.printf "  no pins recorded yet\n");
+      exit 0
+    end;
+    (* Column widths *)
+    let alias_w =
+      List.fold_left (fun w a -> max w (String.length a)) 5 aliases
+    in
+    let pubkey_w = if truncate = 0 then 44 else truncate + 1 in
+    Printf.printf "%-*s  %-*s  %-*s  %5s\n"
+      alias_w "ALIAS" pubkey_w "ED25519" pubkey_w "X25519" "MIN_V";
+    Printf.printf "%s\n"
+      (String.make (alias_w + pubkey_w + pubkey_w + 5 + 6) '-');
+    List.iter (fun a ->
+      let ed = lookup_str ed25519 a in
+      let x = lookup_str x25519 a in
+      let mv = lookup_int min_versions a in
+      let ed_str = match ed with Some s -> truncate_b64 s | None -> "-" in
+      let x_str = match x with Some s -> truncate_b64 s | None -> "-" in
+      let mv_str = match mv with Some n -> string_of_int n | None -> "-" in
+      Printf.printf "%-*s  %-*s  %-*s  %5s\n"
+        alias_w a pubkey_w ed_str pubkey_w x_str (dash_or (Some mv_str))
+    ) aliases;
+    Printf.printf "\n%d alias%s pinned.\n"
+      (List.length aliases)
+      (if List.length aliases = 1 then "" else "es");
+    Printf.printf "(Use --truncate 0 for full b64 pubkeys, or --json for machine output.)\n";
+    exit 0
+  end
+
+let relay_pin_status = Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "relay-pin-status"
+       ~doc:"Operator visibility into the relay TOFU pin store \
+             (relay_pins.json). Flat table per alias: pinned Ed25519, \
+             X25519, and min-observed-envelope-version. Read-only.")
+    relay_pin_status_cmd
+
 (* --- subcommand: doctor delivery-mode (#307a) --- *)
 
 let delivery_mode_cmd =
@@ -6729,7 +6876,7 @@ let doctor = Cmdliner.Cmd.group
     ~default:doctor_cmd
     (Cmdliner.Cmd.info "doctor"
        ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
-    [ doctor_docs_drift; monitor_leak; delivery_mode; relay_mesh; tags_doctor;
+    [ doctor_docs_drift; monitor_leak; delivery_mode; relay_mesh; relay_pin_status; tags_doctor;
       C2c_opencode_plugin_drift.opencode_plugin_drift_cmd ]
 
 (* --- subcommand: stats ---------------------------------------------------- *)
