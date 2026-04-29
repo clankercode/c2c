@@ -111,6 +111,24 @@ let test_load_refuses_loose_perms () =
          let _ = Str.search_forward (Str.regexp_string needle) msg 0 in true
        with Not_found -> false)
 
+let test_load_or_create_at_eacces_falls_back_to_memory () =
+  (* Simulate a volume where we can read but not write (e.g. Railway /data
+     with wrong uid).  load_or_create_at should NOT failwith — it must
+     log clearly, fall back to in-memory identity, and return.
+     The marker file may end up in /tmp (fallback) or alongside the path
+     depending on directory permissions; we verify behavior via exit path. *)
+  with_tmp_dir @@ fun dir ->
+  let readonly_subdir = Filename.concat dir "readonly" in
+  Unix.mkdir readonly_subdir 0o500;  (* read+execute only, no write *)
+  let id_path = Filename.concat readonly_subdir "relay-server-identity.json" in
+  (* Calling with a path in the readonly dir — save will fail with EACCES.
+     The function must return an identity rather than raising. *)
+  let id = Relay_identity.load_or_create_at ~path:id_path ~alias_hint:"eacces-test" in
+  Alcotest.(check bool) "returned identity has non-empty pk"
+    true (String.length id.public_key > 0);
+  Alcotest.(check bool) "returned identity has alias hint"
+    true (String.length id.alias_hint > 0)
+
 let test_canonical_msg_separator () =
   let out =
     Relay_identity.canonical_msg ~ctx:"c2c/v1/register" [ "alice"; "42" ]
@@ -127,6 +145,7 @@ let tests = [
   "save_enforces_0600",       `Quick, test_save_enforces_0600;
   "load_refuses_loose_perms", `Quick, test_load_refuses_loose_perms;
   "canonical_msg_separator",  `Quick, test_canonical_msg_separator;
+  "load_or_create_at_eacces", `Quick, test_load_or_create_at_eacces_falls_back_to_memory;
 ]
 
 let () =

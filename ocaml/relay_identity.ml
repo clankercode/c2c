@@ -248,7 +248,42 @@ let load_or_create_at ~(path : string) ~(alias_hint : string) =
   | Error _ ->
       let id = generate ~alias_hint () in
       (match save ~path id with
-       | Error e -> failwith ("load_or_create_at save: " ^ e)
+       | Error e ->
+           (* Save failed (e.g. volume permission denied on Railway).
+              Log clearly, fall back to in-memory identity, and write a
+              marker file so operators can diagnose + chmod the volume. *)
+           Printf.eprintf "[load_or_create_at] PERMISSION DENIED: cannot persist identity to %s: %s\n%!" path e;
+           Printf.eprintf "[load_or_create_at] Falling back to in-memory identity for this session.\n%!";
+           Printf.eprintf "[load_or_create_at] To fix: chmod the volume path and restart.\n%!";
+            (try
+               let marker =
+                 (* Try to write marker alongside the identity path.  If that
+                    dir is read-only (e.g. Railway volume), fall back to /tmp. *)
+                 let dir = Filename.dirname path in
+                 let base = Filename.concat dir ".identity-write-failed" in
+                 (try
+                    let oc = open_out_gen [Open_creat; Open_append] 0o600 base in
+                    Printf.fprintf oc "identity persist failed at %s: %s\n"
+                      (rfc3339_utc_now ()) e;
+                    close_out oc;
+                    base
+                  with _ ->
+                    (* Fallback: write to /tmp so operator still sees the signal *)
+                    let fallback = Filename.concat "/tmp" (Printf.sprintf "c2c-identity-write-failed-%d.txt" (Unix.getpid ())) in
+                    let oc = open_out_gen [Open_creat; Open_append] 0o600 fallback in
+                    Printf.fprintf oc "identity persist failed at %s: path=%s error=%s\n"
+                      (rfc3339_utc_now ()) path e;
+                    close_out oc;
+                    fallback)
+               in
+               Printf.eprintf "[load_or_create_at] Wrote marker: %s\n%!" marker
+             with exn ->
+               Printf.eprintf "[load_or_create_at] Could not write marker file: %s\n%!"
+                 (Printexc.to_string exn));
+           (match write_openssh_key id ~priv_path:(path ^ ".ssh") with
+            | Ok () -> ()
+            | Error e -> Printf.eprintf "[load_or_create_at] openssh key write failed: %s\n%!" e);
+           id
        | Ok () ->
            (match write_openssh_key id ~priv_path:(path ^ ".ssh") with
             | Ok () -> ()
