@@ -95,7 +95,7 @@ let run_check sha =
     let ins_ref = ref 0 and del_ref = ref 0 in
     List.iter (fun line ->
       match String.split_on_char '\t' line with
-      | add :: del :: _ ->
+      | [add; del; _filename] ->
           (try ins_ref := !ins_ref + int_of_string (String.trim add) with _ -> ());
           (try del_ref := !del_ref + int_of_string (String.trim del) with _ -> ())
       | _ -> ()
