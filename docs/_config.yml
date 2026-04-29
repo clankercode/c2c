@@ -41,3 +41,8 @@ github:
 # Jekyll-publishes-everything default.)
 exclude:
   - CLAUDE.md
+  # Internal planning artifacts (specs, plans, design notes) authored
+  # before the docs/ vs .collab/ split was settled. Kept on disk for
+  # historical reference, but should NOT publish to https://c2c.im/.
+  # See .collab/research/2026-04-29-docs-slimming-audit-cairn.md (#430).
+  - superpowers/
