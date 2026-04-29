@@ -31,9 +31,12 @@ services:
     image: c2c-relay-a:e2e
     container_name: c2c-relay-a
     environment:
-      C2C_RELAY_PERSIST_DIR: /var/lib/c2c
+      C2C_RELAY_PERSIST_DIR: /var/lib/c2c/relay-a-state
       PORT: "9000"
       C2C_RELAY_NAME: "host-a"
+      RELAY_TOKEN: "test-token-a"
+    volumes:
+      - ./volumes/relay-a:/var/lib/c2c/relay-a-state
     networks:
       - c2c-mesh-net
     ports:
@@ -63,9 +66,12 @@ services:
     image: c2c-relay-b:e2e
     container_name: c2c-relay-b
     environment:
-      C2C_RELAY_PERSIST_DIR: /var/lib/c2c
+      C2C_RELAY_PERSIST_DIR: /var/lib/c2c/relay-b-state
       PORT: "9001"
       C2C_RELAY_NAME: "host-b"
+      RELAY_TOKEN: "test-token-b"
+    volumes:
+      - ./volumes/relay-b:/var/lib/c2c/relay-b-state
     networks:
       - c2c-mesh-net
     ports:
@@ -96,8 +102,6 @@ services:
     depends_on:
       relay-a:
         condition: service_healthy
-    volumes:
-      - broker-a1:/var/lib/c2c
     networks:
       - c2c-mesh-net
     deploy:
@@ -108,7 +112,6 @@ services:
         reservations:
           memory: 32m
     environment:
-      C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay-a:9000
       C2C_RELAY_CONNECTOR_BACKEND: http
       C2C_IN_DOCKER: "1"
@@ -125,8 +128,6 @@ services:
     depends_on:
       relay-a:
         condition: service_healthy
-    volumes:
-      - broker-a2:/var/lib/c2c
     networks:
       - c2c-mesh-net
     deploy:
@@ -137,7 +138,6 @@ services:
         reservations:
           memory: 32m
     environment:
-      C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay-a:9000
       C2C_RELAY_CONNECTOR_BACKEND: http
       C2C_IN_DOCKER: "1"
@@ -154,8 +154,6 @@ services:
     depends_on:
       relay-b:
         condition: service_healthy
-    volumes:
-      - broker-b1:/var/lib/c2c
     networks:
       - c2c-mesh-net
     deploy:
@@ -166,7 +164,6 @@ services:
         reservations:
           memory: 32m
     environment:
-      C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay-b:9001
       C2C_RELAY_CONNECTOR_BACKEND: http
       C2C_IN_DOCKER: "1"
@@ -183,8 +180,6 @@ services:
     depends_on:
       relay-b:
         condition: service_healthy
-    volumes:
-      - broker-b2:/var/lib/c2c
     networks:
       - c2c-mesh-net
     deploy:
@@ -195,7 +190,6 @@ services:
         reservations:
           memory: 32m
     environment:
-      C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay-b:9001
       C2C_RELAY_CONNECTOR_BACKEND: http
       C2C_IN_DOCKER: "1"
@@ -207,9 +201,3 @@ services:
 networks:
   c2c-mesh-net:
     driver: bridge
-
-volumes:
-  broker-a1:
-  broker-a2:
-  broker-b1:
-  broker-b2:

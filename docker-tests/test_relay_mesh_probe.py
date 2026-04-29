@@ -69,80 +69,63 @@ def _run_c2c_in(
     container: str,
     argv: list[str],
     timeout: int = 30,
-    *,
-    as_testagent: bool = True,
 ) -> subprocess.CompletedProcess:
-    """Run c2c CLI inside a container as testagent (uid 999)."""
+    """Run c2c CLI inside a container (runs as root in this compose)."""
     env = {
         "C2C_CLI_FORCE": "1",
         "C2C_IN_DOCKER": "1",
-        "HOME": "/home/testagent",
-        "C2C_MCP_BROKER_ROOT": "/var/lib/c2c",
     }
     cmd = ["docker", "exec"]
     for k, v in env.items():
         cmd += ["-e", f"{k}={v}"]
-    if as_testagent:
-        cmd += ["-u", "999"]
     cmd += [container, "/usr/local/bin/c2c"] + argv
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
-def _relay_dead_letter_files(relay_container: str) -> list[str]:
-    """Return sorted list of dead_letter JSON file paths on relay's broker volume."""
+def _relay_dead_letter_count(relay_container: str, persist_dir: str) -> int:
+    """Return count of dead_letter rows in relay's SQLite DB."""
+    db_path = f"{persist_dir}/c2c_relay.db"
     r = subprocess.run(
         ["docker", "exec", relay_container,
-         "bash", "-c",
-         "ls -1 /var/lib/c2c/dead_letter/ 2>/dev/null || echo ''"],
+         "sqlite3", db_path,
+         "SELECT COUNT(*) FROM dead_letter"],
         capture_output=True, text=True, timeout=10,
     )
-    files = [f.strip() for f in r.stdout.splitlines() if f.strip()]
-    return sorted(files)
+    if r.returncode != 0:
+        return 0  # DB or table not yet created
+    return int(r.stdout.strip())
 
 
-def _read_dead_letter(relay_container: str, filename: str) -> dict:
-    """Read and parse a dead_letter JSON file from relay's broker volume."""
+def _read_last_dead_letter(relay_container: str, persist_dir: str) -> dict:
+    """Read the most recent dead_letter entry from relay's SQLite DB."""
+    db_path = f"{persist_dir}/c2c_relay.db"
     r = subprocess.run(
         ["docker", "exec", relay_container,
-         "bash", "-c",
-         f"cat /var/lib/c2c/dead_letter/{filename}"],
+         "sqlite3", "-json", db_path,
+         "SELECT message_id, from_alias, to_alias, content, ts, reason "
+         "FROM dead_letter ORDER BY ts DESC LIMIT 1"],
         capture_output=True, text=True, timeout=10,
     )
-    assert r.returncode == 0, f"failed to read dead_letter {filename}: {r.stderr}"
-    return json.loads(r.stdout)
-
-
-def _ensure_dirs(container: str) -> None:
-    """Create testagent-writable directories inside container."""
-    subprocess.run(
-        ["docker", "exec", container,
-         "bash", "-c",
-         "mkdir -p /home/testagent/.c2c/broker /home/testagent/.config/c2c /home/testagent/.cache/c2c/peer-passes && chown -R 999:999 /home/testagent"],
-        capture_output=True, timeout=10,
-    )
+    assert r.returncode == 0, f"failed to read last dead_letter: {r.stderr}"
+    rows = json.loads(r.stdout)
+    if not rows:
+        return {}
+    return rows[0]
 
 
 def _init_peer(peer: str, alias: str, relay_url: str) -> subprocess.CompletedProcess:
     """Initialize identity + register peer on its relay."""
-    _ensure_dirs(peer)
-    # Create identity
+    # Create identity (stored at ~/.config/c2c/identity.json)
     r0 = _run_c2c_in(peer, ["relay", "identity", "init", "--force"])
     if r0.returncode != 0:
         return r0
-    # Register on relay
+    # Register on relay for cross-host routing
     r1 = _run_c2c_in(peer, [
         "relay", "register",
         "--alias", alias,
         "--relay-url", relay_url,
     ])
-    if r1.returncode != 0:
-        return r1
-    # Local register for broker key path
-    r2 = _run_c2c_in(peer, [
-        "register", "--alias", alias,
-        "--session-id", f"{alias}-session",
-    ])
-    return r2
+    return r1
 
 
 def _send_dm_via_relay(
@@ -232,8 +215,8 @@ def test_cross_host_dead_letter_peer_unknown_host(peer_a1_provisioned, peer_b2_p
     with cross_host_not_implemented. This test validates the contract that
     will flip to "delivered" once the forwarder (S1) lands.
     """
-    # Count dead_letter files before the send
-    before = _relay_dead_letter_files(RELAY_A)
+    persist_dir_a = "/var/lib/c2c/relay-a-state"
+    before = _relay_dead_letter_count(RELAY_A, persist_dir_a)
 
     # peer-a1 sends to peer-b2@host-b — relay-a does not know host-b → dead-letter
     r = _send_dm_via_relay(
@@ -245,19 +228,19 @@ def test_cross_host_dead_letter_peer_unknown_host(peer_a1_provisioned, peer_b2_p
 
     # Send itself may succeed at the wire level (relay accepts the POST)
     # or return an error — both are fine. The observable contract is the
-    # dead_letter file on relay-a.
+    # dead_letter row in relay-a's SQLite DB.
     time.sleep(2)
 
-    after = _relay_dead_letter_files(RELAY_A)
-    new_files = [f for f in after if f not in before]
+    after = _relay_dead_letter_count(RELAY_A, persist_dir_a)
 
-    assert len(new_files) >= 1, (
-        f"Expected at least one new dead_letter file on {RELAY_A} after "
-        f"cross-host send; before={before}, after={after}"
+    assert after > before, (
+        f"Expected dead_letter count to increase on {RELAY_A} after "
+        f"cross-host send; before={before}, after={after}, send_rc={r.returncode}, "
+        f"send_stdout={r.stdout[:200]}"
     )
 
     # Read the most recent dead_letter and verify reason
-    dl = _read_dead_letter(RELAY_A, new_files[-1])
+    dl = _read_last_dead_letter(RELAY_A, persist_dir_a)
     reason = dl.get("reason", "")
     assert "cross_host_not_implemented" in reason, (
         f"Expected cross_host_not_implemented in dead_letter reason, got: {dl}"
@@ -271,10 +254,11 @@ def test_cross_host_dead_letter_relay_b_unreachable(peer_a1_provisioned, peer_b2
     Pre-forwarder: relay-a dead-letters immediately (no forwarder transport).
     Post-forwarder: relay-a would retry then dead-letter. Either way, no delivery.
     """
+    persist_dir_a = "/var/lib/c2c/relay-a-state"
     # Stop relay-b to simulate partition
     subprocess.run(["docker", "stop", RELAY_B], check=True, timeout=30)
     try:
-        before = _relay_dead_letter_files(RELAY_A)
+        before = _relay_dead_letter_count(RELAY_A, persist_dir_a)
 
         r = _send_dm_via_relay(
             from_peer=peer_a1_provisioned,
@@ -285,12 +269,12 @@ def test_cross_host_dead_letter_relay_b_unreachable(peer_a1_provisioned, peer_b2
 
         time.sleep(2)
 
-        after = _relay_dead_letter_files(RELAY_A)
-        new_files = [f for f in after if f not in before]
+        after = _relay_dead_letter_count(RELAY_A, persist_dir_a)
 
-        assert len(new_files) >= 1, (
-            f"Expected dead_letter on {RELAY_A} after relay-b went down; "
-            f"before={before}, after={after}"
+        assert after > before, (
+            f"Expected dead_letter count to increase on {RELAY_A} after relay-b "
+            f"went down; before={before}, after={after}, send_rc={r.returncode}, "
+            f"send_stdout={r.stdout[:200]}"
         )
     finally:
         # Restart relay-b so subsequent tests can run
@@ -304,7 +288,8 @@ def test_unknown_host_dead_letter(peer_a1_provisioned):
 
     Unknown host not in peer_relays table → dead-letter on relay-a.
     """
-    before = _relay_dead_letter_files(RELAY_A)
+    persist_dir_a = "/var/lib/c2c/relay-a-state"
+    before = _relay_dead_letter_count(RELAY_A, persist_dir_a)
 
     r = _send_dm_via_relay(
         from_peer=peer_a1_provisioned,
@@ -315,10 +300,10 @@ def test_unknown_host_dead_letter(peer_a1_provisioned):
 
     time.sleep(2)
 
-    after = _relay_dead_letter_files(RELAY_A)
-    new_files = [f for f in after if f not in before]
+    after = _relay_dead_letter_count(RELAY_A, persist_dir_a)
 
-    assert len(new_files) >= 1, (
-        f"Expected dead_letter on {RELAY_A} for unknown host; "
-        f"before={before}, after={after}"
+    assert after > before, (
+        f"Expected dead_letter count to increase on {RELAY_A} for unknown host; "
+        f"before={before}, after={after}, send_rc={r.returncode}, "
+        f"send_stdout={r.stdout[:200]}"
     )
