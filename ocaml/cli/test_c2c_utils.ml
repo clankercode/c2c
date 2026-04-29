@@ -24,8 +24,8 @@ let test_some_with_whitespace () =
     (Some "peer-alias")
     (with_env "C2C_MCP_AUTO_REGISTER_ALIAS" "  peer-alias  " (fun () -> C2c_utils.alias_from_env_only ()))
 
-let test_none_on_unset () =
-  Alcotest.(check (option string)) "unset → None"
+let test_none_on_empty () =
+  Alcotest.(check (option string)) "empty string → None"
     None
     (with_env "C2C_MCP_AUTO_REGISTER_ALIAS" "" (fun () -> C2c_utils.alias_from_env_only ()))
 
@@ -39,7 +39,7 @@ let () =
     "alias_from_env_only", [
       Alcotest.test_case "whitespace-only → None"   `Quick test_some_trimmed;
       Alcotest.test_case "spaces trimmed"           `Quick test_some_with_whitespace;
-      Alcotest.test_case "None on unset"           `Quick test_none_on_unset;
+      Alcotest.test_case "empty string → None"     `Quick test_none_on_empty;
       Alcotest.test_case "Some plain"              `Quick test_some_plain;
     ]
   ]
