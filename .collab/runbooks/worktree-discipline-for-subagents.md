@@ -760,6 +760,71 @@ this swarm yet; the analogous working-tree destructive precedents (Pattern 6's
 
 ---
 
+## Pattern 15 — daemon-vs-wrapper ps confusion in fork-without-execve flows
+
+**Severity**: HIGH (operational — wrong-process kill during live session management).
+
+**Symptom**: an operator running `pgrep -a` or `ps aux` on a machine
+running one or more `c2c start kimi -n <alias>` instances sees TWO
+entries with identical argv:
+
+```
+jdoe  12345  ...  /home/xterov/.local/bin/kimi -p --model ...
+jdoe  12346  ...  /home/xterov/.local/bin/kimi -p --model ...
+```
+
+Both show `kimi` as the command. The operator picks one to `kill`
+— and kills the **wire-daemon child** that inherited the parent's argv
+via `fork()` without `execve()`. The outer wrapper (the actual CLI
+process the operator intended to manage) survives, but the session is
+now orphaned: registered in the broker, but its comm channel dead.
+No clean recovery short of a full restart.
+
+**Receipt**: at 21:46, an operator mistook the wire-daemon child for
+the outer wrapper and killed the wrong process, producing exactly this
+orphaned-session state.
+
+**Root cause**:
+
+`fork()` without `execve()` copies the parent's full address space,
+including `argv`. The child starts with an identical argv to the
+parent — the kernel does not clear or rewrite it. Until the child
+calls `prctl(PR_SET_NAME)` to set a distinct comm identifier, both
+the wrapper and the daemon report the same argv in `/proc/<pid>/cmdline`
+and the same (parent-derived) comm name in `ps`.
+
+The c2c managed-session launcher uses `fork()` without `execve()` in
+the wire-daemon path, because the daemon needs to inherit the parent's
+file descriptors and session state before exec'ing. During the window
+between fork and the daemon's own `prctl(PR_SET_NAME)` call, both
+processes are indistinguishable by argv.
+
+**Mitigation in flight**: #469 adds `prctl(PR_SET_NAME)` at the
+earliest possible point in the fork-child startup path, giving each
+process a distinct comm name (wrapper vs wire-daemon) visible in
+`ps` / `pgrep` output immediately after fork.
+
+**Operational rule** — in force until #469 lands and deployed:
+
+> When reading `ps` or `pgrep` for ANY c2c process tree, identify
+> processes by **PID line + `/proc/<pid>/comm` column**, NOT by argv
+> match alone.
+
+Correct identification:
+
+```bash
+# Always check comm, not just argv
+ps aux | grep kimi
+# → note the PID, then:
+cat /proc/<pid>/comm
+# wrapper shows:  c2c-start-kimi-<alias>   (or similar distinct name)
+# daemon shows:   c2c-wire-daemon           (or similar distinct name)
+```
+
+**Cross-reference**: #469 (prctl(PR_SET_NAME) at fork-child startup).
+
+---
+
 ## Why these rules are load-bearing
 
 The c2c swarm runs many parallel subagents during quota-burn
