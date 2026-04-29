@@ -56,6 +56,21 @@ For git in the worktree: use `git -C <abs-worktree-path>` instead of
 `cd ... && git ...`. This makes the explicit-worktree intent
 visible at the command level, not just shell state.
 
+**Receipt** (2026-04-29, birch-coder E2E S1): during a Cairn
+cherry-pick batch, three modified files appeared in the main tree's
+`git status` from a `cd`-out earlier — birch's E2E-S1-in-progress
+work staged in the main tree from her worktree. Cairn discarded the
+stash (correctly: peer's in-flight work belongs in their own
+worktree, not in the main tree's index that the next cherry-pick
+batch absorbs). Birch will re-do the work IN her worktree per this
+rule. Cross-link: this kind of leftover-state-at-handoff is also
+why the `2026-04-29` handoff-hygiene rule landed in CLAUDE.md
+(#428) — commit/stash before going off-shift, even mid-shift if
+you're context-switching off a worktree. The two rules are siblings:
+Pattern 1 is the mid-task version; #428 handoff-hygiene is the
+shift-boundary version. Both close the same shared-tree-state
+leak.
+
 ---
 
 ## Pattern 2 — concurrent-stage (#377)
