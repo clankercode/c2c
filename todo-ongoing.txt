@@ -10,6 +10,16 @@ This doc keeps track of long term ongoing tasks and projects. It should be updat
 
 ## Projects/Tasks
 
+### Kimi-as-peer
+
+Project Folder: `.collab/runbooks/kimi-notification-store-delivery.md` + finding `.collab/findings/2026-04-29T10-53-00Z-stanza-coder-kimi-notifier-shipped-and-validated.md`
+
+Goal: Kimi as a first-class c2c peer with reliable inbound delivery — previously broken via wire-bridge dual-agent bug; now uses file-based notification-store push delivery via `C2c_kimi_notifier`.
+
+Status: **active (3 of 4 slices shipped today 2026-04-29)** — Slice 1 `9f0609b3` (deprecate wire-bridge for kimi), Slice 2 `642f6b63` (notifier module), Slice 3a `47bd76b9` (runbook + RESOLVED finding). Validated end-to-end with kuura-viima + lumi-tyyni live peers. Slice 4 (wire-bridge code+docs cleanup, ~1400 LoC) deferred.
+
+Next: schedule Slice 4 cleanup pass; monitor in dogfood for any notification-store delivery edge cases.
+
 ### Agent-file epic
 
 Project Folder: `.collab/agent-files/` (design doc v7 lives here)
@@ -86,9 +96,9 @@ Project Folder: **todo**
 
 Goal: enable a remote node to receive c2c messages through a relay server without requiring the local broker's file system.
 
-Status: **v1 shipped** — Full e2e verified (25dc1b1): fake broker → SSH poll (5s) → relay cache → GET /remote_inbox/<session_id> → message delivered. Regression tests in `test_relay_remote_broker.ml`.
+Status: **v1 shipped + #330 mesh closed (2026-04-29)** — Full e2e verified (25dc1b1): fake broker → SSH poll (5s) → relay cache → GET /remote_inbox/<session_id> → message delivered. Regression tests in `test_relay_remote_broker.ml`. **#330 cross-host relay-mesh validation closed today**: galaxy shipped `/forward` HTTP handler + URL path fix + netbase Dockerfile; cross-host mesh validated end-to-end.
 
-Next: relay.toml persistent config; multi-broker support (v2). #330 (cross-host relay-mesh validation) currently paused (OOM-risk during multi-container runs).
+Next: relay.toml persistent config; multi-broker support (v2).
 
 ### Post-restart UX hardening
 
@@ -126,9 +136,29 @@ Project Folder: **todo** (design + closure docs in `.collab/design/2026-04-2*-cr
 
 Goal: relay-side envelope correctness — Ed25519 signatures cover `from_x25519` (CRIT-1), TOFU pin store catches first-contact + register-path divergence (CRIT-2), v2 envelopes reject malformed shape, audit-log surfaces every interesting event.
 
-Status: **CRIT-1 closed; CRIT-2 closed** — Slice A (`1e414fdc`) + Slice B (`5dc0ad6b`) + B-min-version (`f2a929ce`) + audit-log followup (`e5537bd4`) shipped. CRIT-2 closure header at `76a5f989`. Register-path TOFU + audit-log (#443) shipped today via slate's `d3c9f4e0/5ffe42d0/8eaaff93` (jungle PASS). §7.1 parse-time reject (`4351786a`) shipped via birch (fern PASS). relay_e2e_pin_first_seen audit line (`a350be59`) shipped via stanza. Operator surfaces (`relay-pins`, `doctor relay-pin-status`) shipping via `dcea711e` + cedar's in-flight delete/rotate slice.
+Status: **CRIT-1+2 fully closed in scope (2026-04-29)** — Slice A (`1e414fdc`) + Slice B (`5dc0ad6b`) + B-min-version (`f2a929ce`) + audit-log followup (`e5537bd4`) shipped. CRIT-2 closure header at `76a5f989`. Register-path TOFU + audit-log (#443) shipped via slate's `d3c9f4e0/5ffe42d0/8eaaff93` (jungle PASS). §7.1 parse-time reject (`4351786a`) shipped via birch (fern PASS). relay_e2e_pin_first_seen audit line (`a350be59`) shipped via stanza. Operator surfaces (`relay-pins`, `doctor relay-pin-status`) live via `dcea711e` + cedar's delete/rotate slice. Multiple slices landed today closing the remaining scope items.
 
-Next: cross-host divergence test (#444 slate, ~50 LoC) — signed envelope from host A → relay → host B, asserting full pin-flow. Slice C strict-flip (deny v1 envelopes once min-version observed) deferred pending ops sign-off.
+Next: Slice C strict-flip (deny v1 envelopes once min-version observed) deferred pending ops sign-off; cross-host divergence test (#444) backlog.
+
+### Worktree discipline
+
+Project Folder: `.collab/runbooks/worktree-discipline-for-subagents.md` (Patterns 1-15)
+
+Goal: shared-tree worktree layout's footguns (cross-tree git ops, ref deletion, daemon/wrapper ps confusion) documented + mitigated so subagents don't lose work or destabilize peers.
+
+Status: **active/maturing** — Pattern 14 (ref deletion shared-tree) + Pattern 15 (daemon-vs-wrapper ps confusion) added today (2026-04-29). Pre-reset shim (#452) landed + #462 v2 swarm-shared install means destructive-ref protection now in production for all peers. Patterns 1-13 already in dogfood use; recurring issues feed back into the runbook.
+
+Next: continue capturing new footguns as they surface; periodic audit of subagent compliance.
+
+### Code-health audit
+
+Project Folder: `.collab/research/2026-04-29-code-health-audit-cairn.md`
+
+Goal: surface and shipfix latent code-health issues across the OCaml codebase — duplication, awkward `failwith` paths, oversized handlers, missing dedup helpers.
+
+Status: **Audit-3 fully shipped (2026-04-29)** — 5 findings landed today: `read_json_opt` helper, CONFIG `failwith` → Result migration, `handle_tool_call` extraction (in flight), `auto_register` dedup, `memory_base_dir` dedup. Earlier audit passes already shipped.
+
+Next: schedule Audit-4 once swarm bandwidth permits; monitor for regressions in the simplified surfaces.
 
 ### Public-docs accuracy
 
