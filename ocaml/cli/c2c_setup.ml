@@ -879,11 +879,11 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
   let hook_registered = ref false in
   let settings_changed = ref false in
   let target_matcher = "^(?!mcp__).*" in
-  let settings =
+  let settings_ref = ref (
     if Sys.file_exists settings_path then json_read_file settings_path
     else `Assoc []
-  in
-  let settings = match settings with
+  ) in
+  settings_ref := (match !settings_ref with
     | `Assoc fields ->
         let hooks = match List.assoc_opt "hooks" fields with
           | Some (`Assoc h) -> h
@@ -941,8 +941,61 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
         end else
           `Assoc fields
     | _ -> `Assoc []
+  );
+  (* #142 slice 4: PreToolUse permission-forwarding hook for Claude Code.
+     Symmetric with the kimi PreToolUse hook from slice 2. The approval hook
+     script is installed by `c2c install kimi` (slice 2) to
+     ~/.local/bin/c2c-kimi-approval-hook.sh. We register it here so Claude Code
+     also gets permission forwarding.
+     Design (B per lumi pre-check): auto-write with sentinel matcher
+     `__C2C_PREAUTH_DISABLED__`. Operator edits the matcher to opt in.
+     Sentinel convention: `__C2C_<HOOK>_<STATE>__` namespaces by hook type
+     so future c2c-managed hook blocks don't collide. *)
+  let preauth_hook_script =
+    (Sys.getenv "HOME") // ".local" // "bin" // "c2c-kimi-approval-hook.sh"
   in
-  if !settings_changed then json_write_file_or_dryrun dry_run settings_path settings;
+  let preauth_hook_registered = ref false in
+  let preauth_settings_changed = ref false in
+  if Sys.file_exists preauth_hook_script then begin
+    let fields = match !settings_ref with `Assoc f -> f | _ -> [] in
+    let hooks = match List.assoc_opt "hooks" fields with
+      | Some (`Assoc h) -> h | _ -> []
+    in
+    let pre_tool_use = match List.assoc_opt "PreToolUse" hooks with
+      | Some (`List entries) -> entries | _ -> []
+    in
+    let sentinel_matcher = "__C2C_PREAUTH_DISABLED__" in
+    let already =
+      List.exists (function
+        | `Assoc e ->
+            (match List.assoc_opt "matcher" e with
+             | Some (`String m) -> m = sentinel_matcher
+             | _ -> false)
+        | _ -> false) pre_tool_use
+    in
+    preauth_hook_registered := already;
+    if not already then begin
+      preauth_settings_changed := true;
+      let new_entry = `Assoc [
+        ("matcher", `String sentinel_matcher);
+        ("hooks", `List [
+          `Assoc [ ("type", `String "command"); ("command", `String preauth_hook_script) ]
+        ])
+      ] in
+      let new_pre = pre_tool_use @ [ new_entry ] in
+      let new_hooks = List.filter (fun (k, _) -> k <> "PreToolUse") hooks
+                       @ [ ("PreToolUse", `List new_pre) ] in
+      let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields
+                       @ [ ("hooks", `Assoc new_hooks) ] in
+      settings_ref := `Assoc new_fields
+    end
+  end;
+  let preauth_status =
+    if not (Sys.file_exists preauth_hook_script) then "hook script not installed (run `c2c install kimi` first)"
+    else if !preauth_hook_registered then "already registered"
+    else "registered"
+  in
+  if !settings_changed || !preauth_settings_changed then json_write_file_or_dryrun dry_run settings_path !settings_ref;
   let hook_status =
     if !hook_registered && not !settings_changed && not !script_changed then "already registered"
     else if !hook_registered && !script_changed && not !settings_changed then "script updated"
@@ -952,14 +1005,15 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
   (match output_mode with
    | Json ->
        print_json (`Assoc
-         [ ("ok", `Bool true)
-         ; ("client", `String "claude")
-         ; ("alias", `String alias_val)
-         ; ("broker_root", `String root)
-         ; ("config", `String mcp_config_path)
-         ; ("scope", `String (if global then "global" else "project"))
-         ; ("hook_status", `String hook_status)
-         ])
+          [ ("ok", `Bool true)
+          ; ("client", `String "claude")
+          ; ("alias", `String alias_val)
+          ; ("broker_root", `String root)
+          ; ("config", `String mcp_config_path)
+          ; ("scope", `String (if global then "global" else "project"))
+          ; ("hook_status", `String hook_status)
+          ; ("preauth_hook_status", `String preauth_status)
+          ])
    | Human ->
        let hook_dir = Filename.concat claude_dir "hooks" in
        let hook_script = Filename.concat hook_dir "c2c-inbox-check.sh" in
@@ -982,9 +1036,22 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
        if not global then
          Printf.printf "\n  (project scope: MCP entry written to %s/.mcp.json. Pass --global to write to ~/.claude.json instead.)\n" project_dir;
        let alias_str = match alias_opt with Some a -> " -a " ^ a | None -> "" in
-       let force_str = if force then " --force" else "" in
-       Printf.printf "\nTo use a custom profile directory:\n";
-       Printf.printf "  CLAUDE_CONFIG_DIR=/path/to/profile c2c install claude%s%s\n" alias_str force_str)
+        let force_str = if force then " --force" else "" in
+        Printf.printf "\nTo use a custom profile directory:\n";
+        Printf.printf "  CLAUDE_CONFIG_DIR=/path/to/profile c2c install claude%s%s\n" alias_str force_str;
+        (* #142 slice 4: PreToolUse hook status + opt-in hint *)
+        if Sys.file_exists preauth_hook_script then begin
+          Printf.printf "\n  PreToolUse permission hook: %s\n" preauth_status;
+          if not !preauth_hook_registered then begin
+            Printf.printf "    (edit %s/settings.json to opt in: change\n" claude_dir;
+            Printf.printf "     \"matcher\": \"__C2C_PREAUTH_DISABLED__\" to\n";
+            Printf.printf "     \"matcher\": \"<tool-name>\" where tool-name is the exact\n";
+            Printf.printf "     tool to gate — e.g. \"Bash\", \"Read\".\n";
+            Printf.printf "     NOTE: Claude Code matcher is exact tool name, not regex.)\n"
+          end
+        end else
+          Printf.printf "\n  PreToolUse permission hook: %s\n" preauth_status
+  )
 
 (* --- install: crush (JSON) --- *)
 
