@@ -66,6 +66,7 @@ they don't regress silently.
 | `coord_fallthrough_fired` | MED | coord-backup escalation | #437 / coord-backup-fallthrough |
 | `nudge_enqueue` | LOW | nudge diagnostic | #335 |
 | `nudge_tick` | LOW | nudge diagnostic | #335 |
+| `dm_enqueue` | MED | delivery audit | #488 |
 | `relay_pin_delete` | MED | operator pin management | #432 Slice D |
 | `relay_pin_rotate` | MED | operator pin management | #432 Slice D |
 | `rpc` | LOW | RPC audit | pre-existing (always present) |
@@ -676,6 +677,43 @@ entries here.
 - **LOW** — diagnostic counters: `alias_resolve_multi_match`,
   `nudge_enqueue`, `nudge_tick`. Inspect for capacity planning,
   anomaly baseline.
+
+### `dm_enqueue`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "dm_enqueue",
+  "msg_type": "<enqueue_message | send_all>",
+  "from_alias": "<sender-alias>",
+  "to_alias": "<recipient-alias>",
+  "resolved_session_id": "<session-id>",
+  "inbox_path": "<path-to-inbox>"
+}
+```
+
+**Fires when**: every direct-message enqueue completes inside the broker —
+both 1:1 DMs (`msg_type: "enqueue_message"`) and 1:N fan-out from
+`send_all` (`msg_type: "send_all"`). One line per individual recipient.
+
+**File**: `ocaml/c2c_mcp.ml` ~line 2464 (`enqueue_message` path)
+and ~line 2517 (`send_all` path).
+
+**Operational meaning**: forensic — answer "was a DM actually enqueued for
+recipient X when I sent to alias Y?" by grepping `to_alias` + `msg_ts`
+range. Pairs with the sender's transcript showing the `send` RPC. Unlike
+`dead_letter_write` (which fires only on failure), this fires on every
+success so the absence of a line for a given `to_alias` indicates the
+alias was never resolved — useful for the #488 routing-mismatch
+investigation.
+
+**Cross-link**: #488 (routing-mismatch tripwires).
+
+---
 
 ### `relay_pin_delete`
 

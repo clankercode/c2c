@@ -2439,9 +2439,29 @@ module Broker = struct
                 let next =
                   current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral; message_id = Some (generate_msg_id ()) } ]
                 in
+                let ipath = inbox_path t ~session_id in
                 if debug_enabled then Printf.eprintf "[DEBUG enqueue] inbox_path=%s current_len=%d next_len=%d\n%!"
-                  (inbox_path t ~session_id) (List.length current) (List.length next);
+                  ipath (List.length current) (List.length next);
                 flush stderr;
+                (* Per-DM trace: record to_alias + resolved session_id + inbox path
+                   for every enqueue. This is the primary diagnostic for the #488
+                   routing-mismatch tripwires (coordinator1→cedar delivered to birch,
+                   birch→cedar self-DM-echo, test-agent willow-DM conflated). Logged
+                   unconditionally because the bug manifested without debug_enabled. *)
+                (try
+                  let broker_root = root t in
+                  let ts = Unix.gettimeofday () in
+                  let fields =
+                    [ ("ts", `Float ts)
+                    ; ("msg_type", `String "enqueue_message")
+                    ; ("from_alias", `String from_alias)
+                    ; ("to_alias", `String to_alias)
+                    ; ("resolved_session_id", `String session_id)
+                    ; ("inbox_path", `String ipath)
+                    ]
+                  in
+                  log_broker_event ~broker_root "dm_enqueue" fields
+                with _ -> ());
                 save_inbox t ~session_id next))
 
   type send_all_result =
@@ -2479,6 +2499,23 @@ module Broker = struct
                           current
                           @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = Some (generate_msg_id ()) } ]
                         in
+                        let ipath = inbox_path t ~session_id in
+                        (* Per-DM trace for send_all fan-out — same diagnostic
+                           value as enqueue_message tracing. *)
+                        (try
+                          let ts = Unix.gettimeofday () in
+                          let fields =
+                            [ ("ts", `Float ts)
+                            ; ("msg_type", `String "send_all")
+                            ; ("from_alias", `String from_alias)
+                            ; ("to_alias", `String reg.alias)
+                            ; ("resolved_session_id", `String session_id)
+                            ; ("inbox_path", `String ipath)
+                            ]
+                          in
+                          let broker_root = root t in
+                          log_broker_event ~broker_root "dm_enqueue" fields
+                        with _ -> ());
                         save_inbox t ~session_id next);
                     sent := reg.alias :: !sent
                 | All_recipients_dead ->
