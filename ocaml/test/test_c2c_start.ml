@@ -2764,8 +2764,8 @@ let test_format_c2c_envelope_basic_shape () =
     (string_contains env "<c2c event=\"message\"");
   check bool "from=alice attribute" true
     (string_contains env "from=\"alice\"");
-  check bool "alias=bob attribute" true
-    (string_contains env "alias=\"bob\"");
+  check bool "to=bob attribute" true
+    (string_contains env "to=\"bob\"");
   check bool "default reply_via=c2c_send" true
     (string_contains env "reply_via=\"c2c_send\"");
   check bool "body content present" true
@@ -2801,7 +2801,7 @@ let test_format_c2c_envelope_xml_escapes_attributes () =
   check bool "ampersand in from_alias is &amp;" true
     (string_contains env "from=\"a&amp;b\"");
   check bool "lt/gt in to_alias are escaped" true
-    (string_contains env "alias=\"c&lt;d&gt;\"");
+    (string_contains env "to=\"c&lt;d&gt;\"");
   (* Body content is NOT escaped — agents read it verbatim, including
      literal tags they may have authored. Document this invariant so a
      future change doesn't silently break round-trip. *)

@@ -28,8 +28,8 @@ let test_envelope_xml_escaping () =
             let needle = "from=\"a&amp;b\"" in
             let nl = String.length needle and ll = String.length s in
             let rec f i = i + nl <= ll && (String.sub s i nl = needle || f (i+1)) in f 0);
-  Alcotest.(check bool) "alias attr escapes <>"
-    true (let needle = "alias=\"&lt;x&gt;\"" in
+  Alcotest.(check bool) "to attr escapes <>"
+    true (let needle = "to=\"&lt;x&gt;\"" in
             let nl = String.length needle and ll = String.length got in
             let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
 
