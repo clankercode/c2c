@@ -54,6 +54,17 @@ let bool_member name json =
   | Some (`Bool b) -> Some b
   | _ -> None
 
+(** [from_file path] reads and parses a JSON file.
+    Raises [Yojson.Json_error] on parse failure — callers that need
+    fallback-on-error must wrap explicitly. For a softer variant that
+    returns [None] on error, use [from_file_opt]. *)
+let from_file path = Yojson.Safe.from_file path
+
+(** [from_file_opt path] is [Some v] on success, [None] on
+    error (parse error or [Sys_error]). Useful for optional config files. *)
+let from_file_opt path =
+  try Some (Yojson.Safe.from_file path) with _ -> None
+
 (** [jsonrpc_error ~id ~code ~message] builds a JSON-RPC 2.0 error response.
     [id] is passed verbatim so callers can mirror back the request id or use
     [`Null] when the request id is unavailable (e.g. parse errors). *)
