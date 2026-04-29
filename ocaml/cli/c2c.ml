@@ -4168,10 +4168,13 @@ let relay_rooms_cmd =
              (Relay.Relay_client.set_room_visibility client ~room_id ~visibility:visibility_val)
            in
            print_endline (Yojson.Safe.pretty_to_string result);
-           (match result with
-            | `Assoc fields ->
-                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-            | _ -> exit 1))
+            (match result with
+             | `Assoc fields ->
+                 (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+             | _ -> exit 1))
+  | _ ->
+      Printf.eprintf "error: unknown rooms subcommand '%s'\n%!" subcmd;
+      exit 1
 
 (* c2c relay register — bind Ed25519 identity on the relay (§8.2) *)
 let relay_register_cmd =

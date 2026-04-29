@@ -8727,7 +8727,7 @@ let slice_b_make_signed_envelope
 let slice_b_make_message ~from_alias ~to_alias ~content : C2c_mcp.message =
   { from_alias; to_alias; content
   ; deferrable = false; reply_via = None
-  ; enc_status = None; ts = 0.0; ephemeral = false }
+  ; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
 
 (* Slice B test 1: empty pin store + v2 envelope with from_ed25519
    → on success the broker pins the claimed key. *)
