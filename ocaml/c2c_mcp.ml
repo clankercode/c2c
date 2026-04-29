@@ -7128,13 +7128,7 @@ let ts = Unix.gettimeofday () in
         try match arguments |> Yojson.Safe.Util.member "shared_with_me" with `Bool b -> b | _ -> false
         with _ -> false
       in
-      let read_file path =
-        try
-          let ic = open_in path in
-          Fun.protect ~finally:(fun () -> close_in ic)
-            (fun () -> really_input_string ic (in_channel_length ic))
-        with _ -> ""
-      in
+      let read_file = C2c_io.read_file_opt in
       let list_md_entries dir =
         try
           Array.to_list (Sys.readdir dir)
