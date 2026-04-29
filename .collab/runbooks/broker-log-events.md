@@ -45,6 +45,7 @@ catalog entry.
 | `alias_casefold_invariant_violated` | CRIT | alias / TOFU | #432 §3 |
 | `alias_resolve_multi_match` | LOW | alias-resolution diagnostic | #432 follow-up |
 | `dead_letter_write` | MED | delivery diagnostic | #433 |
+| `relay_e2e_pin_first_seen` | MED | relay-crypto TOFU | CRIT-1 Slice B follow-up |
 | `send_memory_handoff` | MED | feature audit | #286 |
 | `peer_pass_reject` | HIGH | peer-pass security | #29 H1 / H2b |
 | `peer_pass_pin_rotate` | HIGH | TOFU rotation success | #432 TOFU 5 |
@@ -157,6 +158,41 @@ Pairs with the `remote-outbox-dlq.jsonl` file (#379 outbox DLQ)
 when the dead letter is on the relay side.
 
 **Cross-link**: #433.
+
+---
+
+### `relay_e2e_pin_first_seen`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "relay_e2e_pin_first_seen",
+  "alias": "<sender-alias>",
+  "pinned_ed25519_b64": "<b64url-pubkey>"
+}
+```
+
+**Fires when**: an inbound relay envelope is successfully decrypted at
+first contact (no prior Ed25519 pin for `alias`, envelope carries a
+`from_ed25519` claim), and the claimed key is pinned via
+`Broker.pin_ed25519_sync`.
+
+**File**: `ocaml/c2c_mcp.ml` ~line 4226.
+
+**Operational meaning**: forensic — answers "when did alias X first
+contact us and what Ed25519 key did they present?". Pairs with
+`relay_e2e_pin_mismatch` for the established-contact audit trail. An
+unexpected `first_seen` for an alias you believed had an established
+identity (but never logged the original pin) indicates a prior MITM
+that went undetected, or a key-rotation gap. Compare the
+`pinned_ed25519_b64` against the peer's current advertised identity.
+
+**Cross-link**: CRIT-1 Slice B follow-up (symmetric to
+`relay_e2e_pin_mismatch`).
 
 ---
 
@@ -584,8 +620,9 @@ entries here.
   `peer_pass_pin_rotate`, `peer_pass_pin_rotate_unauth`,
   `pending_cap_reject`. Review on review cadence; fire-and-investigate
   if rates spike.
-- **MED** — flow audit: `dead_letter_write`, `send_memory_handoff`,
-  `pending_open`, `pending_check`, `coord_fallthrough_fired`. Forensic
+- **MED** — flow audit: `dead_letter_write`, `relay_e2e_pin_first_seen`,
+  `send_memory_handoff`, `pending_open`, `pending_check`,
+  `coord_fallthrough_fired`. Forensic
   use; correlate by `perm_id_hash` / `from_alias` / `msg_ts`.
 - **LOW** — diagnostic counters: `alias_resolve_multi_match`,
   `nudge_enqueue`, `nudge_tick`. Inspect for capacity planning,

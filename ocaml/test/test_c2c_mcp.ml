@@ -8962,6 +8962,63 @@ let test_slice_b_followup_pin_mismatch_audit_log () =
       check bool "audit-log carries claimed_ed25519_b64" true
         (contains log_content (Printf.sprintf "\"claimed_ed25519_b64\":\"%s\"" claimed_b64))))
 
+(* TOFU first-contact audit-line test: after a successful first-contact decrypt
+   (no prior pin, envelope carries a claimed Ed25519), broker.log must contain
+   a [relay_e2e_pin_first_seen] line with the alias and the pinned key. *)
+let test_relay_e2e_pin_first_seen_audit_log () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-fsf" and recipient_alias = "recipient-fsf" in
+      let (ed_seed, ed_pk_raw) = slice_b_gen_ed25519 () in
+      let ed_pk_b64 = Relay_e2e.b64_encode ed_pk_raw in
+      (* Pre-condition: pin store empty for sender. *)
+      check (option string) "pre: no pinned ed25519"
+        None (C2c_mcp.Broker.get_pinned_ed25519 sender_alias);
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let wire =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:ed_seed ~sender_ed_b64:ed_pk_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext:"first-seen-test" ~envelope_version:2
+      in
+      let our_x25519 = Some recipient_x in
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let (decrypted, enc_status) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:wire
+      in
+      check string "first-contact decrypts" "first-seen-test" decrypted;
+      check (option string) "first-contact enc_status = ok"
+        (Some "ok") enc_status;
+      (* Post-condition: pin set. *)
+      check (option string) "post: pinned ed25519"
+        (Some ed_pk_b64)
+        (C2c_mcp.Broker.get_pinned_ed25519 sender_alias);
+      let log_path = Filename.concat dir "broker.log" in
+      check bool "broker.log written" true (Sys.file_exists log_path);
+      let ic = open_in log_path in
+      let log_content =
+        try
+          let buf = Buffer.create 512 in
+          (try while true do Buffer.add_channel buf ic 512 done with End_of_file -> ());
+          close_in ic;
+          Buffer.contents buf
+        with e -> close_in ic; raise e
+      in
+      let contains s sub =
+        try ignore (Str.search_forward (Str.regexp_string sub) s 0); true
+        with Not_found -> false
+      in
+      check bool "audit-log has relay_e2e_pin_first_seen event" true
+        (contains log_content "\"event\":\"relay_e2e_pin_first_seen\"");
+      check bool "audit-log carries alias" true
+        (contains log_content (Printf.sprintf "\"alias\":\"%s\"" sender_alias));
+      check bool "audit-log carries pinned_ed25519_b64" true
+        (contains log_content (Printf.sprintf "\"pinned_ed25519_b64\":\"%s\"" ed_pk_b64))))
+
 (* Slice B test 4: legacy v1 envelope (no from_ed25519, envelope_version=1).
    Pre-pin the sender's real ed25519 — verifier falls back to pinned.
    Existing path must still decrypt; pin must NOT be spuriously rewritten
@@ -10864,6 +10921,8 @@ let () =
               test_slice_b_tofu_mismatch_rejects
           ; test_case "[CRIT-1 Slice B followup] pin mismatch emits broker.log audit line" `Quick
               test_slice_b_followup_pin_mismatch_audit_log
+          ; test_case "[CRIT-1 Slice B followup] first-contact pin emits broker.log audit line" `Quick
+              test_relay_e2e_pin_first_seen_audit_log
           ; test_case "[CRIT-1 Slice B] TOFU legacy v1 (no from_ed25519) preserves existing path" `Quick
               test_slice_b_tofu_legacy_v1_no_field_accepts_no_tofu_update
           ; test_case "[CRIT-1 Slice B-min-version] v2 first-contact bumps min to 2" `Quick

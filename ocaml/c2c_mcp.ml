@@ -4211,8 +4211,27 @@ let log_relay_e2e_pin_mismatch ~broker_root ~alias
      (try
         output_string oc (line ^ "\n");
         close_out oc
-      with _ -> close_out_noerr oc)
+             with _ -> close_out_noerr oc)
    with _ -> ())
+
+(* TOFU first-contact audit line: symmetric to [log_relay_e2e_pin_mismatch]
+   (#432 CRIT-1 Slice B follow-up). When a sender has no prior pin and the
+   envelope carries a claimed Ed25519 key, the broker pins it. Operators have
+   no visibility into first-contact pins today — this line provides that
+   forensic signal. Same best-effort shape as [log_relay_e2e_pin_mismatch].
+   Written immediately after [Broker.pin_ed25519_sync] succeeds inside the
+   first-contact branch (pinned=None, claimed=Some). *)
+let log_relay_e2e_pin_first_seen ~broker_root ~alias ~pinned_ed25519_b64 ~ts =
+  let line =
+    `Assoc
+      [ ("ts", `Float ts)
+      ; ("event", `String "relay_e2e_pin_first_seen")
+      ; ("alias", `String alias)
+      ; ("pinned_ed25519_b64", `String pinned_ed25519_b64)
+      ]
+    |> Yojson.Safe.to_string
+  in
+  C2c_io.append_jsonl ~perm:0o600 (Filename.concat broker_root "broker.log") line
 
 (* #432 TOFU 5 observability follow-up: sibling logger for
    pin_rotate REJECT path. Same broker.log file, same shape as
@@ -4581,7 +4600,15 @@ let decrypt_envelope ~(our_x25519 : Relay_enc.t option) ~our_ed25519
                                 or when no claim was present (legacy v1). *)
                              (match pinned_ed25519_b64, claimed_ed25519_b64 with
                               | None, Some claimed_b64 ->
-                                Broker.pin_ed25519_sync ~alias:env.from_ ~pk:claimed_b64 |> ignore
+                                Broker.pin_ed25519_sync ~alias:env.from_ ~pk:claimed_b64 |> ignore;
+                                (match Broker.get_relay_pins_root () with
+                                 | Some broker_root ->
+                                   log_relay_e2e_pin_first_seen
+                                     ~broker_root
+                                     ~alias:env.from_
+                                     ~pinned_ed25519_b64:claimed_b64
+                                     ~ts:(Unix.gettimeofday ())
+                                 | None -> ())
                               | _ -> ());
                              (match sender_x25519_pk with
                               | Some pk -> Broker.pin_x25519_sync ~alias:env.from_ ~pk |> ignore
