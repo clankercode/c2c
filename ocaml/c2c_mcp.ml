@@ -2037,6 +2037,12 @@ module Broker = struct
   let is_remote_alias alias =
     String.exists (fun c -> c = '@') alias
 
+  (** Generate a v4 UUID for locally-assigned message IDs.
+      This is called at enqueue time so every locally-sent message gets a
+      stable, globally-unique ID that can be used to anchor sticker reactions. *)
+  let generate_msg_id () =
+    Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
+
     let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) ?(ephemeral = false) () =
     if debug_enabled then Printf.eprintf "[DEBUG enqueue ENTER] from=%s to=%s\n%!" from_alias to_alias;
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
@@ -2076,7 +2082,7 @@ module Broker = struct
             with_inbox_lock t ~session_id (fun () ->
                 let current = load_inbox t ~session_id in
                 let next =
-                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral; message_id = None } ]
+                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral; message_id = Some (generate_msg_id ()) } ]
                 in
                 if debug_enabled then Printf.eprintf "[DEBUG enqueue] inbox_path=%s current_len=%d next_len=%d\n%!"
                   (inbox_path t ~session_id) (List.length current) (List.length next);
@@ -2116,7 +2122,7 @@ module Broker = struct
                         let current = load_inbox t ~session_id in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = Some (generate_msg_id ()) } ]
                         in
                         save_inbox t ~session_id next);
                     sent := reg.alias :: !sent
@@ -2221,7 +2227,7 @@ module Broker = struct
                         in
                         output_string oc (Yojson.Safe.to_string record);
                         output_char oc '\n')
-                      messages))
+                      messages));
 
   type archive_entry =
     { ae_drained_at : float
@@ -3166,11 +3172,11 @@ module Broker = struct
     let skipped = ref [] in
     List.iter
       (fun m ->
-        if m.rm_alias = from_alias then ()
-        else begin
-          let tagged_to = m.rm_alias ^ "#" ^ room_id in
-          try
-            with_registry_lock t (fun () ->
+         if m.rm_alias = from_alias then ()
+         else begin
+           let tagged_to = m.rm_alias ^ "#" ^ room_id in
+           try
+             with_registry_lock t (fun () ->
                  match resolve_live_session_id_by_alias t m.rm_alias with
                  | Resolved session_id ->
                      with_inbox_lock t ~session_id (fun () ->
@@ -3182,9 +3188,9 @@ module Broker = struct
                      delivered := m.rm_alias :: !delivered
                  | All_recipients_dead | Unknown_alias ->
                      skipped := m.rm_alias :: !skipped)
-          with _ ->
-            skipped := m.rm_alias :: !skipped
-        end)
+           with _ ->
+             skipped := m.rm_alias :: !skipped
+         end)
       members;
     (List.rev !delivered, List.rev !skipped)
 

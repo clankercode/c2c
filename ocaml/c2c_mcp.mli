@@ -30,6 +30,9 @@ val parse_send_tag : string option -> (string option, string) result
     (no tag). [Some "fail"|"blocking"|"urgent"] → [Ok (Some _)].
     Anything else → [Error msg] with a human-readable rejection. *)
 
+val xml_escape : string -> string
+(** Escape [&amp;, &lt;, &gt;, &quot;, &apos;] for XML attribute values. *)
+
 val extract_tag_from_content : string -> string option
 (** [#392b] Inverse of [tag_to_body_prefix] — recognize a known body
     prefix and return the abstract tag. *)
