@@ -3133,10 +3133,28 @@ let test_ed25519_lazy_create_on_first_register () =
            | None -> Alcotest.fail "pubkey_sig should be populated"
            | Some _ -> ()))
 
+(* CRIT-2 register-path: read whole broker.log file as a single string
+   (mirrors test_slice_b_followup_pin_mismatch_audit_log shape). *)
+let read_broker_log_full dir =
+  let path = Filename.concat dir "broker.log" in
+  let ic = open_in path in
+  let buf = Buffer.create 1024 in
+  (try
+     while true do Buffer.add_channel buf ic 1024 done
+   with End_of_file -> ());
+  close_in ic;
+  Buffer.contents buf
+
+let log_contains_substr log_content sub =
+  try ignore (Str.search_forward (Str.regexp_string sub) log_content 0); true
+  with Not_found -> false
+
 (* E2E S2: when ed25519 pubkey mismatches the TOFU pin, handle_tool_call
    returns an error without creating a registration.
    Verifies: (i) error response, (ii) no registration created,
-   (iii) relay_pins.json still holds the original pin. *)
+   (iii) relay_pins.json still holds the original pin,
+   (iv) [CRIT-2] broker.log gets a relay_e2e_register_pin_mismatch
+   audit line carrying alias + key_class + pinned_b64. *)
 let test_register_rejects_ed25519_mismatch () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -3170,21 +3188,71 @@ let test_register_rejects_ed25519_mismatch () =
         | _ -> None
       in
       Alcotest.(check (option string)) "ed25519 pin still pk-old"
-        (Some "pk-old-b64") ed_pins)
+        (Some "pk-old-b64") ed_pins;
+      (* (iv) CRIT-2: audit-log line emitted on broker.log. *)
+      let log_path = Filename.concat dir "broker.log" in
+      Alcotest.(check bool) "broker.log written" true (Sys.file_exists log_path);
+      let log_content = read_broker_log_full dir in
+      Alcotest.(check bool) "audit-log has relay_e2e_register_pin_mismatch event" true
+        (log_contains_substr log_content "\"event\":\"relay_e2e_register_pin_mismatch\"");
+      Alcotest.(check bool) "audit-log carries alias" true
+        (log_contains_substr log_content "\"alias\":\"mismatch-ed\"");
+      Alcotest.(check bool) "audit-log key_class is ed25519" true
+        (log_contains_substr log_content "\"key_class\":\"ed25519\"");
+      Alcotest.(check bool) "audit-log carries pinned_b64=pk-old-b64" true
+        (log_contains_substr log_content "\"pinned_b64\":\"pk-old-b64\""))
 
 (* E2E S2: when x25519 pubkey mismatches the TOFU pin, handle_tool_call
    returns an error without creating a registration.
    Verifies: (i) error response, (ii) no registration created,
-   (iii) relay_pins.json still holds the original x25519 pin. *)
+   (iii) relay_pins.json still holds the original x25519 pin,
+   (iv) [CRIT-2] broker.log gets a relay_e2e_register_pin_mismatch
+   audit line for the x25519 class with claimed_b64 + pinned_b64,
+   (v) [CRIT-2 invariant] when Ed25519 is pre-pinned to a key K AND
+   that exact key is the one the handler sees on disk (Already_pinned
+   path), an x25519-only mismatch reject MUST leave the Ed25519 pin
+   completely untouched (still K). This is the load-bearing CRIT-2
+   invariant: a single-class register failure cannot collateral-damage
+   a sibling pin. *)
 let test_register_rejects_x25519_mismatch () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      (* Pre-pin an x25519 pubkey for alias "mismatch-x25519". *)
-      ignore (C2c_mcp.Broker.pin_x25519_sync ~alias:"mismatch-x25519" ~pk:"x25519-old-b64");
-      (* Drive register with a DIFFERENT enc_pubkey — triggers x25519 mismatch. *)
-      let args = `Assoc [ ("alias", `String "mismatch-x25519");
-                           ("enc_pubkey", `String "x25519_different_pk_b64") ]
+      let alias = "mismatch-x25519" in
+      (* CRIT-2 invariant setup: pre-create an Ed25519 keypair on disk
+         at the broker's per-alias key path so the handler's lazy-load
+         branch (Sys.file_exists priv_path = true) returns the same
+         key, then pre-pin the matching pubkey. This means Ed25519 will
+         take the [Already_pinned] path during register and *only* the
+         X25519 mismatch fires. *)
+      let keys_dir = Filename.concat dir "keys" in
+      (try Unix.mkdir keys_dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+      let priv_path = Filename.concat keys_dir (alias ^ ".ed25519") in
+      let ed_id = Relay_identity.load_or_create_at ~path:priv_path ~alias_hint:alias in
+      let ed_pinned_b64 = Relay_identity.b64url_encode ed_id.Relay_identity.public_key in
+      (match C2c_mcp.Broker.pin_ed25519_sync ~alias ~pk:ed_pinned_b64 with
+       | `New_pin -> ()
+       | _ -> Alcotest.fail "expected New_pin on initial Ed25519 pre-pin");
+      (* Pre-pin an x25519 pubkey for the alias. *)
+      ignore (C2c_mcp.Broker.pin_x25519_sync ~alias ~pk:"x25519-old-b64");
+      (* Pre-generate the X25519 key the handler will load, by pointing
+         C2C_KEY_DIR at our temp dir and calling [Relay_enc.load_or_generate]
+         ourselves first. The handler ignores any [enc_pubkey] arg and
+         always uses [Relay_enc.load_or_generate] for the broker-side
+         X25519, so this gives us the exact [claimed_b64] value the
+         audit-log line will carry. *)
+      let x25519_key_dir = Filename.concat dir "x25519-keys" in
+      (try Unix.mkdir x25519_key_dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+      Unix.putenv "C2C_KEY_DIR" x25519_key_dir;
+      let claimed_x25519_b64 =
+        match Relay_enc.load_or_generate ~alias () with
+        | Ok enc -> Relay_enc.public_key_b64 enc
+        | Error e -> Alcotest.failf "Relay_enc.load_or_generate setup failed: %s" e
       in
+      (* Drive register through the handler. Handler will [load_or_generate]
+         the same X25519 key (cached in our temp dir), produce the same
+         pubkey, hit the pre-pinned mismatch ("x25519-old-b64"), and reject.
+         Ed25519 should NOT mismatch because the on-disk key matches the pin. *)
+      let args = `Assoc [ ("alias", `String alias) ] in
       let response = Lwt_main.run (C2c_mcp.handle_tool_call
         ~broker ~session_id_override:(Some "mismatch-x-sid")
         ~tool_name:"register" ~arguments:args)
@@ -3195,19 +3263,50 @@ let test_register_rejects_x25519_mismatch () =
       (* (ii): no registration for "mismatch-x25519". *)
       let regs = C2c_mcp.Broker.list_registrations broker in
       Alcotest.(check bool) "no registration for mismatched alias" true
-        (List.for_all (fun r -> r.C2c_mcp.alias <> "mismatch-x25519") regs);
+        (List.for_all (fun r -> r.C2c_mcp.alias <> alias) regs);
       (* (iii): relay_pins.json still pins x25519-old under "x25519" key. *)
       let pins_path = Filename.concat dir "relay_pins.json" in
       Alcotest.(check bool) "relay_pins.json exists" true (Sys.file_exists pins_path);
       let pins_json = Yojson.Safe.from_file pins_path in
       let x_pins = match pins_json |> Yojson.Safe.Util.member "x25519" with
         | `Assoc l ->
-            (match List.assoc_opt "mismatch-x25519" l with
+            (match List.assoc_opt alias l with
              | Some (`String s) -> Some s | _ -> None)
         | _ -> None
       in
       Alcotest.(check (option string)) "x25519 pin still x25519-old-b64"
-        (Some "x25519-old-b64") x_pins)
+        (Some "x25519-old-b64") x_pins;
+      (* (iv) CRIT-2: audit-log line emitted on broker.log for x25519 class. *)
+      let log_path = Filename.concat dir "broker.log" in
+      Alcotest.(check bool) "broker.log written" true (Sys.file_exists log_path);
+      let log_content = read_broker_log_full dir in
+      Alcotest.(check bool) "audit-log has relay_e2e_register_pin_mismatch event" true
+        (log_contains_substr log_content "\"event\":\"relay_e2e_register_pin_mismatch\"");
+      Alcotest.(check bool) "audit-log carries alias" true
+        (log_contains_substr log_content (Printf.sprintf "\"alias\":\"%s\"" alias));
+      Alcotest.(check bool) "audit-log key_class is x25519" true
+        (log_contains_substr log_content "\"key_class\":\"x25519\"");
+      Alcotest.(check bool) "audit-log carries pinned_b64=x25519-old-b64" true
+        (log_contains_substr log_content "\"pinned_b64\":\"x25519-old-b64\"");
+      Alcotest.(check bool) "audit-log carries claimed_b64=<handler-computed X25519 pubkey>" true
+        (log_contains_substr log_content
+           (Printf.sprintf "\"claimed_b64\":\"%s\"" claimed_x25519_b64));
+      (* (v) CRIT-2 INVARIANT: Ed25519 pin is UNCHANGED post-reject.
+         Single-class (x25519) mismatch must not collateral-touch the
+         Ed25519 pin — it's still the pre-pinned ed_pinned_b64. *)
+      let ed_pin_post = match pins_json |> Yojson.Safe.Util.member "ed25519" with
+        | `Assoc l ->
+            (match List.assoc_opt alias l with
+             | Some (`String s) -> Some s | _ -> None)
+        | _ -> None
+      in
+      Alcotest.(check (option string)) "Ed25519 pin UNCHANGED post-x25519-reject"
+        (Some ed_pinned_b64) ed_pin_post;
+      (* Belt-and-braces: NO ed25519-class audit line on this test —
+         only x25519 mismatched, so we should not see key_class=ed25519
+         in the log. *)
+      Alcotest.(check bool) "audit-log has NO key_class=ed25519 line" false
+        (log_contains_substr log_content "\"key_class\":\"ed25519\""))
 
 let test_concurrent_register_does_not_lose_entries () =
   with_temp_dir (fun dir ->
