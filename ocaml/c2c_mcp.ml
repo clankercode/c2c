@@ -4402,19 +4402,58 @@ let decrypt_envelope ~(our_x25519 : Relay_enc.t option) ~our_ed25519
                           content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
                       | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
                    | Some pt ->
-                      let sender_ed25519_pk_opt = Broker.get_pinned_ed25519 env.from_ in
-                      (match sender_ed25519_pk_opt with
-                       | None ->
-                         content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
-                       | Some pk ->
-                         let sig_ok = Relay_e2e.verify_envelope_sig ~pk env in
-                         if not sig_ok then
-                           content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                         else (
-                           (match sender_x25519_pk with
-                            | Some pk -> Broker.pin_x25519_sync ~alias:env.from_ ~pk |> ignore
-                            | None -> ());
-                           pt, Some (Relay_e2e.enc_status_to_string status))))))
+                      (* Slice B (CRIT-2): Ed25519 TOFU on first-contact.
+                         Pin store holds Ed25519 pubkeys as b64url strings
+                         (matching producer pin_ed25519_sync convention).
+                         Verify key must be 32 raw bytes — decode at the
+                         boundary. Claimed [from_ed25519] (v2 envelope)
+                         takes precedence over pinned for verify; pinned
+                         is the legacy-v1 fallback when the envelope
+                         carries no claim. *)
+                      let claimed_ed25519_b64 = env.from_ed25519 in
+                      let pinned_ed25519_b64 = Broker.get_pinned_ed25519 env.from_ in
+                      let mismatch =
+                        match pinned_ed25519_b64, claimed_ed25519_b64 with
+                        | Some p, Some c -> p <> c
+                        | _ -> false
+                      in
+                      if mismatch then
+                        content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                      else
+                        let try_decode b64 =
+                          match Relay_e2e.b64_decode b64 with
+                          | Ok raw when String.length raw = 32 -> Some raw
+                          | _ -> None
+                        in
+                        let verify_pk_raw_opt =
+                          match claimed_ed25519_b64 with
+                          | Some b64 -> try_decode b64
+                          | None ->
+                            (match pinned_ed25519_b64 with
+                             | Some b64 -> try_decode b64
+                             | None -> None)
+                        in
+                        (match verify_pk_raw_opt with
+                         | None ->
+                           content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
+                         | Some pk ->
+                           let sig_ok = Relay_e2e.verify_envelope_sig ~pk env in
+                           if not sig_ok then
+                             content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                           else (
+                             (* TOFU first-contact: pin claimed Ed25519 if
+                                no existing pin and the envelope carried a
+                                claim. Skip when pin already exists (no-op
+                                same-key, mismatch already rejected above)
+                                or when no claim was present (legacy v1). *)
+                             (match pinned_ed25519_b64, claimed_ed25519_b64 with
+                              | None, Some claimed_b64 ->
+                                Broker.pin_ed25519_sync ~alias:env.from_ ~pk:claimed_b64 |> ignore
+                              | _ -> ());
+                             (match sender_x25519_pk with
+                              | Some pk -> Broker.pin_x25519_sync ~alias:env.from_ ~pk |> ignore
+                              | None -> ());
+                             pt, Some (Relay_e2e.enc_status_to_string status))))))
          | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
       | _ -> content, None
 
@@ -5616,9 +5655,13 @@ let ts = Unix.gettimeofday () in
                                let recipient_entry = Relay_e2e.make_recipient
                                  ~alias:to_alias ~ct_b64 ~nonce:nonce_b64
                                in
+                               let our_ed25519_pk_b64 =
+                                 Relay_e2e.b64_encode our_ed25519.public_key
+                               in
                                let envelope : Relay_e2e.envelope = {
                                  from_ = from_alias;
                                  from_x25519 = Some sender_pk_b64;
+                                 from_ed25519 = Some our_ed25519_pk_b64;
                                  to_ = Some to_alias;
                                  room = None;
                                  ts = Int64.of_float ts;

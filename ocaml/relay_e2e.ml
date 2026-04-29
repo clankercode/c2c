@@ -26,6 +26,12 @@ type recipient = {
 type envelope = {
   from_ : string;
   from_x25519 : string option;  (** Sender's x25519 pubkey (b64url). Optional — absent on legacy envelopes. Used for x25519 TOFU on receive. *)
+  from_ed25519 : string option;
+    (** Sender's Ed25519 verify pubkey (b64url). Optional — absent on
+        legacy v1 envelopes. Used for Ed25519 TOFU on first-contact and
+        mismatch-reject on subsequent receive (Slice B,
+        [.collab/design/2026-04-29-relay-crypto-crit-fix-plan-cairn.md]).
+        v2 producers populate this with their local relay-identity key. *)
   to_ : string option;
   room : string option;
   ts : int64;
@@ -33,18 +39,18 @@ type envelope = {
   recipients : recipient list;
   sig_b64 : string;
   envelope_version : int;
-    (** Canonical-blob version: 1 = legacy (does NOT cover [from_x25519]),
-        2 = CRIT-1 fix (covers [from_x25519] when [Some _], omits the
-        ["from_x25519"] key entirely when [None]). Default 1 on parse for
-        back-compat. New OCaml producers emit 2. Verifier accepts both
-        during the transition window (Slice A,
+    (** Canonical-blob version: 1 = legacy (does NOT cover [from_x25519]
+        or [from_ed25519]), 2 = CRIT-1+B fix (covers both when [Some _],
+        omits the corresponding key entirely when [None]). Default 1 on
+        parse for back-compat. New OCaml producers emit 2. Verifier
+        accepts both during the transition window (Slice A+B,
         [.collab/design/2026-04-29-relay-crypto-crit-fix-plan-cairn.md]).
         Strict-v2 flip is future Slice C. *)
 }
 
 (** Current envelope version emitted by OCaml producers. Bumped to 2 by
     Slice A so [from_x25519] is included in the Ed25519-signed canonical
-    blob. *)
+    blob. Slice B extends v2 to also cover [from_ed25519]. *)
 let current_envelope_version = 2
 
 let b64_encode s =
@@ -89,17 +95,19 @@ let rec json_to_string_sorted (j : Yojson.Safe.t) : string =
   | `Bool b -> string_of_bool b
   | _ -> Yojson.Safe.to_string j
 
-(* Canonical-blob version dispatch (CRIT-1, Slice A).
+(* Canonical-blob version dispatch (CRIT-1+B, Slice A+B).
 
    v1 (legacy): {enc, from, recipients, room, to, ts}
-   v2 (CRIT-1): v1 fields PLUS "from_x25519" when [from_x25519 = Some _].
+   v2 (CRIT-1+B): v1 fields PLUS "from_x25519" and "from_ed25519" when
+   each is [Some _].
 
    Omit-key-when-None semantics for v2: if [from_x25519 = None] the
-   ["from_x25519"] key is NOT included (NOT included as `Null). This
-   keeps the v2 canonical blob bit-identical to v1 when the sender
-   chooses to omit the field (e.g. plaintext-routed messages),
-   which preserves a clean degradation path and matches what TS
-   verifiers expect when paraphrasing the canonical-blob field-list. *)
+   ["from_x25519"] key is NOT included (NOT included as `Null), same
+   for [from_ed25519]. This keeps the v2 canonical blob bit-identical
+   to v1 when the sender chooses to omit both fields (e.g. plaintext-
+   routed messages), preserving a clean degradation path and matching
+   what TS verifiers expect when paraphrasing the canonical-blob
+   field-list. *)
 let canonical_json_v1 (e : envelope) : string =
   let rncs =
     `List (
@@ -151,7 +159,11 @@ let canonical_json_v2 (e : envelope) : string =
     | Some pk -> ("from_x25519", `String pk) :: base
     | None -> base
   in
-  let fields = sort_assoc with_x25519 in
+  let with_ed25519 = match e.from_ed25519 with
+    | Some pk -> ("from_ed25519", `String pk) :: with_x25519
+    | None -> with_x25519
+  in
+  let fields = sort_assoc with_ed25519 in
   "{" ^ String.concat "," (List.map (fun (k, v) -> Printf.sprintf "%S:%s" k (json_to_string_sorted v)) fields) ^ "}"
 
 (** Dispatch on [e.envelope_version]: 1 → v1 shape, 2 → v2 shape, anything
@@ -280,6 +292,7 @@ let envelope_to_json (e : envelope) : Yojson.Safe.t =
   `Assoc (
     [ "from",      `String e.from_ ]
     @ (match e.from_x25519 with Some pk -> [ "from_x25519", `String pk ] | None -> [])
+    @ (match e.from_ed25519 with Some pk -> [ "from_ed25519", `String pk ] | None -> [])
     @ [ "to",        (match e.to_ with Some s -> `String s | None -> `Null)
       ; "room",      (match e.room with Some s -> `String s | None -> `Null)
       ; "ts",        `Intlit (Int64.to_string e.ts)
@@ -299,10 +312,19 @@ let envelope_of_json (j : Yojson.Safe.t) : envelope =
     let open Yojson.Safe.Util in
     let from_ = member "from" j |> to_string in
     let from_x25519 = match member "from_x25519" j with `String s -> Some s | _ -> None in
+    let from_ed25519 = match member "from_ed25519" j with `String s -> Some s | _ -> None in
     let to_ = match member "to" j with `Null -> None | `String s -> Some s | _ -> failwith "envelope_of_json: to must be string or null" in
     let room = match member "room" j with `Null -> None | `String s -> Some s | _ -> failwith "envelope_of_json: room must be string or null" in
-    let ts_str = member "ts" j |> to_string in
-    let ts = Int64.of_string ts_str in
+    (* Wire format for ts is permissive: producers emit Intlit (so the
+       wire JSON has a bare number), but `Yojson.Safe.from_string` parses
+       small numbers as `Int and large ones as `Intlit, and some legacy
+       paths construct ts as `String. Accept all three. *)
+    let ts = match member "ts" j with
+      | `String s -> Int64.of_string s
+      | `Int n -> Int64.of_int n
+      | `Intlit s -> Int64.of_string s
+      | _ -> failwith "envelope_of_json: ts must be number or string"
+    in
     let enc = member "enc" j |> to_string in
     let recipients = member "recipients" j |> to_list |> List.map recipient_of_json in
     let sig_b64 = member "sig" j |> to_string in
@@ -313,7 +335,7 @@ let envelope_of_json (j : Yojson.Safe.t) : envelope =
       | `Intlit s -> (try int_of_string s with _ -> 1)
       | _ -> 1
     in
-    { from_; from_x25519; to_; room; ts; enc; recipients; sig_b64; envelope_version }
+    { from_; from_x25519; from_ed25519; to_; room; ts; enc; recipients; sig_b64; envelope_version }
   | _ -> failwith "envelope_of_json: expected object"
 
 let find_my_recipient ~(my_alias : string) (recipients : recipient list) =
@@ -353,8 +375,8 @@ let check_pinned_x25519_mismatch ~(pinned_pk : string) ~(claimed_pk : string) : 
   pinned_pk <> claimed_pk
 
 let make_test_envelope ~from_ ~to_ ~room ~ts ~enc ~recipients =
-  { from_; from_x25519 = None; to_; room; ts; enc; recipients; sig_b64 = "";
-    envelope_version = current_envelope_version }
+  { from_; from_x25519 = None; from_ed25519 = None; to_; room; ts; enc;
+    recipients; sig_b64 = ""; envelope_version = current_envelope_version }
 
 let set_sig (e : envelope) ~sk_seed =
   let sig_b64 = sign_envelope ~sk_seed e in

@@ -41,6 +41,7 @@ let test_canonical_json_byte_stability () =
   let e = {
     from_ = "alice";
     from_x25519 = None;
+    from_ed25519 = None;
     to_ = Some "bob";
     room = None;
     ts = 1234567890L;
@@ -57,6 +58,7 @@ let test_canonical_json_sorted () =
   let e = {
     from_ = "alice";
     from_x25519 = None;
+    from_ed25519 = None;
     to_ = Some "bob";
     room = None;
     ts = 1234567890L;
@@ -72,7 +74,7 @@ let test_canonical_json_sorted () =
 
 let test_downgrade_detection () =
   let ds = make_downgrade_state () in
-  let e_plain = { from_ = "alice"; from_x25519 = None; to_ = Some "bob"; room = None; ts = 1L; enc = "plain"; recipients = []; sig_b64 = ""; envelope_version = 1 } in
+  let e_plain = { from_ = "alice"; from_x25519 = None; from_ed25519 = None; to_ = Some "bob"; room = None; ts = 1L; enc = "plain"; recipients = []; sig_b64 = ""; envelope_version = 1 } in
   let (status, ds) = decide_enc_status ds e_plain in
   Alcotest.(check string) "first msg plain -> Plain" (enc_status_to_string status) "plain";
   let e_enc = { e_plain with enc = "box-x25519-v1" } in
@@ -128,6 +130,7 @@ let test_canonical_v2_includes_from_x25519 () =
   let e = {
     from_ = "alice";
     from_x25519 = Some "AAAA-x25519-pubkey-original";
+    from_ed25519 = None;
     to_ = Some "bob";
     room = None;
     ts = 1700000000L;
@@ -153,6 +156,7 @@ let test_v1_back_compat_verify () =
   let e = {
     from_ = "legacy-sender";
     from_x25519 = None;
+    from_ed25519 = None;
     to_ = Some "bob";
     room = None;
     ts = 1700000001L;
@@ -199,6 +203,7 @@ let test_v2_envelope_rejects_v1_verify_path () =
   let e_v2 = {
     from_ = "alice";
     from_x25519 = Some "AAAA-x25519-pk";
+    from_ed25519 = None;
     to_ = Some "bob";
     room = None;
     ts = 1700000002L;
@@ -222,6 +227,7 @@ let test_omit_from_x25519_v2_canonicalize () =
   let e = {
     from_ = "alice";
     from_x25519 = None;
+    from_ed25519 = None;
     to_ = Some "bob";
     room = None;
     ts = 1700000003L;
@@ -242,6 +248,101 @@ let test_omit_from_x25519_v2_canonicalize () =
      path mentioned in the design comment. *)
   let e_v1 = { e with envelope_version = 1 } in
   Alcotest.(check string) "v2-with-None-from_x25519 == v1 canonical" (canonical_json e_v1) canon
+
+(* CRIT-1+B Slice B core — v2 envelope binds [from_ed25519] in the signed
+   blob. Mutating the field after signing must invalidate the signature. *)
+let test_canonical_v2_includes_from_ed25519 () =
+  let seed, pk_raw = gen_ed25519 () in
+  let e = {
+    from_ = "alice";
+    from_x25519 = Some "AAAA-x25519-pk";
+    from_ed25519 = Some "BBBB-ed25519-claimed-original";
+    to_ = Some "bob";
+    room = None;
+    ts = 1700000010L;
+    enc = "box-x25519-v1";
+    recipients = [ { alias = "bob"; nonce = Some "n"; ciphertext = "c" } ];
+    sig_b64 = "";
+    envelope_version = 2;
+  } in
+  let signed = set_sig e ~sk_seed:seed in
+  Alcotest.(check bool) "v2 sig verifies" true (verify_envelope_sig ~pk:pk_raw signed);
+  (* Mutate from_ed25519 (attacker key swap); sig must fail. *)
+  let mutated = { signed with from_ed25519 = Some "CCCC-attacker-ed25519" } in
+  Alcotest.(check bool) "v2 verify rejects from_ed25519 swap" false (verify_envelope_sig ~pk:pk_raw mutated);
+  (* Sanity — also fails if from_ed25519 is dropped to None. *)
+  let dropped = { signed with from_ed25519 = None } in
+  Alcotest.(check bool) "v2 verify rejects from_ed25519 drop" false (verify_envelope_sig ~pk:pk_raw dropped)
+
+(* Omit-key-when-None semantics for from_ed25519: same shape as
+   from_x25519. Producer with both = None under v2 — canonical blob
+   omits both keys; v2-bytes == v1-bytes for that shape. *)
+let test_omit_from_ed25519_v2_canonicalize () =
+  let seed, pk_raw = gen_ed25519 () in
+  let e = {
+    from_ = "alice";
+    from_x25519 = Some "X25519-pk";
+    from_ed25519 = None;
+    to_ = Some "bob";
+    room = None;
+    ts = 1700000011L;
+    enc = "box-x25519-v1";
+    recipients = [];
+    sig_b64 = "";
+    envelope_version = 2;
+  } in
+  let canon = canonical_json e in
+  Alcotest.(check bool) "v2 canonical omits from_ed25519 key when None"
+    false
+    (try ignore (Str.search_forward (Str.regexp_string "from_ed25519") canon 0); true
+     with Not_found -> false);
+  Alcotest.(check bool) "v2 canonical still includes from_x25519 when Some" true
+    (try ignore (Str.search_forward (Str.regexp_string "from_x25519") canon 0); true
+     with Not_found -> false);
+  let signed = set_sig e ~sk_seed:seed in
+  Alcotest.(check bool) "v2 envelope without from_ed25519 verifies" true (verify_envelope_sig ~pk:pk_raw signed)
+
+(* Wire-format round-trip: envelope_to_json + envelope_of_json preserves
+   from_ed25519 (b64url string). *)
+let test_envelope_json_roundtrip_from_ed25519 () =
+  let seed, _pk_raw = gen_ed25519 () in
+  let e = {
+    from_ = "alice";
+    from_x25519 = Some "X25519-pk-b64";
+    from_ed25519 = Some "Ed25519-pk-b64";
+    to_ = Some "bob";
+    room = None;
+    ts = 1700000012L;
+    enc = "box-x25519-v1";
+    recipients = [];
+    sig_b64 = "";
+    envelope_version = 2;
+  } in
+  let signed = set_sig e ~sk_seed:seed in
+  let wire = envelope_to_json signed in
+  let parsed = envelope_of_json wire in
+  Alcotest.(check (option string)) "from_ed25519 preserved through wire"
+    (Some "Ed25519-pk-b64") parsed.from_ed25519;
+  Alcotest.(check (option string)) "from_x25519 preserved through wire"
+    (Some "X25519-pk-b64") parsed.from_x25519;
+  (* Also: v1 envelope (no from_ed25519) round-trips with None. *)
+  let e_v1 = {
+    from_ = "legacy";
+    from_x25519 = None;
+    from_ed25519 = None;
+    to_ = Some "bob";
+    room = None;
+    ts = 1700000013L;
+    enc = "box-x25519-v1";
+    recipients = [];
+    sig_b64 = "";
+    envelope_version = 1;
+  } in
+  let signed_v1 = set_sig e_v1 ~sk_seed:seed in
+  let wire_v1 = envelope_to_json signed_v1 in
+  let parsed_v1 = envelope_of_json wire_v1 in
+  Alcotest.(check (option string)) "v1 from_ed25519 round-trips as None"
+    None parsed_v1.from_ed25519
 
 let () =
   Alcotest.run "relay_e2e" [
@@ -278,5 +379,11 @@ let () =
         `Quick test_v2_envelope_rejects_v1_verify_path;
       Alcotest.test_case "v2 with from_x25519=None omits the key"
         `Quick test_omit_from_x25519_v2_canonicalize;
+      Alcotest.test_case "v2 canonical_json includes from_ed25519 (mutate→fail)"
+        `Quick test_canonical_v2_includes_from_ed25519;
+      Alcotest.test_case "v2 with from_ed25519=None omits the key"
+        `Quick test_omit_from_ed25519_v2_canonicalize;
+      Alcotest.test_case "envelope_to_json/of_json round-trips from_ed25519"
+        `Quick test_envelope_json_roundtrip_from_ed25519;
     ];
   ]
