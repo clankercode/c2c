@@ -382,15 +382,22 @@ let memory_root_uncached () =
 (* #388 Finding 2: cache the git-committed memory root at first call.
    Git root never changes at runtime for a given process, so a simple
    unconditional one-time cache is correct. OCaml's GIL-equivalent
-   runtime makes the ref single-threaded-safe. *)
+   runtime makes the ref single-threaded-safe.
+
+   The C2C_MEMORY_ROOT_OVERRIDE test hook is read fresh every call —
+   never cached — so that tests can switch between temporary dirs.
+   Only the auto-detected (git-based) root is memoised. *)
 let memory_root =
   let cache = ref None in
   fun () ->
-    match !cache with
-    | Some v -> v
-    | None ->
-        let v = memory_root_uncached () in
-        cache := Some v; v
+    match Sys.getenv_opt "C2C_MEMORY_ROOT_OVERRIDE" with
+    | Some d when String.trim d <> "" -> String.trim d
+    | _ ->
+        match !cache with
+        | Some v -> v
+        | None ->
+            let v = memory_root_uncached () in
+            cache := Some v; v
 
 let memory_base_dir alias =
   Filename.concat (memory_root ()) alias
