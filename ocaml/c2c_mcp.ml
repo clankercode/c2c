@@ -4099,61 +4099,96 @@ let channel_notification ?(role : string option = None) ({ from_alias; to_alias;
           ] )
     ]
 
-let decrypt_message_for_push (msg : message) ~alias =
-  let our_x25519 = match Relay_enc.load_or_generate ~alias () with Ok k -> Some k | Error _ -> None in
-  let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
-  let { from_alias; to_alias; content; deferrable; reply_via; enc_status = _ } = msg in
-  let decrypted_content =
-    match Yojson.Safe.from_string content with
-    | exception _ -> content
-    | env_json ->
-      match Relay_e2e.envelope_of_json env_json with
-      | exception _ -> content
-      | env ->
-        let ds = Broker.get_downgrade_state env.from_ in
-        let (status, ds) = Relay_e2e.decide_enc_status ds env in
-        Broker.set_downgrade_state env.from_ ds;
-        match env.enc with
-        | "plain" ->
-          (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
-           | Some r -> r.ciphertext
-           | None -> content)
-        | "box-x25519-v1" ->
-          (match our_x25519, our_ed25519 with
-           | Some x25519, Some _ed25519 ->
-             (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
-              | None -> content
-              | Some recipient ->
-                (match recipient.nonce with
-                 | None -> content
-                 | Some nonce_b64 ->
-                   let sender_x25519_pk = env.from_x25519 in
-                   (match Relay_e2e.decrypt_for_me
-                     ~ct_b64:recipient.ciphertext
-                     ~nonce_b64
-                     ~sender_pk_b64:(match sender_x25519_pk with Some pk -> pk | None -> "")
-                     ~our_sk_seed:x25519.private_key_seed with
-                    | None ->
-                      (match sender_x25519_pk with
-                       | Some pk ->
-                         let pinned = Broker.get_pinned_x25519 env.from_ in
-                         if pinned <> None && pinned <> Some pk then content
-                         else content
-                       | None -> content)
-                    | Some pt ->
+(** [#432 §7] Unified envelope-decrypt helper. Two pre-#432 call sites
+    (`decrypt_message_for_push` for the channel-notification push path,
+    and the inline [process_msg] inside [poll_inbox]) implemented the
+    same plain / box-x25519-v1 decrypt+verify+pin flow with only one
+    observable difference: poll_inbox tracked an [enc_status] tuple
+    field, push discarded it. Lifting them to one helper that returns
+    the tuple eliminates the bug-fix surface where any envelope-format
+    change had to be edited twice. The push site discards the status.
+
+    Behavior is byte-equivalent to the prior poll_inbox block (the
+    more-detailed of the two — Failed / Key_changed / Not_for_me). The
+    push site's observable output is unchanged because it only reads
+    the content; the previously-thrown-away "redundant case" in the
+    push block (decrypt_for_me=None + sender_x25519_pk=Some had two
+    arms both returning content, tripping Warning 11) is replaced by
+    the poll_inbox shape's pinned-mismatch-returns-content-with-Key_changed.
+    Push still observes content; status is dropped at the call site.
+
+    Side-effects preserved: [Broker.set_downgrade_state] always fires
+    on a parseable envelope (both blocks did this); [pin_x25519_sync]
+    fires on the success path (both blocks did this). *)
+let decrypt_envelope ~(our_x25519 : Relay_enc.t option) ~our_ed25519
+    ~(to_alias : string) ~(content : string) : string * string option =
+  let _ = our_ed25519 in
+  (* our_ed25519's only role is to gate the box-x25519-v1 path on
+     "we have a signing identity loaded"; the actual sig-verify uses
+     the SENDER's pinned ed25519 pubkey, so the local identity isn't
+     dereferenced. The pattern below matches `Some _ed25519` to
+     enforce the gate without consuming the value. *)
+  match Yojson.Safe.from_string content with
+  | exception _ -> content, None
+  | env_json ->
+    match Relay_e2e.envelope_of_json env_json with
+    | exception _ -> content, None
+    | env ->
+      let ds = Broker.get_downgrade_state env.from_ in
+      let (status, ds) = Relay_e2e.decide_enc_status ds env in
+      Broker.set_downgrade_state env.from_ ds;
+      match env.enc with
+      | "plain" ->
+        (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
+         | Some r -> r.ciphertext, Some (Relay_e2e.enc_status_to_string status)
+         | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Not_for_me))
+      | "box-x25519-v1" ->
+        (match our_x25519, our_ed25519 with
+         | Some x25519, Some _ed25519 ->
+            (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
+             | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Not_for_me)
+             | Some recipient ->
+               (match recipient.nonce with
+                | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
+                | Some nonce_b64 ->
+                  let sender_x25519_pk = env.from_x25519 in
+                  (match Relay_e2e.decrypt_for_me
+                    ~ct_b64:recipient.ciphertext
+                    ~nonce_b64
+                    ~sender_pk_b64:(match sender_x25519_pk with Some pk -> pk | None -> "")
+                    ~our_sk_seed:x25519.private_key_seed with
+                   | None ->
+                     (match sender_x25519_pk with
+                      | Some pk ->
+                        let pinned = Broker.get_pinned_x25519 env.from_ in
+                        if pinned <> None && pinned <> Some pk then
+                          content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
+                        else
+                          content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
+                      | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
+                   | Some pt ->
                       let sender_ed25519_pk_opt = Broker.get_pinned_ed25519 env.from_ in
                       (match sender_ed25519_pk_opt with
-                       | None -> content
+                       | None ->
+                         content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
                        | Some pk ->
                          let sig_ok = Relay_e2e.verify_envelope_sig ~pk env in
-                         if not sig_ok then content
+                         if not sig_ok then
+                           content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
                          else (
                            (match sender_x25519_pk with
                             | Some pk -> Broker.pin_x25519_sync ~alias:env.from_ ~pk |> ignore
                             | None -> ());
-                           pt))))
-           | _ -> content)
-        | _ -> content)
+                           pt, Some (Relay_e2e.enc_status_to_string status))))))
+         | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
+      | _ -> content, None
+
+let decrypt_message_for_push (msg : message) ~alias =
+  let our_x25519 = match Relay_enc.load_or_generate ~alias () with Ok k -> Some k | Error _ -> None in
+  let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
+  let { to_alias; content; _ } = msg in
+  let (decrypted_content, _enc_status) =
+    decrypt_envelope ~our_x25519 ~our_ed25519 ~to_alias ~content
   in
   { msg with content = decrypted_content }
 
@@ -5685,61 +5720,12 @@ let ts = Unix.gettimeofday () in
       in
       let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
       let process_msg ({ from_alias; to_alias; content; deferrable } : message) =
+        (* [#432 §7] Inline decrypt block extracted to [decrypt_envelope]
+           helper above; this site is the status-tracking call site (the
+           push site discards _enc_status). Both formerly-duplicated
+           blocks now share one definition. *)
         let (decrypted, enc_status) =
-          match Yojson.Safe.from_string content with
-          | exception _ -> content, None
-          | env_json ->
-            match Relay_e2e.envelope_of_json env_json with
-            | exception _ -> content, None
-            | env ->
-              let ds = Broker.get_downgrade_state env.from_ in
-              let (status, ds) = Relay_e2e.decide_enc_status ds env in
-              Broker.set_downgrade_state env.from_ ds;
-              match env.enc with
-              | "plain" ->
-                (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
-                 | Some r -> r.ciphertext, Some (Relay_e2e.enc_status_to_string status)
-                 | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Not_for_me))
-              | "box-x25519-v1" ->
-                (match our_x25519, our_ed25519 with
-                 | Some x25519, Some ed25519 ->
-                    (match Relay_e2e.find_my_recipient ~my_alias:to_alias env.recipients with
-                     | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Not_for_me)
-                     | Some recipient ->
-                       (match recipient.nonce with
-                        | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
-                        | Some nonce_b64 ->
-                          let sender_x25519_pk = env.from_x25519 in
-                          (match Relay_e2e.decrypt_for_me
-                            ~ct_b64:recipient.ciphertext
-                            ~nonce_b64
-                            ~sender_pk_b64:(match sender_x25519_pk with Some pk -> pk | None -> "")
-                            ~our_sk_seed:x25519.private_key_seed with
-                           | None ->
-                             (match sender_x25519_pk with
-                              | Some pk ->
-                                let pinned = Broker.get_pinned_x25519 env.from_ in
-                                if pinned <> None && pinned <> Some pk then
-                                  content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                                else
-                                  content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
-                              | None -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
-                           | Some pt ->
-                              let sender_ed25519_pk_opt = Broker.get_pinned_ed25519 env.from_ in
-                              (match sender_ed25519_pk_opt with
-                               | None ->
-                                 content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed)
-                               | Some pk ->
-                                 let sig_ok = Relay_e2e.verify_envelope_sig ~pk env in
-                                 if not sig_ok then
-                                   content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Key_changed)
-                                 else (
-                                   (match sender_x25519_pk with
-                                    | Some pk -> Broker.pin_x25519_sync ~alias:env.from_ ~pk |> ignore
-                                    | None -> ());
-                                   pt, Some (Relay_e2e.enc_status_to_string status)))))
-                 | _ -> content, Some (Relay_e2e.enc_status_to_string Relay_e2e.Failed))
-              | _ -> content, None)
+          decrypt_envelope ~our_x25519 ~our_ed25519 ~to_alias ~content
         in
         let base = [ ("from_alias", `String from_alias); ("to_alias", `String to_alias); ("content", `String decrypted) ] in
         let base = if deferrable then base @ [("deferrable", `Bool true)] else base in
