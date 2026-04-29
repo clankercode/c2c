@@ -227,6 +227,16 @@ const C2CDelivery: Plugin = async (ctx) => {
   const sidecar = loadSidecarConfig();
   const sessionId: string =
     process.env.C2C_MCP_SESSION_ID || process.env.C2C_SESSION_ID || sidecar.session_id || "";
+  // [#497] Fail fast if all session ID sources are unset — empty string would
+  // silently break session routing, inbox delivery, and permission relay.
+  if (!sessionId) {
+    const hint = process.env.C2C_CLI_COMMAND ? ` or run '${process.env.C2C_CLI_COMMAND} install opencode'` : "";
+    throw new Error(
+      "c2c: C2C_MCP_SESSION_ID and C2C_SESSION_ID are both unset, and sidecar.session_id is absent or null.\n" +
+      "  Set C2C_MCP_SESSION_ID to a session ID, or re-run `c2c install opencode`\n" +
+      `  to populate the sidecar config.${hint}`
+    );
+  }
   const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
   // [#496] Fail fast if both sources are unset — empty string would silently
   // break every broker operation (inbox reads, spool checks, approvals).
