@@ -68,6 +68,7 @@ they don't regress silently.
 | `nudge_tick` | LOW | nudge diagnostic | #335 |
 | `relay_pin_delete` | MED | operator pin management | #432 Slice D |
 | `relay_pin_rotate` | MED | operator pin management | #432 Slice D |
+| `rpc` | LOW | RPC audit | pre-existing (always present) |
 
 ---
 
@@ -732,6 +733,36 @@ delete, rotate also bumps the epoch so the broker can distinguish
 (MITM) within a broker lifetime. The epoch is reset to 0 on broker restart.
 
 **Cross-link**: `relay_pin_delete` (targeted single-axis deletion).
+
+---
+
+### `rpc`
+
+**Severity**: LOW
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "rpc",
+  "tool": "<tool-name>",
+  "ok": <bool>
+}
+```
+
+**Fires when**: every tools/call RPC completes. One line per RPC
+regardless of outcome. Content fields are deliberately omitted to
+avoid leaking message content into a shared log file.
+
+**File**: `ocaml/c2c_mcp.ml` ~line 7530.
+
+**Operational meaning**: audit trail of broker RPC volume and success
+rate. Aggregate by `tool` for per-tool latency profiling; filter by
+`ok=false` for error rate.
+
+**Cross-link**: pre-existing (present since the RPC audit subsystem was
+added; catalog entry added retroactively as part of #388).
 
 ---
 

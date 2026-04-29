@@ -47,11 +47,19 @@ declare -A OUT_OF_SCOPE=(
 )
 
 # ── Step 1: emitter names from ocaml/ (production code only, exclude tests) ─
+# Two patterns are recognized:
+#   1. Yojson literal:   `"event", `String "name"` (legacy per-helper pattern)
+#   2. log_broker_event: `log_broker_event ~broker_root "name"` (shared-helper pattern, #388)
 mapfile -t emitters < <(
-  grep -rohP '"event", `String "[^"]+"' ocaml/ \
-    --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
-    | grep -oP 'String "\K[^"]+' \
-    | sort -u
+  (
+    grep -rohP '"event", `String "[^"]+"' ocaml/ \
+      --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
+    | grep -oP 'String "\K[^"]+'
+  ) && {
+    grep -rohP 'log_broker_event ~broker_root "[^"]+"' ocaml/ \
+      --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
+    | grep -oP 'log_broker_event ~broker_root "\K[^"]+'
+  } | sort -u
 )
 
 # ── Step 2: cataloged names (### `name` headers) ───────────────────────────

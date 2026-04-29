@@ -4227,51 +4227,45 @@ end
    the-fact. The 2026-04-27 #327 case had no broker-side trace until
    this logging existed. *)
 
+(* #388 deduplication: one shared writer for all structured broker.log
+   audit lines. Each named logger delegates here instead of repeating
+   the try/ts/path/Yojson/append_jsonl pattern. Best-effort: audit
+   failures must never block the broker's primary path. *)
+let log_broker_event ~broker_root event_name fields =
+  try
+    let path = Filename.concat broker_root "broker.log" in
+    let line =
+      `Assoc (("event", `String event_name) :: fields)
+      |> Yojson.Safe.to_string
+    in
+    C2c_io.append_jsonl path line
+  with _ -> ()
+
 let log_handoff_attempt ~broker_root ~from_alias ~to_alias ~name ~ok ~error =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let ts = Unix.gettimeofday () in
-     let base =
-       [ ("ts", `Float ts)
-       ; ("event", `String "send_memory_handoff")
-       ; ("from", `String from_alias)
-       ; ("to", `String to_alias)
-       ; ("name", `String name)
-       ; ("ok", `Bool ok)
-       ]
-     in
-     let line =
-       (match error with
-        | None -> `Assoc base
-        | Some e -> `Assoc (base @ [ ("error", `String e) ]))
-       |> Yojson.Safe.to_string
-     in
-     C2c_io.append_jsonl path line
-   with _ -> ())
+  let ts = Unix.gettimeofday () in
+  let fields =
+    [ ("ts", `Float ts)
+    ; ("from", `String from_alias)
+    ; ("to", `String to_alias)
+    ; ("name", `String name)
+    ; ("ok", `Bool ok) ]
+    @ (match error with None -> [] | Some e -> [ ("error", `String e) ])
+  in
+  log_broker_event ~broker_root "send_memory_handoff" fields
 
 (* #29 H2b: log every peer-pass DM verification attempt that ends in a
    strict-mode reject. The detailed reason (pin pubkey fingerprints,
    sha mismatch detail, etc.) is appended here; the user-facing reject
    message stays generic so attacker-placed artifact contents do not
    echo back to the sender. *)
-let log_peer_pass_reject ~broker_root ~from_alias ~to_alias ~claim_alias ~claim_sha ~reason =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let ts = Unix.gettimeofday () in
-     let line =
-       `Assoc
-         [ ("ts", `Float ts)
-         ; ("event", `String "peer_pass_reject")
-         ; ("from", `String from_alias)
-         ; ("to", `String to_alias)
-         ; ("claim_alias", `String claim_alias)
-         ; ("claim_sha", `String claim_sha)
-         ; ("reason", `String reason)
-         ]
-       |> Yojson.Safe.to_string
-     in
-     C2c_io.append_jsonl path line
-   with _ -> ())
+let log_peer_pass_reject ~broker_root ~from_alias ~to_alias ~claim_alias ~claim_sha ~reason ~ts =
+  log_broker_event ~broker_root "peer_pass_reject"
+    [ ("ts", `Float ts)
+    ; ("from", `String from_alias)
+    ; ("to", `String to_alias)
+    ; ("claim_alias", `String claim_alias)
+    ; ("claim_sha", `String claim_sha)
+    ; ("reason", `String reason) ]
 
 (* #55: every TOFU pubkey-pin rotation gets a structured audit line in
    broker.log so an attacker who compromises one keypair cannot stealth-
@@ -4285,25 +4279,16 @@ let log_peer_pass_reject ~broker_root ~from_alias ~to_alias ~claim_alias ~claim_
    produces the log line without having to remember to. *)
 let log_peer_pass_pin_rotate ~broker_root ~alias ~old_pubkey ~new_pubkey
     ~prior_first_seen ~ts =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let prior_field = match prior_first_seen with
-       | None -> ("prior_first_seen", `Null)
-       | Some f -> ("prior_first_seen", `Float f)
-     in
-     let line =
-       `Assoc
-         [ ("ts", `Float ts)
-         ; ("event", `String "peer_pass_pin_rotate")
-         ; ("alias", `String alias)
-         ; ("old_pubkey", `String old_pubkey)
-         ; ("new_pubkey", `String new_pubkey)
-         ; prior_field
-         ]
-       |> Yojson.Safe.to_string
-     in
-     C2c_io.append_jsonl path line
-   with _ -> ())
+  let prior_field = match prior_first_seen with
+    | None -> []
+    | Some f -> [ ("prior_first_seen", `Float f) ]
+  in
+  log_broker_event ~broker_root "peer_pass_pin_rotate"
+    (("ts", `Float ts)
+     :: ("alias", `String alias)
+     :: ("old_pubkey", `String old_pubkey)
+     :: ("new_pubkey", `String new_pubkey)
+     :: prior_field)
 
 (* Wire the broker.log writer as the default pin-rotate logger. The
    hook event includes the pin-store [path], from which we recover the
@@ -4329,20 +4314,11 @@ let () =
    [event] consistently. Best-effort, swallows all errors (audit-log
    emission must never block the broker's primary verify path). *)
 let log_version_downgrade_rejected ~broker_root ~alias ~observed ~pinned_min ~ts =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let line =
-       `Assoc
-         [ ("ts", `Float ts)
-         ; ("event", `String "version_downgrade_rejected")
-         ; ("alias", `String alias)
-         ; ("observed_envelope_version", `Int observed)
-         ; ("pinned_min_envelope_version", `Int pinned_min)
-         ]
-       |> Yojson.Safe.to_string
-      in
-      C2c_io.append_jsonl ~perm:0o600 path line
-    with _ -> ())
+  log_broker_event ~broker_root "version_downgrade_rejected"
+    [ ("ts", `Float ts)
+    ; ("alias", `String alias)
+    ; ("observed_envelope_version", `Int observed)
+    ; ("pinned_min_envelope_version", `Int pinned_min) ]
 
 (* Slice B follow-up: structured audit-log line on every Ed25519 pin
    mismatch reject. Closes slate's flagged observability gap from the
@@ -4354,20 +4330,11 @@ let log_version_downgrade_rejected ~broker_root ~alias ~observed ~pinned_min ~ts
    errors. *)
 let log_relay_e2e_pin_mismatch ~broker_root ~alias
       ~pinned_ed25519_b64 ~claimed_ed25519_b64 ~ts =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let line =
-       `Assoc
-         [ ("ts", `Float ts)
-         ; ("event", `String "relay_e2e_pin_mismatch")
-         ; ("alias", `String alias)
-         ; ("pinned_ed25519_b64", `String pinned_ed25519_b64)
-         ; ("claimed_ed25519_b64", `String claimed_ed25519_b64)
-         ]
-       |> Yojson.Safe.to_string
-      in
-      C2c_io.append_jsonl ~perm:0o600 path line
-    with _ -> ())
+  log_broker_event ~broker_root "relay_e2e_pin_mismatch"
+    [ ("ts", `Float ts)
+    ; ("alias", `String alias)
+    ; ("pinned_ed25519_b64", `String pinned_ed25519_b64)
+    ; ("claimed_ed25519_b64", `String claimed_ed25519_b64) ]
 
 (* TOFU first-contact audit line: symmetric to [log_relay_e2e_pin_mismatch]
    (#432 CRIT-1 Slice B follow-up). When a sender has no prior pin and the
@@ -4377,16 +4344,10 @@ let log_relay_e2e_pin_mismatch ~broker_root ~alias
    Written immediately after [Broker.pin_ed25519_sync] succeeds inside the
    first-contact branch (pinned=None, claimed=Some). *)
 let log_relay_e2e_pin_first_seen ~broker_root ~alias ~pinned_ed25519_b64 ~ts =
-  let line =
-    `Assoc
-      [ ("ts", `Float ts)
-      ; ("event", `String "relay_e2e_pin_first_seen")
-      ; ("alias", `String alias)
-      ; ("pinned_ed25519_b64", `String pinned_ed25519_b64)
-      ]
-    |> Yojson.Safe.to_string
-  in
-  C2c_io.append_jsonl ~perm:0o600 (Filename.concat broker_root "broker.log") line
+  log_broker_event ~broker_root "relay_e2e_pin_first_seen"
+    [ ("ts", `Float ts)
+    ; ("alias", `String alias)
+    ; ("pinned_ed25519_b64", `String pinned_ed25519_b64) ]
 
 (* CRIT-2 register-path observability: structured audit-log line on
    every register-path TOFU pin-mismatch reject (Ed25519 OR X25519).
@@ -4400,19 +4361,12 @@ let log_relay_e2e_pin_first_seen ~broker_root ~alias ~pinned_ed25519_b64 ~ts =
    any envelope is sent. *)
 let log_relay_e2e_register_pin_mismatch ~broker_root ~alias
       ~key_class ~pinned_b64 ~claimed_b64 ~ts =
-  let line =
-    `Assoc
-      [ ("ts", `Float ts)
-      ; ("event", `String "relay_e2e_register_pin_mismatch")
-      ; ("alias", `String alias)
-      ; ("key_class", `String key_class)
-      ; ("pinned_b64", `String pinned_b64)
-      ; ("claimed_b64", `String claimed_b64)
-      ]
-    |> Yojson.Safe.to_string
-  in
-  try C2c_io.append_jsonl ~perm:0o600 (Filename.concat broker_root "broker.log") line
-  with _ -> ()
+  log_broker_event ~broker_root "relay_e2e_register_pin_mismatch"
+    [ ("ts", `Float ts)
+    ; ("alias", `String alias)
+    ; ("key_class", `String key_class)
+    ; ("pinned_b64", `String pinned_b64)
+    ; ("claimed_b64", `String claimed_b64) ]
 
 (* #432 TOFU 5 observability follow-up: sibling logger for
    pin_rotate REJECT path. Same broker.log file, same shape as
@@ -4422,19 +4376,10 @@ let log_relay_e2e_register_pin_mismatch ~broker_root ~alias
    above so every caller of [Peer_review.pin_rotate] that's rejected
    at the operator-attestation gate produces a forensic line. *)
 let log_peer_pass_pin_rotate_unauth ~broker_root ~alias ~reason ~ts =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let line =
-       `Assoc
-         [ ("ts", `Float ts)
-         ; ("event", `String "peer_pass_pin_rotate_unauth")
-         ; ("alias", `String alias)
-         ; ("reason", `String reason)
-         ]
-       |> Yojson.Safe.to_string
-     in
-     C2c_io.append_jsonl path line
-   with _ -> ())
+  log_broker_event ~broker_root "peer_pass_pin_rotate_unauth"
+    [ ("ts", `Float ts)
+    ; ("alias", `String alias)
+    ; ("reason", `String reason) ]
 
 let () =
   Peer_review.set_pin_rotate_unauth_logger
@@ -4475,58 +4420,42 @@ let short_hash s =
 let log_pending_open
     ~broker_root ~perm_id ~kind ~requester_session_id ~requester_alias
     ~supervisors ~ttl_seconds ~ts =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let line =
-       `Assoc
-         [ ("ts", `Float ts)
-         ; ("event", `String "pending_open")
-         ; ("perm_id_hash", `String (short_hash perm_id))
-         ; ("kind", `String kind)
-         ; ("requester_session_hash", `String (short_hash requester_session_id))
-         ; ("requester_alias", `String requester_alias)
-         ; ("supervisors", `List (List.map (fun s -> `String s) supervisors))
-         ; ("ttl_seconds", `Float ttl_seconds)
-         ]
-       |> Yojson.Safe.to_string
-     in
-     C2c_io.append_jsonl path line
-   with _ -> ())
+  log_broker_event ~broker_root "pending_open"
+    [ ("ts", `Float ts)
+    ; ("perm_id_hash", `String (short_hash perm_id))
+    ; ("kind", `String kind)
+    ; ("requester_session_hash", `String (short_hash requester_session_id))
+    ; ("requester_alias", `String requester_alias)
+    ; ("supervisors", `List (List.map (fun s -> `String s) supervisors))
+    ; ("ttl_seconds", `Float ttl_seconds) ]
 
 let log_pending_check
     ~broker_root ~perm_id ~outcome ~reply_from_alias
     ?kind ?requester_alias ?requester_session_id ?supervisors ~ts () =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let base =
-       [ ("ts", `Float ts)
-       ; ("event", `String "pending_check")
-       ; ("perm_id_hash", `String (short_hash perm_id))
-       ; ("reply_from_alias", `String reply_from_alias)
-       ; ("outcome", `String outcome)
-       ]
-     in
-     let with_kind = match kind with
-       | Some k -> base @ [ ("kind", `String k) ] | None -> base
-     in
-     let with_alias = match requester_alias with
-       | Some a -> with_kind @ [ ("requester_alias", `String a) ]
-       | None -> with_kind
-     in
-     let with_session = match requester_session_id with
-       | Some sid ->
-           with_alias @ [ ("requester_session_hash", `String (short_hash sid)) ]
-       | None -> with_alias
-     in
-     let with_sup = match supervisors with
-       | Some sups ->
-           with_session
-           @ [ ("supervisors", `List (List.map (fun s -> `String s) sups)) ]
-       | None -> with_session
-     in
-     let line = `Assoc with_sup |> Yojson.Safe.to_string in
-     C2c_io.append_jsonl path line
-   with _ -> ())
+  let base =
+    [ ("ts", `Float ts)
+    ; ("perm_id_hash", `String (short_hash perm_id))
+    ; ("reply_from_alias", `String reply_from_alias)
+    ; ("outcome", `String outcome) ]
+  in
+  let with_kind = match kind with
+    | Some k -> base @ [ ("kind", `String k) ] | None -> base
+  in
+  let with_alias = match requester_alias with
+    | Some a -> with_kind @ [ ("requester_alias", `String a) ]
+    | None -> with_kind
+  in
+  let with_session = match requester_session_id with
+    | Some sid ->
+        with_alias @ [ ("requester_session_hash", `String (short_hash sid)) ]
+    | None -> with_alias
+  in
+  let fields = match supervisors with
+    | Some sups ->
+        with_session @ [ ("supervisors", `List (List.map (fun s -> `String s) sups)) ]
+    | None -> with_session
+  in
+  log_broker_event ~broker_root "pending_check" fields
 
 (* Coord-backup fallthrough audit log
    (slice/coord-backup-fallthrough). Emits one
@@ -4548,23 +4477,14 @@ let log_pending_check
 let log_coord_fallthrough_fired
     ~broker_root ~perm_id ~tier ~primary_alias ~backup_alias
     ~requester_alias ~elapsed_s ~ts =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let line =
-       `Assoc
-         [ ("ts", `Float ts)
-         ; ("event", `String "coord_fallthrough_fired")
-         ; ("perm_id_hash", `String (short_hash perm_id))
-         ; ("tier", `Int tier)
-         ; ("primary_alias", `String primary_alias)
-         ; ("backup_alias", `String backup_alias)
-         ; ("requester_alias", `String requester_alias)
-         ; ("elapsed_s", `Float elapsed_s)
-         ]
-       |> Yojson.Safe.to_string
-     in
-     C2c_io.append_jsonl path line
-   with _ -> ())
+  log_broker_event ~broker_root "coord_fallthrough_fired"
+    [ ("ts", `Float ts)
+    ; ("perm_id_hash", `String (short_hash perm_id))
+    ; ("tier", `Int tier)
+    ; ("primary_alias", `String primary_alias)
+    ; ("backup_alias", `String backup_alias)
+    ; ("requester_alias", `String requester_alias)
+    ; ("elapsed_s", `Float elapsed_s) ]
 
 let notify_shared_with_recipients
     ~broker ~from_alias ~name ?description ~shared ~shared_with () =
@@ -6375,7 +6295,8 @@ let ts = Unix.gettimeofday () in
                           log_peer_pass_reject
                             ~broker_root:(Broker.root broker)
                             ~from_alias ~to_alias
-                            ~claim_alias ~claim_sha ~reason:m;
+                            ~claim_alias ~claim_sha ~reason:m
+                            ~ts:(Unix.gettimeofday ());
                           Some m
                       | _ -> None
                     in
@@ -7590,19 +7511,9 @@ let ts = Unix.gettimeofday () in
    RPC path. Content fields are deliberately omitted to avoid leaking
    message content into a shared log file. *)
 let log_rpc ~broker_root ~tool_name ~is_error =
-  (try
-     let path = Filename.concat broker_root "broker.log" in
-     let ts = Unix.gettimeofday () in
-     let line =
-       `Assoc
-         [ ("ts", `Float ts)
-         ; ("tool", `String tool_name)
-         ; ("ok", `Bool (not is_error))
-         ]
-       |> Yojson.Safe.to_string
-     in
-     C2c_io.append_jsonl path line
-   with _ -> ())
+  log_broker_event ~broker_root "rpc"
+    [ ("tool", `String tool_name)
+    ; ("ok", `Bool (not is_error)) ]
 
 (* --- prompts/list and prompts/get helpers ---------------------------------
 
