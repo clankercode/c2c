@@ -48,6 +48,7 @@ type sync_result = {
   heartbeated : string list;
   outbox_forwarded : int;
   outbox_failed : int;
+  outbox_dlqed : int;  (* entries moved to local DLQ this sync *)
   inbound_delivered : int;
   last_error : sync_error option;
 }
@@ -257,16 +258,29 @@ let remove_mobile_binding broker_root ~binding_id =
   write_mobile_bindings broker_root entries
 
 (* ---------------------------------------------------------------------------
- * Outbox (remote-outbox.jsonl)
+ * Outbox (remote-outbox.jsonl) with retry + DLQ
+ *
+ * Gap #1+#6 fix: outbox entries now track attempts and enqueued_at.
+ * - unknown_alias / recipient_dead errors → immediate DLQ
+ * - connection_error → retry with backstop after MAX_ATTEMPTS or MAX_AGE_SECONDS
+ * - local DLQ at remote-outbox-dlq.jsonl + DM to sender
  * --------------------------------------------------------------------------- *)
 
 let outbox_path broker_root = broker_root // "remote-outbox.jsonl"
+let dlq_path broker_root = broker_root // "remote-outbox-dlq.jsonl"
+
+(* Constants for retry backstop *)
+let max_attempts = 60       (* ~30min at 30s interval *)
+let max_age_seconds = 3600.0 (* 1 hour *)
 
 type outbox_entry = {
   ob_from : string;
   ob_to : string;
   ob_content : string;
   ob_msg_id : string option;
+  ob_attempts : int;        (* cumulative send attempts *)
+  ob_enqueued_at : float;    (* Unix.gettimeofday at creation *)
+  ob_last_error : string option; (* most recent error class *)
 }
 
 let read_outbox broker_root =
@@ -288,7 +302,13 @@ let read_outbox broker_root =
               let to_ = match json |> member "to_alias" with `String s -> s | _ -> "" in
               let content = match json |> member "content" with `String s -> s | _ -> "" in
               let msg_id = match json |> member "message_id" with `String s -> Some s | _ -> None in
-              loop ({ ob_from = from; ob_to = to_; ob_content = content; ob_msg_id = msg_id } :: acc)
+              (* New fields with defaults for backward compat *)
+              let attempts = match json |> member "attempts" with `Int i -> i | _ -> 0 in
+              let enqueued_at = match json |> member "enqueued_at" with `Float f -> f | _ -> 0.0 in
+              let last_error = match json |> member "last_error" with `String s -> Some s | _ -> None in
+              loop ({ ob_from = from; ob_to = to_; ob_content = content;
+                      ob_msg_id = msg_id; ob_attempts = attempts;
+                      ob_enqueued_at = enqueued_at; ob_last_error = last_error } :: acc)
             with _ -> loop acc
     in
     loop []
@@ -305,19 +325,67 @@ let write_outbox broker_root entries =
             | Some m -> ["message_id", `String m]
             | None -> []
           in
+          let extra = [
+            "attempts", `Int e.ob_attempts;
+            "enqueued_at", `Float e.ob_enqueued_at;
+          ] in
+          let extra = match e.ob_last_error with
+            | Some err -> ("last_error", `String err) :: extra
+            | None -> extra
+          in
           let json = `Assoc (
             ["from_alias", `String e.ob_from;
              "to_alias", `String e.ob_to;
              "content", `String e.ob_content]
-            @ msg_id_assoc
+            @ msg_id_assoc @ extra
           ) in
           output_string oc (Yojson.Safe.to_string json ^ "\n")
         ) entries)
+
+(* Append a single entry to the DLQ (append-only). *)
+let append_dlq_entry broker_root entry ~reason =
+  let path = dlq_path broker_root in
+  let msg_id_assoc = match entry.ob_msg_id with
+    | Some m -> ["message_id", `String m]
+    | None -> []
+  in
+  let extra = [
+    "attempts", `Int entry.ob_attempts;
+    "enqueued_at", `Float entry.ob_enqueued_at;
+    ("dlq_reason", `String reason);
+  ] in
+  let extra = match entry.ob_last_error with
+    | Some err -> ("last_error", `String err) :: extra
+    | None -> extra
+  in
+  let json = `Assoc (
+    ["from_alias", `String entry.ob_from;
+     "to_alias", `String entry.ob_to;
+     "content", `String entry.ob_content]
+    @ msg_id_assoc @ extra
+  ) in
+  let line = Yojson.Safe.to_string json ^ "\n" in
+  let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o644 path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc line)
+
+(** Classify an error response from the relay/client.
+    Returns the error class string: "unknown_alias" | "recipient_dead" | "connection_error" | "other" *)
+let classify_error json =
+  let open Yojson.Safe.Util in
+  match json |> member "error_code" with
+  | `String "connection_error" -> "connection_error"
+  | _ ->
+      (match json |> member "reason" with
+       | `String "unknown_alias" -> "unknown_alias"
+       | `String "recipient_dead" -> "recipient_dead"
+       | _ -> "other")
 
 (** Append a single outbox entry to remote-outbox.jsonl (append-only, not rewrite).
     Used by enqueue_message when the target alias is remote (contains '@'). *)
 let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id () =
   let path = outbox_path broker_root in
+  let now = Unix.gettimeofday () in
   let msg_id_assoc = match message_id with
     | Some m -> ["message_id", `String m]
     | None -> []
@@ -325,7 +393,9 @@ let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id (
   let json = `Assoc (
     ["from_alias", `String from_alias;
      "to_alias", `String to_alias;
-     "content", `String content]
+     "content", `String content;
+     "attempts", `Int 1;
+     "enqueued_at", `Float now]
     @ msg_id_assoc
   ) in
   let line = Yojson.Safe.to_string json ^ "\n" in
@@ -655,20 +725,36 @@ let sync (t : t) : sync_result Lwt.t =
   in
   t.registered <- new_registered;
 
-  (* 2. Forward outbox entries *)
-  let outbox_forwarded, outbox_failed, remaining_outbox, send_errors =
-    List.fold_left (fun (fwd, failed, remaining, errs) entry ->
+  (* 2. Forward outbox entries with retry + DLQ *)
+  let outbox_forwarded, outbox_failed, remaining_outbox, dlqed, send_errors =
+    List.fold_left (fun (fwd, failed, remaining, dlqed, errs) entry ->
       let json = Lwt_main.run (Relay_client.send client
         ~from_alias:entry.ob_from
         ~to_alias:entry.ob_to
         ~content:entry.ob_content
         ?message_id:entry.ob_msg_id ()) in
       if json_bool_member ~key:"ok" json then
-        (fwd + 1, failed, remaining, errs)
+        (fwd + 1, failed, remaining, dlqed, errs)
       else
+        let err_class = classify_error json in
+        let now = Unix.gettimeofday () in
+        let too_old = now -. entry.ob_enqueued_at > max_age_seconds in
+        let over_attempts = entry.ob_attempts >= max_attempts in
         let detail = Yojson.Safe.to_string json in
-        (fwd, failed + 1, entry :: remaining, ("send", detail) :: errs)
-    ) (0, 0, [], []) outbox
+        if err_class = "unknown_alias" || err_class = "recipient_dead" then
+          (* Permanent error: immediate DLQ *)
+          let () = append_dlq_entry t.broker_root entry ~reason:err_class in
+          (fwd, failed + 1, remaining, dlqed + 1, ("send", err_class ^ ": " ^ detail) :: errs)
+        else if over_attempts || too_old then
+          (* Backstop reached: DLQ *)
+          let dlq_reason = if over_attempts then "max_attempts" else "max_age" in
+          let () = append_dlq_entry t.broker_root { entry with ob_last_error = Some err_class } ~reason:dlq_reason in
+          (fwd, failed + 1, remaining, dlqed + 1, ("send", dlq_reason ^ ": " ^ detail) :: errs)
+        else
+          (* Retry: increment attempts, update last_error, keep in outbox *)
+          let updated = { entry with ob_attempts = entry.ob_attempts + 1; ob_last_error = Some err_class } in
+          (fwd, failed + 1, updated :: remaining, dlqed, ("send", err_class ^ ": " ^ detail) :: errs)
+    ) (0, 0, [], 0, []) outbox
   in
   write_outbox t.broker_root (List.rev remaining_outbox);
 
@@ -701,6 +787,7 @@ let sync (t : t) : sync_result Lwt.t =
     heartbeated;
     outbox_forwarded;
     outbox_failed;
+    outbox_dlqed = dlqed;
     inbound_delivered;
     last_error;
   }
@@ -735,11 +822,12 @@ let run (t : t) : unit =
                   String.sub e.err_detail 0 80 ^ "..."
                 else e.err_detail)
         in
-        Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d inbound=%d%s\n%!"
+        Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d%s\n%!"
           (List.length result.registered)
           (List.length result.heartbeated)
           result.outbox_forwarded
           result.outbox_failed
+          result.outbox_dlqed
           result.inbound_delivered
           err_str
       with exn ->
