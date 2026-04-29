@@ -3103,29 +3103,32 @@ module KimiAdapter : CLIENT_ADAPTER = struct
        extra_args are inspected for an existing --mcp-config-file flag but are NOT
        included in the return — prepare_launch_args appends them uniformly after.
 
-       --afk: managed sessions are agent-driven, no human at the keyboard for this
-       pane. Without it, every MCP tool call (poll_inbox, send, whoami, list, ...)
-       prompts for human approval and blocks agent-to-agent c2c routing
-       indefinitely. `--afk` makes kimi auto-approve all tool calls
-       (`is_auto_approve()` returns True via `is_afk()`) AND auto-dismisses
-       AskUserQuestion prompts — matching the c2c convention "When you are
-       talking to other models, do not use tools like AskUserQuestion".
+        --yolo: managed sessions are agent-driven, no human at the keyboard for this
+        pane. `--yolo` makes kimi auto-approve all tool calls
+        (`is_auto_approve()` returns True) AND auto-dismisses AskUserQuestion prompts —
+        matching the c2c convention "When you are talking to other models, do not
+        use tools like AskUserQuestion".
 
-       Mirrors the Claude managed-session posture (`--dangerously-load-development-channels`)
-       and the precedent set by the now-removed `--yolo` flag in
-       `c2c_wire_bridge.ml:226` (Slice 4). We pick `--afk` over `--yolo`
-       because the AskUserQuestion auto-dismiss is semantically aligned with
-       "managed pane = no human typing here".
+        With #142 (slice 2: hook script installation, SHA `0f85a486`), the hook
+        script at `~/.local/bin/c2c-kimi-approval-hook.sh` is the actual permission
+        boundary when uncommented in the operator's `~/.config/kimi/kimi-cli.toml`
+        [[hooks]] block. `--yolo` is therefore safe: it gives kimi permission to
+        execute tools unconditionally, but the hook script intercepts and gates
+        each tool call — so the operator has a reviewable audit trail without
+        blocking the agent.
 
-       Persistence gotcha: kimi saves `afk=true` to its session state on disk.
-       If an operator later runs `kimi -C` against the same session-id outside
-       c2c management, the session stays in afk mode until explicitly toggled
-       off. Document this when kimi session-resume lands.
+        Mirrors the Claude managed-session posture (`--dangerously-load-development-channels`).
 
        Research: kimi-permissions audit 2026-04-29 (Option A).
 
        Max-steps-per-turn raised from kimi-cli default (1000) to 9999 for
-       long-running agentic swarm work; matches opencode posture (#153). *)
+       long-running agentic swarm work; matches opencode posture (#153).
+
+       Persistence gotcha: kimi saves `yolo=true` (or `afk=true` on older sessions)
+       to its session state on disk. If an operator later runs `kimi -C` against the
+       same session-id outside c2c management, the session stays in yolo/afk mode
+       until explicitly toggled off. The same persistence applies to `state.json`
+       seeds written by `c2c start` (#158). *)
     let br = broker_root () in
     let session_args =
       match resume_session_id with
@@ -3133,7 +3136,7 @@ module KimiAdapter : CLIENT_ADAPTER = struct
       | _ -> []
     in
     let base =
-      "--afk" ::
+      "--yolo" ::
       "--max-steps-per-turn" :: "9999" ::
       session_args
       @ (match model_override with
@@ -3970,7 +3973,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                 Fun.protect ~finally:(fun () -> close_out oc)
                   (fun () ->
                      output_string oc
-                       ({|{"version":1,"approval":{"yolo":false,"afk":true,"auto_approve_actions":["run command","edit file outside of working directory"]},"additional_dirs":[],"custom_title":null,"title_generated":false,"title_generate_attempts":0,"plan_mode":false,"plan_session_id":null,"plan_slug":null,"wire_mtime":null,"archived":false,"archived_at":null,"auto_archive_exempt":false,"todos":[]}|}
+                       ({|{"version":1,"approval":{"yolo":true,"afk":false,"auto_approve_actions":["run command","edit file outside of working directory"]},"additional_dirs":[],"custom_title":null,"title_generated":false,"title_generate_attempts":0,"plan_mode":false,"plan_session_id":null,"plan_slug":null,"wire_mtime":null,"archived":false,"archived_at":null,"auto_archive_exempt":false,"todos":[]}|}
                         ^ "\n")))
          | _ -> ());
 
