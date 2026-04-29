@@ -360,8 +360,8 @@ let default_permission_ttl_s = 600.0
 
    [C2C_MEMORY_ROOT_OVERRIDE]: test hook — when set (and non-empty after
    trim), replaces the [.c2c/memory] root. Production agents never set
-   this; the in-repo path is canonical. *)
-let memory_root () =
+    this; the in-repo path is canonical. *)
+let memory_root_uncached () =
   match Sys.getenv_opt "C2C_MEMORY_ROOT_OVERRIDE" with
   | Some d when String.trim d <> "" -> String.trim d
   | _ ->
@@ -378,6 +378,19 @@ let memory_root () =
         | None -> Sys.getcwd ()
       in
       Filename.concat (Filename.concat base ".c2c") "memory"
+
+(* #388 Finding 2: cache the git-committed memory root at first call.
+   Git root never changes at runtime for a given process, so a simple
+   unconditional one-time cache is correct. OCaml's GIL-equivalent
+   runtime makes the ref single-threaded-safe. *)
+let memory_root =
+  let cache = ref None in
+  fun () ->
+    match !cache with
+    | Some v -> v
+    | None ->
+        let v = memory_root_uncached () in
+        cache := Some v; v
 
 let memory_base_dir alias =
   Filename.concat (memory_root ()) alias
