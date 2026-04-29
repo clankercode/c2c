@@ -3746,7 +3746,8 @@ generateKeys();
                         let confirm_b64 = Yojson.Safe.to_string confirm_json |>
                           Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet in
                         Relay_ratelimit.structured_log ~event:"pair_confirmed"
-                          ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id) ~result:"ok" ();
+                          ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
+                          ~source_ip_prefix:"" ~result:"ok" ();
                         respond_ok (`Assoc [
                           "ok", `Bool true;
                           "binding_id", `String binding_id;

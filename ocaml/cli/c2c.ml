@@ -7135,10 +7135,9 @@ let start_cmd =
       ~relay_url:resolved_url
       ~interval:interval_opt
       ~extra_args:extra_argv
-      ();
-    (* foreground mode exec'd in place; daemon mode parent has exit 0'd
-       inside C2c_relay_managed.start. We only return here on error. *)
-    exit 1
+      () [@ocaml.warning "-21"];
+    (* We never reach here — start either execs in-place (foreground) or
+       the daemon child never returns (it execs the connector). *)
   end;
   if client <> "tmux" && tmux_loc <> None then begin
     Printf.eprintf "error: --loc is only valid with `c2c start tmux`.\n%!";

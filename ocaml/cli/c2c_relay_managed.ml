@@ -79,7 +79,7 @@ let resolve_self_binary () =
     either forks a daemon or execs in-place. Returns the exit code (in
     foreground mode the daemon's exec replaces us, so this only returns
     on error). *)
-let start ~name ~daemon ~relay_url ~interval ~extra_args () =
+let[@noreturn] start ~name ~daemon ~relay_url ~interval ~extra_args () =
   let inst_dir = instances_dir () // name in
   let outer_pid_path = inst_dir // "outer.pid" in
   let log_path = inst_dir // "log" in
