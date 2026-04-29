@@ -179,6 +179,99 @@ let test_mobile_bindings_add_remove () =
     Alcotest.(check string) "remaining is bind-2" "bind-2" id
   )
 
+(* --- classify_error --- *)
+
+let test_classify_error () =
+  (* Relay send error format: {ok:false, error_code:<code>, error:<msg>} *)
+  let unknown_alias_json = `Assoc [
+    ("ok", `Bool false);
+    ("error_code", `String "unknown_alias");
+    ("error", `String "no registration for alias");
+  ] in
+  Alcotest.(check string) "unknown_alias"
+    "unknown_alias" (Conn.classify_error unknown_alias_json);
+  let recipient_dead_json = `Assoc [
+    ("ok", `Bool false);
+    ("error_code", `String "recipient_dead");
+    ("error", `String "lease expired");
+  ] in
+  Alcotest.(check string) "recipient_dead"
+    "recipient_dead" (Conn.classify_error recipient_dead_json);
+  let conn_err_json = `Assoc [
+    ("ok", `Bool false);
+    ("error_code", `String "connection_error");
+    ("error", `String "connection refused");
+  ] in
+  Alcotest.(check string) "connection_error"
+    "connection_error" (Conn.classify_error conn_err_json);
+  let other_json = `Assoc [
+    ("ok", `Bool false);
+    ("error_code", `String "rate_limited");
+    ("error", `String "slow down");
+  ] in
+  Alcotest.(check string) "other (unknown error_code)"
+    "other" (Conn.classify_error other_json);
+  let no_error_code_json = `Assoc [
+    ("ok", `Bool false);
+    ("error", `String "something went wrong");
+  ] in
+  Alcotest.(check string) "other (missing error_code)"
+    "other" (Conn.classify_error no_error_code_json)
+
+(* --- outbox with new fields (attempts, enqueued_at, last_error) --- *)
+
+let test_outbox_new_fields () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    Conn.append_outbox_entry dir
+      ~from_alias:"alice" ~to_alias:"bob@host" ~content:"hello" ();
+    let entries = Conn.read_outbox dir in
+    Alcotest.(check int) "one entry" 1 (List.length entries);
+    let e = List.hd entries in
+    Alcotest.(check int) "attempts=1 on fresh entry" 1 e.ob_attempts;
+    Alcotest.(check bool) "enqueued_at > 0" true (e.ob_enqueued_at > 0.0);
+    Alcotest.(check (option string)) "last_error=None on fresh entry"
+      None e.ob_last_error
+  )
+
+(* --- outbox backward compat: legacy entry without new fields --- *)
+
+let test_outbox_backward_compat () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    (* Manually write a legacy entry (pre-fix format) *)
+    let oc = open_out (Conn.outbox_path dir) in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () ->
+        output_string oc "{\"from_alias\":\"alice\",\"to_alias\":\"bob@host\",\"content\":\"hi\"}\n");
+    let entries = Conn.read_outbox dir in
+    Alcotest.(check int) "one legacy entry" 1 (List.length entries);
+    let e = List.hd entries in
+    Alcotest.(check int) "attempts=0 for legacy (default)" 0 e.ob_attempts;
+    Alcotest.(check bool) "enqueued_at > 0 (default = now, not epoch)"
+      true (e.ob_enqueued_at > 100_000_000.0);
+    Alcotest.(check (option string)) "last_error=None for legacy"
+      None e.ob_last_error
+  )
+
+(* --- outbox enqueued_at accepts Int (whole-second float) --- *)
+
+let test_outbox_enqueued_at_int () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    (* Write entry with enqueued_at as JSON Int (Yojson emits whole-second as Int) *)
+    let oc = open_out (Conn.outbox_path dir) in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () ->
+        output_string oc "{\"from_alias\":\"alice\",\"to_alias\":\"bob@host\",\"content\":\"hi\",\"attempts\":3,\"enqueued_at\":1717000000}\n");
+    let entries = Conn.read_outbox dir in
+    Alcotest.(check int) "one entry" 1 (List.length entries);
+    let e = List.hd entries in
+    Alcotest.(check int) "attempts=3" 3 e.ob_attempts;
+    Alcotest.(check bool) "enqueued_at parsed from Int"
+      true (e.ob_enqueued_at > 1_717_000_000.0 && e.ob_enqueued_at < 1_718_000_000.0)
+  )
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_relay_connector" [

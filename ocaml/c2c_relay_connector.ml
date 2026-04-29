@@ -288,6 +288,7 @@ let read_outbox broker_root =
   if not (Sys.file_exists path) then []
   else
     let ic = open_in path in
+    let now = Unix.gettimeofday () in
     let rec loop acc =
       match try Some (input_line ic) with End_of_file -> None with
       | None -> close_in ic; List.rev acc
@@ -302,9 +303,17 @@ let read_outbox broker_root =
               let to_ = match json |> member "to_alias" with `String s -> s | _ -> "" in
               let content = match json |> member "content" with `String s -> s | _ -> "" in
               let msg_id = match json |> member "message_id" with `String s -> Some s | _ -> None in
-              (* New fields with defaults for backward compat *)
+              (* New fields with defaults for backward compat.
+                 Legacy entries (pre-fix) have no attempts/enqueued_at — default
+                 attempts=0 (retry from scratch) and enqueued_at=now (don't
+                 trigger max_age on upgrade if relay was briefly flaky). *)
               let attempts = match json |> member "attempts" with `Int i -> i | _ -> 0 in
-              let enqueued_at = match json |> member "enqueued_at" with `Float f -> f | _ -> 0.0 in
+              let enqueued_at =
+                match json |> member "enqueued_at" with
+                | `Float f -> f
+                | `Int i -> float_of_int i  (* Yojson emits whole-second floats as Int *)
+                | _ -> now
+              in
               let last_error = match json |> member "last_error" with `String s -> Some s | _ -> None in
               loop ({ ob_from = from; ob_to = to_; ob_content = content;
                       ob_msg_id = msg_id; ob_attempts = attempts;
@@ -371,15 +380,18 @@ let append_dlq_entry broker_root entry ~reason =
 
 (** Classify an error response from the relay/client.
     Returns the error class string: "unknown_alias" | "recipient_dead" | "connection_error" | "other" *)
+(** Classify an error response from the relay/client.
+    The relay's send error response is {{"ok":false,"error_code":"<code>","error":"<msg>"}}.
+    HTTP-level connection failures produce {{"ok":false,"error_code":"connection_error","error":"<msg>"}}.
+    We check error_code first; unknown codes fall through to "other". *)
 let classify_error json =
   let open Yojson.Safe.Util in
   match json |> member "error_code" with
+  | `String "unknown_alias" -> "unknown_alias"
+  | `String "recipient_dead" -> "recipient_dead"
   | `String "connection_error" -> "connection_error"
-  | _ ->
-      (match json |> member "reason" with
-       | `String "unknown_alias" -> "unknown_alias"
-       | `String "recipient_dead" -> "recipient_dead"
-       | _ -> "other")
+  | `String _ -> "other"
+  | _ -> "other"
 
 (** Append a single outbox entry to remote-outbox.jsonl (append-only, not rewrite).
     Used by enqueue_message when the target alias is remote (contains '@'). *)
@@ -870,11 +882,12 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
             | None -> ""
             | Some e -> Printf.sprintf " [%s: %s]" e.err_op e.err_detail
           in
-          Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d inbound=%d%s\n%!"
+          Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d%s\n%!"
             (List.length result.registered)
             (List.length result.heartbeated)
             result.outbox_forwarded
             result.outbox_failed
+            result.outbox_dlqed
             result.inbound_delivered
             err_str;
           0
