@@ -8662,6 +8662,249 @@ let test_relay_pin_concurrent_save_no_lost_update () =
               (Printf.sprintf "pin for child %d dropped (lost-update)" i))
         (List.init n_children (fun i -> i)))
 
+(* CRIT-1 Slice B — TOFU integration tests for from_ed25519 receive path.
+   Plan: .collab/design/2026-04-29-relay-crypto-crit-fix-plan-cairn.md.
+   Production code: C2c_mcp.decrypt_envelope (~lines 4296-4410) handles
+   Slice B claimed-Ed25519 semantics: prefer claimed for verify, reject
+   pinned/claimed mismatch BEFORE sig verify, pin claimed on first-contact
+   success, leave pin untouched on legacy v1 (no claim).
+
+   Real box-x25519-v1 encryption is required (the plain-envelope and
+   Not_for_me branches both bypass the TOFU code path). Receiver-side
+   X25519 + Ed25519 identities are constructed in-memory via
+   [Relay_enc.generate] / [Relay_identity.generate] so the tests touch
+   no env vars or on-disk identity files — earlier drafts that
+   overrode HOME/C2C_KEY_DIR and restored via [Unix.putenv ""] left
+   [Sys.getenv_opt] returning [Some ""], which downstream code treats
+   as a valid empty keys_dir and writes stray .x25519 files into CWD.
+   [decrypt_envelope] takes our keys as explicit args, so no env
+   override is needed for the test surface. *)
+
+(* Generate Ed25519 keypair (sender's signing identity). Mirrors
+   gen_ed25519 in test_relay_e2e.ml. *)
+let slice_b_gen_ed25519 () =
+  Mirage_crypto_rng_unix.use_default ();
+  let priv, pub = Mirage_crypto_ec.Ed25519.generate () in
+  let seed = Mirage_crypto_ec.Ed25519.priv_to_octets priv in
+  let pk_raw = Mirage_crypto_ec.Ed25519.pub_to_octets pub in
+  seed, pk_raw
+
+(* Build a signed v2 envelope with from_ed25519 = sender_ed_b64.
+   Encrypts plaintext to recipient's X25519 pubkey. Returns the wire
+   JSON string ready to be wrapped in a [message] for decrypt. *)
+let slice_b_make_signed_envelope
+    ~sender_alias ~sender_ed_seed ~sender_ed_b64
+    ~sender_x_keys ~recipient_alias ~recipient_x_pk_b64
+    ~plaintext ~envelope_version =
+  let our_sk_seed = sender_x_keys.Relay_enc.private_key_seed in
+  let sender_x_pk_b64 = Relay_enc.public_key_b64 sender_x_keys in
+  let (ct_b64, nonce_b64) =
+    match Relay_e2e.encrypt_for_recipient
+            ~pt:plaintext ~recipient_pk_b64:recipient_x_pk_b64 ~our_sk_seed with
+    | Some pair -> pair
+    | None -> Alcotest.fail "encrypt_for_recipient returned None"
+  in
+  let recipient =
+    { Relay_e2e.alias = recipient_alias
+    ; nonce = Some nonce_b64
+    ; ciphertext = ct_b64 }
+  in
+  let env =
+    { Relay_e2e.from_ = sender_alias
+    ; from_x25519 = Some sender_x_pk_b64
+    ; from_ed25519 = (if envelope_version >= 2 then Some sender_ed_b64 else None)
+    ; to_ = Some recipient_alias
+    ; room = None
+    ; ts = 1700000020L
+    ; enc = "box-x25519-v1"
+    ; recipients = [ recipient ]
+    ; sig_b64 = ""
+    ; envelope_version }
+  in
+  let signed = Relay_e2e.set_sig env ~sk_seed:sender_ed_seed in
+  Yojson.Safe.to_string (Relay_e2e.envelope_to_json signed)
+
+let slice_b_make_message ~from_alias ~to_alias ~content : C2c_mcp.message =
+  { from_alias; to_alias; content
+  ; deferrable = false; reply_via = None
+  ; enc_status = None; ts = 0.0; ephemeral = false }
+
+(* Slice B test 1: empty pin store + v2 envelope with from_ed25519
+   → on success the broker pins the claimed key. *)
+let test_slice_b_tofu_first_contact_pins () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-fc" and recipient_alias = "recipient-fc" in
+      let (ed_seed, ed_pk_raw) = slice_b_gen_ed25519 () in
+      let ed_pk_b64 = Relay_e2e.b64_encode ed_pk_raw in
+      (* In-memory keys only — Relay_enc.generate touches no disk and
+         needs no env. *)
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let plaintext = "slice-b-first-contact-plaintext-marker" in
+      let wire =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:ed_seed ~sender_ed_b64:ed_pk_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext ~envelope_version:2
+      in
+      (* Pre-condition: pin store empty for sender. *)
+      check (option string) "pre: no pinned ed25519"
+        None (C2c_mcp.Broker.get_pinned_ed25519 sender_alias);
+      let our_x25519 = Some recipient_x in
+      (* Receiver-side ed25519 only gates the decrypt branch (Some _);
+         the actual sig verify uses the SENDER's pinned/claimed pubkey,
+         so any locally-generated identity satisfies the gate. *)
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let (decrypted, enc_status) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:wire
+      in
+      check string "first-contact decrypts to plaintext" plaintext decrypted;
+      check (option string) "first-contact enc_status = ok"
+        (Some "ok") enc_status;
+      (* Post-condition: TOFU pinned the claimed Ed25519. *)
+      check (option string) "first-contact pins claimed ed25519"
+        (Some ed_pk_b64)
+        (C2c_mcp.Broker.get_pinned_ed25519 sender_alias)))
+
+(* Slice B test 2: pin already matches → accept, pin unchanged. *)
+let test_slice_b_tofu_already_pinned_accepts () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-ap" and recipient_alias = "recipient-ap" in
+      let (ed_seed, ed_pk_raw) = slice_b_gen_ed25519 () in
+      let ed_pk_b64 = Relay_e2e.b64_encode ed_pk_raw in
+      (* Pre-pin the sender's ed25519 to the SAME key the envelope claims. *)
+      (match C2c_mcp.Broker.pin_ed25519_sync ~alias:sender_alias ~pk:ed_pk_b64 with
+       | `New_pin -> ()
+       | _ -> Alcotest.fail "expected New_pin on initial pin");
+      (* In-memory keys only — Relay_enc.generate touches no disk and
+         needs no env. *)
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let plaintext = "slice-b-already-pinned-plaintext-marker" in
+      let wire =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:ed_seed ~sender_ed_b64:ed_pk_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext ~envelope_version:2
+      in
+      let our_x25519 = Some recipient_x in
+      (* Receiver-side ed25519 only gates the decrypt branch (Some _);
+         the actual sig verify uses the SENDER's pinned/claimed pubkey,
+         so any locally-generated identity satisfies the gate. *)
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let (decrypted, enc_status) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:wire
+      in
+      check string "already-pinned decrypts to plaintext" plaintext decrypted;
+      check (option string) "already-pinned enc_status = ok"
+        (Some "ok") enc_status;
+      check (option string) "pin unchanged after same-key receive"
+        (Some ed_pk_b64)
+        (C2c_mcp.Broker.get_pinned_ed25519 sender_alias)))
+
+(* Slice B test 3: pinned key X, envelope claims key Y → reject with
+   key-changed BEFORE sig verify (so the test does not need a real key
+   pair matching the claim). Pin must remain at X (not overwritten). *)
+let test_slice_b_tofu_mismatch_rejects () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-mm" and recipient_alias = "recipient-mm" in
+      let pinned_b64 = "PINNED-ed25519-b64-stable-key-X" in
+      let claimed_b64 = "CLAIMED-ed25519-b64-rotated-key-Y" in
+      (match C2c_mcp.Broker.pin_ed25519_sync ~alias:sender_alias ~pk:pinned_b64 with
+       | `New_pin -> ()
+       | _ -> Alcotest.fail "expected New_pin on initial pin");
+      (* The sender uses a real Ed25519 keypair to sign — but claims a
+         DIFFERENT b64 in [from_ed25519]. The mismatch check fires before
+         sig verify per Slice B design, so the (real-sig, fake-claim)
+         combination is exactly what the production guard rejects. *)
+      let (real_seed, _real_pk_raw) = slice_b_gen_ed25519 () in
+      (* In-memory keys only — Relay_enc.generate touches no disk and
+         needs no env. *)
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let plaintext = "slice-b-mismatch-plaintext-must-not-leak" in
+      let wire =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:real_seed ~sender_ed_b64:claimed_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext ~envelope_version:2
+      in
+      let our_x25519 = Some recipient_x in
+      (* Receiver-side ed25519 only gates the decrypt branch (Some _);
+         the actual sig verify uses the SENDER's pinned/claimed pubkey,
+         so any locally-generated identity satisfies the gate. *)
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let (decrypted, enc_status) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:wire
+      in
+      check (option string) "mismatch enc_status = key-changed"
+        (Some "key-changed") enc_status;
+      check bool "mismatch does not leak plaintext"
+        false (decrypted = plaintext);
+      check (option string) "pin not overwritten by mismatched claim"
+        (Some pinned_b64)
+        (C2c_mcp.Broker.get_pinned_ed25519 sender_alias)))
+
+(* Slice B test 4: legacy v1 envelope (no from_ed25519, envelope_version=1).
+   Pre-pin the sender's real ed25519 — verifier falls back to pinned.
+   Existing path must still decrypt; pin must NOT be spuriously rewritten
+   (no first-contact write since claim is None). *)
+let test_slice_b_tofu_legacy_v1_no_field_accepts_no_tofu_update () =
+  with_temp_dir (fun dir ->
+    (
+      let _broker = C2c_mcp.Broker.create ~root:dir in
+      let sender_alias = "sender-v1" and recipient_alias = "recipient-v1" in
+      let (ed_seed, ed_pk_raw) = slice_b_gen_ed25519 () in
+      let ed_pk_b64 = Relay_e2e.b64_encode ed_pk_raw in
+      (* Pre-pin to the real key so the legacy fallback (claim absent →
+         use pinned for verify) succeeds. *)
+      (match C2c_mcp.Broker.pin_ed25519_sync ~alias:sender_alias ~pk:ed_pk_b64 with
+       | `New_pin -> ()
+       | _ -> Alcotest.fail "expected New_pin on initial pin");
+      (* In-memory keys only — Relay_enc.generate touches no disk and
+         needs no env. *)
+      let sender_x = Relay_enc.generate ~alias:sender_alias () in
+      let recipient_x = Relay_enc.generate ~alias:recipient_alias () in
+      let recipient_x_pk_b64 = Relay_enc.public_key_b64 recipient_x in
+      let plaintext = "slice-b-legacy-v1-plaintext-marker" in
+      (* envelope_version = 1 → from_ed25519 omitted from the envelope and
+         from the canonical-blob signature scope. *)
+      let wire =
+        slice_b_make_signed_envelope
+          ~sender_alias ~sender_ed_seed:ed_seed ~sender_ed_b64:ed_pk_b64
+          ~sender_x_keys:sender_x ~recipient_alias
+          ~recipient_x_pk_b64 ~plaintext ~envelope_version:1
+      in
+      let our_x25519 = Some recipient_x in
+      (* Receiver-side ed25519 only gates the decrypt branch (Some _);
+         the actual sig verify uses the SENDER's pinned/claimed pubkey,
+         so any locally-generated identity satisfies the gate. *)
+      let our_ed25519 = Some (Relay_identity.generate ()) in
+      let (decrypted, enc_status) =
+        C2c_mcp.decrypt_envelope ~our_x25519 ~our_ed25519
+          ~to_alias:recipient_alias ~content:wire
+      in
+      check string "legacy v1 decrypts to plaintext" plaintext decrypted;
+      check (option string) "legacy v1 enc_status = ok"
+        (Some "ok") enc_status;
+      (* Pin must still be the original pre-pin value; legacy path must
+         NOT spuriously write because there was no claim. *)
+      check (option string) "legacy v1 pin unchanged"
+        (Some ed_pk_b64)
+        (C2c_mcp.Broker.get_pinned_ed25519 sender_alias)))
+
 (* --- liveness self-heal: respawn-under-new-pid (slice/liveness-respawn-pid) --- *)
 
 (* Pick a pid value that's almost certainly not in the process table.
@@ -10327,6 +10570,14 @@ let () =
               test_relay_pin_external_delete_clears_in_memory
           ; test_case "[#432 TOFU 5 observability] malformed relay_pins.json clears in-memory" `Quick
               test_relay_pin_malformed_json_clears_in_memory
+          ; test_case "[CRIT-1 Slice B] TOFU first-contact pins claimed ed25519" `Quick
+              test_slice_b_tofu_first_contact_pins
+          ; test_case "[CRIT-1 Slice B] TOFU already-pinned same-key accepts, pin unchanged" `Quick
+              test_slice_b_tofu_already_pinned_accepts
+          ; test_case "[CRIT-1 Slice B] TOFU pinned/claimed mismatch rejects with key-changed" `Quick
+              test_slice_b_tofu_mismatch_rejects
+          ; test_case "[CRIT-1 Slice B] TOFU legacy v1 (no from_ed25519) preserves existing path" `Quick
+              test_slice_b_tofu_legacy_v1_no_field_accepts_no_tofu_update
           ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
               test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick

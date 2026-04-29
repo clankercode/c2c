@@ -494,6 +494,21 @@ val notify_shared_with_recipients :
 val channel_notification : ?role:string option -> message -> Yojson.Safe.t
 val decrypt_message_for_push : message -> alias:string -> message
 
+val decrypt_envelope :
+  our_x25519:Relay_enc.t option ->
+  our_ed25519:Relay_identity.t option ->
+  to_alias:string ->
+  content:string ->
+  string * string option
+(** [decrypt_envelope ~our_x25519 ~our_ed25519 ~to_alias ~content] is the
+    unified envelope decrypt+verify+TOFU helper extracted in [#432 §7].
+    Returns [(decrypted_or_original_content, enc_status_string option)].
+    Side-effects: [Broker.set_downgrade_state] always fires on a parseable
+    envelope; on the box-x25519-v1 success path, [pin_x25519_sync] and
+    [pin_ed25519_sync] (Slice B first-contact) fire. Exposed for tests so
+    Slice B TOFU semantics can be exercised against the [enc_status] tuple
+    that [decrypt_message_for_push] discards. *)
+
 val resolve_session_id :
   ?session_id_override:string -> Yojson.Safe.t -> string
 (** [resolve_session_id ?session_id_override arguments] returns the session
