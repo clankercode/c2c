@@ -30,13 +30,14 @@ is_main_tree() {
     [ -n "$mt" ] && [ "$cwd" = "$mt" ]
 }
 
-# Check whether <target> is strictly behind HEAD (HEAD has commits target doesn't).
-# rev-list target..HEAD = commits in HEAD not reachable from target.
+# Check whether <target> is strictly behind HEAD (target is an ancestor of HEAD).
+# git rev-list --right-only <target>..HEAD = commits in HEAD not reachable from target
+# = commits that would be lost by "git reset --hard <target>".
 # Non-zero count means target is behind HEAD → reset would discard commits.
 target_behind_head() {
     local target="$1"
     local count
-    count=$(git rev-list --count --left-only "$target..HEAD" 2>/dev/null || echo "0")
+    count=$(git rev-list --count --right-only "$target..HEAD" 2>/dev/null || echo "0")
     [ "$count" -gt 0 ]
 }
 
@@ -82,7 +83,7 @@ main() {
     done
 
     if [ "$saw_hard" != "true" ]; then
-        # Not --hard; let git handle it
+        # Not --hard; let git handle it (pass through full arg list including reset)
         exec /usr/bin/git reset "$@"
     fi
 
@@ -97,7 +98,11 @@ main() {
         fi
     fi
 
-    exec /usr/bin/git reset --hard "$target"
+    if [ -n "$target" ]; then
+        exec /usr/bin/git reset --hard "$target"
+    else
+        exec /usr/bin/git reset --hard
+    fi
 }
 
 main "$@"

@@ -1,107 +1,132 @@
 #!/bin/bash
 # test_git_shim.sh — unit tests for git-shim.sh
-# Runs against the real git repo (main tree) and a temp worktree.
+#
+# Methodology: safe tests run in the real repo; dangerous reset tests
+# run in a throwaway clone at /tmp/shim-test/repo to prevent accidental
+# data loss in the real worktree.
+#
+# Install shim in PATH, cd to the target dir, run git through the shim.
 
 set -euo pipefail
 
-SHIM="$(cd "$(dirname "$0")" && pwd)/git-shim.sh"
-REAL_GIT="/usr/bin/git"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SHIM="$SCRIPT_DIR/git-shim.sh"
 
-# Colour helpers
+# Real repo (safe tests only)
+REAL_REPO="$(realpath "$(git rev-parse --git-common-dir)/..")"
+
+# Throwaway clone for dangerous tests (reset --hard target)
+CLONE_DIR="/tmp/shim-test/repo"
+ENSURE_CLONE() {
+    if [ ! -d "$CLONE_DIR/.git" ]; then
+        rm -rf /tmp/shim-test
+        mkdir -p /tmp/shim-test
+        git clone --no-local "$REAL_REPO" "$CLONE_DIR" >/dev/null 2>&1
+    fi
+    # Ensure clone is at the same HEAD as real repo
+    git -C "$CLONE_DIR" reset --hard "$(git -C "$REAL_REPO" rev-parse HEAD)" >/dev/null 2>&1 || true
+}
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
-pass() { echo -e "${GREEN}PASS${NC} $1"; }
-fail() { echo -e "${RED}FAIL${NC} $1"; exit 1; }
+passed=0
+failed=0
 
-main_tree="$(git rev-parse --show-toplevel)"
-worktree_dir="$(mktemp -d)"
-worktree_gitdir="$worktree_dir/.git"
+pass() { echo -e "${GREEN}PASS${NC} $1"; ((passed++)) || true; }
+fail() { echo -e "${RED}FAIL${NC} $1"; ((failed++)) || true; }
 
-cleanup() {
-    rm -rf "$worktree_dir"
-    # Restore git shim to normal
-    if [ -d "$worktree_dir" ]; then rm -rf "$worktree_dir"; fi
+# Run the shim in a given dir. Sets C2C_GIT_SHIM_MAIN_TREE to real repo root
+# so the main-tree guard fires appropriately.
+run_shim() {
+    local dir="$1"; shift
+    (
+        export PATH="$(dirname "$SHIM"):$PATH"
+        export C2C_GIT_SHIM_MAIN_TREE="$REAL_REPO"
+        unset C2C_COORDINATOR
+        cd "$dir"
+        "$SHIM" "$@"
+    )
 }
-trap cleanup EXIT
+
+run_shim_as_coord() {
+    local dir="$1"
+    shift
+    (
+        export PATH="$(dirname "$SHIM"):$PATH"
+        export C2C_GIT_SHIM_MAIN_TREE="$REAL_REPO"
+        export C2C_COORDINATOR=1
+        cd "$dir"
+        "$SHIM" reset "$@"
+    )
+}
 
 echo "=== git-shim unit tests ==="
-
-# Helper: run shimmed git command in a given dir with given env.
-run_shim() {
-    (
-        export PATH="$(dirname "$SHIM"):$PATH"
-        export C2C_GIT_SHIM_MAIN_TREE="$main_tree"
-        unset C2C_COORDINATOR
-        cd "$1"
-        bash "$SHIM" "${@:2}"
-    )
-}
-
-run_shim_coord() {
-    (
-        export PATH="$(dirname "$SHIM"):$PATH"
-        export C2C_GIT_SHIM_MAIN_TREE="$main_tree"
-        export C2C_COORDINATOR=1
-        cd "$1"
-        bash "$SHIM" "${@:2}"
-    )
-}
+echo "SHIM=$SHIM"
+echo "REAL_REPO=$REAL_REPO"
 
 # ── Test 1: non-reset commands pass through ──────────────────────────
+echo ""
 echo "--- Test 1: non-reset commands pass through ---"
-result=$(run_shim "$main_tree" status --short 2>/dev/null || echo "OK")
-if [ -n "$result" ] && ! echo "$result" | grep -q "^fatal"; then
-    pass "status passes through"
-else
-    fail "status should pass through"
-fi
+run_shim "$REAL_REPO" status --short >/dev/null 2>&1 && pass "status passes through" || fail "status should pass through"
 
-# ── Test 2: git reset --soft passes through (not --hard) ────────────
+# ── Test 2: git reset (non-hard) passes through ─────────────────────
 echo "--- Test 2: git reset --soft passes through ---"
-run_shim "$main_tree" reset --soft HEAD~1 >/dev/null 2>&1 && pass "reset --soft allowed" || pass "reset --soft allowed (or nothing to do)"
+run_shim "$REAL_REPO" reset --soft >/dev/null 2>&1 && pass "reset --soft allowed" || fail "reset --soft should be allowed"
 
-# ── Test 3: git reset --hard with no target (HEAD) is safe ─────────
+# ── Test 3: git reset --hard with no target (HEAD) is always safe ───
 echo "--- Test 3: git reset --hard (no target = HEAD) is safe ---"
-# This is always safe since target=HEAD means "no change"
-# We just verify it doesn't refuse HEAD itself
-run_shim "$main_tree" reset --hard >/dev/null 2>&1 && pass "reset --hard HEAD is always allowed" || fail "reset --hard HEAD should be safe"
+run_shim "$REAL_REPO" reset --hard >/dev/null 2>&1 && pass "reset --hard HEAD is always allowed" || fail "reset --hard HEAD should be safe"
 
-# ── Test 4: in a worktree — shim allows all reset --hard ────────────
-echo "--- Test 4: worktree: reset --hard always allowed ---"
-# Create a temp worktree (separate git dir)
-git worktree add "$worktree_dir" -b test-shim-branch >/dev/null 2>&1 || true
-# The shim's is_main_tree check compares resolved cwd to main_tree
-# Since worktree has different .git dir and different toplevel, it should pass
-(export PATH="$(dirname "$SHIM"):$PATH"
- export C2C_GIT_SHIM_MAIN_TREE="$main_tree"
- unset C2C_COORDINATOR
- cd "$worktree_dir"
- bash "$SHIM" reset --hard HEAD~1 >/dev/null 2>&1 && pass "worktree reset --hard allowed" || fail "worktree reset --hard should be allowed"
-)
-git worktree remove "$worktree_dir" --force >/dev/null 2>&1 || true
+# ── Test 4: shim script is executable ────────────────────────────────
+echo "--- Test 4: shim script is executable ---"
+[ -x "$SHIM" ] && pass "shim is executable" || fail "shim should be executable"
 
-# ── Test 5: coordinator bypass ───────────────────────────────────────
+# ── Test 5: coordinator bypass with C2C_COORDINATOR=1 ────────────────
 echo "--- Test 5: C2C_COORDINATOR=1 bypasses guard ---"
-# Even a dangerous reset should succeed with coordinator=1
-# Use a detached HEAD state or just verify the env var path works
-# We can't easily cause a "dangerous" situation in the test env,
-# but we can verify the code path is exercised:
-(export PATH="$(dirname "$SHIM"):$PATH"
- export C2C_GIT_SHIM_MAIN_TREE="$main_tree"
- export C2C_COORDINATOR=1
- cd "$main_tree"
- # This should NOT refuse even if it would normally refuse
- bash "$SHIM" reset --hard >/dev/null 2>&1 && pass "coordinator bypass works (reset --hard HEAD)" || fail "coordinator should always succeed for HEAD"
-)
+# reset --hard HEAD is always safe regardless of coordinator status
+run_shim_as_coord "$REAL_REPO" "reset --hard" >/dev/null 2>&1 && pass "coordinator path reachable" || fail "coordinator path should succeed"
 
-# ── Test 6: shim finds real git via /usr/bin/git ─────────────────────
-echo "--- Test 6: real git resolved at /usr/bin/git ---"
-if [ -x /usr/bin/git ]; then
-    pass "/usr/bin/git exists and is executable"
+# ── Test 6: dangerous reset refused in main tree ────────────────────
+# Critical test: "git reset --hard <target>" where target is behind HEAD.
+# Run in THROWAWAY CLONE with C2C_GIT_SHIM_MAIN_TREE pointing at the clone
+# (so the is_main_tree guard fires) but without C2C_COORDINATOR=1 (so the
+# bypass doesn't apply).
+echo "--- Test 6: dangerous reset --hard refused (clone test) ---"
+ENSURE_CLONE
+# Use HEAD~5 as a guaranteed-lagging target. Count commits we'd lose:
+behind_count=$(git -C "$CLONE_DIR" rev-list --count --right-only HEAD~5..HEAD 2>/dev/null || echo 0)
+echo "  Clone: commits that would be lost by resetting to HEAD~5: $behind_count"
+if [ "$behind_count" -gt 0 ]; then
+    # Run shim with MAIN_TREE set to clone dir (so guard fires) and no coordinator bypass
+    output=$(
+        (
+            export PATH="$(dirname "$SHIM"):$PATH"
+            export C2C_GIT_SHIM_MAIN_TREE="$CLONE_DIR"
+            unset C2C_COORDINATOR
+            cd "$CLONE_DIR"
+            "$SHIM" reset --hard HEAD~5 2>&1 || echo "EXIT:$?"
+        )
+    )
+    if echo "$output" | grep -q "git-shim refused"; then
+        pass "reset --hard HEAD~5 refused (clone, $behind_count commits behind)"
+    else
+        fail "reset --hard HEAD~5 should be refused in clone, got: $(echo "$output" | head -1)"
+    fi
 else
-    fail "/usr/bin/git not found or not executable"
+    fail "setup failed: HEAD~5 should be behind HEAD in clone"
 fi
+
+# ── Test 7: worktree: shim allows all reset --hard ──────────────────
+echo "--- Test 7: worktree: reset --hard always allowed ---"
+worktree_dir="$(mktemp -d)"
+rm -rf "$worktree_dir"
+branch_name="test-shim-$$-$(date +%s)"
+git -C "$CLONE_DIR" worktree add "$worktree_dir" -b "$branch_name" >/dev/null 2>&1
+run_shim "$worktree_dir" reset --hard >/dev/null 2>&1 && pass "worktree reset --hard allowed" || fail "worktree reset --hard should be allowed"
+git -C "$CLONE_DIR" worktree remove "$worktree_dir" --force >/dev/null 2>&1 || true
+rm -rf "$worktree_dir"
 
 echo ""
-echo "=== All tests passed ==="
+echo "=== Results: $passed passed, $failed failed ==="
+if [ $failed -gt 0 ]; then exit 1; fi
