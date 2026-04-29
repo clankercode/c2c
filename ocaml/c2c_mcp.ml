@@ -6269,13 +6269,36 @@ let ts = Unix.gettimeofday () in
                    let err = Printf.sprintf "send rejected: enc_status:key-changed — %s's x25519 key differs from known pin (possible relay tamper). Re-send after trust --repin %s." alias alias in
                    Lwt.return (tool_err err)
                   | `Plain s | `Encrypted s ->
+                    (* Compute peer_pass_claim first so we can use it to
+                       suppress self_pass_warning false-positives on the
+                       canonical "peer-PASS by <reviewer>, SHA=<X>" handoff
+                       when the reviewer's alias matches from_alias but the
+                       SHA was authored by someone else (= legitimate cross-
+                       agent peer-PASS announcement). #163. *)
+                    let peer_pass_claim = Peer_review.claim_of_content content in
                     let self_pass_warning =
                       match check_self_pass_content ~from_alias content with
-                      | Some msg when self_pass_detector_strictness () = `Strict -> Some (`Reject msg)
-                      | Some msg -> Some (`Warn msg)
                       | None -> None
+                      | Some msg ->
+                          (* Cross-check: if the body claims a peer-PASS for
+                             a SHA whose git author != from_alias, this is a
+                             cross-agent review announcement, not a self-
+                             pass. Suppress the warning. *)
+                          let sha_author_differs_from_sender =
+                            match peer_pass_claim with
+                            | None -> false
+                            | Some (_claimed_alias, sha) ->
+                                (match Git_helpers.git_commit_author_name sha with
+                                 | None -> false
+                                 | Some author ->
+                                     String.lowercase_ascii author
+                                     <> String.lowercase_ascii from_alias)
+                          in
+                          if sha_author_differs_from_sender then None
+                          else if self_pass_detector_strictness () = `Strict
+                          then Some (`Reject msg)
+                          else Some (`Warn msg)
                     in
-                    let peer_pass_claim = Peer_review.claim_of_content content in
                     let peer_pass_pin_path =
                       Filename.concat (Broker.root broker) "peer-pass-trust.json"
                     in
