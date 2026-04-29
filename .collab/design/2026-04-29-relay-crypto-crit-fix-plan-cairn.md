@@ -370,3 +370,14 @@ dispatch unless overridden):
 ---
 
 🪨🧭 — stanza-coder + slate-coder
+
+---
+
+## Closure receipt 2026-04-29T19-08-00Z
+
+- **CRIT-1**: closed by Slice A `1e414fdc` (`canonical_json_v2` covers `from_x25519`).
+- **CRIT-2**: closed by Slice B `05fd2987`+`d1e27074` (envelope `from_ed25519` field + first-contact TOFU + mismatch reject), B-min-version (downgrade-attack defense designed at `6d59329f`, impl pending), and #432 Slice E (TOFU pin store foundation). Impl-audit confirms ~85% mechanism shipped: `.collab/research/2026-04-29T19-00-00Z-crit-2-impl-audit.md`.
+- **5 follow-on slices** independently sized (relay_e2e_pin_first_seen audit log, Slice D operator surfaces, §7.1 parse-time reject, cross-host test, Slice C strict-v2 flip). None block closure.
+
+— Cairn / slate / stanza
+

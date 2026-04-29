@@ -14,6 +14,43 @@ slate-coder (dispatching parent)
 
 ---
 
+## Resolved 2026-04-29T19-08-00Z — CRIT-2 mechanism shipped, design corrections noted
+
+CRIT-2 mechanism is **~85% landed via Slice A + Slice B (`05fd2987`+`d1e27074`) + B-min-version + #432 Slice E**. Impl-audit by slate (subagent dispatch, NO-OP outcome): `.collab/research/2026-04-29T19-00-00Z-crit-2-impl-audit.md`. Three corrections to this design doc surfaced by the audit:
+
+1. **No separate "relay-side TOFU".** This doc's framing of "relay-side mirror" was a misread. `relay.ml` / `relay_forwarder.ml` treat envelope content as opaque transport (zero references to `Relay_e2e.*` / `from_ed25519` / `verify_envelope_sig`). Crypto boundary: sender-broker → wire → receiver-broker, with TOFU at the receiver-broker (`c2c_mcp.ml decrypt_envelope`). The "verifier" in §2 is the receive-side broker (singular), not a relay-side mirror.
+
+2. **Two pin stores exist; do not conflate.**
+   - `Trust_pin` (`peer_review.ml`) — peer-pass artifact identity. Has `pin_rotate` with operator attestation + structured audit log.
+   - `Broker.known_keys_ed25519` (`c2c_mcp.ml`) — relay-e2e envelope TOFU. No rotate, no attestation, only mismatch audit.
+   §5.2's claim "`pin_rotate` already exists from #432 TOFU 4/5" applies to `Trust_pin`, **NOT** to the relay-pin store. If §5.2 is calling for parity (bringing Trust_pin's rotate semantics over to `relay_pins.json`), that's net-new (~50 LoC), tracked as Slice D follow-on.
+
+3. **Storage shape diff (cosmetic, non-security).** §2.1 shows nested per-alias records `{from_ed25519_b64, first_seen_ts, last_seen_ts, min_observed_envelope_version}`. Reality is flat top-level sections: `{x25519: {alias: pk}, ed25519: {alias: pk}, min_observed_envelope_versions: {alias: int}}`. No `first_seen_ts` / `last_seen_ts` are stored. Documentation drift, not security defect.
+
+### Mapping shipped → SHAs
+
+| Design § | Component | SHA / file:line / test |
+|---|---|---|
+| §2.2 | First-contact pin write | `5dc0ad6b`, `c2c_mcp.ml:4620-4623` |
+| §2.3 | Subsequent verify match → accept | landed (no `last_seen_ts` tracked) |
+| §2.3 | Mismatch reject + audit log | `e5537bd4`, `c2c_mcp.ml:4567-4592` |
+| §6 test 1 | First-contact pins | `test_slice_b_tofu_first_contact_pins` |
+| §6 test 2 | Subsequent match accepts | `test_slice_b_tofu_already_pinned_accepts` |
+| §6 test 3 | Mismatch rejects + audit log | `test_slice_b_tofu_mismatch_rejects` + `_followup_pin_mismatch_audit_log` |
+| §7.2 | Pin persists across restart | `test_relay_pin_ed25519_persists_across_broker_recreate` |
+
+### Follow-on slices (independent, none block CRIT-2 closure)
+
+1. `relay_e2e_pin_first_seen` audit log (~25 LoC) — observability symmetry with `_pin_mismatch`
+2. Slice D operator surfaces — `c2c relay-pins list / delete / [rotate]` (~80-110 LoC)
+3. §7.1 parse-time reject of v2-without-`from_ed25519` (~10 LoC) — defense-in-depth
+4. Cross-host divergence test (~50 LoC, optional per §7.3)
+5. Slice C strict-v2 flip — deferred per §7.3 ops sign-off
+
+— resolved by slate-coder via subagent audit dispatch (NO-OP, ~85% already shipped)
+
+---
+
 ## TL;DR
 
 The relay-e2e envelope today carries no `from_ed25519` field; receivers
