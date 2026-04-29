@@ -332,31 +332,60 @@ let build_reaction_xml ~from_alias ~target_msg_id ~sticker_id ~emoji ~note =
 let parse_reaction_content (content : string) : (string * string * string * string option) option =
   if not (String.length content >= 6 &&
           String.sub content 0 6 = "<c2c " &&
-          String.length content >= 2 &&
           String.sub content (String.length content - 2) 2 = "/>")
   then None
   else
-    let re = Str.regexp "\\(\\w+\\)=\"\([^\"]*\)\"" in
-    let attrs = Hashtbl.create 4 in
-    let rec loop pos =
-      if pos >= String.length content then ()
-      else if Str.string_match re content pos then
-        let key = Str.matched_group 1 content in
-        let value = Str.matched_group 2 content in
-        Hashtbl.add attrs key value;
-        loop (Str.match_end ())
+    (* Custom scanner: find key="value" pairs by scanning for '=' and '"'.
+       Avoids OCaml Str regex complexities with escape sequences. *)
+    let rec scan_attr pos attrs =
+      if pos >= String.length content then attrs
       else
-        loop (pos + 1)
+        (* Skip to next '=' *)
+        match String.index_from content pos '=' with
+        | eq_pos ->
+            (* Check the char before '=' is a valid identifier char *)
+            let key_start = eq_pos - 1 in
+            if key_start < pos then scan_attr (eq_pos + 1) attrs
+            else
+              let c = content.[key_start] in
+              if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c = '_' then
+                (* Scan back to find start of identifier *)
+                let rec key_start_of i =
+                  if i < 0 then 0
+                  else let c = content.[i] in
+                    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                       (c >= '0' && c <= '9') || c = '_' then key_start_of (i - 1)
+                    else i + 1
+                in
+                let ks = key_start_of key_start in
+                let key = String.sub content ks (key_start - ks) in
+                (* Next char after '=' must be '"' *)
+                let after_eq = eq_pos + 1 in
+                if after_eq >= String.length content || content.[after_eq] <> '"' then
+                  scan_attr (eq_pos + 1) attrs
+                else
+                  (* Find closing '"' *)
+                  let rec find_close cpos =
+                    if cpos >= String.length content then None
+                    else if content.[cpos] = '"' then Some cpos
+                    else find_close (cpos + 1)
+                  in
+                  (match find_close (after_eq + 1) with
+                   | None -> scan_attr (eq_pos + 1) attrs
+                   | Some close_pos ->
+                       let value = String.sub content (after_eq + 1) (close_pos - after_eq - 1) in
+                       let attrs' = (key, value) :: attrs in
+                       scan_attr (close_pos + 1) attrs')
+              else scan_attr (eq_pos + 1) attrs
+        | exception Not_found -> attrs
     in
-    loop 0;
-    match Hashtbl.find_opt attrs "event" with
+    let attrs = scan_attr 0 [] in
+    let get key = List.assoc_opt key attrs in
+    match get "event" with
     | Some "reaction" ->
-        (match Hashtbl.find_opt attrs "from",
-               Hashtbl.find_opt attrs "sticker_id",
-               Hashtbl.find_opt attrs "target_msg_id" with
+        (match get "from", get "sticker_id", get "target_msg_id" with
          | Some reactor_alias, Some sticker_id, Some target_msg_id ->
-             let note = Hashtbl.find_opt attrs "note" in
-             Some (reactor_alias, sticker_id, target_msg_id, note)
+             Some (reactor_alias, sticker_id, target_msg_id, get "note")
          | _ -> None)
     | _ -> None
 
