@@ -183,9 +183,20 @@ test: build test-ocaml test-py test-ts
 test-one *ARGS:
     python3 -m pytest {{ARGS}} -v --tb=short
 
-# Format check: verify no trailing whitespace in Python files
+# Pre-flight check: catches latent breakage that `just build` (narrow
+# target list) misses — specifically test exes that fall behind their
+# imported APIs. Sister to `just test-ocaml` but skips the run cost.
+# Also runs `git diff --check` for trailing whitespace.
+#
+# Run before peer-PASS or coord cherry-pick batch; the wider build is
+# how peer-PASS verifies "no broken sibling" but coord-side
+# `install-all` doesn't (#432 receipt: test_relay_enc rotted for ~2
+# days because narrow targets masked the breakage; surfaced when
+# Slice E's bg subagent ran a full dune build).
 check:
     git diff --check
+    mkdir -p _build && touch _build/.c2c-build.lock
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD"
 
 # Install repo git hooks (pre-commit: plugin syntax check).
 # Uses symlinks so edits in scripts/git-hooks/ apply immediately.
