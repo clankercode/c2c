@@ -424,6 +424,50 @@ let test_pin_rotate_mcp_token_rejected_when_env_unset () =
       | Ok _ ->
         failwith "pin_rotate accepted Mcp_operator_token with empty env — security regression")
 
+(* [#432 TOFU 5 observability] pin_rotate REJECT path emits a
+   structured unauth event via the new pin_rotate_unauth_hook. The
+   success-hook stays at 0 (preserving the existing zero-audit
+   semantic on rejection); the unauth-hook fires once with the
+   alias and reason="operator_unauthorized". *)
+let test_pin_rotate_unauth_hook_fires_on_reject () =
+  with_temp_pin_path @@ fun path ->
+  let id = make_identity () in
+  let signed = make_signed_artifact ~identity:id ~reviewer:"helen" in
+  let prior_env = Sys.getenv_opt "C2C_OPERATOR_AUTH_TOKEN" in
+  let success_captured : Peer_review.pin_rotate_log_event list ref = ref [] in
+  let unauth_captured : Peer_review.pin_rotate_unauth_event list ref = ref [] in
+  let prior_success_hook = !Peer_review.pin_rotate_log_hook in
+  let prior_unauth_hook = !Peer_review.pin_rotate_unauth_hook in
+  Fun.protect
+    ~finally:(fun () ->
+      Peer_review.pin_rotate_log_hook := prior_success_hook;
+      Peer_review.pin_rotate_unauth_hook := prior_unauth_hook;
+      match prior_env with
+      | Some v -> Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" v
+      | None -> Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" "")
+    (fun () ->
+      Unix.putenv "C2C_OPERATOR_AUTH_TOKEN" "real-token";
+      Peer_review.pin_rotate_log_hook :=
+        (fun ev -> success_captured := ev :: !success_captured);
+      Peer_review.pin_rotate_unauth_hook :=
+        (fun ev -> unauth_captured := ev :: !unauth_captured);
+      (match
+         Peer_review.pin_rotate ~path
+           ~attestation:(Peer_review.Mcp_operator_token "wrong-token")
+           signed
+       with
+       | Error Peer_review.Operator_unauthorized -> ()
+       | _ -> failwith "expected Operator_unauthorized");
+      check int "success-hook still 0 on unauth reject" 0
+        (List.length !success_captured);
+      check int "unauth-hook fired exactly once" 1
+        (List.length !unauth_captured);
+      let ev = List.hd !unauth_captured in
+      check string "unauth event alias" "helen" ev.Peer_review.alias;
+      check string "unauth event reason" "operator_unauthorized" ev.Peer_review.reason;
+      check string "unauth event path matches the pin path" path ev.Peer_review.path;
+      check bool "unauth event ts > 0" true (ev.Peer_review.ts > 0.0))
+
 let test_pin_store_survives_load_save_roundtrip () =
   with_temp_pin_path @@ fun path ->
   let id = make_identity () in
@@ -953,6 +997,7 @@ let () = Alcotest.run "Peer_review" [
     Alcotest.test_case "[#432 TOFU 5] pin_rotate accepts Mcp_operator_token when env matches" `Quick test_pin_rotate_mcp_token_accepted_when_env_matches;
     Alcotest.test_case "[#432 TOFU 5] pin_rotate rejects Mcp_operator_token + zero pin write + zero audit-log" `Quick test_pin_rotate_mcp_token_rejected_zero_write;
     Alcotest.test_case "[#432 TOFU 5] pin_rotate rejects Mcp_operator_token when env unset" `Quick test_pin_rotate_mcp_token_rejected_when_env_unset;
+    Alcotest.test_case "[#432 TOFU 5 observability] pin_rotate unauth hook fires on reject (success hook stays 0)" `Quick test_pin_rotate_unauth_hook_fires_on_reject;
     Alcotest.test_case "pin store survives load/save roundtrip" `Quick test_pin_store_survives_load_save_roundtrip;
   ];
   "pin_rotate_audit_log_55", [

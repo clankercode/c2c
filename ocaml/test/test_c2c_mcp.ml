@@ -8031,6 +8031,55 @@ let test_relay_pin_ed25519_persists_across_broker_recreate () =
        | None ->
          Alcotest.fail "ed25519 pin not persisted across broker recreate"))
 
+(* [#432 TOFU 5 observability] Operator-clear path: deleting
+   <broker_root>/relay_pins.json wipes in-memory pins on the next
+   load_relay_pins_from_disk call. Pre-fix, [load_section] only
+   cleared the Hashtbl when the on-disk JSON contained
+   `Some (`Assoc entries)` for the section, so an externally-
+   deleted file would leave stale pins in process memory. The fix
+   makes in-memory a true write-through cache of disk: file
+   missing → both Hashtbls clear. *)
+let test_relay_pin_external_delete_clears_in_memory () =
+  with_temp_dir (fun dir ->
+      let broker1 = C2c_mcp.Broker.create ~root:dir in
+      let _ = C2c_mcp.Broker.pin_x25519_sync ~alias:"alpha" ~pk:"pk-x" in
+      let _ = C2c_mcp.Broker.pin_ed25519_sync ~alias:"alpha" ~pk:"pk-ed" in
+      check bool "x25519 pinned before delete" true
+        (C2c_mcp.Broker.get_pinned_x25519 "alpha" <> None);
+      check bool "ed25519 pinned before delete" true
+        (C2c_mcp.Broker.get_pinned_ed25519 "alpha" <> None);
+      let _ = broker1 in
+      (* Operator deletes the on-disk pin store. *)
+      let pin_path = Filename.concat dir "relay_pins.json" in
+      Sys.remove pin_path;
+      (* Broker.create re-runs load_relay_pins_from_disk which now
+         clears both Hashtbls when the file is missing. *)
+      let _broker2 = C2c_mcp.Broker.create ~root:dir in
+      check bool "x25519 cleared after external delete" true
+        (C2c_mcp.Broker.get_pinned_x25519 "alpha" = None);
+      check bool "ed25519 cleared after external delete" true
+        (C2c_mcp.Broker.get_pinned_ed25519 "alpha" = None))
+
+(* [#432 TOFU 5 observability] Companion: malformed JSON is also
+   treated as "operator wiped store" — both Hashtbls clear rather
+   than retaining stale state. Catches the case where a corrupted
+   write or external editing produces non-JSON content. *)
+let test_relay_pin_malformed_json_clears_in_memory () =
+  with_temp_dir (fun dir ->
+      let broker1 = C2c_mcp.Broker.create ~root:dir in
+      let _ = C2c_mcp.Broker.pin_x25519_sync ~alias:"beta" ~pk:"pk-x" in
+      check bool "x25519 pinned before corrupt" true
+        (C2c_mcp.Broker.get_pinned_x25519 "beta" <> None);
+      let _ = broker1 in
+      (* Operator (or filesystem corruption) leaves non-JSON garbage. *)
+      let pin_path = Filename.concat dir "relay_pins.json" in
+      let oc = open_out pin_path in
+      output_string oc "this-is-not-json";
+      close_out oc;
+      let _broker2 = C2c_mcp.Broker.create ~root:dir in
+      check bool "x25519 cleared after malformed JSON" true
+        (C2c_mcp.Broker.get_pinned_x25519 "beta" = None))
+
 (* [#432 Slice E] Mirrors Slice A's [test_concurrent_open_pending_permission]:
    N forked children each pin a distinct alias from a fresh broker
    handle (independent flock state). After all children exit, the
@@ -9490,6 +9539,10 @@ let () =
               test_relay_pin_ed25519_persists_across_broker_recreate
           ; test_case "[#432 Slice E] relay-e2e concurrent pin_save across forks: no lost-update" `Quick
               test_relay_pin_concurrent_save_no_lost_update
+          ; test_case "[#432 TOFU 5 observability] external delete of relay_pins.json clears in-memory" `Quick
+              test_relay_pin_external_delete_clears_in_memory
+          ; test_case "[#432 TOFU 5 observability] malformed relay_pins.json clears in-memory" `Quick
+              test_relay_pin_malformed_json_clears_in_memory
           ; test_case "tools/call register allows takeover of pidless stale alias (Bug #7)" `Quick
               test_tools_call_register_allows_takeover_of_pidless_stale_alias
          ; test_case "tools/call register returns collision_exhausted when all primes taken" `Quick

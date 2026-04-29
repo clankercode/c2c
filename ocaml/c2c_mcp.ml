@@ -902,7 +902,26 @@ module Broker = struct
   let downgrade_states : (string, Relay_e2e.downgrade_state) Hashtbl.t = Hashtbl.create 64
 
   (** Rehydrate both Hashtbls from disk. Caller MUST hold
-      [with_relay_pins_lock]. *)
+      [with_relay_pins_lock].
+
+      #432 TOFU 5 observability follow-up: clear-on-missing-or-malformed.
+      Pre-fix [load_section] only cleared the Hashtbl when the
+      on-disk JSON contained [Some (`Assoc entries)] for the section,
+      so an externally-deleted [relay_pins.json] (or one with a
+      missing/malformed section) would leave stale pins in process
+      memory while the operator's intent was "wipe pins". The fix
+      makes in-memory a true write-through cache of disk: any read
+      where the file is missing, the JSON is malformed, or the
+      section is absent / empty is treated as "no pins on disk →
+      clear in-memory."
+
+      Operator interface: deleting [relay_pins.json] (or rotating
+      it via tooling) triggers a clear on the next public-API call
+      that goes through the lock. The trade-off is that an external
+      delete on a live broker drops in-memory pins, and the next
+      [pin_check] for any peer becomes a TOFU first-seen — so this
+      is a deliberate operator-rotation interface, not an automatic
+      recovery primitive. *)
   let load_relay_pins_from_disk () =
     match !relay_pins_root with
     | None -> ()
@@ -922,11 +941,21 @@ module Broker = struct
                  match v with
                  | `String pk -> Hashtbl.replace tbl alias pk
                  | _ -> ()) entries
-             | _ -> ())
-          | _ -> ()
+             | _ ->
+               (* Section absent or malformed → operator wiped this
+                  kind on disk. Mirror in memory. *)
+               Hashtbl.clear tbl)
+          | _ ->
+            (* Whole JSON malformed → treat as empty store. *)
+            Hashtbl.clear tbl
         in
         load_section "x25519" known_keys_x25519;
         load_section "ed25519" known_keys_ed25519
+      end else begin
+        (* File missing entirely → operator-clear path. Wipe both
+           in-memory tables to match the on-disk truth. *)
+        Hashtbl.clear known_keys_x25519;
+        Hashtbl.clear known_keys_ed25519
       end
 
   (** Serialize both Hashtbls to disk atomically. Caller MUST hold
@@ -3791,6 +3820,42 @@ let () =
       ~new_pubkey:event.new_pubkey
       ~prior_first_seen:event.prior_first_seen
       ~ts:event.ts)
+
+(* #432 TOFU 5 observability follow-up: sibling logger for
+   pin_rotate REJECT path. Same broker.log file, same shape as
+   pending_cap_reject — best-effort, swallows all errors, distinct
+   event-name so log readers can grep for it independently of
+   successful rotates. Registered alongside the success-path logger
+   above so every caller of [Peer_review.pin_rotate] that's rejected
+   at the operator-attestation gate produces a forensic line. *)
+let log_peer_pass_pin_rotate_unauth ~broker_root ~alias ~reason ~ts =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "peer_pass_pin_rotate_unauth")
+         ; ("alias", `String alias)
+         ; ("reason", `String reason)
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
+let () =
+  Peer_review.set_pin_rotate_unauth_logger
+    (fun (event : Peer_review.pin_rotate_unauth_event) ->
+      let broker_root = Filename.dirname event.path in
+      log_peer_pass_pin_rotate_unauth
+        ~broker_root
+        ~alias:event.alias
+        ~reason:event.reason
+        ~ts:event.ts)
 
 (* #432 Slice D: pending-permission decision audit log. Two events on
    broker.log — [pending_open] (after Broker.open_pending_permission

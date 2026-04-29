@@ -694,6 +694,38 @@ let pin_rotate_log_hook : (pin_rotate_log_event -> unit) ref =
 
 let set_pin_rotate_logger f = pin_rotate_log_hook := f
 
+(** #432 TOFU Finding 5 observability follow-up: structured audit-log
+    event for [pin_rotate] REJECT paths.
+
+    The success-side [pin_rotate_log_event] above only fires on the
+    happy path. Operator-attestation rejects (and any future
+    pre-verify gate rejects) are interesting too — they signal either
+    a legitimate "wrong token, try again" or a probe of the rotation
+    surface. Either way an operator wants to see them in broker.log.
+
+    Kept as a SEPARATE event type rather than extending
+    [pin_rotate_log_event] into a variant: existing observers in the
+    broker code use record-field access (event.alias, event.new_pubkey,
+    ...) and switching to a variant would force every observer to
+    pattern-match. Adding a second event type + hook lets new
+    observers opt in while leaving old ones untouched.
+
+    [reason]: today only "operator_unauthorized" (the C2C_OPERATOR_AUTH_TOKEN
+    gate fired). Treated as a free-form string so future attestation
+    failure modes (e.g. expired token, allowlist mismatch) can land
+    additional reason values without a schema rev. *)
+type pin_rotate_unauth_event = {
+  alias : string;
+  reason : string;
+  ts : float;
+  path : string;            (* the pin-store path the rotate would have written *)
+}
+
+let pin_rotate_unauth_hook : (pin_rotate_unauth_event -> unit) ref =
+  ref (fun _ -> ())
+
+let set_pin_rotate_unauth_logger f = pin_rotate_unauth_hook := f
+
 (** Apply TOFU pin policy on a verified artifact. The artifact's signature
     MUST already have been verified by [verify] before calling this — the pin
     policy is only meaningful on cryptographically valid signatures.
@@ -778,7 +810,26 @@ let pin_check ?path (art : t) : pin_check =
 let pin_rotate ?path ~(attestation : operator_attestation) (art : t)
     : (Trust_pin.pin option, verify_error) result =
   match validate_operator_attestation attestation with
-  | Error e -> Error e
+  | Error e ->
+    (* #432 TOFU 5 observability follow-up: emit a structured
+       unauth-attempt event so the operator can see rotate-rejects
+       in broker.log alongside successful rotates. Best-effort —
+       never fail the gate on a logger exception (mirrors the
+       success-path hook policy). *)
+    (try
+       let resolved_path = match path with
+         | Some p -> p
+         | None -> Trust_pin.default_path ()
+       in
+       let event = {
+         alias = art.reviewer;
+         reason = "operator_unauthorized";
+         ts = Unix.gettimeofday ();
+         path = resolved_path;
+       } in
+       !pin_rotate_unauth_hook event
+     with _ -> ());
+    Error e
   | Ok () ->
   match verify art with
   | Error e -> Error e
