@@ -2894,9 +2894,33 @@ module Broker = struct
     if not is_member then
       invalid_arg ("send_room_invite rejected: only room members can invite");
     let meta = load_room_meta t ~room_id in
-    if not (List.mem invitee_alias meta.invited_members) then
+    let was_already_invited = List.mem invitee_alias meta.invited_members in
+    if not was_already_invited then
       save_room_meta t ~room_id
-        { meta with invited_members = meta.invited_members @ [ invitee_alias ] }
+        { meta with invited_members = meta.invited_members @ [ invitee_alias ] };
+    (* #433: auto-DM the invitee so they actually learn about the invite.
+       Prior behaviour was ACL-append-only (silent — no notification). The
+       envelope uses event="room-invite" so client-side Monitors can route
+       it distinctly from ordinary message DMs. We re-DM even on duplicate
+       invites: a duplicate invite is a deliberate nudge and should reach
+       the invitee (cheap; ACL itself stays idempotent). *)
+    let envelope =
+      Printf.sprintf
+        "<c2c event=\"room-invite\" from=\"%s\" room=\"%s\">You've been \
+         invited to room %s by %s. Run `c2c rooms join %s` to accept.</c2c>"
+        from_alias room_id room_id from_alias room_id
+    in
+    (* Sender is the inviter (real alias) rather than the reserved
+       [room_system_alias], because [enqueue_message] rejects
+       reserved system aliases as a spoof guard (see
+       [reserved_system_aliases]). The envelope's [from="..."] attr
+       already names the inviter, and using a real alias keeps the
+       DM addressable for replies. Best-effort: swallow errors so
+       the ACL append remains the primary success path. *)
+    (try
+       enqueue_message t ~from_alias ~to_alias:invitee_alias
+         ~content:envelope ()
+     with _ -> ())
 
   let set_room_visibility t ~room_id ~from_alias ~visibility =
     if not (valid_room_id room_id) then

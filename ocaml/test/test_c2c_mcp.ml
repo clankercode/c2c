@@ -6306,6 +6306,40 @@ let test_send_room_invite_adds_to_invite_list () =
         (match meta.visibility with Public -> "public" | Invite_only -> "invite_only");
       check (list string) "invited_members" ["bob"] meta.invited_members)
 
+(* #433: send_room_invite must auto-DM the invitee with a
+   <c2c event="room-invite" ...> envelope. Prior behaviour was
+   ACL-append-only, so the invitee never learned about the invite. *)
+let test_send_room_invite_auto_dms_invitee () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~invitee_alias:"bob";
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-b" in
+      check int "bob has 1 inbox message" 1 (List.length inbox);
+      let msg = List.hd inbox in
+      check string "from_alias is alice" "alice" msg.from_alias;
+      let contains haystack needle =
+        let h = haystack in
+        let n = needle in
+        let lh = String.length h and ln = String.length n in
+        let rec aux i =
+          if i + ln > lh then false
+          else if String.sub h i ln = n then true
+          else aux (i + 1)
+        in
+        aux 0
+      in
+      check bool "envelope has event=room-invite" true
+        (contains msg.content "event=\"room-invite\"");
+      check bool "envelope mentions room" true
+        (contains msg.content "secret-club"))
+
 let test_send_room_invite_only_member_can_invite () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -8812,6 +8846,8 @@ let () =
              test_tools_call_send_room_rejects_impersonation
          ; test_case "send_room_invite adds to invite list" `Quick
              test_send_room_invite_adds_to_invite_list
+         ; test_case "send_room_invite auto-DMs invitee (#433)" `Quick
+             test_send_room_invite_auto_dms_invitee
          ; test_case "send_room_invite only member can invite" `Quick
              test_send_room_invite_only_member_can_invite
          ; test_case "join_room invite_only rejects uninvited" `Quick

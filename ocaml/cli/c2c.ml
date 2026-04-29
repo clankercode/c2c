@@ -2884,13 +2884,38 @@ let monitor_cmd =
          | _ -> [])
       with _ -> []
     in
+    (* #433: snapshot per-room invited_members for room.invite emission.
+       Reads the [invited_members] field from rooms/<room>/meta.json. *)
+    let known_room_invited : (string, (string, unit) Hashtbl.t) Hashtbl.t =
+      Hashtbl.create 4
+    in
+    let read_room_invited room_id =
+      let path = broker_root // "rooms" // room_id // "meta.json" in
+      try
+        let ic = open_in path in
+        let content = really_input_string ic (in_channel_length ic) in
+        close_in ic;
+        (match Yojson.Safe.from_string content with
+         | `Assoc fields ->
+             (match List.assoc_opt "invited_members" fields with
+              | Some (`List items) ->
+                  List.filter_map
+                    (function `String s -> Some s | _ -> None)
+                    items
+              | _ -> [])
+         | _ -> [])
+      with _ -> []
+    in
     (try
        let rooms_dir = broker_root // "rooms" in
        if Sys.file_exists rooms_dir then
          Array.iter (fun room_id ->
            let tbl : (string, unit) Hashtbl.t = Hashtbl.create 4 in
            List.iter (fun a -> Hashtbl.replace tbl a ()) (read_room_members room_id);
-           Hashtbl.replace known_room_members room_id tbl
+           Hashtbl.replace known_room_members room_id tbl;
+           let itbl : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+           List.iter (fun a -> Hashtbl.replace itbl a ()) (read_room_invited room_id);
+           Hashtbl.replace known_room_invited room_id itbl
          ) (Sys.readdir rooms_dir)
      with _ -> ());
     (* Archive mode watches <broker_root>/archive/*.jsonl (append-only).
@@ -3214,6 +3239,40 @@ let monitor_cmd =
                ) prev_tbl;
                Hashtbl.reset prev_tbl;
                List.iter (fun a -> Hashtbl.replace prev_tbl a ()) new_members
+             end else if filename = "meta.json"
+                      && Filename.basename (Filename.dirname (Filename.dirname full_path)) = "rooms"
+             then begin
+               (* #433: Room meta changed — diff invited_members and emit
+                  room.invite for any newly-invited alias. The MCP
+                  Broker.send_room_invite already auto-DMs the invitee;
+                  this monitor event is the parallel observability surface
+                  (parity with room.join / room.leave). *)
+               let room_id = Filename.basename (Filename.dirname full_path) in
+               let new_invited = read_room_invited room_id in
+               let new_tbl : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+               List.iter (fun a -> Hashtbl.replace new_tbl a ()) new_invited;
+               let prev_tbl =
+                 try Hashtbl.find known_room_invited room_id
+                 with Not_found ->
+                   let t : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+                   Hashtbl.replace known_room_invited room_id t; t
+               in
+               let ts () = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+               List.iter (fun a ->
+                 if not (Hashtbl.mem prev_tbl a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "room.invite"
+                               ; "room_id",    `String room_id
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s ✉️  ROOM   %s invited to %s\n%!" (now_hms ()) a room_id
+                 end
+               ) new_invited;
+               Hashtbl.reset prev_tbl;
+               List.iter (fun a -> Hashtbl.replace prev_tbl a ()) new_invited
              end
          | _ -> ()
         )

@@ -129,15 +129,21 @@ An alias was removed from a room's `members.json`. Emitted in live mode only.
 }
 ```
 
----
+### `room.invite`
 
-## Planned Event Types
+An alias was added to a room's `meta.json` `invited_members` list (#433).
+Emitted in live mode only. The broker also auto-DMs the invitee with a
+`<c2c event="room-invite" ...>` envelope so the invitee learns about
+the invite even when they are not running a monitor.
 
-These are not yet emitted but are reserved for future implementation:
-
-| `event_type`     | Trigger                                   |
-|------------------|-------------------------------------------|
-| `room.invite`    | Room invite sent                          |
+```json
+{
+  "event_type": "room.invite",
+  "room_id":    "swarm-lounge",
+  "alias":      "newbie-agent",
+  "monitor_ts": "1745241340.700"
+}
+```
 
 ---
 
