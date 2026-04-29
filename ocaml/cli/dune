@@ -70,3 +70,8 @@
  (modules test_c2c_perf)
  (libraries alcotest unix)
  (deps c2c.exe))
+
+(test
+ (name test_role_templates)
+ (modules test_role_templates role_templates)
+ (libraries c2c_mcp alcotest str unix))
