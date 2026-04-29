@@ -5104,18 +5104,21 @@ let cmd_restart ?(session_id_override : string option)
         exit 1
     | Some cfg -> cfg
   in
-  (* Apply session-id override if given *)
-  (match session_id_override with
-   | None -> ()
-   | Some sid ->
-       let updated = match cfg.client with
-         | "codex" -> { cfg with codex_resume_target = Some sid }
-         | "codex-headless" -> { cfg with resume_session_id = sid }
-         | "claude" | "opencode" | "kimi" | "crush" ->
-             { cfg with resume_session_id = sid }
-         | _ -> cfg
-       in
-       write_config updated);
+  (* Apply session-id override if given; update last_launch_at for restart *)
+  let cfg =
+    match session_id_override with
+    | None -> { cfg with last_launch_at = Some (Unix.gettimeofday ()) }
+    | Some sid ->
+        let updated = match cfg.client with
+          | "codex" -> { cfg with codex_resume_target = Some sid }
+          | "codex-headless" -> { cfg with resume_session_id = sid }
+          | "claude" | "opencode" | "kimi" | "crush" ->
+              { cfg with resume_session_id = sid }
+          | _ -> cfg
+        in
+        { updated with last_launch_at = Some (Unix.gettimeofday ()) }
+  in
+  write_config cfg;
   (* Kill inner — SIGTERM to whole process group for TUI clients (inner ran with
      setpgid 0 0 so PGID == inner PID; kill(-pid) kills the whole group).
      codex-headless stays in outer's PGID so use positive kill(pid). *)
