@@ -222,8 +222,14 @@ let test_rotate_pin_replaces_existing () =
   (match Peer_review.verify_with_pin ~path signed_b with
    | Ok (Peer_review.Pin_mismatch _) -> ()
    | _ -> failwith "rotation precondition failed: expected mismatch");
-  (* Explicit rotation must replace the pin and surface the prior. *)
-  let prior = Peer_review.pin_rotate ~path signed_b in
+  (* Explicit rotation must replace the pin and surface the prior.
+     #432 TOFU Finding 4: pin_rotate now returns a Result with the
+     verify_error if signature is invalid. signed_b is properly
+     signed via make_signed_artifact, so we expect Ok prior. *)
+  let prior = match Peer_review.pin_rotate ~path signed_b with
+    | Ok p -> p
+    | Error e -> failwith ("rotation rejected: " ^ Peer_review.verify_error_to_string e)
+  in
   (match prior with
    | Some p ->
      check string "rotation returns prior pubkey"
@@ -246,12 +252,78 @@ let test_rotate_pin_with_no_prior_pin () =
   with_temp_pin_path @@ fun path ->
   let id = make_identity () in
   let signed = make_signed_artifact ~identity:id ~reviewer:"bob" in
-  let prior = Peer_review.pin_rotate ~path signed in
+  let prior = match Peer_review.pin_rotate ~path signed with
+    | Ok p -> p
+    | Error e -> failwith ("rotation rejected: " ^ Peer_review.verify_error_to_string e)
+  in
   check bool "no prior pin on first rotate" true (prior = None);
   (* And the pin is now persisted. *)
   match Peer_review.verify_with_pin ~path signed with
   | Ok Peer_review.Pin_match -> ()
   | _ -> failwith "expected Pin_match after rotate-as-first"
+
+(* [#432 TOFU Finding 4] pin_rotate must reject artifacts whose
+   signature is invalid. Pre-fix the function trusted callers to verify
+   first; post-fix it verifies internally. Tampering the signature
+   bytes after signing produces an artifact that fails Ed25519 verify;
+   pin_rotate must return Error Invalid_signature and NOT modify the
+   pin store. *)
+let test_pin_rotate_rejects_invalid_signature () =
+  with_temp_pin_path @@ fun path ->
+  let id = make_identity () in
+  let signed = make_signed_artifact ~identity:id ~reviewer:"alice" in
+  (* Tamper the signature: flip the last byte after b64 decode + encode. *)
+  let open Peer_review in
+  let tampered =
+    let sig_str = match b64url_decode signed.signature with
+      | Ok s -> s
+      | Error _ -> failwith "decode signed.signature"
+    in
+    let buf = Bytes.of_string sig_str in
+    let len = Bytes.length buf in
+    let last = Bytes.get_uint8 buf (len - 1) in
+    Bytes.set_uint8 buf (len - 1) (last lxor 0x01);
+    { signed with signature = b64url_encode (Bytes.to_string buf) }
+  in
+  (* Confirm the tampered artifact does fail verify. The verify
+     function returns either Ok false or Error Invalid_signature
+     depending on whether ed25519's verify primitive returned false
+     or raised — both are "rejection" outcomes. *)
+  (match Peer_review.verify tampered with
+   | Ok false -> ()
+   | Error Peer_review.Invalid_signature -> ()
+   | Ok true -> failwith "tampered signature unexpectedly verified"
+   | Error e ->
+     failwith ("unexpected verify error: " ^ Peer_review.verify_error_to_string e));
+  (* The pin store starts empty — pin_rotate on a tampered artifact
+     must return Error AND leave the store empty. *)
+  (match Peer_review.pin_rotate ~path tampered with
+   | Error Peer_review.Invalid_signature -> ()
+   | Error other ->
+     failwith ("expected Invalid_signature, got: " ^ Peer_review.verify_error_to_string other)
+   | Ok _ ->
+     failwith "pin_rotate accepted tampered signature — security regression");
+  (* And confirm: the store has no pin for "alice" (the rotation didn't
+     persist anything). *)
+  let store = Peer_review.Trust_pin.load ~path () in
+  match Peer_review.Trust_pin.find_pin store ~alias:"alice" with
+  | None -> ()
+  | Some _ ->
+    failwith "pin written despite Invalid_signature — security regression"
+
+(* [#432 TOFU Finding 4] companion: pin_rotate on a valid signature
+   path still works exactly as before (returns Ok prior). The
+   pre-existing test_explicit_rotate_pin_replaces_with_prior covers
+   the success path; this is a smoke that the legacy success contract
+   continues to hold post-Result-shape change. *)
+let test_pin_rotate_accepts_valid_signature () =
+  with_temp_pin_path @@ fun path ->
+  let id = make_identity () in
+  let signed = make_signed_artifact ~identity:id ~reviewer:"dave" in
+  match Peer_review.pin_rotate ~path signed with
+  | Ok None -> ()  (* No prior pin; rotate-as-first. *)
+  | Ok (Some _) -> failwith "did not expect prior pin"
+  | Error e -> failwith ("rotation rejected unexpectedly: " ^ Peer_review.verify_error_to_string e)
 
 let test_pin_store_survives_load_save_roundtrip () =
   with_temp_pin_path @@ fun path ->
@@ -777,6 +849,8 @@ let () = Alcotest.run "Peer_review" [
     Alcotest.test_case "second verify with different pubkey rejected" `Quick test_second_verify_with_different_pubkey_rejected;
     Alcotest.test_case "rotate-pin replaces existing" `Quick test_rotate_pin_replaces_existing;
     Alcotest.test_case "rotate-pin with no prior pin" `Quick test_rotate_pin_with_no_prior_pin;
+    Alcotest.test_case "[#432 TOFU 4] pin_rotate rejects tampered signature" `Quick test_pin_rotate_rejects_invalid_signature;
+    Alcotest.test_case "[#432 TOFU 4] pin_rotate accepts valid signature (success contract)" `Quick test_pin_rotate_accepts_valid_signature;
     Alcotest.test_case "pin store survives load/save roundtrip" `Quick test_pin_store_survives_load_save_roundtrip;
   ];
   "pin_rotate_audit_log_55", [

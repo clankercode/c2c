@@ -493,26 +493,34 @@ let peer_pass_verify_cmd =
         (* Rotate path explicitly replaces the existing pin, so it cannot
            go through verify_claim_for_artifact (which enforces the pin).
            Keep the existing rotate ladder: signature must verify, then
-           rotate, then optional anti-cheat warn. *)
+           rotate, then optional anti-cheat warn.
+           #432 TOFU Finding 4: pin_rotate now verifies internally, so
+           the CLI's pre-call verify is redundant for safety but kept for
+           the print_verified user-facing message ladder. *)
         match Peer_review.verify art with
         | Ok true ->
           print_verified ();
-          let prior = Peer_review.pin_rotate art in
-          (match prior with
-           | None ->
-             Printf.printf "  PIN-ROTATE: no prior pin for %s; recorded new pubkey.\n%!"
-               art.Peer_review.reviewer
-           | Some p ->
-             Printf.printf
-               "  PIN-ROTATE WARNING: replaced pin for %s.\n    \
-               old pubkey: %s\n    \
-               new pubkey: %s\n    \
-               old first_seen: %.0f\n%!"
-               art.Peer_review.reviewer
-               p.Peer_review.Trust_pin.pubkey
-               art.Peer_review.reviewer_pk
-               p.Peer_review.Trust_pin.first_seen);
-          do_anti_cheat ()
+          (match Peer_review.pin_rotate art with
+           | Error e ->
+             Printf.eprintf "  PIN-ROTATE REJECTED: %s\n%!"
+               (Peer_review.verify_error_to_string e);
+             exit 1
+           | Ok prior ->
+             (match prior with
+              | None ->
+                Printf.printf "  PIN-ROTATE: no prior pin for %s; recorded new pubkey.\n%!"
+                  art.Peer_review.reviewer
+              | Some p ->
+                Printf.printf
+                  "  PIN-ROTATE WARNING: replaced pin for %s.\n    \
+                  old pubkey: %s\n    \
+                  new pubkey: %s\n    \
+                  old first_seen: %.0f\n%!"
+                  art.Peer_review.reviewer
+                  p.Peer_review.Trust_pin.pubkey
+                  art.Peer_review.reviewer_pk
+                  p.Peer_review.Trust_pin.first_seen);
+             do_anti_cheat ())
         | Ok false ->
           Printf.eprintf "VERIFY FAILED: invalid signature\n%!"; exit 1
         | Error e ->

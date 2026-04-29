@@ -669,44 +669,59 @@ let pin_check ?path (art : t) : pin_check =
       })
 
 (** Explicit rotation: replace the existing pin (or create one) regardless
-    of mismatch. Returns the previous pin (if any) for audit logging.
+    of mismatch. Returns the previous pin (if any) for audit logging
+    when rotation succeeds.
 
     #54b: load→upsert→save runs under [Trust_pin.with_pin_lock] so a
     concurrent verify-and-pin (or a parallel rotate) cannot interleave.
     #55: emits a structured audit-log event via [pin_rotate_log_hook]
     after the save lands. The hook fires for both first-rotate (no
     prior) and replacement; loggers can branch on
-    [prior_first_seen = None] for the no-prior case. *)
-let pin_rotate ?path (art : t) : Trust_pin.pin option =
-  let resolved_path = match path with
-    | Some p -> p
-    | None -> Trust_pin.default_path ()
-  in
-  let prior =
-    Trust_pin.with_pin_lock ?path (fun () ->
-      let alias = art.reviewer in
-      let store = Trust_pin.load ?path () in
-      let prior = Trust_pin.find_pin store ~alias in
-      let now = Unix.gettimeofday () in
-      let first_seen = match prior with Some p -> p.Trust_pin.first_seen | None -> now in
-      let new_pin = { Trust_pin.pubkey = art.reviewer_pk; first_seen; last_seen = now } in
-      let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
-      Trust_pin.save ?path store';
-      prior)
-  in
-  (* Best-effort audit log; never fail the rotate on a logger exception. *)
-  (try
-     let event = {
-       alias = art.reviewer;
-       old_pubkey = (match prior with Some p -> p.Trust_pin.pubkey | None -> "");
-       new_pubkey = art.reviewer_pk;
-       prior_first_seen = (match prior with Some p -> Some p.Trust_pin.first_seen | None -> None);
-       ts = Unix.gettimeofday ();
-       path = resolved_path;
-     } in
-     !pin_rotate_log_hook event
-   with _ -> ());
-  prior
+    [prior_first_seen = None] for the no-prior case.
+    #432 TOFU Finding 4: the artifact's signature is verified BEFORE
+    any rotation work. Previously this function trusted callers to
+    gate on [verify] first (the CLI did so by convention); a future
+    MCP/CLI rotate caller landing without that gate would have left
+    the trust pin rotatable by anyone able to construct an artifact
+    with a fresh keypair. Now any caller is safe — the verify check
+    is built in. Returns:
+    - [Ok prior_opt] on success (signature valid, pin written/updated).
+    - [Error verify_error] when signature verification fails (no pin
+      modified, no audit-log fired). *)
+let pin_rotate ?path (art : t) : (Trust_pin.pin option, verify_error) result =
+  match verify art with
+  | Error e -> Error e
+  | Ok false -> Error Invalid_signature
+  | Ok true ->
+    let resolved_path = match path with
+      | Some p -> p
+      | None -> Trust_pin.default_path ()
+    in
+    let prior =
+      Trust_pin.with_pin_lock ?path (fun () ->
+        let alias = art.reviewer in
+        let store = Trust_pin.load ?path () in
+        let prior = Trust_pin.find_pin store ~alias in
+        let now = Unix.gettimeofday () in
+        let first_seen = match prior with Some p -> p.Trust_pin.first_seen | None -> now in
+        let new_pin = { Trust_pin.pubkey = art.reviewer_pk; first_seen; last_seen = now } in
+        let store' = Trust_pin.upsert store ~alias ~pin:new_pin in
+        Trust_pin.save ?path store';
+        prior)
+    in
+    (* Best-effort audit log; never fail the rotate on a logger exception. *)
+    (try
+       let event = {
+         alias = art.reviewer;
+         old_pubkey = (match prior with Some p -> p.Trust_pin.pubkey | None -> "");
+         new_pubkey = art.reviewer_pk;
+         prior_first_seen = (match prior with Some p -> Some p.Trust_pin.first_seen | None -> None);
+         ts = Unix.gettimeofday ();
+         path = resolved_path;
+       } in
+       !pin_rotate_log_hook event
+     with _ -> ());
+    Ok prior
 
 (** Convenience wrapper that fuses signature verification with TOFU pin
     enforcement. Returns:
