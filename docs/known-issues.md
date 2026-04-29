@@ -54,7 +54,7 @@ PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_pt
 
 The TypeScript plugin path (global symlink at `~/.config/opencode/plugins/c2c.ts` (canonical), with `.opencode/plugins/c2c.ts` as opt-in via `--project-plugin` flag) is live-proven and the primary delivery path. Plugin uses a `c2c monitor` subprocess for near-real-time wake: the monitor watches the broker inbox directory with `inotifywait` and calls `promptAsync` when a new message arrives.
 
-**Permission resolution (v2):** The plugin's `permission.ask` hook is not wired in current OpenCode builds. Instead, on `permission.asked` events, the plugin DMs supervisors with the permission ID and resolves the dialog via the OpenCode HTTP API (`postSessionIdPermissionsPermissionId`) after receiving an `approve-once`/`approve-always`/`reject` reply within 300s. On timeout, the TUI dialog stays open for the operator.
+**Permission resolution (v2):** The plugin's `permission.ask` hook is not wired in current OpenCode builds. Instead, on `permission.asked` events, the plugin DMs supervisors with the permission ID and resolves the dialog via the OpenCode HTTP API (`postSessionIdPermissionsPermissionId`) after receiving an `approve-once`/`approve-always`/`reject` reply within the `C2C_PERMISSION_TTL` window (default 660s: 600s TTL + 60s margin per #461). On timeout, the TUI dialog stays open for the operator.
 
 **Note:** `c2c_opencode_wake_daemon.py` is deprecated — do not use.
 
