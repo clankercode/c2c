@@ -4064,6 +4064,48 @@ let log_pending_check
       with _ -> close_out_noerr oc)
    with _ -> ())
 
+(* Coord-backup fallthrough audit log
+   (slice/coord-backup-fallthrough). Emits one
+   [event=coord_fallthrough_fired] line per fired tier. Schema:
+     ts                : float (unix seconds)
+     event             : "coord_fallthrough_fired"
+     perm_id_hash      : 16-hex truncation of SHA256(perm_id) — same
+                         discipline as #432 Slice D
+     tier              : 1 = backup1 DM'd, 2 = backup2 DM'd,
+                         broadcast tier carries [tier = N+1] where N
+                         is len(chain) - 1
+     primary_alias     : the chain[0] entry that was supposed to answer
+     backup_alias      : the alias DM'd this tier ("<broadcast>" for
+                         the swarm-lounge broadcast tier)
+     requester_alias   : the original opener of the pending entry
+     elapsed_s         : seconds from open_pending_reply to this fire
+   Best-effort write; mirrors [log_pending_open] / [log_nudge_tick]
+   exactly so a failed audit write never breaks the scheduler. *)
+let log_coord_fallthrough_fired
+    ~broker_root ~perm_id ~tier ~primary_alias ~backup_alias
+    ~requester_alias ~elapsed_s ~ts =
+  (try
+     let path = Filename.concat broker_root "broker.log" in
+     let line =
+       `Assoc
+         [ ("ts", `Float ts)
+         ; ("event", `String "coord_fallthrough_fired")
+         ; ("perm_id_hash", `String (short_hash perm_id))
+         ; ("tier", `Int tier)
+         ; ("primary_alias", `String primary_alias)
+         ; ("backup_alias", `String backup_alias)
+         ; ("requester_alias", `String requester_alias)
+         ; ("elapsed_s", `Float elapsed_s)
+         ]
+       |> Yojson.Safe.to_string
+     in
+     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+     (try
+        output_string oc (line ^ "\n");
+        close_out oc
+      with _ -> close_out_noerr oc)
+   with _ -> ())
+
 let notify_shared_with_recipients
     ~broker ~from_alias ~name ?description ~shared ~shared_with () =
   if shared && shared_with <> [] then []

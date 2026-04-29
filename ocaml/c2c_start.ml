@@ -669,6 +669,71 @@ let swarm_config_restart_intro () : string =
        | Some "" -> builtin_swarm_restart_intro
        | Some v -> decode_toml_basic_escapes v)
 
+(* --------------------------------------------------------------------------- *
+ * Coordinator-backup fallthrough config (slice/coord-backup-fallthrough)
+ *
+ * Per-DM redundancy: when a permission DM's primary recipient doesn't
+ * ack within an idle window, the broker scheduler forwards to the next
+ * backup in [coord_chain]. Full design lives in
+ * .collab/design/2026-04-29-coord-backup-fallthrough-stanza.md. The
+ * config thunks below land in this slice; the broker scheduler that
+ * consumes them lands in the follow-up implementation slice.
+ *
+ * All three keys live under [swarm]. Defaults are conservative:
+ *   coord_chain                       -> [] (feature disabled until
+ *                                            an operator opts in)
+ *   coord_fallthrough_idle_seconds    -> 120.0
+ *   coord_fallthrough_broadcast_room  -> "swarm-lounge"
+ * --------------------------------------------------------------------------- *)
+
+let default_coord_fallthrough_idle_seconds : float = 120.0
+
+let default_coord_fallthrough_broadcast_room : string = "swarm-lounge"
+
+(* Read [swarm] coord_chain from .c2c/config.toml. Returns the configured
+   list (parsed as a TOML inline string-array) or the empty list when the
+   section/key is absent. Empty list means "no fallthrough chain
+   configured" — the scheduler treats it as feature-off for this repo. *)
+let swarm_config_coord_chain () : string list =
+  let sections = read_toml_sections_with_prefix "swarm" in
+  match List.assoc_opt "default" sections with
+  | None -> []
+  | Some entries ->
+      (match List.assoc_opt "coord_chain" entries with
+       | None -> []
+       | Some "" -> []
+       | Some v -> parse_string_list_literal v)
+
+(* Read [swarm] coord_fallthrough_idle_seconds. Float seconds the
+   primary (and each subsequent backup) has to ack before the next
+   backup gets DM'd. Defaults to 120.0. Unparseable values fall back to
+   the default rather than raising — config errors should not crash
+   the broker. *)
+let swarm_config_coord_fallthrough_idle_seconds () : float =
+  let sections = read_toml_sections_with_prefix "swarm" in
+  match List.assoc_opt "default" sections with
+  | None -> default_coord_fallthrough_idle_seconds
+  | Some entries ->
+      (match List.assoc_opt "coord_fallthrough_idle_seconds" entries with
+       | None -> default_coord_fallthrough_idle_seconds
+       | Some "" -> default_coord_fallthrough_idle_seconds
+       | Some v ->
+           (try float_of_string (String.trim v)
+            with _ -> default_coord_fallthrough_idle_seconds))
+
+(* Read [swarm] coord_fallthrough_broadcast_room. Room ID for the final
+   "all coords missing" broadcast tier. Empty string disables the
+   broadcast tier (TTL alone handles end-of-life). Defaults to
+   "swarm-lounge". *)
+let swarm_config_coord_fallthrough_broadcast_room () : string =
+  let sections = read_toml_sections_with_prefix "swarm" in
+  match List.assoc_opt "default" sections with
+  | None -> default_coord_fallthrough_broadcast_room
+  | Some entries ->
+      (match List.assoc_opt "coord_fallthrough_broadcast_room" entries with
+       | None -> default_coord_fallthrough_broadcast_room
+       | Some v -> String.trim v)
+
 let assoc_bool key entries default =
   match List.assoc_opt key entries with
   | None -> default

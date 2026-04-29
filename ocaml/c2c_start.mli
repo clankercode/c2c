@@ -253,6 +253,33 @@ val swarm_config_restart_intro : unit -> string
     absent or empty. Mirrors the #318 v3 thunk pattern
     (swarm_config_coordinator_alias / swarm_config_social_room). #341. *)
 
+val default_coord_fallthrough_idle_seconds : float
+(** Default seconds the primary (and each subsequent backup) has to ack
+    before the next backup is DM'd by the fallthrough scheduler. 120.0.
+    See .collab/design/2026-04-29-coord-backup-fallthrough-stanza.md. *)
+
+val default_coord_fallthrough_broadcast_room : string
+(** Default room ID for the final "all coords missing" broadcast tier
+    of the fallthrough scheduler. ["swarm-lounge"]. *)
+
+val swarm_config_coord_chain : unit -> string list
+(** [swarm_config_coord_chain ()] reads the [swarm] [coord_chain] inline
+    string-array from .c2c/config.toml. Index 0 is the primary; later
+    entries are tried in order if the primary doesn't ack within
+    [swarm_config_coord_fallthrough_idle_seconds ()]. Empty list means
+    feature-off for this repo. *)
+
+val swarm_config_coord_fallthrough_idle_seconds : unit -> float
+(** [swarm_config_coord_fallthrough_idle_seconds ()] reads the per-tier
+    idle window. Returns [default_coord_fallthrough_idle_seconds] when
+    absent or unparseable. *)
+
+val swarm_config_coord_fallthrough_broadcast_room : unit -> string
+(** [swarm_config_coord_fallthrough_broadcast_room ()] reads the room ID
+    used for the final-tier broadcast. Empty string disables the
+    broadcast tier (TTL alone ends the entry's life). Default
+    ["swarm-lounge"]. *)
+
 val read_toml_sections_with_prefix :
   string -> (string * (string * string) list) list
 (** [read_toml_sections_with_prefix prefix] reads .c2c/config.toml and

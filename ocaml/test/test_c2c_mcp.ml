@@ -7590,6 +7590,71 @@ let test_pending_open_audit_log_written () =
           check bool "raw session_id absent" false
             (string_contains raw_line "session-requester-d1")))
 
+(* slice/coord-backup-fallthrough: log_coord_fallthrough_fired writes
+   a [event=coord_fallthrough_fired] line with the expected schema —
+   perm_id_hash is hashed (16 hex), aliases plaintext, tier as int.
+   This exercises the audit-log helper directly; the broker scheduler
+   that calls it lands in the follow-up slice (per the design doc's
+   §11 split). *)
+let test_coord_fallthrough_audit_line_written () =
+  with_temp_dir (fun dir ->
+      let perm_id = "perm:fallthrough:slice-skel-1" in
+      C2c_mcp.log_coord_fallthrough_fired
+        ~broker_root:dir
+        ~perm_id
+        ~tier:1
+        ~primary_alias:"coordinator1"
+        ~backup_alias:"stanza-coder"
+        ~requester_alias:"galaxy-coder"
+        ~elapsed_s:120.5
+        ~ts:1714389600.0;
+      let lines = parse_broker_log_lines_with_event dir "coord_fallthrough_fired" in
+      check int "exactly one coord_fallthrough_fired line" 1 (List.length lines);
+      let json = List.hd lines in
+      let open Yojson.Safe.Util in
+      let perm_id_hash = json |> member "perm_id_hash" |> to_string in
+      check bool "perm_id_hash is 16 hex" true (is_hex16 perm_id_hash);
+      check int "tier is 1" 1 (json |> member "tier" |> to_int);
+      check string "primary_alias plaintext" "coordinator1"
+        (json |> member "primary_alias" |> to_string);
+      check string "backup_alias plaintext" "stanza-coder"
+        (json |> member "backup_alias" |> to_string);
+      check string "requester_alias plaintext" "galaxy-coder"
+        (json |> member "requester_alias" |> to_string);
+      check (float 0.0) "elapsed_s preserved"
+        120.5 (json |> member "elapsed_s" |> to_number);
+      (* Privacy: raw perm_id MUST NOT appear plaintext in the audit line. *)
+      let raw_line =
+        List.hd
+          (read_broker_log_lines dir
+           |> List.filter (fun l -> string_contains l "coord_fallthrough_fired"))
+      in
+      check bool "raw perm_id absent" false
+        (string_contains raw_line perm_id))
+
+(* slice/coord-backup-fallthrough: a broadcast-tier fire records
+   backup_alias="<broadcast>" and a tier index past the chain length.
+   Same shape as a per-backup tier; the consumer (audit reader) keys
+   off the literal "<broadcast>" backup_alias to distinguish. *)
+let test_coord_fallthrough_audit_broadcast_tier () =
+  with_temp_dir (fun dir ->
+      C2c_mcp.log_coord_fallthrough_fired
+        ~broker_root:dir
+        ~perm_id:"perm:fallthrough:slice-skel-2"
+        ~tier:3
+        ~primary_alias:"coordinator1"
+        ~backup_alias:"<broadcast>"
+        ~requester_alias:"galaxy-coder"
+        ~elapsed_s:360.0
+        ~ts:1714389960.0;
+      let lines = parse_broker_log_lines_with_event dir "coord_fallthrough_fired" in
+      check int "one broadcast-tier line" 1 (List.length lines);
+      let json = List.hd lines in
+      let open Yojson.Safe.Util in
+      check string "backup_alias is <broadcast>" "<broadcast>"
+        (json |> member "backup_alias" |> to_string);
+      check int "tier 3" 3 (json |> member "tier" |> to_int))
+
 (* [#432 Slice D] check_pending_reply for an unknown perm_id emits a
    "pending_check" line with outcome="unknown_perm". *)
 let test_pending_check_audit_log_outcome () =
@@ -10174,6 +10239,10 @@ let () =
                 test_pending_open_audit_log_written
            ; test_case "[#432 Slice D] check_pending_reply unknown_perm outcome audit line" `Quick
                 test_pending_check_audit_log_outcome
+           ; test_case "[coord-backup-fallthrough] audit line written" `Quick
+                test_coord_fallthrough_audit_line_written
+           ; test_case "[coord-backup-fallthrough] broadcast-tier audit line shape" `Quick
+                test_coord_fallthrough_audit_broadcast_tier
            ; test_case "tools/call set_dnd on:\"true\" string enables DND" `Quick
                 test_tools_call_set_dnd_on_string_true_enables_dnd
            ; test_case "tools/call set_dnd on:\"false\" string disables DND" `Quick

@@ -460,3 +460,23 @@ val pop_channel_test_code : unit -> string option
 (** [pop_channel_test_code ()] returns and clears the pending channel-test code,
     if one was generated during registration. Returns [None] if no test is pending. *)
 val handle_request : broker_root:string -> Yojson.Safe.t -> Yojson.Safe.t option Lwt.t
+
+val log_coord_fallthrough_fired :
+     broker_root:string
+  -> perm_id:string
+  -> tier:int
+  -> primary_alias:string
+  -> backup_alias:string
+  -> requester_alias:string
+  -> elapsed_s:float
+  -> ts:float
+  -> unit
+(** Coord-backup fallthrough audit log
+    (slice/coord-backup-fallthrough). Append one
+    [event=coord_fallthrough_fired] line to [<broker_root>/broker.log]
+    per fired tier. [perm_id] is hashed (16 hex chars) before write so
+    the bearer token never lands plaintext in the audit log; aliases
+    are plaintext (already public via [list]). [tier] is 1-indexed:
+    1 = first-backup DM, N = Nth-backup DM, [tier > len(chain)-1] =
+    swarm-lounge broadcast tier. Best-effort write; errors swallowed
+    (failed audit must never break a working scheduler tick). *)

@@ -1849,6 +1849,111 @@ let test_restart_intro_override () =
     false
     (string_contains intro "You have been started as a c2c swarm agent.")
 
+(* slice/coord-backup-fallthrough: with no config or no [swarm] section,
+   coord_chain reads as the empty list (feature-off). *)
+let test_coord_chain_default_empty () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let chain = C2c_start.swarm_config_coord_chain () in
+  check (list string) "empty chain when no config" [] chain
+
+(* slice/coord-backup-fallthrough: coord_chain reads an inline string
+   array under [swarm], preserving order. *)
+let test_coord_chain_reads_inline_array () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[swarm]\n\
+       coord_chain = [\"coordinator1\", \"stanza-coder\", \"jungle-coder\"]\n");
+  with_cwd dir @@ fun () ->
+  let chain = C2c_start.swarm_config_coord_chain () in
+  check (list string) "chain order preserved"
+    ["coordinator1"; "stanza-coder"; "jungle-coder"] chain
+
+(* slice/coord-backup-fallthrough: idle-seconds defaults to 120.0
+   when absent, parses a plain float when present, falls back to the
+   default on garbage. *)
+let test_coord_idle_seconds_defaults_and_overrides () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  check (float 0.0) "default idle 120s"
+    120.0
+    (C2c_start.swarm_config_coord_fallthrough_idle_seconds ())
+
+let test_coord_idle_seconds_override () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[swarm]\n\
+       coord_fallthrough_idle_seconds = 60\n");
+  with_cwd dir @@ fun () ->
+  check (float 0.0) "override idle 60s"
+    60.0
+    (C2c_start.swarm_config_coord_fallthrough_idle_seconds ())
+
+let test_coord_idle_seconds_garbage_falls_back () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[swarm]\n\
+       coord_fallthrough_idle_seconds = \"not-a-number\"\n");
+  with_cwd dir @@ fun () ->
+  check (float 0.0) "garbage falls back to default"
+    120.0
+    (C2c_start.swarm_config_coord_fallthrough_idle_seconds ())
+
+(* slice/coord-backup-fallthrough: broadcast room defaults to
+   "swarm-lounge", reads a custom room when present, accepts empty
+   string to disable the broadcast tier. *)
+let test_coord_broadcast_room_default () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  check string "default broadcast room"
+    "swarm-lounge"
+    (C2c_start.swarm_config_coord_fallthrough_broadcast_room ())
+
+let test_coord_broadcast_room_override () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[swarm]\n\
+       coord_fallthrough_broadcast_room = \"emergency-room\"\n");
+  with_cwd dir @@ fun () ->
+  check string "override broadcast room"
+    "emergency-room"
+    (C2c_start.swarm_config_coord_fallthrough_broadcast_room ())
+
+let test_coord_broadcast_room_empty_disables () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "[swarm]\n\
+       coord_fallthrough_broadcast_room = \"\"\n");
+  with_cwd dir @@ fun () ->
+  check string "empty string disables broadcast tier"
+    ""
+    (C2c_start.swarm_config_coord_fallthrough_broadcast_room ())
+
 (* --- #351: c2c instances --- alive-only default + --all archive view ---- *)
 
 (* Resolve the built CLI binary relative to this test executable.
@@ -2590,6 +2695,22 @@ let () =
            test_restart_intro_builtin_default)
         ; ("restart_intro_override", `Quick,
            test_restart_intro_override)
+        ; ("coord_chain_default_empty", `Quick,
+           test_coord_chain_default_empty)
+        ; ("coord_chain_reads_inline_array", `Quick,
+           test_coord_chain_reads_inline_array)
+        ; ("coord_idle_seconds_defaults", `Quick,
+           test_coord_idle_seconds_defaults_and_overrides)
+        ; ("coord_idle_seconds_override", `Quick,
+           test_coord_idle_seconds_override)
+        ; ("coord_idle_seconds_garbage_falls_back", `Quick,
+           test_coord_idle_seconds_garbage_falls_back)
+        ; ("coord_broadcast_room_default", `Quick,
+           test_coord_broadcast_room_default)
+        ; ("coord_broadcast_room_override", `Quick,
+           test_coord_broadcast_room_override)
+        ; ("coord_broadcast_room_empty_disables", `Quick,
+           test_coord_broadcast_room_empty_disables)
         ] )
     ; ( "get_tmux_location",
         [ ( "get_tmux_location_exits_nonzero_when_not_in_tmux",
