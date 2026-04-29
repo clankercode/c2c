@@ -407,7 +407,7 @@ val notify_shared_with_recipients :
 (* Native OCaml relay modules *)
 
 val channel_notification : ?role:string option -> message -> Yojson.Safe.t
-val decrypt_message_for_push : message -> session_id:string -> message
+val decrypt_message_for_push : message -> alias:string -> message
 val session_id_from_env : ?client_type:string -> unit -> string option
 (** Resolve the current broker session id from the ambient client env. Prefers
     explicit c2c-managed ids and falls back to harness-native ids when safe. *)

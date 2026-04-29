@@ -25,7 +25,7 @@ type registration =
    ; enc_pubkey : string option
    (** X25519 public key (base64url, 32 bytes) for E2E encryption.
        Published in the registry so recipients can encrypt DMs.
-       The matching secret lives in ~/.c2c/keys/<session_id>.x25519 mode 0600.
+       The matching secret lives in ~/.config/c2c/keys/<alias>.x25519 mode 0600.
        Known v1 limitation (M1 threat model): mode 0600 does not protect against
        other processes running as the same Unix user (including child agents).
        OS keyring integration deferred to M3. *)
@@ -3999,8 +3999,8 @@ let channel_notification ?(role : string option = None) ({ from_alias; to_alias;
           ] )
     ]
 
-let decrypt_message_for_push (msg : message) ~session_id =
-  let our_x25519 = match Relay_enc.load_or_generate ~session_id () with Ok k -> Some k | Error _ -> None in
+let decrypt_message_for_push (msg : message) ~alias =
+  let our_x25519 = match Relay_enc.load_or_generate ~alias () with Ok k -> Some k | Error _ -> None in
   let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
   let { from_alias; to_alias; content; deferrable; reply_via; enc_status = _ } = msg in
   let decrypted_content =
@@ -4630,7 +4630,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
         let client_type = current_client_type () in
         let plugin_version = current_plugin_version () in
         let enc_pubkey =
-          match Relay_enc.load_or_generate ~session_id () with
+          match Relay_enc.load_or_generate ~alias () with
           | Ok enc -> Some (Relay_enc.public_key_b64 enc)
           | Error e ->
               Printf.eprintf "[auto_register_startup] warning: could not load X25519 key: %s\n%!" e;
@@ -4993,7 +4993,7 @@ let handle_tool_call ~(broker : Broker.t) ?session_id_override ~tool_name ~argum
               let plugin_version = optional_string_member "plugin_version" arguments in
               let role = optional_string_member "role" arguments in
               let enc_pubkey =
-                match Relay_enc.load_or_generate ~session_id () with
+                match Relay_enc.load_or_generate ~alias () with
                 | Ok enc -> Some (Relay_enc.public_key_b64 enc)
                 | Error e ->
                     Printf.eprintf "[register] warning: could not load X25519 key: %s\n%!" e;
@@ -5186,7 +5186,7 @@ let ts = Unix.gettimeofday () in
                                  | Some sid -> sid
                                  | None -> from_alias)
                           in
-                          (match Relay_enc.load_or_generate ~session_id () with
+                          (match Relay_enc.load_or_generate ~alias:from_alias () with
                             | Error e ->
                               Printf.eprintf "send: load_or_generate x25519 failed: %s\n" e;
                               `Plain content
@@ -5565,12 +5565,12 @@ let ts = Unix.gettimeofday () in
       Broker.confirm_registration broker ~session_id;
       Broker.touch_session broker ~session_id;
       let messages = Broker.drain_inbox ~drained_by:"poll_inbox" broker ~session_id in
-      let sid =
-        match session_id_override with
-        | Some sid -> sid
-        | None -> (match current_session_id () with Some s -> s | None -> "unknown")
+      let our_alias =
+        match List.find_opt (fun r -> r.session_id = session_id) (Broker.list_registrations broker) with
+        | Some reg -> reg.alias
+        | None -> "unknown"
       in
-      let our_x25519 = match Relay_enc.load_or_generate ~session_id:sid () with Ok k -> Some k | Error _ -> None in
+      let our_x25519 = match Relay_enc.load_or_generate ~alias:our_alias () with Ok k -> Some k | Error _ -> None in
       let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
       let process_msg ({ from_alias; to_alias; content; deferrable } : message) =
         let (decrypted, enc_status) =

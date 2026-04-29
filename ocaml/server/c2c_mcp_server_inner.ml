@@ -217,7 +217,7 @@ let lookup_sender_role ~broker_root from_alias =
 
 let emit_notification ~broker_root ~session_id msg =
   debug_log ("emit_notification -> " ^ session_id);
-  let decrypted_msg = C2c_mcp.decrypt_message_for_push msg ~session_id in
+  let decrypted_msg = C2c_mcp.decrypt_message_for_push msg ~alias:msg.C2c_mcp.to_alias in
   let role = lookup_sender_role ~broker_root msg.C2c_mcp.from_alias in
   write_message (C2c_mcp.channel_notification ~role decrypted_msg)
 

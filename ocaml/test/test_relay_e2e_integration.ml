@@ -92,20 +92,20 @@ let test_temp_key_dir_override () =
   (* Create a temp directory for keys *)
   let temp_dir = (Filename.get_temp_dir_name ()) ^ "/c2c_e2e_test_" ^ string_of_int (Unix.getpid ()) in
   (try Unix.mkdir temp_dir 0o700 with Unix.Unix_error _ -> ());
-  let session_id = "test-session-e2e" in
+  let alias = "test-alias-e2e" in
   (* Set env var *)
   Unix.putenv "C2C_KEY_DIR" temp_dir;
   (* Generate a key *)
-  let t1 = match Enc.load_or_generate ~session_id () with
+  let t1 = match Enc.load_or_generate ~alias () with
     | Ok t -> t
     | Error e -> Alcotest.fail ("load_or_generate failed: " ^ e)
   in
   Alcotest.(check string) "version is 1" "1" (string_of_int t1.Enc.version);
   (* Key file should be in temp_dir *)
-  let expected_path = temp_dir ^ "/" ^ session_id ^ ".x25519" in
+  let expected_path = temp_dir ^ "/" ^ alias ^ ".x25519" in
   Alcotest.(check bool) "key file exists" true (Sys.file_exists expected_path);
   (* Load again — should get same key *)
-  let t2 = match Enc.load_or_generate ~session_id () with
+  let t2 = match Enc.load_or_generate ~alias () with
     | Ok t -> t
     | Error e -> Alcotest.fail ("load_or_generate failed: " ^ e)
   in

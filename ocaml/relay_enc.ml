@@ -7,6 +7,7 @@ type t = {
   public_key : string;  (* 32 bytes, raw X25519 public key *)
   private_key_seed : string;  (* 32 bytes, raw X25519 secret *)
   created_at : string;
+  alias_hint : string;  (* the alias this key is for; not part of the key material *)
 }
 
 let ( // ) = Filename.concat
@@ -17,15 +18,15 @@ let b64url_encode s =
 let b64url_decode s =
   Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
-let default_path ~session_id =
+let default_path ~alias =
   let keys_dir =
     match Sys.getenv_opt "C2C_KEY_DIR" with
     | Some d -> d
     | None ->
       let home = try Sys.getenv "HOME" with Not_found -> "/" in
-      home // ".c2c" // "keys"
+      home // ".config" // "c2c" // "keys"
   in
-  keys_dir // session_id ^ ".x25519"
+  keys_dir // alias ^ ".x25519"
 
 let rng_initialized = ref false
 
@@ -37,7 +38,7 @@ let ensure_rng () =
 
 let rfc3339_utc_now () = C2c_time.iso8601_utc (Unix.time ())
 
-let generate () =
+let generate ~alias () =
   ensure_rng ();
   let secret, public = Mirage_crypto_ec.X25519.gen_key () in
   let private_key_seed = Mirage_crypto_ec.X25519.secret_to_octets secret in
@@ -47,6 +48,7 @@ let generate () =
     public_key = public;
     private_key_seed;
     created_at = rfc3339_utc_now ();
+    alias_hint = alias;
   }
 
 let public_key_b64 t = b64url_encode t.public_key
@@ -58,6 +60,7 @@ let to_json t : Yojson.Safe.t =
     "public_key",  `String (b64url_encode t.public_key);
     "private_key", `String (b64url_encode t.private_key_seed);
     "created_at",  `String t.created_at;
+    "alias",       `String t.alias_hint;
   ]
 
 let find_string fields name =
@@ -82,6 +85,7 @@ let of_json (j : Yojson.Safe.t) =
       let* pk_enc = find_string fields "public_key" in
       let* sk_enc = find_string fields "private_key" in
       let* created_at = find_string fields "created_at" in
+      let* alias_hint = find_string fields "alias" in
       let* public_key =
         match b64url_decode pk_enc with
         | Ok s when String.length s = 32 -> Ok s
@@ -99,7 +103,7 @@ let of_json (j : Yojson.Safe.t) =
       else if alg <> "x25519" then
         Error (Printf.sprintf "unsupported alg: %s (expected x25519)" alg)
       else
-        Ok { version; alg; public_key; private_key_seed; created_at }
+        Ok { version; alg; public_key; private_key_seed; created_at; alias_hint }
   | _ -> Error "enc identity json: expected object"
 
 let mkdir_p_mode path mode = C2c_io.mkdir_p ~mode path
@@ -152,17 +156,17 @@ let load ~path () =
                path (Unix.error_message e) fn arg)
   | Sys_error msg -> Error ("load: " ^ msg)
 
-(* Load or generate a keypair for the given session.
+(* Load or generate a keypair for the given alias.
    Only regenerates when the file does not exist (ENOENT).
    Permissions errors or corruption are returned as errors — never silently overwritten.
-   [path] defaults to [default_path ~session_id]; override with [?path] for tests. *)
-let load_or_generate ~session_id ?(path : string option) () =
-  let path = match path with Some p -> p | None -> default_path ~session_id in
+   [path] defaults to [default_path ~alias]; override with [?path] for tests. *)
+let load_or_generate ~alias ?(path : string option) () =
+  let path = match path with Some p -> p | None -> default_path ~alias in
   match load ~path () with
   | Ok t -> Ok t
   | Error e ->
       if String.length e >= 22 && String.sub e 0 22 = "enc identity file not " then
-        let t = generate () in
+        let t = generate ~alias () in
         (match save ~path t with
          | Ok () -> Ok t
          | Error se -> Error ("save after generate: " ^ se))
