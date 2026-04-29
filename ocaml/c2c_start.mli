@@ -39,6 +39,7 @@ type instance_config = {
   alias : string;
   extra_args : string list;
   created_at : float;
+  last_launch_at : float option;
   broker_root : string;
   auto_join_rooms : string;
   binary_override : string option;
@@ -477,10 +478,6 @@ val resolve_effective_extra_args :
 val persist_headless_thread_id : name:string -> thread_id:string -> unit
 (** [persist_headless_thread_id ~name ~thread_id] updates the managed instance
     config with the lazily handed-off Codex thread id, if the config exists. *)
-
-val persist_codex_resume_target : name:string -> thread_id:string -> unit
-(** [persist_codex_resume_target ~name ~thread_id] stores an explicit Codex
-    resume target for a managed normal-codex instance, if the config exists. *)
 
 (** {1 Process utilities} *)
 

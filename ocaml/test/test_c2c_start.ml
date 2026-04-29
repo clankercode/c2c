@@ -1662,6 +1662,7 @@ let test_cmd_reset_thread_persists_codex_resume_target () =
     ; alias = name
     ; extra_args = []
     ; created_at = Unix.gettimeofday ()
+    ; last_launch_at = None
     ; broker_root
     ; auto_join_rooms = "swarm-lounge"
     ; binary_override = Some "/bin/true"
@@ -1679,6 +1680,62 @@ let test_cmd_reset_thread_persists_codex_resume_target () =
   | Some saved ->
       check (option string) "persisted codex resume target"
         (Some "thread-reset-123") saved.codex_resume_target
+
+let test_last_launch_at_roundtrip () =
+  let name = Printf.sprintf "launch-at-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun _dir ->
+  with_temp_dir @@ fun broker_root ->
+  let now = Unix.gettimeofday () in
+  let cfg : C2c_start.instance_config =
+    { name
+    ; client = "kimi"
+    ; session_id = name
+    ; resume_session_id = name
+    ; codex_resume_target = None
+    ; alias = name
+    ; extra_args = []
+    ; created_at = now
+    ; last_launch_at = Some now
+    ; broker_root
+    ; auto_join_rooms = "swarm-lounge"
+    ; binary_override = None
+    ; model_override = None
+    ; agent_name = None
+    }
+  in
+  C2c_start.write_config cfg;
+  match C2c_start.load_config_opt name with
+  | None -> fail "expected config after write"
+  | Some saved ->
+      check (option (float 0.001)) "last_launch_at roundtrip" (Some now) saved.last_launch_at
+
+let test_last_launch_at_backward_compat_missing_field () =
+  let name = Printf.sprintf "launch-at-compat-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun _dir ->
+  with_temp_dir @@ fun broker_root ->
+  let now = Unix.gettimeofday () in
+  let cfg : C2c_start.instance_config =
+    { name
+    ; client = "kimi"
+    ; session_id = name
+    ; resume_session_id = name
+    ; codex_resume_target = None
+    ; alias = name
+    ; extra_args = []
+    ; created_at = now
+    ; last_launch_at = None
+    ; broker_root
+    ; auto_join_rooms = "swarm-lounge"
+    ; binary_override = None
+    ; model_override = None
+    ; agent_name = None
+    }
+  in
+  C2c_start.write_config cfg;
+  match C2c_start.load_config_opt name with
+  | None -> fail "expected config after write"
+  | Some saved ->
+      check (option (float 0.001)) "last_launch_at None roundtrip" None saved.last_launch_at
 
 (* ------------------------------------------------------------------ *)
 (* pmodel parsing                                                      *)
@@ -3022,6 +3079,10 @@ let () =
             `Quick, test_codex_supports_server_request_fds_requires_both_flags )
         ; ( "cmd_reset_thread_persists_codex_resume_target",
             `Quick, test_cmd_reset_thread_persists_codex_resume_target )
+        ; ( "last_launch_at_roundtrip",
+            `Quick, test_last_launch_at_roundtrip )
+        ; ( "last_launch_at_backward_compat_missing_field",
+            `Quick, test_last_launch_at_backward_compat_missing_field )
         ; ( "prepare_launch_args_extra_args_appended_verbatim",
             `Quick, test_prepare_launch_args_extra_args_appended_verbatim )
         ; ( "prepare_launch_args_extra_args_empty_by_default",

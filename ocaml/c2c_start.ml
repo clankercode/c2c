@@ -2059,6 +2059,7 @@ type instance_config = {
   alias : string;
   extra_args : string list;
   created_at : float;
+  last_launch_at : float option;
   broker_root : string;
   auto_join_rooms : string;
   binary_override : string option;
@@ -2080,6 +2081,10 @@ let write_config (cfg : instance_config) =
     ; ("created_at", `Float cfg.created_at)
     ; ("broker_root", `String cfg.broker_root)
     ; ("auto_join_rooms", `String cfg.auto_join_rooms) ]
+    @
+    (match cfg.last_launch_at with
+     | Some t -> [ ("last_launch_at", `Float t) ]
+     | None -> [])
     @
     (match cfg.codex_resume_target with
      | Some sid -> [ ("codex_resume_target", `String sid) ]
@@ -2114,10 +2119,11 @@ let load_config_opt (name : string) : instance_config option =
         let gs k = match List.assoc_opt k a with Some (`String s) -> s | _ -> raise Not_found in
         let gso k = match List.assoc_opt k a with Some (`String s) -> Some s | _ -> None in
         let gf k = match List.assoc_opt k a with Some (`Float f) -> f | Some (`Int i) -> float_of_int i | _ -> raise Not_found in
+        let gfo k = match List.assoc_opt k a with Some (`Float f) -> Some f | Some (`Int i) -> Some (float_of_int i) | _ -> None in
         let gl k = match List.assoc_opt k a with Some (`List l) -> List.map (function `String s -> s | _ -> raise Not_found) l | _ -> [] in
         Some { name = gs "name"; client = gs "client"; session_id = gs "session_id";
                resume_session_id = gs "resume_session_id"; codex_resume_target = gso "codex_resume_target"; alias = gs "alias";
-               extra_args = gl "extra_args"; created_at = gf "created_at";
+               extra_args = gl "extra_args"; created_at = gf "created_at"; last_launch_at = gfo "last_launch_at";
                broker_root = gs "broker_root"; auto_join_rooms = gs "auto_join_rooms";
                binary_override = gso "binary_override";
                model_override = gso "model_override";
@@ -2153,12 +2159,6 @@ let persist_headless_thread_id ~(name : string) ~(thread_id : string) : unit =
   | None -> ()
   | Some cfg ->
       write_config { cfg with resume_session_id = thread_id }
-
-let persist_codex_resume_target ~(name : string) ~(thread_id : string) : unit =
-  match load_config_opt name with
-  | None -> ()
-  | Some cfg ->
-      write_config { cfg with codex_resume_target = Some thread_id }
 
 (* ---------------------------------------------------------------------------
  * Process utilities
@@ -4856,6 +4856,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     binary_override;
     model_override;
     agent_name;
+    last_launch_at = Some (Unix.gettimeofday ());
   }
   in
   write_config cfg;
