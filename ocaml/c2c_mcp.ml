@@ -5163,7 +5163,7 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
                      ; ("holder_session_id", `String conflict.session_id)
                      ])
            in
-            Lwt.return (tool_result ~content ~is_error:true)
+            Lwt.return (tool_err content)
          | None ->
              let prior_owner_has_pending =
                Broker.pending_permission_exists_for_alias broker alias
@@ -5294,7 +5294,7 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
              registrations)
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_ok content)
   | "send" ->
       let to_alias = string_member_any [ "to_alias"; "alias" ] arguments in
       let content = string_member "content" arguments in
@@ -5613,7 +5613,7 @@ let ts = Unix.gettimeofday () in
                  |> Yojson.Safe.to_string
              | None -> reg.alias)
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_ok content)
   | "debug" ->
       let action = string_member "action" arguments in
       if not Build_flags.mcp_debug_tool_enabled then
@@ -5784,7 +5784,7 @@ let ts = Unix.gettimeofday () in
         `Assoc base
       in
       let content = `List (List.map process_msg messages) |> Yojson.Safe.to_string in
-      Lwt.return (tool_result ~content ~is_error:false))
+      Lwt.return (tool_ok content))
       end
   | "peek_inbox" ->
       (* Like poll_inbox but does not drain. Resolves session_id from
@@ -5816,7 +5816,7 @@ let ts = Unix.gettimeofday () in
                   messages)
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false))
+           Lwt.return (tool_ok content))
   | "history" ->
       (* Deliberately bypass resolve_session_id — it would honor a
          session_id argument override, which would let the caller read
@@ -5856,7 +5856,7 @@ let ts = Unix.gettimeofday () in
                   entries)
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false))
+           Lwt.return (tool_ok content))
   | "tail_log" ->
       let limit =
         match Broker.int_opt_member "limit" arguments with
@@ -5904,10 +5904,10 @@ let ts = Unix.gettimeofday () in
           `List parsed |> Yojson.Safe.to_string
         end
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_ok content)
   | "server_info" ->
       let content = Yojson.Safe.to_string (server_info ()) in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_ok content)
   | "sweep" ->
       let { Broker.dropped_regs; deleted_inboxes; preserved_messages } =
         Broker.sweep broker
@@ -5948,7 +5948,7 @@ let ts = Unix.gettimeofday () in
           ]
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_ok content)
   | "prune_rooms" ->
       let evicted = Broker.prune_rooms broker in
       let content =
@@ -5965,7 +5965,7 @@ let ts = Unix.gettimeofday () in
           ]
         |> Yojson.Safe.to_string
       in
-      Lwt.return (tool_result ~content ~is_error:false)
+      Lwt.return (tool_ok content)
   | "set_dnd" ->
       let on =
         try
