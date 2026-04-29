@@ -1077,7 +1077,7 @@ class ClaudeSendMsgUnitTests(unittest.TestCase):
                 sender_name="agent-one",
                 sender_alias="storm-herald",
             ),
-            '<c2c event="message" from="agent-one" alias="storm-herald" source="pty" source_tool="claude_send_msg" action_after="continue">\nhello peer\n</c2c>',
+            '<c2c event="message" from="agent-one" to="storm-herald" source="pty" source_tool="claude_send_msg" action_after="continue">\nhello peer\n</c2c>',
         )
 
     def test_render_payload_omits_alias_when_sender_alias_missing(self):

@@ -114,7 +114,7 @@ def xml_message_payload(message: dict[str, Any]) -> str:
     # than racing it. AfterAnyItem gives Codex a safe mid-turn release point
     # while still starting immediately when the thread is idle.
     return (
-        f'<message type="user" queue="AfterAnyItem"><c2c event="message" from="{sender}" alias="{alias}" '
+        f'<message type="user" queue="AfterAnyItem"><c2c event="message" from="{sender}" to="{alias}" '
         'source="broker" reply_via="c2c_send" action_after="continue">'
         f"{content}</c2c></message>\n"
     )

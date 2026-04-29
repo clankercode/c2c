@@ -522,7 +522,7 @@ class C2CDeliverInboxLoopTests(unittest.TestCase):
 
             self.assertEqual(result["delivered"], 1)
             self.assertIn('<message type="user" queue="AfterAnyItem">', payload)
-            self.assertIn('<c2c event="message" from="storm-echo" alias="codex"', payload)
+            self.assertIn('<c2c event="message" from="storm-echo" to="codex"', payload)
             spool_path = broker_root.parent / "codex-xml" / "codex-local.spool.json"
             self.assertEqual(json.loads(spool_path.read_text(encoding="utf-8")), [])
             self.assertEqual(

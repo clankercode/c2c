@@ -214,7 +214,7 @@ def format_c2c_envelope(message: dict[str, Any]) -> str:
     alias = _xml_attr(message.get("to_alias") or "")
     content = str(message.get("content") or "")
     return (
-        f'<c2c event="message" from="{sender}" alias="{alias}" '
+        f'<c2c event="message" from="{sender}" to="{alias}" '
         'source="broker" reply_via="c2c_send" action_after="continue">\n'
         f"{content}\n"
         "</c2c>"

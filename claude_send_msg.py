@@ -94,7 +94,7 @@ def render_payload(
         f"from={quoteattr(sender_name)}",
     ]
     if sender_alias:
-        attributes.append(f"alias={quoteattr(sender_alias)}")
+        attributes.append(f"to={quoteattr(sender_alias)}")
     if source:
         attributes.append(f"source={quoteattr(source)}")
     if source_tool:
@@ -146,7 +146,7 @@ def main():
         epilog=(
             "Examples:\n"
             "  claude-send-msg 'C2C-test-agent2' 'Hello there'\n"
-            '  claude-send-msg \'C2C msg test\' \'<c2c event="message" from="agent-one" alias="storm-herald">What topic should we discuss?</c2c>\''
+            '  claude-send-msg \'C2C msg test\' \'<c2c event="message" from="agent-one" to="storm-herald">What topic should we discuss?</c2c>\''
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )

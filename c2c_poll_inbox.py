@@ -285,7 +285,7 @@ def print_result(
     for item in messages:
         print(
             f"<c2c event=\"message\" from=\"{item.get('from_alias', '')}\" "
-            f"alias=\"{item.get('to_alias', '')}\" source=\"broker\" reply_via=\"c2c_send\" action_after=\"continue\">"
+            f"to=\"{item.get('to_alias', '')}\" source=\"broker\" reply_via=\"c2c_send\" action_after=\"continue\">"
             f"{item.get('content', '')}</c2c>"
         )
 

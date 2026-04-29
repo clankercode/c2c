@@ -14,7 +14,7 @@ let test_envelope_basic () =
   let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello world" in
   let got = C2c_wire_bridge.format_envelope m in
   let expected =
-    "<c2c event=\"message\" from=\"alice\" alias=\"bob\" source=\"broker\" reply_via=\"c2c_send\" action_after=\"continue\">\nhello world\n</c2c>"
+    "<c2c event=\"message\" from=\"alice\" to=\"bob\" source=\"broker\" reply_via=\"c2c_send\" action_after=\"continue\">\nhello world\n</c2c>"
   in
   Alcotest.(check string) "basic envelope" expected got
 

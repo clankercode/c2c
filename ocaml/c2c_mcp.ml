@@ -528,7 +528,7 @@ let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts ~content
   in
   let reply_via_str = xml_escape (Option.value reply_via ~default:"c2c_send") in
   Printf.sprintf
-    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s%s%s>\n%s\n</c2c>"
+    "<c2c event=\"message\" from=\"%s\" to=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s%s%s>\n%s\n</c2c>"
     (xml_escape from_alias)
     (xml_escape to_alias)
     reply_via_str

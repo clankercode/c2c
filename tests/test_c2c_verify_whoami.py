@@ -251,10 +251,10 @@ class C2CVerifyUnitTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             transcript_path = Path(handle.name)
             handle.write(
-                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">one</c2c>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" to=\\"storm-herald\\">one</c2c>"}}\n'
             )
             handle.write(
-                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">two</c2c>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" to=\\"storm-herald\\">two</c2c>"}}\n'
             )
             handle.write(
                 '{"type":"assistant","message":{"content":[{"type":"text","text":"reply one"}]}}\n'
@@ -347,7 +347,7 @@ class C2CWhoamiUnitTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             transcript_path = Path(handle.name)
             handle.write(
-                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">one</c2c>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" to=\\"storm-herald\\">one</c2c>"}}\n'
             )
             handle.write(
                 '{"type":"user","message":{"content":"follow-up outside c2c"}}\n'
@@ -368,7 +368,7 @@ class C2CWhoamiUnitTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             transcript_path = Path(handle.name)
             handle.write(
-                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">one</c2c>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" to=\\"storm-herald\\">one</c2c>"}}\n'
             )
             handle.write(
                 '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"lookup","input":{}}]}}\n'
@@ -392,13 +392,13 @@ class C2CWhoamiUnitTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             transcript_path = Path(handle.name)
             handle.write(
-                '{"type":"user","message":{"content":"<c2c event=\\"onboarding\\" from=\\"c2c-register\\" alias=\\"storm-herald\\">welcome</c2c>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"onboarding\\" from=\\"c2c-register\\" to=\\"storm-herald\\">welcome</c2c>"}}\n'
             )
             handle.write(
                 '{"type":"assistant","message":{"content":[{"type":"text","text":"thanks"}]}}\n'
             )
             handle.write(
-                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" alias=\\"storm-herald\\">hello</c2c>"}}\n'
+                '{"type":"user","message":{"content":"<c2c event=\\"message\\" from=\\"storm-herald\\" to=\\"storm-herald\\">hello</c2c>"}}\n'
             )
             handle.write(
                 '{"type":"assistant","message":{"content":[{"type":"text","text":"reply"}]}}\n'
