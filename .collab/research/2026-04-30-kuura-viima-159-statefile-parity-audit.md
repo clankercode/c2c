@@ -104,8 +104,10 @@ Removed dead function and mli val. Codex resume target is correctly written only
 
 **Implementation:** `14f7c497` — function + mli val removed. No callers found in codebase.
 
-### Slice C: Alias writeback on `c2c register --alias` (S, ~30 LoC)
-When operator runs `c2c register --alias NEW_ALIAS`, scan `~/.local/share/c2c/instances/` and update any configs where `cfg.alias = old_alias` to `NEW_ALIAS`. Prevents identity drift on restart.
+### Slice C: Alias writeback on `c2c register --alias` (S, ~30 LoC) ✅ DONE
+When operator runs `c2c register --alias NEW_ALIAS`, scan `~/.local/share/c2c/instances/` and update any configs where `cfg.session_id = registered_session_id` to use `NEW_ALIAS`. Prevents identity drift on restart.
+
+**Implementation:** `ad33d60c` — `sync_instance_alias` helper in `c2c_start.ml`, wired into `register_cmd`. Two tests (update + ignore mismatched session).
 
 ### Slice D: Exit-code + exit-reason capture (S, ~40 LoC)
 Add `exit_code: int option` and `exit_reason: string option` to `instance_config`. Write them in `run_outer_loop` when the inner client exits (before outer loop relaunches). Enables `c2c instances` to show "crashed" or "clean exit" status.
