@@ -7341,7 +7341,9 @@ let default_kickoff_prompt ~name ~alias ?role () =
     template subst
 
 let agent_file_path ~client ~name =
-  C2c_role.client_agent_dir ~client // (name ^ ".md")
+  match client with
+  | "kimi" -> C2c_role.kimi_agent_yaml_path ~name
+  | _ -> C2c_role.client_agent_dir ~client // (name ^ ".md")
 
 let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~client ~name =
   let pmodel_lookup (key : string) : string option =

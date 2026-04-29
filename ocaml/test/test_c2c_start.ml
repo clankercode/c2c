@@ -2671,7 +2671,26 @@ let test_prepare_launch_args_kimi_agent_file_uses_role_name () =
          (".kimi/agents/coordinator1/agent.yaml")
          path
    | _ ->
-       Alcotest.fail "--agent-file missing or has no value")
+        Alcotest.fail "--agent-file missing or has no value")
+
+(* #489 regression: verify kimi_agent_yaml_path returns a path under
+   .kimi/agents/<name>/agent.yaml (yaml dir), NOT .kimi/agents/<name>.md.
+   This is the contract that write_agent_file (c2c.ml) and
+   C2c_commands.agent_file_path both depend on. The bug: c2c.ml's local
+   agent_file_path shadowed C2c_commands.agent_file_path and hardcoded .md. *)
+let test_kimi_write_agent_file_uses_yaml_path () =
+  let path = C2c_role.kimi_agent_yaml_path ~name:"test-agent" in
+  check string "kimi_agent_yaml_path ends with agent.yaml"
+    "agent.yaml" (Filename.basename path);
+  check string "kimi_agent_yaml_path uses directory per agent"
+    ".kimi/agents/test-agent" (Filename.dirname path);
+  (* Ensure it's NOT the old wrong path (which was .kimi/agents/<name>.md) *)
+  let wrong_path = Filename.concat (C2c_role.client_agent_dir ~client:"kimi") "test-agent.md" in
+  check string "kimi_agent_yaml_path is NOT .md extension"
+    ".kimi/agents/test-agent.md" wrong_path;
+  (* The correct path must differ from the .md wrong path *)
+  check bool "correct path differs from wrong .md path"
+    true (path <> wrong_path)
 
 (* #392: pure helpers for c2c_mcp's event-tag body-prefix shape.
    Hosted here since test_c2c_mcp.ml has a pre-existing build issue
@@ -3036,6 +3055,8 @@ let () =
             `Quick, test_prepare_launch_args_kimi_fresh_omits_session_flag )
         ; ( "agent_file_uses_role_name",
             `Quick, test_prepare_launch_args_kimi_agent_file_uses_role_name )
+        ; ( "write_agent_file_kimi_uses_yaml_path",
+            `Quick, test_kimi_write_agent_file_uses_yaml_path )
         ] )
     ; ( "launch_args",
         [ ( "prepare_launch_args_claude_uses_development_channel_flag",
