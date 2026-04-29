@@ -681,18 +681,32 @@ module InMemoryRelay : RELAY = struct
                      && RegistrationLease.node_id ex <> node_id ->
            (relay_err_alias_conflict, ex)
          | _ ->
-           let effective_pk =
-             if identity_pk <> "" then identity_pk
-             else Option.value ~default:"" (Hashtbl.find_opt t.bindings alias)
+           let old_inbox_msgs, conflict =
+             match existing with
+             | Some ex when RegistrationLease.is_alive ex
+                         && RegistrationLease.session_id ex <> session_id ->
+               let old_key = inbox_key (RegistrationLease.node_id ex) (RegistrationLease.session_id ex) in
+               let msgs = get_inbox t old_key in
+               if msgs <> [] then set_inbox t old_key [];
+               (msgs, None)
+             | _ -> ([], None)
            in
-           let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 () in
-           Hashtbl.replace t.leases alias lease;
-           (match binding_state with
-            | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
-            | _ -> ());
-           let key = inbox_key node_id session_id in
-           if not (Hashtbl.mem t.inboxes key) then set_inbox t key [];
-           ("ok", lease))
+           match conflict with
+           | Some ex -> (relay_err_alias_conflict, ex)
+           | None ->
+             let effective_pk =
+               if identity_pk <> "" then identity_pk
+               else Option.value ~default:"" (Hashtbl.find_opt t.bindings alias)
+             in
+             let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 () in
+             Hashtbl.replace t.leases alias lease;
+             (match binding_state with
+              | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
+              | _ -> ());
+             let key = inbox_key node_id session_id in
+             if not (Hashtbl.mem t.inboxes key) then set_inbox t key [];
+             if old_inbox_msgs <> [] then set_inbox t key (List.append old_inbox_msgs (get_inbox t key));
+             ("ok", lease))
     )
 
 

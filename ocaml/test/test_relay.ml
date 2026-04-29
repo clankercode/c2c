@@ -124,6 +124,28 @@ let test_relay_heartbeat_unknown_session_raises_error () =
   let (status, _) = Relay.InMemoryRelay.heartbeat t ~node_id:"nope" ~session_id:"nope" in
   if status <> Relay.relay_err_unknown_alias then fail_fmt "expected unknown_alias, got %s" status
 
+(* F4: relay-side re-registration inbox migration.
+   register A → send to A → A re-registers with new session_id → assert A's new inbox has the messages. *)
+let test_relay_reregister_migrates_inbox () =
+  let t = make_test_relay () in
+  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  (* Bob sends 3 messages to alice while alice's lease is n1/s1 *)
+  let (_: [> `Ok of float | `Duplicate of float | `Error of string * string]) =
+    Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg1" ~message_id:None in
+  let (_: [> `Ok of float | `Duplicate of float | `Error of string * string]) =
+    Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg2" ~message_id:None in
+  let (_: [> `Ok of float | `Duplicate of float | `Error of string * string]) =
+    Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg3" ~message_id:None in
+  (* Alice re-registers with same node_id but new session_id (simulates restart/reconnect) *)
+  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1_new" ~alias:"alice" () in
+  (* Alice polls her NEW session — with the F4 fix she should get all 3 migrated messages.
+     Note: send prepends (msg :: inbox), so order is newest-first: [msg3; msg2; msg1]. *)
+  let inbox = Relay.InMemoryRelay.poll_inbox t ~node_id:"n1" ~session_id:"s1_new" in
+  if List.length inbox <> 3 then fail_fmt "alice inbox should have 3 messages after re-reg, got %d" (List.length inbox);
+  let contents = List.map (fun m -> json_get_string m "content") inbox in
+  if contents <> ["msg3"; "msg2"; "msg1"] then fail_fmt "content mismatch: %s" (String.concat "," contents)
+
 let test_relay_send_delivers_to_recipient () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
@@ -367,6 +389,8 @@ let tests = [
   "relay register conflict", test_relay_register_same_alias_different_node_raises_conflict;
   "relay heartbeat ok", test_relay_heartbeat_refreshes_existing;
   "relay heartbeat unknown", test_relay_heartbeat_unknown_session_raises_error;
+  (* F4: relay-side re-registration inbox migration *)
+  "relay reregister migrates inbox", test_relay_reregister_migrates_inbox;
   "relay send delivers", test_relay_send_delivers_to_recipient;
   "relay send unknown to dead_letter", test_relay_send_to_unknown_alias_goes_to_dead_letter;
   (* #379 cross-host alias@host unit tests *)
