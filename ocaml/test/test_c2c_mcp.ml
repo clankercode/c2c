@@ -6351,6 +6351,166 @@ let test_tools_call_send_room_rejects_impersonation () =
               in
               check bool "send_room rejected with isError=true" true is_error))
 
+(* #432: delete_room must reject if caller_alias is held by an alive
+   different session — symmetry with send_room/send_room_invite/
+   set_room_visibility. The threat path is an unregistered caller
+   passing `alias: <peer-name>`; `alias_for_current_session_or_argument`
+   only falls back to the arg when the calling session is unregistered. *)
+let test_delete_room_impersonation_rejected () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Only agent-b is registered (with a live pid). *)
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"agent-b" ~pid:(Some live_pid) ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"room-x"
+                ~alias:"agent-b" ~session_id:"session-b");
+      (* Unregistered session-a calls delete_room with alias=agent-b. *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 432001)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "delete_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("alias", `String "agent-b")
+                          ; ("room_id", `String "room-x")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              check bool "delete_room rejected with isError=true" true is_error;
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              check bool "error mentions stolen alias" true
+                (string_contains text "agent-b")))
+
+(* #432: leave_room must reject if alias is held by an alive different
+   session — symmetry with sibling room handlers. The threat path is an
+   unregistered caller passing `alias: <peer-name>` to evict that peer. *)
+let test_leave_room_impersonation_rejected () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Only agent-b is registered (with a live pid). *)
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"agent-b" ~pid:(Some live_pid) ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"shared-room"
+                ~alias:"agent-b" ~session_id:"session-b");
+      (* Unregistered session-a tries to evict agent-b. *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 432002)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "leave_room")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("alias", `String "agent-b")
+                          ; ("room_id", `String "shared-room")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              check bool "leave_room rejected with isError=true" true is_error;
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              check bool "error mentions stolen alias" true
+                (string_contains text "agent-b")))
+
+(* #432: stop_self must reject when the resolved alias targets a peer
+   instance (alias registered to a different alive session). The original
+   handler would SIGTERM that peer's outer.pid file — a DoS vector against
+   any peer whose alias you can list. The threat path is an unregistered
+   caller passing `alias: <peer-name>` (because
+   `alias_for_current_session_or_argument` falls back to the `alias` /
+   `from_alias` arg when the calling session has no registration). *)
+let test_stop_self_cannot_kill_other () =
+  with_temp_dir (fun dir ->
+      let live_pid = Unix.getpid () in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Only session-b is registered, holding alias "alias-b". *)
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"alias-b" ~pid:(Some live_pid) ~pid_start_time:None ();
+      (* session-a is unregistered, calls stop_self with alias=alias-b. *)
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 432003)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "stop_self")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("alias", `String "alias-b")
+                          ; ("reason", `String "DoS attempt")
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected tools/call response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                json |> member "result" |> member "isError" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              check bool "stop_self rejected with isError=true" true is_error;
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              check bool "error mentions targeted alias" true
+                (string_contains text "alias-b")))
+
 let test_send_room_invite_adds_to_invite_list () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -9248,6 +9408,12 @@ let () =
              test_tools_call_send_all_rejects_impersonation
          ; test_case "tools/call send_room rejects impersonation of alive alias" `Quick
              test_tools_call_send_room_rejects_impersonation
+         ; test_case "tools/call delete_room rejects impersonation (#432)" `Quick
+             test_delete_room_impersonation_rejected
+         ; test_case "tools/call leave_room rejects impersonation (#432)" `Quick
+             test_leave_room_impersonation_rejected
+         ; test_case "tools/call stop_self cannot kill other instance (#432)" `Quick
+             test_stop_self_cannot_kill_other
          ; test_case "send_room_invite adds to invite list" `Quick
              test_send_room_invite_adds_to_invite_list
          ; test_case "send_room_invite auto-DMs invitee (#433)" `Quick

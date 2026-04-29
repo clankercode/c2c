@@ -5589,6 +5589,23 @@ let ts = Unix.gettimeofday () in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_member_alias_result "leave_room")
        | Some alias ->
+           (* #432: impersonation guard — sibling room handlers (send_room,
+              send_room_invite, set_room_visibility) all reject when the
+              supplied alias belongs to a different alive session. leave_room
+              previously skipped this check, letting an unregistered caller
+              evict any member by aliasing in. *)
+           (match send_alias_impersonation_check ?session_id_override broker alias with
+            | Some conflict ->
+                Lwt.return
+                  (tool_result
+                     ~content:
+                       (Printf.sprintf
+                          "leave_room rejected: alias '%s' is currently held by \
+                           alive session '%s' — you cannot leave a room as another \
+                           agent."
+                          alias conflict.session_id)
+                     ~is_error:true)
+            | None ->
            let session_id = resolve_session_id ?session_id_override arguments in
            Broker.touch_session broker ~session_id;
            let members = Broker.leave_room broker ~room_id ~alias in
@@ -5605,7 +5622,7 @@ let ts = Unix.gettimeofday () in
                ]
              |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_result ~content ~is_error:false))
+           Lwt.return (tool_result ~content ~is_error:false)))
   | "delete_room" ->
       let room_id = string_member "room_id" arguments in
       let force =
@@ -5618,6 +5635,23 @@ let ts = Unix.gettimeofday () in
         | Some a -> a
         | None -> ""
       in
+      (* #432: impersonation guard — sibling room-mutation handlers
+         (send_room, send_room_invite, set_room_visibility) reject when the
+         supplied alias belongs to a different alive session. delete_room
+         previously skipped this check despite calling Broker.delete_room
+         with caller_alias as the ACL principal. *)
+      (match send_alias_impersonation_check ?session_id_override broker caller_alias with
+       | Some conflict ->
+           Lwt.return
+             (tool_result
+                ~content:
+                  (Printf.sprintf
+                     "delete_room rejected: caller_alias '%s' is currently held by \
+                      alive session '%s' — you cannot delete a room as another \
+                      agent."
+                     caller_alias conflict.session_id)
+                ~is_error:true)
+       | None ->
       (try
          Broker.delete_room broker ~room_id ~caller_alias ~force ();
          let content =
@@ -5627,7 +5661,7 @@ let ts = Unix.gettimeofday () in
          Lwt.return (tool_result ~content ~is_error:false)
        with Invalid_argument msg ->
          let content = `Assoc [ ("error", `String msg) ] |> Yojson.Safe.to_string in
-         Lwt.return (tool_result ~content ~is_error:true))
+         Lwt.return (tool_result ~content ~is_error:true)))
   | "send_room" ->
       let room_id = string_member "room_id" arguments in
       let content = string_member "content" arguments in
@@ -6061,6 +6095,45 @@ let ts = Unix.gettimeofday () in
       (match alias_for_current_session_or_argument ?session_id_override broker arguments with
        | None -> Lwt.return (missing_sender_alias_result "stop_self")
        | Some name ->
+           (* #432: impersonation guard — stop_self previously SIGTERM'd the
+              outer.pid file under instances_dir/<name>/, but `name` came from
+              alias_for_current_session_or_argument with arg fallback. An
+              unregistered caller (or any caller who can list aliases) could
+              terminate any peer's outer process — a DoS vector against the
+              swarm. The fix: refuse if the supplied name names an instance
+              whose registered session_id is NOT the calling session's. The
+              tool name is "stop_SELF"; cross-instance termination must go
+              through a CLI/admin path, not the MCP surface. *)
+           let caller_sid =
+             match session_id_override with
+             | Some sid -> Some sid
+             | None -> current_session_id ()
+           in
+           let other_alive_session_holds_name =
+             match caller_sid with
+             | None -> None  (* no session context — let legacy/system calls through *)
+             | Some current_sid ->
+                 List.find_opt
+                   (fun reg ->
+                     reg.alias = name
+                     && reg.session_id <> current_sid
+                     && reg.pid <> None
+                     && Broker.registration_is_alive reg)
+                   (Broker.list_registrations broker)
+           in
+           (match other_alive_session_holds_name with
+            | Some conflict ->
+                Lwt.return
+                  (tool_result
+                     ~content:
+                       (Printf.sprintf
+                          "stop_self rejected: name '%s' is currently registered to \
+                           alive session '%s' — stop_self only stops the calling \
+                           session's own instance. Use a CLI/admin path to stop a \
+                           different instance."
+                          name conflict.session_id)
+                     ~is_error:true)
+            | None ->
            (* Reconstruct outer.pid path without creating a C2c_start dep cycle. *)
            let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
            let instances_dir =
@@ -6088,7 +6161,7 @@ let ts = Unix.gettimeofday () in
                       ("pid_path", `String pid_path) ]
              |> Yojson.Safe.to_string
            in
-            Lwt.return (tool_result ~content ~is_error:(not ok)))
+            Lwt.return (tool_result ~content ~is_error:(not ok))))
   | "memory_list" ->
       let memory_base_dir alias =
         let git_dir =
