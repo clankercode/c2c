@@ -320,7 +320,10 @@ let envelope_of_json (j : Yojson.Safe.t) : envelope =
     let open Yojson.Safe.Util in
     let from_ = member "from" j |> to_string in
     let from_x25519 = match member "from_x25519" j with `String s -> Some s | _ -> None in
-    let from_ed25519 = match member "from_ed25519" j with `String s -> Some s | _ -> None in
+    let from_ed25519 = match member "from_ed25519" j with
+      | `String s when s <> "" -> Some s  (* reject null and empty-string *)
+      | _ -> None
+    in
     let to_ = match member "to" j with `Null -> None | `String s -> Some s | _ -> failwith "envelope_of_json: to must be string or null" in
     let room = match member "room" j with `Null -> None | `String s -> Some s | _ -> failwith "envelope_of_json: room must be string or null" in
     (* Wire format for ts is permissive: producers emit Intlit (so the

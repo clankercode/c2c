@@ -364,6 +364,31 @@ let test_v2_without_from_ed25519_rejected () =
     (try ignore (Relay_e2e.envelope_of_json v1_json); true
      with _ -> false)
 
+(* §7.1 micro-edges: v2 must reject explicit null and empty-string from_ed25519. *)
+let test_v2_from_ed25519_micro_edges () =
+  (* Edge 1: from_ed25519: null — Yojson.Safe parses null as `Null, pattern gives None,
+     catches the existing envelope_version>=2 && from_ed25519=None guard. *)
+  let v2_null_ed = "{\"from\":\"alice\",\"from_x25519\":\"x25519-pk\",\"from_ed25519\":null,\"to\":\"bob\",\"room\":null,\"ts\":1700000016,\"enc\":\"box-x25519-v1\",\"recipients\":[],\"sig\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"envelope_version\":2}" in
+  let json_null = Yojson.Safe.from_string v2_null_ed in
+  Alcotest.(check bool) "v2 with from_ed25519:null raises"
+    true
+    (try ignore (Relay_e2e.envelope_of_json json_null); false
+     with Failure msg ->
+       (try ignore (Str.search_forward (Str.regexp_string "v2 envelope missing from_ed25519") msg 0); true
+        with Not_found -> false)
+     | _ -> false);
+  (* Edge 2: from_ed25519: "" — empty string now parsed as None (rejected by fix),
+     catches the same guard. Before the fix this would bypass the =None check. *)
+  let v2_empty_ed = "{\"from\":\"alice\",\"from_x25519\":\"x25519-pk\",\"from_ed25519\":\"\",\"to\":\"bob\",\"room\":null,\"ts\":1700000017,\"enc\":\"box-x25519-v1\",\"recipients\":[],\"sig\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"envelope_version\":2}" in
+  let json_empty = Yojson.Safe.from_string v2_empty_ed in
+  Alcotest.(check bool) "v2 with from_ed25519:\\\"\\\" raises"
+    true
+    (try ignore (Relay_e2e.envelope_of_json json_empty); false
+     with Failure msg ->
+       (try ignore (Str.search_forward (Str.regexp_string "v2 envelope missing from_ed25519") msg 0); true
+        with Not_found -> false)
+     | _ -> false)
+
 let () =
   Alcotest.run "relay_e2e" [
     "enc_status", [
@@ -407,5 +432,7 @@ let () =
         `Quick test_envelope_json_roundtrip_from_ed25519;
       Alcotest.test_case "§7.1 v2 without from_ed25519 rejected at parse"
         `Quick test_v2_without_from_ed25519_rejected;
+      Alcotest.test_case "§7.1 v2 from_ed25519 null and empty-string rejected"
+        `Quick test_v2_from_ed25519_micro_edges;
     ];
   ]
