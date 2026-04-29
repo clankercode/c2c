@@ -564,6 +564,7 @@ module Broker = struct
        target). The 0o600 mode policy is preserved on the temp file,
        which becomes the destination inode after rename. *)
     let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+    (* Not append_jsonl: atomic-replace write-to-tmp + rename. *)
     let oc =
       open_out_gen
         [ Open_wronly; Open_creat; Open_trunc; Open_text ]
@@ -1377,6 +1378,7 @@ module Broker = struct
       let line = Printf.sprintf "%s@c2c.im ssh-ed25519 %s # added %s\n"
         alias b64_key date_str
       in
+      (* 0o644: world-readable SSH authorized_keys-style file, intentionally public. *)
       let oc = open_out_gen [Open_append; Open_creat] 0o644 signers_path in
       Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
         output_string oc line)
@@ -2365,6 +2367,7 @@ module Broker = struct
         with_archive_lock t ~session_id (fun () ->
             (* Mode 0o600: archive records carry DM content, must not be
                world-readable. *)
+            (* Not broker.log: DM archive append, not append_jsonl target. *)
             let oc =
               open_out_gen
                 [ Open_wronly; Open_append; Open_creat ]
@@ -2780,6 +2783,7 @@ module Broker = struct
             (* Mode 0o600: dead-letter records carry the same envelope
                content as live inbox files (which Python writers create
                at 0o600), so this file must not be world-readable. *)
+            (* Not broker.log: dead-letter append, not append_jsonl target. *)
             let oc =
               open_out_gen
                 [ Open_wronly; Open_append; Open_creat ]
@@ -3073,6 +3077,7 @@ module Broker = struct
           (* Write pending replay file BEFORE deleting the orphan.
              Atomic write: write to tmp, fsync, rename. *)
           let tmp = pending_path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+          (* Not append_jsonl: atomic-replace write-to-tmp + rename. *)
           let oc = open_out_gen
             [Open_wronly; Open_creat; Open_trunc; Open_text] 0o600 tmp
           in
@@ -3295,6 +3300,7 @@ module Broker = struct
   let append_room_history_unchecked t ~room_id ~from_alias ~content =
     let ts = Unix.gettimeofday () in
     with_room_history_lock t ~room_id (fun () ->
+        (* Not broker.log: room-history append, not append_jsonl target. *)
         let oc =
           open_out_gen
             [ Open_wronly; Open_append; Open_creat ]
@@ -4177,13 +4183,9 @@ let log_version_downgrade_rejected ~broker_root ~alias ~observed ~pinned_min ~ts
          ; ("pinned_min_envelope_version", `Int pinned_min)
          ]
        |> Yojson.Safe.to_string
-     in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-      with _ -> close_out_noerr oc)
-   with _ -> ())
+      in
+      C2c_io.append_jsonl ~perm:0o600 path line
+    with _ -> ())
 
 (* Slice B follow-up: structured audit-log line on every Ed25519 pin
    mismatch reject. Closes slate's flagged observability gap from the
@@ -4206,13 +4208,9 @@ let log_relay_e2e_pin_mismatch ~broker_root ~alias
          ; ("claimed_ed25519_b64", `String claimed_ed25519_b64)
          ]
        |> Yojson.Safe.to_string
-     in
-     let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-     (try
-        output_string oc (line ^ "\n");
-        close_out oc
-             with _ -> close_out_noerr oc)
-   with _ -> ())
+      in
+      C2c_io.append_jsonl ~perm:0o600 path line
+    with _ -> ())
 
 (* TOFU first-contact audit line: symmetric to [log_relay_e2e_pin_mismatch]
    (#432 CRIT-1 Slice B follow-up). When a sender has no prior pin and the
