@@ -4760,7 +4760,56 @@ let run_outer_loop ~(name : string) ~(client : string)
            \    pgrep -a opencode          # list running instances\n\
            \    pkill -f '.opencode'       # kill all (use with care)\n\
            \    c2c instances              # check c2c-managed instances\n%!"
-          n_oc
+           n_oc
+      end;
+
+      (* #514 S2: stale broker_root — re-launch with freshly-resolved broker_root.
+         The MCP server child exited 42 when its inherited C2C_MCP_BROKER_ROOT
+         didn't match what C2c_repo_fp.resolve_broker_root() would compute fresh.
+         This can happen after a git remote URL change or migrate-broker.
+         We stop sidecars, capture orphan messages, then re-exec with the
+         canonical broker_root so the next iteration registers in the right broker.
+         Note: we cannot use cmd_restart here because it would try to kill and
+         wait for our own outer PID (deadlock). Instead, we inline the orphan
+         capture + execvp path directly. *)
+      if exit_code = 42 then begin
+        (* Stop sidecars (deliver, wire, poker). *)
+        stop_sidecar !wire_pid;
+        stop_sidecar !deliver_pid;
+        stop_sidecar !poker_pid;
+        (* Capture orphan inbox — messages that arrived during the restart gap.
+           Saved to pending-replay so the MCP server injects them after
+           auto_register_startup completes in the fresh session. *)
+        let session_id_for_replay =
+          match load_config_opt name with
+          | Some cfg -> cfg.resume_session_id | None -> name
+        in
+        let replayed =
+          try capture_orphan_inbox_for_restart
+                ~broker_root ~session_id:session_id_for_replay
+          with _ -> 0
+        in
+        if replayed > 0 then
+          Printf.printf "[c2c-start/%s] captured %d orphan message%s for replay\n%!"
+            name replayed (if replayed = 1 then "" else "s");
+        (* Compute a fresh broker_root (canonical resolution from current git ctx)
+           and set it in the environment before re-execing. Unsetting the env var
+           would make resolve_broker_root() recompute from git fingerprint, which
+           is what we want — we set it to the freshly-computed value so the
+           re-execed process sees the canonical path explicitly. *)
+        let fresh_broker_root =
+          try C2c_repo_fp.resolve_broker_root () with _ -> broker_root
+        in
+        Unix.putenv "C2C_MCP_BROKER_ROOT" fresh_broker_root;
+        Printf.printf
+          "[c2c-start/%s] stale broker_root detected (child exit 42); \
+           re-executing with fresh broker_root=%s\n%!"
+          name fresh_broker_root;
+        (* Re-exec the current c2c binary with the same arguments.
+           The fresh C2C_MCP_BROKER_ROOT in the env will be used by the
+           re-execed cmd_start → resolve_broker_root() path. *)
+        let argv = Array.of_list (Sys.argv |> Array.to_list) in
+        Unix.execvp argv.(0) argv
       end;
 
       (* Record structured death on non-zero exit *)
