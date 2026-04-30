@@ -5044,7 +5044,9 @@ let mesh_status_cmd =
         match p with
         | `Assoc fs ->
             let alias = match List.assoc_opt "alias" fs with Some (`String s) -> s | _ -> "?" in
-            let session_id = match List.assoc_opt "session_id" fs with Some (`String s) -> String.sub s 0 (min 12 (String.length s)) | _ -> "?" in
+            let session_id = match List.assoc_opt "session_id" fs with
+              | Some (`String s) -> if String.length s >= 12 then String.sub s 0 12 else s
+              | _ -> "?" in
             let client_type = match List.assoc_opt "client_type" fs with Some (`String s) -> s | _ -> "?" in
             let last_seen = match List.assoc_opt "last_seen" fs with Some (`Float t) -> format_time t | _ -> "?" in
             let ttl = match List.assoc_opt "ttl" fs with Some (`Float t) -> Printf.sprintf "%.0fs" t | _ -> "?" in
@@ -5061,13 +5063,15 @@ let mesh_status_cmd =
         | _ -> []) in
       let total_rooms = List.length rooms in
       Printf.printf "c2c mesh status — relay=%s\n\n" url;
+      let dead_count = List.length dead_peers in
+      let dead_suffix = if dead_count > 0 then Printf.sprintf ", %d dead" dead_count else "" in
+      let hint_suffix =
+        if dead_count > 0 && not include_dead then "; use --include-dead to show dead"
+        else if dead_count = 0 && include_dead then "; (no dead peers)"
+        else ""
+      in
       Printf.printf "Peers (%d alive%s%s):\n"
-        (List.length alive_peers)
-        (if List.length dead_peers > 0 then
-           Printf.sprintf ", %d dead" (List.length dead_peers)
-         else "")
-        (if include_dead && dead_peers <> [] then "" else "; use --include-dead to show dead")
-        (* no trailing semicolon when not needed *);
+        (List.length alive_peers) dead_suffix hint_suffix;
       if not include_dead && dead_peers <> [] then
         Printf.printf "  (omitting %d dead sessions; use --include-dead to show)\n"
           (List.length dead_peers);
