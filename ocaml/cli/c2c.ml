@@ -5643,7 +5643,7 @@ let approval_show_cmd =
        | Some al when al <> [] ->
            let chain = String.concat ", " al in
            Printf.printf "[authorizers: %s]\n%!" chain
-       | _ -> ())
+       | _ -> ());
       print_string s;
       if String.length s = 0 || s.[String.length s - 1] <> '\n' then
         print_newline ();
