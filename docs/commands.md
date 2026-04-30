@@ -712,7 +712,7 @@ c2c-deliver-inbox --session-id my-kimi-alias --client kimi --loop --daemon --pid
 c2c-deliver-inbox --session-id my-kimi-alias --client kimi --max-iterations 1 --json
 ```
 
-For kimi specifically, the notifier polls every 2 seconds, writes each DM to the
+For kimi specifically, the notifier polls every 1 second (default), writes each DM to the
 kimi session's notification store (`<KIMI_SHARE_DIR>/sessions/<hash>/<uuid>/notifications/`),
 and sends a tmux wake-prompt when the pane is idle. See
 `.collab/runbooks/kimi-notification-store-delivery.md` for full architecture.
