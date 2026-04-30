@@ -34,7 +34,7 @@ open C2c_mcp_helpers
     else default
 
   let write_json_file path json =
-    (* Atomic write via temp+rename. A truncate-in-place writer that
+    (* Atomic write via temp+rename+fsync. A truncate-in-place writer that
        gets SIGKILLed (OOM, parent process exit, kill -9) between
        truncate and full write leaves a partial JSON file that the
        next reader will fail to parse. Writing to a per-pid sidecar
@@ -44,9 +44,12 @@ open C2c_mcp_helpers
        POSIX as long as src and dst are on the same filesystem,
        which they are by construction (sidecar lives next to the
        target). The 0o600 mode policy is preserved on the temp file,
-       which becomes the destination inode after rename. *)
+       which becomes the destination inode after rename.
+       #54: fsync before rename ensures the temp file's data is flushed
+       to disk before the atomic-replace rename commits it, so readers
+       always see either old or new content, never partial. *)
     let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
-    (* Not append_jsonl: atomic-replace write-to-tmp + rename. *)
+    (* Not append_jsonl: atomic-replace write-to-tmp + fsync + rename. *)
     let oc =
       open_out_gen
         [ Open_wronly; Open_creat; Open_trunc; Open_text ]
@@ -56,7 +59,14 @@ open C2c_mcp_helpers
     (try
        Fun.protect
          ~finally:(fun () -> try close_out oc with _ -> ())
-         (fun () -> Yojson.Safe.to_channel oc json)
+         (fun () ->
+            Yojson.Safe.to_channel oc json;
+            flush oc;
+            (* #54: fsync before rename ensures the temp file's data is flushed
+               to disk before the atomic-replace rename commits it, so readers
+               always see either old or new content, never partial.
+               Best-effort — EINVAL on unusual filesystems is silently ignored. *)
+            (try Unix.fsync (Unix.descr_of_out_channel oc) with Unix.Unix_error _ -> ()))
      with e ->
        cleanup_tmp ();
        raise e);

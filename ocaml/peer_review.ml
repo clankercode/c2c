@@ -640,7 +640,12 @@ module Trust_pin = struct
       let oc = open_out tmp in
       Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
         output_string oc (Yojson.Safe.pretty_to_string (store_to_json s));
-        output_string oc "\n");
+        output_string oc "\n";
+        (* #54: fsync before rename ensures the temp file's data is
+           flushed to disk before the atomic-replace rename commits it.
+           Best-effort — EINVAL on unusual filesystems is silently ignored. *)
+        flush oc;
+        (try Unix.fsync (Unix.descr_of_out_channel oc) with Unix.Unix_error _ -> ()));
       Sys.rename tmp p)
 
   let find_pin (s : store) ~alias : pin option =
