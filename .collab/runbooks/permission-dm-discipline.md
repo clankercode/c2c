@@ -203,6 +203,19 @@ ka_abc123 deny
 
 ---
 
+## Slice Discipline — Rebase Before Cherry-Pick
+
+When rebasing a slice onto a newer master before requesting cherry-pick:
+
+1. **Rebase onto origin/master** (not local master, which may have unmerged peer work)
+2. **Rebuild in the slice worktree** — `just build` or `just check` — before requesting cherry-pick. Rebase can introduce subtle breakage: missing semicolons, stale type annotations, inconsistent function call sites from merged-in upstream changes.
+3. **Re-run `just test-ocaml`** if available
+4. **Update the SHA** in your peer-PASS request with the post-rebase SHA
+
+Failing step 2 means the coordinator cherry-picks what looks like a clean SHA but gets a build break on merge — forcing a follow-up fixup commit that pollutes the cherry-pick lineage.
+
+---
+
 ## See Also
 
 - `c2c await-reply --help` — full flag documentation
