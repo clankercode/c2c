@@ -17,6 +17,8 @@ Broker root resolution order (coord1 2026-04-26):
 
 The fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of the same upstream share a broker), falling back to `git rev-parse --show-toplevel`. This sidesteps `.git/`-RO sandboxes permanently. Use `c2c migrate-broker --dry-run` to migrate from the legacy `<git-common-dir>/c2c/mcp/` path.
 
+**Stale entries in `.mcp.json` files** — if `C2C_MCP_BROKER_ROOT` is hard-coded in a project's `.mcp.json` `env` block pointing at the legacy `.git/c2c/mcp` path (or at the current resolver default — same skip-when-default rule as the opencode-plugin slice), the explicit override silently re-creates the split-brain symptom even after migration. Operator-facing fix: `c2c migrate-broker --rewrite-mcp-configs` (compatible with `--dry-run`) scans the project root + `.worktrees/*/.mcp.json` and strips matching entries; operator overrides (any other value) are preserved with a `[KEEP]` log line. See #512.
+
 ### `C2C_MCP_SESSION_ID`
 
 Explicit session ID override. Set this when launching one-shot child CLI probes (kimi, crush) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.

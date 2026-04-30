@@ -1208,9 +1208,42 @@ let sync_sidecar_for_migration ~new_root ~json =
     Yojson.Safe.to_file sidecar_path new_sidecar
   end
 
-let migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar =
+let mcp_config_rewriter_run ~legacy ~default ~dry_run ~print_line =
+  let repo_root =
+    match Git_helpers.git_repo_toplevel () with
+    | Some t -> t
+    | None -> Sys.getcwd ()
+  in
+  let paths = C2c_mcp_config_rewriter.default_scan_paths ~repo_root in
+  print_line "";
+  print_line "--- mcp-config rewriter -----------------------------------";
+  C2c_mcp_config_rewriter.run ~legacy ~default ~paths ~dry_run ~print_line
+
+let migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar ~rewrite_mcp_configs =
   let from = Option.value from_path ~default:(legacy_broker_root ()) in
   let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
+  let do_rewrite ~print_line =
+    if rewrite_mcp_configs then
+      let _ : C2c_mcp_config_rewriter.outcome =
+        mcp_config_rewriter_run ~legacy:from ~default:to_ ~dry_run ~print_line
+      in
+      ()
+  in
+  (* Standalone mode: --rewrite-mcp-configs without a usable broker source.
+     Run only the rewriter; skip broker-data migration. *)
+  if rewrite_mcp_configs && not (Sys.file_exists from) then begin
+    let buf = Buffer.create 1024 in
+    let print_line s =
+      if json then begin Buffer.add_string buf s; Buffer.add_char buf '\n' end
+      else print_endline s
+    in
+    do_rewrite ~print_line;
+    if json then
+      print_json (`Assoc ["ok", `Bool true; "log", `String (Buffer.contents buf)
+                         ; "rewrite_mcp_configs", `Bool true
+                         ; "broker_data_skipped", `Bool true ]);
+    exit 0
+  end;
   if not (Sys.file_exists from) then begin
     if json then print_json (`Assoc ["ok", `Bool false; "error", `String ("source broker does not exist: " ^ from)])
     else Printf.eprintf "error: source broker does not exist: %s\n" from;
@@ -1237,6 +1270,7 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar =
   let outcome =
     C2c_migrate.run ~src_root:from ~dest_root:to_ ~dry_run ~print_line
   in
+  do_rewrite ~print_line;
   if json then begin
     let assoc =
       [ "ok", `Bool outcome.ok
@@ -1283,13 +1317,22 @@ let migrate_broker_cmd =
     Arg.(value & flag & info ["sync-sidecar"; "s"]
            ~doc:"After a successful migration, update .opencode/c2c-plugin.json with the new broker_root and current fingerprint so the OpenCode plugin picks up the new broker without a restart. Only applies to live (non-dry-run) migrations.")
   in
+  let rewrite_mcp_configs =
+    Arg.(value & flag & info ["rewrite-mcp-configs"]
+           ~doc:"Also strip stale C2C_MCP_BROKER_ROOT env entries from \
+                 .mcp.json files (project root + .worktrees/*) when their \
+                 value matches the legacy path or the current resolver \
+                 default. Operator overrides are preserved (logged [KEEP]). \
+                 Compatible with --dry-run.")
+  in
   let json = json_flag in
   let+ from_path = from
   and+ to_path = to_
   and+ dry_run = dry_run
   and+ sync_sidecar = sync_sidecar
+  and+ rewrite_mcp_configs = rewrite_mcp_configs
   and+ json = json in
-  migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar
+  migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar ~rewrite_mcp_configs
 
 let migrate_broker =
   Cmdliner.Cmd.v
@@ -1317,6 +1360,13 @@ let migrate_broker =
                   devices, or any non-regular/non-directory/non-symlink type) abort the \
                   migration BEFORE any copy is performed. The legacy tree is left \
                   intact; resolve or remove the offending entry, then re-run."
+            ; `S "MCP-CONFIG REWRITER"
+            ; `P "With $(b,--rewrite-mcp-configs), additionally scan \
+                  $(b,.mcp.json) files (project root + $(b,.worktrees/*)) and \
+                  strip $(b,C2C_MCP_BROKER_ROOT) entries whose value matches \
+                  either the legacy path or the current resolver default. \
+                  Operator-overridden values are preserved with a $(b,[KEEP]) \
+                  log line. Compatible with $(b,--dry-run). Default off."
             ; `S "DRY-RUN OUTPUT LEGEND"
             ; `P "$(b,[WILL COPY])             — entry is in the copy-set and will be \
                   written to the destination."
