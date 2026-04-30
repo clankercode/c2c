@@ -1178,6 +1178,7 @@ module type CLIENT_ADAPTER = sig
     broker_root:string ->
     project_dir:string ->
     instances_dir:string ->
+    agent_name:string option ->
     unit
 
   val probe_capabilities : binary_path:string -> (string * bool) list
@@ -1333,7 +1334,8 @@ module OpenCodeAdapter : CLIENT_ADAPTER = struct
     | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
     | _ -> base
 
-  let refresh_identity ~name ~alias ~broker_root ~project_dir ~instances_dir =
+  let refresh_identity ~name ~alias ~broker_root ~project_dir ~instances_dir
+      ~agent_name =
     let config_dir = project_dir // ".opencode" in
     let config_path = config_dir // "opencode.json" in
     (if Sys.file_exists config_path then
@@ -1396,10 +1398,13 @@ module OpenCodeAdapter : CLIENT_ADAPTER = struct
       let resolver_default =
         try C2c_repo_fp.resolve_broker_root () with _ -> ""
       in
-      let identity_base = [
-        ("session_id", `String name);
-        ("alias", `String alias);
-      ] in
+      let identity_base =
+        (match agent_name with Some n -> [("agent_name", `String n)] | None -> [])
+        @ [
+          ("session_id", `String name);
+          ("alias", `String alias);
+        ]
+      in
       let identity =
         if broker_root = "" || broker_root = resolver_default
         then identity_base
@@ -1407,10 +1412,10 @@ module OpenCodeAdapter : CLIENT_ADAPTER = struct
       in
       (* Always strip stale broker_root from existing file so the skip
          actually takes effect on resume. *)
-      let stripped_keys = "session_id" :: "alias" :: "broker_root" :: [] in
-      let kept = List.filter (fun (k, _) -> not (List.mem k stripped_keys)) existing in
-      write_json_file_atomic sidecar_path (`Assoc (kept @ identity))
-    with _ -> ())
+       let stripped_keys = "session_id" :: "alias" :: "broker_root" :: [] in
+       let kept = List.filter (fun (k, _) -> not (List.mem k stripped_keys)) existing in
+       write_json_file_atomic sidecar_path (`Assoc (kept @ identity))
+     with _ -> ())
 
   let probe_capabilities ~binary_path =
     let plugin_path = Filename.concat (Sys.getcwd ()) ".opencode" // "plugins" // "c2c.ts" in
@@ -2703,9 +2708,10 @@ let build_env ?(broker_root_override : string option = None)
  * Called by start_inner when client = "opencode".
  * --------------------------------------------------------------------------- *)
 
-let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir =
+let refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir
+    ~agent_name =
   let module A = (val (Stdlib.Hashtbl.find client_adapters "opencode") : CLIENT_ADAPTER) in
-  A.refresh_identity ~name ~alias ~broker_root ~project_dir ~instances_dir
+  A.refresh_identity ~name ~alias ~broker_root ~project_dir ~instances_dir ~agent_name
 
 (* ---------------------------------------------------------------------------
  * Kimi MCP config generation
@@ -3167,7 +3173,8 @@ module ClaudeAdapter : CLIENT_ADAPTER = struct
     | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
     | _ -> base
 
-  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_ =
+  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_
+      ~agent_name:_ =
     (* Claude configures itself via C2C_MCP_* env vars injected at launch;
        no per-launch config-file update is required. *)
     ()
@@ -3219,7 +3226,8 @@ module CodexAdapter : CLIENT_ADAPTER = struct
     | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
     | _ -> base
 
-  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_ =
+  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_
+      ~agent_name:_ =
     (* Codex configures itself via C2C_MCP_* env vars and ~/.codex/config.toml
        written by c2c install codex; no per-launch refresh is needed. *)
     ()
@@ -3328,7 +3336,8 @@ module KimiAdapter : CLIENT_ADAPTER = struct
     end else
       base
 
-  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_ =
+  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_
+      ~agent_name:_ =
     (* Kimi MCP config is written fresh at each launch via build_start_args;
        no additional per-launch refresh is needed. *)
     ()
@@ -3413,7 +3422,7 @@ module GeminiAdapter : CLIENT_ADAPTER = struct
     | _ -> base
 
   let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_
-      ~instances_dir:_ =
+      ~instances_dir:_ ~agent_name:_ =
     (* Gemini's c2c MCP server is configured via ~/.gemini/settings.json
        (written by `c2c install gemini`); env vars in that entry carry the
        broker root + alias. No per-launch config-file refresh needed. *)
@@ -4298,7 +4307,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                 "  [c2c start] skipping install — \
                  session may not auto-register without opencode.json\n%!"
           end);
-          refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir;
+          refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir ~agent_name;
           (* Write the canonical plugin from data/opencode-plugin/c2c.ts to
              .opencode/plugins/c2c.ts so that branch switches in the shared
              working tree cannot clobber the live plugin file.  Always-overwrite:
