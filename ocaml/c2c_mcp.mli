@@ -529,6 +529,14 @@ module Broker : sig
       the entry is absent. Cross-process safe via [with_pending_lock]. *)
 
   val write_allowed_signers_entry : t -> alias:string -> (unit, string) result
+
+  (** #511: resolve the first live/DnD-clear/idle-clear authorizer from an
+      ordered alias list.  Checks each alias in order: registered + Alive
+      (PID-confirmed per [registration_liveness_state]), not DnD, not idle
+      (last_activity within 25-minute threshold).  Returns the first alias
+      satisfying all three, or None if the list is empty or no candidate
+      qualifies. *)
+  val resolve_authorizers : t -> authorizers:string list -> string option
 end
 
 val notify_shared_with_recipients :

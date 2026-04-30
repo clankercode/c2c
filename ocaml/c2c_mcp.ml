@@ -4280,6 +4280,37 @@ module Broker = struct
           regs
       in
       if !changed then save_registrations t regs')
+
+  (* #511: ordered fallback authorizers.  Resolution order: live (PID confirmed
+     alive per [registration_liveness_state]) → not-DnD → not-idle
+     (last_activity within 25-minute threshold matching relay_nudge idle).
+     Returns the first alias in [authorizers] that satisfies all three
+     predicates, or None if the list is empty or no candidate qualifies.
+     The idle threshold (25 min) is hardcoded to match relay_nudge's
+     default_idle_minutes; callers who want a different threshold should
+     pass it explicitly (future extension). *)
+  let resolve_authorizers t ~(authorizers : string list) : string option =
+    if authorizers = [] then None
+    else
+      let now = Unix.gettimeofday () in
+      let idle_threshold_s = 25.0 *. 60.0 in
+      let regs = list_registrations t in
+      let rec find_first = function
+        | [] -> None
+        | alias :: rest ->
+            (match List.find_opt (fun r -> r.alias = alias) regs with
+             | None -> find_first rest
+             | Some reg ->
+                 if registration_liveness_state reg <> Alive then find_first rest
+                 else if is_dnd t ~session_id:reg.session_id then find_first rest
+                 else
+                   (match reg.last_activity_ts with
+                    | None -> find_first rest
+                    | Some ts ->
+                        if now -. ts > idle_threshold_s then find_first rest
+                        else Some alias))
+      in
+      find_first authorizers
 end
 
 (* #286: send-memory handoff.
@@ -5822,9 +5853,9 @@ module Memory_handlers = struct
              ; ("notified", `List (List.map (fun a -> `String a) notified))
              ] |> Yojson.Safe.to_string
            in
-           Lwt.return (tool_ok result)
-         with _ ->
-           Lwt.return (tool_err ("error writing memory entry: " ^ name)))
+             Lwt.return (tool_ok result)
+          with _ ->
+            Lwt.return (tool_err ("error writing memory entry: " ^ name)))
 end
 
 let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~arguments =

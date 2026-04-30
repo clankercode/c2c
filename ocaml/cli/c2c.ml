@@ -1502,11 +1502,28 @@ let check_supervisor_config () =
              | _ -> None)
           with _ -> None
         else None
-      in
-      (match sidecar_sup, repo_sup with
-       | Some v, _ -> (`Green, Printf.sprintf "supervisor: %s (from sidecar)" v)
-       | _, Some v -> (`Green, Printf.sprintf "supervisor: %s (from .c2c/repo.json)" v)
-       | None, None -> (`Yellow, "supervisor: coordinator1 (default — run: c2c init --supervisor <alias> or c2c repo set supervisor <alias>)"))
+       in
+       (match sidecar_sup, repo_sup with
+        | Some v, _ -> (`Green, Printf.sprintf "supervisor: %s (from sidecar)" v)
+        | _, Some v -> (`Green, Printf.sprintf "supervisor: %s (from .c2c/repo.json)" v)
+        | None, None -> (`Yellow, "supervisor: coordinator1 (default — run: c2c init --supervisor <alias> or c2c repo set supervisor <alias>)"))
+
+(* #511: check the resolved primary authorizer (first live/DnD-clear/idle-clear
+   reviewer in the authorizers[] chain). Displayed in `c2c doctor`. *)
+let check_authorizers () =
+  match C2c_authorizers.get_authorizers () with
+  | None ->
+      (`Yellow, "authorizers: not configured (fallback: C2C_KIMI_APPROVAL_REVIEWER env / coordinator1 implicit)")
+  | Some [] ->
+      (`Yellow, "authorizers: [] (empty — no approval forwarding will succeed)")
+  | Some names ->
+      (match C2c_authorizers.resolve_first_authorizer () with
+       | None ->
+           (`Red, Printf.sprintf "authorizers: [%s] (none live/DnD-clear/idle-clear)"
+              (String.concat ", " names))
+       | Some first ->
+           (`Green, Printf.sprintf "authorizers: [%s] → primary: %s"
+              (String.concat ", " names) first))
 
 let check_relay_http () =
   let url = match Sys.getenv_opt "C2C_RELAY_URL" with Some v when v <> "" -> v | _ -> "https://relay.c2c.im" in
@@ -1719,6 +1736,7 @@ let health_cmd =
   in
   let stale_daemons = check_deprecated_daemons () in
   let supervisor_check = check_supervisor_config () in
+  let authorizers_check = check_authorizers () in
   let relay_check = check_relay_http () in
   let plugin_checks = check_plugin_installs () in
   let legacy_broker = C2c_broker_root_check.is_legacy_broker_root root in
@@ -1758,6 +1776,7 @@ let health_cmd =
           ; ("pty_inject_cap", `String (match pty_cap with `Ok -> "ok" | `Missing_cap _ -> "missing" | `Unknown -> "unknown"))
           ; ("stale_deprecated_daemons", stale_json)
           ; ("supervisor", `Assoc [("status", `String (color_str sup_col)); ("message", `String sup_msg)])
+          ; ("authorizers", `Assoc [("status", `String (color_str (fst authorizers_check))); ("message", `String (snd authorizers_check))])
           ; ("relay", `Assoc [("status", `String (color_str rel_col)); ("message", `String rel_msg)])
           ; ("plugins", plugin_json)
           ])
@@ -1776,6 +1795,8 @@ let health_cmd =
       Printf.printf "pty-inject cap: %s\n" pty_cap_str;
       let (sup_col, sup_msg) = supervisor_check in
       Printf.printf "%s %s\n" (icon sup_col) sup_msg;
+      let (auth_col, auth_msg) = authorizers_check in
+      Printf.printf "%s %s\n" (icon auth_col) auth_msg;
       let (rel_col, rel_msg) = relay_check in
       Printf.printf "%s %s\n" (icon rel_col) rel_msg;
       List.iter (fun (c, msg) -> Printf.printf "%s %s\n" (icon c) msg) plugin_checks;
@@ -5303,6 +5324,32 @@ let approval_reply_cmd =
       verdict_lc token path reviewer_alias;
   exit 0
 
+(* --- subcommand: resolve-authorizer ----------------------------------------
+   #511: resolve the first live/DnD-clear/idle-clear authorizer from the
+   ordered authorizers[] list in ~/.c2c/repo.json.  Exits 0 and prints the
+   alias if one qualifies; exits 1 and prints nothing if the list is empty
+   or no candidate is currently available.  The hook script (Slice 2) uses
+   this to determine where to send the first permission-request DM. *)
+
+let resolve_authorizer_cmd =
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Machine-readable output.")
+  in
+  let+ json = json in
+  match C2c_authorizers.resolve_first_authorizer () with
+  | None ->
+      if json then
+        Printf.printf "{\"ok\":false,\"authorizer\":null}\n%!"
+      else
+        Printf.eprintf "resolve-authorizer: no live authorizer found\n%!";
+      exit 1
+  | Some authorizer ->
+      if json then
+        Printf.printf "{\"ok\":true,\"authorizer\":\"%s\"}\n%!" authorizer
+      else
+        Printf.printf "%s\n%!" authorizer;
+      exit 0
+
 (* --- subcommand: approval-pending-write ------------------------------------ *)
 
 (* [#490 slice 5b] Bash-callable companion to approval-reply: lets the
@@ -5574,6 +5621,7 @@ let approval_pending_write = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-pending
 let approval_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-list" ~doc:"List currently-pending PreToolUse approvals (token + verdict-ready flag).") approval_list_cmd
 let approval_show = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-show" ~doc:"Print the full pending-record JSON for one approval token.") approval_show_cmd
 let approval_gc = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-gc" ~doc:"Sweep stale approval-pending/verdict files (dry-run by default; --apply to delete).") approval_gc_cmd
+let resolve_authorizer = Cmdliner.Cmd.v (Cmdliner.Cmd.info "resolve-authorizer" ~doc:"Resolve the first live/DnD-clear/idle-clear authorizer from authorizers[] in ~/.c2c/repo.json (#511). Exits 0 with alias on stdout, exits 1 if none qualify.") resolve_authorizer_cmd
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
 let sweep = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sweep" ~doc:"Remove dead registrations and orphan inboxes.") sweep_cmd
 let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived inbox messages.") history_cmd
@@ -10996,7 +11044,7 @@ let () =
   let is_agent = is_agent_session () in
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
-    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; approval_pending_write; approval_list; approval_show; approval_gc; send_all; sweep
+    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
