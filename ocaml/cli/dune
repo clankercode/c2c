@@ -6,7 +6,7 @@
 ; #482 S1/S3a: deliver-inbox daemon executable
 (executable
  (name c2c_deliver_inbox)
- (modules c2c_deliver_inbox)
+ (modules c2c_deliver_inbox c2c_deliver_inbox_log)
  (libraries c2c_mcp cmdliner yojson unix)
  (public_name c2c-deliver-inbox))
 

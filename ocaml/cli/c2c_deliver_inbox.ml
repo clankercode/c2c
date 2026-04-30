@@ -144,11 +144,16 @@ let effective_submit_delay ~(client : string) ~(submit_delay : float option) : f
    and tmux wake internally. The session_id IS the kimi alias in managed context. *)
 let poll_once_kimi ~(broker_root : string) ~(session_id : string) : int =
   let tmux_pane = Sys.getenv_opt "TMUX_PANE" in
-  C2c_kimi_notifier.run_once
+  let count = C2c_kimi_notifier.run_once
     ~broker_root
     ~alias:session_id
     ~session_id
     ~tmux_pane
+  in
+  (* #562: log kimi notification result *)
+  C2c_deliver_inbox_log.log_kimi
+    ~broker_root ~session_id ~who:session_id ~count ~ok:true;
+  count
 
 (* For non-kimi: drain via broker, then log (future: PTY injection, etc.) *)
 let poll_once_generic ~(broker : C2c_mcp.Broker.t) ~(session_id : string)
@@ -192,6 +197,13 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
             ~broker:(Option.get broker)
             ~session_id
           in
+          (* #562: log drain event *)
+          C2c_deliver_inbox_log.log_drain
+            ~broker_root:args.broker_root
+            ~session_id
+            ~client:args.client
+            ~count:(List.length messages)
+            ~drained_by_pid:(Unix.getpid ());
           List.iter
             (fun (m : C2c_mcp.message) ->
                Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
@@ -425,6 +437,13 @@ let () =
         else
           let broker = C2c_mcp.Broker.create ~root:broker_root in
           let messages = poll_once_generic ~broker ~session_id in
+          (* #562: log single-shot drain (pid=0 = not a daemon) *)
+          C2c_deliver_inbox_log.log_drain
+            ~broker_root
+            ~session_id
+            ~client:args.client
+            ~count:(List.length messages)
+            ~drained_by_pid:0;
           List.iter
             (fun (m : C2c_mcp.message) ->
                Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
