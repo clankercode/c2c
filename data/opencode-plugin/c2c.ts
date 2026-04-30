@@ -371,15 +371,36 @@ const C2CDelivery: Plugin = async (ctx) => {
   let backgroundLoopStarted = false;
   let pendingToastShown = false; // debounce the "messages waiting" toast
 
-  // Dedup window for permission notifications: track last 10 seen permission IDs.
+  // [#494-G1] Cap on pendingPermissions: prevents unbounded Map growth.
+  // When a new entry would exceed this cap, the oldest (first-inserted) entry
+  // is evicted first. JavaScript Map maintains insertion order, so the first key
+  // is always the LRU entry.
+  const PENDING_PERMISSION_CAP = 20;
+
+  // Dedup window for permission notifications: track last 20 seen permission IDs.
   const seenPermissionIds: string[] = [];
   // Pending async permission approvals (v2): permId → {resolve, supervisors}.
   // Security: supervisors list prevents alias-spoofing replies — only listed supervisors
   // are trusted to send permission decisions for this permId.
+  //
+  // [#494-G1] GC coupling: when seenPermissionIds evicts an ID (LRU shift), the
+  // corresponding pendingPermissions entry must also be removed — otherwise the Map
+  // grows unbounded while seenPermissionIds stays bounded at 20.
   const pendingPermissions = new Map<string, {
     resolve: (reply: string) => void;
     supervisors: string[];
   }>();
+
+  /** [#494-G1] Remove a permId from both seenPermissionIds and pendingPermissions.
+   *  Called when the seenPermissionIds LRU window evicts an entry, and when a
+   *  pending permission times out or is resolved. Keeps the two structures in sync. */
+  function removePendingPermission(permId: string): void {
+    // Remove from seenPermissionIds if present (indexOf is O(n) but n ≤ 20, negligible)
+    const idx = seenPermissionIds.indexOf(permId);
+    if (idx >= 0) seenPermissionIds.splice(idx, 1);
+    // Remove from pendingPermissions if present
+    pendingPermissions.delete(permId);
+  }
   // Dedup window for question.asked events.
   const seenQuestionIds: string[] = [];
   // Pending question replies: questionId → resolve({answer, rejected}).
@@ -1413,15 +1434,21 @@ const C2CDelivery: Plugin = async (ctx) => {
    *  are trusted to send permission decisions for this permId. */
   function waitForPermissionReply(permId: string, timeoutMs: number, supervisors: string[]): Promise<string> {
     return new Promise((resolve) => {
+      // [#494-G1] LRU eviction: if Map is at capacity, remove the oldest entry first
+      // to make room. JavaScript Map maintains insertion order, so first key = LRU.
+      if (pendingPermissions.size >= PENDING_PERMISSION_CAP) {
+        const oldestKey = pendingPermissions.keys().next().value;
+        if (oldestKey) removePendingPermission(oldestKey);
+      }
       pendingPermissions.set(permId, { resolve, supervisors });
       setTimeout(async () => {
         if (!pendingPermissions.has(permId)) return;
         const decision = await peekInboxForPermission(permId);
         if (decision) {
-          pendingPermissions.delete(permId);
+          removePendingPermission(permId);
           resolve(decision);
         } else {
-          pendingPermissions.delete(permId);
+          removePendingPermission(permId);
           resolve("timeout");
         }
       }, timeoutMs);
@@ -1507,7 +1534,7 @@ const C2CDelivery: Plugin = async (ctx) => {
           else if (brokerValidationPassed === false) {
             await log(`M4: broker validation failed for ${permReply.permId} — dropping reply`);
           } else {
-            pendingPermissions.delete(permReply.permId);
+            removePendingPermission(permReply.permId);
             resolve(permReply.decision);
             await log(`permission reply from ${msg.from_alias}: ${permReply.permId} → ${permReply.decision}`);
           }
@@ -1848,7 +1875,11 @@ const C2CDelivery: Plugin = async (ctx) => {
         if (!permId) return;
         if (seenPermissionIds.includes(permId)) return;
         seenPermissionIds.push(permId);
-        if (seenPermissionIds.length > 20) seenPermissionIds.shift();
+        if (seenPermissionIds.length > PENDING_PERMISSION_CAP) {
+          // [#494-G1] Evict the oldest seen ID from both structures together.
+          const evicted = seenPermissionIds.shift();
+          if (evicted) removePendingPermission(evicted);
+        }
 
         const sid: string = perm.sessionID || activeSessionId || sessionId || "unknown";
         const timeoutSec = Math.round(permissionTimeoutMs / 1000);
