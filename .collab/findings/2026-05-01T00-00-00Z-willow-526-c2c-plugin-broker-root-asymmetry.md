@@ -47,8 +47,8 @@ Neither project-level nor per-instance sidecar `broker_root` fields are consulte
 
 | What | File:Line |
 |------|-----------|
-| `c2c setup` writes broker_root + fingerprint always | `ocaml/cli/c2c_setup.ml:617-618` |
-| `c2c start` writes broker_root only when ≠ default | `ocaml/c2c_start.ml:1403-1406` |
+| `c2c setup` writes broker_root + fingerprint always | `ocaml/cli/c2c_setup.ml:611-612` |
+| `c2c start` writes broker_root only when ≠ default | `ocaml/c2c_start.ml:1379-1382` |
 | TypeScript plugin resolveBrokerRoot() (never reads sidecar) | `data/opencode-plugin/c2c.ts:244-268` |
 | #507 change (setup always writes) | commit `509a1ef1` |
 | #504 fix (skip-when-default on config.json) | `c2c_start.ml:2176-2235` |
