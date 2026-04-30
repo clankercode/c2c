@@ -9,9 +9,8 @@
 # For git commit, it warns (or refuses with C2C_COMMIT_REFUSE=1) when
 # running in the main tree (cwd = main repo root) unless C2C_COORDINATOR=1.
 #
-# The main-tree guard fires when cwd equals the main repo root AND
-# GIT_WORK_TREE is not set (git sets GIT_WORK_TREE when inside a worktree,
-# so this distinguishes main-repo-root-on-worktree-branch from true worktree).
+# The main-tree guard fires when .git is a directory (main repo).
+# Worktrees have .git as a file (gitdir reference) — never fire the guard.
 #
 # Install: this file is installed as git-pre-reset by `c2c install self` (or
 # `c2c install all`). The c2c binary's install step copies this file into the
@@ -20,7 +19,7 @@
 
 set -euo pipefail
 
-MAIN_TREE="${C2C_GIT_SHIM_MAIN_TREE:-$(git rev-parse --show-toplevel 2>/dev/null || echo "")}"
+MAIN_TREE="${C2C_GIT_SHIM_MAIN_TREE:-$(git rev-parse --git-common-dir 2>/dev/null | xargs dirname || echo "")}"
 COORDINATOR="${C2C_COORDINATOR:-0}"
 
 # Resolve to physical path (resolve symlinks, remove trailing slash)
@@ -32,21 +31,17 @@ realpath_cwd() {
 }
 
 is_main_tree() {
-    local cwd
-    cwd="$(realpath_cwd)"
-    local mt="${MAIN_TREE%/}"
-    [ -n "$mt" ] && [ "$cwd" = "$mt" ]
+    # Main repo: .git is a directory. Worktree: .git is a file (gitdir reference).
+    # This is git's own canonical worktree indicator.
+    [ -d ".git" ]
 }
 
-# Returns 0 (true) if we are inside a git worktree (GIT_WORK_TREE is set
-# by git itself when the git command runs inside a worktree). This replaces
-# the previous heuristic that checked the branch name — that heuristic
-# fails when cwd is the main repo root but HEAD points to a worktree branch
-# (the worktree's HEAD symref is active in the main repo's .git directory).
+# Returns 0 (true) if we are inside a git worktree. This replaces
+# the old GIT_WORK_TREE heuristic which git does not set automatically.
 is_worktree_branch() {
-    # GIT_WORK_TREE is set by git when operating inside a worktree.
-    # In the main repo it is always empty/unset.
-    [ -n "${GIT_WORK_TREE:-}" ]
+    # Worktree: .git is a file (gitdir reference). Main repo: .git is a directory.
+    # This replaces the old GIT_WORK_TREE heuristic which git does not set automatically.
+    [ -f ".git" ]
 }
 
 # Check whether <target> is strictly behind HEAD (target is an ancestor of HEAD).
