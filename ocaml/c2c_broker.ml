@@ -1703,6 +1703,25 @@ open C2c_mcp_helpers
           | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery, r.tmux_location)
           | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None, tmux_location)
         in
+        (* #529: log when a fresh registration has session_id ≠ alias.
+           The inbox filename is based on session_id (original value), so when they
+           differ, operators may see unexpected filenames (e.g. "session-a.inbox.json"
+           instead of "storm-ember.inbox.json"). The broker itself handles this
+           correctly — the sender resolves alias→session_id via the registry, so
+           both enqueue and drain use the same session_id-based path. This log
+           event provides visibility into when this configuration occurs. *)
+        (if session_id <> alias then
+          try
+            let ts = Unix.gettimeofday () in
+            let fields =
+              [ ("ts", `Float ts)
+              ; ("event", `String "session_id_differs_from_alias")
+              ; ("session_id", `String session_id)
+              ; ("alias", `String alias)
+              ]
+            in
+            log_broker_event ~broker_root:(root t) "session_id_differs_from_alias" fields
+          with _ -> ());
         let new_reg =
           let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery, old_tmux_location) = old_state in
           let effective_client_type = match client_type with

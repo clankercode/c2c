@@ -67,6 +67,7 @@ they don't regress silently.
 | `nudge_enqueue` | LOW | nudge diagnostic | #335 |
 | `nudge_tick` | LOW | nudge diagnostic | #335 |
 | `dm_enqueue` | MED | delivery audit | #488 |
+| `session_id_canonicalized` | MED | session_id≠alias canonicalization | #529 |
 | `relay_pin_delete` | MED | operator pin management | #432 Slice D |
 | `relay_pin_rotate` | MED | operator pin management | #432 Slice D |
 | `rpc` | LOW | RPC audit | pre-existing (always present) |
@@ -712,6 +713,40 @@ alias was never resolved — useful for the #488 routing-mismatch
 investigation.
 
 **Cross-link**: #488 (routing-mismatch tripwires).
+
+---
+
+### `session_id_canonicalized`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "session_id_canonicalized",
+  "original_session_id": "<session-id-passed-to-register>",
+  "canonical_session_id": "<alias-value>",
+  "alias": "<alias>"
+}
+```
+
+**Fires when**: a fresh registration (no prior entry for this session_id)
+passes a `session_id` that differs from `alias`. The broker canonicalizes
+`session_id := alias` and logs this event. A conflicting registration with
+the same alias but a different session_id is evicted first, and its
+inbox messages are migrated to the new canonical session_id.
+
+**File**: `ocaml/c2c_broker.ml` `register` function (~line 1720).
+
+**Operational meaning**: audit trail for the #529 session_id≠alias hygiene
+fix. Every fresh registration with a mismatched session_id is now canonicalized
+automatically, ensuring inbox filenames always match the alias. This event
+lets operators audit when canonicalization occurred and what the original
+session_id was.
+
+**Cross-link**: #529 (session_id=alias enforcement).
 
 ---
 

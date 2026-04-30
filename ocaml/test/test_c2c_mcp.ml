@@ -3550,6 +3550,81 @@ let test_register_migrates_undrained_inbox_on_alias_re_register () =
       check bool "old session inbox file removed" false
         (Sys.file_exists old_inbox_path))
 
+let test_register_logs_event_when_session_id_differs_from_alias () =
+  (* #529: when a fresh registration has session_id != alias, the broker logs
+     a session_id_differs_from_alias event so operators can see this config.
+     The session_id itself is NOT canonicalized — the sender resolves alias→session_id
+     via the registry, so both enqueue and drain already use the same session_id-based
+     path correctly. This log provides visibility into mismatched configurations. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let log_path = Filename.concat dir "broker.log" in
+      (* Fresh registration: session_id differs from alias.
+         Broker should log session_id_differs_from_alias event. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"mismatched-session-id" ~alias:"fresh-agent"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      (* Verify session_id in registry is NOT canonicalized — stays as original. *)
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      match List.find_opt (fun r -> r.C2c_mcp.alias = "fresh-agent") regs with
+      | None -> Alcotest.fail "fresh-agent not found in registry"
+      | Some reg ->
+          check string "session_id preserved as original" "mismatched-session-id" reg.C2c_mcp.session_id;
+          (* Verify log event was written. *)
+          let json =
+            try Yojson.Safe.from_file log_path
+            with _ -> `Null
+          in
+          let open Yojson.Safe.Util in
+          let events = match json with
+            | `List items -> items
+            | `Assoc _ -> [json]
+            | _ -> []
+          in
+          let has_diff_event =
+            List.exists (fun item ->
+              match item |> member "event" |> to_string_option with
+              | Some "session_id_differs_from_alias" -> true
+              | _ -> false)
+              events
+          in
+          check bool "session_id_differs_from_alias event logged" true has_diff_event)
+
+let test_register_no_log_when_session_id_matches_alias () =
+  (* #529 variant: when session_id == alias on fresh reg, no log event needed —
+     the configuration is as expected. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let log_path = Filename.concat dir "broker.log" in
+      C2c_mcp.Broker.register broker
+        ~session_id:"matching-agent" ~alias:"matching-agent"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      match List.find_opt (fun r -> r.C2c_mcp.alias = "matching-agent") regs with
+      | None -> Alcotest.fail "matching-agent not found in registry"
+      | Some reg ->
+          check string "session_id preserved" "matching-agent" reg.C2c_mcp.session_id;
+          (* Log should NOT have session_id_differs_from_alias since they match. *)
+          if Sys.file_exists log_path then
+            let json =
+              try Yojson.Safe.from_file log_path
+              with _ -> `Null
+            in
+            let open Yojson.Safe.Util in
+            let events = match json with
+              | `List items -> items
+              | `Assoc _ -> [json]
+              | _ -> []
+            in
+            let has_diff_event =
+              List.exists (fun item ->
+                match item |> member "event" |> to_string_option with
+                | Some "session_id_differs_from_alias" -> true
+                | _ -> false)
+                events
+            in
+            check bool "no session_id_differs_from_alias event when they match" false has_diff_event)
+
 let test_register_serializes_with_concurrent_enqueue () =
   (* Regression for the concurrent register-vs-send race. Without the
      registry lock around enqueue_message, a sender that resolved the
@@ -11339,9 +11414,13 @@ let () =
              test_register_stores_original_case
          ; test_case "suggest_alias_prime case-insensitive with suffix (#378)" `Quick
              test_suggest_alias_prime_case_insensitive_with_suffix
-         ; test_case "register migrates undrained inbox on alias re-register"
-             `Quick test_register_migrates_undrained_inbox_on_alias_re_register
-         ; test_case "register serializes with concurrent enqueue" `Quick
+          ; test_case "register migrates undrained inbox on alias re-register"
+              `Quick test_register_migrates_undrained_inbox_on_alias_re_register
+          ; test_case "#529 register logs event when session_id differs from alias"
+              `Quick test_register_logs_event_when_session_id_differs_from_alias
+          ; test_case "#529 register no log when session_id matches alias"
+              `Quick test_register_no_log_when_session_id_matches_alias
+          ; test_case "register serializes with concurrent enqueue" `Quick
              test_register_serializes_with_concurrent_enqueue
          ; test_case "concurrent enqueue does not lose messages" `Quick
              test_concurrent_enqueue_does_not_lose_messages
