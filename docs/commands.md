@@ -668,44 +668,54 @@ Use `c2c send <alias@host> <message>` or `mcp__c2c__send` with
 `to_alias="<alias@host>"` for relay-routed direct messages through
 `remote-outbox.jsonl`; keep `c2c relay connect` running to forward them.
 
-#### Kimi Wire Bridge
+#### Kimi Delivery (`c2c-deliver-inbox`)
 
-`c2c-kimi-wire-bridge` delivers queued broker inbox messages through Kimi's
-Wire JSON-RPC protocol (`kimi --wire`), bypassing PTY injection entirely.
+The canonical delivery mechanism for managed `c2c start kimi` sessions is the
+OCaml `c2c-deliver-inbox` daemon, which writes inbound DMs to kimi-cli's
+native notification store on disk — no PTY injection, no subprocess, no
+dual-agent confusion.
+
+**`c2c-kimi-wire-bridge` (the Python wire-bridge / `kimi --wire` path) is
+deprecated** as of 2026-04-29 (finding `b6455d8e`). Use `c2c-deliver-inbox`
+instead.
+
+`c2c-deliver-inbox` is a standalone binary installed at `~/.local/bin/c2c-deliver-inbox`.
+It is launched automatically by `c2c start kimi`; operators typically do not need
+to invoke it directly.
 
 | Flag | Description |
 |------|-------------|
 | `--session-id ID` | Broker session ID to drain (required) |
-| `--alias NAME` | Broker alias (default: session-id) |
-| `--broker-root DIR` | Broker root directory |
-| `--command CMD` | Kimi binary to launch (default: `kimi`) |
-| `--spool-path PATH` | Crash-safe spool file path |
-| `--work-dir DIR` | Working directory for the Kimi subprocess |
-| `--timeout SECS` | Inbox poll timeout (default: 5.0) |
-| `--dry-run` | Print launch config without starting Kimi |
-| `--once` | Start Kimi, deliver queued messages, exit |
-| `--loop` | Run as daemon: poll every `--interval` seconds, start Wire only when messages are queued. Mutually exclusive with `--once`. |
-| `--interval SECS` | Seconds between inbox checks in `--loop` mode (default: 5) |
-| `--max-iterations N` | Exit after N loop iterations (default: unlimited; for testing) |
-| `--pidfile PATH` | Write the loop daemon PID to this file |
-| `--daemon` | Spawn a detached `--loop` child; requires `--loop` and `--pidfile` |
-| `--daemon-log PATH` | Log file for detached daemon stdout/stderr (default: `<pidfile>.log`) |
-| `--daemon-timeout SECS` | Seconds to wait for detached daemon pidfile (default: 5) |
+| `--broker-root DIR` | Broker root directory (default: from env) |
+| `--client TYPE` | Client type — pass `kimi` here; other values: `claude`, `codex`, `codex-headless`, `opencode`, `crush`, `generic` |
+| `--loop` | Keep polling and delivering continuously |
+| `--interval SECS` | Polling interval in seconds (default: 2.0) |
+| `--max-iterations N` | Exit after N iterations |
+| `--pidfile PATH` | Write daemon PID to this file |
+| `--daemon` | Start detached (fork + setsid) |
+| `--daemon-log PATH` | Daemon stdout/stderr log path |
+| `--daemon-timeout SECS` | Seconds to wait for pidfile write (default: 10) |
+| `--notify-only` | Peek only — inject nudge without content |
+| `--notify-debounce SECS` | Minimum seconds between repeated nudges (default: 30) |
+| `--submit-delay SECS` | Override delay before wake-prompt (default: 1.5s for kimi) |
+| `--timeout SECS` | Inbox drain timeout (default: 5.0) |
 | `--json` | Emit JSON output |
 
 ```bash
-# Preview config:
-c2c-kimi-wire-bridge --session-id kimi-user-host --dry-run --json
+# Preview help:
+c2c-deliver-inbox --help
 
-# Deliver queued messages and exit:
-c2c-kimi-wire-bridge --session-id kimi-user-host --once --json
+# Start a detached kimi delivery daemon (normal production path):
+c2c-deliver-inbox --session-id my-kimi-alias --client kimi --loop --daemon --pidfile /run/user/1000/c2c-kimi.pid
 
-# Start a detached daemon (polls every 5 seconds):
-c2c wire-daemon start --session-id kimi-user-host --json
+# One-shot drain (dry-run / smoke test):
+c2c-deliver-inbox --session-id my-kimi-alias --client kimi --max-iterations 1 --json
 ```
 
-Live-proven 2026-04-14: `--once` delivered 1 broker message through a real
-`kimi --wire` subprocess, received acknowledgment, cleared spool, rc=0.
+For kimi specifically, the notifier polls every 2 seconds, writes each DM to the
+kimi session's notification store (`<KIMI_SHARE_DIR>/sessions/<hash>/<uuid>/notifications/`),
+and sends a tmux wake-prompt when the pane is idle. See
+`.collab/runbooks/kimi-notification-store-delivery.md` for full architecture.
 
 #### Wire Daemon Lifecycle (`c2c wire-daemon`)
 
@@ -722,10 +732,12 @@ stored in `~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
 | `sitrep commit [--message M]` | Stage and commit the current local-hour sitrep file. |
 | `stats [--alias A] [--since DUR] [--top N] [--json] [--append-sitrep]` | Per-agent message statistics (with `stats history` sub for daily rollups). |
 
-### Wire bridge (Kimi)
+### Wire Daemon (`c2c wire-daemon`)
 
-`c2c wire-daemon` manages background Kimi Wire bridge daemon processes
-(`kimi --wire`). State is stored in `~/.local/share/c2c/wire-daemons/`.
+`c2c wire-daemon` manages background OCaml wire bridge daemon processes for
+claude/codex/opencode PTY injection delivery. For kimi delivery, use
+`c2c-deliver-inbox --client kimi` instead (see above). State is stored in
+`~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
 
 | Subcommand | Description |
 |------------|-------------|
