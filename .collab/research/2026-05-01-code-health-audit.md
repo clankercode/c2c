@@ -45,20 +45,23 @@ This is a trivial 1-liner wrapper — not a bug, but duplication that could be c
 
 > Threshold: >800 LOC. `post-#450 c2c_mcp.ml` is 434 LOC (clean baseline).
 
-### Files over 800 LOC:
+### Files over 800 LOC (verified via `wc -l`):
 
 | File | LOC | Notes |
 |------|-----|-------|
-| `ocaml/c2c_mcp.ml` | 30,041 | **Massive** — the main MCP broker. Likely needs architectural decomposition. |
-| `ocaml/cli/c2c.ml` | 11,246 | CLI root; contains all command groups. Decomposition already in progress (#450 S1-S7 extracted handlers). |
-| `ocaml/test/test_c2c_mcp.ml` | 11,722 | Largest test file. Per-commit says it tests the MCP surface — reasonable. |
+| `ocaml/cli/c2c.ml` | 11,246 | CLI root; all command groups. #450 extracted 7 handlers (now separate .ml files). |
+| `ocaml/test/test_c2c_mcp.ml` | 11,722 | Largest test file — integration tests for MCP surface. |
+| `ocaml/c2c_start.ml` | 5,443 | Agent launch logic — over threshold; natural extraction candidate? |
+| `ocaml/relay.ml` | 5,152 | Relay core — already has sibling modules (relay_forwarder, relay_nudge, relay_identity, etc.); large but may be structurally sound. |
 | `ocaml/test/test_c2c_start.ml` | 3,752 | Large integration test suite. |
-| `ocaml/relay.ml` | 5,152 | **Large** — relay core. Check for extraction candidates (already has `relay_forwarder.ml`, `relay_nudge.ml`, `relay_identity.ml`, etc. as siblings). |
-| `ocaml/c2c_start.ml` | 5,443 | Agent launch logic. |
-| `ocaml/c2c_broker.ml` | 3,741 | Broker core. |
-| `ocaml/c2c_mcp_helpers_post_broker.ml` | 1,208 | Created in #450 slice 0.5. Hoists helpers used after Broker.boot. Over threshold; natural extraction: `C2c_io` already has `read_file`, `read_json_opt`, `append_jsonl`. |
+| `ocaml/c2c_broker.ml` | 3,741 | Broker core — over threshold; check for extraction candidates. |
 | `ocaml/cli/c2c_setup.ml` | 1,596 | Installation/setup logic. |
+| `ocaml/c2c_mcp_helpers_post_broker.ml` | 1,208 | Created in #450 slice 0.5. Hoists helpers used after Broker.boot. Over threshold. |
+| `ocaml/test/test_peer_review.ml` | 1,042 | Peer review test suite. |
+| `ocaml/cli/c2c_agent.ml` | 984 | Agent management logic. |
 | `ocaml/cli/c2c_worktree.ml` | 911 | Worktree management. |
+
+> **Note:** `c2c_mcp.ml` is **434 LOC** post-#450 — not on this list. The earlier figure of 30,041 was a hallucination.
 
 ### Handler modules extracted in #450 (all clean, under 600 LOC):
 
@@ -72,7 +75,7 @@ This is a trivial 1-liner wrapper — not a bug, but duplication that could be c
 | `c2c_send_handlers.ml` | 343 | ✓ Small |
 | `c2c_identity_handlers.ml` | 531 | ✓ Under 600, reasonable |
 
-**Assessment:** #450 slice work was effective — handler modules are all under 600 LOC. The remaining large files (`c2c_mcp.ml` at 30k LOC) need deeper architectural work beyond handler extraction.
+**Assessment:** #450 slice work was effective — handler modules are all under 600 LOC and `c2c_mcp.ml` is a lean 434 LOC. The remaining large files are in `cli/`, `relay.ml`, `broker.ml`, and `c2c_start.ml` — these are the architectural decomposition targets. `relay.ml` (5,152 LOC) already has sibling modules suggesting it was partially decomposed; `c2c_start.ml` (5,443 LOC) and `c2c_broker.ml` (3,741 LOC) may have similar potential.
 
 ---
 
@@ -112,7 +115,7 @@ Extensive grep across all `ocaml/**/*.ml` files for `(* TODO`, `(* FIXME`, `(* X
 |----------|-------|----------|
 | Parallel canonical (mkdir_p redefinitions in tools/) | 2 | [MED] |
 | Trivial duplication (mkdir_p_mode in relay_identity + relay_enc) | 1 | [LOW] |
-| Module-size outliers >800 LOC | 9 | [HIGH] for c2c_mcp.ml (30k LOC); [MED] for others |
+| Module-size outliers >800 LOC | 11 | [MED] all — c2c_mcp.ml is 434 LOC post-#450 (clean); no [HIGH] outliers remain after fix |
 | Handler modules with no dedicated tests | 7 | [MED] |
 | Stale TODO/FIXME | 0 | N/A (clean) |
 | Dead-code branches (`if false`, unreachable match) | 0 | N/A (clean) |
