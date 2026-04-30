@@ -1790,8 +1790,16 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then (
           let alias = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
-          let last_seen = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1)) in
-          let ttl = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2)) in
+          let last_seen =
+            match Sqlite3.Data.to_float (Sqlite3.column stmt 1) with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1))
+          in
+          let ttl =
+            match Sqlite3.Data.to_float (Sqlite3.column stmt 2) with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2))
+          in
           if (last_seen +. ttl) < now then expired_aliases := alias :: !expired_aliases;
           collect_expired ()
         ) else if rc <> Rc.DONE then
@@ -1962,8 +1970,16 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
           let alias = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
-          let last_seen = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1)) in
-          let ttl = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2)) in
+          let last_seen =
+            match Sqlite3.Data.to_float (Sqlite3.column stmt 1) with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1))
+          in
+          let ttl =
+            match Sqlite3.Data.to_float (Sqlite3.column stmt 2) with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2))
+          in
           let alive = (last_seen +. ttl) >= now in
           if alive then (
             let node_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3) in
