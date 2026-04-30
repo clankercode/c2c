@@ -3563,7 +3563,13 @@ let () =
         [ ( "get_tmux_location_exits_nonzero_when_not_in_tmux",
             `Quick,
             (fun () ->
-              let rc = Sys.command "env -u TMUX c2c get-tmux-location > /dev/null 2>&1" in
+              (* Clear BOTH TMUX and TMUX_PANE — tmux sets TMUX_PANE per-pane
+                 at fork, so `env -u TMUX` alone leaves TMUX_PANE leaking from
+                 the developer's tmux session into the test, and the fast-path
+                 implementation reads both (#418).  Unsetting TMUX_PANE too
+                 makes this assertion deterministic across in-tmux developer
+                 runs and clean-env CI. *)
+              let rc = Sys.command "env -u TMUX -u TMUX_PANE c2c get-tmux-location > /dev/null 2>&1" in
               check int "non-zero exit when not in tmux" 1 rc) )
         ; ( "get_tmux_location_json_flag",
             `Quick,
