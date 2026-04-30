@@ -167,3 +167,8 @@
  (name test_c2c_agent_state_handlers)
  (modules test_c2c_agent_state_handlers)
  (libraries c2c_mcp alcotest yojson unix))
+
+(test
+ (name test_c2c_memory_handlers)
+ (modules test_c2c_memory_handlers)
+ (libraries c2c_mcp alcotest yojson unix))
