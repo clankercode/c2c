@@ -1,0 +1,64 @@
+(* c2c_deliver_inbox — public interface (S1 scaffold)
+   Exposes helpers for testing and for use by c2c_start.ml *)
+
+type cli_args = {
+  session_id : string option;
+  terminal_pid : int option;
+  pts : string option;
+  broker_root : string;
+  client : string;
+  loop : bool;
+  interval : float;
+  max_iterations : int option;
+  pidfile : string option;
+  daemon : bool;
+  daemon_log : string option;
+  daemon_timeout : float;
+  notify_only : bool;
+  notify_debounce : float;
+  xml_output_fd : int option;
+  xml_output_path : string option;
+  event_fifo : string option;
+  response_fifo : string option;
+  file_fallback : bool;
+  timeout : float;
+  submit_delay : float option;
+  dry_run : bool;
+  json : bool;
+}
+
+(* PID file helpers — also used by c2c_start.ml for consistency *)
+val write_pidfile : string -> int -> unit
+val read_pidfile : string -> int option
+val pid_is_alive : int -> bool
+val already_running : string -> bool
+
+val effective_submit_delay : client:string -> submit_delay:float option -> float option
+(** [effective_submit_delay ~client ~submit_delay] returns the submit delay:
+    - explicit [submit_delay] if provided
+    - 1.5s for "kimi" client
+    - [None] for all other clients *)
+
+val run_loop : args:cli_args -> watched_pid:int option -> unit
+(** [run_loop ~args ~watched_pid] runs the delivery loop.
+    In S1 this is a stub that logs iteration counts.
+    In S2+ this will poll inbox and inject messages. *)
+
+val parse_args : unit -> cli_args
+(** [parse_args ()] parses command-line arguments. *)
+
+val default_broker_root : unit -> string
+(** [default_broker_root ()] mirrors c2c_poll_inbox.default_broker_root. *)
+
+type daemon_start_result = [
+  | `Already_running of int
+  | `Started of int
+  | `Failed of string
+]
+
+val start_daemon :
+  child_argv:string list ->
+  pidfile_path:string ->
+  log_path:string ->
+  wait_timeout:float ->
+  daemon_start_result
