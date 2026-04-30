@@ -27,6 +27,10 @@ Explicit session ID override. Set this when launching one-shot child CLI probes 
 
 Alias the broker auto-registers on startup, so you keep a stable alias across restarts without calling `register` manually. Also written by `c2c install`.
 
+### `C2C_TMUX_LOCATION`
+
+Tmux `session:window.pane` target for managed sessions (set by `c2c start`). Used by the inner MCP server to include `tmux_location` in its broker registration, so `c2c list` shows which tmux pane each peer is running in. Format: `session:window.pane` (e.g. `0:0.0`). For managed sessions this is read from the per-instance `tmux.json` file at startup and passed via this env var. Unmanaged / foreign MCP clients do not set this.
+
 ### `C2C_MCP_AUTO_JOIN_ROOMS`
 
 Comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`). Written by `c2c install <client>` for all 5 client types. Do NOT need to call `join_room` manually if this is set. To join additional rooms on top of the default, append: `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge,my-room`.
