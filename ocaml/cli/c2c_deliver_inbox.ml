@@ -83,7 +83,7 @@ let already_running pidfile =
  * --------------------------------------------------------------------------- *)
 
 let start_daemon
-    ~(child_argv : string list)
+    ~(_child_argv : string list)  (* S2: exec child_argv in child process *)
     ~(pidfile_path : string)
     ~(log_path : string)
     ~(wait_timeout : float)
@@ -241,11 +241,16 @@ let parse_args () : cli_args =
   ] in
   let anon _ = () in
   Arg.parse speclist anon "c2c-deliver-inbox [options]";
+  let broker_root_val =
+    match !broker_root with
+    | Some b -> b
+    | None -> failwith "--broker-root required"
+  in
   {
     session_id = !session_id;
     terminal_pid = !terminal_pid;
     pts = !pts;
-    broker_root = (match !broker_root with Some b -> b | None -> failwith "--broker-root required");
+    broker_root = broker_root_val;
     client = !client;
     loop = !loop;
     interval = !interval;
@@ -310,8 +315,9 @@ let () =
   in
 
   if args.daemon then begin
+    (* _child_argv deferred to S2 (exec in child process) *)
     match start_daemon
-        ~child_argv:(Sys.argv |> Array.to_list)
+        ~_child_argv:(Sys.argv |> Array.to_list)
         ~pidfile_path
         ~log_path
         ~wait_timeout:args.daemon_timeout with

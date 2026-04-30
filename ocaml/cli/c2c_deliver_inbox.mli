@@ -57,7 +57,7 @@ type daemon_start_result = [
 ]
 
 val start_daemon :
-  child_argv:string list ->
+  _child_argv:string list ->  (* S2: exec in child process *)
   pidfile_path:string ->
   log_path:string ->
   wait_timeout:float ->
