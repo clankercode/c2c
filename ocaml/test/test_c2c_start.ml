@@ -1749,6 +1749,86 @@ let test_last_launch_at_backward_compat_missing_field () =
   | Some saved ->
       check (option (float 0.001)) "last_launch_at None roundtrip" None saved.last_launch_at
 
+(* #504: write_config skips persisting broker_root when it equals the resolver
+   default. This prevents the stale-fingerprint drift that pinned peers to old
+   broker roots across migrations: once `broker_root` is in saved config, the
+   resume path re-injects it into env even after the env has been scrubbed,
+   silently overriding the resolver. *)
+let test_write_config_omits_broker_root_when_default () =
+  let name = Printf.sprintf "broker-default-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun _dir ->
+  let default_root = C2c_start.broker_root () in
+  let cfg : C2c_start.instance_config =
+    { name
+    ; client = "claude"
+    ; session_id = name
+    ; resume_session_id = name
+    ; codex_resume_target = None
+    ; alias = name
+    ; extra_args = []
+    ; created_at = Unix.gettimeofday ()
+    ; last_launch_at = None
+    ; broker_root = default_root
+    ; auto_join_rooms = "swarm-lounge"
+    ; binary_override = None
+    ; model_override = None
+    ; agent_name = None
+    ; last_exit_code = None
+    ; last_exit_reason = None
+    }
+  in
+  C2c_start.write_config cfg;
+  let path = C2c_start.config_path name in
+  let ic = open_in path in
+  let raw = Fun.protect ~finally:(fun () -> close_in ic)
+              (fun () -> really_input_string ic (in_channel_length ic)) in
+  check bool "raw JSON omits broker_root when value == resolver default" false
+    (string_contains raw "\"broker_root\"");
+  (* Round-trip: load_config_opt should still produce the resolver default. *)
+  match C2c_start.load_config_opt name with
+  | None -> fail "expected config after write"
+  | Some saved ->
+      check string "load_config_opt falls back to resolver default"
+        default_root saved.broker_root
+
+let test_write_config_persists_broker_root_when_overridden () =
+  let name = Printf.sprintf "broker-override-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun _dir ->
+  with_temp_dir @@ fun explicit_root ->
+  (* Sanity: temp dir is unlikely to coincide with the resolver default. *)
+  if explicit_root = C2c_start.broker_root () then
+    fail "test setup: temp broker_root collided with resolver default";
+  let cfg : C2c_start.instance_config =
+    { name
+    ; client = "claude"
+    ; session_id = name
+    ; resume_session_id = name
+    ; codex_resume_target = None
+    ; alias = name
+    ; extra_args = []
+    ; created_at = Unix.gettimeofday ()
+    ; last_launch_at = None
+    ; broker_root = explicit_root
+    ; auto_join_rooms = "swarm-lounge"
+    ; binary_override = None
+    ; model_override = None
+    ; agent_name = None
+    ; last_exit_code = None
+    ; last_exit_reason = None
+    }
+  in
+  C2c_start.write_config cfg;
+  let path = C2c_start.config_path name in
+  let ic = open_in path in
+  let raw = Fun.protect ~finally:(fun () -> close_in ic)
+              (fun () -> really_input_string ic (in_channel_length ic)) in
+  check bool "raw JSON persists broker_root when overridden" true
+    (string_contains raw "\"broker_root\"");
+  match C2c_start.load_config_opt name with
+  | None -> fail "expected config after write"
+  | Some saved ->
+      check string "explicit broker_root round-trips" explicit_root saved.broker_root
+
 let test_sync_instance_alias_updates_matching_session () =
   let name = Printf.sprintf "sync-alias-%d" (Random.bits ()) in
   with_instance_dir name @@ fun _dir ->
@@ -3256,6 +3336,10 @@ let () =
             `Quick, test_last_launch_at_roundtrip )
         ; ( "last_launch_at_backward_compat_missing_field",
             `Quick, test_last_launch_at_backward_compat_missing_field )
+        ; ( "write_config_omits_broker_root_when_default",
+            `Quick, test_write_config_omits_broker_root_when_default )
+        ; ( "write_config_persists_broker_root_when_overridden",
+            `Quick, test_write_config_persists_broker_root_when_overridden )
         ; ( "sync_instance_alias_updates_matching_session",
             `Quick, test_sync_instance_alias_updates_matching_session )
         ; ( "sync_instance_alias_ignores_mismatched_session",

@@ -2087,6 +2087,18 @@ let write_config (cfg : instance_config) =
   let dir = instance_dir cfg.name in
   mkdir_p dir;
   let path = config_path cfg.name in
+  (* #504: skip persisting broker_root when it equals the resolver default.
+     Persisting verbatim is what pinned the swarm to stale fingerprints across
+     migrations: once `broker_root` is in the saved config, the resume path
+     re-injects it into env even after the wrapper / .mcp.json env has been
+     scrubbed, silently overriding the resolver. By only persisting when the
+     value differs from the current default, drift can't accumulate across
+     re-launches; intentional overrides still round-trip. *)
+  let resolver_default = try resolve_broker_root () with _ -> "" in
+  let broker_root_field =
+    if cfg.broker_root = "" || cfg.broker_root = resolver_default then []
+    else [ ("broker_root", `String cfg.broker_root) ]
+  in
   let fields =
     [ ("name", `String cfg.name)
     ; ("client", `String cfg.client)
@@ -2094,9 +2106,9 @@ let write_config (cfg : instance_config) =
     ; ("resume_session_id", `String cfg.resume_session_id)
     ; ("alias", `String cfg.alias)
     ; ("extra_args", `List (List.map (fun s -> `String s) cfg.extra_args))
-    ; ("created_at", `Float cfg.created_at)
-    ; ("broker_root", `String cfg.broker_root)
-    ; ("auto_join_rooms", `String cfg.auto_join_rooms) ]
+    ; ("created_at", `Float cfg.created_at) ]
+    @ broker_root_field
+    @ [ ("auto_join_rooms", `String cfg.auto_join_rooms) ]
     @
     (match cfg.last_launch_at with
      | Some t -> [ ("last_launch_at", `Float t) ]
@@ -2146,15 +2158,21 @@ let load_config_opt (name : string) : instance_config option =
         let gfo k = match List.assoc_opt k a with Some (`Float f) -> Some f | Some (`Int i) -> Some (float_of_int i) | _ -> None in
         let gio k = match List.assoc_opt k a with Some (`Int i) -> Some i | _ -> None in
         let gl k = match List.assoc_opt k a with Some (`List l) -> List.map (function `String s -> s | _ -> raise Not_found) l | _ -> [] in
-        (* broker_root is optional in the persisted config (#501 broker
-           migration removed pinned broker_root from all configs).
-           When absent or empty, callers must fall through to the env >
-           XDG > canonical resolver via `broker_root ()`. *)
-        let gs_or_empty k = match List.assoc_opt k a with Some (`String s) -> s | _ -> "" in
+        (* #504 + #501: broker_root is optional in the persisted config
+           (post-migration write_config skips it when == resolver default).
+           When absent or empty at load time, fall back to the resolver's
+           canonical default — env > XDG > $HOME/.c2c/repos/<fp>/broker —
+           preventing the stale-fingerprint drift that pinned peers to old
+           broker roots across migrations. *)
+        let broker_root_loaded =
+          match gso "broker_root" with
+          | Some s when s <> "" -> s
+          | _ -> (try resolve_broker_root () with _ -> "")
+        in
         Some { name = gs "name"; client = gs "client"; session_id = gs "session_id";
                resume_session_id = gs "resume_session_id"; codex_resume_target = gso "codex_resume_target"; alias = gs "alias";
                extra_args = gl "extra_args"; created_at = gf "created_at"; last_launch_at = gfo "last_launch_at";
-               broker_root = gs_or_empty "broker_root"; auto_join_rooms = gs "auto_join_rooms";
+               broker_root = broker_root_loaded; auto_join_rooms = gs "auto_join_rooms";
                binary_override = gso "binary_override";
                model_override = gso "model_override";
                agent_name = gso "agent_name";
