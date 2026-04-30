@@ -4128,14 +4128,11 @@ let run_outer_loop ~(name : string) ~(client : string)
         | _ -> binary_path :: launch_args
       in
 
-      (* Debug: print full cmd before fork when C2C_START_DEBUG set. Intentional
-         verbosity — this costs one line per launch and is invaluable when
-         diagnosing "why did claude/cc-mm reject the channel flags?" bugs. *)
-      (match Sys.getenv_opt "C2C_START_DEBUG" with
-       | Some v when v <> "" && v <> "0" ->
-         Printf.eprintf "[c2c-start/debug] exec: %s\n%!"
-           (String.concat " " (List.map Filename.quote cmd))
-       | _ -> ());
+      (* [#504] Print the resolved launch command so operators can see exactly what
+         was spawned without needing strace. Written to stderr so it doesn't
+         pollute stdout of the managed session. *)
+      Printf.eprintf "[c2c-start] launch: %s\n%!"
+        (String.concat " " (List.map Filename.quote cmd));
 
       (* Write meta.json with launch metadata *)
       let meta_path = meta_json_path name in
@@ -4326,6 +4323,10 @@ let run_outer_loop ~(name : string) ~(client : string)
                      dup_fifo_to_fd responses_path [ Unix.O_RDWR ] fd7
                  | _ -> ());
                 (try Unix.close outer_stderr_fd with _ -> ());
+                (* [#504] Echo the resolved launch command from the child so operators can
+                   see exactly what execvpe received — after all fd redirects are done. *)
+                Printf.eprintf "[c2c-start] launch (child): %s\n%!"
+                  (String.concat " " (List.map Filename.quote cmd));
                 (try Unix.execvpe (List.hd cmd) (Array.of_list cmd) env
                  with e ->
                    Printf.eprintf "exec %s failed: %s\n%!" binary_path (Printexc.to_string e);
