@@ -28,7 +28,30 @@ open C2c_mcp_helpers
 
   let ensure_root t = mkdir_p t.root
 
-  let read_json_file path ~default =
+  (** [log_json_cap_exceeded ~broker_root ~path ~max_bytes] emits a
+      best-effort broker.log audit line when a JSON file is rejected
+      because it exceeds [max_bytes]. Silently ignores all errors so
+      logging never blocks the read path. Follow-up to Slice F
+      (fern non-blocking note: operators need observability when the
+      cap triggers). *)
+  let log_json_cap_exceeded ~broker_root ~path ~max_bytes =
+    (try
+       let log_path = Filename.concat broker_root "broker.log" in
+       let line =
+         `Assoc
+           [ ("ts", `Float (Unix.gettimeofday ()))
+           ; ("event", `String "json_cap_exceeded")
+           ; ("file", `String path)
+           ; ("max_bytes", `Int max_bytes)
+           ]
+         |> Yojson.Safe.to_string
+       in
+        let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 log_path in
+        (try output_string oc (line ^ "\n"); close_out oc
+         with _ -> close_out_noerr oc)
+     with _ -> ())
+
+  let read_json_file ?broker_root path ~default =
     if Sys.file_exists path then
       (* 64 KiB cap: registration blobs, relay state, and config files
          are operator-controlled but may be attacker-adjacent (e.g. a
@@ -36,7 +59,16 @@ open C2c_mcp_helpers
          directory). A parse-cap of 64 KiB is ample for any legitimate
          broker artifact and prevents unbounded memory allocation from
          maliciously large files. Slice F. *)
-      C2c_io.read_json_capped ~max_bytes:(64 * 1024) ~default path
+      let content = C2c_io.read_file_opt path in
+      let size = String.length content in
+      if size > 64 * 1024 then begin
+        (match broker_root with
+         | Some root ->
+           log_json_cap_exceeded ~broker_root:root ~path ~max_bytes:(64 * 1024)
+         | None -> ());
+        default
+      end else
+        (try Yojson.Safe.from_string content with _ -> default)
     else default
 
   let write_json_file path json =
@@ -309,7 +341,7 @@ open C2c_mcp_helpers
 
   let load_registrations t =
     ensure_root t;
-    match read_json_file (registry_path t) ~default:(`List []) with
+    match read_json_file ~broker_root:t.root (registry_path t) ~default:(`List []) with
     | `List items ->
         let regs = List.map registration_of_json items in
         if debug_enabled then Printf.eprintf "[DEBUG load_registrations] root=%s count=%d\n%!" t.root (List.length regs);
@@ -409,7 +441,7 @@ open C2c_mcp_helpers
      wrap their bodies in [with_pending_lock]. *)
   let load_pending_permissions t =
     ensure_root t;
-    match read_json_file (pending_permissions_path t) ~default:(`List []) with
+    match read_json_file ~broker_root:t.root (pending_permissions_path t) ~default:(`List []) with
     | `List items -> List.map pending_permission_of_json items
     | _ -> []
 
@@ -642,11 +674,19 @@ open C2c_mcp_helpers
     | Some _ ->
       let path = relay_pins_path () in
       if Sys.file_exists path then begin
+        (* Slice F + follow-up: check size before parse; emit audit event
+           if cap exceeded so operators have observability (fern non-blocking
+           note). *)
+        let content = C2c_io.read_file_opt path in
         let json =
-          (* Slice F: relay-pins are trust-on-first-use data written by
-             the relay operator; cap prevents a malformed/ oversized file
-             from causing memory stress during load. *)
-          C2c_io.read_json_capped ~max_bytes:65536 ~default:(`Assoc []) path
+          if String.length content > 65536 then begin
+            (match !relay_pins_root with
+             | Some root ->
+               log_json_cap_exceeded ~broker_root:root ~path ~max_bytes:65536
+             | None -> ());
+            `Assoc []
+          end else
+            (try Yojson.Safe.from_string content with _ -> `Assoc [])
         in
         let load_section name tbl =
           match json with
@@ -749,10 +789,10 @@ open C2c_mcp_helpers
            ]
          |> Yojson.Safe.to_string
        in
-        let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
-        (try output_string oc (line ^ "\n"); close_out oc
-         with _ -> close_out_noerr oc)
-      with _ -> ())
+         let oc = open_out_gen [ Open_append; Open_creat; Open_wronly ] 0o600 path in
+         (try output_string oc (line ^ "\n"); close_out oc
+          with _ -> close_out_noerr oc)
+       with _ -> ())
 
   (** [relay_pin_delete ~broker_root ~alias ~axes] removes the specified
       pin axes for [alias] from the in-memory Hashtbls and persists the
@@ -1461,7 +1501,7 @@ open C2c_mcp_helpers
     ensure_root t;
     let path = inbox_path t ~session_id in
     let result =
-      match read_json_file path ~default:(`List []) with
+      match read_json_file ~broker_root:t.root path ~default:(`List []) with
       | `List items -> List.map message_of_json items
       | _ -> []
     in
@@ -2813,11 +2853,15 @@ open C2c_mcp_helpers
     in
     if not (Sys.file_exists pending_path) then 0
     else
+      (* Slice F + follow-up: inline size check with audit event on cap
+         exceeded (fern non-blocking note). *)
+      let content = C2c_io.read_file_opt pending_path in
       let pending_json =
-        (* Slice F: pending orphan replay files are ephemeral broker
-           artifacts; cap prevents a malformed file from causing memory
-           stress during deserialization. *)
-        C2c_io.read_json_capped ~max_bytes:65536 ~default:(`List []) pending_path
+        if String.length content > 65536 then begin
+          log_json_cap_exceeded ~broker_root:t.root ~path:pending_path ~max_bytes:65536;
+          `List []
+        end else
+          (try Yojson.Safe.from_string content with _ -> `List [])
       in
       let msgs =
         match pending_json with
@@ -2934,7 +2978,7 @@ open C2c_mcp_helpers
 
   let load_room_members t ~room_id =
     ensure_room_dir t ~room_id;
-    match read_json_file (room_members_path t ~room_id) ~default:(`List []) with
+    match read_json_file ~broker_root:t.root (room_members_path t ~room_id) ~default:(`List []) with
     | `List items -> List.map room_member_of_json items
     | _ -> []
 
@@ -2985,7 +3029,7 @@ open C2c_mcp_helpers
 
   let load_room_meta t ~room_id =
     ensure_room_dir t ~room_id;
-    match read_json_file (room_meta_path t ~room_id) ~default:(`Assoc []) with
+    match read_json_file ~broker_root:t.root (room_meta_path t ~room_id) ~default:(`Assoc []) with
     | `Assoc _ as json -> room_meta_of_json json
     | _ -> { visibility = Public; invited_members = []; created_by = "" }
 

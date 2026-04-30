@@ -4265,6 +4265,60 @@ let test_sweep_dead_letter_write_emits_broker_log_event () =
       in
       check bool "alpha event has reason+aliases+sid" true has_alpha_event)
 
+(* Slice F follow-up: verify json_cap_exceeded emits a broker.log event
+   when a JSON file exceeds 64 KiB. *)
+let test_json_cap_exceeded_emits_broker_log_event () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Write an oversized (>64 KiB) registry.json directly to disk,
+         bypassing the normal write path, then call load_registrations
+         to trigger the cap. *)
+      let reg_path = Filename.concat dir "registry.json" in
+      let big_json = "{ \"registrations\": [" ^ String.make (70 * 1024) 'x' ^ "炉" ^ "]" ^ "}" in
+      write_file reg_path big_json;
+      (* load_registrations is called internally by list_registrations *)
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "cap triggered, empty registrations returned" 0 (List.length regs);
+      let log_path = Filename.concat dir "broker.log" in
+      check bool "broker.log created" true (Sys.file_exists log_path);
+      let lines =
+        let ic = open_in log_path in
+        Fun.protect
+          ~finally:(fun () -> close_in ic)
+          (fun () ->
+            let acc = ref [] in
+            (try
+               while true do
+                 let line = input_line ic |> String.trim in
+                 if line <> "" then acc := line :: !acc
+               done
+             with End_of_file -> ());
+            List.rev !acc)
+      in
+      let cap_events =
+        List.filter
+          (fun line ->
+            try
+              let json = Yojson.Safe.from_string line in
+              let open Yojson.Safe.Util in
+              json |> member "event" |> to_string = "json_cap_exceeded"
+            with _ -> false)
+          lines
+      in
+      check int "one json_cap_exceeded event logged" 1 (List.length cap_events);
+      let has_correct_max_bytes =
+        List.exists
+          (fun line ->
+            try
+              let json = Yojson.Safe.from_string line in
+              let open Yojson.Safe.Util in
+              json |> member "event" |> to_string = "json_cap_exceeded"
+              && json |> member "max_bytes" |> to_int = 65536
+            with _ -> false)
+          lines
+      in
+      check bool "event has max_bytes:65536" true has_correct_max_bytes)
+
 (* Provisional sweep: a pid=None, confirmed_at=None reg with a recent registered_at
    is NOT swept until the timeout has elapsed. *)
 let test_sweep_preserves_fresh_provisional_reg () =
@@ -11442,9 +11496,11 @@ let () =
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick
              test_sweep_empty_orphan_writes_no_dead_letter
-         ; test_case "#433 sweep dead-letter write emits broker.log event" `Quick
-             test_sweep_dead_letter_write_emits_broker_log_event
-         ; test_case "sweep preserves fresh provisional reg" `Quick
+          ; test_case "#433 sweep dead-letter write emits broker.log event" `Quick
+              test_sweep_dead_letter_write_emits_broker_log_event
+          ; test_case "Slice F follow-up json_cap_exceeded emits broker.log event" `Quick
+              test_json_cap_exceeded_emits_broker_log_event
+          ; test_case "sweep preserves fresh provisional reg" `Quick
              test_sweep_preserves_fresh_provisional_reg
          ; test_case "sweep drops expired provisional reg" `Quick
              test_sweep_drops_expired_provisional_reg
