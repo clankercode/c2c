@@ -1,5 +1,5 @@
 {
   "supervisor_strategy": "broadcast",
   "supervisors": [ "coordinator1" ],
-  "fallback_supervisors": ["stanza-coder", "lyra-quill", "ceo"],
+  "fallback_supervisors": ["stanza-coder", "lyra-quill", "ceo"]
 }
