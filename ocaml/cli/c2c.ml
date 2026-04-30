@@ -4998,22 +4998,69 @@ let mesh_status_cmd =
       (* Fetch rooms. *)
       let rooms_result = Lwt_main.run (Relay.Relay_client.list_rooms client) in
       if as_json then begin
-        let peers_json = (match peers_result with
+        let now_ts = Unix.gettimeofday () in
+        let format_time t =
+          let tm = Unix.gmtime t in
+          Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+            (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
+            tm.tm_hour tm.tm_min tm.tm_sec
+        in
+        (* Relay token status: signed when identity exists and include_dead not requested. *)
+        let relay_token_status = match Relay_identity.load (), include_dead with
+          | Ok _, false -> "signed"
+          | Ok _, true -> "unsigned" (* signed auth excluded dead peers *)
+          | Error _, _ -> "unsigned"
+        in
+        let peers_raw = (match peers_result with
           | `Assoc fields ->
               (match List.assoc_opt "peers" fields with
-               | Some p -> p
-               | None -> `List [])
-          | _ -> `List []) in
-        let rooms_json = (match rooms_result with
+               | Some (`List ps) -> ps
+               | _ -> [])
+          | _ -> []) in
+        let alive_peers = List.filter (fun p ->
+          match p with `Assoc fs ->
+            (match List.assoc_opt "alive" fs with Some (`Bool a) -> a | _ -> false)
+          | _ -> false) peers_raw in
+        let dead_peers = List.filter (fun p ->
+          match p with `Assoc fs ->
+            (match List.assoc_opt "alive" fs with Some (`Bool a) -> not a | _ -> false)
+          | _ -> false) peers_raw in
+        let peers_json = `List (List.map (fun p ->
+          match p with `Assoc fs ->
+            let alive = match List.assoc_opt "alive" fs with Some (`Bool a) -> a | _ -> false in
+            let last_seen = match List.assoc_opt "last_seen" fs with Some (`Float t) -> t | _ -> 0.0 in
+            let ttl = match List.assoc_opt "ttl" fs with Some (`Float t) -> t | _ -> 0.0 in
+            let ttl_remaining = if alive then max 0.0 (last_seen +. ttl -. now_ts) else 0.0 in
+            let extra = [
+              ("last_seen_iso8601", `String (format_time last_seen));
+              ("ttl_remaining_seconds", `Float ttl_remaining);
+            ] in
+            `Assoc (fs @ extra)
+          | _ -> p) peers_raw) in
+        let rooms_raw = (match rooms_result with
           | `Assoc fields ->
               (match List.assoc_opt "rooms" fields with
-               | Some r -> r
-               | None -> `List [])
-          | _ -> `List []) in
+               | Some (`List rs) -> rs
+               | _ -> [])
+          | _ -> []) in
+        let rooms_json = `List (List.map (fun r ->
+          match r with `Assoc fs ->
+            let member_count = match List.assoc_opt "member_count" fs with
+              | Some (`Int n) -> `Int n
+              | _ -> `Int 0
+            in
+            `Assoc (fs @ [("member_count_int", member_count)])
+          | _ -> r) rooms_raw) in
         let kv = [
           ("ok", `Bool true);
           ("relay_url", `String url);
+          ("relay_token_status", `String relay_token_status);
+          ("queried_at_iso8601", `String (format_time now_ts));
+          ("peers_count", `Int (List.length peers_raw));
+          ("alive_count", `Int (List.length alive_peers));
+          ("dead_count", `Int (List.length dead_peers));
           ("peers", peers_json);
+          ("rooms_count", `Int (List.length rooms_raw));
           ("rooms", rooms_json);
         ] in
         print_endline (Yojson.Safe.to_string (`Assoc kv));
