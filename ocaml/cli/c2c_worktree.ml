@@ -894,6 +894,7 @@ let worktree_gc_term =
       Printf.printf "Done. %d removed, %s freed.\n" !removed (format_bytes !freed)
   end
 
+
 (* --- subcommand: worktree shim-test-gc ---------------------------------
    Scans and (with --clean) deletes refs under refs/c2c-stashes/shim-test/.
    These are test-checkpoint refs created by test_git_shim.sh — they point to
@@ -984,6 +985,162 @@ let shim_test_gc_term =
     end
   end
 
+(* --- subcommand: worktree branch-clutter-gc (#522) -------------------------
+   Scans .git/config for stale [branch "<name>"] entries whose
+   remote-tracking refs (refs/remotes/origin/<name>) no longer exist.
+   Such entries are left behind after a branch is deleted and git fetch --prune
+   removes the origin/ ref, but the config section persists.
+
+   Classification:
+   - ORPHANED: no remote-tracking ref, no local ref → safe to remove
+   - HAS_REMOTE: remote-tracking ref still exists → keep (active or unmerged)
+   - HAS_LOCAL: local ref still exists → keep (still in use)
+   - NO_REMOTE_CONFIG: entry exists but .remote is not "origin" → keep (custom)
+
+   The ORPHANED category is always safe to remove (--clean). *)
+
+type branch_entry = {
+  name: string;
+  has_remote: bool;    (* refs/remotes/origin/<name> exists *)
+  has_local: bool;     (* refs/heads/<name> exists *)
+  remote: string option; (* branch.<name>.remote value *)
+}
+
+let get_git_config_branch_entries () =
+  (* Read all branch.<name>.* entries via --list and filter to .remote keys *)
+  let (code, output, _) = git_command ~quiet:true
+    [ "config"; "--list" ]
+  in
+  if code <> 0 || String.trim output = "" then []
+  else begin
+    let entries = ref [] in
+    let prefix = "branch." in
+    let suffix = ".remote" in
+    List.iter (fun line ->
+      if String.length line < String.length prefix + String.length suffix + 2 then ()
+      else
+        let eq_idx = try String.index line '=' with Not_found -> -1 in
+        if eq_idx < 0 then ()
+        else
+          let key = String.sub line 0 eq_idx in
+          let value = String.sub line (eq_idx + 1) (String.length line - eq_idx - 1) in
+          (* Check if key ends with ".remote" *)
+          let key_len = String.length key in
+          let suff_len = String.length suffix in
+          if key_len < suff_len + 1 then ()
+          else if String.sub key (key_len - suff_len) suff_len <> suffix then ()
+          else
+            let name = String.sub key (String.length prefix)
+              (key_len - String.length prefix - suff_len) in
+            (* Skip empty names *)
+            if name = "" then ()
+            else
+              (* Check if remote-tracking ref exists *)
+              let remote_ref = "refs/remotes/origin/" ^ name in
+              let (rc_rt, _, _) = git_command ~quiet:true
+                [ "rev-parse"; "--verify"; "--quiet"; remote_ref ]
+              in
+              (* Check if local ref exists *)
+              let local_ref = "refs/heads/" ^ name in
+              let (rc_loc, _, _) = git_command ~quiet:true
+                [ "rev-parse"; "--verify"; "--quiet"; local_ref ]
+              in
+              entries := {
+                name;
+                has_remote = (rc_rt = 0);
+                has_local = (rc_loc = 0);
+                remote = Some value;
+              } :: !entries)
+      (String.split_on_char '\n' output);
+    List.rev !entries
+  end
+
+let remove_branch_config name =
+  (* Remove all branch.<name>.* keys from config *)
+  let (code, _, _) = git_command
+    [ "config"; "--remove-section"; "branch." ^ name ]
+  in
+  code = 0
+
+let branch_clutter_gc_term =
+  let open Cmdliner in
+  let clean_flag =
+    Arg.(value & flag & info ["clean"]
+           ~doc:"Actually remove the ORPHANED entries. Default is dry-run.")
+  in
+  let json_flag =
+    Arg.(value & flag & info ["json"]
+           ~doc:"Output machine-readable JSON.")
+  in
+  let+ clean = clean_flag
+  and+ json_out = json_flag in
+  let entries = get_git_config_branch_entries () in
+  let orphaned = List.filter (fun e ->
+      (not e.has_remote) && (not e.has_local) &&
+      e.remote = Some "origin") entries
+  in
+  let has_remote = List.filter (fun e -> e.has_remote) entries in
+  let has_local = List.filter (fun e -> e.has_local) entries in
+  let no_remote_config = List.filter (fun e ->
+      e.remote <> Some "origin" && not e.has_remote && not e.has_local) entries
+  in
+  if json_out then begin
+    let item e status =
+      `Assoc [("name", `String e.name); ("status", `String status)]
+    in
+    let json = `Assoc [
+      ("orphaned", `List (List.map (fun e -> item e "orphaned") orphaned));
+      ("has_remote", `List (List.map (fun e -> item e "has_remote") has_remote));
+      ("has_local", `List (List.map (fun e -> item e "has_local") has_local));
+      ("no_remote_config", `List (List.map (fun e -> item e "no_remote_config") no_remote_config));
+    ] in
+    print_endline (Yojson.Safe.to_string json)
+  end else begin
+    Printf.printf "Branch config GC — %d entries found\n\n" (List.length entries);
+    Printf.printf "  ORPHANED (safe to --clean): %d\n"
+      (List.length orphaned);
+    List.iter (fun e ->
+        Printf.printf "    %s\n" e.name)
+      orphaned;
+    if has_remote <> [] then begin
+      Printf.printf "\n  HAS_REMOTE (keep): %d\n" (List.length has_remote);
+      List.iter (fun e ->
+          Printf.printf "    %s\n" e.name)
+        (List.rev (List.rev has_remote))
+    end;
+    if has_local <> [] then begin
+      Printf.printf "\n  HAS_LOCAL (keep): %d\n" (List.length has_local);
+      List.iter (fun e ->
+          Printf.printf "    %s\n" e.name)
+        (List.rev (List.rev has_local))
+    end;
+    if no_remote_config <> [] then begin
+      Printf.printf "\n  NO_REMOTE_CONFIG (keep): %d\n"
+        (List.length no_remote_config);
+      List.iter (fun e ->
+          Printf.printf "    %s (remote=%s)\n" e.name
+            (match e.remote with Some r -> r | None -> "?"))
+        (List.rev (List.rev no_remote_config))
+    end;
+    if clean then begin
+      if orphaned <> [] then begin
+        Printf.printf "\nRemoving %d orphaned entries...\n"
+          (List.length orphaned);
+        let removed = ref 0 in
+        List.iter (fun e ->
+          if remove_branch_config e.name then begin
+            incr removed;
+            Printf.printf "  removed %s\n" e.name
+          end else
+            Printf.eprintf "  FAILED to remove %s\n" e.name)
+          orphaned;
+        Printf.printf "Done. %d removed.\n" !removed
+      end else
+        Printf.printf "\nNo orphaned entries to remove.\n"
+    end else
+      Printf.printf "\nDry-run: pass --clean to remove orphaned entries.\n"
+  end
+
 let worktree_group =
   Cmdliner.Cmd.group
     ~default:worktree_list_term
@@ -999,8 +1156,13 @@ let worktree_group =
               clean working tree, HEAD ancestor of origin/master, no live \
               process holding cwd, and not the main worktree (#313).")
         worktree_gc_term
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "branch-clutter-gc"
+        ~doc:"Audit and (with --clean) remove orphaned [branch \"<name>\"] \
+              entries from .git/config whose remote-tracking refs no longer exist.")
+        branch_clutter_gc_term
     ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "shim-test-gc"
         ~doc:"List and (with --clean) delete refs/c2c-stashes/shim-test/ \
               checkpoint refs. These are test fixtures from test_git_shim.sh, \
               not user data — GC is always safe.")
-        shim_test_gc_term ]
+        shim_test_gc_term
+    ]
