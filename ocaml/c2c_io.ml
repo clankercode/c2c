@@ -73,3 +73,18 @@ let read_json_opt (path : string) : Yojson.Safe.t option =
   | "" -> None
   | s ->
     try Some (Yojson.Safe.from_string s) with _ -> None
+
+(** [read_json_capped ~max_bytes path] reads and parses a JSON file,
+    returning [default] if the file exceeds [max_bytes] or on any error
+    (I/O error, missing file, parse failure). Guards against unbounded
+    memory allocation when deserializing untrusted or attacker-controlled
+    JSON files (e.g. registration blobs, relay state, config files).
+    Uses [read_file_opt] + [Yojson.Safe.from_string] so the file is
+    fully buffered in memory before parsing — the size check happens
+    before parse, not during. *)
+let read_json_capped ~(max_bytes : int) ~(default : Yojson.Safe.t) (path : string)
+    : Yojson.Safe.t =
+  let content = read_file_opt path in
+  if String.length content > max_bytes then default
+  else
+    try Yojson.Safe.from_string content with _ -> default

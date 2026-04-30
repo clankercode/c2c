@@ -54,6 +54,55 @@ let string_contains haystack needle =
   in
   needle_len = 0 || loop 0
 
+(** Slice F: tests for [C2c_io.read_json_capped] *)
+let test_read_json_capped_under_limit () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "test.json" in
+  let json_str = "{\"key\": \"value\"}" in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc json_str);
+  let result =
+    C2c_io.read_json_capped ~max_bytes:1024 ~default:(`Assoc []) path
+  in
+  check bool "parses valid JSON under cap" true
+    (match result with `Assoc [("key", `String "value")] -> true | _ -> false)
+
+let test_read_json_capped_over_limit () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "big.json" in
+  (* JSON string larger than 100-byte cap *)
+  let big_json = "{\"key\": \"" ^ String.make 200 'x' ^ "\"}" in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc big_json);
+  let result =
+    C2c_io.read_json_capped ~max_bytes:100 ~default:(`Assoc [("fallback", `Bool true)]) path
+  in
+  check bool "returns default for JSON over cap" true
+    (match result with `Assoc [("fallback", `Bool true)] -> true | _ -> false)
+
+let test_read_json_capped_malformed_returns_default () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "bad.json" in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "{not valid json");
+  let result =
+    C2c_io.read_json_capped ~max_bytes:4096 ~default:(`Assoc [("error", `Bool true)]) path
+  in
+  check bool "returns default for malformed JSON" true
+    (match result with `Assoc [("error", `Bool true)] -> true | _ -> false)
+
+let test_read_json_capped_missing_file_returns_default () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "nonexistent.json" in
+  let result =
+    C2c_io.read_json_capped ~max_bytes:4096 ~default:(`Assoc [("missing", `Bool true)]) path
+  in
+  check bool "returns default for missing file" true
+    (match result with `Assoc [("missing", `Bool true)] -> true | _ -> false)
+
 let test_prepare_launch_args_claude_uses_development_channel_flag () =
   with_temp_dir @@ fun dir ->
   with_cwd dir @@ fun () ->
@@ -3748,5 +3797,15 @@ let () =
             `Quick, test_deliver_kickoff_claude_is_noop )
         ; ( "unknown_client_returns_empty",
             `Quick, test_deliver_kickoff_unknown_client_returns_empty )
+        ] )
+    ; ( "read_json_capped_561f",
+        [ ( "under_limit_parses_ok",
+            `Quick, test_read_json_capped_under_limit )
+        ; ( "over_limit_returns_default",
+            `Quick, test_read_json_capped_over_limit )
+        ; ( "malformed_returns_default",
+            `Quick, test_read_json_capped_malformed_returns_default )
+        ; ( "missing_file_returns_default",
+            `Quick, test_read_json_capped_missing_file_returns_default )
         ] )
     ]

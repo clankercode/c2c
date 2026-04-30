@@ -30,7 +30,13 @@ open C2c_mcp_helpers
 
   let read_json_file path ~default =
     if Sys.file_exists path then
-      try Yojson.Safe.from_file path with Yojson.Json_error _ -> default
+      (* 64 KiB cap: registration blobs, relay state, and config files
+         are operator-controlled but may be attacker-adjacent (e.g. a
+         compromised peer writing an oversized blob to the shared relay
+         directory). A parse-cap of 64 KiB is ample for any legitimate
+         broker artifact and prevents unbounded memory allocation from
+         maliciously large files. Slice F. *)
+      C2c_io.read_json_capped ~max_bytes:(64 * 1024) ~default path
     else default
 
   let write_json_file path json =
@@ -637,7 +643,10 @@ open C2c_mcp_helpers
       let path = relay_pins_path () in
       if Sys.file_exists path then begin
         let json =
-          try Yojson.Safe.from_file path with Yojson.Json_error _ -> `Assoc []
+          (* Slice F: relay-pins are trust-on-first-use data written by
+             the relay operator; cap prevents a malformed/ oversized file
+             from causing memory stress during load. *)
+          C2c_io.read_json_capped ~max_bytes:65536 ~default:(`Assoc []) path
         in
         let load_section name tbl =
           match json with
@@ -2805,7 +2814,10 @@ open C2c_mcp_helpers
     if not (Sys.file_exists pending_path) then 0
     else
       let pending_json =
-        try Yojson.Safe.from_file pending_path with _ -> `List []
+        (* Slice F: pending orphan replay files are ephemeral broker
+           artifacts; cap prevents a malformed file from causing memory
+           stress during deserialization. *)
+        C2c_io.read_json_capped ~max_bytes:65536 ~default:(`List []) pending_path
       in
       let msgs =
         match pending_json with
