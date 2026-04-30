@@ -1321,12 +1321,15 @@ const C2CDelivery: Plugin = async (ctx) => {
   }
 
   /** Peek at inbox without draining — returns any permission reply for permId, or null.
-   *  Checks two sources:
-   *  1. Broker inbox (live) — highest priority
-   *  2. Spool file — drainInbox may have moved the message there before timeout.
-   *     If so, we still want to find it rather than falsely timing out. */
+   *  Checks three sources in order:
+   *  1. Broker inbox (live)
+   *  2. Local plugin spool — drainInbox may have written here from a prior call
+   *  3. Broker OCaml spool — when the plugin runs from a different cwd than the
+   *     broker root, drainInbox writes to the local spool but the OCaml wire-bridge
+   *     also appends to $BROKER_ROOT/<sessionId>.spool.json; we check both to avoid
+   *     false timeouts when the reply landed in the broker's spool. */
   async function peekInboxForPermission(permId: string): Promise<string | null> {
-    // 1. Check broker inbox
+    // 1. Broker inbox
     try {
       const stdout = (await runC2c([
         "peek-inbox",
@@ -1341,17 +1344,41 @@ const C2CDelivery: Plugin = async (ctx) => {
         }
       }
     } catch {
-      // fall through: broker inbox unavailable or empty, check spool
+      // fall through
     }
 
-    // 2. Check spool — drainInbox may have moved the coordinator's reply there
-    //    before we could read it from the broker inbox.
+    // 2. Local plugin spool — drainInbox writes here; may contain replies written
+    //    before we got to poll.
     const spooled = readSpool();
     for (const msg of spooled) {
       const reply = extractPermissionReply(msg.content);
       if (reply && reply.permId === permId) {
         return reply.decision;
       }
+    }
+
+    // 3. Broker OCaml spool — the wire-bridge appends to
+    //    $BROKER_ROOT/<sessionId>.spool.json on every drain. When the plugin
+    //    is invoked from a project directory whose cwd differs from the broker
+    //    root, the local spool and broker spool diverge; we check both so a
+    //    reply in the broker spool doesn't falsely time out (#495).
+    try {
+      if (brokerRoot) {
+        const brokerSpoolPath = path.join(brokerRoot, `${sessionId}.spool.json`);
+        const raw = fs.readFileSync(brokerSpoolPath, "utf-8").trim();
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const brokerMsgs: Msg[] = Array.isArray(parsed) ? parsed : [];
+          for (const msg of brokerMsgs) {
+            const reply = extractPermissionReply(msg.content);
+            if (reply && reply.permId === permId) {
+              return reply.decision;
+            }
+          }
+        }
+      }
+    } catch {
+      // best-effort: spool may not exist or be readable
     }
 
     return null;
