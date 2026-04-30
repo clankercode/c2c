@@ -44,6 +44,11 @@
  (libraries c2c_mcp alcotest str unix))
 
 (test
+ (name test_c2c_send_handlers)
+ (modules test_c2c_send_handlers)
+ (libraries c2c_mcp alcotest yojson unix))
+
+(test
  (name test_c2c_start)
  (modules test_c2c_start)
  (libraries c2c_mcp alcotest cmdliner yojson unix)
