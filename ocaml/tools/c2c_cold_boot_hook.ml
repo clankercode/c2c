@@ -10,7 +10,7 @@
 
 let iso8601_now () = C2c_time.now_iso8601_utc ()
 
-let mkdir_p dir = C2c_io.mkdir_p ~mode:0o700 dir
+let mkdir_p = C2c_mcp.mkdir_p ~mode:0o700
 
 let cold_boot_marker_path broker_root session_id =
   Filename.concat (Filename.concat broker_root ".cold_boot_done") session_id

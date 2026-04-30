@@ -24,7 +24,7 @@ let min_runtime_ms = 10.0
 
 let iso8601_now () = C2c_time.iso8601_utc_ms (Unix.gettimeofday ())
 
-let mkdir_p dir = C2c_io.mkdir_p ~mode:0o700 dir
+let mkdir_p = C2c_mcp.mkdir_p ~mode:0o700
 
 let statefile_path () =
   let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
