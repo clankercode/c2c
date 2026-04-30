@@ -8,27 +8,16 @@
     Slice B: this becomes the outer proxy; the inner refactors behind run_inner_server.
  *)
 
-let ( // ) = Filename.concat
-
 let server_banner () =
   Version.banner ~role:"mcp-server" ~git_hash:C2c_mcp.server_git_hash
 
-let xdg_state_home () =
-  match Sys.getenv_opt "XDG_STATE_HOME" with
-  | Some v when String.trim v <> "" -> String.trim v
-  | _ ->
-      (match Sys.getenv_opt "HOME" with
-       | Some h when String.trim h <> "" -> String.trim h // ".local" // "state"
-       | _ -> "/tmp")
-
-let resolve_broker_root () =
-  let abs_path p = if Filename.is_relative p then Sys.getcwd () // p else p in
-  match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-  | Some dir -> abs_path dir
-  | None -> (
-      match Git_helpers.git_common_dir () with
-      | Some git_dir -> abs_path git_dir // "c2c" // "mcp"
-      | None -> xdg_state_home () // "c2c" // "default" // "mcp")
+(* #503: delegate to canonical resolver in C2c_repo_fp.
+   Previously this had its own resolver that fell back to legacy
+   `<git-common-dir>/c2c/mcp` when env was unset, causing split-brain
+   after migration: stanza launched with C2C_MCP_BROKER_ROOT correctly
+   resolved canonical, but agents whose env didn't propagate fell
+   through to legacy and silently wrote to a different broker. *)
+let resolve_broker_root () = C2c_repo_fp.resolve_broker_root ()
 
 let () =
   server_banner ();
