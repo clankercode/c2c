@@ -3,7 +3,7 @@
 **Audience**: any agent (subagent, peer, human) implementing a slice in
 the c2c repo's shared-`.git` multi-worktree layout.
 
-**Pattern catalog**: this runbook catalogs **20 patterns** (as of 2026-05-01).
+**Pattern catalog**: this runbook catalogs **21 patterns** (as of 2026-05-01).
 The canonical count lives in `CLAUDE.md`; this line tracks locally.
 
 **Why this exists**: 2026-04-28's high-parallel burn surfaced four
@@ -920,6 +920,45 @@ The coordinator's prompt explicitly called out both cases. The corrective action
 3. If you receive a PASS artifact that references an old SHA (reviewer's worktree was stale), treat it as invalid and ask for a fresh review against current master.
 
 **Cross-reference**: Pattern 8 (reviewer must build IN slice worktree), Pattern 18 (install-ancestry staleness). The stale-base problem is the upstream cause of both downstream symptoms.
+
+---
+
+## Pattern 21 — install-recipe slices need fresh-tree install verification (#521)
+
+**Severity**: MEDIUM — false-green peer-PASS verdicts on a high-impact regression class. Operators on a fresh checkout hit the failure immediately; reviewers in a populated `_build/` see rc=0 because the cached artifact is still on disk.
+
+**Symptom**: A reviewer signs PASS on a slice that touches install plumbing (e.g. `justfile` adds a `cp _build/default/.../foo.exe` line). Reviewer runs `dune build --root .` rc=0, `just install-all` rc=0, even invokes the new binary rc=0. Coordinator cherry-picks to master and runs `just install-all` from a clean tree:
+
+```
+cp: cannot stat '_build/default/ocaml/cli/foo.exe': No such file or directory
+```
+
+**Root cause**: Pattern 8's bare `build-clean-IN-slice-worktree-rc=0` criterion is satisfied by `dune build --root .` returning 0 — which builds **everything** dune knows about, regardless of whether the explicit `just build` recipe target list lists the artifact. So when the slice's `cp` line is added to `install-all` but the corresponding target is missing from `just build`, the reviewer's prior `dune build` has already populated `_build/`, and the subsequent `cp` succeeds purely on cached state. A clean tree (no `_build/`) does NOT have the artifact, so `cp` fails immediately. Pattern 8 alone cannot surface the difference.
+
+**The check**: when the slice diff touches `justfile` (especially `build`/`install-all`/install-style recipes), `dune install` stanzas, or dune `(public_name ...)` targets, peer-PASS verification MUST include a clean-tree install run:
+
+```
+rm -rf _build      # OR `dune clean --root .`
+just install-all
+```
+
+Capture the rc in `criteria_checked` as `clean-build-then-install-all-rc=N`. The bare Pattern 8 criterion `build-clean-IN-slice-worktree-rc=0` is necessary but not sufficient for this slice class.
+
+**Case study — birch #482 S1 (2026-05-01)**:
+
+- birch's first commit `3686f524` added a `cp _build/default/ocaml/cli/c2c_deliver_inbox.exe` line to `install-all` but did not add `c2c_deliver_inbox.exe` to the explicit target list in `just build` (justfile:142) — and missed `install-all`'s own inline `dune build` invocation at line 269. Reviewer (stanza-coder) PASS'd because `dune build --root .` had already laid down the artifact. Cairn's clean-tree cherry-pick attempt failed with the `cp: cannot stat` shape above.
+- birch's first fix `4794558a` added the target to `build:` (line 142) only. Re-PASS reviewer applied the new clean-tree criterion (`rm -rf _build && just install-all`) and reproduced the failure — `install-all`'s line 269 `dune build` was still missing the target. **The new criterion caught the regression within minutes of being articulated.** Without it, the second false-green PASS would have been identical in shape to the first.
+- birch's second fix `f0006d15` patched line 269. Clean-tree install rc=0 confirmed; re-PASS signed.
+
+**Receipt**: `.collab/findings/2026-05-01T06-25-00Z-stanza-coder-pattern-8-hole-install-recipe-stale-artifacts.md` — full timeline with rc captures and the empirical FAIL→re-PASS validation that motivated this pattern.
+
+**Mitigation**:
+
+1. **Reviewers**: when the slice diff touches install plumbing, run `rm -rf _build && just install-all` before signing. Add `clean-build-then-install-all-rc=0` to `criteria_checked`. The `review-and-fix` skill's pre-flight already says "Force a clean rebuild before testing" — this pattern elevates it from a general note to a hard criterion for this slice class.
+2. **Slice authors**: when adding a `cp _build/default/...` line to `install-all`, also add the corresponding target to BOTH `just build`'s explicit target list AND `install-all`'s own inline `dune build` invocation. Search the justfile for every `dune build` and ensure the new artifact is listed in each.
+3. **Coordinators**: when sequencing peer-PASS for an install-recipe slice, include the clean-tree criterion in the PASS-request DM template — explicit beats implicit.
+
+**Cross-reference**: Pattern 7 (review-and-fix pre-flight fresh build), Pattern 8 (reviewer must build IN slice worktree). Pattern 21 is a strict tightening of Pattern 8 for the install-recipe sub-class.
 
 ---
 
