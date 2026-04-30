@@ -3,7 +3,9 @@
 c2c-dup-scanner: detect copy-pasted code blocks across .py/.ml/.mli files.
 
 Usage:
-    c2c-dup-scanner.py --repo <repo_path> [--summary|--full] [--warn-only] [--json] [--min-cluster-size N]
+    c2c-dup-scanner.py --repo <repo_path> [--summary|--full] [--warn-only] [--json] \
+                        [--min-cluster-size N] [--max-files N] [--scan-timeout SECONDS] \
+                        [--overall-timeout SECONDS]
     c2c-dup-scanner.py --repo . --summary --warn-only
 
 Wired into c2c-doctor.sh like c2c-command-test-audit.py.
@@ -13,11 +15,13 @@ import argparse
 import hashlib
 import os
 import re
+import signal
 import sys
 import json
+import time
 from pathlib import Path
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as futures_wait, ALL_COMPLETED
 
 # Parameters
 WINDOW_TOKENS = 25  # tokens per hash window
@@ -404,7 +408,7 @@ def get_file_loc(filepath: str, all_file_datas: dict) -> int | None:
     return None
 
 
-def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json_output: bool, ignore_patterns: list[re.Pattern] = None, min_cluster_size: int = 1) -> int:
+def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json_output: bool, ignore_patterns: list[re.Pattern] = None, min_cluster_size: int = 1, max_files: int = 2000, scan_timeout: int = 60) -> int:
     """Run the duplication scanner."""
     repo = Path(repo_path)
     if not repo.exists():
@@ -420,15 +424,28 @@ def run_scanner(repo_path: str, summary: bool, full: bool, warn_only: bool, json
             if Path(f).suffix.lower() in INCLUDE_EXTENSIONS:
                 files_to_scan.append(Path(root) / f)
 
+    # Cap file count to prevent runaway scans (#519)
+    if len(files_to_scan) > max_files:
+        files_to_scan = files_to_scan[:max_files]
+
     if not files_to_scan:
         print("no .py/.ml/.mli files found", file=sys.stderr)
         return 0
 
-    # Scan files in parallel
+    # Scan files in parallel with hard timeout (#519)
     file_datas = []
     with ThreadPoolExecutor() as executor:
         futures = {executor.submit(scan_file, fp): fp for fp in files_to_scan}
-        for future in as_completed(futures):
+        done, not_done = futures_wait(
+            futures,
+            timeout=scan_timeout,
+            return_when=ALL_COMPLETED
+        )
+        # Log skipped files on timeout
+        if not_done:
+            print(f"warning: scan timed out after {scan_timeout}s; "
+                  f"{len(not_done)} files skipped", file=sys.stderr)
+        for future in done:
             try:
                 result = future.result()
                 file_datas.append(result)
@@ -547,6 +564,32 @@ def main():
         metavar="N",
         help="Only report clusters with at least N duplicate windows (default: 1, show all)",
     )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=300,
+        metavar="N",
+        help="Maximum number of files to scan (default: 300). Caps parallelism to prevent runaway scans. "
+             "Cluster-finding is O(n^2) in windows — keep this small for large repos.",
+    )
+    parser.add_argument(
+        "--scan-timeout",
+        type=int,
+        default=20,
+        metavar="SECONDS",
+        help="Timeout for the parallel file-scan phase in seconds (default: 20). "
+             "Files scanned within the timeout are returned; remainder are skipped. "
+             "The overall scan also has a hard --overall-timeout ceiling.",
+    )
+    parser.add_argument(
+        "--overall-timeout",
+        type=int,
+        default=30,
+        metavar="SECONDS",
+        help="Hard overall timeout for the entire scan in seconds (default: 30). "
+             "Uses SIGALRM; applies to all phases (scan + cluster-finding). "
+             "If exceeded, the scan is aborted and partial results (or a timeout message) are returned.",
+    )
     args = parser.parse_args()
 
     # Compile ignore patterns
@@ -555,15 +598,38 @@ def main():
     if not args.summary and not args.full and not args.json:
         args.summary = True  # default to summary mode
 
-    exit_code = run_scanner(
-        args.repo,
-        summary=args.summary,
-        full=args.full,
-        warn_only=args.warn_only,
-        json_output=args.json,
-        ignore_patterns=ignore_patterns,
-        min_cluster_size=args.min_cluster_size,
-    )
+    # Set overall hard-timeout via SIGALRM
+    class TimeoutError(Exception):
+        pass
+
+    def _sigalrm_handler(signum, frame):
+        raise TimeoutError(f"scan exceeded overall timeout ({args.overall_timeout}s)")
+
+    old_handler = None
+    if args.overall_timeout > 0:
+        old_handler = signal.signal(signal.SIGALRM, _sigalrm_handler)
+        signal.alarm(args.overall_timeout)
+
+    try:
+        exit_code = run_scanner(
+            args.repo,
+            summary=args.summary,
+            full=args.full,
+            warn_only=args.warn_only,
+            json_output=args.json,
+            ignore_patterns=ignore_patterns,
+            min_cluster_size=args.min_cluster_size,
+            max_files=args.max_files,
+            scan_timeout=args.scan_timeout,
+        )
+    except TimeoutError as e:
+        print(f"error: {e}", file=sys.stderr)
+        exit_code = 124
+    finally:
+        if args.overall_timeout > 0:
+            signal.alarm(0)  # cancel pending alarm
+            if old_handler is not None:
+                signal.signal(signal.SIGALRM, old_handler)
 
     if args.warn_only:
         return 0

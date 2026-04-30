@@ -293,7 +293,11 @@ if [[ "$AHEAD" == "0" ]]; then
       echo ""
       bold "=== duplication scan ==="
       echo ""
-      "$SCRIPT_DIR/c2c-dup-scanner.py" --repo "$PWD" --full --warn-only || true
+      # timeout 30: bash outer limit; Python --overall-timeout 30 means SIGALRM fires
+      # first inside Python (clean return rc=124), bash timeout is cancelled since Python
+      # already exited. Both timers set to 30s so neither interferes with normal runs.
+      timeout 30 "$SCRIPT_DIR/c2c-dup-scanner.py" --repo "$PWD" --full --warn-only \
+        || { rc=$?; [[ $rc -eq 124 ]] && echo "warning: duplication scan timed out after 30s" || echo "warning: duplication scan errored (rc=${rc})"; }
       echo ""
     fi
   fi
@@ -439,13 +443,17 @@ if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -x "$SCRIPT_DIR/c2c-dup-scanner.py" ]]; t
 fi
 
 # ---------------------------------------------------------------------------
-# Worktree base staleness
+# Worktree base staleness (cap: 505 worktrees × 2 git cmds = slow;
+# skip entirely when JSON mode — callers who want JSON can run
+# `c2c worktree check-bases` directly)
 # ---------------------------------------------------------------------------
 WORKTREE_BASE_OUTPUT=""
 if [[ $JSON -eq 0 ]]; then
   WT_CLI="${C2C_CLI:-c2c}"
   if [[ -x "$WT_CLI" ]] || command -v c2c &>/dev/null; then
-    WORKTREE_BASE_OUTPUT=$("$WT_CLI" worktree check-bases 2>&1 || true)
+    # timeout 15: worktree check-bases is O(worktrees) with 2 git cmds each;
+    # 505 worktrees takes ~15-20s — cap it so it can't block the whole doctor run.
+    WORKTREE_BASE_OUTPUT=$(timeout 15 "$WT_CLI" worktree check-bases 2>&1 || true)
     if [[ -n "$WORKTREE_BASE_OUTPUT" ]]; then
       bold "=== worktree base drift ==="
       echo ""
