@@ -6,11 +6,12 @@
 # Install: add this dir to PATH, BEFORE the real git.
 # The shim detects "git reset --hard <target>" and checks whether <target>
 # is strictly behind HEAD. If so, it refuses unless C2C_COORDINATOR=1.
-# For git commit, it warns (or refuses with C2C_COMMIT_REFUSE=1) when on
-# main/master unless C2C_COORDINATOR=1.
+# For git commit, it warns (or refuses with C2C_COMMIT_REFUSE=1) when
+# running in the main tree (cwd = main repo root) unless C2C_COORDINATOR=1.
 #
-# The main-tree guard fires when the resolved cwd equals the main repo root.
-# All other directories (feature worktrees, subdirs) pass through unchanged.
+# The main-tree guard fires when cwd equals the main repo root AND
+# GIT_WORK_TREE is not set (git sets GIT_WORK_TREE when inside a worktree,
+# so this distinguishes main-repo-root-on-worktree-branch from true worktree).
 #
 # Usage: install via `c2c install git-shim` or manually add to PATH.
 
@@ -34,13 +35,15 @@ is_main_tree() {
     [ -n "$mt" ] && [ "$cwd" = "$mt" ]
 }
 
-# Returns 0 (true) if current branch is NOT main/master (i.e., is a worktree
-# branch or detached HEAD). Worktree branches are safe to commit on.
+# Returns 0 (true) if we are inside a git worktree (GIT_WORK_TREE is set
+# by git itself when the git command runs inside a worktree). This replaces
+# the previous heuristic that checked the branch name — that heuristic
+# fails when cwd is the main repo root but HEAD points to a worktree branch
+# (the worktree's HEAD symref is active in the main repo's .git directory).
 is_worktree_branch() {
-    local branch
-    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")"
-    # HEAD means detached — treat as worktree-safe (no pollution of main history)
-    [ "$branch" != "master" ] && [ "$branch" != "main" ] && [ "$branch" != "HEAD" ]
+    # GIT_WORK_TREE is set by git when operating inside a worktree.
+    # In the main repo it is always empty/unset.
+    [ -n "${GIT_WORK_TREE:-}" ]
 }
 
 # Check whether <target> is strictly behind HEAD (target is an ancestor of HEAD).

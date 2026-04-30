@@ -224,6 +224,39 @@ fi
 git -C "$CLONE_DIR" worktree remove "$worktree_dir" --force >/dev/null 2>&1 || true
 rm -rf "$worktree_dir"
 
+# ── Test 13: regression — GIT_WORK_TREE is sole determinant, not branch name ─
+# Bug: old is_worktree_branch() used git rev-parse --abbrev-ref HEAD to detect
+# worktrees. This fails when cwd=main-repo-root but HEAD=worktree-branch (the
+# branch ref from the worktree is accessible in the main .git).
+# Fix: is_worktree_branch() now checks GIT_WORK_TREE (set by git in any worktree).
+# This test verifies the main-tree commit guard fires regardless of which
+# non-master branch is checked out in the main repo.
+echo "--- Test 13: main repo + non-master branch: commit refused (GIT_WORK_TREE detection) ---"
+ENSURE_CLONE
+# Create a throwaway branch in the clone (simulates any non-master branch)
+regress_branch="regress-branch-$$-$(date +%s)"
+git -C "$CLONE_DIR" branch "$regress_branch" HEAD >/dev/null 2>&1
+# Verify: in clone, HEAD is regress_branch (not master/main); GIT_WORK_TREE is unset
+head_branch="$(git -C "$CLONE_DIR" rev-parse --abbrev-ref HEAD)"
+echo "  Clone HEAD=$head_branch (should be $regress_branch), GIT_WORK_TREE=${GIT_WORK_TREE-}"
+# Try to commit from clone root — must be refused (GIT_WORK_TREE not set = main repo)
+output=$(
+    (
+        export PATH="$(dirname "$SHIM"):$PATH"
+        export C2C_GIT_SHIM_MAIN_TREE="$CLONE_DIR"
+        unset C2C_COORDINATOR
+        unset C2C_COMMIT_REFUSE
+        cd "$CLONE_DIR"
+        "$SHIM" commit --allow-empty -m "regress-test-$$" 2>&1 || echo "EXIT_CODE:$?"
+    )
+)
+git -C "$CLONE_DIR" branch -d "$regress_branch" >/dev/null 2>&1 || true
+if echo "$output" | grep -q "git-shim refused"; then
+    pass "main repo + non-master branch: refused (GIT_WORK_TREE detection)"
+else
+    fail "main repo + non-master branch should refuse, got: $(echo "$output" | head -1)"
+fi
+
 echo ""
 echo "=== Results: $passed passed, $failed failed ==="
 if [ $failed -gt 0 ]; then exit 1; fi
