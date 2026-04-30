@@ -115,7 +115,7 @@ let test_cleanup () =
         C2c_approval_paths.make_pending_payload
           ~token ~agent_alias:"a" ~tool_name:"Shell"
           ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"r"
-          ~broker_root:root
+          ~broker_root:root ~authorizers:[] ~primary_authorizer:""
       in
       let _ =
         C2c_approval_paths.write_pending ~override_root:root
@@ -165,7 +165,7 @@ let test_list_pending_tokens () =
           C2c_approval_paths.make_pending_payload
             ~token:t ~agent_alias:"a" ~tool_name:"Shell"
             ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"r"
-            ~broker_root:root
+            ~broker_root:root ~authorizers:[] ~primary_authorizer:""
         in
         ignore
           (C2c_approval_paths.write_pending ~override_root:root
@@ -198,12 +198,12 @@ let test_read_pending () =
         "missing file -> None" None
         (C2c_approval_paths.read_pending ~override_root:root
            ~token:"ka_unknown" ());
-      let pl =
-        C2c_approval_paths.make_pending_payload
-          ~token:"ka_y" ~agent_alias:"k" ~tool_name:"Shell"
-          ~tool_input:"{\"x\":1}" ~timeout_at:42 ~reviewer_alias:"r"
-          ~broker_root:root
-      in
+       let pl =
+         C2c_approval_paths.make_pending_payload
+           ~token:"ka_y" ~agent_alias:"k" ~tool_name:"Shell"
+           ~tool_input:"{\"x\":1}" ~timeout_at:42 ~reviewer_alias:"r"
+           ~broker_root:root ~authorizers:[] ~primary_authorizer:""
+       in
       let _ =
         C2c_approval_paths.write_pending ~override_root:root
           ~token:"ka_y" ~payload:pl ()
@@ -257,7 +257,7 @@ let test_read_pending_timeout_at () =
         C2c_approval_paths.make_pending_payload
           ~token:"ka_t" ~agent_alias:"a" ~tool_name:"Shell"
           ~tool_input:"{}" ~timeout_at:9876 ~reviewer_alias:"r"
-          ~broker_root:root
+          ~broker_root:root ~authorizers:[] ~primary_authorizer:""
       in
       let _ =
         C2c_approval_paths.write_pending ~override_root:root
@@ -293,13 +293,87 @@ let test_parse_string_field () =
     (C2c_approval_paths.parse_string_field
        "{\"broker_root\":\"/home/user/a b\",\"token\":\"ka_x\"}" "broker_root")
 
+(* #511 Slice 4 additions *)
+
+let test_parse_string_list_field () =
+  Alcotest.(check (option (list string)))
+    "present"
+    (Some ["coordinator1"; "jungle-coder"; "fern-coder"])
+    (C2c_approval_paths.parse_string_list_field
+       "{\"authorizers\":[\"coordinator1\",\"jungle-coder\",\"fern-coder\"],\"token\":\"ka_x\"}"
+       "authorizers");
+  Alcotest.(check (option (list string)))
+    "empty array"
+    (Some [])
+    (C2c_approval_paths.parse_string_list_field
+       "{\"authorizers\":[],\"token\":\"ka_x\"}" "authorizers");
+  Alcotest.(check (option (list string)))
+    "missing field"
+    None
+    (C2c_approval_paths.parse_string_list_field
+       "{\"token\":\"ka_x\"}" "authorizers");
+  Alcotest.(check (option (list string)))
+    "single item"
+    (Some ["coordinator1"])
+    (C2c_approval_paths.parse_string_list_field
+       "{\"authorizers\":[\"coordinator1\"]}" "authorizers")
+
+let test_authorizers_in_pending_payload () =
+  with_tmp_dir (fun root ->
+      let authz = ["coordinator1"; "jungle-coder"] in
+      let pl =
+        C2c_approval_paths.make_pending_payload
+          ~token:"ka_auth" ~agent_alias:"a" ~tool_name:"Shell"
+          ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"coordinator1"
+          ~broker_root:root ~authorizers:authz ~primary_authorizer:"coordinator1"
+      in
+      Alcotest.(check (option (list string)))
+        "authorizers round-trips through payload"
+        (Some authz)
+        (C2c_approval_paths.parse_string_list_field pl "authorizers");
+      Alcotest.(check (option string))
+        "primary_authorizer round-trips"
+        (Some "coordinator1")
+        (C2c_approval_paths.parse_string_field pl "primary_authorizer"))
+
+let test_update_primary_authorizer () =
+  with_tmp_dir (fun root ->
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      let pl =
+        C2c_approval_paths.make_pending_payload
+          ~token:"ka_upd" ~agent_alias:"a" ~tool_name:"Shell"
+          ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"coordinator1"
+          ~broker_root:root ~authorizers:["coordinator1"; "jungle-coder"]
+          ~primary_authorizer:"coordinator1"
+      in
+      let _ =
+        C2c_approval_paths.write_pending ~override_root:root
+          ~token:"ka_upd" ~payload:pl ()
+      in
+      let ok =
+        C2c_approval_paths.update_primary_authorizer_in_file
+          ~override_root:root ~token:"ka_upd" ~new_authorizer:"jungle-coder" ()
+      in
+      Alcotest.(check bool) "update succeeded" true ok;
+      match C2c_approval_paths.read_pending ~override_root:root ~token:"ka_upd" () with
+      | None -> Alcotest.fail "pending file gone after update"
+      | Some s ->
+          Alcotest.(check (option string))
+            "primary_authorizer updated"
+            (Some "jungle-coder")
+            (C2c_approval_paths.parse_string_field s "primary_authorizer");
+          Alcotest.(check (option (list string)))
+            "authorizers still intact"
+            (Some ["coordinator1"; "jungle-coder"])
+            (C2c_approval_paths.parse_string_list_field s "authorizers"))
+
 let test_broker_root_in_pending_payload () =
   with_tmp_dir (fun root ->
       let pl =
         C2c_approval_paths.make_pending_payload
           ~token:"ka_br" ~agent_alias:"a" ~tool_name:"Shell"
           ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"r"
-          ~broker_root:root
+          ~broker_root:root ~authorizers:[] ~primary_authorizer:""
       in
       Alcotest.(check (option string))
         "broker_root round-trips through payload"
@@ -313,7 +387,7 @@ let test_read_pending_broker_root () =
         C2c_approval_paths.make_pending_payload
           ~token:"ka_rb" ~agent_alias:"a" ~tool_name:"Shell"
           ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"r"
-          ~broker_root:root
+          ~broker_root:root ~authorizers:[] ~primary_authorizer:""
       in
       let _ =
         C2c_approval_paths.write_pending ~override_root:root
@@ -361,5 +435,11 @@ let () =
              test_broker_root_in_pending_payload;
            Alcotest.test_case "read_pending preserves broker_root" `Quick
              test_read_pending_broker_root;
-         ] );
+           Alcotest.test_case "parse_string_list_field" `Quick
+             test_parse_string_list_field;
+           Alcotest.test_case "authorizers in payload" `Quick
+             test_authorizers_in_pending_payload;
+           Alcotest.test_case "update_primary_authorizer" `Quick
+             test_update_primary_authorizer;
+          ] );
     ]

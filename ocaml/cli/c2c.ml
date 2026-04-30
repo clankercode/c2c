@@ -5391,6 +5391,22 @@ let approval_pending_write_cmd =
                   & info [ "agent-alias" ] ~docv:"ALIAS"
                       ~doc:"Agent (kimi) alias whose hook fired. Defaults to current session alias.")
   in
+  (* #511 Slice 4: fallback authorizer chain + update-authorizer flag. *)
+  let authorizers_flag =
+    Cmdliner.Arg.(value & opt (some string) None
+                  & info [ "authorizers" ] ~docv:"ALIAS1,ALIAS2,..."
+                      ~doc:"Comma-separated ordered list of reviewer aliases (the fallback chain). Written into the pending record. Omit when using --update-authorizer.")
+  in
+  let primary_authorizer_flag =
+    Cmdliner.Arg.(value & opt (some string) None
+                  & info [ "primary-authorizer" ] ~docv:"ALIAS"
+                      ~doc:"First (current) authorizer in the chain. Written into the pending record. Omit when using --update-authorizer.")
+  in
+  let update_authorizer_flag =
+    Cmdliner.Arg.(value & opt (some string) None
+                  & info [ "update-authorizer" ] ~docv:"ALIAS"
+                      ~doc:"Instead of creating a new pending record, update the primary_authorizer field of an existing one. Use this to advance the chain as each authorizer is tried.")
+  in
   let json =
     Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Machine-readable output.")
   in
@@ -5400,7 +5416,21 @@ let approval_pending_write_cmd =
   and+ reviewer = reviewer
   and+ timeout = timeout
   and+ agent_alias_flag = agent_alias_flag
+  and+ authorizers_flag = authorizers_flag
+  and+ primary_authorizer_flag = primary_authorizer_flag
+  and+ update_authorizer_flag = update_authorizer_flag
   and+ json = json in
+  (* --update-authorizer: in-place update of primary_authorizer field only. *)
+  (match update_authorizer_flag with
+   | Some new_authorizer ->
+       let ok = C2c_approval_paths.update_primary_authorizer_in_file ~token ~new_authorizer () in
+       if json then
+         Printf.printf "{\"ok\":%b,\"token\":\"%s\",\"updated_primary_authorizer\":\"%s\"}\n%!" ok token new_authorizer
+       else
+         Printf.printf "approval-pending-write: %supdated primary_authorizer=%s for token=%s\n%!"
+           (if ok then "" else "FAILED to ") new_authorizer token;
+       exit (if ok then 0 else 1)
+   | None -> ());
   let agent_alias =
     match agent_alias_flag with
     | Some a -> a
@@ -5418,6 +5448,18 @@ let approval_pending_write_cmd =
            | None -> "unknown"
          with _ -> "unknown")
   in
+  let authorizers =
+    match authorizers_flag with
+    | Some s ->
+        s |> String.split_on_char ','
+          |> List.filter (fun s -> String.trim s <> "")
+          |> List.map String.trim
+    | None -> []
+  in
+  let primary_authorizer =
+    match primary_authorizer_flag with
+    | Some a -> a | None -> ""
+  in
   C2c_approval_paths.ensure_dirs ();
   let timeout_at = int_of_float (Unix.gettimeofday ()) + timeout in
   let broker_root = resolve_broker_root () in
@@ -5425,6 +5467,7 @@ let approval_pending_write_cmd =
     C2c_approval_paths.make_pending_payload
       ~token ~agent_alias ~tool_name ~tool_input ~timeout_at
       ~reviewer_alias:reviewer ~broker_root
+      ~authorizers ~primary_authorizer
   in
   let path =
     try C2c_approval_paths.write_pending ~token ~payload () with
@@ -5438,8 +5481,10 @@ let approval_pending_write_cmd =
       token path agent_alias reviewer timeout_at
   else
     Printf.printf
-      "approval-pending-write: %s recorded (file=%s, agent=%s, reviewer=%s, timeout_at=%d)\n%!"
-      token path agent_alias reviewer timeout_at;
+      "approval-pending-write: %s recorded (file=%s, agent=%s, reviewer=%s, timeout_at=%d, authorizers=%d, primary_authorizer=%s)\n%!"
+      token path agent_alias reviewer timeout_at
+      (List.length authorizers)
+      (if primary_authorizer = "" then "(none)" else primary_authorizer);
   exit 0
 
 (* --- subcommand: approval-list -------------------------------------------- *)
@@ -5504,6 +5549,16 @@ let approval_show_cmd =
        | Some br ->
            Printf.printf "[broker_root: %s]\n%!" br
        | None -> ());
+      (* #511 Slice 4: also display primary_authorizer and authorizers chain. *)
+      (match C2c_approval_paths.parse_string_field s "primary_authorizer" with
+       | Some pa ->
+           Printf.printf "[primary_authorizer: %s]\n%!" pa
+       | None -> ());
+      (match C2c_approval_paths.parse_string_list_field s "authorizers" with
+       | Some al when al <> [] ->
+           let chain = String.concat ", " al in
+           Printf.printf "[authorizers: %s]\n%!" chain
+       | _ -> ());
       print_string s;
       if String.length s = 0 || s.[String.length s - 1] <> '\n' then
         print_newline ();
