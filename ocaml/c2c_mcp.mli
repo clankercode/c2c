@@ -95,6 +95,10 @@ type registration =
       needed). [Some false] = explicitly negotiated without channel
       support. [None] = unknown / pre-Phase compat. Conservative
       consumers treat [None] as "not push-capable". *)
+  ; tmux_location : string option
+  (** Tmux session:window.pane target for the pane running this session.
+      Captured at registration time for managed sessions (c2c start);
+      None for unmanaged / foreign MCP clients. Format: "session:window.pane". *)
   }
 type message =
   { from_alias : string
@@ -237,7 +241,7 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> unit -> unit
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a

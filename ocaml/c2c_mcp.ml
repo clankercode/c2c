@@ -57,13 +57,17 @@ type registration =
       Incremented by clear_compacting and clear_stale_compacting.
       Defaults to 0 for sessions predating this field. *)
   ; automated_delivery : bool option
-  (** [Some true] = client negotiated [experimental.claude/channel] in
-      MCP initialize and receives messages via push (no manual poll
-      needed). [Some false] = explicitly negotiated without channel
-      support. [None] = unknown (pre-Phase compat or the session has
-      not yet handshaked). Set in the initialize handler; consumers
-      treat [None] conservatively as "not push-capable". *)
-  }
+   (** [Some true] = client negotiated [experimental.claude/channel] in
+       MCP initialize and receives messages via push (no manual poll
+       needed). [Some false] = explicitly negotiated without channel
+       support. [None] = unknown (pre-Phase compat or the session has
+       not yet handshaked). Set in the initialize handler; consumers
+       treat [None] conservatively as "not push-capable". *)
+   ; tmux_location : string option
+   (** Tmux session:window.pane target for the pane running this session.
+       Captured at registration time for managed sessions (c2c start);
+       None for unmanaged / foreign MCP clients. Format: "session:window.pane". *)
+   }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool; message_id : string option }
 (** [message_id] is set when the message arrived via the relay (which assigns
     a UUID to every sent message). It is used to anchor sticker reactions:
@@ -807,6 +811,7 @@ module Broker = struct
              | `Bool b -> Some b
              | _ -> None
          with _ -> None)
+    ; tmux_location = str_opt "tmux_location" json
     }
 
   let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral; message_id } =
@@ -2244,7 +2249,7 @@ module Broker = struct
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) () =
     if List.mem alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -2277,11 +2282,11 @@ module Broker = struct
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery)
-          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery, r.tmux_location)
+          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None, tmux_location)
         in
         let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery, old_tmux_location) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -2310,6 +2315,10 @@ module Broker = struct
             | Some _ -> role
             | None -> old_role
           in
+          let effective_tmux_location = match tmux_location with
+            | Some _ -> tmux_location
+            | None -> old_tmux_location
+          in
           { session_id; alias; pid; pid_start_time
           ; registered_at = Some (Unix.gettimeofday ())
           ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t))
@@ -2325,7 +2334,8 @@ module Broker = struct
           ; last_activity_ts = old_last_activity_ts
           ; role = effective_role
           ; compaction_count = old_compaction_count
-          ; automated_delivery = old_automated_delivery }
+          ; automated_delivery = old_automated_delivery
+          ; tmux_location = effective_tmux_location }
         in
         let kept =
           match
@@ -4874,6 +4884,7 @@ let base_tool_definitions =
         [ prop "alias" "New alias to register for this session. Pass a different alias to rename without changing env vars."
         ; prop "session_id" "Optional session id override; defaults to the current MCP session."
         ; prop "role" "Optional sender role for envelope attribution (coordinator, reviewer, agent, user)."
+        ; prop "tmux_location" "Optional tmux session:window.pane target for this session (e.g. \"0:0.0\"). When not passed, falls back to the C2C_TMUX_LOCATION environment variable. Set automatically by managed sessions started via 'c2c start'."
         ]
   ; tool_definition ~name:"list"
       ~description:"List registered C2C peers."
@@ -5998,6 +6009,12 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
             else begin
               let plugin_version = optional_string_member "plugin_version" arguments in
               let role = optional_string_member "role" arguments in
+              let tmux_location_arg = optional_string_member "tmux_location" arguments in
+              let tmux_location =
+                match tmux_location_arg with
+                | Some _ -> tmux_location_arg
+                | None -> Sys.getenv_opt "C2C_TMUX_LOCATION"
+              in
               let broker_root = Broker.root broker in
               let keys_dir = Filename.concat broker_root "keys" in
               let enc_pubkey =
@@ -6110,7 +6127,7 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
               | None, None ->
                   Broker.register broker ~session_id ~alias ~pid ~pid_start_time
                     ~client_type ~plugin_version ~enc_pubkey ~ed25519_pubkey
-                    ~pubkey_signed_at ~pubkey_sig ~role ();
+                    ~pubkey_signed_at ~pubkey_sig ~role ~tmux_location ();
                   Broker.touch_session broker ~session_id;
               List.iter
                 (fun room_id ->

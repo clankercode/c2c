@@ -377,7 +377,7 @@ val broker_root : unit -> string
 
 (** {1 Environment building} *)
 
-val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> ?role_class_opt:string option -> ?client:string option -> ?reply_to_override:string option -> string -> string option -> string array
+val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> ?role_class_opt:string option -> ?client:string option -> ?reply_to_override:string option -> ?tmux_location:string option -> string -> string option -> string array
 (** [build_env ?broker_root_override ?auto_join_rooms_override ?role_class_opt ?client name alias_override] builds the environment array for a managed
     client subprocess. Sets C2C_MCP_SESSION_ID, C2C_MCP_AUTO_REGISTER_ALIAS,
     C2C_MCP_BROKER_ROOT, C2C_MCP_AUTO_JOIN_ROOMS (defaults to "swarm-lounge"),

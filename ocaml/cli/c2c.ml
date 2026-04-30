@@ -547,6 +547,11 @@ let list_cmd =
                 | None -> with_alive
               in
               let fields =
+                match r.tmux_location with
+                | Some loc -> fields @ [ ("tmux_location", `String loc) ]
+                | None -> fields
+              in
+              let fields =
                 match r.compacting with
                 | Some c ->
                     let reason_json = match c.reason with Some r -> `String r | None -> `Null in
@@ -621,9 +626,11 @@ let list_cmd =
                     Printf.sprintf " %04d-%02d-%02d %02d:%02d"
                       (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour t.tm_min
               in
-              Printf.printf "  %-20s %s%s  %s%s\n" r.alias alive_str pid_str session_short time_str
+              let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
+              Printf.printf "  %-20s %s%s  %s%s%s\n" r.alias alive_str pid_str session_short time_str tmux_str
             else
-              Printf.printf "  %-20s %s%s\n" r.alias alive_str pid_str)
+              let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
+              Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
           regs
 
 (* --- subcommand: whoami --------------------------------------------------- *)
@@ -8428,7 +8435,11 @@ let registration_to_json (r : C2c_mcp.registration) : Yojson.Safe.t =
   in
   let with_alive = with_pid @ [("alive", alive_val)] in
   let with_dnd = if r.dnd then with_alive @ [("dnd", `Bool true)] else with_alive in
-  `Assoc with_dnd
+  let with_tmux = match r.tmux_location with
+    | Some loc -> with_dnd @ [("tmux_location", `String loc)]
+    | None -> with_dnd
+  in
+  `Assoc with_tmux
 
 let room_to_json (ri : C2c_mcp.Broker.room_info) : Yojson.Safe.t =
   `Assoc

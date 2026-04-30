@@ -1748,6 +1748,25 @@ let capture_and_write_tmux_location name =
           with _ -> ())
       | _ -> ()
 
+(* Read the tmux session:window.pane from the per-instance tmux.json file,
+   written by [capture_and_write_tmux_location] at session start. Returns
+   [None] if the file does not exist or lacks a "session" field. *)
+let read_tmux_location_opt (name : string) : string option =
+  let path = tmux_info_path name in
+  if not (Sys.file_exists path) then None
+  else
+    try
+      let json = Yojson.Safe.from_file path in
+      let rec get_string = function
+        | `Assoc fields ->
+            (match List.assoc_opt "session" fields with
+             | Some (`String s) -> Some s
+             | _ -> None)
+        | _ -> None
+      in
+      get_string json
+    with _ -> None
+
 type tmux_target_info = { tmux_location : string; tmux_pane_id : string }
 
 let parse_tmux_target_info line =
@@ -2516,6 +2535,7 @@ let build_env ?(broker_root_override : string option = None)
     ?(role_class_opt : string option = None)
     ?(client : string option = None)
     ?(reply_to_override : string option = None)
+    ?(tmux_location : string option = None)
     (name : string) (alias_override : string option) : string array =
   let br = Option.value broker_root_override ~default:(broker_root ()) in
   (* Only set C2C_MCP_AUTO_JOIN_ROOMS when explicitly requested *)
@@ -2581,6 +2601,12 @@ let build_env ?(broker_root_override : string option = None)
     let base = base @ auto_join_base in
     let base = base @ match reply_to_override with
       | Some r -> [ "C2C_MCP_REPLY_TO", r ]
+      | None -> [] in
+    (* #517: tmux session:window.pane target for this managed session.
+       Read from the per-instance tmux.json written at startup so the inner
+       MCP server can include it in its registration. *)
+    let base = base @ match tmux_location with
+      | Some loc -> [ "C2C_TMUX_LOCATION", loc ]
       | None -> [] in
     let base =
       if client = Some "claude" then
@@ -3984,10 +4010,12 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       let start_time = Unix.gettimeofday () in
 
-      (* Build env *)
+      (* Build env — read tmux location from the per-instance file written
+         at startup so the inner MCP server receives it via C2C_TMUX_LOCATION. *)
+      let tmux_loc = read_tmux_location_opt name in
       let env = build_env ~broker_root_override:(Some broker_root)
           ~auto_join_rooms_override:auto_join_rooms ~client:(Some client)
-          ~reply_to_override:reply_to
+          ~reply_to_override:reply_to ~tmux_location:tmux_loc
           name alias_override in
       let env =
         Array.append env
