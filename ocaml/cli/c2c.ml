@@ -7702,9 +7702,11 @@ let relay_pins_rotate =
 
 (* --- subcommand: relay-pins list ----------------------------------------- *)
 
-let relay_pins_list =
-  (* Delegate to the existing doctor relay-pin-status command. *)
-  relay_pin_status
+let relay_pins_list_cmd =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "list"
+       ~doc:"List all pinned aliases and their key fingerprints + min-observed-envelope-version. Alias for relay-pin-status.")
+    relay_pin_status_cmd
 
 (* --- relay-pins command group --------------------------------------------- *)
 
@@ -7713,7 +7715,7 @@ let relay_pins =
     ~default:relay_pin_status_cmd
     (Cmdliner.Cmd.info "relay-pins"
        ~doc:"Inspect and manage broker TOFU pins (relay_pins.json).")
-    [ relay_pin_status; relay_pins_delete; relay_pins_rotate ]
+    [ relay_pins_list_cmd; relay_pin_status; relay_pins_delete; relay_pins_rotate ]
 
 (* --- subcommand: doctor delivery-mode (#307a) --- *)
 
