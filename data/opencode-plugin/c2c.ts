@@ -388,6 +388,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   // grows unbounded while seenPermissionIds stays bounded at 20.
   const pendingPermissions = new Map<string, {
     resolve: (reply: string) => void;
+    reject: (err: Error) => void;
     supervisors: string[];
   }>();
 
@@ -1460,14 +1461,21 @@ const C2CDelivery: Plugin = async (ctx) => {
    *  Security: supervisors list is verified on reply delivery — only listed supervisors
    *  are trusted to send permission decisions for this permId. */
   function waitForPermissionReply(permId: string, timeoutMs: number, supervisors: string[]): Promise<string> {
-    return new Promise((resolve) => {
-      // [#494-G1] LRU eviction: if Map is at capacity, remove the oldest entry first
-      // to make room. JavaScript Map maintains insertion order, so first key = LRU.
+    return new Promise((resolve, reject) => {
+      // [#509] LRU eviction: if Map is at capacity, reject the oldest entry's
+      // promise immediately so the caller does not wait for a promise that will
+      // never resolve, then remove it to make room.
       if (pendingPermissions.size >= PENDING_PERMISSION_CAP) {
         const oldestKey = pendingPermissions.keys().next().value;
-        if (oldestKey) removePendingPermission(oldestKey);
+        if (oldestKey) {
+          const evicted = pendingPermissions.get(oldestKey);
+          if (evicted) {
+            evicted.reject(Error("permission request evicted: concurrent permission limit reached"));
+          }
+          removePendingPermission(oldestKey);
+        }
       }
-      pendingPermissions.set(permId, { resolve, supervisors });
+      pendingPermissions.set(permId, { resolve, reject, supervisors });
       setTimeout(async () => {
         if (!pendingPermissions.has(permId)) return;
         const decision = await peekInboxForPermission(permId);
