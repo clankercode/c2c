@@ -2303,11 +2303,13 @@ let sync_instance_alias ~(session_id : string) ~(alias : string) : unit =
     (fun name ->
        let full = Filename.concat instances_dir name in
        if Sys.is_directory full && Sys.file_exists (Filename.concat full "config.json") then
-         match load_config_opt name with
-         | None -> ()
-         | Some cfg when cfg.session_id = session_id && cfg.alias <> alias ->
-             write_config { cfg with alias }
-         | _ -> ())
+         (try
+           match load_config_opt name with
+           | None -> ()
+           | Some cfg when cfg.session_id = session_id && cfg.alias <> alias ->
+               write_config { cfg with alias }
+           | _ -> ()
+         with Not_found -> ()))
     entries
 
 let persist_headless_thread_id ~(name : string) ~(thread_id : string) : unit =
