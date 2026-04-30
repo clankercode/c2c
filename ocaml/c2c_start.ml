@@ -1795,11 +1795,11 @@ let read_tmux_location_opt (name : string) : string option =
       get_string json
     with _ -> None
 
-type tmux_target_info = { tmux_location : string; tmux_pane_id : string }
+type tmux_target_info = { tmux_location : string }
 
 let parse_tmux_target_info line =
   match String.split_on_char ' ' (String.trim line) |> List.filter ((<>) "") with
-  | loc :: pane_id :: _ -> Some { tmux_location = loc; tmux_pane_id = pane_id }
+  | loc :: _ -> Some { tmux_location = loc }
   | _ -> None
 
 let tmux_shell_command_of_argv argv =
@@ -2492,8 +2492,8 @@ let run_tmux_loop ~(name : string) ~(tmux_location : string)
                     ~alias:effective_alias ~session_id:name)
       with _ -> ())
     rooms;
-  Printf.printf "[c2c-start/%s] tmux target=%s pane_id=%s outer pid=%d\n%!"
-    name target_info.tmux_location target_info.tmux_pane_id (Unix.getpid ());
+  Printf.printf "[c2c-start/%s] tmux target=%s outer pid=%d\n%!"
+    name target_info.tmux_location (Unix.getpid ());
   if tmux_command <> [] then begin
     Printf.printf "[c2c-start/%s] starting command in tmux target: %s\n%!"
       name (tmux_shell_command_of_argv tmux_command);

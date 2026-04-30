@@ -54,7 +54,7 @@ val signal_name : int -> string
     [SIGTERM] → "term", [SIGKILL] → "kill", [SIGHUP] → "hup", etc.
     Unknown signals render as "sigN". *)
 
-type tmux_target_info = { tmux_location : string; tmux_pane_id : string }
+type tmux_target_info = { tmux_location : string }
 
 val parse_tmux_target_info : string -> tmux_target_info option
 (** Parse [tmux display-message -p '#S:#I.#P #{pane_id}'] output. *)

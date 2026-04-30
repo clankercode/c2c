@@ -301,14 +301,13 @@ let test_tmux_message_payload_uses_c2c_envelope () =
   check bool "closes envelope" true
     (String.ends_with ~suffix:"</c2c>" payload)
 
-let test_parse_tmux_target_info_requires_loc_and_pane_id () =
+let test_parse_tmux_target_info () =
   let parsed = C2c_start.parse_tmux_target_info "0:1.2 %42" in
   (match parsed with
    | Some info ->
-       check string "location" "0:1.2" info.C2c_start.tmux_location;
-       check string "pane id" "%42" info.C2c_start.tmux_pane_id
+       check string "location" "0:1.2" info.C2c_start.tmux_location
    | None -> fail "expected target info");
-  check bool "missing pane id rejected" false
+  check bool "single field accepted" true
     (Option.is_some (C2c_start.parse_tmux_target_info "0:1.2"))
 
 let test_build_env_keeps_channel_delivery_without_force_flag () =
@@ -3398,8 +3397,8 @@ let () =
             `Quick, test_tmux_shell_command_quotes_argv )
         ; ( "tmux_message_payload_uses_c2c_envelope",
             `Quick, test_tmux_message_payload_uses_c2c_envelope )
-        ; ( "parse_tmux_target_info_requires_loc_and_pane_id",
-            `Quick, test_parse_tmux_target_info_requires_loc_and_pane_id )
+        ; ( "parse_tmux_target_info",
+            `Quick, test_parse_tmux_target_info )
         ; ( "build_env_keeps_channel_delivery_without_force_flag",
             `Quick, test_build_env_keeps_channel_delivery_without_force_flag )
         ; ( "build_env_does_not_seed_codex_thread_id",
