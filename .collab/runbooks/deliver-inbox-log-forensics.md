@@ -133,15 +133,16 @@ Scenario: agent `bob` did not receive a DM from `alice` sent at ~`1748501234`.
 
 1. **Find the enqueue** in `broker.log`:
    ```bash
-   jq -c 'select(.event=="dm_enqueue" and .to_alias=="bob" and .msg_ts > 1748501200 and .msg_ts < 1748501300)' <broker_root>/broker.log
+   jq -c 'select(.event=="dm_enqueue" and .to_alias=="bob" and .ts > 1748501200 and .ts < 1748501300)' <broker_root>/broker.log
    ```
-   → `{"ts":1748501234.567,"event":"dm_enqueue","from_alias":"alice","to_alias":"bob","msg_ts":1748501234.001}`
+   → `{"ts":1748501234.567,"event":"dm_enqueue","from_alias":"alice","to_alias":"bob","resolved_session_id":"bob-session-id","inbox_path":"/.../bob.inbox.json"}`
+   Note: `dm_enqueue` uses `ts` (enqueue wall-clock time), NOT `msg_ts`. The `ts` field is also present in `deliver_inbox_drain`, so both sides of the correlation use the same clock field.
 
 2. **Check if daemon drained** in `deliver-inbox.log`:
    ```bash
    jq -c 'select(.event=="deliver_inbox_drain" and .session_id=="<bob-session-id>" and .ts > 1748501234 and .ts < 1748501240)' <broker_root>/deliver-inbox.log
    ```
-   - **Found**: daemon drained `count=N`. Check `ts` — did it drain after `msg_ts`?
+   - **Found**: daemon drained `count=N`. Check `ts` — did it drain after the `ts` in `dm_enqueue`?
      - If yes: daemon picked it up. Was PTY injection attempted? Check `c2c_start.ml` PTY path and `c2c_wire_bridge.ml`.
      - If no drain event after `msg_ts`: daemon missed it. Was the daemon alive? Check if `drained_by_pid=0` (single-shot) or daemon was dead.
    - **Not found**: daemon never saw it. Was bob's session registered? Check `broker.log` for `session_register` events around that time.
