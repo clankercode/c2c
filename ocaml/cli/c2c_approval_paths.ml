@@ -154,6 +154,48 @@ let list_verdict_tokens ?override_root () =
       |> List.sort compare
     with _ -> []
 
+(** Lightweight extraction of a string field from a JSON payload.
+    Used to read `broker_root` from the pending payload. Returns
+    None on missing/empty/unparseable. *)
+let parse_string_field s field =
+  let needle = "\"" ^ field ^ "\"" in
+  let nlen = String.length needle in
+  let slen = String.length s in
+  let rec find_needle i =
+    if i + nlen > slen then None
+    else if String.sub s i nlen = needle then Some (i + nlen)
+    else find_needle (i + 1)
+  in
+  match find_needle 0 with
+  | None -> None
+  | Some after_key ->
+      let rec skip_to_quote j =
+        if j >= slen then None
+        else
+          match s.[j] with
+          | ' ' | '\t' | '\n' | '\r' | ':' -> skip_to_quote (j + 1)
+          | '"' -> Some (j + 1)
+          | _ -> None
+      in
+      (match skip_to_quote after_key with
+       | None -> None
+       | Some start ->
+           let buf = Buffer.create 32 in
+           let rec scan k =
+             if k >= slen then None
+             else
+               match s.[k] with
+               | '"' -> Some (Buffer.contents buf)
+               | '\\' when k + 1 < slen ->
+                   (match s.[k + 1] with
+                    | 'n' -> Buffer.add_char buf '\n'; scan (k + 2)
+                    | 't' -> Buffer.add_char buf '\t'; scan (k + 2)
+                    | 'r' -> Buffer.add_char buf '\r'; scan (k + 2)
+                    | c -> Buffer.add_char buf c; scan (k + 2))
+               | c -> Buffer.add_char buf c; scan (k + 1)
+           in
+           scan start)
+
 (** Lightweight extraction of an integer field from a JSON payload.
     Used to read `timeout_at` from the pending payload without pulling
     in a full JSON parser. *)
@@ -214,7 +256,7 @@ let cleanup ?override_root ~token () =
 (** Build the canonical pending-file JSON payload. *)
 let make_pending_payload
     ~token ~agent_alias ~tool_name ~tool_input
-    ~timeout_at ~reviewer_alias =
+    ~timeout_at ~reviewer_alias ~broker_root =
   let escape s =
     (* Minimal JSON string escape: backslash, double-quote, control chars. *)
     let buf = Buffer.create (String.length s + 2) in
@@ -233,8 +275,8 @@ let make_pending_payload
     Buffer.contents buf
   in
   Printf.sprintf
-    "{\"token\":\"%s\",\"agent_alias\":\"%s\",\"tool_name\":\"%s\",\"tool_input\":%s,\"timeout_at\":%d,\"reviewer_alias\":\"%s\"}\n"
-    (escape token) (escape agent_alias) (escape tool_name)
+    "{\"token\":\"%s\",\"broker_root\":\"%s\",\"agent_alias\":\"%s\",\"tool_name\":\"%s\",\"tool_input\":%s,\"timeout_at\":%d,\"reviewer_alias\":\"%s\"}\n"
+    (escape token) (escape broker_root) (escape agent_alias) (escape tool_name)
     (* tool_input is already a JSON value (jq -c emits compact JSON);
        passed through verbatim. Hook ensures non-empty/valid. *)
     (if tool_input = "" then "{}" else tool_input)

@@ -115,6 +115,7 @@ let test_cleanup () =
         C2c_approval_paths.make_pending_payload
           ~token ~agent_alias:"a" ~tool_name:"Shell"
           ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"r"
+          ~broker_root:root
       in
       let _ =
         C2c_approval_paths.write_pending ~override_root:root
@@ -164,6 +165,7 @@ let test_list_pending_tokens () =
           C2c_approval_paths.make_pending_payload
             ~token:t ~agent_alias:"a" ~tool_name:"Shell"
             ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"r"
+            ~broker_root:root
         in
         ignore
           (C2c_approval_paths.write_pending ~override_root:root
@@ -200,6 +202,7 @@ let test_read_pending () =
         C2c_approval_paths.make_pending_payload
           ~token:"ka_y" ~agent_alias:"k" ~tool_name:"Shell"
           ~tool_input:"{\"x\":1}" ~timeout_at:42 ~reviewer_alias:"r"
+          ~broker_root:root
       in
       let _ =
         C2c_approval_paths.write_pending ~override_root:root
@@ -254,6 +257,7 @@ let test_read_pending_timeout_at () =
         C2c_approval_paths.make_pending_payload
           ~token:"ka_t" ~agent_alias:"a" ~tool_name:"Shell"
           ~tool_input:"{}" ~timeout_at:9876 ~reviewer_alias:"r"
+          ~broker_root:root
       in
       let _ =
         C2c_approval_paths.write_pending ~override_root:root
@@ -263,6 +267,67 @@ let test_read_pending_timeout_at () =
         (Some 9876)
         (C2c_approval_paths.read_pending_timeout_at
            ~override_root:root ~token:"ka_t" ()))
+
+(* #506 additions *)
+
+let test_parse_string_field () =
+  Alcotest.(check (option string))
+    "present"
+    (Some "/home/user/.c2c/repos/abc123/broker")
+    (C2c_approval_paths.parse_string_field
+       "{\"broker_root\":\"/home/user/.c2c/repos/abc123/broker\",\"token\":\"ka_x\"}"
+       "broker_root");
+  Alcotest.(check (option string))
+    "missing field"
+    None
+    (C2c_approval_paths.parse_string_field
+       "{\"token\":\"ka_x\"}" "broker_root");
+  Alcotest.(check (option string))
+    "empty string value"
+    (Some "")
+    (C2c_approval_paths.parse_string_field
+       "{\"broker_root\":\"\",\"token\":\"ka_x\"}" "broker_root");
+  Alcotest.(check (option string))
+    "with escaped chars"
+    (Some "/home/user/a b")
+    (C2c_approval_paths.parse_string_field
+       "{\"broker_root\":\"/home/user/a b\",\"token\":\"ka_x\"}" "broker_root")
+
+let test_broker_root_in_pending_payload () =
+  with_tmp_dir (fun root ->
+      let pl =
+        C2c_approval_paths.make_pending_payload
+          ~token:"ka_br" ~agent_alias:"a" ~tool_name:"Shell"
+          ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"r"
+          ~broker_root:root
+      in
+      Alcotest.(check (option string))
+        "broker_root round-trips through payload"
+        (Some root)
+        (C2c_approval_paths.parse_string_field pl "broker_root"))
+
+let test_read_pending_broker_root () =
+  with_tmp_dir (fun root ->
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      let pl =
+        C2c_approval_paths.make_pending_payload
+          ~token:"ka_rb" ~agent_alias:"a" ~tool_name:"Shell"
+          ~tool_input:"{}" ~timeout_at:0 ~reviewer_alias:"r"
+          ~broker_root:root
+      in
+      let _ =
+        C2c_approval_paths.write_pending ~override_root:root
+          ~token:"ka_rb" ~payload:pl ()
+      in
+      match
+        C2c_approval_paths.read_pending ~override_root:root ~token:"ka_rb" ()
+      with
+      | None -> Alcotest.fail "read_pending None after write"
+      | Some s ->
+          Alcotest.(check (option string))
+            "read_pending preserves broker_root field"
+            (Some root)
+            (C2c_approval_paths.parse_string_field s "broker_root"))
 
 let () =
   Alcotest.run "c2c_approval_paths"
@@ -287,8 +352,14 @@ let () =
           Alcotest.test_case "read_pending" `Quick test_read_pending;
           Alcotest.test_case "list_verdict_tokens" `Quick
             test_list_verdict_tokens;
-          Alcotest.test_case "parse_int_field" `Quick test_parse_int_field;
-          Alcotest.test_case "read_pending_timeout_at" `Quick
-            test_read_pending_timeout_at;
-        ] );
+           Alcotest.test_case "parse_int_field" `Quick test_parse_int_field;
+           Alcotest.test_case "read_pending_timeout_at" `Quick
+             test_read_pending_timeout_at;
+           Alcotest.test_case "parse_string_field" `Quick
+             test_parse_string_field;
+           Alcotest.test_case "broker_root in payload" `Quick
+             test_broker_root_in_pending_payload;
+           Alcotest.test_case "read_pending preserves broker_root" `Quick
+             test_read_pending_broker_root;
+         ] );
     ]

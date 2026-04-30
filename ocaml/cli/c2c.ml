@@ -5130,6 +5130,11 @@ let approval_reply_cmd =
                   & info [ "reviewer"; "as" ] ~docv:"ALIAS"
                       ~doc:"Reviewer alias to record in the verdict file. Defaults to current session's alias if resolvable; falls back to 'unknown'.")
   in
+  let broker_root_flag =
+    Cmdliner.Arg.(value & opt (some string) None
+                  & info [ "broker-root" ] ~docv:"PATH"
+                      ~doc:"Override the broker root for the verdict file write. When the hook ran from a worktree while the reviewer runs from a different directory, pass the broker_root value shown by 'approval-show' so the verdict lands in the same directory the hook watches.")
+  in
   let json =
     Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Print machine-readable JSON.")
   in
@@ -5137,6 +5142,7 @@ let approval_reply_cmd =
   and+ verdict = verdict
   and+ reason_words = reason_words
   and+ reviewer_alias_flag = reviewer_alias_flag
+  and+ broker_root_flag = broker_root_flag
   and+ json = json in
   let verdict_lc = String.lowercase_ascii (String.trim verdict) in
   if verdict_lc <> "allow" && verdict_lc <> "deny" then begin
@@ -5173,14 +5179,15 @@ let approval_reply_cmd =
            | None -> "unknown"
          with _ -> "unknown")
   in
-  C2c_approval_paths.ensure_dirs ();
+  let override_root = broker_root_flag in
+  C2c_approval_paths.ensure_dirs ?override_root ();
   let ts = int_of_float (Unix.gettimeofday ()) in
   let payload =
     C2c_approval_paths.make_verdict_payload
       ~token ~verdict:verdict_lc ~reason ~reviewer_alias ~ts
   in
   let path =
-    try C2c_approval_paths.write_verdict ~token ~payload () with
+    try C2c_approval_paths.write_verdict ?override_root ~token ~payload () with
     | Sys_error msg ->
         Printf.eprintf "approval-reply: write failed: %s\n%!" msg;
         exit 2
@@ -5262,10 +5269,11 @@ let approval_pending_write_cmd =
   in
   C2c_approval_paths.ensure_dirs ();
   let timeout_at = int_of_float (Unix.gettimeofday ()) + timeout in
+  let broker_root = resolve_broker_root () in
   let payload =
     C2c_approval_paths.make_pending_payload
       ~token ~agent_alias ~tool_name ~tool_input ~timeout_at
-      ~reviewer_alias:reviewer
+      ~reviewer_alias:reviewer ~broker_root
   in
   let path =
     try C2c_approval_paths.write_pending ~token ~payload () with
@@ -5340,6 +5348,11 @@ let approval_show_cmd =
       Printf.eprintf "approval-show: no pending record for %s\n%!" token;
       exit 1
   | Some s ->
+      (* Extract and display broker_root for the reviewer's convenience. *)
+      (match C2c_approval_paths.parse_string_field s "broker_root" with
+       | Some br ->
+           Printf.printf "[broker_root: %s]\n%!" br
+       | None -> ());
       print_string s;
       if String.length s = 0 || s.[String.length s - 1] <> '\n' then
         print_newline ();
