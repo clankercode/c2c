@@ -136,21 +136,50 @@ let effective_submit_delay ~(client : string) ~(submit_delay : float option) : f
     else None
 
 (* ---------------------------------------------------------------------------
- * STUB: run_loop — does nothing yet (S2 will add inbox polling)
+ * Inbox polling via c2c_mcp library
+ * --------------------------------------------------------------------------- *)
+
+let poll_once ~(broker : C2c_mcp.Broker.t) ~(session_id : string) : C2c_mcp.message list =
+  (* Confirm registration (marks session as active; safe if already confirmed),
+     then drain the inbox. Returns the list of messages. *)
+  C2c_mcp.Broker.confirm_registration broker ~session_id;
+  C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-inbox" broker ~session_id
+
+(* ---------------------------------------------------------------------------
+ * run_loop — poll inbox and sleep, until watched_pid exits or max_iterations
  * --------------------------------------------------------------------------- *)
 
 let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
+  let session_id = args.session_id in
+  if session_id = None then
+    (Printf.eprintf "[c2c-deliver-inbox] --session-id required for loop mode\n%!";
+     flush stderr;
+     exit 1);
+  let session_id = Option.get session_id in
   let iterations = ref 0 in
   let total_delivered = ref 0 in
   let max_iterations = args.max_iterations in
+  (* Create the broker once — reused across all poll calls *)
+  let broker = C2c_mcp.Broker.create ~root:args.broker_root in
   let rec loop () =
     match max_iterations with
-    | Some m when !iterations >= m -> ()
+    | Some m when !iterations >= m ->
+      Printf.printf "[c2c-deliver-inbox] max iterations (%d) reached, stopping\n%!" m;
+      flush stdout
     | _ ->
       incr iterations;
-      Printf.printf "[c2c-deliver-inbox] iteration %d (stub — no-op)\n%!" !iterations;
+      let messages = poll_once ~broker ~session_id in
+      total_delivered := !total_delivered + (List.length messages);
+      (match messages with
+       | [] ->
+         Printf.printf "[c2c-deliver-inbox] iteration %d: no messages\n%!" !iterations
+        | msgs ->
+          Printf.printf "[c2c-deliver-inbox] iteration %d: %d message(s): %s\n%!"
+            !iterations
+            (List.length msgs)
+            (String.concat ", "
+               (List.map (fun (m : C2c_mcp.message) -> m.from_alias) msgs)));
       flush stdout;
-      total_delivered := !total_delivered + 0;
       (match watched_pid with
        | Some wp when not (pid_is_alive wp) ->
          Printf.printf "[c2c-deliver-inbox] watched pid %d exited, stopping\n%!" wp;
@@ -161,7 +190,8 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
          loop ())
   in
   loop ();
-  Printf.printf "[c2c-deliver-inbox] loop finished after %d iterations\n%!" !iterations;
+  Printf.printf "[c2c-deliver-inbox] loop finished after %d iterations, %d total delivered\n%!"
+    !iterations !total_delivered;
   flush stdout
 
 (* ---------------------------------------------------------------------------
