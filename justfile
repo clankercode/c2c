@@ -187,12 +187,53 @@ test-one *ARGS:
 # target list) misses — specifically test exes that fall behind their
 # imported APIs. Sister to `just test-ocaml` but skips the run cost.
 # Also runs `git diff --check` for trailing whitespace.
+
+# Run OCaml tests for a worktree slice.
+# Usage: just test-slice .worktrees/my-slice
 #
-# Run before peer-PASS or coord cherry-pick batch; the wider build is
-# how peer-PASS verifies "no broken sibling" but coord-side
-# `install-all` doesn't (#432 receipt: test_relay_enc rotted for ~2
-# days because narrow targets masked the breakage; surfaced when
-# Slice E's bg subagent ran a full dune build).
+# Note: `dune runtest --root <worktree>/ocaml/` does NOT work from within
+# a worktree (path resolution goes to main repo). Workaround: build from main
+# repo first (run `just test-ocaml` once from the main repo to populate _build
+# artifacts for all worktrees), then run binaries directly from each worktree's
+# _build directory using this recipe.
+#
+# Known limitation: test_c2c_mcp has CWD-dependent temp-dir flakiness
+# (temp dir name derived from cwd → collisions when binary runs from a
+# different directory than where it was built). This is a pre-existing test
+# issue; the binary is excluded from the pass/fail tally.
+test-slice *SLICES:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ {{SLICES}} == "" ]]; then
+        echo "Usage: just test-slice .worktrees/<slice-name>" >&2
+        exit 1
+    fi
+    for slice in {{SLICES}}; do
+        echo "=== Testing slice: $slice ==="
+        test_dir="$slice/_build/default/ocaml/test"
+        if [[ ! -d "$test_dir" ]]; then
+            echo "No _build found at $test_dir — run 'just test-ocaml' from main repo first to populate build artifacts" >&2
+            continue
+        fi
+        total=0; passed=0; failed=0
+        for exe in "$test_dir"/*.exe; do
+            [[ -e "$exe" ]] || continue
+            name=$(basename "$exe" .exe)
+            # test_c2c_mcp has CWD-dependent temp-dir flakiness — skip
+            [[ "$name" == "test_c2c_mcp" ]] && echo "[$name] SKIP (known CWD flakiness)" && continue
+            total=$((total + 1))
+            echo -n "[$name] "
+            if "$exe" > /dev/null 2>&1; then
+                echo "PASS"
+                passed=$((passed + 1))
+            else
+                echo "FAIL"
+                failed=$((failed + 1))
+            fi
+        done
+        echo "=== $slice: $passed/$total passed, $failed failed ==="
+    done
+
 check:
     git diff --check
     mkdir -p _build && touch _build/.c2c-build.lock
