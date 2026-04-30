@@ -290,6 +290,16 @@ to re-establish the canonical stamp. The #322 install-guard's drift
 detection will log a WARN naming both the stale and new stamps —
 that's the recover-with-evidence path working as designed.
 
+### Pre-cherry-pick audit gate
+Before every `git cherry-pick` or `git rebase`, run:
+```bash
+git status --short    # expect: only your files, or empty
+git diff --stat HEAD  # expect: only slice-diff, or nothing unexpected
+```
+If anything unexpected appears (e.g. another agent's leaked worktree state — Pattern 14), `git reset HEAD <path>` to unstage before proceeding.
+
+See also: Pattern 14 in `.collab/runbooks/worktree-discipline-for-subagents.md`.
+
 ### "I cherry-picked a slice and reverted everything not in its base" (#325)
 
 Coord-side variant of #324(b). When you `git cherry-pick <sha>` a slice
