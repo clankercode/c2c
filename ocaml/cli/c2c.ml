@@ -5223,6 +5223,64 @@ let await_reply_cmd =
   in
   loop ()
 
+(* --- Shared helper: resolve reviewer alias --------------------------------- *)
+
+(** Resolve the reviewer alias: explicit --reviewer flag first, then
+    best-effort from current session registration, then "unknown". *)
+let resolve_reviewer_alias (explicit : string option) : string =
+  match explicit with
+  | Some a -> a
+  | None ->
+      (try
+         let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+         let session_id = resolve_session_id_for_inbox broker in
+         let regs = C2c_mcp.Broker.list_registrations broker in
+         match
+           List.find_opt
+             (fun (r : C2c_mcp.registration) ->
+               r.session_id = session_id)
+             regs
+         with
+         | Some r -> r.alias
+         | None -> "unknown"
+       with _ -> "unknown")
+
+(** Shared verdict-writing logic used by both approval-reply and authorize. *)
+let do_approval_reply
+    ~(token : string)
+    ~(verdict_lc : string)
+    ~(reason : string)
+    ~(reviewer_alias : string)
+    ~(override_root : string option)
+    ~(json : bool)
+    ~(cmd_name : string)
+  : unit =
+  C2c_approval_paths.ensure_dirs ?override_root ();
+  let ts = int_of_float (Unix.gettimeofday ()) in
+  let payload =
+    C2c_approval_paths.make_verdict_payload
+      ~token ~verdict:verdict_lc ~reason ~reviewer_alias ~ts
+  in
+  let path =
+    try C2c_approval_paths.write_verdict ?override_root ~token ~payload () with
+    | Sys_error msg ->
+        Printf.eprintf "%s: write failed: %s\n%!" cmd_name msg;
+        exit 2
+    | exn ->
+        Printf.eprintf "%s: write failed: %s\n%!"
+          cmd_name (Printexc.to_string exn);
+        exit 2
+  in
+  if json then
+    Printf.printf
+      "{\"ok\":true,\"verdict\":\"%s\",\"token\":\"%s\",\"path\":\"%s\",\"reviewer_alias\":\"%s\"}\n%!"
+      verdict_lc token path reviewer_alias
+  else
+    Printf.printf
+      "%s: %s recorded for %s (file=%s, reviewer=%s)\n%!"
+      cmd_name verdict_lc token path reviewer_alias;
+  exit 0
+
 (* --- subcommand: approval-reply -------------------------------------------- *)
 
 (* [#490 slice 5a] Reviewer-side counterpart to `c2c await-reply`. Writes
@@ -5278,58 +5336,77 @@ let approval_reply_cmd =
   let reason =
     let raw = String.concat " " reason_words in
     let raw = String.trim raw in
-    (* Allow `c2c approval-reply <token> deny because foo bar` — strip
-       leading "because " for ergonomics. *)
     if String.length raw >= 8
        && String.lowercase_ascii (String.sub raw 0 8) = "because "
     then String.sub raw 8 (String.length raw - 8) |> String.trim
     else raw
   in
-  let reviewer_alias =
-    match reviewer_alias_flag with
-    | Some a -> a
-    | None ->
-        (* Best-effort: resolve from current session's registration. *)
-        (try
-           let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-           let session_id = resolve_session_id_for_inbox broker in
-           let regs = C2c_mcp.Broker.list_registrations broker in
-           match
-             List.find_opt
-               (fun (r : C2c_mcp.registration) ->
-                 r.session_id = session_id)
-               regs
-           with
-           | Some r -> r.alias
-           | None -> "unknown"
-         with _ -> "unknown")
+  let reviewer_alias = resolve_reviewer_alias reviewer_alias_flag in
+  do_approval_reply
+    ~token ~verdict_lc ~reason ~reviewer_alias
+    ~override_root:broker_root_flag ~json
+    ~cmd_name:"approval-reply"
+
+(* --- subcommand: authorize (#511 Slice 5) ------------------------------- *)
+
+(* Ergonomic shortcut for approval-reply. Identical semantics, different
+   command name: `c2c authorize <token> allow|deny [because <reason>]`.
+   Saves reviewers from remembering the longer approval-reply name.
+   See .collab/design/2026-05-01-prompt-forwarding-fallback-authorizers.md §4 S5. *)
+let authorize_cmd =
+  let token =
+    Cmdliner.Arg.(required & pos 0 (some string) None
+                  & info [] ~docv:"TOKEN"
+                      ~doc:"Approval token (e.g. ka_abc123).")
   in
-  let override_root = broker_root_flag in
-  C2c_approval_paths.ensure_dirs ?override_root ();
-  let ts = int_of_float (Unix.gettimeofday ()) in
-  let payload =
-    C2c_approval_paths.make_verdict_payload
-      ~token ~verdict:verdict_lc ~reason ~reviewer_alias ~ts
+  let verdict =
+    Cmdliner.Arg.(required & pos 1 (some string) None
+                  & info [] ~docv:"VERDICT"
+                      ~doc:"Verdict: 'allow' or 'deny' (case-insensitive).")
   in
-  let path =
-    try C2c_approval_paths.write_verdict ?override_root ~token ~payload () with
-    | Sys_error msg ->
-        Printf.eprintf "approval-reply: write failed: %s\n%!" msg;
-        exit 2
-    | exn ->
-        Printf.eprintf "approval-reply: write failed: %s\n%!"
-          (Printexc.to_string exn);
-        exit 2
+  let reason_words =
+    Cmdliner.Arg.(value & pos_right 1 string []
+                  & info [] ~docv:"REASON"
+                      ~doc:"Optional free-text reason (concatenated; for 'deny' it shows up in the agent's stderr).")
   in
-  if json then
-    Printf.printf
-      "{\"ok\":true,\"verdict\":\"%s\",\"token\":\"%s\",\"path\":\"%s\",\"reviewer_alias\":\"%s\"}\n%!"
-      verdict_lc token path reviewer_alias
-  else
-    Printf.printf
-      "approval-reply: %s recorded for %s (file=%s, reviewer=%s)\n%!"
-      verdict_lc token path reviewer_alias;
-  exit 0
+  let reviewer_alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None
+                  & info [ "reviewer"; "as" ] ~docv:"ALIAS"
+                      ~doc:"Reviewer alias to record in the verdict file. Defaults to current session's alias if resolvable.")
+  in
+  let broker_root_flag =
+    Cmdliner.Arg.(value & opt (some string) None
+                  & info [ "broker-root" ] ~docv:"PATH"
+                      ~doc:"Override the broker root for the verdict file write.")
+  in
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Print machine-readable JSON.")
+  in
+  let+ token = token
+  and+ verdict = verdict
+  and+ reason_words = reason_words
+  and+ reviewer_alias_flag = reviewer_alias_flag
+  and+ broker_root_flag = broker_root_flag
+  and+ json = json in
+  let verdict_lc = String.lowercase_ascii (String.trim verdict) in
+  if verdict_lc <> "allow" && verdict_lc <> "deny" then begin
+    Printf.eprintf
+      "authorize: VERDICT must be 'allow' or 'deny' (got %S)\n%!" verdict;
+    exit 2
+  end;
+  let reason =
+    let raw = String.concat " " reason_words in
+    let raw = String.trim raw in
+    if String.length raw >= 8
+       && String.lowercase_ascii (String.sub raw 0 8) = "because "
+    then String.sub raw 8 (String.length raw - 8) |> String.trim
+    else raw
+  in
+  let reviewer_alias = resolve_reviewer_alias reviewer_alias_flag in
+  do_approval_reply
+    ~token ~verdict_lc ~reason ~reviewer_alias
+    ~override_root:broker_root_flag ~json
+    ~cmd_name:"authorize"
 
 (* --- subcommand: resolve-authorizer ----------------------------------------
    #511: resolve the first live/DnD-clear/idle-clear authorizer from the
@@ -5519,10 +5596,18 @@ let approval_list_cmd =
     if tokens = [] then
       print_endline "(no pending approvals)"
     else begin
-      Printf.printf "%-40s  %-7s\n" "TOKEN" "VERDICT";
+      Printf.printf "%-40s  %-7s  %-20s\n" "TOKEN" "VERDICT" "CURRENT AUTHORIZER";
       List.iter (fun tok ->
         let v = if C2c_approval_paths.has_verdict ~token:tok () then "ready" else "wait" in
-        Printf.printf "%-40s  %-7s\n" tok v
+        let authorizer =
+          match C2c_approval_paths.read_pending ~token:tok () with
+          | Some s ->
+              (match C2c_approval_paths.parse_string_field s "primary_authorizer" with
+               | Some a -> a
+               | None -> "-")
+          | None -> "-"
+        in
+        Printf.printf "%-40s  %-7s  %-20s\n" tok v authorizer
       ) tokens
     end;
     exit 0
@@ -5558,7 +5643,7 @@ let approval_show_cmd =
        | Some al when al <> [] ->
            let chain = String.concat ", " al in
            Printf.printf "[authorizers: %s]\n%!" chain
-       | _ -> ());
+       | _ -> ())
       print_string s;
       if String.length s = 0 || s.[String.length s - 1] <> '\n' then
         print_newline ();
@@ -5679,6 +5764,7 @@ let setcap = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setcap"
 let peek_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "peek-inbox" ~doc:"Peek at your inbox without draining.") peek_inbox_cmd
 let await_reply = Cmdliner.Cmd.v (Cmdliner.Cmd.info "await-reply" ~doc:"Block until a token-tagged verdict (allow/deny) arrives in the inbox; print verdict on stdout and exit 0, exit 1 on timeout.") await_reply_cmd
 let approval_reply = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-reply" ~doc:"Reply to a pending PreToolUse approval request (#142/#490). Writes a verdict file the kimi hook is watching, avoiding the broker-DM drain race.") approval_reply_cmd
+let authorize = Cmdliner.Cmd.v (Cmdliner.Cmd.info "authorize" ~doc:"Ergonomic shortcut for approval-reply: `c2c authorize <token> allow|deny`. Same semantics as approval-reply, discoverable name (#511 S5).") authorize_cmd
 let approval_pending_write = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-pending-write" ~doc:"Bash-callable helper used by the kimi PreToolUse hook to record pending-approval state.") approval_pending_write_cmd
 let approval_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-list" ~doc:"List currently-pending PreToolUse approvals (token + verdict-ready flag).") approval_list_cmd
 let approval_show = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-show" ~doc:"Print the full pending-record JSON for one approval token.") approval_show_cmd
@@ -11110,7 +11196,7 @@ let () =
   let is_agent = is_agent_session () in
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
-    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep
+    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
