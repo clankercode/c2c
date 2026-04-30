@@ -2146,10 +2146,15 @@ let load_config_opt (name : string) : instance_config option =
         let gfo k = match List.assoc_opt k a with Some (`Float f) -> Some f | Some (`Int i) -> Some (float_of_int i) | _ -> None in
         let gio k = match List.assoc_opt k a with Some (`Int i) -> Some i | _ -> None in
         let gl k = match List.assoc_opt k a with Some (`List l) -> List.map (function `String s -> s | _ -> raise Not_found) l | _ -> [] in
+        (* broker_root is optional in the persisted config (#501 broker
+           migration removed pinned broker_root from all configs).
+           When absent or empty, callers must fall through to the env >
+           XDG > canonical resolver via `broker_root ()`. *)
+        let gs_or_empty k = match List.assoc_opt k a with Some (`String s) -> s | _ -> "" in
         Some { name = gs "name"; client = gs "client"; session_id = gs "session_id";
                resume_session_id = gs "resume_session_id"; codex_resume_target = gso "codex_resume_target"; alias = gs "alias";
                extra_args = gl "extra_args"; created_at = gf "created_at"; last_launch_at = gfo "last_launch_at";
-               broker_root = gs "broker_root"; auto_join_rooms = gs "auto_join_rooms";
+               broker_root = gs_or_empty "broker_root"; auto_join_rooms = gs "auto_join_rooms";
                binary_override = gso "binary_override";
                model_override = gso "model_override";
                agent_name = gso "agent_name";
@@ -4893,7 +4898,11 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           | _, Some _ -> ex.codex_resume_target
           | _ -> None
         in
-        (bo, ao, ea, rs, codex_target, ex.broker_root, model_override, mo)
+        (* If persisted broker_root is empty (#501: instance configs were
+           cleaned of broker_root pinning during legacy→canonical broker
+           migration), fall through to env > XDG > canonical resolver. *)
+        let resolved_br = if ex.broker_root = "" then broker_root () else ex.broker_root in
+        (bo, ao, ea, rs, codex_target, resolved_br, model_override, mo)
     | None ->
         let rs =
           match client, session_id_override with
