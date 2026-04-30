@@ -1742,9 +1742,10 @@ let replay_pending_orphan_inbox ~(broker_root : string) ~(session_id : string) :
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   C2c_mcp.Broker.replay_pending_orphan_inbox broker ~session_id
 
-(* Capture tmux location if running inside a tmux session.
-   Writes {session, pane_pid, pane_tty, captured_at} to tmux_info_path.
-   Silently skips if $TMUX is not set or tmux commands fail. *)
+(* Capture tmux session name if running inside a tmux session.
+   Writes {session} to tmux_info_path. Silently skips if $TMUX is not set
+   or tmux commands fail. Only 'session' is read back by read_tmux_location_opt;
+   pane_pid and captured_at were dead fields (#523). *)
 let capture_and_write_tmux_location name =
   match Sys.getenv_opt "TMUX" with
   | None -> ()
@@ -1758,13 +1759,11 @@ let capture_and_write_tmux_location name =
         with _ -> None
       in
       match capture "tmux display -p '#S:#I.#P'", capture "tmux display -p '#{pane_pid}'" with
-      | Some session, Some pane_pid ->
+      | Some session, Some _pane_pid ->
           (try
-            let pane_pid_s = String.trim pane_pid in
             let tmux_json =
-              Printf.sprintf
-                "{\n  \"session\": \"%s\",\n  \"pane_pid\": \"%s\",\n  \"captured_at\": %.0f\n}\n"
-                (String.trim session) pane_pid_s (Unix.gettimeofday ())
+              Printf.sprintf "{\n  \"session\": \"%s\"\n}\n"
+                (String.trim session)
             in
             let oc = open_out tmux_info_file in
             Fun.protect ~finally:(fun () -> close_out oc)
@@ -1943,17 +1942,15 @@ let auto_answer_dev_channel_prompt ~(tmux_location : string) : bool =
   in
   poll ()
 
+(* [#523] removed pane_id and captured_at — only 'session' is read back
+   by read_tmux_location_opt. Dead fields removed from write. *)
 let write_tmux_target_info name (info : tmux_target_info) =
   let path = tmux_info_path name in
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc)
     (fun () ->
       Yojson.Safe.pretty_to_channel oc
-        (`Assoc
-          [ ("session", `String info.tmux_location)
-          ; ("pane_id", `String info.tmux_pane_id)
-          ; ("captured_at", `Float (Unix.gettimeofday ()))
-          ]);
+        (`Assoc [ ("session", `String info.tmux_location) ]);
       output_char oc '\n')
 
 let tmux_deliver_once ~broker_root ~session_id ~target =
