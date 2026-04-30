@@ -4959,6 +4959,153 @@ let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay r
             ])
     [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair ]
 
+(* --- mesh ------------------------------------------------------------------- *)
+
+let mesh_status_cmd =
+  let open Cmdliner in
+  let relay_url_flag =
+    Arg.(value & opt (some string) None & info ["relay-url"] ~docv:"URL"
+           ~doc:"Relay HTTP URL. Defaults to C2C_RELAY_URL env var.")
+  in
+  let include_dead =
+    Arg.(value & flag & info ["include-dead"; "a"]
+           ~doc:"Include expired/dead sessions in the peer list.")
+  in
+  let json_flag =
+    Arg.(value & flag & info ["json"]
+           ~doc:"Output raw JSON instead of a human-readable table.")
+  in
+  let+ relay_url = relay_url_flag
+  and+ include_dead = include_dead
+  and+ as_json = json_flag in
+  match resolve_relay_url relay_url with
+  | None ->
+      Printf.eprintf "%s%!" relay_url_required_error;
+      exit 1
+  | Some url ->
+      let client = Relay.Relay_client.make url in
+      (* Fetch peers — signed if identity exists and --include-dead not set. *)
+      let peers_result = (
+        match Relay_identity.load (), include_dead with
+        | Ok id, false ->
+            let alias = Option.value ~default:"anon" (env_auto_alias ()) in
+            let auth = Relay_signed_ops.sign_request id ~alias
+              ~meth:"GET" ~path:"/list" ~body_str:"" () in
+            Lwt_main.run (Relay.Relay_client.list_peers_signed client ~auth_header:auth ())
+        | _ ->
+            Lwt_main.run (Relay.Relay_client.list_peers client ~include_dead ())
+      ) in
+      (* Fetch rooms. *)
+      let rooms_result = Lwt_main.run (Relay.Relay_client.list_rooms client) in
+      if as_json then begin
+        let peers_json = (match peers_result with
+          | `Assoc fields ->
+              (match List.assoc_opt "peers" fields with
+               | Some p -> p
+               | None -> `List [])
+          | _ -> `List []) in
+        let rooms_json = (match rooms_result with
+          | `Assoc fields ->
+              (match List.assoc_opt "rooms" fields with
+               | Some r -> r
+               | None -> `List [])
+          | _ -> `List []) in
+        let kv = [
+          ("ok", `Bool true);
+          ("relay_url", `String url);
+          ("peers", peers_json);
+          ("rooms", rooms_json);
+        ] in
+        print_endline (Yojson.Safe.to_string (`Assoc kv));
+        exit 0
+      end;
+      (* Human-readable output. *)
+      let peers = (match peers_result with
+        | `Assoc fields ->
+            (match List.assoc_opt "peers" fields with
+             | Some (`List ps) -> ps
+             | _ -> [])
+        | _ -> []) in
+      let alive_peers = List.filter (fun p ->
+        match p with `Assoc fs ->
+          (match List.assoc_opt "alive" fs with Some (`Bool a) -> a | _ -> false)
+        | _ -> false) peers in
+      let dead_peers = List.filter (fun p ->
+        match p with `Assoc fs ->
+          (match List.assoc_opt "alive" fs with Some (`Bool a) -> not a | _ -> false)
+        | _ -> false) peers in
+      let format_time t =
+        let tm = Unix.gmtime t in
+        Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+          (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
+          tm.tm_hour tm.tm_min tm.tm_sec
+      in
+      let print_peer p =
+        match p with
+        | `Assoc fs ->
+            let alias = match List.assoc_opt "alias" fs with Some (`String s) -> s | _ -> "?" in
+            let session_id = match List.assoc_opt "session_id" fs with Some (`String s) -> String.sub s 0 (min 12 (String.length s)) | _ -> "?" in
+            let client_type = match List.assoc_opt "client_type" fs with Some (`String s) -> s | _ -> "?" in
+            let last_seen = match List.assoc_opt "last_seen" fs with Some (`Float t) -> format_time t | _ -> "?" in
+            let ttl = match List.assoc_opt "ttl" fs with Some (`Float t) -> Printf.sprintf "%.0fs" t | _ -> "?" in
+            let alive = match List.assoc_opt "alive" fs with Some (`Bool a) -> a | _ -> false in
+            Printf.printf "  %-18s %-14s %-10s %-22s %-6s  %s\n"
+              alias session_id client_type last_seen ttl (if alive then "ALIVE" else "DEAD")
+        | _ -> ()
+      in
+      let rooms = (match rooms_result with
+        | `Assoc fields ->
+            (match List.assoc_opt "rooms" fields with
+             | Some (`List rs) -> rs
+             | _ -> [])
+        | _ -> []) in
+      let total_rooms = List.length rooms in
+      Printf.printf "c2c mesh status — relay=%s\n\n" url;
+      Printf.printf "Peers (%d alive%s%s):\n"
+        (List.length alive_peers)
+        (if List.length dead_peers > 0 then
+           Printf.sprintf ", %d dead" (List.length dead_peers)
+         else "")
+        (if include_dead && dead_peers <> [] then "" else "; use --include-dead to show dead")
+        (* no trailing semicolon when not needed *);
+      if not include_dead && dead_peers <> [] then
+        Printf.printf "  (omitting %d dead sessions; use --include-dead to show)\n"
+          (List.length dead_peers);
+      Printf.printf "  %-18s %-14s %-10s %-22s %-6s  %s\n"
+        "ALIAS" "SESSION_ID" "TYPE" "LAST_SEEN" "TTL" "STATUS";
+      Printf.printf "  %s\n"
+        (String.make 82 '-');
+      List.iter print_peer (if include_dead then peers else alive_peers);
+      Printf.printf "\nRooms on relay (%d):\n" total_rooms;
+      if rooms = [] then
+        Printf.printf "  (none)\n"
+      else
+        List.iter (fun r ->
+          match r with
+          | `Assoc fs ->
+              let room_id = match List.assoc_opt "room_id" fs with Some (`String s) -> s | _ -> "?" in
+              let member_count = match List.assoc_opt "member_count" fs with Some (`Int n) -> n | _ -> 0 in
+              Printf.printf "  %-24s  (%d members)\n" room_id member_count
+          | _ -> ()) rooms;
+      exit 0
+
+let mesh_status = Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "status"
+       ~doc:"Show peer topology of a remote relay in human-readable format.")
+    mesh_status_cmd
+
+let mesh_group =
+  Cmdliner.Cmd.group
+    ~default:mesh_status_cmd
+    (Cmdliner.Cmd.info "mesh"
+       ~doc:"Inspect the peer mesh connected to a remote relay."
+       ~man:[ `S "DESCRIPTION"
+            ; `P "Reports who is connected to a relay and which rooms exist."
+            ; `P "Use $(b,c2c mesh status --relay-url URL) to see peers and rooms on a relay."
+            ; `P "This is a read-only diagnostic command — it does not modify any state."
+            ])
+    [ mesh_status ]
+
 (* --- skills helpers -------------------------------------------------------- *)
 
 let skills_dir () = Sys.getcwd () // ".opencode" // "skills"
@@ -11221,7 +11368,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
-    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
+    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit
