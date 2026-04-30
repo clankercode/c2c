@@ -99,6 +99,8 @@ CMD ["sh", "-c", "\
   relay_name_flag=${C2C_RELAY_NAME:+--relay-name ${C2C_RELAY_NAME}}; \
   if [ -f /run/secrets/relay_token ]; then \
     exec c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token ${storage_flag} ${persist_flag} ${relay_name_flag}; \
+  elif [ -n \"${C2C_RELAY_TOKEN:-}\" ]; then \
+    exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${C2C_RELAY_TOKEN}\" ${storage_flag} ${persist_flag} ${relay_name_flag}; \
   elif [ -n \"${RELAY_TOKEN:-}\" ]; then \
     exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${RELAY_TOKEN}\" ${storage_flag} ${persist_flag} ${relay_name_flag}; \
   else \

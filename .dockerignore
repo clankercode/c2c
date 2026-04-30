@@ -12,6 +12,7 @@ _build
 _opam
 dist
 target
+.worktrees
 
 # Large/unneeded for the OCaml relay build
 tests/
@@ -40,9 +41,9 @@ venv/
 *.log
 *.sqlite
 *.sqlite-journal
-
 # Bind-mount volumes — created at runtime by docker compose, not needed at
 # build time. Excluding avoids "permission denied reading context" errors
 # when volume subdirectories are owned by other uids (e.g. uid=999 from a
 # prior container run).
+.volumes/
 volumes/
