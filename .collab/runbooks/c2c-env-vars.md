@@ -63,6 +63,36 @@ How long a session must be idle before receiving a nudge (default 25). Must be l
 
 ---
 
+## Kimi PreToolUse approval hook (#142)
+
+### `C2C_KIMI_APPROVAL_REVIEWER` — DEPRECATED (#502)
+
+Single-reviewer alias for the kimi PreToolUse approval hook (default
+`coordinator1`). **Deprecated** as of #502, planned removal next cycle —
+the canonical approval path is the `supervisors[]` list in
+`.c2c/repo.json` (#490 Slice 5e), which generalizes the single-reviewer
+fallback to a list and integrates with the broker-side
+`open-pending-reply` / `approval-reply` machinery (see
+`docs/security/pending-permissions.md`).
+
+When set, the hook script emits a stderr deprecation warning on every
+invocation. Set `C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION=1` to
+suppress (e.g. CI environments where the noise drowns useful output)
+without removing the override itself — that escape hatch will go away
+together with the env var when the deprecation completes.
+
+### `C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION`
+
+Truthy values suppress the #502 deprecation warning on the kimi-approval
+hook. Same removal cycle as the parent env var.
+
+### `C2C_KIMI_APPROVAL_TIMEOUT`
+
+Seconds the hook will block on `c2c await-reply` before falling closed
+(default 120). Not deprecated; tunable independently.
+
+---
+
 ## E2E / Relay
 
 ### `C2C_RELAY_E2E_STRICT_V2`

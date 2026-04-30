@@ -238,6 +238,7 @@ post-compact context injection #317). E2E test procedure:
 - **Model resolution priority on resume**: `c2c start` resolves models via 3-way priority: explicit `--model` flag > role file `pmodel:` field > saved instance config. Role pmodel is advisory — it takes priority over a saved config on resume but an explicit `--model` always wins. Only an explicit `--model` is persisted to instance config; role pmodel is never locked in.
 
 - **Env vars** — see `.collab/runbooks/c2c-env-vars.md` for the full dictionary (broker root, MCP session, inbox watcher, deferrable, nudge cadence, e2e strict, etc).
+- **`C2C_KIMI_APPROVAL_REVIEWER` deprecated (#502, 2026-05-01).** The single-reviewer env var on the kimi PreToolUse hook is being phased out in favour of the `supervisors[]` list in `.c2c/repo.json` (#490 Slice 5e). When set, the hook now emits a stderr deprecation warning on every invocation; set `C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION=1` to suppress. Both env vars planned for removal next cycle. Full notes: `.collab/runbooks/c2c-env-vars.md` § Kimi PreToolUse approval hook.
 
 ## Python Scripts (deprecated)
 

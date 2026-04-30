@@ -75,6 +75,11 @@ let approval_hook_script_content = {bash|#!/usr/bin/env bash
 #
 # Configuration:
 #   C2C_KIMI_APPROVAL_REVIEWER  reviewer alias (default: coordinator1)
+#                                **DEPRECATED (#502)** — single-reviewer
+#                                env var is being phased out in favour of
+#                                the `supervisors[]` list in .c2c/repo.json
+#                                (#490 Slice 5e). When set, a stderr warning
+#                                fires; planned removal next cycle.
 #   C2C_KIMI_APPROVAL_TIMEOUT   seconds to wait for verdict (default: 120)
 #
 # Slice 1 of #142.  Slice 2 wires the [[hooks]] block in ~/.kimi/config.toml
@@ -101,6 +106,19 @@ tool_name="$(printf '%s' "$payload" | jq -r '.tool_name // ""')"
 tool_input="$(printf '%s' "$payload" | jq -c '.tool_input // {}')"
 tool_call_id="$(printf '%s' "$payload" | jq -r '.tool_call_id // ""')"
 
+# Deprecation warning (#502): the single-reviewer env var is being phased
+# out in favour of the supervisors[] list in .c2c/repo.json (#490 Slice 5e).
+# Warn once on each invocation when the operator has explicitly set it; the
+# default-fallback path stays silent to avoid noise for stock installs. Set
+# C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION=1 to suppress (e.g. in CI).
+if [ -n "${C2C_KIMI_APPROVAL_REVIEWER:-}" ] \
+   && [ -z "${C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION:-}" ]; then
+  echo "c2c-kimi-approval-hook: WARN: C2C_KIMI_APPROVAL_REVIEWER is deprecated (#502)." >&2
+  echo "  The single-reviewer env var will be removed next cycle; the canonical" >&2
+  echo "  approval path is the supervisors[] list in .c2c/repo.json (see #490 /" >&2
+  echo "  docs/security/pending-permissions.md). Set" >&2
+  echo "  C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION=1 to suppress this warning." >&2
+fi
 REVIEWER="${C2C_KIMI_APPROVAL_REVIEWER:-coordinator1}"
 TIMEOUT="${C2C_KIMI_APPROVAL_TIMEOUT:-120}"
 
@@ -205,6 +223,8 @@ let toml_block_template = {toml|
 #
 # Reviewer alias and timeout are tunable via env when launching kimi:
 #   C2C_KIMI_APPROVAL_REVIEWER  reviewer alias (default: coordinator1)
+#                                DEPRECATED (#502): superseded by
+#                                supervisors[] in .c2c/repo.json (#490).
 #   C2C_KIMI_APPROVAL_TIMEOUT   seconds (default: 120)
 #
 # Examples — uncomment ONE.
