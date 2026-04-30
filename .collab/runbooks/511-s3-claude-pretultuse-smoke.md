@@ -8,10 +8,11 @@
 
 ## What This Tests
 
-`c2c install claude` registers the `c2c-kimi-approval-hook.sh` PreToolUse
-hook in `~/.claude/settings.json`. When the operator edits the matcher to opt
-in, a matching tool call fires the hook, which forwards the request to the first
-live authorizer in the `authorizers[]` chain via c2c DM.
+`c2c install claude` registers a PreToolUse hook entry pointing to
+`~/.local/bin/c2c-kimi-approval-hook.sh` in `~/.claude/settings.json`. The
+hook script itself is installed by `c2c install kimi`. When the operator edits
+the matcher to opt in, a matching tool call fires the hook, which forwards the
+request to the first live authorizer in the `authorizers[]` chain via c2c DM.
 
 ---
 
