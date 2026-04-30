@@ -26,7 +26,7 @@
 
 import type { Plugin } from "@opencode-ai/plugin";
 import type { Event, EventSessionIdle, EventSessionCreated, EventSessionCompacted, EventSessionStatus } from "@opencode-ai/sdk";
-import { spawn } from "child_process";
+import { spawn, execFileSync } from "child_process";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -237,17 +237,36 @@ const C2CDelivery: Plugin = async (ctx) => {
       `  to populate the sidecar config.${hint}`
     );
   }
-  const brokerRoot: string = process.env.C2C_MCP_BROKER_ROOT || sidecar.broker_root || "";
-  // [#496] Fail fast if both sources are unset — empty string would silently
-  // break every broker operation (inbox reads, spool checks, approvals).
-  if (!brokerRoot) {
-    const hint = process.env.C2C_CLI_COMMAND ? ` or run '${process.env.C2C_CLI_COMMAND} install opencode'` : "";
-    throw new Error(
-      "c2c: C2C_MCP_BROKER_ROOT is unset and sidecar.broker_root is absent or null.\n" +
-      "  Set C2C_MCP_BROKER_ROOT to an absolute path, or re-run `c2c install opencode`\n" +
-      `  to populate the sidecar config.${hint}`
-    );
+  // [#496 Option A] Canonical broker-root resolver — mirrors C2c_repo_fp.resolve_broker_root
+  // in OCaml. C2C_MCP_BROKER_ROOT wins if set (explicit override). Otherwise derives
+  // from git remote fingerprint: $XDG_STATE_HOME/c2c/repos/<fp>/broker or
+  // $HOME/.c2c/repos/<fp>/broker. Never falls through to empty string.
+  function resolveBrokerRoot(): string {
+    const env = process.env.C2C_MCP_BROKER_ROOT?.trim();
+    if (env) {
+      return path.isAbsolute(env) ? env : path.resolve(process.cwd(), env);
+    }
+    let fp = "";
+    try {
+      const gitData = execFileSync("git", ["config", "--get", "remote.origin.url"],
+        { encoding: "utf-8", timeout: 3000 }).trim();
+      if (gitData) fp = crypto.createHash("sha256").update(gitData).digest("hex").slice(0, 12);
+    } catch { /* no remote.origin.url */ }
+    if (!fp) {
+      try {
+        const toplevel = execFileSync("git", ["rev-parse", "--show-toplevel"],
+          { encoding: "utf-8", timeout: 3000 }).trim();
+        if (toplevel) fp = crypto.createHash("sha256").update(toplevel).digest("hex").slice(0, 12);
+      } catch { /* not a git repo */ }
+    }
+    if (!fp) fp = "default";
+    const xdg = process.env.XDG_STATE_HOME?.trim();
+    if (xdg) return path.join(xdg, "c2c", "repos", fp, "broker");
+    const home = process.env.HOME?.trim();
+    if (home) return path.join(home, ".c2c", "repos", fp, "broker");
+    return path.join("/tmp", "c2c", "repos", fp, "broker");
   }
+  const brokerRoot: string = resolveBrokerRoot();
   const configuredOpenCodeSessionId: string =
     process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
   // Only values starting with "ses_" are real OpenCode session IDs. Instance
