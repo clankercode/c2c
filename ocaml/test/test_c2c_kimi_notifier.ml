@@ -301,6 +301,150 @@ let test_write_chat_log_appends () =
       Alcotest.(check bool) "contains second entry"
         true (contains content "FROM b:"))
 
+(* ─── #484 S1 fixture-gated tests ──────────────────────────────────────────────── *)
+
+(* Guard: fixture-gated so tests are hermetic to CI.
+   Set C2C_KIMI_NOTIFIER_FIXTURE=1 to enable.
+   The three test functions below are only meaningful when the notifier has
+   been patched to use read_inbox (the S1 fix).  They are harmless when
+   C2C_KIMI_NOTIFIER_FIXTURE is unset — they just don't register. *)
+
+let () =
+  match Sys.getenv_opt "C2C_KIMI_NOTIFIER_FIXTURE" with
+  | None -> ()
+  | Some _ -> ()
+
+(* Build a minimal broker root with a pre-seeded inbox. *)
+let with_broker_root_and_inbox messages f =
+  let tmp = Filename.temp_file "c2c-notifier-fixture-" "" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o755;
+  Fun.protect
+    ~finally:(fun () ->
+      let rec rmrf p =
+        if Sys.is_directory p then begin
+          Array.iter (fun c -> rmrf (Filename.concat p c)) (Sys.readdir p);
+          try Unix.rmdir p with _ -> ()
+        end else try Sys.remove p with _ -> ()
+      in
+      rmrf tmp)
+    (fun () ->
+       (* Broker needs a registry — create an empty one. *)
+       let reg_path = Filename.concat tmp "registrations.yaml" in
+       let reg = open_out reg_path in
+       output_string reg "registrations: []\n";
+       close_out reg;
+       (* Write the inbox. *)
+       let inbox_path = Filename.concat tmp "kimi-test-session.inbox.json" in
+       let inbox = open_out inbox_path in
+       let json_list =
+         `List (List.map (fun (from_alias, content) ->
+           `Assoc [
+             ("from_alias", `String from_alias);
+             ("to_alias", `String "kimi-test");
+             ("content", `String content);
+             ("ts", `Float (Unix.gettimeofday ()));
+             ("deferrable", `Bool false);
+             ("ephemeral", `Bool false);
+             ("reply_via", `Null);
+             ("enc_status", `Null);
+             ("message_id", `Null);
+           ])
+           messages)
+         |> Yojson.Safe.to_string
+       in
+       output_string inbox json_list;
+       close_out inbox;
+       f tmp)
+
+(* Verify inbox contents after run_once. *)
+let read_inbox_messages broker_root session_id =
+  let path = Filename.concat broker_root (session_id ^ ".inbox.json") in
+  if not (Sys.file_exists path) then []
+  else
+    try
+      let json = Yojson.Safe.from_file path in
+      match json with
+      | `List items ->
+          List.map (fun item ->
+            let open Yojson.Safe.Util in
+            ( item |> member "from_alias" |> to_string,
+              item |> member "content" |> to_string ))
+            items
+      | _ -> []
+    with _ -> []
+
+(* [#484 S1] Core invariant: approval verdicts are NOT drained from the broker
+   unless they were actually delivered to kimi. When session_dir is missing,
+   delivery fails and the verdict stays in the broker inbox — await-reply can
+   still find it on next poll (which is the whole point of the fix). *)
+let test_approval_verdict_kept_in_inbox_after_run_once () =
+  with_broker_root_and_inbox
+    [ ("reviewer", "ka_call_42 allow — looks fine") ]
+    (fun broker_root ->
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+       (* No kimi session dir → 0 deliveries, verdict stays in broker. *)
+       let n = C2c_kimi_notifier.run_once
+         ~broker_root
+         ~alias:"kimi-test"
+         ~session_id:"kimi-test-session"
+         ~tmux_pane:None
+       in
+       Alcotest.(check int) "0 deliveries (no session dir)" 0 n;
+       let remaining = read_inbox_messages broker_root "kimi-test-session" in
+       Alcotest.(check int) "approval verdict kept in broker inbox" 1 (List.length remaining);
+       match remaining with
+       | [from_alias, content] ->
+           Alcotest.(check string) "from_alias preserved" "reviewer" from_alias;
+           Alcotest.(check bool) "ka_ verdict still present" true (contains content "ka_call_42")
+       | _ -> Alcotest.fail "expected exactly 1 message")
+
+(* System events: before the fix they were drained (removed). After the fix they
+   stay in the inbox (written back as to_skip). This is a semantic change but not
+   a regression — system events in the inbox are harmless and await-reply ignores them. *)
+let test_system_event_remains_in_inbox_after_run_once () =
+  with_broker_root_and_inbox
+    [ ("c2c-system", "some-alias registered") ]
+    (fun broker_root ->
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+       let n = C2c_kimi_notifier.run_once
+         ~broker_root
+         ~alias:"kimi-test"
+         ~session_id:"kimi-test-session"
+         ~tmux_pane:None
+       in
+        Alcotest.(check int) "0 deliveries (no session dir)" 0 n;
+       let remaining = read_inbox_messages broker_root "kimi-test-session" in
+       Alcotest.(check int) "system event still in inbox" 1 (List.length remaining);
+       match remaining with
+       | [from_alias, _] ->
+           Alcotest.(check string) "system event preserved" "c2c-system" from_alias
+       | _ -> Alcotest.fail "expected exactly 1 message")
+
+(* Mixed inbox: system event + approval verdict + regular DM.
+   After run_once: all 3 remain in broker inbox (nothing drained).
+   await-reply will find the approval verdict on next poll. *)
+let test_mixed_messages_approval_verdict_kept () =
+  with_broker_root_and_inbox
+    [ ("c2c-system", "some-alias registered")
+    ; ("reviewer", "ka_call_99 deny — looks dangerous")
+    ; ("another-peer", "hello kimi")
+    ]
+    (fun broker_root ->
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+       let n = C2c_kimi_notifier.run_once
+         ~broker_root
+         ~alias:"kimi-test"
+         ~session_id:"kimi-test-session"
+         ~tmux_pane:None
+       in
+        Alcotest.(check int) "0 deliveries (no session dir)" 0 n;
+       let remaining = read_inbox_messages broker_root "kimi-test-session" in
+       Alcotest.(check int) "all 3 messages remain in inbox" 3 (List.length remaining);
+       let contents = List.map snd remaining in
+       Alcotest.(check bool) "ka_ verdict still present" true
+         (List.exists (fun c -> contains c "ka_call_99") contents))
+
 let () =
   Alcotest.run "c2c_kimi_notifier"
     [ "notification_id",
@@ -328,5 +472,10 @@ let () =
       ; Alcotest.test_case "includes system events" `Quick test_write_chat_log_includes_system_events
       ; Alcotest.test_case "multiline body indented" `Quick test_write_chat_log_multiline_body
       ; Alcotest.test_case "appends multiple entries" `Quick test_write_chat_log_appends
+      ]
+    ; "await_reply_race_484",
+      [ Alcotest.test_case "approval verdict kept in inbox" `Quick test_approval_verdict_kept_in_inbox_after_run_once
+      ; Alcotest.test_case "system event kept in inbox" `Quick test_system_event_remains_in_inbox_after_run_once
+      ; Alcotest.test_case "mixed messages verdict preserved" `Quick test_mixed_messages_approval_verdict_kept
       ]
     ]
