@@ -1907,7 +1907,7 @@ let test_opencode_sidecar_omits_broker_root_when_default () =
   let (instances_dir, project_dir, sidecar) = prepare_sidecar_dirs root name in
   let default_root = C2c_start.broker_root () in
   C2c_start.refresh_opencode_identity
-    ~name ~alias:"omitter" ~broker_root:default_root ~project_dir ~instances_dir;
+    ~name ~alias:"omitter" ~broker_root:default_root ~project_dir ~instances_dir ~agent_name:None;
   let raw = read_sidecar_raw sidecar in
   check bool "sidecar exists" true (raw <> "");
   check bool "session_id present" true (string_contains raw "\"session_id\"");
@@ -1923,7 +1923,7 @@ let test_opencode_sidecar_persists_broker_root_when_overridden () =
   if explicit_root = C2c_start.broker_root () then
     fail "test setup: temp broker_root collided with resolver default";
   C2c_start.refresh_opencode_identity
-    ~name ~alias:"persister" ~broker_root:explicit_root ~project_dir ~instances_dir;
+    ~name ~alias:"persister" ~broker_root:explicit_root ~project_dir ~instances_dir ~agent_name:None;
   let raw = read_sidecar_raw sidecar in
   check bool "broker_root present when overridden" true
     (string_contains raw "\"broker_root\"");
@@ -1948,7 +1948,7 @@ let test_opencode_sidecar_strips_stale_default_broker_root () =
   close_out oc;
   let default_root = C2c_start.broker_root () in
   C2c_start.refresh_opencode_identity
-    ~name ~alias:"stripper-new" ~broker_root:default_root ~project_dir ~instances_dir;
+    ~name ~alias:"stripper-new" ~broker_root:default_root ~project_dir ~instances_dir ~agent_name:None;
   let raw = read_sidecar_raw sidecar in
   check bool "stale broker_root literal stripped" false
     (string_contains raw "/legacy/stale/broker/path");

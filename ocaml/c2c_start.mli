@@ -359,15 +359,16 @@ val refresh_opencode_identity :
   broker_root:string ->
   project_dir:string ->
   instances_dir:string ->
+  agent_name:string option ->
   unit
 (** Rewrite the opencode identity sidecar at
     [<instances_dir>/<name>/c2c-plugin.json] with the current
-    [session_id]/[alias] pair, plus [broker_root] iff it differs from the
-    resolver default (drift-prevention follow-up to #504 / kimi-mcp-canonical).
-    Stale [broker_root] entries from prior runs are stripped on every
-    refresh so the omit-when-default rule actually takes effect on resume.
-    Exported for tests; the production caller is the OpenCodeAdapter
-    [refresh_identity] entry. *)
+    [session_id]/[alias]/[agent_name] tuple, plus [broker_root] iff it differs
+    from the resolver default (drift-prevention follow-up to #504 /
+    kimi-mcp-canonical).  Stale [broker_root] entries from prior runs are
+    stripped on every refresh so the omit-when-default rule actually takes
+    effect on resume.  Exported for tests; the production caller is the
+    OpenCodeAdapter [refresh_identity] entry. *)
 
 (** {1 Broker root} *)
 
