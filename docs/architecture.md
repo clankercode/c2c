@@ -239,7 +239,7 @@ See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering se
 
 The OCaml `c2c` binary at `~/.local/bin/c2c` (built from
 `ocaml/cli/c2c.ml`) is the canonical CLI entrypoint. The Python
-scripts listed in `docs/commands.md` are mostly either:
+scripts in `scripts/` are mostly either:
 
 - legacy CLI wrappers that predate the OCaml port (`c2c_cli.py`,
   `c2c_register.py`, `c2c_send.py`) — kept only for the handful of

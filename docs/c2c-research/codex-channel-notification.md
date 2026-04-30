@@ -47,11 +47,12 @@ Messages.tsx renders message visibly in chat UI
 
 However, **standard Claude Code does NOT declare this capability** in its initialize, so the mechanism is gated behind the `--dangerously-load-development-channels` flag.
 
-**Evidence:** `ocaml/c2c_mcp.ml:65` declares the capability:
+**Evidence:** `ocaml/c2c_mcp_helpers.ml:330` declares the capability:
 ```ocaml
 let capabilities =
   `Assoc
     [ ("tools", `Assoc [])
+    ; ("prompts", `Assoc [])
     ; ("experimental", `Assoc [ ("claude/channel", `Assoc []) ])
     ]
 ```
@@ -76,7 +77,7 @@ Codex uses a **notify daemon + PTY injection path**:
 ```
 Peer sends message  →  broker writes to Codex's .inbox.json
     ↓
-c2c_deliver_inbox.py daemon (inotifywait)
+`c2c deliver-inbox` daemon (OCaml, inotifywait)
     ↓
 PTY-injects notification string:
   "\n<c2c event=\"message_pending\">poll mcp__c2c__poll_inbox</c2c>\n"
