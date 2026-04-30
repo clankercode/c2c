@@ -287,67 +287,142 @@ let tmux_wake ~pane =
     (Filename.quote pane) in
   ignore (Sys.command cmd)
 
+(* ─── Inbox write-back helpers (mirrors Broker.save_inbox locking) ──────────── *)
+
+(* Inline message JSON serialization to avoid depending on un-exposed internals.
+   Must match the schema Broker.save_inbox writes. *)
+let message_to_json (msg : C2c_mcp.message) =
+  let base =
+    [ ("from_alias", `String msg.from_alias)
+    ; ("to_alias", `String msg.to_alias)
+    ; ("content", `String msg.content)
+    ; ("ts", `Float msg.ts)
+    ]
+  in
+  let with_deferrable = if msg.deferrable then base @ [("deferrable", `Bool true)] else base in
+  let with_ephemeral = if msg.ephemeral then with_deferrable @ [("ephemeral", `Bool true)] else with_deferrable in
+  let with_reply_via = match msg.reply_via with None -> with_ephemeral | Some rv -> with_ephemeral @ [("reply_via", `String rv)] in
+  let with_msg_id = match msg.message_id with None -> with_reply_via | Some mid -> with_reply_via @ [("message_id", `String mid)] in
+  match msg.enc_status with
+  | None -> `Assoc with_msg_id
+  | Some es -> `Assoc (with_msg_id @ [("enc_status", `String es)])
+
+(* Replicate the broker's atomic-write-to-tmp+rename pattern for the inbox file.
+   We write back only the messages we want to keep (skipped ones) without
+   depending on un-exposed Broker internals. Lock path and file layout match
+   what Broker uses: <broker_root>/<session_id>.inbox.json with
+   <broker_root>/<session_id>.inbox.lock for the fcntl lock. *)
+let write_inbox_file ~broker_root ~session_id messages =
+  let path = Filename.concat broker_root (session_id ^ ".inbox.json") in
+  let lock_path = Filename.concat broker_root (session_id ^ ".inbox.lock") in
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let fd =
+    Unix.openfile lock_path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ();
+      try Unix.close fd with _ -> ())
+    (fun () ->
+       Unix.lockf fd Unix.F_LOCK 0;
+       let oc =
+         open_out_gen
+           [ Open_wronly; Open_creat; Open_trunc; Open_text ]
+           0o600 tmp
+       in
+       Fun.protect
+         ~finally:(fun () -> try close_out oc with _ -> ())
+         (fun () ->
+            let json = `List (List.map message_to_json messages) in
+            Yojson.Safe.to_channel oc json);
+       (* Atomic rename — same guarantee as Broker.write_json_file. *)
+       Unix.rename tmp path)
+
 (* ─── Drain + deliver loop ───────────────────────────────────────────────── *)
+
+(* [#484 S1] Eliminate the inbox-drain race that was starving await-reply.
+   Previously run_once called Broker.drain_inbox which REMOVED every message
+   from the broker inbox before await-reply could see it — a race the notifier
+   won every time, causing approval-verdict DMs to vanish.
+   Fix: read_inbox (peek, no side effects), deliver to kimi store, then
+   write back ONLY the messages we want to keep in the broker inbox (system
+   events that were skipped).  Approval verdicts and all other non-system
+   messages stay in the broker inbox for await-reply to find on next poll. *)
 
 let run_once ~broker_root ~alias ~session_id ~tmux_pane =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
-  (* The kimi managed session registers with session_id = alias by default;
-     we accept session_id as a separate param to keep the API explicit but
-     fall back to alias for the drain. *)
   let drain_sid = if session_id = "" then alias else session_id in
-  let messages = C2c_mcp.Broker.drain_inbox broker ~session_id:drain_sid in
-  match messages with
+  (* Peek: read messages without draining them from the broker inbox. *)
+  let all_messages = C2c_mcp.Broker.read_inbox broker ~session_id:drain_sid in
+  match all_messages with
   | [] -> 0
-  | msgs ->
-    (* Resolve the kimi session-dir. If we can't, log + drop the wake but
-       still drain (messages remain in archive even if kimi can't see them). *)
+  | _ ->
+    (* Resolve the kimi session-dir. *)
     let cwd = Sys.getcwd () in
     let session_dir_opt =
       match read_session_id_from_config alias with
       | Some sid -> Some (session_dir_for ~cwd ~session_id:sid)
       | None -> None
     in
-    let n = List.length msgs in
-    (* [#490 slice 5c] Track whether any message was user-visible — if every
-       message in this drain was an approval-verdict backchannel DM, we
-       suppress the wake too (no point waking kimi for traffic it never
-       sees). *)
-    let any_visible = ref false in
+    (* Partition into messages we will deliver vs. ones we skip.
+       System events are written to chat-log but NOT to the JSON notification
+       store (#475 identity-confusion guard).  All other messages (including
+       approval verdicts) are delivered to kimi. *)
+    let to_deliver, to_skip =
+      List.partition
+        (fun (msg : C2c_mcp.message) -> not (is_system_event ~from_alias:msg.from_alias))
+        all_messages
+    in
+    (* Log skipped messages (system events) to chat-log for operator scrollback. *)
+    List.iter
+      (fun (msg : C2c_mcp.message) ->
+        (try
+           match session_dir_opt with
+           | Some sdir -> write_chat_log ~session_dir:sdir ~from_alias:msg.from_alias ~body:msg.content
+           | None -> ()
+         with exn ->
+           Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+             (Printexc.to_string exn)))
+      to_skip;
+    (* Attempt delivery of non-system messages. Track what actually landed. *)
+    let delivered, undelivered = ref [], ref [] in
     List.iter
       (fun (msg : C2c_mcp.message) ->
         let from_alias = msg.from_alias in
         let body = msg.content in
         let ts = msg.ts in
         let nid = notification_id_for_msg ~from_alias ~ts ~content:body in
-        if is_approval_verdict_body body then begin
+        match session_dir_opt with
+        | Some sdir ->
+          (* Sidecar chat-log for all messages. *)
+          (try write_chat_log ~session_dir:sdir ~from_alias ~body
+           with exn ->
+             Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+               (Printexc.to_string exn));
+          (* JSON notification store: skip system events (#475 identity-confusion guard). *)
+          (try write_notification ~session_dir:sdir ~notification_id:nid
+                 ~from_alias ~body;
+           delivered := msg :: !delivered
+           with exn ->
+             Printf.eprintf "[kimi-notifier] write failed: %s\n%!"
+               (Printexc.to_string exn);
+           undelivered := msg :: !undelivered)
+        | None ->
+          undelivered := msg :: !undelivered;
           Printf.eprintf
-            "[kimi-notifier] skip approval-verdict DM from %s (#490 side-channel filter): %s\n%!"
-            from_alias
-            (if String.length body > 60 then String.sub body 0 60 ^ "..." else body)
-        end else begin
-          any_visible := true;
-          match session_dir_opt with
-          | Some sdir ->
-            (* Sidecar log: ALL non-verdict messages including system events. *)
-            (try write_chat_log ~session_dir:sdir ~from_alias ~body
-             with exn ->
-               Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
-                 (Printexc.to_string exn));
-            (* JSON notification store: skip system events to avoid #475 identity confusion. *)
-            (try write_notification ~session_dir:sdir ~notification_id:nid
-                   ~from_alias ~body
-             with exn ->
-               Printf.eprintf "[kimi-notifier] write failed: %s\n%!"
-                 (Printexc.to_string exn))
-          | None ->
-            Printf.eprintf
-              "[kimi-notifier] no kimi session-id resolved; message archived but undelivered\n%!"
-        end)
-      msgs;
-    (* Wake the pane if we have one + pane appears idle + something visible
-       actually landed. *)
+            "[kimi-notifier] no kimi session-id resolved; message archived but undelivered\n%!")
+      to_deliver;
+    (* Write back to_skip (system events) + any undelivered non-system messages.
+       This keeps approval verdicts in the broker inbox if kimi delivery failed —
+       await-reply will find them on the next poll. *)
+    let to_keep = to_skip @ !undelivered in
+    write_inbox_file ~broker_root ~session_id:drain_sid to_keep;
+    let n = List.length !delivered in
+    (* Wake pane if idle and something was delivered. *)
     (match tmux_pane with
-     | Some pane when session_dir_opt <> None && !any_visible ->
+     | Some pane when session_dir_opt <> None && n > 0 ->
+       if tmux_pane_is_idle ~pane then tmux_wake ~pane
+     | _ -> ())
        if tmux_pane_is_idle ~pane then tmux_wake ~pane
      | _ -> ());
     n
