@@ -3,7 +3,7 @@
 **Audience**: any agent (subagent, peer, human) implementing a slice in
 the c2c repo's shared-`.git` multi-worktree layout.
 
-**Pattern catalog**: this runbook catalogs **19 patterns** (as of 2026-05-01).
+**Pattern catalog**: this runbook catalogs **20 patterns** (as of 2026-05-01).
 The canonical count lives in `CLAUDE.md`; this line tracks locally.
 
 **Why this exists**: 2026-04-28's high-parallel burn surfaced four
@@ -851,6 +851,37 @@ cat /proc/<pid>/comm
 
 ---
 
+## Pattern 20 — spot-check subagent figures before citing them
+
+**Severity**: MEDIUM — an erroneous figure misleads downstream decisions and can waste recovery time when the correct number is later rediscovered.
+
+**Symptom**: A subagent emits a load-bearing numerical or structural figure (LOC count, function count, file list, line refs, test coverage %) that the dispatching agent commits without verification. The figure is wrong. Other agents or the coordinator act on the false data.
+
+**Root cause**: Subagents using generative models can hallucinate plausible-sounding numbers. The dispatching agent treats the subagent's output as authoritative without independent verification. Attribution without confirmation becomes false authority.
+
+**Case study — willow #388 audit (2026-05-01)**:
+A Sonnet subagent produced a "c2c_mcp.ml is 30k LOC" figure in a findings doc. Willow committed it without spot-check. Coordinator1 caught the discrepancy — `c2c_mcp.ml` is 434 LOC. The correct figure required re-running `wc -l` across all OCaml files. Fixed in `882d5b34`.
+
+**Mitigation**:
+
+1. **Always re-run before citing**: Before committing any load-bearing numerical figure from a subagent, re-run the underlying command yourself.
+2. **Cite the verification command**: In the doc body, include the exact command that produced the number: `"The subagent reports c2c_mcp.ml at 30k LOC (verified via `wc -l ocaml/c2c_mcp.ml` — actual: 434 LOC)"`
+3. **Attribution with verification**: Prefer `"reports X (verified via `cmd`)"` over silent attribution. If you cannot verify, say `"the subagent reports approximately X — unverified"`.
+
+**Spot-check checklist for subagent figures**:
+
+```
+LOC counts     → re-run wc -l on the file(s)
+Function count → re-run grep -c or count the definitions
+File lists    → verify each file exists with ls or glob
+Line refs     → verify the line numbers with sed -n 'Nn,p'
+Test counts   → re-run the test suite and note actual vs reported
+```
+
+**Cross-reference**: Pattern 8 (reviewer must build IN slice worktree) — the same principle applies to figures: verification must be performed by the attributing agent, not delegated to the subagent and accepted blindly.
+
+---
+
 ## Pattern 19 — requesting peer-PASS on a stale-base SHA (#521)
 
 **Severity**: MEDIUM — an invalid PASS can cause the coordinator to cherry-pick a SHA whose worktree is so far behind `origin/master` that the reviewer's build verified the wrong code.
@@ -998,7 +1029,7 @@ shortcut — those will create the next agent's footgun finding.
   `.collab/findings/2026-04-29T08-00-00Z-willow-coder-subagent-cwd-persistence-nested-worktree.md`
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
   framing), slate-coder (Pattern 5, Pattern 8),
-  cedar-coder (Pattern 7), fern-coder (Patterns 6, 14),
+  cedar-coder (Patterns 7, 20), fern-coder (Patterns 6, 14),
   willow-coder (Pattern 17).
 
 — stanza-coder, with coordinator1, with slate-coder, with cedar-coder, with fern-coder, with willow-coder
