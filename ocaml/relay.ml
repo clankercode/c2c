@@ -1432,17 +1432,25 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
             let rc = step stmt in
             if rc = ROW then (
               let row_node_id = Data.to_string_exn (column stmt 0) in
-              (try
-                let row_last_seen = float_of_string (Data.to_string_exn (column stmt 1)) in
-                let row_ttl = float_of_string (Data.to_string_exn (column stmt 2)) in
-                let row_pk = Data.to_string_exn (column stmt 3) in
-                existing_pk := row_pk;
-                let alive = (row_last_seen +. row_ttl) >= now in
-                if alive && row_node_id <> node_id then (
-                  conflict_lease := Some (RegistrationLease.make ~node_id:row_node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ())
-                ) else
-                  check_existing ()
-              with _ -> check_existing ())
+              let row_last_seen =
+                let col = column stmt 1 in
+                match Data.to_float col with
+                | Some f -> f
+                | None -> float_of_string (Data.to_string_exn col)
+              in
+              let row_ttl =
+                let col = column stmt 2 in
+                match Data.to_float col with
+                | Some f -> f
+                | None -> float_of_string (Data.to_string_exn col)
+              in
+              let row_pk = Data.to_string_exn (column stmt 3) in
+              existing_pk := row_pk;
+              let alive = (row_last_seen +. row_ttl) >= now in
+              if alive && row_node_id <> node_id then (
+                conflict_lease := Some (RegistrationLease.make ~node_id:row_node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ())
+              ) else
+                check_existing ()
             ) else if rc <> DONE then
               failwith ("step error: " ^ Rc.to_string rc)
           in
@@ -1541,7 +1549,12 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
           let from_alias = Data.to_string_exn (column stmt 1) in
           let to_alias = Data.to_string_exn (column stmt 2) in
           let content = Data.to_string_exn (column stmt 3) in
-          let ts = float_of_string (Data.to_string_exn (column stmt 4)) in
+          let ts =
+            let col = column stmt 4 in
+            match Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Data.to_string_exn col)
+          in
           msgs := `Assoc [
             ("message_id", `String message_id);
             ("from_alias", `String from_alias);
@@ -1729,9 +1742,24 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
           let node_id' = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1) in
           let session_id' = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2) in
           let client_type = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3) in
-          let registered_at = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 4)) in
-          let last_seen = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 5)) in
-          let ttl = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 6)) in
+          let registered_at =
+            let col = Sqlite3.column stmt 4 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
+          let last_seen =
+            let col = Sqlite3.column stmt 5 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
+          let ttl =
+            let col = Sqlite3.column stmt 6 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
           let identity_pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 7) in
           let lease = RegistrationLease.make ~node_id:node_id' ~session_id:session_id' ~alias ~client_type ~ttl ~identity_pk () in
           found_lease := Some lease;
@@ -1765,9 +1793,24 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
           let node_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1) in
           let session_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2) in
           let client_type = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3) in
-          let registered_at = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 4)) in
-          let last_seen = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 5)) in
-          let ttl = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 6)) in
+          let registered_at =
+            let col = Sqlite3.column stmt 4 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
+          let last_seen =
+            let col = Sqlite3.column stmt 5 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
+          let ttl =
+            let col = Sqlite3.column stmt 6 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
           let identity_pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 7) in
           let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
           let alive = (last_seen +. ttl) >= now in
@@ -2089,7 +2132,12 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
           let message_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
           let from_alias = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1) in
           let content = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2) in
-          let ts = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3)) in
+          let ts =
+            let col = Sqlite3.column stmt 3 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
           msgs := `Assoc [("message_id", `String message_id); ("from_alias", `String from_alias); ("content", `String content); ("ts", `Float ts)] :: !msgs;
           loop ()
         else if rc <> Rc.DONE then
@@ -2111,7 +2159,12 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
           let from_alias = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1) in
           let to_alias = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2) in
           let content = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3) in
-          let ts = float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 4)) in
+          let ts =
+            let col = Sqlite3.column stmt 4 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
           let reason = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 5) in
           msgs := `Assoc [("message_id", `String message_id); ("from_alias", `String from_alias); ("to_alias", `String to_alias); ("content", `String content); ("ts", `Float ts); ("reason", `String reason)] :: !msgs;
           loop ()
