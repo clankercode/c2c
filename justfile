@@ -284,7 +284,7 @@ install-all: codegen-role-designer install-git-hooks
       cp _build/default/ocaml/tools/c2c_post_compact_hook_bin.exe ~/.local/bin/c2c-post-compact-hook; \
       printf "#!/usr/bin/env bash\nset -euo pipefail\nexec \"%s/scripts/cc-quota\" \"\$@\"\n" "$PWD" > ~/.local/bin/cc-quota; \
       chmod +x ~/.local/bin/cc-quota; \
-      printf "#!/usr/bin/env bash\nset -euo pipefail\nexec python3 \"%s/c2c_deliver_inbox.py\" \"\$@\"\n" "$PWD" > ~/.local/bin/c2c-deliver-inbox; \
+      cp _build/default/ocaml/cli/c2c_deliver_inbox.exe ~/.local/bin/c2c-deliver-inbox; \
       chmod +x ~/.local/bin/c2c-deliver-inbox; \
       scripts/c2c-install-stamp.sh; \
     '
