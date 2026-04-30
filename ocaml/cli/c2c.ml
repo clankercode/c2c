@@ -2780,10 +2780,11 @@ let monitor_cmd =
   in
   const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self force ->
     let broker_root =
-      match broker_root_arg with
+      let trimmed = function Some s when String.trim s <> "" -> Some (String.trim s) | _ -> None in
+      match trimmed broker_root_arg with
       | Some r -> r
       | None ->
-          (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+          (match trimmed (Sys.getenv_opt "C2C_MCP_BROKER_ROOT") with
            | Some r -> r
            | None -> (try resolve_broker_root () with _ ->
                Printf.eprintf "c2c monitor: cannot resolve broker root \
@@ -3733,7 +3734,7 @@ let relay_config_path () =
   | Some p when p <> "" -> p
   | _ ->
       (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-       | Some d when d <> "" -> Filename.concat d "relay.json"
+       | Some d when String.trim d <> "" -> Filename.concat (String.trim d) "relay.json"
        | _ ->
            let home = try Sys.getenv "HOME" with Not_found -> "." in
            Filename.concat home ".config/c2c/relay.json")
@@ -5788,7 +5789,7 @@ let init_cmd =
              | Some p when p <> "" -> p
              | _ ->
                  (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-                  | Some d when d <> "" -> Filename.concat d "relay.json"
+                  | Some d when String.trim d <> "" -> Filename.concat (String.trim d) "relay.json"
                   | _ ->
                       let home = try Sys.getenv "HOME" with Not_found -> "." in
                       Filename.concat home ".config/c2c/relay.json")

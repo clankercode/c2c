@@ -1731,8 +1731,8 @@ module Broker = struct
 
   let docker_broker_root () : (string, string) result =
     match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-    | Some root -> Ok root
-    | None -> Error "C2C_IN_DOCKER=1 requires C2C_MCP_BROKER_ROOT to be set"
+    | Some root when String.trim root <> "" -> Ok (String.trim root)
+    | _ -> Error "C2C_IN_DOCKER=1 requires C2C_MCP_BROKER_ROOT to be set"
 
   let in_docker_mode () =
     match Sys.getenv_opt "C2C_IN_DOCKER" with
