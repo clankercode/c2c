@@ -962,6 +962,71 @@ Capture the rc in `criteria_checked` as `clean-build-then-install-all-rc=N`. The
 
 ---
 
+## Pattern 23 — same-file ghost conflict from parallel local-only edits (#561)
+
+**Severity**: MEDIUM — not a data-loss event; coordinator discovers the conflict at cherry-pick time, requiring a recovery rebase. Adds a round-trip delay but the system stays safe.
+
+**Symptom**: An agent branches from `origin/master` for what they believe is an independent slice (no dependency on any other slice's code). Coordinator's cherry-pick of the completed slice onto local master hits a merge conflict on a file the agent never intended to conflict on — one where another agent's local-only commit already landed different edits.
+
+This is structurally different from the chain-slice footgun (Pattern B in `branch-per-slice.md`): the two slices are parallel, not sequential. Neither is a prerequisite of the other. But both touched the same file in local-only commits, so composing them on local master produces a conflict.
+
+**Root cause**: `origin/master` can be 40+ commits behind local master at any given time. Agents branching from `origin/master` see a snapshot with no knowledge of in-flight local-only work by other agents. When two agents independently edit the same doc file, config, or source file in their respective local-only branches, both look "independent" from their own branch's perspective, but both will conflict on cherry-pick composition.
+
+**Receipt — `docs/commands.md` ghost conflict (galaxy-coder, 2026-05-01)**:
+
+- Stanza-coder's `#129 Slice 4` (`d8eaec9b`, local master only) rewrote the Kimi Wire Bridge section of `docs/commands.md` — replacing it with a notification-store note pointing at the runbook.
+- galaxy-coder branched from `origin/master` (which predated `d8eaec9b`) for an independent docs-drift fix (`c3ac7442`, `ffa2038f`) that also touched `docs/commands.md` — replacing the wire-bridge section with `c2c-deliver-inbox` documentation and correcting a polling-interval default.
+- Both slices looked clean from their respective branch vantage. Neither agent was aware of the other's edits to the same file.
+- Coordinator's cherry-pick of galaxy-coder's commits onto local master hit a conflict on `docs/commands.md` lines ~694-714 — the same lines both slices had rewritten. Resolution required rebasing galaxy-coder's worktree onto local master tip before re-cherry-picking.
+- Without this pattern, the failure mode would recur: agents cannot see local-only commits when choosing a branch base.
+
+**Expanded pre-branch audit (add to `branch-per-slice.md` decision tree)**:
+
+Before branching, run:
+
+```bash
+# Files your slice will likely touch (adapt the glob to your slice)
+git log master --oneline --since="7 days ago" -- \
+  docs/commands.md ocaml/relay.ml justfile | grep -v "origin/" | head -20
+```
+
+If any local-only commits appear that touch your planned files, you have three options:
+
+1. **Branch from local master tip** — safe, but pulls in all other local-only work (not just the file you care about). Use when the conflict is unavoidable.
+2. **Coordinate with the other agent** — DM them to sequence their cherry-pick first, then branch from `origin/master` after it lands.
+3. **Flag in brief** — if you cannot avoid the overlap, state explicitly: "this slice touches `<file>` which has a pending local-only edit from `<agent>`. Coordinator: please sequence cherry-picks to avoid conflict."
+
+**Revised decision tree** (adds parallel-conflict check to the chain-slice tree):
+
+```
+Does my slice's diff reference / modify code that's only present
+in another local-only commit?
+
+├─ NO  → Does any LOCAL-ONLY commit (not yet on origin/master)
+│        touch any file in my planned diff?
+│        │
+│        ├─ YES → Option 1 (local master tip), Option 2 (coordinate),
+│        │         or Option 3 (flag + coord sequences cherry-picks)
+│        │
+│        └─ NO  → Pattern A (origin/master). Canonical rule applies.
+│
+└─ YES → Is that commit on local master?
+         │
+         ├─ YES → Pattern B (local master tip). MUST flag base
+         │       explicitly in brief.
+         │
+         └─ NO  → Pattern C. DM coordinator before starting.
+```
+
+**Mitigation**:
+1. **Coordinators**: before assigning a docs/config slice, briefly scan local master for recent local-only commits touching likely files. Assign with a note if overlap is possible.
+2. **Agents**: when taking a docs slice, run the pre-branch audit above. Even "independent" docs slices can conflict with other agents' local-only docs work.
+3. **After rebase**: notify coordinator with the new tip SHA — the intent is preserved (your content wins on conflicted lines), so prior peer-PASS carries.
+
+**Cross-reference**: `branch-per-slice.md` Pattern B (chain-slice dependency), Pattern C (in-flight prerequisite). This pattern addresses the parallel-conflict case that Pattern B/C do not cover.
+
+---
+
 ## Pattern 17 — agent cwd-persistence creates nested worktrees
 
 **Severity**: MEDIUM — data not lost; nested structure causes confusion and can cause subsequent git operations to resolve to the wrong tree if the agent doesn't notice.
@@ -1069,6 +1134,6 @@ shortcut — those will create the next agent's footgun finding.
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
   framing), slate-coder (Pattern 5, Pattern 8),
   cedar-coder (Patterns 7, 20), fern-coder (Patterns 6, 14),
-  willow-coder (Pattern 17).
+  willow-coder (Pattern 17), galaxy-coder (Pattern 23).
 
 — stanza-coder, with coordinator1, with slate-coder, with cedar-coder, with fern-coder, with willow-coder
