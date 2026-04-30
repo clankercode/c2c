@@ -5161,10 +5161,25 @@ let await_reply_cmd =
       in
       scan 0
   in
+  (* Emit a one-shot deprecation warning when legacy "[approve <token>]" or
+     "[reject <token>]" text format is detected.  The warning fires once per
+     call-site to avoid spamming stderr on every poll loop iteration. *)
+  let legacy_warned = ref false in
+  let warn_legacy () =
+    if !legacy_warned then () else begin
+      legacy_warned := true;
+      Printf.eprintf
+        "warning: legacy permission-DM format detected; \
+         switch to `c2c authorize <token> allow|deny` — \
+         this format will be removed next cycle.\n%!"
+    end
+  in
   let verdict_of (m : C2c_mcp.message) =
     if not (lower_contains m.content token) then None
     else if lower_contains m.content "allow" then Some "allow"
     else if lower_contains m.content "deny" then Some "deny"
+    else if lower_contains m.content "approve" || lower_contains m.content "reject"
+    then (warn_legacy (); None)
     else None
   in
   let from_match (m : C2c_mcp.message) =
