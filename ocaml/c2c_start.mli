@@ -351,6 +351,24 @@ val check_pty_inject_capability :
     [cap_sys_ptrace] via [getcap]. Optional overrides exist for deterministic
     tests. *)
 
+(** {1 Opencode identity sidecar (test-visible)} *)
+
+val refresh_opencode_identity :
+  name:string ->
+  alias:string ->
+  broker_root:string ->
+  project_dir:string ->
+  instances_dir:string ->
+  unit
+(** Rewrite the opencode identity sidecar at
+    [<instances_dir>/<name>/c2c-plugin.json] with the current
+    [session_id]/[alias] pair, plus [broker_root] iff it differs from the
+    resolver default (drift-prevention follow-up to #504 / kimi-mcp-canonical).
+    Stale [broker_root] entries from prior runs are stripped on every
+    refresh so the omit-when-default rule actually takes effect on resume.
+    Exported for tests; the production caller is the OpenCodeAdapter
+    [refresh_identity] entry. *)
+
 (** {1 Broker root} *)
 
 val broker_root : unit -> string

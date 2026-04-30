@@ -1362,13 +1362,29 @@ module OpenCodeAdapter : CLIENT_ADAPTER = struct
         (match Yojson.Safe.from_file sidecar_path with `Assoc p -> p | _ -> [])
       else []
       in
-      let identity = [
+      (* Drift-prevention follow-up to #504 / kimi-mcp-canonical-server:
+         omit broker_root from the sidecar when it equals the resolver
+         default. Persisting the resolver-default value re-pins stale
+         paths after future migrations; the opencode TS plugin has its
+         own canonical resolver (mirrors C2c_repo_fp.resolve_broker_root)
+         so an absent field falls back correctly. Only persist when the
+         operator explicitly overrode. *)
+      let resolver_default =
+        try C2c_repo_fp.resolve_broker_root () with _ -> ""
+      in
+      let identity_base = [
         ("session_id", `String name);
         ("alias", `String alias);
-        ("broker_root", `String broker_root);
       ] in
-      let keys = List.map fst identity in
-      let kept = List.filter (fun (k, _) -> not (List.mem k keys)) existing in
+      let identity =
+        if broker_root = "" || broker_root = resolver_default
+        then identity_base
+        else identity_base @ [ ("broker_root", `String broker_root) ]
+      in
+      (* Always strip stale broker_root from existing file so the skip
+         actually takes effect on resume. *)
+      let stripped_keys = "session_id" :: "alias" :: "broker_root" :: [] in
+      let kept = List.filter (fun (k, _) -> not (List.mem k stripped_keys)) existing in
       write_json_file_atomic sidecar_path (`Assoc (kept @ identity))
     with _ -> ())
 

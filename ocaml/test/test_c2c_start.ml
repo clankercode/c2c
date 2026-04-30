@@ -1865,6 +1865,85 @@ let test_kimi_mcp_config_persists_broker_root_env_when_overridden () =
   check bool "explicit broker_root value appears in env" true
     (string_contains raw explicit_root)
 
+(* opencode-plugin-skip-default-broker (drift-prevention follow-up to #504
+   / kimi-mcp-canonical-server): the OpenCodeAdapter sidecar writer at
+   <instances_dir>/<name>/c2c-plugin.json must omit broker_root when its
+   value equals the resolver default, persist it when explicitly overridden,
+   and strip stale broker_root entries on every refresh so the omit-when-
+   default rule actually takes effect on resume. *)
+
+let prepare_sidecar_dirs root name =
+  let instances_dir = Filename.concat root "instances" in
+  let project_dir = Filename.concat root "project" in
+  let inst_dir = Filename.concat instances_dir name in
+  Unix.mkdir instances_dir 0o755;
+  Unix.mkdir project_dir 0o755;
+  Unix.mkdir inst_dir 0o755;
+  let sidecar = Filename.concat inst_dir "c2c-plugin.json" in
+  (instances_dir, project_dir, sidecar)
+
+let read_sidecar_raw sidecar =
+  if Sys.file_exists sidecar then Yojson.Safe.to_string (Yojson.Safe.from_file sidecar)
+  else ""
+
+let test_opencode_sidecar_omits_broker_root_when_default () =
+  with_temp_dir @@ fun root ->
+  let name = "opencode-omit" in
+  let (instances_dir, project_dir, sidecar) = prepare_sidecar_dirs root name in
+  let default_root = C2c_start.broker_root () in
+  C2c_start.refresh_opencode_identity
+    ~name ~alias:"omitter" ~broker_root:default_root ~project_dir ~instances_dir;
+  let raw = read_sidecar_raw sidecar in
+  check bool "sidecar exists" true (raw <> "");
+  check bool "session_id present" true (string_contains raw "\"session_id\"");
+  check bool "alias present" true (string_contains raw "\"alias\"");
+  check bool "broker_root field omitted when value == resolver default" false
+    (string_contains raw "\"broker_root\"")
+
+let test_opencode_sidecar_persists_broker_root_when_overridden () =
+  with_temp_dir @@ fun root ->
+  let name = "opencode-persist" in
+  let (instances_dir, project_dir, sidecar) = prepare_sidecar_dirs root name in
+  with_temp_dir @@ fun explicit_root ->
+  if explicit_root = C2c_start.broker_root () then
+    fail "test setup: temp broker_root collided with resolver default";
+  C2c_start.refresh_opencode_identity
+    ~name ~alias:"persister" ~broker_root:explicit_root ~project_dir ~instances_dir;
+  let raw = read_sidecar_raw sidecar in
+  check bool "broker_root present when overridden" true
+    (string_contains raw "\"broker_root\"");
+  check bool "explicit broker_root value appears" true
+    (string_contains raw explicit_root)
+
+let test_opencode_sidecar_strips_stale_default_broker_root () =
+  with_temp_dir @@ fun root ->
+  let name = "opencode-strip" in
+  let (instances_dir, project_dir, sidecar) = prepare_sidecar_dirs root name in
+  (* Seed an existing sidecar that carries a stale broker_root literal —
+     simulating a pre-#504 pre-#kimi-mcp install that persisted the
+     resolver default. *)
+  let stale = `Assoc [
+    ("session_id", `String name);
+    ("alias", `String "stripper-old");
+    ("broker_root", `String "/legacy/stale/broker/path");
+    ("opaque_keep_me", `String "preserved");
+  ] in
+  let oc = open_out sidecar in
+  Yojson.Safe.to_channel oc stale;
+  close_out oc;
+  let default_root = C2c_start.broker_root () in
+  C2c_start.refresh_opencode_identity
+    ~name ~alias:"stripper-new" ~broker_root:default_root ~project_dir ~instances_dir;
+  let raw = read_sidecar_raw sidecar in
+  check bool "stale broker_root literal stripped" false
+    (string_contains raw "/legacy/stale/broker/path");
+  check bool "broker_root field absent after refresh (default)" false
+    (string_contains raw "\"broker_root\"");
+  check bool "alias updated to new value" true
+    (string_contains raw "stripper-new");
+  check bool "non-managed keys preserved" true
+    (string_contains raw "opaque_keep_me")
+
 let test_sync_instance_alias_updates_matching_session () =
   let name = Printf.sprintf "sync-alias-%d" (Random.bits ()) in
   with_instance_dir name @@ fun _dir ->
@@ -3382,6 +3461,12 @@ let () =
             `Quick, test_kimi_mcp_config_omits_broker_root_env_when_default )
         ; ( "kimi_mcp_config_persists_broker_root_env_when_overridden",
             `Quick, test_kimi_mcp_config_persists_broker_root_env_when_overridden )
+        ; ( "opencode_sidecar_omits_broker_root_when_default",
+            `Quick, test_opencode_sidecar_omits_broker_root_when_default )
+        ; ( "opencode_sidecar_persists_broker_root_when_overridden",
+            `Quick, test_opencode_sidecar_persists_broker_root_when_overridden )
+        ; ( "opencode_sidecar_strips_stale_default_broker_root",
+            `Quick, test_opencode_sidecar_strips_stale_default_broker_root )
         ; ( "sync_instance_alias_updates_matching_session",
             `Quick, test_sync_instance_alias_updates_matching_session )
         ; ( "sync_instance_alias_ignores_mismatched_session",
