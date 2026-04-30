@@ -1027,6 +1027,35 @@ in another local-only commit?
 
 ---
 
+## Pattern 24 — parent-shell CWD-mismatch leaks slice work into main tree (#562)
+
+**Severity**: MEDIUM — no data loss; the git-shim refuses commits on main, but file *writes* are not gated. Result: design docs / findings / scoped edits accumulate as untracked or dirty state in the main tree, polluting `git status` for every other agent and forcing recovery cherry-picks (Pattern 23) at compose time.
+
+**Symptom**: An agent intends to work in `.worktrees/<slice>/` but their parent shell's CWD is the main repo root (`/home/xertrov/src/c2c`). File writes via Edit/Write land in the main tree. The agent only notices when:
+- the git-shim refuses a `git commit` on master, OR
+- coordinator's `git status` after cherry-pick shows the slice's files as untracked / `M`, OR
+- a parallel cherry-pick hits a "local changes would be overwritten" error.
+
+**Root cause**: Tool-using agents inherit the parent shell's CWD across Edit/Write calls. There is no per-call CWD enforcement — the agent can *intend* to operate in a worktree while every actual filesystem write resolves against the main tree path. The git-shim catches commit attempts; nothing catches plain file writes.
+
+**Receipt — four instances, 2026-04-30 to 2026-05-01**:
+1. Cedar-coder's `2e523f4e` justfile recipe drive-by — initially edited in main tree; recovered cleanly.
+2. Galaxy-coder's `83ced29a` SQLite finding doc — left untracked in main tree; force-added at commit time.
+3. Galaxy-coder's Pattern 23 addition to this runbook (2026-05-01) — edited in main tree; coordinator had to `git checkout --` the dirty edit before cherry-picking the worktree commit (`af76169f`).
+4. Galaxy-coder's `0f7ecdc0` cross-host auth-hardening scoping doc — delivered as untracked file in main tree; coordinator staged + committed with author attribution from main tree.
+
+The 4× clustering inside ~24h promoted this from candidate to documented pattern.
+
+**Mitigation** (for all agents):
+- **Verify CWD before the first Edit/Write of a slice**: `pwd` should match `.worktrees/<slice>/`. If not, `cd` first or use absolute paths under the worktree.
+- **Coordinators dispatching slices**: include the worktree path in the brief (`work in .worktrees/<slice>/`) and explicitly remind the agent to start with `cd <worktree>` or absolute-path edits. Don't assume the agent's parent shell has the right CWD.
+- **Drive-by edits to main-tree-resident files** (justfile, top-level docs, gitignore) are exempt from the worktree rule per CLAUDE.md, but agents should still confirm the file's home before starting — a "drive-by" that should have been a slice is the same footgun in disguise.
+- **Recovery when caught**: if the file is already in main tree, either (a) force-add + commit with `C2C_COORDINATOR=1` and author attribution, or (b) move the file to a worktree, commit there, cherry-pick. (a) is faster for design/finding docs; (b) preserves the worktree-discipline trail for code changes.
+
+**Cross-reference**: Pattern 23 (this runbook) for the conflict that arises when parent-shell-CWD-mismatched edits collide with worktree-resident slices touching the same file.
+
+---
+
 ## Pattern 17 — agent cwd-persistence creates nested worktrees
 
 **Severity**: MEDIUM — data not lost; nested structure causes confusion and can cause subsequent git operations to resolve to the wrong tree if the agent doesn't notice.
@@ -1134,6 +1163,7 @@ shortcut — those will create the next agent's footgun finding.
 - Authors: stanza-coder (compilation), coordinator1 (#373/#377/#380
   framing), slate-coder (Pattern 5, Pattern 8),
   cedar-coder (Patterns 7, 20), fern-coder (Patterns 6, 14),
-  willow-coder (Pattern 17), galaxy-coder (Pattern 23).
+  willow-coder (Pattern 17), galaxy-coder (Pattern 23),
+  coordinator1 (Pattern 24).
 
 — stanza-coder, with coordinator1, with slate-coder, with cedar-coder, with fern-coder, with willow-coder
