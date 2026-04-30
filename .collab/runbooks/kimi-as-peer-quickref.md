@@ -22,6 +22,12 @@ sends tmux `send-keys` to wake an idle pane. You see DMs as toasts in the TUI.
 
 **Components**: kimi TUI (tmux pane) + kimi-notifier daemon (background).
 
+> **No PTY injection** — unlike opencode, codex, and claude peers, kimi does
+> not use PTY injection for message delivery. The notification-store mechanism
+> is the sole delivery path. See
+> [kimi-notification-store-delivery](./kimi-notification-store-delivery.md)
+> for architecture details.
+
 ### Direct MCP — channel-push path
 
 Kimi connects to the c2c MCP broker directly. No notifier daemon, no tmux pane.
@@ -113,6 +119,38 @@ never appears for standard c2c tools. The TOML `[[hooks]]` block for
 `~/.kimi/config.toml` after install). **Workaround**: none needed for tool
 approval; just accept the TOML hook prompt if you want await-reply support.
 
+### PreToolUse permission requests (managed + direct MCP)
+
+When kimi needs approval for a tool call (e.g., executing a shell command,
+running `git push`), the PreToolUse hook intercepts the request and
+forwards it to a supervisor via the c2c broker:
+
+```
+kimi agent → PreToolUse hook → c2c send <supervisor> "$TOKEN <reason>" (DM)
+kimi agent ← hook ← poll await-reply --token $TOKEN --timeout 120
+```
+
+The supervisor receives a DM with the token and reason, and replies with:
+`ka_abc123 allow` or `ka_abc123 deny`.
+
+**Expectations for kimi operators:**
+- The agent blocks waiting for a verdict — you'll see the toast sit for up to
+  the timeout (default 120s) before the tool call is rejected.
+- If no supervisor is configured, permission requests time out — the tool call
+  fails and the agent retries or asks you directly.
+- The supervisor's verdict arrives as a DM back to kimi — you may see a
+  toast from the supervisor's reply.
+
+**For swarm supervisors**: reply with the token + verdict word:
+```
+ka_abc123 allow
+ka_abc123 deny
+```
+
+The canonical reply format is `<token> allow|deny` (case-insensitive). See
+[permission-DM-discipline.runbook](./permission-dm-discipline.md) for full
+format guide including the legacy `[approve/reject]` deprecation.
+
 ---
 
 ## Operator Footguns
@@ -134,14 +172,20 @@ If `c2c start kimi` appears to spawn two kimi panes, that's expected:
 one is the kimi TUI (what you interact with), one is the notifier daemon.
 Do not kill the notifier — it's how DMs reach you.
 
+The notifier daemon renames its process comm field to `c2c-kimi-notif` via
+`prctl(PR_SET_NAME, ...)` so it is distinguishable from the kimi TUI in
+`ps` or `/proc/<pid>/comm` output.
+
 To tell them apart:
 
 ```bash
 # TUI process — interactive
 ps aux | grep kimi | grep -v notifier
 
-# Notifier daemon
+# Notifier daemon (renamed via prctl to c2c-kimi-notif)
 ps aux | grep kimi-notif
+# or:
+cat /proc/$(pgrep -f c2c-kimi-notif)/comm
 ```
 
 ### Notifier log dir permissions (managed mode)
@@ -261,5 +305,8 @@ be compacting (context summarization in progress). Wait and retry.
 
 - [kimi-notification-store-delivery.md](./kimi-notification-store-delivery.md) —
   technical delivery mechanism, architecture, troubleshooting (managed mode)
+- [permission-DM-discipline.runbook](./permission-dm-discipline.md) —
+  PreToolUse approval flow: token format, supervisor reply syntax, footguns,
+  recovery (relevant when kimi is supervised by a swarm peer)
 - `c2c instances` — list all managed sessions
 - `c2c doctor` — broker health + registration diagnostics
