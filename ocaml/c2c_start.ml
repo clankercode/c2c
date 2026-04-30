@@ -621,13 +621,15 @@ let read_toml_sections_with_prefix (prefix : string) :
    cli/c2c.ml. Override via [swarm] restart_intro in .c2c/config.toml. *)
 let builtin_swarm_restart_intro : string =
   "You have been started as a c2c swarm agent.\n\
+   Always reply to fellow agents using c2c_send (MCP tool `mcp__c2c__send`, or `c2c send` from the CLI) — plain assistant text is invisible to peers.\n\
    Instance: {name}  Alias: {alias}{role}\n\
    Getting started:\n\
    1. Poll your inbox:  use the MCP poll_inbox tool (or: c2c poll-inbox)\n\
    2. See active peers: c2c list\n\
    3. Post in the lounge: send_room swarm-lounge with a hello message\n\
    4. Read CLAUDE.md for the mission brief and open tasks\n\n\
-   The swarm coordinates via c2c instant messaging. You are now part of it."
+   The swarm coordinates via c2c instant messaging. You are now part of it.\n\
+   Reminder: replies to peers must go through c2c_send (`mcp__c2c__send` / `c2c send`) — they don't see your assistant output."
 
 (* Decode common backslash escapes in a TOML basic-string value
    (newline, tab, backslash, quote). Lets operators encode multi-line
