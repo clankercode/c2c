@@ -1502,7 +1502,7 @@ let check_supervisor_config () =
              | _ -> None)
           with _ -> None
         else None
-       in
+      in
        (match sidecar_sup, repo_sup with
         | Some v, _ -> (`Green, Printf.sprintf "supervisor: %s (from sidecar)" v)
         | _, Some v -> (`Green, Printf.sprintf "supervisor: %s (from .c2c/repo.json)" v)
@@ -1513,7 +1513,7 @@ let check_supervisor_config () =
 let check_authorizers () =
   match C2c_authorizers.get_authorizers () with
   | None ->
-      (`Yellow, "authorizers: not configured (fallback: C2C_KIMI_APPROVAL_REVIEWER env / coordinator1 implicit)")
+      (`Yellow, "authorizers: not configured (set in ~/.c2c/repo.json: {\"authorizers\":[\"alias1\",\"alias2\"]}; fallback: coordinator1 implicit)")
   | Some [] ->
       (`Yellow, "authorizers: [] (empty — no approval forwarding will succeed)")
   | Some names ->

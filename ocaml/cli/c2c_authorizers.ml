@@ -11,7 +11,7 @@
 
 let ( // ) = Filename.concat
 
-(** Canonical path to the repo.json at project level. *)
+(** Canonical path to the repo.json at home level (~/.c2c/repo.json). *)
 let project_repo_json () =
   Filename.concat (Sys.getcwd ()) ".c2c" // "repo.json"
 
