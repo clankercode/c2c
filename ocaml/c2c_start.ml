@@ -1476,18 +1476,23 @@ let write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path =
   Fun.protect ~finally:(fun () -> close_out oc) @@ fun () ->
   output_string oc "#!/bin/bash\n";
   output_string oc
-    "# WARNING: Recursion trap. This shim sits on PATH for managed sessions.\n";
+    "# Delegation shim: git attribution for managed sessions.\n";
   output_string oc
-    "# If `c2c git` or any startup helper re-enters bare `git` without the\n";
+    "# Delegates allowed operations to git-pre-reset (pre-reset guard) on PATH.\n";
   output_string oc
-    "# guard below, the process chain becomes shim -> c2c git -> git -> shim\n";
+    "# git-pre-reset is installed in the same directory and handles dangerous-op\n";
   output_string oc
-    "# and can fork-bomb the session. See revert a23b483 before changing this.\n";
+    "# guard (reset --hard, commit on main, checkout -f on main).\n";
   output_string oc "if [ \"${C2C_GIT_SHIM_ACTIVE:-}\" = \"1\" ]; then\n";
   output_string oc (Printf.sprintf "  exec %s \"$@\"\n" (q real_git_path));
   output_string oc "fi\n";
   output_string oc "export C2C_GIT_SHIM_ACTIVE=1\n";
-  output_string oc (Printf.sprintf "exec %s git -- \"$@\"\n" (q c2c_bin_path))
+  (* Delegate to git-pre-reset (the pre-reset/pre-commit guard) for allowed
+     operations. git-pre-reset is installed alongside this shim in the same
+     directory (swarm_git_shim_dir) and handles the dangerous-op guard.
+     Using just "git-pre-reset" relies on PATH ordering: the shim dir
+     is prepended to PATH by build_inner_env, so git-pre-reset is found first. *)
+  output_string oc "exec git-pre-reset \"$@\"\n"
 
 (* ----------------------------------------------------------------------------
  * #462 — swarm-wide git-shim install.
@@ -1513,6 +1518,30 @@ let swarm_git_shim_dir () =
   | Some d when String.trim d <> "" -> String.trim d
   | _ -> C2c_repo_fp.xdg_state_home () // "c2c" // "bin"
 
+(* ----------------------------------------------------------------------------
+ * Install the pre-reset guard shim (git-pre-reset) into the swarm shim dir.
+ * Copies the repo's git-shim.sh to git-pre-reset in [dir] and chmods +x.
+ * The pre-reset shim intercepts dangerous git operations (reset --hard, commit
+ * on main) and refuses them for non-coordinators.  It is distinct from the
+ * attribution shim (the "git" shim that wraps `c2c git`); both live in the same
+ * dir and are found via PATH ordering.
+ * --------------------------------------------------------------------------- *)
+let install_pre_reset_shim ~(dir : string) =
+  let src =
+    match Git_helpers.git_repo_toplevel () with
+    | None -> failwith "install_pre_reset_shim: not in a git repo"
+    | Some r -> r // "git-shim.sh"
+  in
+  let dst = dir // "git-pre-reset" in
+  if not (Sys.file_exists src) then
+    failwith ("install_pre_reset_shim: source not found: " ^ src);
+  (* Copy src to dst; idempotent.  Use cp rather than OCaml IO to handle
+     the shebang/interpreter correctly without binary-mode edge-cases. *)
+  let q s = Filename.quote s in
+  let rc = Sys.command (Printf.sprintf "cp %s %s" (q src) (q dst)) in
+  if rc <> 0 then failwith ("install_pre_reset_shim: cp failed: " ^ src ^ " -> " ^ dst);
+  try Unix.chmod dst 0o755 with _ -> ()
+
 let ensure_swarm_git_shim_installed () =
   let dir = swarm_git_shim_dir () in
   mkdir_p dir;
@@ -1521,6 +1550,9 @@ let ensure_swarm_git_shim_installed () =
   let real_git_path = Git_helpers.find_real_git () in
   write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path;
   (try Unix.chmod shim_bin_path 0o755 with _ -> ());
+  (* Also install the pre-reset guard (git-pre-reset) from the repo's
+     git-shim.sh into the same shim directory. Idempotent. *)
+  install_pre_reset_shim ~dir;
   dir
 
 let ensure_fifo path =
@@ -3862,15 +3894,8 @@ let run_outer_loop ~(name : string) ~(client : string)
         let shim_bin_path = shim_bin_dir // "git" in
         let c2c_bin_path = current_c2c_command () in
         let real_git_path = Git_helpers.find_real_git () in
-        (* WARNING: this shim is intentionally dangerous-looking because it is.
-           It lives on PATH inside managed sessions and can recurse into
-           `c2c git` catastrophically if either the env guard or the baked
-           real-git fallback is removed. The previous unguarded version caused
-           a fork bomb and was reverted in a23b483. Keep the warning block in
-           the generated shim and update the tmux dogfood coverage if this
-           behavior changes. *)
         write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path;
-        (try Unix.chmod shim_bin_path 0o755 with _ -> ());
+        (try Unix.chmod shim_bin_path 0o755 with _ -> ())
       end;
       (* Registry precheck: human-readable "alias alive" error before flock. *)
       check_registry_alias_alive ~broker_root ~name;

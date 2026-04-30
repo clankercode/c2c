@@ -75,6 +75,7 @@ run_shim_commit() {
         unset C2C_COORDINATOR
         unset C2C_COMMIT_REFUSE
         [ "$refuse_flag" = "1" ] && export C2C_COMMIT_REFUSE=1
+        [ "$refuse_flag" = "0" ] && export C2C_COMMIT_REFUSE=0
         [ "$coord_bypass" = "1" ] && export C2C_COORDINATOR=1
         cd "$REAL_REPO"
         "$SHIM" commit --allow-empty -m "$msg" 2>&1 || echo "EXIT_CODE:$?"

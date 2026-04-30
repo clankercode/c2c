@@ -133,27 +133,39 @@ let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
                   Unix.rename (mcp_dest ^ ".tmp") mcp_dest;
                   [ Ok mcp_dest ]
                 with Sys_error msg -> [ Error msg ]
-          else []
-        in
-        Ok (dest_path, extras)
+           else []
+         in
+         (* Install the swarm-wide git shim (pre-reset guard + attribution shim).
+            This also installs git-pre-reset (the guard) alongside the git shim.
+            Failures here are non-fatal (the shim is best-effort). *)
+         let shim_dir =
+           try Some (C2c_start.ensure_swarm_git_shim_installed ()) with
+           | e -> Printf.eprintf "warning: could not install git shim: %s\n%!" (Printexc.to_string e); None
+         in
+         Ok (dest_path, extras, shim_dir)
       with
       | Unix.Unix_error (code, func, _arg) ->
           Error (Printf.sprintf "%s: %s" func (Unix.error_message code))
       | Sys_error msg -> Error msg
     in
     (match result with
-     | Ok (dest_path, extras) ->
+     | Ok (dest_path, extras, shim_dir) ->
          (match output_mode with
           | Json ->
               let items = [ ("ok", `Bool true); ("c2c", `String dest_path) ] in
               let items =
                 let extra_json = List.map (fun x -> match x with Ok p -> `String p | Error m -> `String ("error: " ^ m)) extras in
-                if extra_json = [] then items else items @ [ ("mcp_server", `List extra_json) ]
+                let items = if extra_json = [] then items else items @ [ ("mcp_server", `List extra_json) ] in
+                let items = match shim_dir with Some d -> items @ [ ("git_shim_dir", `String d) ] | None -> items in
+                items
               in
               print_json (`Assoc items)
           | Human ->
               Printf.printf "installed c2c to %s\n" dest_path;
-              List.iter (function Ok p -> Printf.printf "installed c2c-mcp-server to %s\n" p | Error m -> Printf.eprintf "error: %s\n%!" m) extras)
+              List.iter (function Ok p -> Printf.printf "installed c2c-mcp-server to %s\n" p | Error m -> Printf.eprintf "error: %s\n%!" m) extras;
+              (match shim_dir with
+               | Some d -> Printf.printf "installed git-pre-reset guard to %s\n" d
+               | None -> ()))
      | Error msg ->
          (match output_mode with
           | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])

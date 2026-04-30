@@ -13,7 +13,10 @@
 # GIT_WORK_TREE is not set (git sets GIT_WORK_TREE when inside a worktree,
 # so this distinguishes main-repo-root-on-worktree-branch from true worktree).
 #
-# Usage: install via `c2c install git-shim` or manually add to PATH.
+# Install: this file is installed as git-pre-reset by `c2c install self` (or
+# `c2c install all`). The c2c binary's install step copies this file into the
+# same directory as the attribution shim (the "git" shim) so both are found via
+# PATH ordering when the shim directory is prepended to PATH.
 
 set -euo pipefail
 
