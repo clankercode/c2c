@@ -227,6 +227,26 @@ let toml_block_template = {toml|
 #                                supervisors[] in .c2c/repo.json (#490).
 #   C2C_KIMI_APPROVAL_TIMEOUT   seconds (default: 120)
 #
+# Matcher syntax — kimi-cli vs Claude Code (#161)
+# -----------------------------------------------
+# kimi-cli's HookDef.matcher is a single regex matched against
+# `"<ToolName>:<argString>"` (engine.py: name + ":" + args concatenated
+# before regex search). So `^Bash$:rm\s+-rf` means "tool is exactly
+# Bash AND the arg string starts with `rm -rf`" — the colon is
+# literal payload, not syntax. To match a tool name with no arg
+# constraint, end with `:` (e.g. `^Write$:`) or just `^Write$`
+# (still matches because `:` appears in the haystack).
+#
+# Claude Code's PreToolUse matcher is by contrast a tool-name regex
+# only: `Bash` or `^(Bash|Edit)$`. There is no `:argRegex` half.
+# Operators porting hook configs between the two CLIs must rewrite
+# the matcher accordingly — a Claude-style `Bash` matcher in
+# ~/.kimi/config.toml will match every tool whose name+args contains
+# the substring `Bash` (probably way too broad).
+#
+# An empty matcher (`""`) is match-all in kimi-cli (engine.py:196-198),
+# which is why this template ships fully commented out — see header.
+#
 # Examples — uncomment ONE.
 #
 # A) Forward only obviously-dangerous shell commands:
