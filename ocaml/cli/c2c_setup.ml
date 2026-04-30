@@ -410,7 +410,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
   in
   let hook_block_status =
     C2c_kimi_hook.append_toml_block
-      ~config_path:toml_config_path ~hook_path ~dry_run
+      ~config_path:toml_config_path ~hook_path ~dry_run ()
   in
   let hook_block_status_str = match hook_block_status with
     | `Already_present -> "already_present"

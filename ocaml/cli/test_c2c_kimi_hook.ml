@@ -58,7 +58,7 @@ let test_script_content_has_await_reply () =
 let test_toml_template_has_marker () =
   Alcotest.(check bool) "toml template contains marker substring" true
     (let s = C2c_kimi_hook.toml_block_template in
-     count_substr ~haystack:s ~needle:C2c_kimi_hook.toml_block_marker > 0)
+     count_substr ~haystack:s ~needle:C2c_kimi_hook.toml_block_legacy_marker > 0)
 
 let test_toml_template_has_placeholder () =
   Alcotest.(check bool) "toml template references {hook_path}" true
@@ -94,13 +94,13 @@ let test_append_creates_when_missing () =
   let cfg = dir // "config.toml" in
   let result =
     C2c_kimi_hook.append_toml_block
-      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false
+      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false ()
   in
   Alcotest.(check bool) "result is `Created when file did not exist" true
     (result = `Created);
   let body = read_file cfg in
   Alcotest.(check int) "marker present exactly once" 1
-    (count_substr ~haystack:body ~needle:C2c_kimi_hook.toml_block_marker)
+    (count_substr ~haystack:body ~needle:C2c_kimi_hook.toml_block_legacy_marker)
 
 let test_append_appends_when_exists_without_marker () =
   let dir = mktemp_dir () in
@@ -111,13 +111,13 @@ let test_append_appends_when_exists_without_marker () =
   close_out oc;
   let result =
     C2c_kimi_hook.append_toml_block
-      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false
+      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false ()
   in
   Alcotest.(check bool) "result is `Appended when file existed" true
     (result = `Appended);
   let body = read_file cfg in
   Alcotest.(check int) "marker present exactly once" 1
-    (count_substr ~haystack:body ~needle:C2c_kimi_hook.toml_block_marker);
+    (count_substr ~haystack:body ~needle:C2c_kimi_hook.toml_block_legacy_marker);
   Alcotest.(check bool) "pre-existing content preserved" true
     (count_substr ~haystack:body ~needle:"default_model" > 0)
 
@@ -125,25 +125,130 @@ let test_append_idempotent_when_marker_present () =
   let dir = mktemp_dir () in
   let cfg = dir // "config.toml" in
   let _ = C2c_kimi_hook.append_toml_block
-            ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false in
+            ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false () in
   let result2 = C2c_kimi_hook.append_toml_block
-                  ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false in
+                  ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false () in
   Alcotest.(check bool) "second call returns `Already_present" true
     (result2 = `Already_present);
   let body = read_file cfg in
   Alcotest.(check int) "marker still present exactly once after second call" 1
-    (count_substr ~haystack:body ~needle:C2c_kimi_hook.toml_block_marker)
+    (count_substr ~haystack:body ~needle:C2c_kimi_hook.toml_block_legacy_marker)
 
 let test_append_dry_run_no_write () =
   let dir = mktemp_dir () in
   let cfg = dir // "config.toml" in
   let result =
     C2c_kimi_hook.append_toml_block
-      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:true
+      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:true ()
   in
   Alcotest.(check bool) "dry run reports `Created" true (result = `Created);
   Alcotest.(check bool) "dry run did not create the file" false
     (Sys.file_exists cfg)
+
+(* ------------------------------------------------------------------ *)
+(* #162: BEGIN/END envelope + multi-block coexistence                   *)
+(* ------------------------------------------------------------------ *)
+
+let test_appended_block_has_begin_end_envelope () =
+  let dir = mktemp_dir () in
+  let cfg = dir // "config.toml" in
+  let _ =
+    C2c_kimi_hook.append_toml_block
+      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false ()
+  in
+  let body = read_file cfg in
+  let begin_marker =
+    C2c_kimi_hook.toml_block_begin_marker
+      ~block_id:C2c_kimi_hook.approval_hook_block_id in
+  let end_marker =
+    C2c_kimi_hook.toml_block_end_marker
+      ~block_id:C2c_kimi_hook.approval_hook_block_id in
+  Alcotest.(check int) "BEGIN marker present exactly once" 1
+    (count_substr ~haystack:body ~needle:begin_marker);
+  Alcotest.(check int) "END marker present exactly once" 1
+    (count_substr ~haystack:body ~needle:end_marker)
+
+let test_idempotent_on_legacy_only_marker () =
+  (* Operators with pre-#162 installs have a config.toml that
+     contains the legacy single-sentinel header but no BEGIN/END
+     envelope. A re-run of `c2c install kimi` (i.e. append_toml_block
+     for the approval hook block_id) must still detect the legacy
+     marker as "already present" and no-op. *)
+  let dir = mktemp_dir () in
+  let cfg = dir // "config.toml" in
+  let oc = open_out cfg in
+  output_string oc
+    ("default_model = \"foo\"\n"
+     ^ "# c2c-managed PreToolUse hook (#142). Slice 2 — install side.\n"
+     ^ "# (legacy block content here)\n");
+  close_out oc;
+  let result =
+    C2c_kimi_hook.append_toml_block
+      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false ()
+  in
+  Alcotest.(check bool) "legacy marker triggers Already_present" true
+    (result = `Already_present);
+  let body = read_file cfg in
+  let begin_marker =
+    C2c_kimi_hook.toml_block_begin_marker
+      ~block_id:C2c_kimi_hook.approval_hook_block_id in
+  Alcotest.(check int) "no new BEGIN marker added" 0
+    (count_substr ~haystack:body ~needle:begin_marker)
+
+let test_distinct_block_ids_coexist () =
+  (* Future-proof: two managed blocks with distinct ids must be able
+     to coexist in the same file without colliding. *)
+  let dir = mktemp_dir () in
+  let cfg = dir // "config.toml" in
+  let r1 =
+    C2c_kimi_hook.append_toml_block
+      ~block_id:"preuse-approval-hook-142"
+      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false ()
+  in
+  let r2 =
+    C2c_kimi_hook.append_toml_block
+      ~block_id:"some-future-block"
+      ~config_path:cfg ~hook_path:"/bin/h" ~dry_run:false ()
+  in
+  Alcotest.(check bool) "first block creates" true (r1 = `Created);
+  Alcotest.(check bool) "second block appends (no collision)" true
+    (r2 = `Appended);
+  let body = read_file cfg in
+  Alcotest.(check int) "first block's BEGIN marker present" 1
+    (count_substr ~haystack:body
+       ~needle:(C2c_kimi_hook.toml_block_begin_marker
+                  ~block_id:"preuse-approval-hook-142"));
+  Alcotest.(check int) "second block's BEGIN marker present" 1
+    (count_substr ~haystack:body
+       ~needle:(C2c_kimi_hook.toml_block_begin_marker
+                  ~block_id:"some-future-block"))
+
+let test_idempotent_per_block_id () =
+  (* Each block_id is independently idempotent: re-running the same
+     id is a no-op even when other ids' blocks are present. *)
+  let dir = mktemp_dir () in
+  let cfg = dir // "config.toml" in
+  let _ =
+    C2c_kimi_hook.append_toml_block
+      ~block_id:"block-a" ~config_path:cfg
+      ~hook_path:"/bin/h" ~dry_run:false ()
+  in
+  let _ =
+    C2c_kimi_hook.append_toml_block
+      ~block_id:"block-b" ~config_path:cfg
+      ~hook_path:"/bin/h" ~dry_run:false ()
+  in
+  let r3 =
+    C2c_kimi_hook.append_toml_block
+      ~block_id:"block-a" ~config_path:cfg
+      ~hook_path:"/bin/h" ~dry_run:false ()
+  in
+  Alcotest.(check bool) "third call (block-a re-run) is Already_present" true
+    (r3 = `Already_present);
+  let body = read_file cfg in
+  Alcotest.(check int) "block-a BEGIN marker still exactly once" 1
+    (count_substr ~haystack:body
+       ~needle:(C2c_kimi_hook.toml_block_begin_marker ~block_id:"block-a"))
 
 (* ------------------------------------------------------------------ *)
 (* install_approval_hook_script: write + chmod                          *)
@@ -210,6 +315,16 @@ let () =
             test_append_idempotent_when_marker_present
         ; Alcotest.test_case "dry run does not write" `Quick
             test_append_dry_run_no_write
+        ] )
+    ; ( "block-id-envelope",
+        [ Alcotest.test_case "appended block has BEGIN/END envelope" `Quick
+            test_appended_block_has_begin_end_envelope
+        ; Alcotest.test_case "legacy marker keeps idempotency (compat)" `Quick
+            test_idempotent_on_legacy_only_marker
+        ; Alcotest.test_case "distinct block ids coexist" `Quick
+            test_distinct_block_ids_coexist
+        ; Alcotest.test_case "per-block-id idempotency" `Quick
+            test_idempotent_per_block_id
         ] )
     ; ( "install-approval-hook-script",
         [ Alcotest.test_case "writes file with 0755 perms" `Quick

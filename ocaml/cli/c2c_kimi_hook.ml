@@ -31,9 +31,34 @@ let ( // ) = Filename.concat
 
 let approval_hook_filename = "c2c-kimi-approval-hook.sh"
 
-(* Sentinel comment used to detect already-installed blocks.
-   Idempotency relies on this exact substring being present. *)
-let toml_block_marker = "# c2c-managed PreToolUse hook (#142)"
+(* Block identifier for the kimi PreToolUse approval hook.
+
+   #162: the original idempotency design used a single load-bearing
+   sentinel comment ("# c2c-managed PreToolUse hook (#142)") matched
+   anywhere in the file. That works fine for one block but collides
+   the moment c2c wants to write a second managed block (e.g. a
+   PostToolUse hook, a different event filter, a follow-up tool):
+   any block carrying the same legacy header would be detected as
+   "already present" and the new block would silently never land.
+
+   The block-id-based scheme below wraps each managed block in
+   `# c2c-managed:BEGIN <id>` / `# c2c-managed:END <id>` lines.
+   Idempotency keys on the BEGIN marker for the specific id, so
+   distinct blocks coexist without colliding. *)
+let approval_hook_block_id = "preuse-approval-hook-142"
+
+let toml_block_begin_marker ~block_id =
+  Printf.sprintf "# c2c-managed:BEGIN %s" block_id
+
+let toml_block_end_marker ~block_id =
+  Printf.sprintf "# c2c-managed:END %s" block_id
+
+(* Legacy sentinel — kept ONLY to detect blocks installed before the
+   block-id envelope shipped (#162). Existing operator config.toml
+   files have this exact substring; we must continue to no-op-skip
+   on a re-install when only the legacy marker is present. New
+   blocks are detected via [toml_block_begin_marker]. *)
+let toml_block_legacy_marker = "# c2c-managed PreToolUse hook (#142)"
 
 (* Embedded bash script. Source of truth: scripts/c2c-kimi-approval-hook.sh.
    When updating, keep both in sync — the script-on-disk version is what
@@ -225,26 +250,51 @@ let render_toml_block ~hook_path =
   done;
   Buffer.contents buf
 
-(* Idempotency check: returns true iff the file at [path] already
-   contains the [toml_block_marker] sentinel. Missing file -> false. *)
-let toml_block_already_present ~config_path =
+(* Substring search helper — returns true iff [needle] occurs in [s]. *)
+let string_contains s needle =
+  let nlen = String.length needle in
+  let slen = String.length s in
+  if nlen = 0 then true
+  else
+    let rec search i =
+      if i + nlen > slen then false
+      else if String.sub s i nlen = needle then true
+      else search (i + 1)
+    in
+    search 0
+
+(* Idempotency check (#162): returns true iff [config_path] already
+   contains the BEGIN marker for [block_id], OR the legacy single-
+   sentinel header (for backward-compat with pre-#162 installs that
+   wrote the approval-hook block without the BEGIN/END envelope).
+   Missing file -> false. *)
+let toml_block_already_present ?(block_id = approval_hook_block_id) ~config_path () =
   if not (Sys.file_exists config_path) then false
   else
     let ic = open_in config_path in
     Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
       let s = really_input_string ic (in_channel_length ic) in
-      let needle = toml_block_marker in
-      let nlen = String.length needle in
-      let slen = String.length s in
-      let rec search i =
-        if i + nlen > slen then false
-        else if String.sub s i nlen = needle then true
-        else search (i + 1)
+      let new_marker = toml_block_begin_marker ~block_id in
+      let legacy_match =
+        block_id = approval_hook_block_id
+        && string_contains s toml_block_legacy_marker
       in
-      search 0)
+      string_contains s new_marker || legacy_match)
+
+(* Wrap a rendered block body in `# c2c-managed:BEGIN <id>` /
+   `# c2c-managed:END <id>` envelope lines (#162). The body is
+   bracketed verbatim — we keep the legacy "c2c-managed PreToolUse
+   hook (#142)" header inside the body for human readability and as
+   a soft cross-link. *)
+let envelope_block ~block_id body =
+  Printf.sprintf "%s\n%s\n%s\n"
+    (toml_block_begin_marker ~block_id)
+    body
+    (toml_block_end_marker ~block_id)
 
 (* Append the rendered [[hooks]] block to [config_path]. Idempotent —
-   no-op if [toml_block_marker] already present.
+   no-op if a block with the same [block_id] is already present (or
+   the legacy single-sentinel marker for the approval-hook block).
 
    Returns one of:
      `Already_present  — block was already there, no write
@@ -253,18 +303,20 @@ let toml_block_already_present ~config_path =
 
    When [dry_run], prints a summary and returns the corresponding
    verdict without touching the file. *)
-let append_toml_block ~config_path ~hook_path ~dry_run =
-  if toml_block_already_present ~config_path then begin
+let append_toml_block ?(block_id = approval_hook_block_id) ~config_path ~hook_path ~dry_run () =
+  if toml_block_already_present ~block_id ~config_path () then begin
     if dry_run then
-      Printf.printf "[DRY-RUN] %s already contains c2c hook block (no-op)\n%!" config_path;
+      Printf.printf "[DRY-RUN] %s already contains c2c hook block (id=%s, no-op)\n%!"
+        config_path block_id;
     `Already_present
   end else begin
-    let block = render_toml_block ~hook_path in
+    let body = render_toml_block ~hook_path in
+    let block = envelope_block ~block_id body in
     let existed = Sys.file_exists config_path in
     if dry_run then begin
-      Printf.printf "[DRY-RUN] would %s %d bytes to %s\n%!"
+      Printf.printf "[DRY-RUN] would %s %d bytes to %s (id=%s)\n%!"
         (if existed then "append" else "write")
-        (String.length block) config_path;
+        (String.length block) config_path block_id;
       if existed then `Appended else `Created
     end else begin
       let dir = Filename.dirname config_path in
