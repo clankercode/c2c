@@ -39,6 +39,17 @@ let alias_from_env_only () =
   | Some v when String.trim v <> "" -> Some (String.trim v)
   | _ -> None
 
+(** [trimmed_env_value env_var] reads [env_var], trims whitespace, and
+    returns [None] if the result is empty. This treats an empty-string or
+    whitespace-only value as "unset" — the correct semantics for optional
+    path overrides like [C2C_MCP_BROKER_ROOT].
+    An empty-string value should fall through to the default resolver rather
+    than propagate as a bogus empty path (#518). *)
+let trimmed_env_value env_var =
+  match Sys.getenv_opt env_var with
+  | Some v when String.trim v <> "" -> Some (String.trim v)
+  | _ -> None
+
 (** Canonical whole-file read/write helpers (#388). Delegates to
     [C2c_io] — single source of truth, reachable from the library and
     the executable. Re-exported here so call-sites already using

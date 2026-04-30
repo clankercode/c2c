@@ -2858,11 +2858,18 @@ let monitor_cmd =
   in
   const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self force ->
     let broker_root =
-      let trimmed = function Some s when String.trim s <> "" -> Some (String.trim s) | _ -> None in
-      match trimmed broker_root_arg with
+      (* #518: treat empty-string env/arg as "unset" — same shape as #496/#497.
+         C2C_MCP_BROKER_ROOT='' should fall through to resolve_broker_root ()
+         rather than being used as a bogus empty-string path. *)
+      let resolved value_opt =
+        match value_opt with
+        | Some s when String.trim s <> "" -> Some (String.trim s)
+        | _ -> None
+      in
+      match resolved broker_root_arg with
       | Some r -> r
       | None ->
-          (match trimmed (Sys.getenv_opt "C2C_MCP_BROKER_ROOT") with
+          (match C2c_utils.trimmed_env_value "C2C_MCP_BROKER_ROOT" with
            | Some r -> r
            | None -> (try resolve_broker_root () with _ ->
                Printf.eprintf "c2c monitor: cannot resolve broker root \
