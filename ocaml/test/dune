@@ -163,10 +163,7 @@
  (modules test_c2c_oc_plugin)
  (libraries c2c_mcp alcotest yojson unix))
 
-; #482 S1: c2c_deliver_inbox scaffold tests
-; Deferred to S2 (inbox polling) — requires c2c_mcp to expose C2c_deliver_inbox
-; which needs proper library cross-directory wiring in dune.
-; (test
-;  (name test_c2c_deliver_inbox)
-;  (modules test_c2c_deliver_inbox)
-;  (libraries c2c_deliver_inbox_lib c2c_mcp alcotest unix))
+(test
+ (name test_c2c_agent_state_handlers)
+ (modules test_c2c_agent_state_handlers)
+ (libraries c2c_mcp alcotest yojson unix))
