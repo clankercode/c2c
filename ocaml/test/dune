@@ -139,23 +139,13 @@
  (libraries c2c_mcp alcotest yojson unix))
 
 (test
- (name test_c2c_pending_reply_handlers)
- (modules test_c2c_pending_reply_handlers)
- (libraries c2c_mcp alcotest yojson unix))
-
-(test
- (name test_c2c_inbox_handlers)
- (modules test_c2c_inbox_handlers)
- (libraries c2c_mcp alcotest yojson unix))
-
-(test
  (name test_relay_peer_relay)
  (modules test_relay_peer_relay)
  (libraries c2c_mcp alcotest unix))
 
 (test
- (name test_c2c_identity_handlers)
- (modules test_c2c_identity_handlers)
+ (name test_c2c_room_handlers)
+ (modules test_c2c_room_handlers)
  (libraries c2c_mcp alcotest yojson unix))
 
 (test
