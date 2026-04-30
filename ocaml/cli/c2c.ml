@@ -18,6 +18,7 @@ open C2c_types
 open C2c_commands
 open C2c_utils
 open C2c_agent
+module Repo_fp = C2c_repo_fp
 
 (* Resolve the Claude config dir.
    Prefers CLAUDE_CONFIG_DIR if set, otherwise resolves ~/.claude as a symlink
@@ -1178,7 +1179,36 @@ let legacy_broker_root () =
        with _ -> "")
   | None -> ""
 
-let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
+(** #507: rewrite .opencode/c2c-plugin.json with the post-migration broker_root
+    and current fingerprint, preserving session_id and alias for continuity. *)
+let sync_sidecar_for_migration ~new_root ~json =
+  let sidecar_path = Sys.getcwd () // ".opencode" // "c2c-plugin.json" in
+  if not (Sys.file_exists sidecar_path) then begin
+    if json then print_json (`Assoc ["sidecar_sync", `String "skipped_no_sidecar"])
+    else Printf.printf "[sidecar sync] skipped: no .opencode/c2c-plugin.json in cwd\n";
+    ()
+  end else begin
+    let old = try Yojson.Safe.from_file sidecar_path with _ -> `Assoc [] in
+    let session_id = match Yojson.Safe.Util.member "session_id" old with
+      | `String s -> s | _ -> "unknown"
+    in
+    let alias = match Yojson.Safe.Util.member "alias" old with
+      | `String a -> a | _ -> ""
+    in
+    let fp = try Repo_fp.repo_fingerprint () with _ -> "" in
+    let new_sidecar = `Assoc [
+      ("session_id", `String session_id);
+      ("alias", `String alias);
+      ("broker_root", `String new_root);
+      ("broker_root_fingerprint", `String fp);
+    ]
+    in
+    if json then print_json (`Assoc ["sidecar_sync", `String "updated"])
+    else Printf.printf "[sidecar sync] updated %s with new broker_root=%s\n" sidecar_path new_root;
+    Yojson.Safe.to_file sidecar_path new_sidecar
+  end
+
+let migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar =
   let from = Option.value from_path ~default:(legacy_broker_root ()) in
   let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
   if not (Sys.file_exists from) then begin
@@ -1201,7 +1231,8 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
     Printf.printf "  from: %s\n" from;
     Printf.printf "  to:   %s\n" to_;
     if dry_run then Printf.printf "  mode: DRY RUN (no files will be written)\n"
-    else Printf.printf "  mode: LIVE (files will be written)\n"
+    else Printf.printf "  mode: LIVE (files will be written)\n";
+    if sync_sidecar then Printf.printf "  sidecar sync: enabled\n"
   end;
   let outcome =
     C2c_migrate.run ~src_root:from ~dest_root:to_ ~dry_run ~print_line
@@ -1230,7 +1261,10 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json =
     in
     print_json (`Assoc assoc)
   end;
-  if not outcome.ok then exit 1
+  if not outcome.ok then exit 1;
+  (* #507: after successful live migration, sync the opencode sidecar so the
+     plugin sees the new broker_root and current fingerprint without a restart. *)
+  if sync_sidecar && not dry_run then sync_sidecar_for_migration ~new_root:to_ ~json
 
 let migrate_broker_cmd =
   let open Cmdliner in
@@ -1245,12 +1279,17 @@ let migrate_broker_cmd =
            ~doc:"Destination broker root (default: your HOME/.c2c/repos/<fp>/broker)")
   in
   let dry_run = Arg.(value & flag & info ["dry-run"; "n"] ~doc:"Show what would be copied without writing.") in
+  let sync_sidecar =
+    Arg.(value & flag & info ["sync-sidecar"; "s"]
+           ~doc:"After a successful migration, update .opencode/c2c-plugin.json with the new broker_root and current fingerprint so the OpenCode plugin picks up the new broker without a restart. Only applies to live (non-dry-run) migrations.")
+  in
   let json = json_flag in
   let+ from_path = from
   and+ to_path = to_
   and+ dry_run = dry_run
+  and+ sync_sidecar = sync_sidecar
   and+ json = json in
-  migrate_broker_run ~from_path ~to_path ~dry_run ~json
+  migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar
 
 let migrate_broker =
   Cmdliner.Cmd.v
@@ -1287,11 +1326,18 @@ let migrate_broker =
                   with matching content; no-op."
             ; `P "$(b,[UNKNOWN])               — entry has an unrecognized file type; \
                   migration will abort with exit 1 if run without $(b,--dry-run)."
-            ; `S "EXIT STATUS"
-            ; `P "0 on successful migration (or clean dry-run). 1 on abort/failure — \
-                  the legacy tree is preserved so the operator can investigate and \
-                  retry."
-            ])
+             ; `S "SIDE CAR SYNC (#507)"
+             ; `P "Use $(b,--sync-sidecar) after a live migration to rewrite \
+                   $(b,.opencode/c2c-plugin.json) with the new broker_root and \
+                   current fingerprint. The OpenCode plugin detects the stale \
+                   fingerprint on its next poll and rereads the sidecar without \
+                   requiring a session restart. This flag has no effect during \
+                   dry-runs."
+             ; `S "EXIT STATUS"
+             ; `P "0 on successful migration (or clean dry-run). 1 on abort/failure — \
+                   the legacy tree is preserved so the operator can investigate and \
+                   retry."
+             ])
     migrate_broker_cmd
 
 (* --- subcommand: history -------------------------------------------------- *)

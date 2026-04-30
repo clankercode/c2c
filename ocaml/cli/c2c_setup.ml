@@ -592,20 +592,26 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
   let sidecar = config_dir // "c2c-plugin.json" in
   (* Drift-prevention follow-up to #504 / kimi-mcp-canonical-server:
      omit broker_root from the sidecar when value == resolver default.
-     The opencode TS plugin (data/opencode-plugin/c2c.ts) has its own
-     canonical resolveBrokerRoot() that mirrors C2c_repo_fp; an absent
-     field falls back correctly. *)
+      The opencode TS plugin (data/opencode-plugin/c2c.ts) has its own
+      canonical resolveBrokerRoot() that mirrors C2c_repo_fp; an absent
+      field falls back correctly. *)
   let resolver_default =
     try C2c_repo_fp.resolve_broker_root () with _ -> ""
   in
+  (* #507: always write broker_root (not just when non-default) and also
+     write broker_root_fingerprint so the plugin can detect staleness after
+     a git remote or migrate-broker change. *)
+  let fp =
+    try C2c_repo_fp.repo_fingerprint () with _ -> ""
+  in
   let sidecar_json =
-    let base = [
-      ("session_id", `String session_id);
-      ("alias", `String alias_val);
-    ] in
-    if root = "" || root = resolver_default
-    then `Assoc base
-    else `Assoc (base @ [ ("broker_root", `String root) ])
+    `Assoc (
+      ("session_id", `String session_id) ::
+      ("alias", `String alias_val) ::
+      ("broker_root", `String root) ::
+      ("broker_root_fingerprint", `String fp) ::
+      (if root = "" || root = resolver_default then [] else [])
+    )
   in
   json_write_file_or_dryrun dry_run sidecar sidecar_json;
   (* Find canonical plugin source. When running from the c2c repo, the canonical
