@@ -1498,6 +1498,21 @@ let test_prepare_launch_args_codex_uses_exact_resume_target_when_set () =
   check (list string) "codex exact resume"
     [ "resume"; "thread-abc" ] args
 
+(* #491: codex-headless was ignoring codex_resume_target and only checking
+   resume_session_id for --thread-id. Now it normalises the same way as
+   the codex adapter: codex_resume_target wins, resume_session_id is the
+   fallback signal ("" = resume --last, None = fresh). *)
+let test_prepare_launch_args_codex_headless_uses_exact_resume_target () =
+  let args =
+    C2c_start.prepare_launch_args ~name:"cx-headless" ~client:"codex-headless"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"placeholder-uuid"
+      ~codex_resume_target:"thread-xyz"
+      ()
+  in
+  check bool "codex-headless thread-id from codex_resume_target" true
+    (has_adjacent_pair "--thread-id" "thread-xyz" args)
+
 let test_prepare_launch_args_codex_adds_permission_sideband_fds () =
   let args =
     C2c_start.prepare_launch_args ~name:"codex-proof" ~client:"codex"
@@ -3441,6 +3456,8 @@ let () =
             `Quick, test_prepare_launch_args_codex_resume_last_by_default )
         ; ( "prepare_launch_args_codex_uses_exact_resume_target_when_set",
             `Quick, test_prepare_launch_args_codex_uses_exact_resume_target_when_set )
+        ; ( "prepare_launch_args_codex_headless_uses_exact_resume_target",
+            `Quick, test_prepare_launch_args_codex_headless_uses_exact_resume_target )
         ; ( "prepare_launch_args_codex_adds_permission_sideband_fds",
             `Quick, test_prepare_launch_args_codex_adds_permission_sideband_fds )
         ; ( "codex_supports_server_request_fds_requires_both_flags",

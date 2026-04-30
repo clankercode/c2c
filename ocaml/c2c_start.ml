@@ -2832,9 +2832,12 @@ let prepare_launch_args ~(name : string) ~(client : string)
              --server-request-responses-fd (fd 7). The deliver daemon handles
              the full supervisor round-trip and writes the response back. *)
           "--approval-policy"; "on-request" ]
-        @ (match resume_session_id with
+        @ (match codex_resume_target with
            | Some sid when String.trim sid <> "" -> [ "--thread-id"; sid ]
-           | _ -> [])
+           | _ ->
+               (match resume_session_id with
+                | Some sid when String.trim sid <> "" -> [ "--thread-id"; sid ]
+                | _ -> []))
         @ (match thread_id_fd with
            | Some fd -> [ "--thread-id-fd"; fd ]
            | None -> [])
