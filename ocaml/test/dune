@@ -147,3 +147,8 @@
  (name test_relay_forwarder)
  (modules test_relay_forwarder)
  (libraries c2c_mcp alcotest yojson unix))
+
+(test
+ (name test_c2c_oc_plugin)
+ (modules test_c2c_oc_plugin)
+ (libraries c2c_mcp alcotest yojson unix))
