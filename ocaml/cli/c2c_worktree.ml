@@ -894,6 +894,96 @@ let worktree_gc_term =
       Printf.printf "Done. %d removed, %s freed.\n" !removed (format_bytes !freed)
   end
 
+(* --- subcommand: worktree shim-test-gc ---------------------------------
+   Scans and (with --clean) deletes refs under refs/c2c-stashes/shim-test/.
+   These are test-checkpoint refs created by test_git_shim.sh — they point to
+   orphaned commits (never on any branch) so they accumulate silently.
+   GC is safe: the commits are exclusively test fixtures, not user data. *)
+
+type shim_test_entry = {
+  ref_name: string;
+  commit_sha: string;
+  commit_age_days: int;
+}
+
+(** [list_shim_test_refs ()] returns all refs under refs/c2c-stashes/shim-test/
+    with their target SHA and approximate age in days. *)
+let list_shim_test_refs () =
+  let (code, output, _) =
+    git_command ~quiet:true
+      [ "for-each-ref"; "--format=%(refname) %(objectname) %(creatordate:unix)";
+        "refs/c2c-stashes/shim-test/" ]
+  in
+  if code <> 0 || String.trim output = "" then []
+  else
+    let now = Unix.gettimeofday () in
+    let one_day = 86400.0 in
+    List.filter_map (fun line ->
+      match String.split_on_char ' ' line |> List.filter ((<>) "") with
+      | [ref_name; sha; age_str] ->
+          (try
+             let age_unix = float_of_string age_str in
+             let days = int_of_float ((now -. age_unix) /. one_day) in
+             Some { ref_name; commit_sha = sha; commit_age_days = days }
+           with _ -> None)
+      | _ -> None)
+      (String.split_on_char '\n' output)
+
+(** [delete_shim_test_ref ref_name] deletes a single refs/c2c-stashes/shim-test/ ref. *)
+let delete_shim_test_ref ref_name =
+  let (code, _, _) = git_command [ "update-ref"; "-d"; ref_name ] in
+  code = 0
+
+let shim_test_gc_term =
+  let open Cmdliner in
+  let clean_flag =
+    Arg.(value & flag & info ["clean"]
+           ~doc:"Actually delete the refs. Default is dry-run.")
+  in
+  let json_flag =
+    Arg.(value & flag & info ["json"]
+           ~doc:"Output machine-readable JSON.")
+  in
+  let+ clean = clean_flag
+  and+ json_out = json_flag in
+  let entries = list_shim_test_refs () in
+  if json_out then begin
+    let items = List.map (fun e ->
+      `Assoc [
+        ("ref", `String e.ref_name);
+        ("sha", `String e.commit_sha);
+        ("age_days", `Int e.commit_age_days);
+      ]) entries
+    in
+    print_endline (Yojson.Safe.to_string (`List items))
+  end else begin
+    Printf.printf "Shim-test refs GC (%d entries)\n\n" (List.length entries);
+    if entries = [] then
+      Printf.printf "  (no refs/c2c-stashes/shim-test/ entries)\n"
+    else begin
+      List.iter (fun e ->
+        let age_str = if e.commit_age_days = 0 then "<1d"
+          else if e.commit_age_days = 1 then "1d"
+          else Printf.sprintf "%dd" e.commit_age_days in
+        Printf.printf "  %-55s %s  (%s)\n" e.ref_name e.commit_sha age_str)
+        entries;
+      if clean then begin
+        let deleted = ref 0 in
+        Printf.printf "\nDeleting %d refs...\n" (List.length entries);
+        List.iter (fun e ->
+          if delete_shim_test_ref e.ref_name then begin
+            incr deleted;
+            Printf.printf "  deleted %s\n" e.ref_name
+          end else
+            Printf.eprintf "  FAILED to delete %s\n" e.ref_name)
+          entries;
+        Printf.printf "Done. %d deleted.\n" !deleted
+      end else begin
+        Printf.printf "\nDry-run: pass --clean to delete.\n"
+      end
+    end
+  end
+
 let worktree_group =
   Cmdliner.Cmd.group
     ~default:worktree_list_term
@@ -908,4 +998,9 @@ let worktree_group =
         ~doc:"Detect and (with --clean) remove worktrees safe to delete: \
               clean working tree, HEAD ancestor of origin/master, no live \
               process holding cwd, and not the main worktree (#313).")
-        worktree_gc_term ]
+        worktree_gc_term
+    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "shim-test-gc"
+        ~doc:"List and (with --clean) delete refs/c2c-stashes/shim-test/ \
+              checkpoint refs. These are test fixtures from test_git_shim.sh, \
+              not user data — GC is always safe.")
+        shim_test_gc_term ]

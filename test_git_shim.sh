@@ -5,6 +5,9 @@
 # run in a throwaway clone at /tmp/shim-test/repo to prevent accidental
 # data loss in the real worktree.
 #
+# Test commits are stored in refs/c2c-stashes/shim-test/ (not on any branch)
+# so they never pollute slice-branch history. See _run_shim_commit_to_ref().
+#
 # Install shim in PATH, cd to the target dir, run git through the shim.
 
 set -euo pipefail
@@ -61,6 +64,42 @@ run_shim_as_coord() {
     )
 }
 
+# Helper: create a commit via the shim, then immediately move the resulting
+# SHA into refs/c2c-stashes/shim-test/<label> so it never lands on any branch.
+# The commit exercises the shim's guard logic but is stored as an orphaned ref.
+# Args: <repo_dir> <label> <msg>
+# Sets shim env vars (C2C_GIT_SHIM_MAIN_TREE, C2C_COORDINATOR, C2C_COMMIT_REFUSE)
+# before calling the shim, then moves the resulting commit to the stash ref.
+_run_shim_commit_to_ref() {
+    local repo="$1"
+    local label="$2"
+    local msg="$3"
+    local temp_branch="shim-test-temp-$$-$(date +%s)"
+    # Branch so the commit lands on a throwaway branch we can abandon
+    git branch "$temp_branch" HEAD >/dev/null 2>&1 || true
+    # Run the commit through the shim (exercises the guard)
+    local output
+    output=$(
+        cd "$repo"
+        "$SHIM" commit --allow-empty -m "$msg" 2>&1 || echo "EXIT_CODE:$?"
+    )
+    local ec=$?
+    # Capture the SHA while still on temp branch (commit succeeded)
+    if [ $ec -eq 0 ]; then
+        local sha
+        sha=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo "")
+        if [ -n "$sha" ]; then
+            # Store in stash ref — never appears in branch history
+            git -C "$repo" update-ref "refs/c2c-stashes/shim-test/${label}" "$sha" 2>/dev/null || true
+            # Abandon the throwaway branch (reset + delete) so no commit remains
+            git -C "$repo" reset --hard HEAD~1 >/dev/null 2>&1 || true
+        fi
+        git -C "$repo" branch -D "$temp_branch" >/dev/null 2>&1 || true
+    fi
+    echo "$output"
+    return $ec
+}
+
 # Helper: run git commit through the shim in the main tree
 # Args: <refuse_flag> <coord_bypass>
 # refuse_flag: "1" to set C2C_COMMIT_REFUSE=1, "0" otherwise
@@ -68,6 +107,7 @@ run_shim_as_coord() {
 run_shim_commit() {
     local refuse_flag="$1"
     local coord_bypass="$2"
+    local label="main-$$-$(date +%s)"
     local msg="shim-test-$$-$(date +%s)"
     (
         export PATH="$(dirname "$SHIM"):$PATH"
@@ -77,8 +117,7 @@ run_shim_commit() {
         [ "$refuse_flag" = "1" ] && export C2C_COMMIT_REFUSE=1
         [ "$refuse_flag" = "0" ] && export C2C_COMMIT_REFUSE=0
         [ "$coord_bypass" = "1" ] && export C2C_COORDINATOR=1
-        cd "$REAL_REPO"
-        "$SHIM" commit --allow-empty -m "$msg" 2>&1 || echo "EXIT_CODE:$?"
+        _run_shim_commit_to_ref "$REAL_REPO" "$label" "$msg"
     )
 }
 
@@ -87,6 +126,7 @@ run_shim_commit() {
 run_shim_commit_in_worktree() {
     local wtdir="$1"
     local refuse_flag="$2"
+    local label="worktree-$$-$(date +%s)"
     local msg="shim-test-wt-$$-$(date +%s)"
     (
         export PATH="$(dirname "$SHIM"):$PATH"
@@ -94,8 +134,7 @@ run_shim_commit_in_worktree() {
         unset C2C_COORDINATOR
         unset C2C_COMMIT_REFUSE
         [ "$refuse_flag" = "1" ] && export C2C_COMMIT_REFUSE=1
-        cd "$wtdir"
-        "$SHIM" commit --allow-empty -m "$msg" 2>&1 || echo "EXIT_CODE:$?"
+        _run_shim_commit_to_ref "$wtdir" "$label" "$msg"
     )
 }
 
