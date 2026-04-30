@@ -395,6 +395,15 @@ val prepare_launch_args :
     optional --agent for Claude/agent launches, and
     --mcp-config-file for kimi. *)
 
+val build_kimi_mcp_config :
+  string -> string -> string option -> Yojson.Safe.t
+(** [build_kimi_mcp_config name broker_root alias_override] returns the
+    JSON object written to a kimi instance's [kimi-mcp.json] file.
+    [command] is the canonical [c2c-mcp-server] OCaml binary; [args] is
+    empty. The env block omits [C2C_MCP_BROKER_ROOT] when [broker_root]
+    equals the resolver default ([""] also treated as default). Exposed
+    for tests; use via [cmd_start] / [cmd_restart] in production. *)
+
 val codex_supports_server_request_fds : string -> bool
 (** [codex_supports_server_request_fds binary_path] returns whether the Codex
     binary advertises both server request event and response sideband flags. *)

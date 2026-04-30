@@ -2650,11 +2650,6 @@ let resolve_repo_root ~(broker_root : string) : string =
 
 let build_kimi_mcp_config (name : string) (br : string) (alias_override : string option) : Yojson.Safe.t =
   let alias = Option.value alias_override ~default:name in
-  let script_path =
-    match repo_toplevel () with
-    | "" -> "c2c_mcp.py"
-    | dir -> dir // "c2c_mcp.py"
-  in
   (* #478: enumerate all c2c MCP tools so kimi auto-approves them without
      prompting. Must stay in sync with C2c_mcp.base_tool_definitions. *)
   let c2c_mcp_tools = [
@@ -2672,18 +2667,30 @@ let build_kimi_mcp_config (name : string) (br : string) (alias_override : string
     "mcp__c2c__memory_list"; "mcp__c2c__memory_read";
     "mcp__c2c__memory_write";
   ] in
+  (* Drift-prevention (kimi-mcp-canonical-server, follow-up to #504):
+     omit C2C_MCP_BROKER_ROOT from the env block when it equals the
+     resolver default. Same rule as write_config in #504 — persisting
+     the resolver-default value re-injects stale paths after future
+     migrations. Only persist when the operator explicitly overrode. *)
+  let resolver_default = try resolve_broker_root () with _ -> "" in
+  let env_pairs =
+    let base = [
+      "C2C_MCP_SESSION_ID", `String name;
+      "C2C_MCP_AUTO_REGISTER_ALIAS", `String alias;
+      "C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge";
+      "C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0";
+    ] in
+    if br = "" || br = resolver_default
+    then base
+    else ("C2C_MCP_BROKER_ROOT", `String br) :: base
+  in
   `Assoc [ "mcpServers",
     `Assoc [ "c2c",
       `Assoc [ "type", `String "stdio";
-               "command", `String "python3";
-               "args", `List [ `String script_path ];
-               "env", `Assoc [
-                 "C2C_MCP_BROKER_ROOT", `String br;
-                 "C2C_MCP_SESSION_ID", `String name;
-                 "C2C_MCP_AUTO_REGISTER_ALIAS", `String alias;
-                 "C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge";
-                 "C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0";
-               ];
+               (* Canonical OCaml MCP server (was: python3 c2c_mcp.py — deprecated). *)
+               "command", `String "c2c-mcp-server";
+               "args", `List [];
+               "env", `Assoc env_pairs;
                "allowedTools", `List (List.map (fun t -> `String t) c2c_mcp_tools) ] ] ]
 
 (* ---------------------------------------------------------------------------

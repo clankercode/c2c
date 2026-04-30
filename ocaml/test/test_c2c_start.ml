@@ -1829,6 +1829,42 @@ let test_write_config_persists_broker_root_when_overridden () =
   | Some saved ->
       check string "explicit broker_root round-trips" explicit_root saved.broker_root
 
+(* kimi-mcp-canonical-server slice (follow-up to #504):
+   - canonical command must be c2c-mcp-server, NOT python3 + c2c_mcp.py
+   - C2C_MCP_BROKER_ROOT must be omitted from env when broker_root
+     equals the resolver default (drift-prevention, same rule as #504). *)
+
+let test_kimi_mcp_config_uses_canonical_server () =
+  let json =
+    C2c_start.build_kimi_mcp_config "kuura-test" (C2c_start.broker_root ()) None
+  in
+  let raw = Yojson.Safe.to_string json in
+  check bool "kimi MCP command is c2c-mcp-server" true
+    (string_contains raw "\"command\":\"c2c-mcp-server\"");
+  check bool "kimi MCP command is NOT python3" false
+    (string_contains raw "\"command\":\"python3\"");
+  check bool "kimi MCP args do NOT reference c2c_mcp.py" false
+    (string_contains raw "c2c_mcp.py")
+
+let test_kimi_mcp_config_omits_broker_root_env_when_default () =
+  let default_root = C2c_start.broker_root () in
+  let json = C2c_start.build_kimi_mcp_config "lumi-test" default_root None in
+  let raw = Yojson.Safe.to_string json in
+  check bool "C2C_MCP_BROKER_ROOT omitted from env when value == resolver default"
+    false
+    (string_contains raw "C2C_MCP_BROKER_ROOT")
+
+let test_kimi_mcp_config_persists_broker_root_env_when_overridden () =
+  with_temp_dir @@ fun explicit_root ->
+  if explicit_root = C2c_start.broker_root () then
+    fail "test setup: temp broker_root collided with resolver default";
+  let json = C2c_start.build_kimi_mcp_config "tyyni-test" explicit_root None in
+  let raw = Yojson.Safe.to_string json in
+  check bool "C2C_MCP_BROKER_ROOT present in env when overridden" true
+    (string_contains raw "C2C_MCP_BROKER_ROOT");
+  check bool "explicit broker_root value appears in env" true
+    (string_contains raw explicit_root)
+
 let test_sync_instance_alias_updates_matching_session () =
   let name = Printf.sprintf "sync-alias-%d" (Random.bits ()) in
   with_instance_dir name @@ fun _dir ->
@@ -3340,6 +3376,12 @@ let () =
             `Quick, test_write_config_omits_broker_root_when_default )
         ; ( "write_config_persists_broker_root_when_overridden",
             `Quick, test_write_config_persists_broker_root_when_overridden )
+        ; ( "kimi_mcp_config_uses_canonical_server",
+            `Quick, test_kimi_mcp_config_uses_canonical_server )
+        ; ( "kimi_mcp_config_omits_broker_root_env_when_default",
+            `Quick, test_kimi_mcp_config_omits_broker_root_env_when_default )
+        ; ( "kimi_mcp_config_persists_broker_root_env_when_overridden",
+            `Quick, test_kimi_mcp_config_persists_broker_root_env_when_overridden )
         ; ( "sync_instance_alias_updates_matching_session",
             `Quick, test_sync_instance_alias_updates_matching_session )
         ; ( "sync_instance_alias_ignores_mismatched_session",
