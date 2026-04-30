@@ -1,7 +1,8 @@
-(* c2c_deliver_inbox — OCaml deliver-inbox daemon (S1 scaffold)
-   Replaces c2c_deliver_inbox.py (Python). S1 scope: CLI parsing,
-   daemon fork+setsid+pgrp, pidfile, log redirection, already_running guard,
-   run_loop stub that does nothing yet (stubs for S2 onward).
+(* c2c_deliver_inbox — OCaml deliver-inbox daemon
+   Replaces c2c_deliver_inbox.py (Python).
+   S1: CLI parsing, daemon fork+setsid+pgrp, pidfile, log redirection.
+   S2: inbox polling loop via c2c_mcp library.
+   S3a: kimi notification-store delivery via C2c_kimi_notifier.
 
    Single-file executable: all logic in this file, `let () =` is the
    OCaml program body. *)
@@ -83,7 +84,7 @@ let already_running pidfile =
  * --------------------------------------------------------------------------- *)
 
 let start_daemon
-    ~(_child_argv : string list)  (* S2: exec child_argv in child process *)
+    ~(_child_argv : string list)
     ~(pidfile_path : string)
     ~(log_path : string)
     ~(wait_timeout : float)
@@ -136,12 +137,22 @@ let effective_submit_delay ~(client : string) ~(submit_delay : float option) : f
     else None
 
 (* ---------------------------------------------------------------------------
- * Inbox polling via c2c_mcp library
+ * Inbox polling + delivery via c2c_mcp library
  * --------------------------------------------------------------------------- *)
 
-let poll_once ~(broker : C2c_mcp.Broker.t) ~(session_id : string) : C2c_mcp.message list =
-  (* Confirm registration (marks session as active; safe if already confirmed),
-     then drain the inbox. Returns the list of messages. *)
+(* For kimi: use the kimi notifier which handles notification-store writes
+   and tmux wake internally. The session_id IS the kimi alias in managed context. *)
+let poll_once_kimi ~(broker_root : string) ~(session_id : string) : int =
+  let tmux_pane = Sys.getenv_opt "TMUX_PANE" in
+  C2c_kimi_notifier.run_once
+    ~broker_root
+    ~alias:session_id
+    ~session_id
+    ~tmux_pane
+
+(* For non-kimi: drain via broker, then log (future: PTY injection, etc.) *)
+let poll_once_generic ~(broker : C2c_mcp.Broker.t) ~(session_id : string)
+    : C2c_mcp.message list =
   C2c_mcp.Broker.confirm_registration broker ~session_id;
   C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-inbox" broker ~session_id
 
@@ -159,8 +170,13 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
   let iterations = ref 0 in
   let total_delivered = ref 0 in
   let max_iterations = args.max_iterations in
-  (* Create the broker once — reused across all poll calls *)
-  let broker = C2c_mcp.Broker.create ~root:args.broker_root in
+  let is_kimi = args.client = "kimi" in
+  (* For kimi: notifier handles broker lifecycle internally.
+     For others: create broker once and reuse. *)
+  let broker =
+    if is_kimi then None
+    else Some (C2c_mcp.Broker.create ~root:args.broker_root)
+  in
   let rec loop () =
     match max_iterations with
     | Some m when !iterations >= m ->
@@ -168,17 +184,28 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
       flush stdout
     | _ ->
       incr iterations;
-      let messages = poll_once ~broker ~session_id in
-      total_delivered := !total_delivered + (List.length messages);
-      (match messages with
-       | [] ->
-         Printf.printf "[c2c-deliver-inbox] iteration %d: no messages\n%!" !iterations
-        | msgs ->
-          Printf.printf "[c2c-deliver-inbox] iteration %d: %d message(s): %s\n%!"
-            !iterations
-            (List.length msgs)
-            (String.concat ", "
-               (List.map (fun (m : C2c_mcp.message) -> m.from_alias) msgs)));
+      let delivered =
+        if is_kimi then
+          poll_once_kimi ~broker_root:args.broker_root ~session_id
+        else
+          let messages = poll_once_generic
+            ~broker:(Option.get broker)
+            ~session_id
+          in
+          List.iter
+            (fun (m : C2c_mcp.message) ->
+               Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
+                 m.from_alias
+                 (String.sub m.content 0 (min (String.length m.content) 80)))
+            messages;
+          List.length messages
+      in
+      total_delivered := !total_delivered + delivered;
+      (if delivered > 0 then
+         Printf.printf "[c2c-deliver-inbox] iteration %d: delivered %d message(s)\n%!"
+           !iterations delivered
+       else
+         Printf.printf "[c2c-deliver-inbox] iteration %d: no messages\n%!" !iterations);
       flush stdout;
       (match watched_pid with
        | Some wp when not (pid_is_alive wp) ->
@@ -345,7 +372,6 @@ let () =
   in
 
   if args.daemon then begin
-    (* _child_argv deferred to S2 (exec in child process) *)
     match start_daemon
         ~_child_argv:(Sys.argv |> Array.to_list)
         ~pidfile_path
@@ -392,6 +418,21 @@ let () =
     if args.loop then
       run_loop ~args ~watched_pid
     else
-      Printf.printf "[c2c-deliver-inbox] session=%s broker_root=%s client=%s (single-shot stub)\n%!"
-        session_id broker_root args.client
+      (* Single-shot: one poll + deliver for kimi, poll-only for others *)
+      let delivered =
+        if args.client = "kimi" then
+          poll_once_kimi ~broker_root ~session_id
+        else
+          let broker = C2c_mcp.Broker.create ~root:broker_root in
+          let messages = poll_once_generic ~broker ~session_id in
+          List.iter
+            (fun (m : C2c_mcp.message) ->
+               Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
+                 m.from_alias
+                 (String.sub m.content 0 (min (String.length m.content) 80)))
+            messages;
+          List.length messages
+      in
+      Printf.printf "[c2c-deliver-inbox] session=%s broker_root=%s client=%s delivered=%d\n%!"
+        session_id broker_root args.client delivered
   end
