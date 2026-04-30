@@ -374,18 +374,14 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
 
 (* --- setup: Kimi (JSON) --- *)
 
-let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
-  let home = Sys.getenv "HOME" in
-  let config_path = Filename.concat home (".kimi" // "mcp.json") in
-  let toml_config_path = Filename.concat home (".kimi" // "config.toml") in
-  let hook_install_dir = Filename.concat home (".local" // "bin") in
-  let existing =
-    if Sys.file_exists config_path then json_read_file config_path
-    else `Assoc []
-  in
-  (* #478: enumerate all c2c MCP tools so kimi auto-approves them without
-     prompting. Reuses c2c_tools_list which must stay in sync with
-     C2c_mcp.base_tool_definitions (see comment there). *)
+(* [build_kimi_mcp_config ~root ~alias_val ~server_path existing]
+   is the pure JSON merge at the heart of setup_kimi.  It takes the
+   pre-existing ~/.kimi/mcp.json value (already parsed) and returns the
+   updated config with the c2c entry (including #478 allowedTools) merged in.
+   Running this twice on the same input yields identical output (idempotent
+   replacement — the old c2c entry is removed before the new one is added,
+   never appended). *)
+let build_kimi_mcp_config ~root ~alias_val ~server_path existing : Yojson.Safe.t =
   let c2c_allowed_tools_json = `List (List.map (fun t -> `String t) c2c_tools_list) in
   let c2c_entry =
     `Assoc
@@ -402,16 +398,26 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
       ; ("allowedTools", c2c_allowed_tools_json)
       ]
   in
-  let config = match existing with
-    | `Assoc fields ->
-        let existing_mcp = match List.assoc_opt "mcpServers" fields with
-          | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
-          | _ -> []
-        in
-        `Assoc (List.filter (fun (k, _) -> k <> "mcpServers") fields
-                @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
-    | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
+  match existing with
+  | `Assoc fields ->
+      let existing_mcp = match List.assoc_opt "mcpServers" fields with
+        | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
+        | _ -> []
+      in
+      `Assoc (List.filter (fun (k, _) -> k <> "mcpServers") fields
+              @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
+  | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
+
+let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path =
+  let home = Sys.getenv "HOME" in
+  let config_path = Filename.concat home (".kimi" // "mcp.json") in
+  let toml_config_path = Filename.concat home (".kimi" // "config.toml") in
+  let hook_install_dir = Filename.concat home (".local" // "bin") in
+  let existing =
+    if Sys.file_exists config_path then json_read_file config_path
+    else `Assoc []
   in
+  let config = build_kimi_mcp_config ~root ~alias_val ~server_path existing in
   mkdir_or_dryrun dry_run (Filename.dirname config_path);
   json_write_file_or_dryrun dry_run config_path config;
   (* Slice 2 of #142: install the PreToolUse approval hook script and

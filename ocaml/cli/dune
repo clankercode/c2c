@@ -93,6 +93,12 @@
  (libraries alcotest yojson unix)
  (deps c2c.exe))
 
+; #478 slice 2: setup_kimi JSON merge idempotency + allowedTools presence.
+(test
+ (name test_c2c_setup_kimi)
+ (modules test_c2c_setup_kimi c2c_setup c2c_kimi_hook c2c_types c2c_utils c2c_broker_root_check)
+ (libraries c2c_mcp alcotest yojson unix))
+
 (test
  (name test_role_templates)
  (modules test_role_templates role_templates)

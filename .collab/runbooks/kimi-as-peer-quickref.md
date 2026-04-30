@@ -106,10 +106,12 @@ if kimi encounters a new tool from the c2c MCP server that hasn't been approved 
 > Kimi can prompt per-tool within a server. If you see repeated allowlist prompts
 > for different c2c tools, that's expected — approve each one as it appears.
 
-**Fix for Phase 2 (#478)**: the allowlist will be pre-approved via
-configuration so the prompt never appears.
-
-**Workaround now**: accept each allowlist prompt as it appears and don't dismiss it.
+**Phase 2 (#478 — shipped)**: `c2c install kimi` now pre-approves all c2c MCP
+tools via `allowedTools` in `~/.kimi/mcp.json`. The per-tool allowlist prompt
+never appears for standard c2c tools. The TOML `[[hooks]]` block for
+`await-reply` still needs manual opt-in (uncomment the block in
+`~/.kimi/config.toml` after install). **Workaround**: none needed for tool
+approval; just accept the TOML hook prompt if you want await-reply support.
 
 ---
 
@@ -117,15 +119,14 @@ configuration so the prompt never appears.
 
 ### Kimi blocks on per-tool MCP approval (managed mode)
 
-**This is Phase 1's known limitation.** When kimi sends a tool call to its
+**This was Phase 1's known limitation.** When kimi sends a tool call to its
 MCP server, it blocks waiting for approval if the allowlist hasn't been accepted
 yet. If you dismiss or deny the allowlist prompt, the agent hangs.
 
-**Fix for Phase 2 (#478)**: the allowlist will be pre-approved via
-configuration so the prompt never appears.
-
-**Workaround now**: accept each allowlist prompt as it appears at session start
-and don't dismiss it.
+**Phase 2 (#478 — shipped)**: `allowedTools` in `~/.kimi/mcp.json` pre-approves
+all c2c tools — the blocking prompt no longer appears for standard c2c MCP
+operations. The TOML `[[hooks]]` block for `await-reply` still requires manual
+opt-in (uncomment one example block in `~/.kimi/config.toml`).
 
 ### Two kimi processes (managed mode only)
 
