@@ -283,6 +283,12 @@ val repo_config_git_sign : unit -> bool
     `c2c git` injects SSH signing flags (-c gpg.format=ssh, etc.) for
     git commit signing. *)
 
+val repo_config_supervisor_strategy : unit -> string option
+(** [repo_config_supervisor_strategy ()] reads [supervisor_strategy] from
+    [.c2c/repo.json]. Returns the configured strategy string or [None] if absent.
+    Valid strategies: "first-alive", "round-robin", "broadcast".
+    Without this reader the field was dead state (#524). *)
+
 val builtin_swarm_restart_intro : string
 (** Default restart/kickoff intro template emitted into the agent's
     transcript when [c2c start <client>] launches a fresh session.

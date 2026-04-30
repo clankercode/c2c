@@ -2332,6 +2332,67 @@ let test_repo_config_default_binary_preflight_uses_config () =
   check string "preflight resolves from [default_binary]"
     "/usr/local/bin/codex-bridge" resolved
 
+(* #524: repo_config_supervisor_strategy reads supervisor_strategy from ~/.c2c/repo.json.
+   Uses Sys.getenv "HOME" directly (not cwd-based), so each test must
+   set HOME to the fake temp dir via putenv. *)
+
+let with_fake_home dir f =
+  let old_home = try Some (Sys.getenv "HOME") with Not_found -> None in
+  Fun.protect
+    ~finally:(fun () ->
+      (match old_home with
+       | Some h -> Unix.putenv "HOME" h
+       | None -> ()))
+    (fun () ->
+      Unix.putenv "HOME" dir;
+      f ())
+
+let test_repo_config_supervisor_strategy_no_repo_json () =
+  with_temp_dir @@ fun dir ->
+  with_fake_home dir (fun () ->
+    (match C2c_start.repo_config_supervisor_strategy () with
+     | Some _ -> fail "should return None when no repo.json exists"
+     | None -> ()))
+
+let test_repo_config_supervisor_strategy_missing_field () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let repo_json = Filename.concat c2c_dir "repo.json" in
+  let oc = open_out repo_json in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "{\"authorizers\": [\"alice\"]}\n");
+  with_fake_home dir (fun () ->
+    (match C2c_start.repo_config_supervisor_strategy () with
+     | Some _ -> fail "should return None when supervisor_strategy field absent"
+     | None -> ()))
+
+let test_repo_config_supervisor_strategy_valid () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let repo_json = Filename.concat c2c_dir "repo.json" in
+  let oc = open_out repo_json in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "{\"supervisor_strategy\": \"broadcast\"}\n");
+  with_fake_home dir (fun () ->
+    (match C2c_start.repo_config_supervisor_strategy () with
+     | Some s -> check string "supervisor_strategy" "broadcast" s
+     | None -> fail "should return Some for valid supervisor_strategy"))
+
+let test_repo_config_supervisor_strategy_trims_whitespace () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let repo_json = Filename.concat c2c_dir "repo.json" in
+  let oc = open_out repo_json in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "  {  \"supervisor_strategy\"  :  \"round-robin\"  }\n");
+  with_fake_home dir (fun () ->
+    (match C2c_start.repo_config_supervisor_strategy () with
+     | Some s -> check string "trimmed" "round-robin" s
+     | None -> fail "should return Some and trim whitespace"))
+
 (* #341: with no config or no [swarm] section, the restart-intro thunk
    returns the built-in default. Sanity-check a known substring so a future
    reword of the default is caught here. *)
@@ -3536,6 +3597,18 @@ let () =
            test_repo_config_default_binary_no_config_file)
         ; ("repo_config_default_binary_preflight_uses_config", `Quick,
            test_repo_config_default_binary_preflight_uses_config)
+        ; ( "repo_config_supervisor_strategy_no_repo_json",
+            `Quick,
+            test_repo_config_supervisor_strategy_no_repo_json )
+        ; ( "repo_config_supervisor_strategy_missing_field",
+            `Quick,
+            test_repo_config_supervisor_strategy_missing_field )
+        ; ( "repo_config_supervisor_strategy_valid",
+            `Quick,
+            test_repo_config_supervisor_strategy_valid )
+        ; ( "repo_config_supervisor_strategy_trims_whitespace",
+            `Quick,
+            test_repo_config_supervisor_strategy_trims_whitespace )
         ] )
     ; ( "swarm_config",
         [ ("restart_intro_builtin_default", `Quick,

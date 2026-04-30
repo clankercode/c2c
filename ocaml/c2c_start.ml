@@ -555,6 +555,30 @@ let repo_config_git_sign () : bool =
     in
     loop ()
 
+(** [repo_config_supervisor_strategy ()] reads the [supervisor_strategy] field
+    from [~/.c2c/repo.json]. Returns the configured strategy string, or
+    [None] if the field is absent or malformed.
+
+    The field is a top-level string in repo.json:
+      { "supervisor_strategy": "first-alive", ... }
+
+    This is the read-side counterpart to the [supervisor_strategy] field written
+    by [c2c init --supervisor-strategy]. Without this reader the field was
+    dead state — configured but never consulted (#524). *)
+let repo_config_supervisor_strategy () : string option =
+  let repo_json =
+    let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+    Filename.concat home (".c2c" // "repo.json")
+  in
+  if not (Sys.file_exists repo_json) then None
+  else
+    match Yojson.Safe.from_file repo_json with
+    | `Assoc fields ->
+        (match List.assoc_opt "supervisor_strategy" fields with
+         | Some (`String s) when String.trim s <> "" -> Some (String.trim s)
+         | _ -> None)
+    | _ -> None
+
 let read_toml_sections_with_prefix_from_path (path : string) (prefix : string) :
     (string * (string * string) list) list =
   if not (Sys.file_exists path) then []

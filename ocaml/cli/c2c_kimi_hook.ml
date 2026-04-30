@@ -127,6 +127,34 @@ resolve_authorizers() {
   return 1
 }
 
+# [#524] Read supervisor_strategy from repo.json. Returns the configured
+# strategy or "first-alive" as the implicit default. Errors clearly if
+# an unknown strategy is configured — operators see the problem immediately
+# rather than silently getting wrong routing behavior.
+resolve_supervisor_strategy() {
+  local repo_json="${HOME}/.c2c/repo.json"
+  if [ ! -f "$repo_json" ]; then
+    printf 'first-alive'
+    return 0
+  fi
+  local strategy
+  strategy="$(jq -r '.supervisor_strategy // "first-alive"' "$repo_json" 2>/dev/null)"
+  case "$strategy" in
+    first-alive|round-robin|broadcast)
+      printf '%s' "$strategy"
+      return 0
+      ;;
+    *)
+      echo "c2c-kimi-approval-hook: ERROR: unknown supervisor_strategy '$strategy' in ~/.c2c/repo.json" >&2
+      echo "  Valid strategies: first-alive, round-robin, broadcast" >&2
+      echo "  round-robin and broadcast are not yet implemented (#524 S1)" >&2
+      echo "  Falling back to first-alive for this request." >&2
+      printf 'first-alive'
+      return 0
+      ;;
+  esac
+}
+
 # Deprecation warning (#502)
 if [ -n "${C2C_KIMI_APPROVAL_REVIEWER:-}" ] \
    && [ -z "${C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION:-}" ]; then
@@ -200,61 +228,116 @@ authorizers_csv="$(IFS=,; echo "${AUTHORIZERS[*]}")"
   --timeout "$TIMEOUT" >/dev/null 2>&1 || true
 
 # --------------------------------------------------------------------------
-# Sequential chain walk: try each authorizer with equal budget timeout.
-# budget = TIMEOUT / remaining_count
+# Resolve supervisor strategy from repo.json (default: first-alive).
+# [#524] Routing is driven by this strategy.
 # --------------------------------------------------------------------------
-last_index=$((${#AUTHORIZERS[@]} - 1))
-for i in "${!AUTHORIZERS[@]}"; do
-  authorizer="${AUTHORIZERS[$i]}"
-  remaining=$((${#AUTHORIZERS[@]} - i))
-  # Compute integer budget: divide total timeout by remaining authorizers.
-  # bash doesn't do float, so we use a simple integer division.
-  budget=$((TIMEOUT / remaining))
-  # Ensure minimum budget of 5 seconds so we don't spin too fast.
-  [ "$budget" -lt 5 ] && budget=5
+SUPERVISOR_STRATEGY="$(resolve_supervisor_strategy)"
 
-  body="$(build_body "$authorizer")"
+# --------------------------------------------------------------------------
+# Routing dispatcher: first-alive | round-robin | broadcast
+# round-robin and broadcast are not yet implemented (#524 S1).
+# --------------------------------------------------------------------------
+case "$SUPERVISOR_STRATEGY" in
 
-  # Update primary_authorizer to show who we're currently asking
-  "$C2C_BIN" approval-pending-write \
-    --token "$TOKEN" \
-    --update-authorizer "$authorizer" >/dev/null 2>&1 || true
+  first-alive)
+    # Sequential chain walk: try each authorizer with equal budget timeout.
+    # budget = TIMEOUT / remaining_count
+    last_index=$((${#AUTHORIZERS[@]} - 1))
+    for i in "${!AUTHORIZERS[@]}"; do
+      authorizer="${AUTHORIZERS[$i]}"
+      remaining=$((${#AUTHORIZERS[@]} - i))
+      # Compute integer budget: divide total timeout by remaining authorizers.
+      # bash doesn't do float, so we use a simple integer division.
+      budget=$((TIMEOUT / remaining))
+      # Ensure minimum budget of 5 seconds so we don't spin too fast.
+      [ "$budget" -lt 5 ] && budget=5
 
-  # Send DM to this authorizer
-  if ! "$C2C_BIN" send "$authorizer" "$body" >/dev/null 2>&1; then
-    echo "c2c-kimi-approval-hook: failed to send DM to authorizer=$authorizer" >&2
-    continue
-  fi
+      body="$(build_body "$authorizer")"
 
-  # Wait for verdict with this authorizer's budget
-  verdict="$("$C2C_BIN" await-reply --token "$TOKEN" --timeout "$budget" 2>/dev/null || true)"
+      # Update primary_authorizer to show who we're currently asking
+      "$C2C_BIN" approval-pending-write \
+        --token "$TOKEN" \
+        --update-authorizer "$authorizer" >/dev/null 2>&1 || true
 
-  case "$verdict" in
-    allow|ALLOW)
-      exit 0
-      ;;
-    deny|DENY)
-      echo "denied by authorizer=$authorizer (token=$TOKEN)" >&2
-      exit 2
-      ;;
-    "")
-      # Timeout — try next authorizer if any remain
-      if [ "$i" -lt "$last_index" ]; then
+      # Send DM to this authorizer
+      if ! "$C2C_BIN" send "$authorizer" "$body" >/dev/null 2>&1; then
+        echo "c2c-kimi-approval-hook: failed to send DM to authorizer=$authorizer" >&2
         continue
-      else
-        echo "no verdict from any authorizer within ${TIMEOUT}s total; falling closed (token=$TOKEN)" >&2
-        exit 2
       fi
-      ;;
-    *)
-      echo "unrecognized verdict '$verdict' from authorizer=$authorizer; falling closed (token=$TOKEN)" >&2
-      exit 2
-      ;;
-  esac
-done
 
-# Should not reach here, but defensive fallthrough
-exit 2
+      # Wait for verdict with this authorizer's budget
+      verdict="$("$C2C_BIN" await-reply --token "$TOKEN" --timeout "$budget" 2>/dev/null || true)"
+
+      case "$verdict" in
+        allow|ALLOW)
+          exit 0
+          ;;
+        deny|DENY)
+          echo "denied by authorizer=$authorizer (token=$TOKEN)" >&2
+          exit 2
+          ;;
+        "")
+          # Timeout — try next authorizer if any remain
+          if [ "$i" -lt "$last_index" ]; then
+            continue
+          else
+            echo "no verdict from any authorizer within ${TIMEOUT}s total; falling closed (token=$TOKEN)" >&2
+            exit 2
+          fi
+          ;;
+        *)
+          echo "unrecognized verdict '$verdict' from authorizer=$authorizer; falling closed (token=$TOKEN)" >&2
+          exit 2
+          ;;
+      esac
+    done
+    # Should not reach here, but defensive fallthrough
+    exit 2
+    ;;
+
+  round-robin|broadcast)
+    echo "c2c-kimi-approval-hook: supervisor_strategy '$SUPERVISOR_STRATEGY' is not yet implemented (#524 S1)" >&2
+    echo "  Falling back to first-alive for this request." >&2
+    # Re-use first-alive path by re-invoking this logic inline.
+    last_index=$((${#AUTHORIZERS[@]} - 1))
+    for i in "${!AUTHORIZERS[@]}"; do
+      authorizer="${AUTHORIZERS[$i]}"
+      remaining=$((${#AUTHORIZERS[@]} - i))
+      budget=$((TIMEOUT / remaining))
+      [ "$budget" -lt 5 ] && budget=5
+      body="$(build_body "$authorizer")"
+      "$C2C_BIN" approval-pending-write \
+        --token "$TOKEN" \
+        --update-authorizer "$authorizer" >/dev/null 2>&1 || true
+      if ! "$C2C_BIN" send "$authorizer" "$body" >/dev/null 2>&1; then
+        echo "c2c-kimi-approval-hook: failed to send DM to authorizer=$authorizer" >&2
+        continue
+      fi
+      verdict="$("$C2C_BIN" await-reply --token "$TOKEN" --timeout "$budget" 2>/dev/null || true)"
+      case "$verdict" in
+        allow|ALLOW) exit 0 ;;
+        deny|DENY)
+          echo "denied by authorizer=$authorizer (token=$TOKEN)" >&2
+          exit 2
+          ;;
+        "")
+          if [ "$i" -lt "$last_index" ]; then
+            continue
+          else
+            echo "no verdict from any authorizer within ${TIMEOUT}s total; falling closed (token=$TOKEN)" >&2
+            exit 2
+          fi
+          ;;
+        *)
+          echo "unrecognized verdict '$verdict' from authorizer=$authorizer; falling closed (token=$TOKEN)" >&2
+          exit 2
+          ;;
+      esac
+    done
+    exit 2
+    ;;
+
+esac
 |bash}
 
 (* Fully-commented [[hooks]] block appended to ~/.kimi/config.toml.
