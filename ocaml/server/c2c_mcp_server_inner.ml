@@ -306,6 +306,29 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
           in
           loop ~broker_root ~negotiated_capabilities_ref)
 
+(* #514: stale broker-root detection.
+   The parent process (c2c start, kimi, opencode plugin) passes C2C_MCP_BROKER_ROOT
+   to the MCP server child. If the parent's git context differs from the child's
+   (e.g. remote.origin.url changed, or a nested c2c start with different repo),
+   the child writes to a broker directory that doesn't match peers — split-brain.
+   Detection: compare the inherited value against what we would compute fresh.
+   Exit 42 signals the parent to re-launch with the correct (canonical) value. *)
+let check_stale_broker_root ~(broker_root : string) : (_, _) result =
+  let canonical = C2c_repo_fp.resolve_broker_root () in
+  let from_env = Sys.getenv_opt "C2C_MCP_BROKER_ROOT" in
+  let inherited = Option.value from_env ~default:"" in
+  if inherited = "" then
+    (* No env value passed — parent used canonical resolution (or no parent).
+       No staleness possible. *)
+    Ok ()
+  else if inherited = canonical then
+    (* Inherited matches canonical — fresh and correct. *)
+    Ok ()
+  else
+    (* Stale: parent passed a value that doesn't match what we'd compute fresh.
+       Exit 42 so the parent can re-launch us with the correct value. *)
+    Error (inherited, canonical)
+
 (* run_inner_server — the full-featured MCP server loop.
    Called by:
    - c2c-mcp-inner binary (Slice A)
@@ -313,6 +336,15 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
    - c2c mcp-inner CLI command (Slice A) *)
 let run_inner_server ~broker_root =
   let open Lwt.Syntax in
+  (* #514: bail early if broker_root is stale. *)
+  (match check_stale_broker_root ~broker_root with
+   | Error (inherited, canonical) ->
+       debug_log (Printf.sprintf
+         "ERROR: stale broker_root detected: inherited=%s canonical=%s — exiting 42 (restart with correct broker root)"
+         inherited canonical);
+       print_endline "[c2c] stale broker_root detected; restart with correct broker root";
+       exit 42
+   | Ok () -> ());
   debug_log ("run_inner_server starting, broker_root=" ^ broker_root);
   C2c_mcp.auto_register_startup ~broker_root;
   (* Replay any orphan messages that arrived during the restart gap
