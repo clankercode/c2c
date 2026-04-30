@@ -73,21 +73,21 @@ let approval_hook_script_content = {bash|#!/usr/bin/env bash
 #   exit 0  -> allow (kimi proceeds)
 #   exit 2  -> block (stderr is shown to the agent as the rejection reason)
 #
-# Configuration:
-#   C2C_KIMI_APPROVAL_REVIEWER  reviewer alias (default: coordinator1)
-#                                **DEPRECATED (#502)** — single-reviewer
-#                                env var is being phased out in favour of
-#                                the `supervisors[]` list in .c2c/repo.json
-#                                (#490 Slice 5e). When set, a stderr warning
-#                                fires; planned removal next cycle.
-#   C2C_KIMI_APPROVAL_TIMEOUT   seconds to wait for verdict (default: 120)
+# #511 Slice 2: fallback authorizer chain walk.
+# The hook reads `authorizers` from ~/.c2c/repo.json (an ordered JSON array).
+# It sequentially tries each reviewer, splitting the total TIMEOUT budget
+# equally among remaining authorizers. The first to respond wins; if all
+# time out the hook falls closed (exit 2).
 #
-# Slice 1 of #142.  Slice 2 wires the [[hooks]] block in ~/.kimi/config.toml
-# via `c2c install kimi`.  The matcher / event filter is configured there;
-# this script unconditionally forwards whatever it receives.
+# Configuration (env vars):
+#   C2C_KIMI_APPROVAL_TIMEOUT  total budget in seconds (default: 120)
+#   C2C_KIMI_APPROVAL_REVIEWER  **DEPRECATED** (#502) — fallback to this
+#                                single alias when repo.json has no authorizers[]
+#   C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION  set to 1 to silence the
+#                                deprecation warning on each invocation
 set -euo pipefail
 
-# Tools required: jq for parsing kimi's stdin payload, c2c for messaging.
+# Tools required: jq for parsing kimi's stdin payload + repo.json, c2c for messaging.
 if ! command -v jq >/dev/null 2>&1; then
   echo "c2c-kimi-approval-hook: jq is required but not on PATH" >&2
   exit 2
@@ -106,24 +106,60 @@ tool_name="$(printf '%s' "$payload" | jq -r '.tool_name // ""')"
 tool_input="$(printf '%s' "$payload" | jq -c '.tool_input // {}')"
 tool_call_id="$(printf '%s' "$payload" | jq -r '.tool_call_id // ""')"
 
-# Deprecation warning (#502): the single-reviewer env var is being phased
-# out in favour of the supervisors[] list in .c2c/repo.json (#490 Slice 5e).
-# Warn once on each invocation when the operator has explicitly set it; the
-# default-fallback path stays silent to avoid noise for stock installs. Set
-# C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION=1 to suppress (e.g. in CI).
+TIMEOUT="${C2C_KIMI_APPROVAL_TIMEOUT:-120}"
+
+# --------------------------------------------------------------------------
+# Resolve the authorizer chain.
+# 1. Try to read authorizers[] from ~/.c2c/repo.json
+# 2. Fall back to C2C_KIMI_APPROVAL_REVIEWER env var (deprecated #502)
+# 3. Fall back to "coordinator1" as last resort
+# --------------------------------------------------------------------------
+resolve_authorizers() {
+  local repo_json="${HOME}/.c2c/repo.json"
+  if [ -f "$repo_json" ]; then
+    local authors
+    authors="$(jq -r '.authorizers // empty' "$repo_json" 2>/dev/null)"
+    if [ -n "$authors" ]; then
+      printf '%s\n' "$authors"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Deprecation warning (#502)
 if [ -n "${C2C_KIMI_APPROVAL_REVIEWER:-}" ] \
    && [ -z "${C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION:-}" ]; then
   echo "c2c-kimi-approval-hook: WARN: C2C_KIMI_APPROVAL_REVIEWER is deprecated (#502)." >&2
   echo "  The single-reviewer env var will be removed next cycle; the canonical" >&2
-  echo "  approval path is the supervisors[] list in .c2c/repo.json (see #490 /" >&2
-  echo "  docs/security/pending-permissions.md). Set" >&2
-  echo "  C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION=1 to suppress this warning." >&2
+  echo "  approval path is the authorizers[] list in .c2c/repo.json (see #511)." >&2
+  echo "  Set C2C_KIMI_APPROVAL_REVIEWER_SILENCE_DEPRECATION=1 to suppress." >&2
 fi
-REVIEWER="${C2C_KIMI_APPROVAL_REVIEWER:-coordinator1}"
-TIMEOUT="${C2C_KIMI_APPROVAL_TIMEOUT:-120}"
 
-# Mint a token: prefer kimi's tool_call_id (stable, unique per call); fall
-# back to a hash of the payload + a nanosecond-timestamp suffix.
+# Build the authorizers array
+AUTHORIZERS=()
+if resolved="$(resolve_authorizers)" && [ -n "$resolved" ]; then
+  while IFS= read -r authorizer; do
+    [ -n "$authorizer" ] && AUTHORIZERS+=("$authorizer")
+  done <<< "$resolved"
+else
+  # Deprecated fallback: single reviewer env var
+  if [ -n "${C2C_KIMI_APPROVAL_REVIEWER:-}" ]; then
+    AUTHORIZERS+=("${C2C_KIMI_APPROVAL_REVIEWER}")
+  else
+    AUTHORIZERS+=("coordinator1")
+  fi
+fi
+
+if [ ${#AUTHORIZERS[@]} -eq 0 ]; then
+  echo "c2c-kimi-approval-hook: no authorizers available; falling closed" >&2
+  exit 2
+fi
+
+# --------------------------------------------------------------------------
+# Mint a token: prefer kimi's tool_call_id (stable, unique per call);
+# fall back to a hash of the payload + a nanosecond-timestamp suffix.
+# --------------------------------------------------------------------------
 if [ -n "$tool_call_id" ]; then
   TOKEN="ka_${tool_call_id}"
 else
@@ -131,68 +167,94 @@ else
   TOKEN="ka_${payload_hash}_$(date +%s%N)"
 fi
 
-# [#490 slice 5b] Record pending-approval state to the file-based
-# side-channel BEFORE sending the awareness DM. Reviewers can then
-# `c2c approval-list` / `c2c approval-show <token>` even before reading
-# the DM. Failure here is non-fatal — the DM still carries the token,
-# and reviewers can issue `c2c approval-reply` from that.
-"$C2C_BIN" approval-pending-write \
-  --token "$TOKEN" \
-  --tool-name "$tool_name" \
-  --tool-input "$tool_input" \
-  --reviewer "$REVIEWER" \
-  --timeout "$TIMEOUT" >/dev/null 2>&1 || true
-
-# Build the DM body the reviewer sees. Slice-5a preferred reply path is
-# `c2c approval-reply <token> {allow|deny [because <reason>]}`. The
-# legacy raw-DM path (c2c send <kimi-alias> "<TOKEN> allow") still works
-# but races the notifier-daemon drain and may not be seen — we keep it
-# in the hint as a fallback for MCP-only flows.
-body="$(cat <<EOF
+# --------------------------------------------------------------------------
+# Build the DM body (shared across all authorizer attempts).
+# --------------------------------------------------------------------------
+build_body() {
+  local reviewer="$1"
+  cat <<EOF
 [kimi-approval] PreToolUse:
   tool: $tool_name
   args: $tool_input
   token: $TOKEN
-  timeout: ${TIMEOUT}s
+  authorizers: ${AUTHORIZERS[*]}
+  timeout: ${TIMEOUT}s total budget
 
 Approve via:
   c2c approval-reply $TOKEN allow
   c2c approval-reply $TOKEN deny because <reason>
-
-Legacy fallback (may race drain — prefer approval-reply):
-  c2c send <kimi-alias> "$TOKEN allow"
-  c2c send <kimi-alias> "$TOKEN deny because <reason>"
 EOF
-)"
+}
 
-# Forward to the reviewer.  If the send fails we fall closed (exit 2);
-# kimi will surface the stderr to the agent.
-if ! "$C2C_BIN" send "$REVIEWER" "$body" >/dev/null 2>&1; then
-  echo "c2c-kimi-approval-hook: failed to send DM to reviewer=$REVIEWER" >&2
-  exit 2
-fi
+# --------------------------------------------------------------------------
+# Write the initial pending record with the full authorizers chain.
+# The primary_authorizer will be updated after each failed attempt.
+# --------------------------------------------------------------------------
+authorizers_csv="$(IFS=,; echo "${AUTHORIZERS[*]}")"
+"$C2C_BIN" approval-pending-write \
+  --token "$TOKEN" \
+  --tool-name "$tool_name" \
+  --tool-input "$tool_input" \
+  --authorizers "$authorizers_csv" \
+  --primary-authorizer "${AUTHORIZERS[0]}" \
+  --timeout "$TIMEOUT" >/dev/null 2>&1 || true
 
-# Block on a verdict.  await-reply prints "allow" or "deny" on stdout
-# and exits 0; on timeout it prints nothing and exits 1.
-verdict="$("$C2C_BIN" await-reply --token "$TOKEN" --timeout "$TIMEOUT" 2>/dev/null || true)"
+# --------------------------------------------------------------------------
+# Sequential chain walk: try each authorizer with equal budget timeout.
+# budget = TIMEOUT / remaining_count
+# --------------------------------------------------------------------------
+last_index=$((${#AUTHORIZERS[@]} - 1))
+for i in "${!AUTHORIZERS[@]}"; do
+  authorizer="${AUTHORIZERS[$i]}"
+  remaining=$((${#AUTHORIZERS[@]} - i))
+  # Compute integer budget: divide total timeout by remaining authorizers.
+  # bash doesn't do float, so we use a simple integer division.
+  budget=$((TIMEOUT / remaining))
+  # Ensure minimum budget of 5 seconds so we don't spin too fast.
+  [ "$budget" -lt 5 ] && budget=5
 
-case "$verdict" in
-  allow|ALLOW)
-    exit 0
-    ;;
-  deny|DENY)
-    echo "denied by reviewer=$REVIEWER (token=$TOKEN)" >&2
-    exit 2
-    ;;
-  "")
-    echo "no verdict from reviewer=$REVIEWER within ${TIMEOUT}s; falling closed (token=$TOKEN)" >&2
-    exit 2
-    ;;
-  *)
-    echo "unrecognized verdict '$verdict' from await-reply; falling closed (token=$TOKEN)" >&2
-    exit 2
-    ;;
-esac
+  body="$(build_body "$authorizer")"
+
+  # Update primary_authorizer to show who we're currently asking
+  "$C2C_BIN" approval-pending-write \
+    --token "$TOKEN" \
+    --update-authorizer "$authorizer" >/dev/null 2>&1 || true
+
+  # Send DM to this authorizer
+  if ! "$C2C_BIN" send "$authorizer" "$body" >/dev/null 2>&1; then
+    echo "c2c-kimi-approval-hook: failed to send DM to authorizer=$authorizer" >&2
+    continue
+  fi
+
+  # Wait for verdict with this authorizer's budget
+  verdict="$("$C2C_BIN" await-reply --token "$TOKEN" --timeout "$budget" 2>/dev/null || true)"
+
+  case "$verdict" in
+    allow|ALLOW)
+      exit 0
+      ;;
+    deny|DENY)
+      echo "denied by authorizer=$authorizer (token=$TOKEN)" >&2
+      exit 2
+      ;;
+    "")
+      # Timeout — try next authorizer if any remain
+      if [ "$i" -lt "$last_index" ]; then
+        continue
+      else
+        echo "no verdict from any authorizer within ${TIMEOUT}s total; falling closed (token=$TOKEN)" >&2
+        exit 2
+      fi
+      ;;
+    *)
+      echo "unrecognized verdict '$verdict' from authorizer=$authorizer; falling closed (token=$TOKEN)" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Should not reach here, but defensive fallthrough
+exit 2
 |bash}
 
 (* Fully-commented [[hooks]] block appended to ~/.kimi/config.toml.

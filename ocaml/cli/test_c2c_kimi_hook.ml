@@ -251,7 +251,46 @@ let test_idempotent_per_block_id () =
        ~needle:(C2c_kimi_hook.toml_block_begin_marker ~block_id:"block-a"))
 
 (* ------------------------------------------------------------------ *)
-(* install_approval_hook_script: write + chmod                          *)
+(* #511 Slice 2: authorizer chain walk                                    *)
+(* ------------------------------------------------------------------ *)
+
+let test_script_has_authorizers_chain () =
+  Alcotest.(check bool)
+    "script reads authorizers from repo.json"
+    true
+    (let s = C2c_kimi_hook.approval_hook_script_content in
+     count_substr ~haystack:s ~needle:".authorizers // empty" > 0)
+
+let test_script_has_budget_timeout () =
+  Alcotest.(check bool)
+    "script computes budget = TIMEOUT / remaining"
+    true
+    (let s = C2c_kimi_hook.approval_hook_script_content in
+     count_substr ~haystack:s ~needle:"TIMEOUT / remaining" > 0)
+
+let test_script_has_update_authorizer () =
+  Alcotest.(check bool)
+    "script calls approval-pending-write --update-authorizer"
+    true
+    (let s = C2c_kimi_hook.approval_hook_script_content in
+     count_substr ~haystack:s ~needle:"--update-authorizer" > 0)
+
+let test_script_has_deprecated_reviewer_warning () =
+  Alcotest.(check bool)
+    "script warns about deprecated C2C_KIMI_APPROVAL_REVIEWER"
+    true
+    (let s = C2c_kimi_hook.approval_hook_script_content in
+     count_substr ~haystack:s ~needle:"C2C_KIMI_APPROVAL_REVIEWER is deprecated" > 0)
+
+let test_script_has_fallback_coordinator () =
+  Alcotest.(check bool)
+    "script falls back to coordinator1 when no authorizers configured"
+    true
+    (let s = C2c_kimi_hook.approval_hook_script_content in
+     count_substr ~haystack:s ~needle:"coordinator1" > 0)
+
+(* ------------------------------------------------------------------ *)
+(* install-approval-hook-script: write + chmod                          *)
 (* ------------------------------------------------------------------ *)
 
 let test_install_script_writes_file_with_perms () =
@@ -331,5 +370,17 @@ let () =
             test_install_script_writes_file_with_perms
         ; Alcotest.test_case "dry run does not write" `Quick
             test_install_script_dry_run_no_write
+        ] )
+    ; ( "authorizer-chain",
+        [ Alcotest.test_case "reads authorizers from repo.json" `Quick
+            test_script_has_authorizers_chain
+        ; Alcotest.test_case "computes budget timeout per authorizer" `Quick
+            test_script_has_budget_timeout
+        ; Alcotest.test_case "calls --update-authorizer on retry" `Quick
+            test_script_has_update_authorizer
+        ; Alcotest.test_case "warns on deprecated C2C_KIMI_APPROVAL_REVIEWER" `Quick
+            test_script_has_deprecated_reviewer_warning
+        ; Alcotest.test_case "falls back to coordinator1" `Quick
+            test_script_has_fallback_coordinator
         ] )
     ]
