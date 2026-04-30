@@ -3,6 +3,9 @@
 **Audience**: any agent (subagent, peer, human) implementing a slice in
 the c2c repo's shared-`.git` multi-worktree layout.
 
+**Pattern catalog**: this runbook catalogs **19 patterns** (as of 2026-05-01).
+The canonical count lives in `CLAUDE.md`; this line tracks locally.
+
 **Why this exists**: 2026-04-28's high-parallel burn surfaced four
 distinct silent-data-loss patterns where shared-tree state leaked
 between slices, plus a fifth structural pattern where parallel
@@ -845,6 +848,47 @@ cat /proc/<pid>/comm
 **Mitigation**: keep worktrees rebased on origin/master, or use `C2C_INSTALL_FORCE=1` when you intentionally want a stale install.
 
 **Cross-reference**: #388 (install-ancestry guard), `c2c doctor --install-freshness`.
+
+---
+
+## Pattern 19 — requesting peer-PASS on a stale-base SHA (#521)
+
+**Severity**: MEDIUM — an invalid PASS can cause the coordinator to cherry-pick a SHA whose worktree is so far behind `origin/master` that the reviewer's build verified the wrong code.
+
+**Symptom**: A reviewer runs `just build` + tests in a worktree, reports PASS, and the coordinator cherry-picks the SHA. But the worktree was based on an old commit — `origin/master` has advanced significantly since the SHA was committed. The cherry-pick succeeds, but the landed code has absorbed intervening commits from other agents that were not reviewed together with this one.
+
+**Root cause**: Agents accumulate worktree divergence when they don't rebase for extended periods. When the slice author sends a peer-PASS request without first rebasing, the reviewer tests against a worktree that no longer represents the current state of the codebase. The PASS is technically valid against the SHA's diff, but the integration context has changed.
+
+**The one-line check before sending a peer-PASS DM**:
+
+```
+git fetch origin && git rebase origin/master && just build
+```
+
+If the rebase absorbed commits, rebuild, then send the PASS-request DM with the new tip SHA. The old SHA's PASS is invalid — the artifact must reference the post-rebase SHA.
+
+**Case study 1 — test-agent #491 (2026-05-01)**:
+test-agent reviewed `67359d97` and reported PASS. Fern's artifact listed it. But `67359d97` was already on `origin/master` at `f464a146` (the #526 doc findings patch) because test-agent's worktree was based on an earlier commit — the parent branch was stale. The PASS was technically valid against the diff, but the reviewer was testing in a worktree that hadn't absorbed the latest master commits. The fix: rebase before requesting PASS, or check `git fetch origin && git log --oneline origin/master | head -3` to confirm the worktree is current.
+
+**Case study 2 — fern `aaa77f67` (2026-05-01)**:
+fern's PASS artifact for jungle's review listed a SHA that didn't match the current master tip — the worktree had diverged. The reviewer was testing against a different base than what would be cherry-picked.
+
+**Receipt — this slice (#521, willow 2026-05-01)**:
+The coordinator's prompt explicitly called out both cases. The corrective action is now encoded in this pattern.
+
+**Mitigation**:
+
+1. Before sending a peer-PASS DM, always do:
+   ```
+   git fetch origin && git log --oneline origin/master | head -3
+   ```
+   Confirm your worktree HEAD is within 1-2 commits of origin/master.
+
+2. If behind: rebase, rebuild, and update any pending PASS DMs with the new SHA.
+
+3. If you receive a PASS artifact that references an old SHA (reviewer's worktree was stale), treat it as invalid and ask for a fresh review against current master.
+
+**Cross-reference**: Pattern 8 (reviewer must build IN slice worktree), Pattern 18 (install-ancestry staleness). The stale-base problem is the upstream cause of both downstream symptoms.
 
 ---
 
