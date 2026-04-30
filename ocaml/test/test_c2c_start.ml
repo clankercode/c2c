@@ -1867,7 +1867,12 @@ let test_kimi_mcp_config_omits_broker_root_env_when_default () =
   let raw = Yojson.Safe.to_string json in
   check bool "C2C_MCP_BROKER_ROOT omitted from env when value == resolver default"
     false
-    (string_contains raw "C2C_MCP_BROKER_ROOT")
+    (string_contains raw "C2C_MCP_BROKER_ROOT");
+  (* broker_root_source=resolver signals the receiving MCP server to
+     re-resolve broker_root at startup rather than treating the absent
+     C2C_MCP_BROKER_ROOT as an intentional empty string (fixes #525). *)
+  check bool "broker_root_source=resolver present when broker_root omitted" true
+    (string_contains raw "\"broker_root_source\":\"resolver\"")
 
 let test_kimi_mcp_config_persists_broker_root_env_when_overridden () =
   with_temp_dir @@ fun explicit_root ->
@@ -1878,7 +1883,11 @@ let test_kimi_mcp_config_persists_broker_root_env_when_overridden () =
   check bool "C2C_MCP_BROKER_ROOT present in env when overridden" true
     (string_contains raw "C2C_MCP_BROKER_ROOT");
   check bool "explicit broker_root value appears in env" true
-    (string_contains raw explicit_root)
+    (string_contains raw explicit_root);
+  (* broker_root_source=override signals the receiving MCP server to
+     use the explicit C2C_MCP_BROKER_ROOT value as-is (#525). *)
+  check bool "broker_root_source=override present when broker_root set" true
+    (string_contains raw "\"broker_root_source\":\"override\"")
 
 (* opencode-plugin-skip-default-broker (drift-prevention follow-up to #504
    / kimi-mcp-canonical-server): the OpenCodeAdapter sidecar writer at

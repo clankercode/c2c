@@ -2747,7 +2747,11 @@ let build_kimi_mcp_config (name : string) (br : string) (alias_override : string
      omit C2C_MCP_BROKER_ROOT from the env block when it equals the
      resolver default. Same rule as write_config in #504 — persisting
      the resolver-default value re-injects stale paths after future
-     migrations. Only persist when the operator explicitly overrode. *)
+     migrations. Only persist when the operator explicitly overrode.
+     Additionally, add broker_root_source so the receiving MCP server
+     knows how to interpret the absent field:
+       "resolver"  = broker_root was default; re-resolve at startup
+       "override"  = broker_root was explicitly set; use C2C_MCP_BROKER_ROOT *)
   let resolver_default = try resolve_broker_root () with _ -> "" in
   let env_pairs =
     let base = [
@@ -2757,8 +2761,10 @@ let build_kimi_mcp_config (name : string) (br : string) (alias_override : string
       "C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0";
     ] in
     if br = "" || br = resolver_default
-    then base
-    else ("C2C_MCP_BROKER_ROOT", `String br) :: base
+    then ("broker_root_source", `String "resolver") :: base
+    else
+      ("C2C_MCP_BROKER_ROOT", `String br)
+      :: ("broker_root_source", `String "override") :: base
   in
   `Assoc [ "mcpServers",
     `Assoc [ "c2c",
