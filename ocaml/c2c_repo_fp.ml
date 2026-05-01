@@ -33,6 +33,21 @@ let xdg_state_home () =
        | Some h when String.trim h <> "" -> String.trim h // ".local" // "state"
        | _ -> "/tmp")
 
+(** Broker-root fallback — computes the path without consulting C2C_MCP_BROKER_ROOT.
+    Shared between resolve_broker_root (step 1 = env var) and
+    resolve_broker_root_canonical (steps 2-4 = what we'd get without the env var). *)
+let resolve_broker_root_fallback () =
+  let fp = repo_fingerprint () in
+  let xdg_root = xdg_state_home () // "c2c" // "repos" // fp // "broker" in
+  match Sys.getenv_opt "XDG_STATE_HOME" with
+  | Some xdg when xdg <> "" -> xdg_root  (* XDG_STATE_HOME wins *)
+  | _ ->
+      (* Canonical default: $HOME/.c2c/repos/<fp>/broker *)
+      (match Sys.getenv_opt "HOME" with
+       | Some h when String.trim h <> "" ->
+           String.trim h // ".c2c" // "repos" // fp // "broker"
+       | _ -> xdg_root)  (* No HOME: fall back to XDG default *)
+
 (** Pure broker-root path resolution — no side effects.
     Resolution order (coord1 2026-04-26):
       1. C2C_MCP_BROKER_ROOT env var (explicit override)
@@ -41,18 +56,12 @@ let xdg_state_home () =
       4. ~/.local/state/c2c/repos/<fp>/broker  (XDG default fallback)
     The broker directory is created lazily on first use via Broker.ensure_root. *)
 let resolve_broker_root () =
-  let fp = repo_fingerprint () in
   match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
   | Some dir when String.trim dir <> "" ->
       let p = String.trim dir in
       if Filename.is_relative p then Sys.getcwd () // p else p
-  | _ ->
-      let xdg_root = xdg_state_home () // "c2c" // "repos" // fp // "broker" in
-      match Sys.getenv_opt "XDG_STATE_HOME" with
-      | Some xdg when xdg <> "" -> xdg_root  (* XDG_STATE_HOME wins *)
-      | _ ->
-          (* Canonical default: $HOME/.c2c/repos/<fp>/broker *)
-          (match Sys.getenv_opt "HOME" with
-           | Some h when String.trim h <> "" ->
-               String.trim h // ".c2c" // "repos" // fp // "broker"
-           | _ -> xdg_root)  (* No HOME: fall back to XDG default *)
+  | _ -> resolve_broker_root_fallback ()
+
+(** Same as resolve_broker_root but always uses the fallback chain (steps 2-4),
+    ignoring C2C_MCP_BROKER_ROOT. Used to detect stale env-var exports. *)
+let resolve_broker_root_canonical () = resolve_broker_root_fallback ()

@@ -4937,10 +4937,40 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           \  or 'c2c restart-self' to restart the inner client.\n%!"
          red reset sid_str;
        exit 1
-   | None, None, _ -> ()  (* no session vars → OK *)
-   | Some _, None, Some _ -> ()  (* session + wrapper_self → OK (managed client) *)
-   | None, Some _, Some _ -> ()  (* alias + wrapper_self → OK (managed client) *)
-   | Some _, Some _, Some _ -> ());
+    | None, None, _ -> ()  (* no session vars → OK *)
+    | Some _, None, Some _ -> ()  (* session + wrapper_self → OK (managed client) *)
+    | None, Some _, Some _ -> ()  (* alias + wrapper_self → OK (managed client) *)
+    | Some _, Some _, Some _ -> ());
+
+  (* Guard: stale C2C_MCP_BROKER_ROOT.
+     If the launching shell has a legacy/stale C2C_MCP_BROKER_ROOT export, the
+     broker and notifier will use a different path than the canonical resolver,
+     causing split-brain delivery (broker writes to canonical, notifier reads from
+     stale → messages pile up, kimi never wakes, log stays 0 bytes).
+     Detect by comparing the env-var value against C2c_repo_fp.resolve_broker_root_canonical ()
+     (the same resolution but without consulting C2C_MCP_BROKER_ROOT). Warn and unset
+     before forking so child processes inherit the canonical path. *)
+  (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
+   | None -> ()
+   | Some inherited ->
+       let stale = String.trim inherited in
+       if stale <> "" then
+         let canonical = C2c_repo_fp.resolve_broker_root_canonical () in
+         if stale <> canonical then begin
+           let use_color = Unix.isatty Unix.stderr in
+           let yellow = if use_color then "\027[1;33m" else "" in
+           let reset = if use_color then "\027[0m" else "" in
+           Printf.eprintf
+             "%s[WARNING]%s stale C2C_MCP_BROKER_ROOT detected.\n\
+              \  Current value: %s\n\
+              \  Canonical path: %s\n\
+              \  Your daemon may be polling the wrong broker directory.\n\
+              \  To fix permanently: unset C2C_MCP_BROKER_ROOT from your shell config,\n\
+              \  or run: c2c migrate-broker\n\
+              \  Unsetting C2C_MCP_BROKER_ROOT for this session.\n\n%!"
+             yellow reset stale canonical;
+           (try Unix.putenv "C2C_MCP_BROKER_ROOT" "" with _ -> ())
+         end);
 
   (* PTY client: run PTY loop and exit when done *)
   if client = "pty" then
