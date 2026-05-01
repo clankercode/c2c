@@ -3681,7 +3681,9 @@ let start_deliver_daemon ~(name : string) ~(client : string)
     ~(broker_root : string) ?(child_pid_opt : int option)
     ?command_override
     ?(xml_output_fd : string option) ?(xml_output_path : string option)
-?(event_fifo_path : string option) ?(response_fifo_path : string option) ?(preserve_fds : Unix.file_descr list option) () : int option =
+    ?(event_fifo_path : string option) ?(response_fifo_path : string option)
+    ?(preserve_fds : Unix.file_descr list option)
+    ?(pty_master_fd : int option) () : int option =
   match (match command_override with Some cmd -> Some cmd | None -> deliver_command ~broker_root) with
   | None -> None
   | Some (command, prefix_args) ->
@@ -3697,6 +3699,7 @@ let start_deliver_daemon ~(name : string) ~(client : string)
         @ (match event_fifo_path with None -> [] | Some path -> [ "--event-fifo"; path ])
         @ (match response_fifo_path with None -> [] | Some path -> [ "--response-fifo"; path ])
         @ (match child_pid_opt with None -> [] | Some p -> [ "--pid"; string_of_int p ])
+        @ (match pty_master_fd with None -> [] | Some fd -> [ "--pty-master-fd"; string_of_int fd ])
       in
       try
         let argv = Array.of_list (command :: args) in
