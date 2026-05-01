@@ -26,7 +26,11 @@ us a regression net for every client release.
 2. OpenCode
 3. Codex (xml_fd deliver path)
 4. Kimi (notification-store delivery, post-#473)
-5. Crush (experimental — light-touch checklist OK)
+
+**Crush is deprecated** (Max directive 2026-05-01) — drop from the
+checklist; consider a follow-up slice to mark its column DEPRECATED in
+`docs/clients/feature-matrix.md` and audit any remaining `c2c install
+crush` / `c2c start crush` paths for warn-or-refuse.
 
 Gemini CLI (#406) is pty/tmux-only; flag separately as "experimental,
 limited matrix coverage."
