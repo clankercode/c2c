@@ -1132,7 +1132,16 @@ let write_json_file_atomic (path : string) (json : Yojson.Safe.t) : unit =
   (try
      Fun.protect
        ~finally:(fun () -> try close_out oc with _ -> ())
-       (fun () -> Yojson.Safe.to_channel oc json)
+       (fun () ->
+          Yojson.Safe.to_channel oc json;
+          flush oc;
+          (* #603: fsync before rename ensures the temp file's data is flushed
+             to disk before the atomic-replace rename commits it, so readers
+             always see either old or new content, never partial.
+             Mirrors c2c_broker.ml's write_json_file pattern (#54).
+             Best-effort — EINVAL on unusual filesystems is silently ignored. *)
+          (try Unix.fsync (Unix.descr_of_out_channel oc)
+           with Unix.Unix_error _ -> ()))
    with e ->
      cleanup_tmp ();
      raise e);
