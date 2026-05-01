@@ -1226,7 +1226,33 @@ let mcp_config_rewriter_run ~legacy ~default ~dry_run ~print_line =
   print_line "--- mcp-config rewriter -----------------------------------";
   C2c_mcp_config_rewriter.run ~legacy ~default ~paths ~dry_run ~print_line
 
-let migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar ~rewrite_mcp_configs =
+let suggest_shell_export_run ~stale_broker_root ~canonical =
+  let stale = Option.value stale_broker_root ~default:"" in
+  let stale = String.trim stale in
+  if stale = "" then
+    Printf.printf "C2C_MCP_BROKER_ROOT is not set — no shell export needed.\n\
+                    The canonical broker root resolver is already active.\n"
+  else if stale = canonical then
+    Printf.printf "C2C_MCP_BROKER_ROOT is already set to the canonical path — no action needed.\n\
+                    Current value: %s\n"
+      stale
+  else begin
+    Printf.printf "C2C_MCP_BROKER_ROOT is pointing to a stale path:\n";
+    Printf.printf "  current:  %s\n" stale;
+    Printf.printf "  canonical: %s\n" canonical;
+    Printf.printf "\n\
+After running 'c2c migrate-broker', run this command to stop the warning:\n\
+\n\
+  unset C2C_MCP_BROKER_ROOT\n\
+\n\
+To find and remove the export from your shell config, try:\n\
+  grep -r 'C2C_MCP_BROKER_ROOT' ~/.bashrc ~/.bash_profile ~/.zshrc ~/.profile 2>/dev/null\n\
+\n\
+Canonical broker root: %s\n%!"
+      canonical
+  end
+
+let migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar ~rewrite_mcp_configs ~suggest_shell_export =
   let from = Option.value from_path ~default:(legacy_broker_root ()) in
   let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
   let do_rewrite ~print_line =
@@ -1236,6 +1262,15 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar ~rewrite
       in
       ()
   in
+  (* Standalone mode: --suggest-shell-export shows the operator what to put in
+     their shell config to stop the stale-broker-root warning, without running
+     any migration. Works even when no broker data exists. *)
+  if suggest_shell_export then begin
+    let stale = Sys.getenv_opt "C2C_MCP_BROKER_ROOT" in
+    let canonical = C2c_repo_fp.resolve_broker_root_canonical () in
+    suggest_shell_export_run ~stale_broker_root:stale ~canonical;
+    exit 0
+  end;
   (* Standalone mode: --rewrite-mcp-configs without a usable broker source.
      Run only the rewriter; skip broker-data migration. *)
   if rewrite_mcp_configs && not (Sys.file_exists from) then begin
@@ -1327,10 +1362,18 @@ let migrate_broker_cmd =
   let rewrite_mcp_configs =
     Arg.(value & flag & info ["rewrite-mcp-configs"]
            ~doc:"Also strip stale C2C_MCP_BROKER_ROOT env entries from \
-                 .mcp.json files (project root + .worktrees/*) when their \
-                 value matches the legacy path or the current resolver \
-                 default. Operator overrides are preserved (logged [KEEP]). \
+                 .mcp.json files (project root + $(b,.worktrees/*)) when their \
+                 value matches the legacy path or the current resolver default. \
+                 Operator overrides are preserved (logged [KEEP]). \
                  Compatible with --dry-run.")
+  in
+  let suggest_shell_export =
+    Arg.(value & flag & info ["suggest-shell-export"]
+           ~doc:"Print shell commands to permanently unset C2C_MCP_BROKER_ROOT \
+                 after migration, so the canonical resolver takes over and the \
+                 stale-broker-root warning stops appearing. Can be used alone \
+                 (without --from/--to) to check the current env-var state. \
+                 Does not perform any file operations.")
   in
   let json = json_flag in
   let+ from_path = from
@@ -1338,8 +1381,10 @@ let migrate_broker_cmd =
   and+ dry_run = dry_run
   and+ sync_sidecar = sync_sidecar
   and+ rewrite_mcp_configs = rewrite_mcp_configs
+  and+ suggest_shell_export = suggest_shell_export
   and+ json = json in
-  migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar ~rewrite_mcp_configs
+  migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar
+    ~rewrite_mcp_configs ~suggest_shell_export
 
 let migrate_broker =
   Cmdliner.Cmd.v
@@ -1374,7 +1419,14 @@ let migrate_broker =
                   either the legacy path or the current resolver default. \
                   Operator-overridden values are preserved with a $(b,[KEEP]) \
                   log line. Compatible with $(b,--dry-run). Default off."
-            ; `S "DRY-RUN OUTPUT LEGEND"
+             ; `S "SHELL EXPORT SUGGESTION (#581 S3)"
+             ; `P "After a migration, your shell may still have $(b,C2C_MCP_BROKER_ROOT) \
+                   pointing to the old (now-empty) path, causing 'stale broker root' \
+                   warnings on every $(b,c2c start). Run $(b,--suggest-shell-export) \
+                   to print the exact $(b,unset C2C_MCP_BROKER_ROOT) command and \
+                   grep commands to find the stale export in your shell config files. \
+                   Can be used standalone without --from/--to."
+             ; `S "DRY-RUN OUTPUT LEGEND"
             ; `P "$(b,[WILL COPY])             — entry is in the copy-set and will be \
                   written to the destination."
             ; `P "$(b,[WILL DENY])             — entry matches the deny-list and will \
