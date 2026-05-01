@@ -45,6 +45,58 @@ tool_call_id="$(printf '%s' "$payload" | jq -r '.tool_call_id // ""')"
 REVIEWER="${C2C_KIMI_APPROVAL_REVIEWER:-coordinator1}"
 TIMEOUT="${C2C_KIMI_APPROVAL_TIMEOUT:-120}"
 
+# --------------------------------------------------------------------------
+# Safe-pattern allowlist — exit 0 immediately without DM for read-only commands.
+# This runs BEFORE the authorizer chain, so safe commands cost nothing.
+# --------------------------------------------------------------------------
+is_safe_command() {
+  # Extract command string from tool_input
+  local cmd
+  cmd="$(printf '%s' "$payload" | jq -r '.tool_input.command // ""')"
+  [ -z "$cmd" ] && return 1
+
+  # Strip leading whitespace, extract first token
+  local first
+  first="$(printf '%s' "$cmd" | awk '{print $1}')"
+  [ -z "$first" ] && return 1
+
+  case "$first" in
+    cat|ls|pwd|head|tail|wc|file|stat|which|whereis|type|env|printenv|\
+echo|printf|true|false|test|\[)
+      return 0
+      ;;
+    grep|rg|ag|find|fd|tree|du|df|free|uptime|date|hostname|whoami|id|\
+ps|pgrep|pidof|lsof|jobs|history|column|sort|uniq|cut|paste|tr|sed|awk|\
+jq|yq|xq|tomlq)
+      # Pure-read or pure-text-transformer commands with no side effects
+      return 0
+      ;;
+    git)
+      # Only allow read-only git subcommands
+      local sub
+      sub="$(printf '%s' "$cmd" | awk '{print $2}')"
+      case "$sub" in
+        status|log|diff|show|branch|tag|remote|config|rev-parse|\
+rev-list|describe|blame|reflog|ls-files|ls-tree|stash|fetch|\
+shortlog|count|status|-h|--help)
+          return 0
+          ;;
+        *)  # push, pull, commit, reset, checkout, merge, rebase, etc. — require approval
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# If the command is safe, exit 0 immediately — no DM, no round-trip.
+if is_safe_command; then
+  exit 0
+fi
+
 # Mint a token: prefer kimi's tool_call_id (stable, unique per call); fall
 # back to a hash of the payload + a nanosecond-timestamp suffix.
 if [ -n "$tool_call_id" ]; then
