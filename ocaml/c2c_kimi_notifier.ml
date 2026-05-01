@@ -472,6 +472,9 @@ let start_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval=2.0) () =
       let pid = Unix.getpid () in
       let oc = open_out pidfile in
       Printf.fprintf oc "%d\n" pid; close_out oc;
+      let inbox_path = Filename.concat broker_root (session_id ^ ".inbox.json") in
+      Printf.printf "[kimi-notifier] starting alias=%s session_id=%s broker_root=%s inbox=%s\n%!"
+        alias session_id broker_root inbox_path;
       while true do
         (try
            let n = run_once ~broker_root ~alias ~session_id ~tmux_pane in
