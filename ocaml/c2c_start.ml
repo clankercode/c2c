@@ -3796,23 +3796,10 @@ let start_headless_thread_id_watcher ~(name : string) ~(path : string) : Thread.
  * PTY generic client
  * --------------------------------------------------------------------------- *)
 
-(* Write a message to the PTY master fd using bracketed paste mode.
-   content: the message text to inject *)
-let pty_inject ~(master_fd : Unix.file_descr) (content : string) : unit =
-  let oc = Unix.out_channel_of_descr master_fd in
-  (* Bracketed paste mode: ESC [ 200 ~ ... ESC [ 201 ~
-     Tells the terminal to treat the content as a paste, not typing *)
-  let esc = "\027" in  (* 0x1b = ESC, xterm C1 control *)  let paste_start = esc ^ "[200~" in
-  let paste_end = esc ^ "[201~" in
-  output_string oc paste_start;
-  output_string oc content;
-  output_string oc paste_end;
-  flush oc;
-  (* Brief delay to let the application process the paste before we send Enter *)
-  ignore (Unix.select [] [] [] 0.01);
-  (* Send Enter to submit *)
-  output_char oc '\n';
-  flush oc
+(* Reuses C2c_pty_inject.pty_inject from the shared c2c_pty_inject module.
+   Kept here for now so existing call sites in pty_deliver_loop don't break.
+   When all callers migrate to c2c_pty_inject.ml this alias can be removed. *)
+let pty_inject = C2c_pty_inject.pty_inject
 
 (* Parse -- separator from extra_args. Returns (cmd, argv) if found, or exits with error. *)
 let parse_pty_cmd_argv (extra_args : string list) : (string * string list) =
@@ -3833,7 +3820,8 @@ let parse_pty_cmd_argv (extra_args : string list) : (string * string list) =
   split_on_dashdash [] extra_args
 
 (* PTY deliver loop: polls broker inbox and writes messages to PTY master fd.
-   Exits when child_pid is no longer alive (child exited). *)
+   Exits when child_pid is no longer alive (child exited).
+   Uses C2c_pty_inject.pty_inject for the actual injection. *)
 let pty_deliver_loop ~(master_fd : Unix.file_descr) ~(broker_root : string)
     ~(session_id : string) ~(name : string) ~(child_pid : int) : unit =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
@@ -3841,7 +3829,7 @@ let pty_deliver_loop ~(master_fd : Unix.file_descr) ~(broker_root : string)
   while pid_alive child_pid do
     let messages = C2c_mcp.Broker.drain_inbox ~drained_by:"pty" broker ~session_id in
     List.iter (fun (msg : C2c_mcp.message) ->
-      pty_inject ~master_fd msg.content
+      C2c_pty_inject.pty_inject ~master_fd msg.content
     ) messages;
     ignore (Unix.select [] [] [] poll_interval)
   done

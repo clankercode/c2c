@@ -42,6 +42,7 @@ type cli_args = {
   timeout : float;
   dry_run : bool;
   json : bool;
+  pty_master_fd : int option;  (* S4: PTY master fd for PTY-based delivery *)
 }
 
 (* ---------------------------------------------------------------------------
@@ -160,66 +161,78 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
      flush stderr;
      exit 1);
   let session_id = Option.get session_id in
-  let iterations = ref 0 in
-  let total_delivered = ref 0 in
-  let max_iterations = args.max_iterations in
-  let is_kimi = args.client = "kimi" in
-  (* For kimi: notifier handles broker lifecycle internally.
-     For others: create broker once and reuse. *)
-  let broker =
-    if is_kimi then None
-    else Some (C2c_mcp.Broker.create ~root:args.broker_root)
-  in
-  let rec loop () =
-    match max_iterations with
-    | Some m when !iterations >= m ->
-      Printf.printf "[c2c-deliver-inbox] max iterations (%d) reached, stopping\n%!" m;
-      flush stdout
-    | _ ->
-      incr iterations;
-      let delivered =
-        if is_kimi then
-          poll_once_kimi ~broker_root:args.broker_root ~session_id
-        else
-          let messages = poll_once_generic
-            ~broker:(Option.get broker)
-            ~session_id
-          in
-          (* #562: log drain event *)
-          C2c_deliver_inbox_log.log_drain
-            ~broker_root:args.broker_root
-            ~session_id
-            ~client:args.client
-            ~count:(List.length messages)
-            ~drained_by_pid:(Unix.getpid ());
-          List.iter
-            (fun (m : C2c_mcp.message) ->
-               Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
-                 m.from_alias
-                 (String.sub m.content 0 (min (String.length m.content) 80)))
-            messages;
-          List.length messages
+  (* S4: if a PTY master fd was provided, use PTY delivery *)
+  match args.pty_master_fd with
+  | Some fd ->
+      let master_fd : Unix.file_descr = Obj.magic fd in
+      C2c_pty_inject.pty_deliver_loop_daemon
+        ~master_fd
+        ~broker_root:args.broker_root
+        ~session_id
+        ~watched_pid
+        ~poll_interval:args.interval
+        ~max_iterations:args.max_iterations
+  | None ->
+      let iterations = ref 0 in
+      let total_delivered = ref 0 in
+      let max_iterations = args.max_iterations in
+      let is_kimi = args.client = "kimi" in
+      (* For kimi: notifier handles broker lifecycle internally.
+         For others: create broker once and reuse. *)
+      let broker =
+        if is_kimi then None
+        else Some (C2c_mcp.Broker.create ~root:args.broker_root)
       in
-      total_delivered := !total_delivered + delivered;
-      (if delivered > 0 then
-         Printf.printf "[c2c-deliver-inbox] iteration %d: delivered %d message(s)\n%!"
-           !iterations delivered
-       else
-         Printf.printf "[c2c-deliver-inbox] iteration %d: no messages\n%!" !iterations);
-      flush stdout;
-      (match watched_pid with
-       | Some wp when not (pid_is_alive wp) ->
-         Printf.printf "[c2c-deliver-inbox] watched pid %d exited, stopping\n%!" wp;
-         flush stdout;
-         ()
-       | _ ->
-         Unix.sleepf args.interval;
-         loop ())
-  in
-  loop ();
-  Printf.printf "[c2c-deliver-inbox] loop finished after %d iterations, %d total delivered\n%!"
-    !iterations !total_delivered;
-  flush stdout
+      let rec loop () =
+        match max_iterations with
+        | Some m when !iterations >= m ->
+          Printf.printf "[c2c-deliver-inbox] max iterations (%d) reached, stopping\n%!" m;
+          flush stdout
+        | _ ->
+          incr iterations;
+          let delivered =
+            if is_kimi then
+              poll_once_kimi ~broker_root:args.broker_root ~session_id
+            else
+              let messages = poll_once_generic
+                ~broker:(Option.get broker)
+                ~session_id
+              in
+              (* #562: log drain event *)
+              C2c_deliver_inbox_log.log_drain
+                ~broker_root:args.broker_root
+                ~session_id
+                ~client:args.client
+                ~count:(List.length messages)
+                ~drained_by_pid:(Unix.getpid ());
+              List.iter
+                (fun (m : C2c_mcp.message) ->
+                   Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
+                     m.from_alias
+                     (String.sub m.content 0 (min (String.length m.content) 80)))
+                messages;
+              List.length messages
+          in
+          total_delivered := !total_delivered + delivered;
+          (if delivered > 0 then
+             Printf.printf "[c2c-deliver-inbox] iteration %d: delivered %d message(s)\n%!"
+               !iterations delivered
+           else
+             Printf.printf "[c2c-deliver-inbox] iteration %d: no messages\n%!" !iterations);
+          flush stdout;
+          (match watched_pid with
+           | Some wp when not (pid_is_alive wp) ->
+             Printf.printf "[c2c-deliver-inbox] watched pid %d exited, stopping\n%!" wp;
+             flush stdout;
+             ()
+           | _ ->
+             Unix.sleepf args.interval;
+             loop ())
+      in
+      loop ();
+      Printf.printf "[c2c-deliver-inbox] loop finished after %d iterations, %d total delivered\n%!"
+        !iterations !total_delivered;
+      flush stdout
 
 (* ---------------------------------------------------------------------------
  * CLI argument parsing
@@ -248,6 +261,7 @@ let parse_args () : cli_args =
   let timeout = ref 5.0 in
   let dry_run = ref false in
   let json = ref false in
+  let pty_master_fd = ref None in
 
   let speclist = [
     ("--session-id", Arg.String (fun s -> session_id := Some s),
@@ -292,6 +306,8 @@ let parse_args () : cli_args =
      " terminal/process pid (same as --pid)");
     ("--pts", Arg.String (fun s -> pts := Some s),
      " pts device (required with --terminal-pid)");
+    ("--pty-master-fd", Arg.Int (fun i -> pty_master_fd := Some i),
+     " PTY master fd for PTY-based delivery (S4)");
   ] in
   let anon _ = () in
   Arg.parse speclist anon "c2c-deliver-inbox [options]";
@@ -323,6 +339,7 @@ let parse_args () : cli_args =
     timeout = !timeout;
     dry_run = !dry_run;
     json = !json;
+    pty_master_fd = !pty_master_fd;
   }
 
 (* ---------------------------------------------------------------------------

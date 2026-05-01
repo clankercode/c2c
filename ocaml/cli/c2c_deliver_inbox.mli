@@ -24,6 +24,7 @@ type cli_args = {
   timeout : float;
   dry_run : bool;
   json : bool;
+  pty_master_fd : int option;  (* S4: PTY master fd for PTY-based delivery *)
 }
 
 (* PID file helpers — also used by c2c_start.ml for consistency *)
