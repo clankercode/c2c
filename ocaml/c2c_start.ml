@@ -5317,12 +5317,26 @@ let build_start_argv ~(cfg : instance_config) : string array =
   argv := !argv @ cfg.extra_args;
   Array.of_list !argv
 
+(** [filter_env_for_restart ()] returns a copy of the current environment
+    with [C2C_INSTANCE_NAME] stripped. Used by [cmd_restart] to prevent the
+    re-launched [c2c start] from hitting the "cannot run from inside a c2c
+    session" guard (c2c.ml:8499). *)
+let filter_env_for_restart () =
+  let key = "C2C_INSTANCE_NAME" in
+  let env_key e = try String.sub e 0 (String.index e '=') with Not_found -> e in
+  Unix.environment () |> Array.to_list
+  |> List.filter (fun e -> env_key e <> key)
+  |> Array.of_list
+
 let cmd_restart ?(session_id_override : string option)
     ?(do_exec : (string array -> unit) option)
     (name : string) ~(timeout_s : float) : int =
+  (* Strip C2C_INSTANCE_NAME so the re-launched c2c start doesn't hit the
+     "cannot run c2c start from inside a c2c session" guard (c2c.ml:8499).
+     Use execve + filtered env rather than execvp to control inheritance. *)
   let do_exec = match do_exec with
     | Some f -> f
-    | None -> fun argv -> Unix.execvp argv.(0) argv
+    | None -> fun argv -> Unix.execve argv.(0) argv (filter_env_for_restart ())
   in
   let cfg = match load_config_opt name with
     | None ->

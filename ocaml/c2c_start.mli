@@ -658,6 +658,12 @@ val cmd_start :
     1 on error. Handles duplicate-running checks, config inheritance, and
     stable session ID generation. *)
 
+val filter_env_for_restart : unit -> string array
+(** [filter_env_for_restart ()] returns a copy of the current process environment
+    with [C2C_INSTANCE_NAME] stripped. Prevents the re-launched [c2c start]
+    from seeing the parent's session and hitting the "cannot run from inside a
+    c2c session" guard (c2c.ml:8499). *)
+
 val cmd_stop : string -> int
 (** [cmd_stop name] stops a running instance. Returns 0. *)
 
@@ -669,8 +675,8 @@ val cmd_restart :
     [timeout_s] is how long to wait for the outer process to exit before
     spawning the new start (default 5s). When [session_id_override] is provided,
     it becomes the persisted exact resume target for clients that support it.
-    [do_exec] defaults to [Unix.execvp argv.(0) argv]; tests pass a no-op stub
-    to drive the function without replacing the test process.
+    [do_exec] defaults to [Unix.execve argv.(0) argv (filter_env_for_restart ())];
+    tests pass a no-op stub to drive the function without replacing the test process.
     Returns exit code. *)
 
 val cmd_reset_thread :

@@ -3677,8 +3677,38 @@ let () =
            test_coord_broadcast_room_default)
         ; ("coord_broadcast_room_override", `Quick,
            test_coord_broadcast_room_override)
-        ; ("coord_broadcast_room_empty_disables", `Quick,
-           test_coord_broadcast_room_empty_disables)
+         ; ("coord_broadcast_room_empty_disables", `Quick,
+            test_coord_broadcast_room_empty_disables)
+         ] )
+    ; ( "filter_env_for_restart_598",
+        [ ( "strips_C2C_INSTANCE_NAME",
+            `Quick,
+            (fun () ->
+              (* Seed C2C_INSTANCE_NAME, verify it is absent from filtered output. *)
+              let test_key = "C2C_INSTANCE_NAME" in
+              let test_val = "jungle-test-session" in
+              Unix.putenv test_key test_val;
+              Fun.protect ~finally:(fun () -> Unix.putenv test_key "") (fun () ->
+                let filtered = C2c_start.filter_env_for_restart () in
+                Alcotest.(check bool)
+                  "C2C_INSTANCE_NAME absent from filtered env" false
+                  (env_has_key filtered test_key)
+              )
+          ) )
+        ; ( "passes_through_other_vars",
+            `Quick,
+            (fun () ->
+              (* Set another C2C_* var, verify it survives the filter. *)
+              let test_key = "C2C_MCP_SESSION_ID" in
+              let test_val = "other-session-123" in
+              Unix.putenv test_key test_val;
+              Fun.protect ~finally:(fun () -> Unix.putenv test_key "") (fun () ->
+                let filtered = C2c_start.filter_env_for_restart () in
+                Alcotest.(check bool)
+                  "other C2C_MCP_SESSION_ID passes through" true
+                  (env_has_key filtered test_key)
+              )
+          ) )
         ] )
     ; ( "get_tmux_location",
         [ ( "get_tmux_location_exits_nonzero_when_not_in_tmux",
