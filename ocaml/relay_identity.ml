@@ -184,13 +184,11 @@ let of_json (j : Yojson.Safe.t) =
       }
   | _ -> Error "identity json: expected object"
 
-let mkdir_p_mode path mode = C2c_io.mkdir_p ~mode path
-
 let save ?path t =
   let path = match path with Some p -> p | None -> default_path () in
   try
     let dir = Filename.dirname path in
-    mkdir_p_mode dir 0o700;
+    C2c_io.mkdir_p ~mode:0o700 dir;
     (* Ensure parent dir tightens to 0700 even if it pre-existed with
        looser perms. *)
     (try Unix.chmod dir 0o700 with Unix.Unix_error _ -> ());

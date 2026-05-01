@@ -106,12 +106,10 @@ let of_json (j : Yojson.Safe.t) =
         Ok { version; alg; public_key; private_key_seed; created_at; alias_hint }
   | _ -> Error "enc identity json: expected object"
 
-let mkdir_p_mode path mode = C2c_io.mkdir_p ~mode path
-
 let save ~path t =
   try
     let dir = Filename.dirname path in
-    mkdir_p_mode dir 0o700;
+    C2c_io.mkdir_p ~mode:0o700 dir;
     (try Unix.chmod dir 0o700 with Unix.Unix_error _ -> ());
     let tmp = path ^ ".tmp" in
     let fd =
