@@ -445,6 +445,69 @@ let test_mixed_messages_approval_verdict_kept () =
        Alcotest.(check bool) "ka_ verdict still present" true
          (List.exists (fun c -> contains c "ka_call_99") contents))
 
+(* ─── Idle-detection tests (#590) ─────────────────────────────────────────── *)
+
+let with_tmpdir f =
+  let tmp = Filename.temp_file "kimi-notifier-test-" "" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      let rec rmrf p =
+        match (Unix.lstat p).Unix.st_kind with
+        | Unix.S_DIR ->
+          Array.iter (fun e -> rmrf (Filename.concat p e)) (Sys.readdir p);
+          Unix.rmdir p
+        | _ -> Unix.unlink p
+        | exception _ -> ()
+      in
+      rmrf tmp)
+    (fun () -> f tmp)
+
+let touch_file path =
+  let oc = open_out path in
+  close_out oc
+
+let set_mtime path t =
+  Unix.utimes path t t
+
+let test_kimi_session_is_idle_no_wire () =
+  with_tmpdir (fun dir ->
+    let now = Unix.gettimeofday () in
+    Alcotest.(check bool) "no wire.jsonl → idle" true
+      (C2c_kimi_notifier.kimi_session_is_idle ~session_dir:dir ~now ~threshold_s:2.0))
+
+let test_kimi_session_is_idle_fresh_mtime () =
+  with_tmpdir (fun dir ->
+    let wire = Filename.concat dir "wire.jsonl" in
+    touch_file wire;
+    let now = Unix.gettimeofday () in
+    set_mtime wire now;  (* now → busy *)
+    Alcotest.(check bool) "fresh mtime → busy" false
+      (C2c_kimi_notifier.kimi_session_is_idle ~session_dir:dir ~now ~threshold_s:2.0))
+
+let test_kimi_session_is_idle_stale_mtime () =
+  with_tmpdir (fun dir ->
+    let wire = Filename.concat dir "wire.jsonl" in
+    touch_file wire;
+    let now = Unix.gettimeofday () in
+    set_mtime wire (now -. 10.0);  (* 10s ago → idle *)
+    Alcotest.(check bool) "stale mtime → idle" true
+      (C2c_kimi_notifier.kimi_session_is_idle ~session_dir:dir ~now ~threshold_s:2.0))
+
+let test_kimi_session_is_idle_threshold_boundary () =
+  with_tmpdir (fun dir ->
+    let wire = Filename.concat dir "wire.jsonl" in
+    touch_file wire;
+    let now = Unix.gettimeofday () in
+    (* Strictly greater than threshold ⇒ idle. Equal-or-less ⇒ busy. *)
+    set_mtime wire (now -. 1.5);
+    Alcotest.(check bool) "1.5s ago < 2s threshold → busy" false
+      (C2c_kimi_notifier.kimi_session_is_idle ~session_dir:dir ~now ~threshold_s:2.0);
+    set_mtime wire (now -. 3.0);
+    Alcotest.(check bool) "3s ago > 2s threshold → idle" true
+      (C2c_kimi_notifier.kimi_session_is_idle ~session_dir:dir ~now ~threshold_s:2.0))
+
 let () =
   Alcotest.run "c2c_kimi_notifier"
     [ "notification_id",
@@ -472,6 +535,12 @@ let () =
       ; Alcotest.test_case "includes system events" `Quick test_write_chat_log_includes_system_events
       ; Alcotest.test_case "multiline body indented" `Quick test_write_chat_log_multiline_body
       ; Alcotest.test_case "appends multiple entries" `Quick test_write_chat_log_appends
+      ]
+    ; "idle_detection_590",
+      [ Alcotest.test_case "no wire.jsonl → idle" `Quick test_kimi_session_is_idle_no_wire
+      ; Alcotest.test_case "fresh mtime → busy" `Quick test_kimi_session_is_idle_fresh_mtime
+      ; Alcotest.test_case "stale mtime → idle" `Quick test_kimi_session_is_idle_stale_mtime
+      ; Alcotest.test_case "threshold boundary" `Quick test_kimi_session_is_idle_threshold_boundary
       ]
     ; "await_reply_race_484",
       [ Alcotest.test_case "approval verdict kept in inbox" `Quick test_approval_verdict_kept_in_inbox_after_run_once

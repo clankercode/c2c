@@ -266,20 +266,77 @@ let tmux_capture_tail ~pane =
         Buffer.contents buf)
   with _ -> ""
 
-(* Heuristic: kimi at idle shows the "── input ──" divider + an empty input
-   area + status line, NO "Thinking..." spinner, NO "Tool:" indicator.
-   When the regex doesn't match cleanly we ASSUME idle (per coord
-   guidance — better to fire one extra wake than to silently miss). *)
-let tmux_pane_is_idle ~pane =
+(* Statefile-based idle detection (#590).
+   Kimi-cli writes <session_dir>/wire.jsonl on every TurnBegin/Step/Tool/Done
+   event. If the mtime is older than threshold_s, the agent loop is quiescent.
+   Falls "idle" when no wire file exists yet (fresh session, never busy). *)
+let kimi_session_is_idle ~session_dir ~now ~threshold_s =
+  let wire = Filename.concat session_dir "wire.jsonl" in
+  match (try Some (Unix.stat wire).Unix.st_mtime with _ -> None) with
+  | None -> true  (* no wire file → not actively writing → idle *)
+  | Some mtime -> now -. mtime > threshold_s
+
+(* Detect whether our previous wake-text is still sitting in the input box,
+   not yet submitted. If so, firing another wake just stacks more text on
+   top — visible footgun lumi-test/tyyni-test hit 2026-05-01.
+   Greps for "[c2c] check inbox" in the bottom 4 lines of the captured pane
+   tail (where the kimi input box lives, after the "── input ──" divider). *)
+let tmux_pane_has_pending_wake ~pane =
   let tail = tmux_capture_tail ~pane in
-  if tail = "" then true  (* no info → assume idle, send wake *)
+  if tail = "" then false
   else
-    let busy_markers = [ "Thinking"; "Tool:"; "elapsed_steps="; "permission" ] in
-    not (List.exists
-           (fun marker ->
-             try ignore (Str.search_forward (Str.regexp_string marker) tail 0); true
-             with Not_found -> false)
-           busy_markers)
+    (* Pull the bottom 4 lines (input-box region) out of the captured tail. *)
+    let lines = String.split_on_char '\n' tail in
+    let n = List.length lines in
+    let bottom =
+      if n <= 4 then lines
+      else
+        let rec drop k = function
+          | _ :: rest when k > 0 -> drop (k - 1) rest
+          | xs -> xs
+        in
+        drop (n - 4) lines
+    in
+    let region = String.concat "\n" bottom in
+    try ignore (Str.search_forward (Str.regexp_string "[c2c] check inbox") region 0); true
+    with Not_found -> false
+
+(* Combined idle check: (a) busy-marker absence on the captured tail,
+   (b) wire.jsonl mtime older than threshold (default 2s), and
+   (c) no pending [c2c] check inbox text already in the input box.
+   All three must pass to fire a wake. Logs skip reasons to stderr so
+   notifier.log shows when wakes were correctly suppressed.
+   Falls "idle" if no session_dir is supplied (no statefile to consult)
+   and falls back to the legacy busy-marker heuristic. *)
+let tmux_pane_is_idle ~pane ?session_dir ?(now = Unix.gettimeofday ()) () =
+  let tail = tmux_capture_tail ~pane in
+  let busy_markers = [ "Thinking"; "Tool:"; "elapsed_steps="; "permission" ] in
+  let busy_marker_present =
+    if tail = "" then false
+    else
+      List.exists
+        (fun marker ->
+          try ignore (Str.search_forward (Str.regexp_string marker) tail 0); true
+          with Not_found -> false)
+        busy_markers
+  in
+  if busy_marker_present then begin
+    Printf.eprintf "[kimi-notifier] skipping wake — busy marker on tail\n%!";
+    false
+  end else if tmux_pane_has_pending_wake ~pane then begin
+    Printf.eprintf
+      "[kimi-notifier] skipping wake — prior [c2c] check inbox still in input box\n%!";
+    false
+  end else
+    match session_dir with
+    | None -> true  (* no statefile → trust the marker check *)
+    | Some sd ->
+      if kimi_session_is_idle ~session_dir:sd ~now ~threshold_s:2.0 then true
+      else begin
+        Printf.eprintf
+          "[kimi-notifier] skipping wake — wire.jsonl mtime < 2s ago (busy)\n%!";
+        false
+      end
 
 let tmux_wake ~pane =
   let cmd = Printf.sprintf
@@ -422,7 +479,8 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
     (* Wake pane if idle and something was delivered. *)
     (match tmux_pane with
      | Some pane when session_dir_opt <> None && n > 0 ->
-       if tmux_pane_is_idle ~pane then tmux_wake ~pane
+       if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
+         tmux_wake ~pane
      | _ -> ());
     n
 

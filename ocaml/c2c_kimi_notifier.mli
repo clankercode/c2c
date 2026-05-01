@@ -113,6 +113,43 @@ val write_notification :
   body:string ->
   unit
 
+(** [kimi_session_is_idle ~session_dir ~now ~threshold_s] returns [true]
+    iff [<session_dir>/wire.jsonl] is missing OR its mtime is older than
+    [threshold_s] seconds before [now]. kimi-cli appends to wire.jsonl on
+    every TurnBegin / Step / Tool / Done event, so a fresh mtime is a
+    reliable signal that the agent loop is mid-step. Default threshold in
+    callers is 2s. Replaces tmux-scrape heuristic for the busy-vs-idle
+    decision. See #590. *)
+val kimi_session_is_idle :
+  session_dir:string ->
+  now:float ->
+  threshold_s:float ->
+  bool
+
+(** [tmux_pane_has_pending_wake ~pane] captures the bottom of the pane
+    and returns [true] if the literal text ["[c2c] check inbox"] is
+    present in the input-box region (last 4 lines of the captured tail).
+    When [true], the previous wake's typed text is still sitting unsent
+    in kimi's input box; firing another wake would just stack more text
+    on top. Used by [tmux_pane_is_idle] to suppress duplicate wakes. *)
+val tmux_pane_has_pending_wake : pane:string -> bool
+
+(** [tmux_pane_is_idle ~pane ?session_dir ?now ()] returns [true] iff the
+    pane is safe to wake. Three guards (all must pass):
+    - no busy-marker (Thinking / Tool: / elapsed_steps= / permission)
+      visible in the captured pane tail,
+    - no prior ["[c2c] check inbox"] wake-text still pending in the
+      input box,
+    - if [session_dir] is supplied, [wire.jsonl] mtime older than 2s.
+    Defaults [now] to [Unix.gettimeofday ()]. Logs skip reasons to
+    stderr so notifier.log shows when wakes were correctly suppressed. *)
+val tmux_pane_is_idle :
+  pane:string ->
+  ?session_dir:string ->
+  ?now:float ->
+  unit ->
+  bool
+
 (** [notification_id_for_msg ~from_alias ~ts ~content] returns a
     deterministic 12-char id (lowercase hex) that maps the same broker
     message to the same notification id across c2c retries — so the kimi
