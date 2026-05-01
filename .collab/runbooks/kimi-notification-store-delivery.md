@@ -217,6 +217,59 @@ the strings concatenate. Mitigation in v1: rare in practice (agent
 panes are de-facto agent-owned). v2 may add a "wait for empty input"
 gate — track in todo-ideas.txt.
 
+### Recovery: notifier stuck on stale broker_root env
+
+**Symptom**
+
+- Notifier log at `~/.local/share/c2c/kimi-notifiers/<alias>.log` is empty or shows no deliveries.
+- Kimi pane appears idle; DMs sent to the alias never surface as toasts or agent-turn injections.
+- DMs are visible in the canonical broker inbox (check with `mcp__c2c__peek_inbox` or `c2c inbox <alias>`) but are not being drained.
+
+**Diagnosis**
+
+The notifier process may be polling a stale broker root because `C2C_MCP_BROKER_ROOT` was set to a legacy path (e.g. `.git/c2c/mcp/`) before the canonical default (`$HOME/.c2c/repos/<fp>/broker`) took effect. The notifier was likely launched from a shell that inherited the stale env.
+
+Verify by inspecting the notifier's environment:
+
+```bash
+# Find the notifier pid
+cat ~/.local/share/c2c/kimi-notifiers/<alias>.pid
+# Or: pgrep -af "kimi-notifier.*<alias>"
+
+# Check the broker root it is using
+xargs -0 -n1 < /proc/<notifier-pid>/environ | grep C2C_MCP_BROKER_ROOT
+```
+
+If the path points to a non-canonical or non-existent broker directory, the notifier is polling into the void.
+
+**Recovery sequence**
+
+1. **Unset the stale env** in your current shell:
+   ```bash
+   unset C2C_MCP_BROKER_ROOT
+   ```
+2. **Stop the orphaned session**:
+   ```bash
+   c2c stop <alias>
+   ```
+   This SIGTERMs both the kimi TUI and the stale notifier.
+3. **Restart from a clean shell**:
+   ```bash
+   c2c start kimi -n <alias>
+   ```
+   The new notifier inherits the canonical broker root and resumes draining.
+4. **Verify**: send a test DM to the alias and confirm it surfaces within ~3 seconds.
+
+**Prevention**
+
+Three mitigations shipped in #581 reduce the likelihood of future stale-env orphans:
+
+- **S1** (`16b50044`) — `c2c start` warns + clears env when `C2C_MCP_BROKER_ROOT` points to a non-canonical path, so child daemons inherit the canonical default.
+- **S2** (`e4eee870`) — `c2c-kimi-notif` logs a startup banner with alias/session_id/broker_root/inbox path; 0-byte log files for live daemons are now impossible.
+- **S3** (`3b528406`) — `c2c migrate-broker --suggest-shell-export` prints the `unset C2C_MCP_BROKER_ROOT` line + `grep` helpers operators can run against their shell rc files to clean up stale exports.
+
+Root-cause finding: `36e9dfd7` (stale env propagation into c2c-kimi-notif during bring-up).
+
 ## Implementation pointers
 
 - Module: `ocaml/c2c_kimi_notifier.ml` + `.mli`
