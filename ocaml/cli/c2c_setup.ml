@@ -1135,9 +1135,15 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path =
         ; ("alias", `String alias_val)
         ; ("broker_root", `String root)
         ; ("config", `String config_path)
+        ; ("deprecated", `Bool true)
         ])
   | Human ->
-      Printf.printf "Configured Crush for c2c (experimental).\n";
+      let use_color = Unix.isatty Unix.stderr in
+      let yellow = if use_color then "\027[1;33m" else "" in
+      let reset = if use_color then "\027[0m" else "" in
+      Printf.eprintf "%s[DEPRECATED]%s Crush is no longer a first-class c2c client.\n%!" yellow reset;
+      Printf.eprintf "  `c2c start crush` refuses (exit 1). For new agents use: claude | codex | opencode | kimi\n%!";
+      Printf.printf "Configured Crush for c2c (still writes config as requested).\n";
       Printf.printf "  alias:       %s\n" alias_val;
       Printf.printf "  broker root: %s\n" root;
       Printf.printf "  config:      %s\n" config_path;
