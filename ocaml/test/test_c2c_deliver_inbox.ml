@@ -63,28 +63,6 @@ let already_running_true () =
       C2c_deliver_inbox.write_pidfile tmp (Unix.getpid ());
       check (C2c_deliver_inbox.already_running tmp) "expected true for our own pid")
 
-let effective_submit_delay_none () =
-  match C2c_deliver_inbox.effective_submit_delay ~client:"generic" ~submit_delay:None with
-  | None -> ()
-  | Some _ -> Alcotest.fail "expected None for generic client"
-
-let effective_submit_delay_some () =
-  match C2c_deliver_inbox.effective_submit_delay ~client:"generic" ~submit_delay:(Some 2.5) with
-  | Some 2.5 -> ()
-  | None -> Alcotest.fail "expected Some 2.5"
-  | Some _ -> Alcotest.fail "expected 2.5"
-
-let effective_submit_delay_kimi_default () =
-  match C2c_deliver_inbox.effective_submit_delay ~client:"kimi" ~submit_delay:None with
-  | Some 1.5 -> ()
-  | None -> Alcotest.fail "expected Some 1.5 for kimi"
-  | Some _ -> Alcotest.fail "expected 1.5 for kimi"
-
-let effective_submit_delay_kimi_override () =
-  match C2c_deliver_inbox.effective_submit_delay ~client:"kimi" ~submit_delay:(Some 3.0) with
-  | Some 3.0 -> ()
-  | _ -> Alcotest.fail "expected override value 3.0 for kimi"
-
 let run_loop_max_iterations () =
   let args = {
     C2c_deliver_inbox.
@@ -108,7 +86,6 @@ let run_loop_max_iterations () =
     response_fifo = None;
     file_fallback = false;
     timeout = 5.0;
-    submit_delay = None;
     dry_run = false;
     json = false;
   } in
@@ -138,7 +115,6 @@ let run_loop_watched_pid_exit () =
     response_fifo = None;
     file_fallback = false;
     timeout = 5.0;
-    submit_delay = None;
     dry_run = false;
     json = false;
   } in
@@ -156,10 +132,6 @@ let suite = [
   "already_running false (no file)", `Quick, already_running_false_no_file;
   "already_running false (dead pid)", `Quick, already_running_false_dead_pid;
   "already_running true", `Quick, already_running_true;
-  "effective_submit_delay none", `Quick, effective_submit_delay_none;
-  "effective_submit_delay some", `Quick, effective_submit_delay_some;
-  "effective_submit_delay kimi default", `Quick, effective_submit_delay_kimi_default;
-  "effective_submit_delay kimi override", `Quick, effective_submit_delay_kimi_override;
   "run_loop max_iterations", `Quick, run_loop_max_iterations;
   "run_loop watched_pid exit", `Quick, run_loop_watched_pid_exit;
 ]

@@ -22,7 +22,6 @@ type cli_args = {
   response_fifo : string option;
   file_fallback : bool;
   timeout : float;
-  submit_delay : float option;
   dry_run : bool;
   json : bool;
 }
@@ -32,12 +31,6 @@ val write_pidfile : string -> int -> unit
 val read_pidfile : string -> int option
 val pid_is_alive : int -> bool
 val already_running : string -> bool
-
-val effective_submit_delay : client:string -> submit_delay:float option -> float option
-(** [effective_submit_delay ~client ~submit_delay] returns the submit delay:
-    - explicit [submit_delay] if provided
-    - 1.5s for "kimi" client
-    - [None] for all other clients *)
 
 val run_loop : args:cli_args -> watched_pid:int option -> unit
 (** [run_loop ~args ~watched_pid] runs the delivery loop.

@@ -40,7 +40,6 @@ type cli_args = {
   response_fifo : string option;
   file_fallback : bool;
   timeout : float;
-  submit_delay : float option;
   dry_run : bool;
   json : bool;
 }
@@ -124,17 +123,6 @@ let start_daemon
              wait ()
        in
        wait ())
-
-(* ---------------------------------------------------------------------------
- * Effective submit delay (mirrors Python deliver-inbox)
- * --------------------------------------------------------------------------- *)
-
-let effective_submit_delay ~(client : string) ~(submit_delay : float option) : float option =
-  match submit_delay with
-  | Some d -> Some d
-  | None ->
-    if client = "kimi" then Some 1.5
-    else None
 
 (* ---------------------------------------------------------------------------
  * Inbox polling + delivery via c2c_mcp library
@@ -258,7 +246,6 @@ let parse_args () : cli_args =
   let response_fifo = ref None in
   let file_fallback = ref false in
   let timeout = ref 5.0 in
-  let submit_delay = ref None in
   let dry_run = ref false in
   let json = ref false in
 
@@ -296,8 +283,6 @@ let parse_args () : cli_args =
      " use file-based broker when Unix socket unavailable");
     ("--timeout", Arg.Set_float timeout,
      " timeout for inbox drain operations (default 5s)");
-    ("--submit-delay", Arg.Float (fun d -> submit_delay := Some d),
-     " override delay between bracketed paste and Enter");
     ("--dry-run", Arg.Set dry_run,
      " peek and render without draining or injecting");
     ("--json", Arg.Set json, " output JSON");
@@ -336,7 +321,6 @@ let parse_args () : cli_args =
     response_fifo = !response_fifo;
     file_fallback = !file_fallback;
     timeout = !timeout;
-    submit_delay = !submit_delay;
     dry_run = !dry_run;
     json = !json;
   }
