@@ -77,7 +77,7 @@ jq|yq|xq|tomlq)
       sub="$(printf '%s' "$cmd" | awk '{print $2}')"
       case "$sub" in
         status|log|diff|show|branch|tag|remote|config|rev-parse|\
-rev-list|describe|blame|reflog|ls-files|ls-tree|stash|fetch|\
+rev-list|describe|blame|reflog|ls-files|ls-tree|fetch|\
 shortlog|count|status|-h|--help)
           return 0
           ;;
