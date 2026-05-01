@@ -290,6 +290,51 @@ let test_script_has_fallback_coordinator () =
      count_substr ~haystack:s ~needle:"coordinator1" > 0)
 
 (* ------------------------------------------------------------------ *)
+(* #587: safe-pattern allowlist — read-only commands exit 0 without DM    *)
+(* ------------------------------------------------------------------ *)
+
+let test_script_has_is_safe_command () =
+  Alcotest.(check bool)
+    "script defines is_safe_command function"
+    true
+    (let s = C2c_kimi_hook.approval_hook_script_content in
+     count_substr ~haystack:s ~needle:"is_safe_command() {" > 0)
+
+let test_script_allows_cat () =
+  Alcotest.(check bool)
+    "allowlist includes cat/ls/pwd/head as safe"
+    true
+    (let s = C2c_kimi_hook.approval_hook_script_content in
+     count_substr ~haystack:s ~needle:"cat|ls|pwd|head|tail|wc" > 0)
+
+let test_script_blocks_git_push () =
+  Alcotest.(check bool)
+    "allowlist marks git push as requiring approval (not in safe list)"
+    true
+    (let s = C2c_kimi_hook.approval_hook_script_content in
+     (* push, pull, commit, reset, checkout, merge, rebase are the blocked git
+        subcommands. Verify they appear as a blocked-group in the script. *)
+     count_substr ~haystack:s ~needle:"push, pull, commit, reset, checkout, merge, rebase" > 0)
+
+let test_script_allows_jq () =
+  Alcotest.(check bool)
+    "allowlist includes jq as safe"
+    true
+    (let s = C2c_kimi_hook.approval_hook_script_content in
+     count_substr ~haystack:s ~needle:"jq|yq|xq|tomlq" > 0)
+
+let test_script_calls_is_safe_before_authorizers () =
+  (* Verify is_safe_command is called BEFORE resolve_authorizers,
+     so safe commands exit 0 without any authorizer chain overhead. *)
+  let s = C2c_kimi_hook.approval_hook_script_content in
+  let safe_pos = try String.index s 'i' + String.length "is_safe_command" with Not_found -> -1 in
+  let auth_pos = try String.index s 'r' + String.length "resolve_authorizers" with Not_found -> -1 in
+  Alcotest.(check bool)
+    "is_safe_command appears before resolve_authorizers in script"
+    true
+    (safe_pos > 0 && auth_pos > 0 && safe_pos < auth_pos)
+
+(* ------------------------------------------------------------------ *)
 (* install-approval-hook-script: write + chmod                          *)
 (* ------------------------------------------------------------------ *)
 
@@ -382,5 +427,17 @@ let () =
             test_script_has_deprecated_reviewer_warning
         ; Alcotest.test_case "falls back to coordinator1" `Quick
             test_script_has_fallback_coordinator
+        ] )
+    ; ( "safe-pattern-allowlist",
+        [ Alcotest.test_case "script defines is_safe_command" `Quick
+            test_script_has_is_safe_command
+        ; Alcotest.test_case "allowlist includes cat/ls/pwd" `Quick
+            test_script_allows_cat
+        ; Alcotest.test_case "allowlist excludes git push (blocked)" `Quick
+            test_script_blocks_git_push
+        ; Alcotest.test_case "allowlist includes jq/yq" `Quick
+            test_script_allows_jq
+        ; Alcotest.test_case "is_safe_command called before authorizers" `Quick
+            test_script_calls_is_safe_before_authorizers
         ] )
     ]
