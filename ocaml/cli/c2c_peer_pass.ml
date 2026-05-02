@@ -60,6 +60,10 @@ let resolve_identity () =
     and compare its local-part to [reviewer]. If any author surface
     matches, treat as author and block self-PASS. *)
 let reviewer_is_author ~reviewer ~sha =
+  (* Reset the circuit breaker before our 3 git spawns (author_email,
+     author_name, co_author_emails) so prior git activity in the same
+     process doesn't trip the 5-spawn/3s threshold. *)
+  Git_helpers.reset_git_circuit_breaker ();
   let email = Git_helpers.git_commit_author_email sha in
   let name = Git_helpers.git_commit_author_name sha in
   let co_author_emails = Git_helpers.git_commit_co_author_emails sha in
