@@ -128,6 +128,13 @@ def registered_agents():
     # Give relay time to process registrations
     time.sleep(2)
 
+    # Start relay connectors in both containers (#674)
+    docker_exec(container_a, f"{C2C} relay connect &")
+    docker_exec(container_b, f"{C2C} relay connect &")
+
+    # Let connectors establish connections to relay
+    time.sleep(3)
+
     return container_a, container_b
 
 
