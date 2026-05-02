@@ -10,6 +10,16 @@
 
 open Alcotest
 
+let with_temp_dir f =
+  let base = Filename.get_temp_dir_name () in
+  let dir = Filename.concat base (Printf.sprintf "c2c-cli-test-%08x" (Random.bits ())) in
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) ->
+    ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)));
+    Unix.mkdir dir 0o755);
+  Fun.protect
+    ~finally:(fun () -> Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)) |> ignore)
+    (fun () -> f dir)
+
 let string_contains haystack needle =
   let hay_len = String.length haystack in
   let needle_len = String.length needle in
@@ -143,6 +153,39 @@ let test_agent_list_shows_role_files () =
       check bool "agent list shows roles or empty message" true has_roles_or_empty)
 
 (* ------------------------------------------------------------------------- *)
+(* c2c agent new — E2E: creates a role file that can be parsed             *)
+(* ------------------------------------------------------------------------- *)
+
+let test_agent_new_creates_role_file () =
+  (* Run in a temp dir so we get a clean .c2c/roles/ with no fixtures *)
+  with_temp_dir (fun tmpdir ->
+    let role_name = Printf.sprintf "e2e-test-role-%08x" (Random.bits ()) in
+    let cmd = Printf.sprintf "cd %s && c2c agent new %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) role_name in
+    let rc = Sys.command cmd in
+    check int "c2c agent new exits 0" 0 rc;
+    (* The file should exist at .c2c/roles/<role_name>.md relative to tmpdir *)
+    let role_path = Filename.concat tmpdir (Printf.sprintf ".c2c/roles/%s.md" role_name) in
+    check bool "role file was created" true (Sys.file_exists role_path))
+
+let test_agent_new_role_file_is_valid_yaml () =
+  with_temp_dir (fun tmpdir ->
+    let role_name = Printf.sprintf "e2e-parse-test-%08x" (Random.bits ()) in
+    let cmd = Printf.sprintf "cd %s && c2c agent new %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) role_name in
+    ignore (Sys.command cmd);
+    let role_path = Filename.concat tmpdir (Printf.sprintf ".c2c/roles/%s.md" role_name) in
+    let exists = Sys.file_exists role_path in
+    check bool "role file exists before parse test" true exists;
+    if exists then
+      (let ic = open_in role_path in
+       let content = Fun.protect ~finally:(fun () -> close_in ic)
+         (fun () -> really_input_string ic (in_channel_length ic)) in
+       (* The file should start with a YAML frontmatter marker *)
+       check bool "role file starts with --- yaml marker" true
+         (String.length content >= 3 && String.sub content 0 3 = "---")))
+
+(* ------------------------------------------------------------------------- *)
 (* c2c roles validate — verify role file validation                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -177,6 +220,10 @@ let () =
     ; ( "agent_list",
         [ ( "agent list exits 0", `Quick, test_agent_list_exits_zero )
         ; ( "agent list shows role files or empty message", `Quick, test_agent_list_shows_role_files )
+        ] )
+    ; ( "agent_new",
+        [ ( "agent new creates role file", `Quick, test_agent_new_creates_role_file )
+        ; ( "agent new output file is valid yaml", `Quick, test_agent_new_role_file_is_valid_yaml )
         ] )
     ; ( "roles_validate",
         [ ( "roles validate shows summary line", `Quick, test_roles_validate_runs_and_shows_summary )
