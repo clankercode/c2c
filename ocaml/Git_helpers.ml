@@ -1,3 +1,30 @@
+(** Marker string present in the c2c git-attribution shim.
+    Used by [is_c2c_shim] to content-check candidates so we never
+    accidentally exec the shim when looking for the real git binary.
+    Must match the literal written by [C2c_start.write_git_shim]. *)
+let shim_marker = "# Delegation shim: git attribution for managed sessions."
+
+(** Read the first ~512 bytes of [path] and return [true] if
+    [shim_marker] appears in that prefix.  Returns [false] on any
+    I/O error (permission denied, broken symlink, etc.). *)
+let is_c2c_shim path =
+  try
+    let ic = open_in_bin path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+    let len = min (in_channel_length ic) 512 in
+    let buf = really_input_string ic len in
+    (* Simple substring search — shim marker is always in the first
+       two lines of the generated script. *)
+    let marker_len = String.length shim_marker in
+    let buf_len = String.length buf in
+    let rec scan i =
+      if i + marker_len > buf_len then false
+      else if String.sub buf i marker_len = shim_marker then true
+      else scan (i + 1)
+    in
+    scan 0
+  with _ -> false
+
 let find_real_git () =
   let shim_dir = Sys.getenv_opt "C2C_GIT_SHIM_DIR" in
   let same_path a b =
@@ -15,12 +42,20 @@ let find_real_git () =
     | dir :: rest ->
         let candidate = Filename.concat dir "git" in
         if Sys.file_exists candidate && not (Sys.is_directory candidate) then
-          match shim_dir with
-          | Some shim when same_path dir shim ->
-              (* Managed sessions prepend a git shim dir that re-enters `c2c git`.
-                 Skip it anywhere we need the real git binary. *)
-              search rest
-          | _ -> candidate
+          (* Guard 1: skip if candidate lives in the known shim dir. *)
+          let in_shim_dir =
+            match shim_dir with
+            | Some shim -> same_path dir shim
+            | None -> false
+          in
+          (* Guard 2: content-check — refuse any file containing the
+             c2c delegation-shim marker.  This catches the self-exec
+             recursion bug where the shim's exec target resolves back
+             to itself (e.g. C2C_GIT_SHIM_DIR unset at install time). *)
+          if in_shim_dir || is_c2c_shim candidate then
+            search rest
+          else
+            candidate
         else search rest
   in
   search dirs
