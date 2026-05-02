@@ -617,7 +617,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 
 | Subcommand | Description |
 |------------|-------------|
-| `register [--alias A] [--session-id ID]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. |
+
 | `whoami [--json]` | Show alias and registration info for the current session. |
 | `list [--all] [--json]` | List registered peers (`--all` adds session ID + registered time). |
 | `send [--from A] [--no-warn-substitution] [--ephemeral] [--fail \| --blocking \| --urgent] ALIAS MSG…` | Send a 1:1 DM. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
@@ -676,7 +676,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `clear-compact [--json]` | Clear the compacting flag. |
 | `open-pending-reply [--kind K] [--supervisors A,B] PERM_ID` | Open a pending permission reply slot. |
 | `check-pending-reply [--json] PERM_ID REPLY_FROM` | Validate a permission reply. |
-| `await-reply [--timeout SECS] [--json]` | Block until a verdict arrives in the inbox. |
+
 | `dead-letter [--limit N] [--json]` | Show dead-letter entries (orphan messages from sweeps or delivery failures). |
 
 ### Managed instances (daily)
@@ -701,6 +701,8 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
+| `await-reply [--timeout SECS] [--json]` | Block until a verdict arrives in the inbox. |
+| `register [--alias A] [--session-id ID]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. |
 
 ### Scheduling
 
@@ -726,7 +728,6 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 |---------|-------------|
 | `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join swarm-lounge. |
 | `config show` | Show current `.c2c/config.toml` values. |
-| `config set KEY=VALUE…` | Set config values. |
 | `config generation-client [CLIENT]` | Show or set the `generation_client` preference. |
 | `repo show [--json]` | Show current per-repo config (`.c2c/repo.json`). |
 | `repo init [--default]` | Initialize a per-repo config. |
@@ -755,7 +756,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `peer-pass verify ARTIFACT [--json]` | Verify a signed peer-PASS artifact. |
 | `peer-pass list [--json]` | List all known peer-PASS artifacts. |
 | `peer-pass clean [--older-than DAYS]` | Remove expired artifacts. |
-| `peer-pass status [--json]` | Show peer-pass audit trail and status. |
+
 
 ### Statistics and sitreps
 
@@ -772,7 +773,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 |---------|-------------|
 | `worktree list` | List per-agent git worktrees. |
 | `worktree setup [--name NAME] [--alias A] [--role ROLE]` | Create and register a new worktree. |
-| `worktree start NAME` | Start a managed session in a worktree. |
+| `worktree start SLICE [--branch BRANCH]` | Create an isolated git worktree for a new slice, branched from origin/master. SLICE is both the worktree directory (.worktrees/<slice>) and branch name (fix/<slice>). |
 | `worktree status NAME` | Show worktree status (clean/dirty, up-to-date). |
 | `worktree gc [--clean]` | Garbage-collect stale worktrees (dry-run by default). |
 | `worktree prune` | Remove dead worktree entries from registry. |
@@ -786,7 +787,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `sticker send ALIAS [--emoji E] [--reason R]` | Send a sticker to an agent. |
 | `sticker list [--json]` | List received stickers. |
 | `sticker wall [--json]` | Show the community sticker wall. |
-| `sticker stats [--json]` | Show sticker statistics. |
+
 | `sticker verify ARTIFACT` | Verify a sticker authenticity. |
 
 ---
@@ -798,7 +799,6 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `commands [--all]` | List all c2c commands grouped by safety tier. |
 | `completion --shell bash\|zsh\|pwsh` | Generate shell completion scripts. |
 | `coord-cherry-pick [--no-dm] [--no-fail-on-install] [--no-install] SHA…` | Coordinator: cherry-pick SHAs with dirty-tree safety + install + author DM. |
-| `coord status` | Show coordinator queue and status. |
 | `git [ARG…]` | Git wrapper that auto-injects `--author` when `git.attribution=true` in `.c2c/config.toml`. |
 | `install [--client CLIENT] [--dry-run]` | Install c2c binary and/or client integrations. |
 | `install self [--dest DIR] [--mcp-server]` | Install the c2c binary to `~/.local/bin`. |
