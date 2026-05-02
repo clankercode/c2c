@@ -1,0 +1,10 @@
+[schedule]
+name = "wake"
+interval_s = 246
+align = ""
+message = "wake — poll inbox, advance work"
+only_when_idle = true
+idle_threshold_s = 246
+enabled = true
+created_at = "2026-05-02T08:38:11Z"
+updated_at = "2026-05-02T08:39:47Z"
