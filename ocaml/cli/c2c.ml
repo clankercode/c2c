@@ -1069,31 +1069,43 @@ let send_all_cmd =
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias ~override:from_override broker in
   let content = String.concat " " message in
-  let content = (C2c_mcp.tag_to_body_prefix tag_str) ^ content in
+  let broker_raw = C2c_broker.create ~root:(resolve_broker_root ()) in
   let result =
-    C2c_mcp.Broker.send_all broker ~from_alias ~content ~exclude_aliases:exclude
+    C2c_send_handlers.broadcast_to_all ~broker:broker_raw ~from_alias ~content ~exclude_aliases:exclude ~tag_arg:tag_str
   in
   let output_mode = if json then Json else Human in
+  match result with
+  | Error msg ->
+      Printf.eprintf "error: %s\n%!" msg;
+      exit 1
+  | Ok result_json ->
   match output_mode with
   | Json ->
-      print_json
-        (`Assoc
-          [ ( "sent_to",
-              `List (List.map (fun a -> `String a) result.sent_to) )
-          ; ( "skipped",
-              `List
-                (List.map
-                   (fun (a, r) ->
-                     `Assoc [ ("alias", `String a); ("reason", `String r) ])
-                   result.skipped) )
-          ])
+      print_json result_json
   | Human ->
+      (* Extract sent_to and skipped from the JSON for human display *)
+      let sent_to = match result_json with
+        | `Assoc l -> (match List.assoc_opt "sent_to" l with
+            | Some (`List aliases) -> List.filter_map (function `String s -> Some s | _ -> None) aliases
+            | _ -> [])
+        | _ -> []
+      in
+      let skipped = match result_json with
+        | `Assoc l -> (match List.assoc_opt "skipped" l with
+            | Some (`List items) -> List.filter_map (function
+                | `Assoc kv -> (match List.assoc_opt "alias" kv, List.assoc_opt "reason" kv with
+                    | Some (`String a), Some (`String r) -> Some (a, r)
+                    | _ -> None)
+                | _ -> None) items
+            | _ -> [])
+        | _ -> []
+      in
       Printf.printf "Sent to: %s\n"
-        (match result.sent_to with [] -> "(none)" | l -> String.concat ", " l);
-      if result.skipped <> [] then
+        (match sent_to with [] -> "(none)" | l -> String.concat ", " l);
+      if skipped <> [] then
         List.iter
           (fun (a, r) -> Printf.printf "  skipped %s (%s)\n" a r)
-          result.skipped
+          skipped
 
 (* --- subcommand: sweep ---------------------------------------------------- *)
 
