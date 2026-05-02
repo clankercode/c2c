@@ -343,7 +343,7 @@ let envelope_to_json (e : envelope) : Yojson.Safe.t =
              [ "envelope_version", `Int e.envelope_version ])
     )
 
-let envelope_of_json (j : Yojson.Safe.t) : envelope =
+let envelope_of_json (j : Yojson.Safe.t) : (envelope, string) result =
   match j with
   | `Assoc _ ->
     let open Yojson.Safe.Util in
@@ -353,38 +353,50 @@ let envelope_of_json (j : Yojson.Safe.t) : envelope =
       | `String s when s <> "" -> Some s  (* reject null and empty-string *)
       | _ -> None
     in
-    let to_ = match member "to" j with `Null -> None | `String s -> Some s | _ -> failwith "envelope_of_json: to must be string or null" in
-    let room = match member "room" j with `Null -> None | `String s -> Some s | _ -> failwith "envelope_of_json: room must be string or null" in
+    let to_ = match member "to" j with
+      | `Null -> Result.Ok None
+      | `String s -> Result.Ok (Some s)
+      | _ -> Result.Error "envelope_of_json: to must be string or null"
+    in
+    let room = match member "room" j with
+      | `Null -> Result.Ok None
+      | `String s -> Result.Ok (Some s)
+      | _ -> Result.Error "envelope_of_json: room must be string or null"
+    in
     (* Wire format for ts is permissive: producers emit Intlit (so the
        wire JSON has a bare number), but `Yojson.Safe.from_string` parses
        small numbers as `Int and large ones as `Intlit, and some legacy
        paths construct ts as `String. Accept all three. *)
     let ts = match member "ts" j with
-      | `String s -> Int64.of_string s
-      | `Int n -> Int64.of_int n
-      | `Intlit s -> Int64.of_string s
-      | _ -> failwith "envelope_of_json: ts must be number or string"
+      | `String s -> Result.Ok (Int64.of_string s)
+      | `Int n -> Result.Ok (Int64.of_int n)
+      | `Intlit s -> Result.Ok (Int64.of_string s)
+      | _ -> Result.Error "envelope_of_json: ts must be number or string"
     in
-    let enc = member "enc" j |> to_string in
-    let recipients = member "recipients" j |> to_list |> List.map recipient_of_json in
-    let sig_b64 = member "sig" j |> to_string in
-    (* Default envelope_version to 1 on parse: legacy wire JSON has no
-       such key. New v2 producers emit it explicitly as `Int. *)
-    let envelope_version = match member "envelope_version" j with
-      | `Int n -> n
-      | `Intlit s -> (try int_of_string s with _ -> 1)
-      | _ -> 1
-    in
-    (* §7.1: v2 envelopes MUST carry from_ed25519. Rejecting missing-field
-       v2 envelopes closes the attack surface where an attacker strips the field
-       to bypass TOFU (the field is what binds the Ed25519 identity to the
-       envelope for signature verification). v1 envelopes are exempt (legacy compat). *)
-    let () =
+    match to_, room, ts with
+    | Result.Error e, _, _ -> Result.Error e
+    | _, Result.Error e, _ -> Result.Error e
+    | _, _, Result.Error e -> Result.Error e
+    | Result.Ok to_, Result.Ok room, Result.Ok ts ->
+      let enc = member "enc" j |> to_string in
+      let recipients = member "recipients" j |> to_list |> List.map recipient_of_json in
+      let sig_b64 = member "sig" j |> to_string in
+      (* Default envelope_version to 1 on parse: legacy wire JSON has no
+         such key. New v2 producers emit it explicitly as `Int. *)
+      let envelope_version = match member "envelope_version" j with
+        | `Int n -> n
+        | `Intlit s -> (try int_of_string s with _ -> 1)
+        | _ -> 1
+      in
+      (* §7.1: v2 envelopes MUST carry from_ed25519. Rejecting missing-field
+         v2 envelopes closes the attack surface where an attacker strips the field
+         to bypass TOFU (the field is what binds the Ed25519 identity to the
+         envelope for signature verification). v1 envelopes are exempt (legacy compat). *)
       if envelope_version >= 2 && from_ed25519 = None then
-        failwith "envelope_of_json: v2 envelope missing from_ed25519"
-    in
-    { from_; from_x25519; from_ed25519; to_; room; ts; enc; recipients; sig_b64; envelope_version }
-  | _ -> failwith "envelope_of_json: expected object"
+        Result.Error "envelope_of_json: v2 envelope missing from_ed25519"
+      else
+        Result.Ok { from_; from_x25519; from_ed25519; to_; room; ts; enc; recipients; sig_b64; envelope_version }
+  | _ -> Result.Error "envelope_of_json: expected object"
 
 let find_my_recipient ~(my_alias : string) (recipients : recipient list) =
   (* #alias-casefold: recipient lookup is case-insensitive so a sender

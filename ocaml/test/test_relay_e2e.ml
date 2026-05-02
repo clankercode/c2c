@@ -190,7 +190,7 @@ let test_v1_back_compat_verify () =
     ] ];
     "sig",        `String signed.sig_b64;
   ] in
-  let parsed = envelope_of_json v1_wire in
+  let parsed = match envelope_of_json v1_wire with Ok e -> e | Error m -> Alcotest.fail m in
   Alcotest.(check int) "wire parse defaults envelope_version to 1" 1 parsed.envelope_version;
   Alcotest.(check bool) "v1 envelope round-trips and verifies" true (verify_envelope_sig ~pk:pk_raw parsed)
 
@@ -320,7 +320,7 @@ let test_envelope_json_roundtrip_from_ed25519 () =
   } in
   let signed = set_sig e ~sk_seed:seed in
   let wire = envelope_to_json signed in
-  let parsed = envelope_of_json wire in
+  let parsed = match envelope_of_json wire with Ok e -> e | Error m -> Alcotest.fail m in
   Alcotest.(check (option string)) "from_ed25519 preserved through wire"
     (Some "Ed25519-pk-b64") parsed.from_ed25519;
   Alcotest.(check (option string)) "from_x25519 preserved through wire"
@@ -340,7 +340,7 @@ let test_envelope_json_roundtrip_from_ed25519 () =
   } in
   let signed_v1 = set_sig e_v1 ~sk_seed:seed in
   let wire_v1 = envelope_to_json signed_v1 in
-  let parsed_v1 = envelope_of_json wire_v1 in
+  let parsed_v1 = match envelope_of_json wire_v1 with Ok e -> e | Error m -> Alcotest.fail m in
   Alcotest.(check (option string)) "v1 from_ed25519 round-trips as None"
     None parsed_v1.from_ed25519
 
@@ -352,17 +352,16 @@ let test_v2_without_from_ed25519_rejected () =
   let json = Yojson.Safe.from_string v2_without_ed_json_str in
   Alcotest.(check bool) "v2 without from_ed25519 raises"
     true
-    (try ignore (Relay_e2e.envelope_of_json json); false
-     with Failure msg ->
+    (match Relay_e2e.envelope_of_json json with
+     | Error msg ->
        (try ignore (Str.search_forward (Str.regexp_string "v2 envelope missing from_ed25519") msg 0); true
         with Not_found -> false)
-     | _ -> false);
+     | Ok _ -> false);
   (* v1 without from_ed25519 is still accepted (legacy compat). *)
   let v1_json_str = "{\"from\":\"alice\",\"to\":\"bob\",\"room\":null,\"ts\":1700000015,\"enc\":\"plain\",\"recipients\":[],\"sig\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}" in
   let v1_json = Yojson.Safe.from_string v1_json_str in
   Alcotest.(check bool) "v1 without from_ed25519 still accepted" true
-    (try ignore (Relay_e2e.envelope_of_json v1_json); true
-     with _ -> false)
+    (match Relay_e2e.envelope_of_json v1_json with Ok _ -> true | Error _ -> false)
 
 (* §7.1 micro-edges: v2 must reject explicit null and empty-string from_ed25519. *)
 let test_v2_from_ed25519_micro_edges () =
@@ -372,22 +371,22 @@ let test_v2_from_ed25519_micro_edges () =
   let json_null = Yojson.Safe.from_string v2_null_ed in
   Alcotest.(check bool) "v2 with from_ed25519:null raises"
     true
-    (try ignore (Relay_e2e.envelope_of_json json_null); false
-     with Failure msg ->
+    (match Relay_e2e.envelope_of_json json_null with
+     | Error msg ->
        (try ignore (Str.search_forward (Str.regexp_string "v2 envelope missing from_ed25519") msg 0); true
         with Not_found -> false)
-     | _ -> false);
+     | Ok _ -> false);
   (* Edge 2: from_ed25519: "" — empty string now parsed as None (rejected by fix),
      catches the same guard. Before the fix this would bypass the =None check. *)
   let v2_empty_ed = "{\"from\":\"alice\",\"from_x25519\":\"x25519-pk\",\"from_ed25519\":\"\",\"to\":\"bob\",\"room\":null,\"ts\":1700000017,\"enc\":\"box-x25519-v1\",\"recipients\":[],\"sig\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"envelope_version\":2}" in
   let json_empty = Yojson.Safe.from_string v2_empty_ed in
   Alcotest.(check bool) "v2 with from_ed25519:\\\"\\\" raises"
     true
-    (try ignore (Relay_e2e.envelope_of_json json_empty); false
-     with Failure msg ->
+    (match Relay_e2e.envelope_of_json json_empty with
+     | Error msg ->
        (try ignore (Str.search_forward (Str.regexp_string "v2 envelope missing from_ed25519") msg 0); true
         with Not_found -> false)
-     | _ -> false)
+     | Ok _ -> false)
 
 (* Slice C — C2C_RELAY_E2E_STRICT_V2 strict-flip gate.
 

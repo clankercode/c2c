@@ -383,8 +383,8 @@ let decrypt_envelope ~(our_x25519 : Relay_enc.t option) ~our_ed25519
   | exception _ -> content, None
   | env_json ->
     match Relay_e2e.envelope_of_json env_json with
-    | exception _ -> content, None
-    | env ->
+    | Error _ -> content, None
+    | Ok env ->
       (* Slice B-min-version: per-alias minimum-observed-envelope-version
          policy check. Fires BEFORE sig-verify dispatch so a downgraded
          envelope (attacker rewriting envelope_version=2 → 1 to bypass
