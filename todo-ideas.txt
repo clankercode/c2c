@@ -100,7 +100,7 @@ Future slice (PoW proxy) — design decisions locked 2026-04-28 by Max:
 Idea: `c2c list -g` / `--global` — show every running c2c managed session system-wide (across repos / brokers), not just the current repo's broker.
 
 Submitted by: Max Kaye (via coordinator1) · 2026-05-01T06:11Z
-Status: new
+Status: **ingested** — shipped by galaxy-coder (63dc95c6 + 342c8679). `c2c list -g` scans all broker roots, groups by broker. Closed.
 Related: #517 (c2c list shows tmux session:window.pane), broker-root resolution (CLAUDE.md "Key Architecture Notes")
 
 Context: users may forget about c2c instances they started in another repo / another broker root. `c2c list` today only enumerates registrations under the resolved broker root for the current cwd. A `-g`/`--global` flag would scan all known broker roots (e.g. `$HOME/.c2c/repos/*/broker/` + any `$XDG_STATE_HOME/c2c/repos/*/broker/`) and surface everything currently registered, regardless of repo. Useful for finding orphaned outer-loops, rogue notifiers, or sessions started in a different worktree.
