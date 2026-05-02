@@ -1,9 +1,15 @@
-(* test_c2c_cli.ml — CLI subcommand tests (#670)
+(* test_c2c_cli.ml — CLI subcommand tests (#670, #698)
    Tests for c2c CLI commands with zero prior test coverage:
    - c2c doctor
    - c2c config show
    - c2c agent list
    - c2c roles validate
+   - c2c list
+   - c2c send (fixture-gated)
+   - c2c whoami
+   - c2c history
+   - c2c schedule list
+   - c2c memory list
 
    Each test invokes the c2c binary via Sys.command and verifies
    exit code + output shape. *)
@@ -186,6 +192,139 @@ let test_agent_new_role_file_is_valid_yaml () =
          (String.length content >= 3 && String.sub content 0 3 = "---")))
 
 (* ------------------------------------------------------------------------- *)
+(* c2c list — verify peer listing                                           *)
+(* ------------------------------------------------------------------------- *)
+
+let test_list_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 c2c list > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c list exits 0" 0 rc
+
+let test_list_output_contains_peer_entries () =
+  let tmpfile = Filename.temp_file "c2c-list" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf "C2C_CLI_FORCE=1 c2c list > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let lines = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () ->
+          let rec read_lines acc =
+            try read_lines ((input_line ch) :: acc)
+            with End_of_file -> List.rev acc
+          in
+          read_lines [])
+      in
+      (* list output has lines with status keywords: alive, dead, or ??? *)
+      let has_status = List.exists (fun l ->
+        string_contains l "alive" || string_contains l "dead"
+        || string_contains l "???"
+      ) lines in
+      check bool "list output contains peer status entries" true has_status)
+
+(* ------------------------------------------------------------------------- *)
+(* c2c send — fixture-gated send test                                       *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_missing_args_exits_nonzero () =
+  let cmd = "C2C_CLI_FORCE=1 C2C_SEND_MESSAGE_FIXTURE=1 c2c send > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  (* Missing required ALIAS and MSG args => exits non-zero *)
+  check bool "c2c send with no args exits non-zero" true (rc <> 0)
+
+let test_send_unknown_alias_reports_error () =
+  let tmpfile = Filename.temp_file "c2c-send" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_SEND_MESSAGE_FIXTURE=1 c2c send nonexistent-test-alias 'hello' > %s 2>&1"
+        tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "send to unknown alias reports error" true
+        (string_contains content "unknown alias" || string_contains content "error"))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c whoami — verify alias display                                        *)
+(* ------------------------------------------------------------------------- *)
+
+let test_whoami_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 C2C_MCP_ALIAS=cli-test-alias c2c whoami > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c whoami exits 0" 0 rc
+
+let test_whoami_output_contains_alias () =
+  let tmpfile = Filename.temp_file "c2c-whoami" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_MCP_ALIAS=cli-test-alias c2c whoami > %s 2>&1"
+        tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "whoami output contains alias keyword" true
+        (string_contains content "alias"))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c history — verify message history display                             *)
+(* ------------------------------------------------------------------------- *)
+
+let test_history_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 C2C_MCP_ALIAS=cli-test-alias c2c history > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c history exits 0" 0 rc
+
+(* ------------------------------------------------------------------------- *)
+(* c2c schedule list — verify schedule listing                              *)
+(* ------------------------------------------------------------------------- *)
+
+let test_schedule_list_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 c2c schedule list > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c schedule list exits 0" 0 rc
+
+let test_schedule_list_output_contains_header () =
+  let tmpfile = Filename.temp_file "c2c-schedule-list" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c schedule list > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      (* schedule list outputs a table with NAME header or empty state *)
+      check bool "schedule list has header or content" true
+        (string_contains content "NAME" || string_contains content "schedule"
+         || string_contains content "No schedules" || String.length content = 0))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c memory list — verify memory listing                                  *)
+(* ------------------------------------------------------------------------- *)
+
+let test_memory_list_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 c2c memory list > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c memory list exits 0" 0 rc
+
+let test_memory_list_output_is_nonempty () =
+  let tmpfile = Filename.temp_file "c2c-memory-list" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c memory list > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      (* memory list should produce some output — entries or empty message *)
+      check bool "memory list produces output" true
+        (String.length content > 0))
+
+(* ------------------------------------------------------------------------- *)
 (* c2c roles validate — verify role file validation                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -224,6 +363,29 @@ let () =
     ; ( "agent_new",
         [ ( "agent new creates role file", `Quick, test_agent_new_creates_role_file )
         ; ( "agent new output file is valid yaml", `Quick, test_agent_new_role_file_is_valid_yaml )
+        ] )
+    ; ( "list",
+        [ ( "list exits 0", `Quick, test_list_exits_zero )
+        ; ( "list output contains peer entries", `Quick, test_list_output_contains_peer_entries )
+        ] )
+    ; ( "send",
+        [ ( "send missing args exits non-zero", `Quick, test_send_missing_args_exits_nonzero )
+        ; ( "send unknown alias reports error", `Quick, test_send_unknown_alias_reports_error )
+        ] )
+    ; ( "whoami",
+        [ ( "whoami exits 0", `Quick, test_whoami_exits_zero )
+        ; ( "whoami output contains alias", `Quick, test_whoami_output_contains_alias )
+        ] )
+    ; ( "history",
+        [ ( "history exits 0", `Quick, test_history_exits_zero )
+        ] )
+    ; ( "schedule_list",
+        [ ( "schedule list exits 0", `Quick, test_schedule_list_exits_zero )
+        ; ( "schedule list output contains header", `Quick, test_schedule_list_output_contains_header )
+        ] )
+    ; ( "memory_list",
+        [ ( "memory list exits 0", `Quick, test_memory_list_exits_zero )
+        ; ( "memory list output is nonempty", `Quick, test_memory_list_output_is_nonempty )
         ] )
     ; ( "roles_validate",
         [ ( "roles validate shows summary line", `Quick, test_roles_validate_runs_and_shows_summary )
