@@ -75,6 +75,7 @@ let test_parse_co_author_email_basic () =
     (Git_helpers.parse_co_author_email "Name <>")
 
 let test_reviewer_is_author_blocks_co_authored_by () =
+  Git_helpers.reset_git_circuit_breaker ();
   with_temp_repo (fun dir ->
     init_repo dir;
     let cmd =
@@ -86,17 +87,23 @@ let test_reviewer_is_author_blocks_co_authored_by () =
     let prev = Sys.getcwd () in
     Sys.chdir dir;
     Fun.protect ~finally:(fun () -> Sys.chdir prev) (fun () ->
+      Git_helpers.reset_git_circuit_breaker ();
       let emails = Git_helpers.git_commit_co_author_emails sha in
       check (list string) "trailer email extracted"
         ["stanza-coder@c2c.im"] emails;
-      (* Direct anti-cheat check: reviewer = co-author -> blocked. *)
+      (* Reset circuit breaker before each reviewer_is_author call —
+         each call makes 3 git spawns (author_email, author_name,
+         co_author_emails), and the default 5-spawn/3s window trips
+         if we don't reset between calls. *)
+      Git_helpers.reset_git_circuit_breaker ();
       check bool "co-authored-by reviewer treated as author"
         true (C2c_peer_pass.reviewer_is_author ~reviewer:"stanza-coder" ~sha);
-      (* Primary author still matches. *)
+      Git_helpers.reset_git_circuit_breaker ();
       check bool "primary author still matches"
         true (C2c_peer_pass.reviewer_is_author ~reviewer:"primary-author" ~sha)))
 
 let test_reviewer_is_author_doesnt_match_unrelated_co_author () =
+  Git_helpers.reset_git_circuit_breaker ();
   with_temp_repo (fun dir ->
     init_repo dir;
     let cmd =
@@ -108,10 +115,12 @@ let test_reviewer_is_author_doesnt_match_unrelated_co_author () =
     let prev = Sys.getcwd () in
     Sys.chdir dir;
     Fun.protect ~finally:(fun () -> Sys.chdir prev) (fun () ->
+      Git_helpers.reset_git_circuit_breaker ();
       check bool "unrelated reviewer not flagged"
         false (C2c_peer_pass.reviewer_is_author ~reviewer:"stanza-coder" ~sha);
       (* Local-part of [unrelated@c2c.im] is [unrelated]; that's what the
          author-check matches against, not the display name. *)
+      Git_helpers.reset_git_circuit_breaker ();
       check bool "co-author email local-part flagged"
         true (C2c_peer_pass.reviewer_is_author ~reviewer:"unrelated" ~sha)))
 
