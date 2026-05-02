@@ -166,9 +166,9 @@ Project Folder: `.collab/research/2026-04-29-code-health-audit-cairn.md`
 
 Goal: surface and shipfix latent code-health issues across the OCaml codebase — duplication, awkward `failwith` paths, oversized handlers, missing dedup helpers.
 
-Status: **Audit-3 fully shipped (2026-04-29)** — 5 findings landed today: `read_json_opt` helper, CONFIG `failwith` → Result migration, `handle_tool_call` extraction (in flight), `auto_register` dedup, `memory_base_dir` dedup. Earlier audit passes already shipped.
+Status: **Audit-4 shipped (2026-05-02)** — #450 send_handlers refactor complete (S6-S10: 5 helper extractions landed, `send` reduced to ~60 lines of dispatch). Room ACL dedup (`resolve_caller_identity`). MCP-helpers dedup (`log_broker_event`). relay_e2e `Result.t` migration. broker-log rotation. 320 tests, all passing.
 
-Next: schedule Audit-4 once swarm bandwidth permits; monitor for regressions in the simplified surfaces.
+Next: monitor for regressions; schedule Audit-5 when bandwidth permits.
 
 ### Public-docs accuracy
 
