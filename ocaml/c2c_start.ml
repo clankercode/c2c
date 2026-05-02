@@ -1698,6 +1698,18 @@ let swarm_git_shim_dir () =
   | Some d when String.trim d <> "" -> String.trim d
   | _ -> C2c_repo_fp.xdg_state_home () // "c2c" // "bin"
 
+(* S6c: detect whether the MCP server child handles schedule-timer firing.
+   When c2c start sets C2C_MCP_SCHEDULE_TIMER=1 in its own process env
+   (after also passing it to the child via build_env), this returns true
+   so the parent skips its own schedule watcher thread — avoiding
+   duplicate heartbeats. *)
+let mcp_schedule_timer_active () =
+  match Sys.getenv_opt "C2C_MCP_SCHEDULE_TIMER" with
+  | Some v ->
+      let n = String.lowercase_ascii (String.trim v) in
+      List.mem n ["1"; "true"; "yes"; "on"]
+  | None -> false
+
 (* ----------------------------------------------------------------------------
  * Install the pre-reset guard shim (git-pre-reset) into the swarm shim dir.
  * Copies the repo's git-shim.sh to git-pre-reset in [dir] and chmods +x.
@@ -2797,6 +2809,12 @@ let build_env ?(broker_root_override : string option = None)
     "GIT_AUTHOR_EMAIL", alias ^ "@c2c.im";
     "GIT_COMMITTER_NAME", alias;
     "GIT_COMMITTER_EMAIL", alias ^ "@c2c.im";
+    (* S6c: tell the MCP server child to run its own Lwt schedule timer,
+       which reads .c2c/schedules/<alias>/ and fires via C2c_schedule_fire.
+       The parent (c2c start) also sets this in its own env so
+       mcp_schedule_timer_active() returns true → skip the schedule watcher
+       thread, avoiding duplicate heartbeats. *)
+    "C2C_MCP_SCHEDULE_TIMER", "1";
     ] in
     let base = base @ auto_join_base in
     let base = base @ match reply_to_override with
@@ -4846,12 +4864,23 @@ let run_outer_loop ~(name : string) ~(client : string)
           List.iter
             (start_managed_heartbeat ~broker_root ~alias:effective_alias)
             heartbeat_specs;
-          (* Schedule-dir heartbeats are managed by the watcher thread,
-             which handles both the initial load and hot-reload of
-             .c2c/schedules/<alias>/*.toml files. *)
-          start_schedule_watcher ~broker_root ~alias:effective_alias
-            ~client ~deliver_started:(Option.is_some !deliver_pid)
-            ~role:heartbeat_role;
+          (* S6c: Mirror C2C_MCP_SCHEDULE_TIMER into the parent env so
+             mcp_schedule_timer_active() sees it. build_env passes the
+             same var to the MCP child. Respect operator overrides: only
+             set if not already present in the environment. *)
+          (match Sys.getenv_opt "C2C_MCP_SCHEDULE_TIMER" with
+           | None -> Unix.putenv "C2C_MCP_SCHEDULE_TIMER" "1"
+           | Some _ -> ());
+          (* Schedule-dir heartbeats: skip when the MCP server handles
+             scheduling (S6c dedup — C2C_MCP_SCHEDULE_TIMER=1 set in
+             build_env). The MCP server's Lwt timer reads the same
+             .c2c/schedules/<alias>/ dir. Fall back to the c2c start
+             watcher thread if the operator explicitly set the env var
+             to 0/false/no/off. *)
+          if not (mcp_schedule_timer_active ()) then
+            start_schedule_watcher ~broker_root ~alias:effective_alias
+              ~client ~deliver_started:(Option.is_some !deliver_pid)
+              ~role:heartbeat_role;
           pid
         with Unix.Unix_error (Unix.EINTR, _, _) -> 0
       in
