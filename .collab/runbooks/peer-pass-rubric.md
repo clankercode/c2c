@@ -155,9 +155,13 @@ S11: 4), each burning ~20k tokens to produce a redundant verdict.
 **Convention (established 2026-05-02)**:
 
 1. **Claim before reviewing.** Post `claiming <short-SHA>` in
-   `swarm-lounge` before starting your review.
-2. **Stand down at 2 claims.** If you see 2 claims already posted for a
-   SHA, do not start a review — the slot is full.
+   `swarm-lounge` before starting your review. A DM to the author
+   does NOT count as a claim — other peers can't see it, so they
+   can't count slots correctly. Lounge post is the only valid claim.
+2. **Stand down at 2 lounge claims.** If you see 2 `claiming` posts
+   in swarm-lounge for a SHA, do not start a review — the slot is
+   full. Only count lounge claims, not DMs or PASS artifacts from
+   unclaimed reviewers.
 3. **Coordinator DM overrides lounge claims.** If coord DMs you to review
    a specific SHA, that assignment takes priority even if 2 claims exist.
    (Coord may need a specific reviewer for domain expertise or chain-slice
