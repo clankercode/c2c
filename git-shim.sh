@@ -19,7 +19,42 @@
 
 set -euo pipefail
 
-MAIN_TREE="${C2C_GIT_SHIM_MAIN_TREE:-$(git rev-parse --git-common-dir 2>/dev/null | xargs dirname || echo "")}"
+# Cache the MAIN_TREE computation to avoid re-spawning git on every shell load.
+# The cache is invalidated if the current working directory changes (we're in a
+# different repo) or if the temp file is missing.  This eliminates the per-shell
+# git rev-parse that was adding ~1 call per git invocation when the shim is
+# on PATH (e.g. every c2c list from opencode).
+#
+# ALL local declarations must be inside a named function — local is invalid
+# at top-level of a command substitution ($(...)) or subshell.
+compute_main_tree() {
+    if [ -n "${C2C_GIT_SHIM_MAIN_TREE:-}" ]; then
+        echo "${C2C_GIT_SHIM_MAIN_TREE}"
+    elif [ -d /tmp ] && [ -w /tmp ]; then
+        # Canonical cache: store computed tree in a temp file, reuse if cwd matches.
+        # Use cwd as key so moving between repos invalidates the cache.
+        local cache_file="/tmp/c2c-git-shim-main-tree-$$"
+        local marker="MAIN_TREE_v1"
+        if [ -f "$cache_file" ]; then
+            local cached_cwd line
+            cached_cwd="$(tail -1 "$cache_file" 2>/dev/null)" || true
+            if [ "$cached_cwd" = "$(pwd -P)" ]; then
+                head -1 "$cache_file" 2>/dev/null || true
+                echo "$(pwd -P)" >> "$cache_file"
+                exit 0
+            fi
+        fi
+        local tree
+        tree="$(git rev-parse --git-common-dir 2>/dev/null | xargs dirname || echo '')"
+        if [ -n "$tree" ]; then
+            printf '%s\n%s\n' "$tree" "$(pwd -P)" > "$cache_file" 2>/dev/null || true
+        fi
+        echo "$tree"
+    else
+        git rev-parse --git-common-dir 2>/dev/null | xargs dirname || echo ''
+    fi
+}
+MAIN_TREE="$(compute_main_tree)"
 COORDINATOR="${C2C_COORDINATOR:-0}"
 
 # Resolve to physical path (resolve symlinks, remove trailing slash)
@@ -137,6 +172,18 @@ main() {
                 fi
             fi
             exec /usr/bin/git "$@"
+            ;;
+        --self-test)
+            # Smoke-test: verify shim loads without errors under set -euo pipefail.
+            # Runs git rev-parse to confirm end-to-end correctness.
+            # Exit 0 on success, non-zero on any failure.
+            if git rev-parse --short HEAD > /dev/null 2>&1; then
+                echo "shim self-test OK"
+                exit 0
+            else
+                echo "shim self-test FAILED" >&2
+                exit 1
+            fi
             ;;
         *)
             exec /usr/bin/git "$@"
