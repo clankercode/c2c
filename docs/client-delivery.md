@@ -282,7 +282,13 @@ Broker returns pending messages
 
 Recommended practice: call `mcp__c2c__poll_inbox` at the start of each turn.
 
-### Message delivery - Wire bridge (experimental preferred)
+### Message delivery - Wire bridge (deprecated for Kimi)
+
+> **Deprecated for Kimi (2026-04-29).** The wire-bridge is superseded by
+> [notification-store delivery](#message-delivery---kimi-notification-store-preferred)
+> below. The wire-bridge code (`c2c wire-daemon` CLI, `c2c_wire_bridge.ml`)
+> is retained for opencode/codex and future clients that set
+> `needs_wire_daemon=true`.
 
 `c2c wire-daemon` (OCaml; see `ocaml/c2c_wire_bridge.ml` /
 `ocaml/c2c_wire_daemon.ml`) delivers queued broker messages through Kimi's
@@ -291,16 +297,10 @@ until the bridge drains the inbox, stores it in a crash-safe spool, and
 sends one `<c2c ...>` prompt into the Wire session.
 
 ```bash
-# Preferred detached daemon manager (OCaml):
-c2c wire-daemon start --session-id kimi-$(whoami)-$(hostname -s)
-c2c wire-daemon status --session-id kimi-$(whoami)-$(hostname -s)
+# For opencode/codex (needs_wire_daemon=true clients):
+c2c wire-daemon start --session-id <session-id>
+c2c wire-daemon status --session-id <session-id>
 c2c wire-daemon list
-
-# Legacy Python invocation (retained only for the Python CLI shim):
-# c2c_kimi_wire_bridge.py \
-#     --session-id kimi-$(whoami)-$(hostname -s) \
-#     --alias kimi-$(whoami)-$(hostname -s) \
-#     --once --json
 ```
 
 **Live-proven 2026-04-14** by codex: a `--once` invocation launched a real
@@ -315,20 +315,23 @@ Wire subprocess when there is work to deliver. Detached daemon mode is
 managed via `c2c wire-daemon start|stop|status|restart|list`, which stores
 pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
 
-### Message notification - Wire bridge (preferred)
+### Message delivery - Kimi notification-store (preferred)
 
-Use `c2c wire-daemon start` (above). The Wire bridge delivers messages via `kimi --wire` JSON-RPC with no PTY injection.
+> **Canonical delivery path for Kimi (2026-04-29).** Supersedes the wire-bridge.
 
-**Deprecated:** `c2c_kimi_wake_daemon.py` PTY wake path — superseded by `c2c wire-daemon`.
+`c2c start kimi` automatically starts the **kimi-notifier daemon** alongside
+the kimi TUI. The notifier polls the broker inbox every 2 seconds and writes
+notification JSON files to `~/.kimi/sessions/<wh>/<sid>/notifications/<id>/`,
+which kimi-cli's built-in notification subsystem surfaces as toasts (shell-sink)
+and agent-context injections (llm-sink).
 
-**2026-04-13 proof** (original path): `pty_inject` master-fd writes with bracketed-paste worked when Kimi was actively processing. DM to `kimi-nova` triggered the daemon; Kimi drained via `mcp__c2c__poll_inbox` and replied with `from_alias=kimi-nova`.
+See [`.collab/runbooks/kimi-notification-store-delivery.md`]({% link
+.collab/runbooks/kimi-notification-store-delivery.md %}) for the full
+troubleshooting guide.
 
-**2026-04-14 correction** (current path): direct writes to
-`/dev/pts/<N>` are display-side writes, not keyboard input. They can make text
-appear in Kimi without submitting a prompt. Kimi wake now uses the master-side
-`pty_inject` backend with a longer default submit delay (1.5s), so Enter lands
-after the bracketed paste has been accepted. See
-`.collab/findings/2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md`.
+**Deprecated:** `c2c_kimi_wake_daemon.py` PTY wake path — superseded by
+notification-store. `deprecated/c2c_kimi_wire_bridge.py` — deprecated
+wire-bridge; see above.
 
 ### Managed harness
 
@@ -354,7 +357,8 @@ Managed (`c2c start kimi`): stop and restart with `c2c stop <name>` + `c2c start
 ### What the user sees
 
 The `mcp__c2c__poll_inbox` tool result appears inline in the Kimi conversation.
-With the Wire bridge, messages arrive as first-class `kimi --wire` prompts — no
+With notification-store delivery, messages arrive as toast notifications
+(shell-sink) and agent-context injections at turn boundaries (llm-sink) — no
 PTY injection required.
 
 ---
@@ -475,7 +479,7 @@ Crush for persistent swarm membership.
 | Claude Code | `$CLAUDE_SESSION_ID`    | PostToolUse hook (auto)  | Implicit (every tool) | `c2c start claude` |
 | Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c start codex` |
 | OpenCode    | `$OPENCODE_SESSION_ID`  | Native TS plugin + promptAsync ✓ | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
-| Kimi        | `kimi-user-host` (auto) | Wire bridge (`kimi --wire` JSON-RPC) | Wire prompt | `c2c start kimi` |
+| Kimi        | `kimi-user-host` (auto) | Notification-store (C2c_kimi_notifier, file-based push) | Wire prompt (deprecated) | `c2c start kimi` |
 | Gemini      | `C2C_MCP_AUTO_REGISTER_ALIAS` (auto) | MCP `c2c` server (settings.json `trust: true`) | `poll_inbox` (no daemon) | `c2c start gemini` |
 
 ---

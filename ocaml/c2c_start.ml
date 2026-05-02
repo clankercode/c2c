@@ -1252,18 +1252,13 @@ let () =
     { binary = "opencode"; deliver_client = "opencode";
       needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
-  (* kimi: delivery moves from wire-bridge to the kimi notification-store
-     push path. The wire-bridge spawns a fully-agentic `kimi --wire`
-     subprocess per delivery batch which registers as the same alias and
-     races the TUI to drain inbox — see finding b6455d8e + research doc
-     2026-04-29T10-27-00Z. The notifier replacement (C2c_kimi_notifier,
-     follow-up slice) writes notification JSON directly into the kimi
-     session's notifications/ dir. Until that ships, kimi delivery is
-     dark — restored by the next slice in this chain.
-
-     The wire-bridge code stays in place for opencode/codex (any future
-     ephemeral-no-TUI runner can opt into wire delivery by setting
-     needs_wire_daemon=true on its client_config). *)
+  (* kimi: delivers via C2c_kimi_notifier (file-based notification-store push
+     to ~/.kimi/sessions/<wh>/<sid>/notifications/). The notifier replaced the
+     deprecated wire-bridge path (which spawned a fully-agentic `kimi --wire`
+     subprocess per batch — see finding b6455d8e). The wire-bridge code
+     (c2c_wire_bridge.ml, c2c_wire_daemon.ml, start_wire_daemon) stays in
+     place for opencode/codex; any future ephemeral-no-TUI runner can opt in
+     by setting needs_wire_daemon=true on its client_config. *)
   Stdlib.Hashtbl.add clients "kimi"
     { binary = "kimi"; deliver_client = "kimi";
       needs_deliver = false; needs_wire_daemon = false; needs_poker = true;
@@ -3320,11 +3315,9 @@ module KimiAdapter : CLIENT_ADAPTER = struct
 
   let binary = "kimi"
   let needs_deliver = false
-  (* Wire-bridge fully deprecated for kimi (root cause: dual-agent bug per
-     finding b6455d8e). Replaced by C2c_kimi_notifier in the follow-up slice;
-     until that lands, kimi delivery is dark. Once the notifier ships, the
-     wire-bridge code (c2c_wire_bridge.ml, c2c_wire_daemon.ml, start_wire_daemon)
-     becomes unreachable and can be deleted in a cleanup slice. *)
+  (* Wire-bridge deprecated for kimi (root cause: dual-agent bug per finding
+     b6455d8e). Replaced by C2c_kimi_notifier (file-based notification-store
+     push). The wire-bridge code stays for opencode/codex. *)
   let needs_wire_daemon = false
   let needs_poker = true
   let poker_event = Some "heartbeat"
@@ -3715,13 +3708,6 @@ let poker_script_path ~(broker_root : string) : string option =
   | "" -> None
   | dir ->
       let p = dir // "c2c_poker.py" in
-      if Sys.file_exists p then Some p else None
-
-let wire_bridge_script_path ~(broker_root : string) : string option =
-  match resolve_repo_root ~broker_root with
-  | "" -> None
-  | dir ->
-      let p = dir // "c2c_kimi_wire_bridge.py" in
       if Sys.file_exists p then Some p else None
 
 (* ---------------------------------------------------------------------------
@@ -4678,10 +4664,8 @@ let run_outer_loop ~(name : string) ~(client : string)
                (try Unix.close read_fd with _ -> ());
                (try Unix.close write_fd with _ -> ())
            | None -> ());
-          (* Start wire-daemon (Kimi Wire bridge delivery, replaces PTY deliver).
-             Note: kimi flipped needs_wire_daemon=false 2026-04-29 — kimi delivery
-             now lives in start_kimi_notifier below. Wire-bridge code retained for
-             any future ephemeral-no-TUI client that opts in. *)
+          (* Start wire-daemon for clients that set needs_wire_daemon=true
+             (opencode/codex; kimi uses C2c_kimi_notifier instead). *)
           (if !wire_pid = None && cfg.needs_wire_daemon then begin
              let alias = Option.value alias_override ~default:name in
              match start_wire_daemon ~name ~alias ~broker_root () with

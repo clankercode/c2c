@@ -52,8 +52,10 @@ they don't regress silently.
 | `alias_casefold_invariant_violated` | CRIT | alias / TOFU | #432 §3 |
 | `alias_resolve_multi_match` | LOW | alias-resolution diagnostic | #432 follow-up |
 | `dead_letter_write` | MED | delivery diagnostic | #433 |
+| `json_cap_exceeded` | MED | JSON read-cap triggered | Slice F follow-up |
 | `relay_e2e_pin_first_seen` | MED | relay-crypto TOFU | CRIT-1 Slice B follow-up |
 | `send_memory_handoff` | MED | feature audit | #286 |
+| `session_id_differs_from_alias` | MED | session_id≠alias on registration | #529 |
 | `peer_pass_reject` | HIGH | peer-pass security | #29 H1 / H2b |
 | `peer_pass_pin_rotate` | HIGH | TOFU rotation success | #432 TOFU 5 |
 | `peer_pass_pin_rotate_unauth` | HIGH | TOFU rotation reject | #432 TOFU 4 |
@@ -67,8 +69,6 @@ they don't regress silently.
 | `nudge_enqueue` | LOW | nudge diagnostic | #335 |
 | `nudge_tick` | LOW | nudge diagnostic | #335 |
 | `dm_enqueue` | MED | delivery audit | #488 |
-| `json_cap_exceeded` | MED | JSON read-cap triggered | Slice F follow-up |
-| `session_id_differs_from_alias` | MED | session_id≠alias on registration | #529 |
 | `relay_pin_delete` | MED | operator pin management | #432 Slice D |
 | `relay_pin_rotate` | MED | operator pin management | #432 Slice D |
 | `rpc` | LOW | RPC audit | pre-existing (always present) |
@@ -175,6 +175,32 @@ when the dead letter is on the relay side.
 
 ---
 
+### `json_cap_exceeded`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "json_cap_exceeded",
+  "file": "<path>",
+  "max_bytes": <int>
+}
+```
+
+**Fires when**: a JSON file (inbox or archive) exceeds the read-cap limit
+and is skipped. Best-effort audit logging — silently ignores all errors so
+logging never blocks the read path.
+
+**File**: `ocaml/c2c_broker.ml` `log_json_cap_exceeded`.
+
+**Operational meaning**: operators need observability when the cap triggers.
+Follow-up to Slice F (non-blocking note).
+
+---
+
 ### `relay_e2e_pin_first_seen`
 
 **Severity**: MED
@@ -242,6 +268,35 @@ their inbox.
 
 **Cross-link**: `.collab/runbooks/per-agent-memory.md` §send-memory-handoff;
 #327 (broker.log line per handoff attempt).
+
+---
+
+### `session_id_differs_from_alias`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "session_id_differs_from_alias",
+  "session_id": "<session-id-passed-to-register>",
+  "alias": "<alias>"
+}
+```
+
+**Fires when**: a registration call passes a `session_id` that differs from
+`alias`. The broker uses `alias` as the canonical key; the mismatched
+`session_id` is noted for audit purposes.
+
+**File**: `ocaml/c2c_broker.ml` `register` function.
+
+**Operational meaning**: audit trail for #529 session_id≠alias hygiene.
+A mismatch may indicate a client-side registration bug or a relay routing
+issue where the session_id doesn't match the expected alias.
+
+**Cross-link**: #529.
 
 ---
 

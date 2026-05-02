@@ -24,7 +24,7 @@ Last updated: 2026-04-26
 | 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | Experimental; not real-time |
 | 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP tool that drains and returns pending messages | Yes | Yes | Yes | Yes | Working (universal baseline) |
 | 6 | [Wake Daemon](#6-wake-daemon) | inotifywait watches inbox, PTY-injects a poll sentinel to wake idle agents | Yes | Yes | Yes | Yes | Working; per-client variants |
-| 7 | [Kimi Wire Bridge](#7-kimi-wire-bridge) | Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method | No | No | No | Yes | Proven; preferred for Kimi |
+| 7 | [Kimi Wire Bridge](#7-kimi-wire-bridge) | Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method | No | No | No | Deprecated | Deprecated; notification-store is preferred |
 | 8 | [OpenCode Native Plugin](#8-opencode-native-plugin) | TypeScript plugin polls broker, delivers via `promptAsync` | No | No | Yes | No | Proven; preferred for OpenCode |
 
 ---
@@ -351,7 +351,7 @@ injection text and PTY coordination:
 | `c2c_claude_wake_daemon.py` (**deprecated**) | Claude Code | Wake prompt asking the agent to call `poll_inbox` |
 | `c2c-deliver-inbox --notify-only` (OCaml binary) | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel |
 | `c2c_opencode_wake_daemon.py` (**deprecated**) | OpenCode | Superseded by TypeScript plugin + `c2c monitor` subprocess |
-| `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by `c2c wire-daemon` (Wire JSON-RPC, no PTY) |
+| `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by notification-store (C2c_kimi_notifier, file-based push) |
 | `c2c_crush_wake_daemon.py` (**deprecated**) | Crush | Unreliable; Crush not a first-class peer |
 
 #### Client support
@@ -361,7 +361,7 @@ injection text and PTY coordination:
 | Claude Code | Yes (gap) | PostToolUse hook covers active tool calls. AFK gap (idle session) has no non-PTY fix yet; `c2c_claude_wake_daemon.py` deprecated. |
 | Codex | Yes | `c2c-deliver-inbox --notify-only --loop` (OCaml binary) started by managed harness. |
 | OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via `c2c monitor` subprocess → `promptAsync`. No PTY. |
-| Kimi | Yes ✓ | `c2c wire-daemon` (Wire JSON-RPC). Preferred over deprecated PTY wake. |
+| Kimi | Yes ✓ | Notification-store (C2c_kimi_notifier, file-based push). Preferred over deprecated PTY wake. |
 | Crush | Deprecated | Unreliable; Crush lacks context compaction. |
 
 #### Key files
@@ -371,7 +371,7 @@ injection text and PTY coordination:
 | `c2c_claude_wake_daemon.py` | Claude Code PTY wake — **deprecated** |
 | `c2c-deliver-inbox` (OCaml binary) | Codex notify daemon (with `--notify-only --loop`); Python `c2c_deliver_inbox.py` is a fallback |
 | `c2c_opencode_wake_daemon.py` | OpenCode PTY wake — **deprecated**; use TypeScript plugin |
-| `c2c_kimi_wake_daemon.py` | Kimi PTY wake — **deprecated**; use Wire bridge |
+| `c2c_kimi_wake_daemon.py` | Kimi PTY wake — **deprecated**; use notification-store (C2c_kimi_notifier) |
 | `c2c_crush_wake_daemon.py` | Crush PTY wake — **deprecated** |
 | `ocaml/c2c_poker.ml` (`C2c_poker`) | Shared PTY injection helper used by all daemons; Python `c2c_poker.py` is a fallback |
 
@@ -389,6 +389,8 @@ injection text and PTY coordination:
 ---
 
 ### 7. Kimi Wire Bridge
+
+> **Deprecated for Kimi (2026-04-29).** The [Kimi notification-store delivery](#9-kimi-notification-store) (Section 9) is the preferred path. The wire-bridge code (`c2c_wire_bridge.ml`, `c2c_wire_daemon.ml`) is retained for opencode/codex and future clients that set `needs_wire_daemon=true`.
 
 **Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method** --
 A native delivery path that avoids all PTY hacking by using Kimi's built-in
@@ -427,7 +429,7 @@ daemon pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
 | Claude Code | No | Claude Code does not expose a Wire-style JSON-RPC protocol. |
 | Codex | No | Codex does not expose a Wire-style JSON-RPC protocol. |
 | OpenCode | No | OpenCode does not expose a Wire-style JSON-RPC protocol. |
-| Kimi | Yes | Preferred delivery path. Live-proven 2026-04-14. |
+| Kimi | Deprecated | **Deprecated 2026-04-29.** Use Section 9 (notification-store) instead. Live-proven 2026-04-14. |
 
 #### Key files
 
@@ -435,17 +437,18 @@ daemon pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
 |------|------|
 | `ocaml/c2c_wire_bridge.ml` | Bridge implementation (OCaml, primary): inbox drain, spool, Wire delivery |
 | `ocaml/c2c_wire_daemon.ml` / `c2c wire-daemon` | Lifecycle manager (OCaml, primary) for Wire bridge background daemons |
-| `c2c_kimi_wire_bridge.py` / `c2c_wire_daemon.py` | Legacy Python implementations retained only for the Python CLI shim |
+| `c2c_kimi_wire_bridge.py` / `c2c_wire_daemon.py` | Legacy Python implementations retained only for the Python CLI shim; `c2c_kimi_wire_bridge.py` moved to `deprecated/` |
 
 #### Limitations
 
-- Kimi-specific: no other client exposes a similar JSON-RPC stdin/stdout
+- **Deprecated for Kimi.** No other client exposes a similar JSON-RPC stdin/stdout
   interface for prompt injection.
 - Requires `kimi` binary in PATH with `--wire` support.
 - Wire subprocess is started per delivery batch, not kept alive between polls
   (loop mode only launches Wire when there is work).
 - Spool file retains messages on delivery failure for retry, but there is no
   automatic retry backoff.
+- **For Kimi: use Section 9 (notification-store) instead.**
 
 ---
 
@@ -500,6 +503,57 @@ until the plugin drains them and injects them through the official plugin API.
 
 ---
 
+### 9. Kimi Notification-Store
+
+**File-based notification push to Kimi's native notification subsystem** --
+The canonical delivery path for Kimi since 2026-04-29, replacing the
+deprecated wire-bridge path.
+
+#### How it works
+
+`c2c start kimi` forks a **kimi-notifier daemon** alongside the kimi TUI
+process. The notifier:
+
+1. Polls the c2c broker inbox every 2 seconds.
+2. Drains messages for the Kimi alias.
+3. Resolves the active kimi session-id by parsing `~/.kimi/logs/kimi.log`.
+4. Writes a notification JSON file to
+   `~/.kimi/sessions/<workspace-hash>/<session-id>/notifications/<id>/event.json`.
+5. Optionally sends a tmux `send-keys` wake-prompt when the kimi pane appears idle.
+
+Kimi-cli's built-in notification subsystem handles toast display (shell-sink) and
+agent-context injection (llm-sink, drained at turn boundaries).
+
+#### Client support
+
+| Client | Supported | Notes |
+|--------|-----------|-------|
+| Kimi | **Yes — Preferred** | File-based push to notification store. Replaces wire-bridge. |
+| Claude Code | No | — |
+| Codex | No | — |
+| OpenCode | No | — |
+
+#### Key files
+
+| File | Role |
+|------|------|
+| `ocaml/c2c_kimi_notifier.ml` / `.mli` | Notifier daemon implementation |
+| `ocaml/c2c_start.ml` (`start_kimi_notifier`) | Spawning logic in `run_outer_loop` |
+| `deprecated/c2c_kimi_wire_bridge.py` | **Deprecated** wire-bridge (retained for reference) |
+
+#### Limitations
+
+- Requires kimi session to be active and a session-id resolvable from `kimi.log`.
+- LLM-sink injection only at agent turn boundaries (not immediate).
+- tmux send-keys wake-prompt may not fire if pane is in copy-mode.
+- Notifier daemon must be running (`c2c start kimi` starts it automatically).
+
+See [`.collab/runbooks/kimi-notification-store-delivery.md`]({% link
+.collab/runbooks/kimi-notification-store-delivery.md %}) for the full
+troubleshooting guide.
+
+---
+
 ## Delivery Method Selection by Client
 
 Which methods are primary, fallback, or unavailable for each client:
@@ -512,7 +566,8 @@ Which methods are primary, fallback, or unavailable for each client:
 | History.jsonl Injection | Experimental | -- | -- | -- |
 | poll_inbox Tool | Baseline | Baseline | Baseline | Baseline |
 | Wake Daemon | Idle bridge | **Primary daemon** | Fallback | Fallback |
-| Kimi Wire Bridge | -- | -- | -- | **Primary** |
+| Kimi Wire Bridge | -- | -- | -- | Deprecated |
+| Kimi Notification-Store | -- | -- | -- | **Primary** |
 | OpenCode Native Plugin | -- | -- | **Primary** | -- |
 
 **Primary** = recommended path installed by `c2c install <client>`.
