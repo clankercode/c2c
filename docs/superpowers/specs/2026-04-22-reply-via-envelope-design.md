@@ -54,7 +54,7 @@ The `source` attribute is already a parameter in `format_envelope` (shown as `"b
 ```ocaml
 let format_envelope ?(reply_via="c2c_send") (msg : C2c_mcp.message) =
   Printf.sprintf
-    "<c2c event=\"message\" from=\"%s\" alias=\"%s\" source=\"%s\" reply_via=\"%s\" action_after=\"continue\">\n%s\n</c2c>"
+    "<c2c event=\"message\" from=\"%s\" to=\"%s\" source=\"%s\" reply_via=\"%s\" action_after=\"continue\">\n%s\n</c2c>"
     (xml_escape msg.from_alias)
     (xml_escape msg.to_alias)
     (xml_escape (Option.value msg.source ~default:"broker"))
