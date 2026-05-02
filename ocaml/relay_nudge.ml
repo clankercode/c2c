@@ -96,38 +96,35 @@ let pid_state_label (reg : registration) =
 
 (* #335: structured log for each nudge-enqueue attempt. Mirrors the
    `log_handoff_attempt` shape from #327 so a single broker.log parser
-   covers both events. Total / never raises. *)
+   covers both events. Total / never raises. Uses Broker_log.append_json
+   for size-based rotation. *)
 let log_nudge_enqueue ~broker_root ~from_session_id ~to_alias ~to_pid_state ~ok =
   (try
-     let path = Filename.concat broker_root "broker.log" in
-     let ts = Unix.gettimeofday () in
-     let line =
+     let json =
        `Assoc
-         [ ("ts", `Float ts)
+         [ ("ts", `Float (Unix.gettimeofday ()))
          ; ("event", `String "nudge_enqueue")
          ; ("from_session_id", `String from_session_id)
          ; ("to_alias", `String to_alias)
          ; ("to_pid_state", `String to_pid_state)
          ; ("ok", `Bool ok)
          ]
-       |> Yojson.Safe.to_string
      in
-     C2c_io.append_jsonl path line
+     Broker_log.append_json ~broker_root ~json
    with _ -> ())
 
 (* #335: structured log for each nudge-tick fire. Counts let us verify
    whether the multi-broker amplification hypothesis holds (one tick per
-   alive MCP server per cadence period). Total / never raises. *)
+   alive MCP server per cadence period). Total / never raises.
+   Uses Broker_log.append_json for size-based rotation. *)
 let log_nudge_tick ~broker_root ~from_session_id ~alive_total
     ~idle_eligible ~sent ~skipped_dnd ~alive_no_pid
     ~unknown_with_pid ~dead
     ~cadence_minutes ~idle_minutes =
   (try
-     let path = Filename.concat broker_root "broker.log" in
-     let ts = Unix.gettimeofday () in
-     let line =
+     let json =
        `Assoc
-         [ ("ts", `Float ts)
+         [ ("ts", `Float (Unix.gettimeofday ()))
          ; ("event", `String "nudge_tick")
          ; ("from_session_id", `String from_session_id)
          ; ("alive_total", `Int alive_total)
@@ -140,9 +137,8 @@ let log_nudge_tick ~broker_root ~from_session_id ~alive_total
          ; ("cadence_minutes", `Float cadence_minutes)
          ; ("idle_minutes", `Float idle_minutes)
          ]
-       |> Yojson.Safe.to_string
      in
-     C2c_io.append_jsonl path line
+     Broker_log.append_json ~broker_root ~json
    with _ -> ())
 
 (* #335: nudge_session — sends one nudge and logs the enqueue. Threads
