@@ -124,6 +124,11 @@
  (libraries c2c_mcp alcotest base64 unix))
 
 (test
+ (name test_broker_log)
+ (modules test_broker_log)
+ (libraries c2c_mcp alcotest unix))
+
+(test
  (name test_relay_nudge)
  (modules test_relay_nudge)
  (libraries c2c_mcp alcotest unix))

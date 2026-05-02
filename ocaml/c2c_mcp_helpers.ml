@@ -713,11 +713,5 @@ let parse_alias_list raw =
    the try/ts/path/Yojson/append_jsonl pattern. Best-effort: audit
    failures must never block the broker's primary path. *)
 let log_broker_event ~broker_root event_name fields =
-  try
-    let path = Filename.concat broker_root "broker.log" in
-    let line =
-      `Assoc (("event", `String event_name) :: fields)
-      |> Yojson.Safe.to_string
-    in
-    C2c_io.append_jsonl path line
-  with _ -> ()
+  let json = `Assoc (("event", `String event_name) :: fields) in
+  Broker_log.append_json ~broker_root ~json
