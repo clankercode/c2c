@@ -250,30 +250,34 @@ let test_send_unknown_alias_reports_error () =
 (* ------------------------------------------------------------------------- *)
 
 let test_whoami_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 C2C_MCP_ALIAS=cli-test-alias c2c whoami > /dev/null 2>&1" in
+  (* Use a fake session ID so whoami exits 0 even without a real registration *)
+  let cmd = "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c whoami > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c whoami exits 0" 0 rc
 
-let test_whoami_output_contains_alias () =
+let test_whoami_output_contains_alias_field () =
   let tmpfile = Filename.temp_file "c2c-whoami" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
       ignore (Sys.command (Printf.sprintf
-        "C2C_CLI_FORCE=1 C2C_MCP_ALIAS=cli-test-alias c2c whoami > %s 2>&1"
+        "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c whoami > %s 2>&1"
         tmpfile));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
-      check bool "whoami output contains alias keyword" true
-        (string_contains content "alias"))
+      (* whoami output always contains "alias:" field label and "session_id:" *)
+      check bool "whoami output contains alias field" true
+        (string_contains content "alias:");
+      check bool "whoami output contains session_id field" true
+        (string_contains content "session_id:"))
 
 (* ------------------------------------------------------------------------- *)
 (* c2c history — verify message history display                             *)
 (* ------------------------------------------------------------------------- *)
 
 let test_history_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 C2C_MCP_ALIAS=cli-test-alias c2c history > /dev/null 2>&1" in
+  let cmd = "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c history > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c history exits 0" 0 rc
 
@@ -374,7 +378,7 @@ let () =
         ] )
     ; ( "whoami",
         [ ( "whoami exits 0", `Quick, test_whoami_exits_zero )
-        ; ( "whoami output contains alias", `Quick, test_whoami_output_contains_alias )
+        ; ( "whoami output contains alias field", `Quick, test_whoami_output_contains_alias_field )
         ] )
     ; ( "history",
         [ ( "history exits 0", `Quick, test_history_exits_zero )
