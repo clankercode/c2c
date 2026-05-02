@@ -5,11 +5,86 @@
 
    Mechanical move — no behavior change. The bodies are byte-for-byte
    identical to the original arms with free locals lifted into named
-   parameters ([broker], [session_id_override], [arguments]). *)
+   parameters ([broker], [session_id_override], [arguments]).
+
+   #450 Slice 7: [encrypt_content_for_recipient] extracted from [send]
+   lines 60-131 (mechanical hoist, same pattern as S6). *)
 
 open C2c_mcp_helpers
 open C2c_mcp_helpers_post_broker
 module Broker = C2c_broker
+
+(* #450 S7: encryption helper — mechanically hoisted from [send] lines 60-131.
+   Free vars lifted to named parameters: broker, from_alias, to_alias, content, ts.
+   No behavior change. *)
+let encrypt_content_for_recipient
+    ~(broker : Broker.t)
+    ~(from_alias : string)
+    ~(to_alias : string)
+    ~(content : string)
+    ~(ts : float) : [> `Encrypted of string | `Key_changed of string | `Plain of string ] =
+  (* #432: case-insensitive alias matching mirrors
+     [resolve_live_session_id_by_alias] so the
+     enc-pubkey lookup cannot disagree with the
+     inbox-write target. *)
+  let to_alias_cf = Broker.alias_casefold to_alias in
+  let recipient_reg =
+    Broker.list_registrations broker
+    |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf)
+  in
+  match recipient_reg with
+  | Some _ -> `Plain content
+  | None ->
+    let recipient_reg =
+      Broker.list_registrations broker
+      |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf && r.enc_pubkey <> None)
+    in
+    match recipient_reg with
+    | None -> `Plain content
+    | Some reg ->
+      match reg.enc_pubkey with
+      | None -> `Plain content
+      | Some recipient_pk_b64 ->
+        (match Broker.get_pinned_x25519 to_alias with
+        | Some pinned when pinned <> recipient_pk_b64 ->
+          `Key_changed to_alias
+        | _ ->
+          (match Relay_enc.load_or_generate ~alias:from_alias () with
+           | Error e ->
+             Printf.eprintf "send: load_or_generate x25519 failed: %s\n" e;
+             `Plain content
+           | Ok our_x25519 ->
+             let sender_pk_b64 = Relay_enc.b64url_encode our_x25519.public_key in
+             Broker.pin_x25519_sync ~alias:to_alias ~pk:recipient_pk_b64 |> ignore;
+             let our_ed25519 = Broker.load_or_create_ed25519_identity () in
+             let our_ed_pubkey_b64 = Relay_enc.b64url_encode our_ed25519.public_key in
+             Broker.pin_ed25519_sync ~alias:from_alias ~pk:our_ed_pubkey_b64 |> ignore;
+             let sk_seed = our_x25519.private_key_seed in
+             match Relay_e2e.encrypt_for_recipient
+                     ~pt:content
+                     ~recipient_pk_b64:recipient_pk_b64
+                     ~our_sk_seed:sk_seed with
+             | None -> `Plain content
+             | Some (ct_b64, nonce_b64) ->
+               let recipient_entry = Relay_e2e.make_recipient
+                 ~alias:to_alias ~ct_b64 ~nonce:nonce_b64
+               in
+               let our_ed25519_pk_b64 =
+                 Relay_e2e.b64_encode our_ed25519.public_key
+               in
+               let envelope : Relay_e2e.envelope = {
+                 from_ = from_alias;
+                 from_x25519 = Some sender_pk_b64;
+                 from_ed25519 = Some our_ed25519_pk_b64;
+                 to_ = Some to_alias;
+                 room = None;
+                 ts = Int64.of_float ts;
+                 enc = "box-x25519-v1";
+                 recipients = [ recipient_entry ];
+                 sig_b64 = "";
+                 envelope_version = Relay_e2e.current_envelope_version;
+                } in
+                `Encrypted (Yojson.Safe.to_string (Relay_e2e.envelope_to_json (Relay_e2e.set_sig envelope ~sk_seed:our_ed25519.private_key_seed)))))
 
 (** Receipt-visible side-channel data produced by [verify_peer_pass_dm].
     Available on [Allow] and [Warn] paths; callers include these fields
@@ -170,78 +245,9 @@ let send ~broker ~session_id_override ~arguments =
                  let content = (tag_to_body_prefix tag_opt) ^ content in
 let ts = Unix.gettimeofday () in
                   let effective_content =
-                    (* #432: case-insensitive alias matching mirrors
-                       [resolve_live_session_id_by_alias] so the
-                       enc-pubkey lookup cannot disagree with the
-                       inbox-write target. *)
-                    let to_alias_cf = Broker.alias_casefold to_alias in
-                    let recipient_reg =
-                      Broker.list_registrations broker
-                      |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf)
-                    in
-                    match recipient_reg with
-                    | Some _ -> `Plain content
-                    | None ->
-                      let recipient_reg =
-                        Broker.list_registrations broker
-                        |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf && r.enc_pubkey <> None)
-                      in
-                      match recipient_reg with
-                      | None -> `Plain content
-                      | Some reg ->
-                        match reg.enc_pubkey with
-                        | None -> `Plain content
-                        | Some recipient_pk_b64 ->
-                          (match Broker.get_pinned_x25519 to_alias with
-                        | Some pinned when pinned <> recipient_pk_b64 ->
-                          `Key_changed to_alias
-                        | _ ->
-                          let _session_id =
-                            match session_id_override with
-                            | Some sid -> sid
-                            | None ->
-                                (match current_session_id () with
-                                 | Some sid -> sid
-                                 | None -> from_alias)
-                          in
-                          (match Relay_enc.load_or_generate ~alias:from_alias () with
-                            | Error e ->
-                              Printf.eprintf "send: load_or_generate x25519 failed: %s\n" e;
-                              `Plain content
-                             | Ok our_x25519 ->
-                              let sender_pk_b64 = Relay_enc.b64url_encode our_x25519.public_key in
-                              Broker.pin_x25519_sync ~alias:to_alias ~pk:recipient_pk_b64 |> ignore;
-                              let our_ed25519 = Broker.load_or_create_ed25519_identity () in
-                              let our_ed_pubkey_b64 = Relay_enc.b64url_encode our_ed25519.public_key in
-                              Broker.pin_ed25519_sync ~alias:from_alias ~pk:our_ed_pubkey_b64 |> ignore;
-                              let sk_seed = our_x25519.private_key_seed in
-                             match Relay_e2e.encrypt_for_recipient
-                                     ~pt:content
-                                     ~recipient_pk_b64:recipient_pk_b64
-                                     ~our_sk_seed:sk_seed with
-                             | None -> `Plain content
-                             | Some (ct_b64, nonce_b64) ->
-                               let recipient_entry = Relay_e2e.make_recipient
-                                 ~alias:to_alias ~ct_b64 ~nonce:nonce_b64
-                               in
-                               let our_ed25519_pk_b64 =
-                                 Relay_e2e.b64_encode our_ed25519.public_key
-                               in
-                               let envelope : Relay_e2e.envelope = {
-                                 from_ = from_alias;
-                                 from_x25519 = Some sender_pk_b64;
-                                 from_ed25519 = Some our_ed25519_pk_b64;
-                                 to_ = Some to_alias;
-                                 room = None;
-                                 ts = Int64.of_float ts;
-                                 enc = "box-x25519-v1";
-                                 recipients = [ recipient_entry ];
-                                 sig_b64 = "";
-                                 envelope_version = Relay_e2e.current_envelope_version;
-                               } in
-                               let signed = Relay_e2e.set_sig envelope ~sk_seed:our_ed25519.private_key_seed in
-                               `Encrypted (Yojson.Safe.to_string (Relay_e2e.envelope_to_json signed))))
-                 in
+                    encrypt_content_for_recipient
+                      ~broker ~from_alias ~to_alias ~content ~ts
+                  in
                  match effective_content with
                  | `Key_changed alias ->
                    let err = Printf.sprintf "send rejected: enc_status:key-changed — %s's x25519 key differs from known pin (possible relay tamper). Re-send after trust --repin %s." alias alias in
