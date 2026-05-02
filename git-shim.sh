@@ -1,13 +1,14 @@
 #!/bin/bash
-# git-shim: refuses git reset --hard <ref> in main tree when it would lose commits;
-# refuses git commit on main/master branches by default (Pattern 16).
-# C2C_COORDINATOR=1 bypasses. C2C_COMMIT_REFUSE=0 restores warn-only.
+# git-shim: guards destructive / branch-ref-mutating git operations in the
+# main tree. Non-coordinators must use worktrees for these operations.
+# C2C_COORDINATOR=1 bypasses all guards.
 #
-# Install: add this dir to PATH, BEFORE the real git.
-# The shim detects "git reset --hard <target>" and checks whether <target>
-# is strictly behind HEAD. If so, it refuses unless C2C_COORDINATOR=1.
-# For git commit, it warns (or refuses with C2C_COMMIT_REFUSE=1) when
-# running in the main tree (cwd = main repo root) unless C2C_COORDINATOR=1.
+# Guarded operations:
+#   - git reset --hard <ref>  — refuses when <ref> is behind HEAD (commit loss)
+#   - git commit              — refuses on main/master in main tree
+#   - git switch <branch>     — refuses branch-ref mutations in main tree
+#   - git checkout <branch>   — refuses branch-switching form (allows file ops)
+#   - git rebase <upstream>   — refuses all forms except --continue/--abort/--skip
 #
 # The main-tree guard fires when .git is a directory (main repo).
 # Worktrees have .git as a file (gitdir reference) — never fire the guard.
@@ -16,6 +17,8 @@
 # `c2c install all`). The c2c binary's install step copies this file into the
 # same directory as the attribution shim (the "git" shim) so both are found via
 # PATH ordering when the shim directory is prepended to PATH.
+#
+# Design: .collab/design/2026-05-02-hardening-c-pre-reset-shim-branch-guard.md
 
 set -euo pipefail
 
@@ -81,8 +84,21 @@ check_reset_hard() {
     target_behind_head "$target"
 }
 
+# ---------------------------------------------------------------------------
+# Shared refusal message for branch-ref mutations in main tree.
+# $1 = the full git command description (e.g. "git switch feature-branch")
+# ---------------------------------------------------------------------------
+refuse_branch_mutation() {
+    echo "fatal: git-shim refused '$1' in main tree." >&2
+    echo "fatal: branch-ref-mutating operations are not allowed in the main tree." >&2
+    echo "fatal: use a worktree for this operation, or set C2C_COORDINATOR=1 to bypass." >&2
+    exit 128
+}
+
 main() {
-    # Dispatch: handle reset and commit specially; pass everything else through.
+    # Dispatch: handle destructive/branch-ref-mutating ops specially;
+    # pass everything else through to /usr/bin/git.
+    # Guards: reset (--hard), commit, switch, checkout, rebase.
     case "$1" in
         reset)
             # "git reset" — check for --hard
@@ -155,15 +171,181 @@ main() {
             fi
             exec /usr/bin/git "$@"
             ;;
+        switch)
+            # git switch — branch-ref mutation guard.
+            # Refuse: switch <branch>, switch -c <branch>, switch -C <branch>
+            # Allow:  switch - (previous branch), switch with no args, --help, --version
+            local orig_args=("$@")
+            if is_main_tree && [ "$COORDINATOR" != "1" ]; then
+                shift  # consume "switch"
+                local switch_refuse=false
+                while [ $# -gt 0 ]; do
+                    case "$1" in
+                        -)
+                            # "switch -" = return to previous branch — allowed
+                            ;;
+                        -c|-C|--create|--force-create)
+                            # Create + switch — refuse
+                            switch_refuse=true
+                            break
+                            ;;
+                        --help|--version)
+                            # Info-only — allow
+                            ;;
+                        -*)
+                            # Other flags (-d/--detach, -q, etc.) — ignore
+                            ;;
+                        *)
+                            # Positional arg = branch name — refuse
+                            switch_refuse=true
+                            break
+                            ;;
+                    esac
+                    shift
+                done
+                if [ "$switch_refuse" = "true" ]; then
+                    refuse_branch_mutation "git switch ..."
+                fi
+            fi
+            exec /usr/bin/git "${orig_args[@]}"
+            ;;
+        checkout)
+            # git checkout — dual-purpose command: branch switching AND file operations.
+            #
+            # Branch-switching form (REFUSE in main tree):
+            #   git checkout <branch>
+            #   git checkout -b <branch>
+            #   git checkout HEAD~1  (detaches HEAD)
+            #
+            # File operation form (ALLOW):
+            #   git checkout -- <file>
+            #   git checkout <rev> -- <file>
+            #   git checkout -  (return to previous branch)
+            #
+            # Key signal: presence of "--" separator → always a file operation.
+            local orig_args=("$@")
+            if is_main_tree && [ "$COORDINATOR" != "1" ]; then
+                local has_double_hyphen=false
+                local has_positional=false
+                local has_create_flag=false
+                local first_positional=""
+
+                shift  # consume "checkout"
+                while [ $# -gt 0 ]; do
+                    case "$1" in
+                        --)
+                            has_double_hyphen=true
+                            break
+                            ;;
+                        -b|-B)
+                            has_create_flag=true
+                            ;;
+                        -)
+                            # "checkout -" = return to previous branch — safe
+                            ;;
+                        -*)
+                            # Other flags (--ours, --theirs, -f, -q, etc.)
+                            ;;
+                        *)
+                            if [ "$has_positional" = "false" ]; then
+                                first_positional="$1"
+                                has_positional=true
+                            fi
+                            ;;
+                    esac
+                    shift
+                done
+
+                if [ "$has_double_hyphen" = "false" ]; then
+                    # No "--" separator — could be branch-switching
+                    if [ "$has_create_flag" = "true" ]; then
+                        refuse_branch_mutation "git checkout -b ..."
+                    elif [ "$has_positional" = "true" ] && [ "$first_positional" != "-" ]; then
+                        refuse_branch_mutation "git checkout $first_positional"
+                    fi
+                fi
+                # If we get here, it's allowed (file op or "-")
+            fi
+            exec /usr/bin/git "${orig_args[@]}"
+            ;;
+        rebase)
+            # git rebase — always a branch-ref mutation.
+            # Refuse: rebase <upstream>, rebase --onto, rebase -i
+            # Allow:  rebase --continue, rebase --abort, rebase --skip (state management)
+            local orig_args=("$@")
+            if is_main_tree && [ "$COORDINATOR" != "1" ]; then
+                shift  # consume "rebase"
+                local rebase_state_mgmt=false
+                while [ $# -gt 0 ]; do
+                    case "$1" in
+                        --continue|--abort|--skip|--quit)
+                            rebase_state_mgmt=true
+                            break
+                            ;;
+                        *)
+                            ;;
+                    esac
+                    shift
+                done
+                if [ "$rebase_state_mgmt" = "false" ]; then
+                    refuse_branch_mutation "git rebase ..."
+                fi
+            fi
+            exec /usr/bin/git "${orig_args[@]}"
+            ;;
         --self-test)
-            # Smoke-test: verify shim loads without errors under set -euo pipefail.
-            # Runs git rev-parse to confirm end-to-end correctness.
+            # Smoke-test: verify shim loads without errors under set -euo pipefail
+            # and that branch-ref-mutation guards fire correctly.
             # Exit 0 on success, non-zero on any failure.
-            if git rev-parse --short HEAD > /dev/null 2>&1; then
+            local failures=0
+
+            # Basic: git rev-parse works through the shim
+            if ! /usr/bin/git rev-parse --short HEAD > /dev/null 2>&1; then
+                echo "FAIL: git rev-parse --short HEAD" >&2
+                failures=$((failures + 1))
+            fi
+
+            # Guard tests: only meaningful in main tree with COORDINATOR unset
+            if is_main_tree && [ "${C2C_COORDINATOR:-0}" != "1" ]; then
+                # switch should refuse
+                if "$0" switch test-branch-does-not-exist > /dev/null 2>&1; then
+                    echo "FAIL: 'git switch <branch>' was not refused in main tree" >&2
+                    failures=$((failures + 1))
+                fi
+                # checkout <branch> should refuse
+                if "$0" checkout test-branch-does-not-exist > /dev/null 2>&1; then
+                    echo "FAIL: 'git checkout <branch>' was not refused in main tree" >&2
+                    failures=$((failures + 1))
+                fi
+                # checkout -- <file> should be allowed. Use a file that exists in the repo
+                # so git itself succeeds (exit 0). If shim refuses, exit = 128.
+                local co_rc=0
+                "$0" checkout -- CLAUDE.md > /dev/null 2>&1 || co_rc=$?
+                if [ "$co_rc" -eq 128 ]; then
+                    echo "FAIL: 'git checkout -- <file>' was refused (should be allowed)" >&2
+                    failures=$((failures + 1))
+                fi
+                # rebase should refuse
+                if "$0" rebase origin/master > /dev/null 2>&1; then
+                    echo "FAIL: 'git rebase <upstream>' was not refused in main tree" >&2
+                    failures=$((failures + 1))
+                fi
+                # rebase --abort should be allowed. Since git returns 128 when no rebase
+                # is in progress, we can't distinguish shim-refuse from git-error by exit
+                # code alone. Instead, check stderr for the shim's signature message.
+                local rb_stderr=""
+                rb_stderr=$("$0" rebase --abort 2>&1 || true)
+                if echo "$rb_stderr" | grep -q "git-shim refused"; then
+                    echo "FAIL: 'git rebase --abort' was refused by shim (should be allowed)" >&2
+                    failures=$((failures + 1))
+                fi
+            fi
+
+            if [ "$failures" -eq 0 ]; then
                 echo "shim self-test OK"
                 exit 0
             else
-                echo "shim self-test FAILED" >&2
+                echo "shim self-test FAILED ($failures failures)" >&2
                 exit 1
             fi
             ;;
