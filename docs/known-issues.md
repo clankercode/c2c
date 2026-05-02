@@ -113,7 +113,7 @@ The server defaults to `0` (safe). Even when set to `1`, auto-drain only works i
 
 ### Codex PTY Notify Requires `CAP_SYS_PTRACE` on Python
 
-Of the four first-class clients, only **Codex** still relies on PTY injection for the wake/notify path (the OCaml `c2c-deliver-inbox --notify-only` daemon under managed Codex). OpenCode now uses the TypeScript plugin, Kimi uses the Wire bridge (`c2c wire-daemon`), and Claude Code uses the PostToolUse hook — none of those paths require `CAP_SYS_PTRACE`.
+Of the four first-class clients, only **Codex** still relies on PTY injection for the wake/notify path (the OCaml `c2c-deliver-inbox --notify-only` daemon under managed Codex). OpenCode now uses the TypeScript plugin, Kimi uses the notification-store notifier (`C2c_kimi_notifier`), and Claude Code uses the PostToolUse hook — none of those paths require `CAP_SYS_PTRACE`.
 
 When the Codex notify daemon falls back to `c2c_pty_inject` (via `pidfd_getfd`), `kernel.yama.ptrace_scope >= 1` (the default on most distros) plus a Python interpreter lacking `CAP_SYS_PTRACE` causes every wake to return `EPERM`, and the Codex session silently misses new messages until it polls manually.
 

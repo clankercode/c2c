@@ -710,9 +710,10 @@ OCaml `c2c-deliver-inbox` daemon, which writes inbound DMs to kimi-cli's
 native notification store on disk — no PTY injection, no subprocess, no
 dual-agent confusion.
 
-**`c2c-kimi-wire-bridge` (the Python wire-bridge / `kimi --wire` path) is
-deprecated** as of 2026-04-29 (finding `b6455d8e`). Use `c2c-deliver-inbox`
-instead.
+**`c2c-kimi-wire-bridge` (the Python wire-bridge / `kimi --wire` path) was
+removed** — the OCaml `c2c wire-daemon` CLI group was deleted in the
+kimi-wire-bridge-cleanup slice. Kimi delivery now uses the notification-store
+notifier (`C2c_kimi_notifier`), launched automatically by `c2c start kimi`.
 
 `c2c-deliver-inbox` is a standalone binary installed at `~/.local/bin/c2c-deliver-inbox`.
 It is launched automatically by `c2c start kimi`; operators typically do not need
