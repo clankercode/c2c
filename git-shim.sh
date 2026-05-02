@@ -35,11 +35,13 @@ set -euo pipefail
 #   (b) no self-exclusion — the comment said "subtract 1" but the code
 #       never did
 # Fix: pipe pgrep output through grep -v to exclude our own PID ($$).
-# The pgrep process exits before wc runs (pipeline scheduling), so it
-# doesn't self-count in the pipe-based variant.
+# Note: pgrep still sees its own PID in /proc and writes it to the pipe,
+# adding one phantom (+1) to the count.  The effective threshold is
+# therefore C2C_SHIM_SPAWN_MAX - 1.  This is acceptable: the threshold
+# is set high enough (15) to absorb the single phantom.
 # ---------------------------------------------------------------------------
 if [ -z "${C2C_SHIM_GUARD_DISABLE:-}" ]; then
-    shim_count=$(pgrep -f "git-pre-reset" 2>/dev/null | grep -vc "^$$\$" || echo "0")
+    shim_count=$( (pgrep -f "git-pre-reset" 2>/dev/null || true) | grep -v "^$$\$" | wc -l)
     spawn_max="${C2C_SHIM_SPAWN_MAX:-15}"
     if [ "$shim_count" -gt "$spawn_max" ]; then
         echo "git-shim: WARNING: $shim_count shim processes running (threshold $spawn_max); bypassing shim to avoid spawn storm." >&2
