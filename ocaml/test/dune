@@ -177,3 +177,8 @@
  (name test_git_helpers)
  (modules test_git_helpers)
  (libraries c2c_mcp alcotest unix))
+
+(test
+ (name test_git_shim)
+ (modules test_git_shim)
+ (libraries c2c_mcp alcotest unix))
