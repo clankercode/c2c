@@ -17,6 +17,7 @@
    - c2c worktree list
    - c2c worktree gc
    - c2c instances
+   - c2c schedule enable/disable
 
    Each test invokes the c2c binary via Sys.command and verifies
    exit code + output shape. *)
@@ -876,6 +877,89 @@ let test_worktree_gc_refuses_dirty () =
     )
 
 (* ------------------------------------------------------------------------- *)
+(* c2c schedule enable / disable                                             *)
+(* ------------------------------------------------------------------------- *)
+
+let test_schedule_enable_nonexistent_exits_nonzero () =
+  let tmpfile = Filename.temp_file "c2c-sched-en" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let rc = Sys.command
+        (Printf.sprintf "c2c schedule enable nonexistent-test-sched-xyz > %s 2>&1" tmpfile) in
+      check bool "schedule enable nonexistent exits non-zero" true (rc <> 0);
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "output contains not found" true
+        (string_contains content "not found"))
+
+let test_schedule_disable_nonexistent_exits_nonzero () =
+  let tmpfile = Filename.temp_file "c2c-sched-dis" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let rc = Sys.command
+        (Printf.sprintf "c2c schedule disable nonexistent-test-sched-xyz > %s 2>&1" tmpfile) in
+      check bool "schedule disable nonexistent exits non-zero" true (rc <> 0);
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "output contains not found" true
+        (string_contains content "not found"))
+
+let test_schedule_enable_missing_name_exits_nonzero () =
+  let rc = Sys.command "c2c schedule enable > /dev/null 2>&1" in
+  check bool "schedule enable with no args exits non-zero" true (rc <> 0)
+
+let test_schedule_disable_missing_name_exits_nonzero () =
+  let rc = Sys.command "c2c schedule disable > /dev/null 2>&1" in
+  check bool "schedule disable with no args exits non-zero" true (rc <> 0)
+
+let test_schedule_enable_disable_roundtrip () =
+  (* Use c2c schedule set to create a temp schedule, then disable/enable it,
+     and clean up via c2c schedule rm.  This avoids having to locate the
+     schedule directory on disk (it resolves via broker-root, not cwd). *)
+  let sched_name = Printf.sprintf "test-sched-%08x" (Random.bits ()) in
+  (* Create the schedule via CLI *)
+  let rc_set = Sys.command
+    (Printf.sprintf "c2c schedule set %s --interval 5m --message test > /dev/null 2>&1"
+      (Filename.quote sched_name)) in
+  check int "schedule set exits 0" 0 rc_set;
+  Fun.protect ~finally:(fun () ->
+    ignore (Sys.command
+      (Printf.sprintf "c2c schedule rm %s > /dev/null 2>&1" (Filename.quote sched_name))))
+    (fun () ->
+      (* Disable the schedule *)
+      let tmpfile = Filename.temp_file "c2c-sched-rt" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+        (fun () ->
+          let rc = Sys.command
+            (Printf.sprintf "c2c schedule disable %s > %s 2>&1"
+              (Filename.quote sched_name) tmpfile) in
+          check int "schedule disable exits 0" 0 rc;
+          let ch = open_in tmpfile in
+          let content = Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () -> really_input_string ch (in_channel_length ch))
+          in
+          check bool "output contains disabled" true
+            (string_contains content "disabled"));
+      (* Enable the schedule *)
+      let tmpfile2 = Filename.temp_file "c2c-sched-rt2" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile2 |> ignore)
+        (fun () ->
+          let rc = Sys.command
+            (Printf.sprintf "c2c schedule enable %s > %s 2>&1"
+              (Filename.quote sched_name) tmpfile2) in
+          check int "schedule enable exits 0" 0 rc;
+          let ch = open_in tmpfile2 in
+          let content = Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () -> really_input_string ch (in_channel_length ch))
+          in
+          check bool "output contains enabled" true
+            (string_contains content "enabled")))
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -979,5 +1063,12 @@ let () =
         ; ( "agent rename new file exists", `Quick, test_agent_rename_new_file_exists )
         ; ( "agent rename missing old exits non-zero", `Quick, test_agent_rename_missing_old_exits_nonzero )
         ; ( "agent rename existing new exits non-zero", `Quick, test_agent_rename_existing_new_exits_nonzero )
+        ] )
+    ; ( "schedule_enable_disable",
+        [ ( "enable nonexistent schedule exits non-zero", `Quick, test_schedule_enable_nonexistent_exits_nonzero )
+        ; ( "disable nonexistent schedule exits non-zero", `Quick, test_schedule_disable_nonexistent_exits_nonzero )
+        ; ( "enable missing name exits non-zero", `Quick, test_schedule_enable_missing_name_exits_nonzero )
+        ; ( "disable missing name exits non-zero", `Quick, test_schedule_disable_missing_name_exits_nonzero )
+        ; ( "enable/disable roundtrip on temp schedule", `Quick, test_schedule_enable_disable_roundtrip )
         ] )
     ]
