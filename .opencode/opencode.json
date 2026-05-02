@@ -4,15 +4,14 @@
     "c2c": {
       "type": "local",
       "command": [
-        "opam", "exec", "--",
-        "/home/xertrov/src/c2c/_build/default/ocaml/server/c2c_mcp_server.exe"
+        "opam", "exec", "--", "/home/xertrov/.local/bin/c2c-mcp-server"
       ],
       "environment": {
-        "C2C_MCP_DEBUG": "1",
-        "C2C_MCP_BROKER_ROOT": "/home/xertrov/src/c2c/.git/c2c/mcp",
-        "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
+        "C2C_MCP_BROKER_ROOT": "/home/xertrov/.c2c/repos/8fef2c369975/broker",
         "C2C_MCP_AUTO_DRAIN_CHANNEL": "0",
-        "C2C_CLI_COMMAND": "/home/xertrov/.local/bin/c2c"
+        "C2C_MCP_AUTO_JOIN_ROOMS": "swarm-lounge",
+        "C2C_CLI_COMMAND": "/home/xertrov/.local/bin/c2c",
+        "C2C_AUTO_JOIN_ROLE_ROOM": "1"
       },
       "enabled": true
     }

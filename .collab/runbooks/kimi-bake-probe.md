@@ -1,8 +1,11 @@
 # Kimi Bake Probe Runbook
+> **STATUS: ARCHIVED** — The wire-bridge bake window closed 2026-05-01/02.
+> The kimi wire-bridge was fully removed in the `kimi-wire-bridge-cleanup` slice.
+> This runbook is retained for historical reference only.
 
-**Purpose**: Passive health monitoring during the Slice 4 wire-bridge bake window.
+**Original purpose**: Passive health monitoring during the Slice 4 wire-bridge bake window.
 Detects notifier-store delivery regressions in kimi peers *before* the wire-bridge
-deletion is cherry-picked.
+deletion was cherry-picked.
 
 **What it does**: Every ~15 minutes, a Monitor fires `kimi-bake-probe.sh`, which:
 1. Sends a 🔔 probe DM to `kuura-viima` and `lumi-tyyni` asking for a room reply
@@ -146,10 +149,9 @@ env: { KIMI_BAKE_PROBE_TARGETS: "kuura-viima lumi-tyyni my-peer" }
 
 ---
 
-## Slice 4 Bake Window
+## Slice 4 Bake Window (CLOSED)
 
 - **Opens**: ~2026-05-01 22:00 UTC (48h after Slice 4 is on origin/master)
-- **Ends**: When coordinator1 confirms bake passed and cherry-picks Slice 4
-- **Probe purpose**: catch notifier-store regressions before wire-bridge deletion lands
-- **If probe is silent during bake**: healthy — keep monitoring
-- **If HARD-FAIL fires**: alert coordinator1 immediately; do NOT let Slice 4 cherry-pick until regression is resolved
+- **Closed**: 2026-05-02 — coordinator confirmed bake passed; kimi-wire-bridge-cleanup slice landed.
+- **Result**: wire-bridge fully removed. Kimi delivery now uses `C2c_kimi_notifier` only.
+- This runbook is archived; no further bake monitoring needed for this transition.

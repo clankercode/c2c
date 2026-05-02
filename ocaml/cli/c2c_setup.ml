@@ -421,6 +421,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   (* Write deliver-watch supervisor scripts for non-MCP clients. *)
   let home = Sys.getenv "HOME" in
   let client_dir = home // ".c2c" // "clients" // client in
+  mkdir_or_dryrun dry_run client_dir;
   if deliver_watch then
     write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:client
   else if not dry_run then begin
@@ -539,6 +540,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
       (* Write deliver-watch supervisor scripts for non-MCP clients. *)
       let home = Sys.getenv "HOME" in
       let client_dir = home // ".c2c" // "clients" // "kimi" in
+      mkdir_or_dryrun dry_run client_dir;
       if deliver_watch then
         write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"kimi"
       else if not dry_run then begin
@@ -620,6 +622,7 @@ let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_comman
       (* Write deliver-watch supervisor scripts for non-MCP clients. *)
       let home = Sys.getenv "HOME" in
       let client_dir = home // ".c2c" // "clients" // "gemini" in
+      mkdir_or_dryrun dry_run client_dir;
       if deliver_watch then
         write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"gemini"
       else if not dry_run then begin
@@ -808,6 +811,7 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
       (* Write deliver-watch supervisor scripts for non-MCP clients. *)
       let home = Sys.getenv "HOME" in
       let client_dir = home // ".c2c" // "clients" // "opencode" in
+      mkdir_or_dryrun dry_run client_dir;
       if deliver_watch then
         write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"opencode"
       else if not dry_run then begin
@@ -1255,6 +1259,7 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_wat
       (* Write deliver-watch supervisor scripts for non-MCP clients. *)
       let home = Sys.getenv "HOME" in
       let client_dir = home // ".c2c" // "clients" // "crush" in
+      mkdir_or_dryrun dry_run client_dir;
       if deliver_watch then
         write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"crush"
       else if not dry_run then begin

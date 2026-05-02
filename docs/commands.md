@@ -543,8 +543,9 @@ fields: `name`, `interval_s`, `align`, `message`, `only_when_idle`,
 
 ```
 c2c schedule set   <name> --interval DURATION [--align SPEC] [--message TEXT]
-                   [--only-when-idle BOOL] [--idle-threshold DURATION]
-                   [--enabled BOOL] [--json]
+                   [--only-when-idle | --no-only-when-idle]
+                   [--idle-threshold DURATION]
+                   [--enabled | --disabled] [--json]
 c2c schedule list  [--json]
 c2c schedule rm    <name> [--json]
 c2c schedule enable  <name> [--json]
@@ -556,7 +557,8 @@ Identifies the current agent from `C2C_MCP_AUTO_REGISTER_ALIAS`.
 - `set` creates or updates a schedule entry. `--interval` is required;
   duration formats: `4.1m`, `1h`, `30s`, or bare seconds (e.g. `246`).
   `--align` accepts wall-clock specs such as `@1h+7m`. `--only-when-idle`
-  defaults to `true` so the schedule only fires when the agent is idle.
+  / `--no-only-when-idle` toggle idle-only firing (default: idle). `--enabled`
+  / `--disabled` toggle whether the schedule starts active (default: enabled).
 - `list` (default subcommand when no subcommand is given) shows a table or
   JSON array of all schedules for the current alias.
 - `rm` deletes a schedule entry by name.
