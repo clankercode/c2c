@@ -211,6 +211,7 @@ Post a message to a room. Fans out to every member except the sender, with `to_a
 | `room_id` | string | yes | Target room |
 | `content` | string | yes | Message body |
 | `alias` | string | no | Legacy fallback sender alias |
+| `tag` | string | no | Optional visual indicator: `"fail"`, `"blocking"`, or `"urgent"` (#392). Prepended to each recipient's inbox row body. |
 
 **Returns** `{delivered_to, skipped, ts}`.
 
@@ -424,7 +425,7 @@ Validate that a received reply is authorized for a pending request.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `perm_id` | string | yes | Permission/request ID from the reply |
-| `reply_from_alias` | string | yes | Alias the reply claims to be from |
+| `reply_from_alias` | string | no | **DEPRECATED** — ignored; the broker derives the reply alias from the calling session's registration (#432 Slice B) |
 
 ---
 
