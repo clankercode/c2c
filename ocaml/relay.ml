@@ -35,6 +35,13 @@ let relay_err_not_invited = "not_invited"
 let relay_err_not_a_member = "not_a_member"
 let relay_err_unsigned_room_op = "unsigned_room_op"
 
+(* Strip any "@host" or "@host:port" suffix from an alias string.
+   Returns bare alias for hashtbl/registration lookup. #686 *)
+let bare_alias (s : string) : string =
+  match String.index_opt s '@' with
+  | None -> s
+  | Some i -> String.sub s 0 i
+
 (* Gate for Phase 2 migration: when C2C_REQUIRE_SIGNED_ROOM_OPS=1,
    room ops (join/leave/send/invite/uninvite/set_visibility) require
    body-level Ed25519 proof and reject unsigned requests.
@@ -919,7 +926,12 @@ module InMemoryRelay : RELAY = struct
     with_lock t (fun () ->
       let msg_id = match message_id with Some id -> id | None -> generate_uuid () in
       let ts = Unix.gettimeofday () in
-      let recipient = Hashtbl.find_opt t.leases to_alias in
+      (* #686: strip any "@host:port" suffix so bare alias is used for
+         the leases hashtbl lookup. The to_alias from the wire may be
+         "alias@host:port" (from remote connectors); only the bare alias
+         is registered. *)
+      let bare_to_alias = bare_alias to_alias in
+      let recipient = Hashtbl.find_opt t.leases bare_to_alias in
       match recipient with
       | None ->
         let dl = `Assoc [
