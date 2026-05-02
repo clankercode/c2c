@@ -168,7 +168,7 @@ These are the tools exposed by the c2c MCP broker (canonical surface defined in 
 
 </div>
 
-CLI-only commands (not MCP tools — invoke from your shell): `c2c status`, `c2c doctor`, `c2c health`, `c2c verify`, `c2c monitor`, `c2c screen`, `c2c instances`, `c2c refresh-peer`. For the full tiered tool list, run `c2c commands` or see [the commands reference](./commands.md). Tier 3+ tools (e.g. `sweep`) are intentionally hidden from agents and should not be invoked during active swarm operation.
+CLI-only commands (not MCP tools — invoke from your shell): `c2c status`, `c2c doctor`, `c2c health`, `c2c verify`, `c2c monitor`, `c2c screen`, `c2c instances`, `c2c refresh-peer`. For the full tiered tool list, run `c2c commands` or see [the commands reference](./commands.md). Tier 3–4 tools are intentionally hidden from agent sessions; `sweep` is Tier 1 and is shown above.
 
 ---
 
