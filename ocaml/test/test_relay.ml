@@ -105,6 +105,87 @@ let test_relay_register_creates_new_registration () =
   if status <> "ok" then fail_fmt "expected ok, got %s" status;
   if Relay.RegistrationLease.alias lease <> "alice" then fail_fmt "alias mismatch"
 
+(* #578: registration receipt tests *)
+
+let b64url s =
+  Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
+
+let json_get_field_exn json name =
+  match List.assoc_opt name json with
+  | Some v -> v
+  | None -> fail_fmt "receipt: missing field %S" name
+
+let json_string_exn = function
+  | `String s -> s
+  | _ -> fail_fmt "expected String"
+
+let test_build_registration_receipt_json_has_all_fields () =
+  let relay_identity = Relay_identity.generate ~alias_hint:"test-relay" () in
+  let client_pk = Mirage_crypto_ec.Ed25519.generate () |> snd |> Mirage_crypto_ec.Ed25519.pub_to_octets in
+  let client_pk_b64 = b64url client_pk in
+  let ts = "2026-01-01T00:00:00Z" in
+  let nonce = "test_nonce_b64_url_saf" in
+  let receipt = Relay_signed_ops.build_registration_receipt_json
+    ~identity:relay_identity
+    ~alias:"test-alias"
+    ~client_identity_pk_b64:client_pk_b64
+    ~nonce
+    ~ts
+  in
+  match receipt with
+  | `Assoc fields ->
+      let alias_s = json_string_exn (json_get_field_exn fields "alias") in
+      if alias_s <> "test-alias" then fail_fmt "alias mismatch: %s" alias_s;
+      let c_pk = json_string_exn (json_get_field_exn fields "client_identity_pk") in
+      if c_pk <> client_pk_b64 then fail_fmt "client_identity_pk mismatch";
+      let r_pk = json_string_exn (json_get_field_exn fields "relay_identity_pk") in
+      if r_pk <> b64url relay_identity.Relay_identity.public_key
+      then fail_fmt "relay_identity_pk mismatch";
+      let ts_s = json_string_exn (json_get_field_exn fields "ts") in
+      if ts_s <> ts then fail_fmt "ts mismatch";
+      let nonce_s = json_string_exn (json_get_field_exn fields "nonce") in
+      if nonce_s <> nonce then fail_fmt "nonce mismatch";
+      let sig_s = json_string_exn (json_get_field_exn fields "sig") in
+      if sig_s = "" then fail_fmt "sig must be non-empty"
+  | _ -> fail_fmt "receipt should be Assoc"
+
+let test_build_registration_receipt_json_sig_verifies () =
+  let relay_identity = Relay_identity.generate ~alias_hint:"test-relay" () in
+  let client_pk = Mirage_crypto_ec.Ed25519.generate () |> snd |> Mirage_crypto_ec.Ed25519.pub_to_octets in
+  let client_pk_b64 = b64url client_pk in
+  let ts = "2026-01-01T00:00:00Z" in
+  let nonce = "test_nonce_b64_url_saf" in
+  let receipt = Relay_signed_ops.build_registration_receipt_json
+    ~identity:relay_identity
+    ~alias:"test-alias"
+    ~client_identity_pk_b64:client_pk_b64
+    ~nonce
+    ~ts
+  in
+  match receipt with
+  | `Assoc fields ->
+      let relay_pk = json_string_exn (json_get_field_exn fields "relay_identity_pk") in
+      let sig_s = json_string_exn (json_get_field_exn fields "sig") in
+      (* reconstruct the blob and verify the signature *)
+      let blob = Relay_identity.canonical_msg ~ctx:Relay_signed_ops.receipt_sign_ctx
+        [ "test-alias"; client_pk_b64; relay_pk; ts; nonce ]
+      in
+      let sig_bytes = match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_s with
+        | Ok s -> s | Error _ -> fail_fmt "sig b64 decode failed"
+      in
+      let relay_pk_bytes = match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet relay_pk with
+        | Ok s -> s | Error _ -> fail_fmt "relay_pk b64 decode failed"
+      in
+      if not (Relay_identity.verify ~pk:relay_pk_bytes ~msg:blob ~sig_:sig_bytes)
+      then fail_fmt "receipt signature failed to verify"
+  | _ -> fail_fmt "receipt should be Assoc"
+
+let test_receipt_sign_ctx_is_unique () =
+  if Relay_signed_ops.receipt_sign_ctx = Relay_signed_ops.register_sign_ctx
+  then fail_fmt "receipt_sign_ctx must differ from register_sign_ctx";
+  if Relay_signed_ops.receipt_sign_ctx = Relay_signed_ops.request_sign_ctx
+  then fail_fmt "receipt_sign_ctx must differ from request_sign_ctx"
+
 let test_relay_register_same_alias_different_node_raises_conflict () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
@@ -387,6 +468,10 @@ let tests = [
   "lease touch updates last_seen", test_lease_touch_updates_last_seen;
   "relay register creates new", test_relay_register_creates_new_registration;
   "relay register conflict", test_relay_register_same_alias_different_node_raises_conflict;
+  (* #578 signed registration receipt *)
+  "receipt build has all fields", test_build_registration_receipt_json_has_all_fields;
+  "receipt sig verifies", test_build_registration_receipt_json_sig_verifies;
+  "receipt_sign_ctx is unique", test_receipt_sign_ctx_is_unique;
   "relay heartbeat ok", test_relay_heartbeat_refreshes_existing;
   "relay heartbeat unknown", test_relay_heartbeat_unknown_session_raises_error;
   (* F4: relay-side re-registration inbox migration *)
