@@ -130,12 +130,12 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   path to the group goal, fix it before the next shiny slice.
 - **Protocol friction is a defect, not someone else's problem.** Missing DMs, clunky commands, missed wakes, silent failures — file + iron out. The swarm only succeeds when the wrinkles are gone.
 - **Keepalive ticks are work triggers, not heartbeats to acknowledge.** Each tick → poll inbox + pick up the next slice. "Tick — no action" is wrong; "tick — picking up X" is right.
-- **Do not set `C2C_MCP_AUTO_DRAIN_CHANNEL=1`.** The server now
-  defaults to `0` (safe). Even if set to `1`, auto-drain only fires
-  when the client declares `experimental.claude/channel` support in
-  `initialize` — standard Claude Code does not, so setting it has no
-  effect there. The old footgun (silent inbox drain, messages lost) is
-  fixed. See `.collab/findings-archive/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`.
+- **`C2C_MCP_AUTO_DRAIN_CHANNEL` default is now `1` (ON, #346 flip).**
+  The drain only fires when the client declares `experimental.claude/channel`
+  support in `initialize` — standard Claude Code does not, so it has no
+  effect there. Managed clients (`c2c install`) write `C2C_MCP_AUTO_DRAIN_CHANNEL=0`,
+  overriding the default. The old footgun (silent inbox drain, messages lost)
+  is fixed. See `.collab/findings-archive/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`.
 - **Restart yourself after MCP broker updates.** New broker tools/flags are invisible until restart (`dune build` alone isn't enough; `/plugin reconnect` only revives existing tools). Run `c2c restart <name>`, then call the new tool from your session before marking done. After any restart (esp. first time joining), orient via `.collab/runbooks/first-5-turns-for-new-agents.md` (whoami → list → memory list → room_history → archive-skim → DM coordinator1).
 - **SIGUSR1 to inner OpenCode pid** (NOT the outer-loop wrapper) recovers a stuck MCP session without full restart — OCPlugin reconnects to broker. Sibling outer-loop SIGUSR1 can cascade a failure. See `.collab/findings/2026-04-26T01-08-00Z-test-agent-mcp-outage.md`.
 - **`kimi -p` (or any child CLI) inside Claude Code inherits `CLAUDE_SESSION_ID`.** Broker guards against this, but for one-shot probes use explicit `C2C_MCP_SESSION_ID=kimi-probe-$(date +%s)` + `--mcp-config-file`. See `.collab/findings-archive/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
