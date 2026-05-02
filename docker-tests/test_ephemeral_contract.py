@@ -18,6 +18,13 @@ def run(argv, session_id=None, alias=None):
     env = dict(os.environ)
     env["C2C_CLI_FORCE"] = "1"
     env["C2C_MCP_BROKER_ROOT"] = BROKER_ROOT
+    # Pass session_id so resolve_alias can look up this session's registered alias.
+    if session_id is not None:
+        env["C2C_MCP_SESSION_ID"] = session_id
+    # Also set AUTO_REGISTER_ALIAS so the subprocess has an alias identity even
+    # before register has been called (e.g. for send before register in test flow).
+    if alias is not None:
+        env["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias
     # Use Popen to capture real subprocess PID instead of pytest PID.
     env["C2C_MCP_CLIENT_PID"] = "0"
     proc = subprocess.Popen(
