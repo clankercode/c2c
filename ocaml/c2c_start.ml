@@ -278,46 +278,25 @@ let next_heartbeat_delay_s ~(now : float) (hb : managed_heartbeat) : float =
       let next = (slots *. interval_s) +. offset_s in
       max 0.001 (next -. now)
 
-let enqueue_heartbeat ~(broker_root : string) ~(alias : string)
-    ~(content : string) : unit =
-  let broker = C2c_mcp.Broker.create ~root:broker_root in
-  C2c_mcp.Broker.enqueue_message broker ~from_alias:alias ~to_alias:alias
-    ~content ()
+let enqueue_heartbeat ~broker_root ~alias ~content =
+  C2c_schedule_fire.enqueue_heartbeat ~broker_root ~alias ~content
 
-(* Pure idle predicate. [now] is current epoch seconds, [last_activity_ts]
-   is the registration's most recent broker-touch timestamp (None if the
-   session has never touched the broker since registration was added).
-   Returns true when the agent should be considered idle and woken. *)
-let agent_is_idle ~(now : float) ~(idle_threshold_s : float)
-    ~(last_activity_ts : float option) : bool =
-  match last_activity_ts with
-  | None -> true
-  (* No activity recorded ⇒ treat as idle (fire heartbeat to surface state). *)
-  | Some ts -> now -. ts >= idle_threshold_s
+let agent_is_idle ~now ~idle_threshold_s ~last_activity_ts =
+  C2c_schedule_fire.agent_is_idle ~now ~idle_threshold_s ~last_activity_ts
 
-(* Look up the registration for [alias], returning its last_activity_ts.
-   Returns None when no live registration exists for the alias. *)
-let last_activity_ts_for_alias ~(broker_root : string) ~(alias : string)
-    : float option =
-  let broker = C2c_mcp.Broker.create ~root:broker_root in
-  match C2c_mcp.Broker.list_registrations broker
-        |> List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = alias) with
-  | Some reg -> reg.last_activity_ts
-  | None -> None
+let last_activity_ts_for_alias ~broker_root ~alias =
+  C2c_schedule_fire.last_activity_ts_for_alias ~broker_root ~alias
 
-(* True when the heartbeat should fire for [alias] right now. Honors
-   [idle_only] semantics: when false, always fire (legacy behavior); when
-   true, fire only if the agent has been quiet for at least
-   [idle_threshold_s] (or has no activity record). *)
 let should_fire_heartbeat ~(broker_root : string) ~(alias : string)
     (hb : managed_heartbeat) : bool =
   if not hb.idle_only then true
   else
     let now = Unix.gettimeofday () in
     let last_activity_ts =
-      last_activity_ts_for_alias ~broker_root ~alias
+      C2c_schedule_fire.last_activity_ts_for_alias ~broker_root ~alias
     in
-    agent_is_idle ~now ~idle_threshold_s:hb.idle_threshold_s ~last_activity_ts
+    C2c_schedule_fire.agent_is_idle ~now ~idle_threshold_s:hb.idle_threshold_s
+      ~last_activity_ts
 
 let enqueue_codex_heartbeat ~(broker_root : string) ~(alias : string) : unit =
   enqueue_heartbeat ~broker_root ~alias ~content:codex_heartbeat_content
