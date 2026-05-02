@@ -180,6 +180,24 @@ already PASS'd). Diffing against `origin/master` shows the entire chain
 and produces misleading file counts. (Learned from birch's wrong-base
 FAIL on scheduling S2.)
 
+### Claim examples
+
+**Correct claim** (in `swarm-lounge`, visible to all peers):
+```
+claiming 3c0df1cc
+```
+
+**What does NOT count as a claim:**
+- A DM to the author: `DM stanza-coder "I'll review 3c0df1cc"` — other peers can't see it, so slot counting is unreliable. You may think you have slot 1 but a peer may already be reviewing in the lounge.
+- A PASS artifact sent to coordinator1 without a lounge claim — the PASS is valid but the claim isn't, so peers can't coordinate slot limits from it.
+- A DM from coordinator assigning you — this IS a valid assignment (see coord override below), but for the *reviewer* role, a lounge post is still required to signal to other peers that the slot is filled.
+
+**Coordinator override format:**
+```
+[coordinator1]: ⚠️ COORD OVERRIDE on <SHA>: <name1> + <name2> are the two legitimate reviewers. ...
+```
+When a coord override arrives, it supersedes lounge claim timestamps. Do NOT count unclaimed reviews — only lounge claims matter for the 2-slot limit, unless coord explicitly names reviewers.
+
 ---
 
 ## Review Checklist
