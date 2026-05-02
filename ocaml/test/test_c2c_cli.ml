@@ -49,41 +49,67 @@ let test_doctor_output_contains_health_checks () =
 (* c2c config show — verify config rendering                                   *)
 (* ------------------------------------------------------------------------- *)
 
+let repo_root_from_git () =
+  (* Run git from OCaml test context to find repo root portably *)
+  let tmpfile = Filename.temp_file "git-root" ".txt" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf "git rev-parse --show-toplevel > %s 2>/dev/null" tmpfile in
+      if Sys.command cmd = 0 then
+        try
+          let ch = open_in tmpfile in
+          Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () -> try Some (input_line ch) with End_of_file -> None)
+        with _ -> None
+      else None)
+
 let test_config_show_exits_zero () =
-  let cmd = "c2c config show > /dev/null 2>&1" in
-  let rc = Sys.command cmd in
-  check int "c2c config show exits 0" 0 rc
+  (* Run from repo root so c2c finds .c2c/config.toml *)
+  match repo_root_from_git () with
+  | Some root ->
+      let cmd = Printf.sprintf "cd %s && c2c config show > /dev/null 2>&1" root in
+      let rc = Sys.command cmd in
+      check int "c2c config show exits 0" 0 rc
+  | None -> check int "c2c config show exits 0" 1 (-1)
 
 let test_config_show_contains_key_value_pairs () =
-  let tmpfile = Filename.temp_file "c2c-config-show" ".out" in
-  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
-    (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c config show > %s 2>&1" tmpfile));
-      let ch = open_in tmpfile in
-      let content = Fun.protect ~finally:(fun () -> close_in ch)
-        (fun () -> really_input_string ch (in_channel_length ch))
-      in
-      (* config show outputs "key = value\n" lines *)
-      check bool "output contains = sign (key=value format)" true
-        (string_contains content " = "))
+  (* Run from repo root so c2c finds .c2c/config.toml *)
+  match repo_root_from_git () with
+  | None -> check bool "repo root found" false true
+  | Some root ->
+      let tmpfile = Filename.temp_file "c2c-config-show" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+        (fun () ->
+          ignore (Sys.command (Printf.sprintf "cd %s && c2c config show > %s 2>&1" root tmpfile));
+          let ch = open_in tmpfile in
+          let content = Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () -> really_input_string ch (in_channel_length ch))
+          in
+          (* config show outputs "key = value\n" lines *)
+          check bool "output contains = sign (key=value format)" true
+            (string_contains content " = "))
 
 let test_config_show_renders_explicit_values () =
-  let tmpfile = Filename.temp_file "c2c-config-show2" ".out" in
-  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
-    (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c config show > %s 2>&1" tmpfile));
-      let ch = open_in tmpfile in
-      let lines = Fun.protect ~finally:(fun () -> close_in ch)
+  (* Run from repo root so c2c finds .c2c/config.toml *)
+  match repo_root_from_git () with
+  | None -> check bool "repo root found" false true
+  | Some root ->
+      let tmpfile = Filename.temp_file "c2c-config-show2" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
         (fun () ->
-          let rec read_lines acc =
-            try read_lines ((input_line ch) :: acc)
-            with End_of_file -> List.rev acc
+          ignore (Sys.command (Printf.sprintf "cd %s && c2c config show > %s 2>&1" root tmpfile));
+          let ch = open_in tmpfile in
+          let lines = Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () ->
+              let rec read_lines acc =
+                try read_lines ((input_line ch) :: acc)
+                with End_of_file -> List.rev acc
+              in
+              read_lines [])
           in
-          read_lines [])
-      in
-      (* Should have at least one line with "=" in it *)
-      let has_kv = List.exists (fun l -> string_contains l " = ") lines in
-      check bool "at least one key=value line present" true has_kv)
+          (* Should have at least one line with "=" in it *)
+          let has_kv = List.exists (fun l -> string_contains l " = ") lines in
+          check bool "at least one key=value line present" true has_kv)
 
 (* ------------------------------------------------------------------------- *)
 (* c2c agent list — verify role file listing                                *)
