@@ -10,6 +10,16 @@ This doc keeps track of long term ongoing tasks and projects. It should be updat
 
 ## Projects/Tasks
 
+### c2c-native agent self-scheduling
+
+Project Folder: `.collab/design/2026-05-02-c2c-native-scheduling.md`
+
+Goal: replace external `heartbeat` binary + Monitor tool dependency with c2c-native self-scheduling. Agents write TOML schedule files to `.c2c/schedules/<alias>/`; the managed session timer thread delivers self-DMs at configured intervals with idle-gating and hot-reload.
+
+Status: **active (S1+S2+S3 shipped, S4 in flight)** — S1 `1341222e`+`20cadb20` (CLI: `c2c schedule set/list/rm/enable/disable`), S2 `8315b0fd` (startup loader reads `.c2c/schedules/` at launch), S3 `a67b731f`+`a496deb6` (stat-poll hot-reload — schedule changes picked up within one interval without restart). stanza-coder authored all slices. Design doc complete with 5-slice plan.
+
+Next: S4 (MCP tool surface: `schedule_set/list/rm`) — stanza has subagent dispatched. S5 (migration: update role files + runbook to use `c2c schedule set` instead of Monitor + heartbeat) follows.
+
 ### Kimi-as-peer
 
 Project Folder: `.collab/runbooks/kimi-notification-store-delivery.md` + finding `.collab/findings/2026-04-29T10-53-00Z-stanza-coder-kimi-notifier-shipped-and-validated.md`
