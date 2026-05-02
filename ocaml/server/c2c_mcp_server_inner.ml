@@ -85,6 +85,13 @@ let auto_drain_channel_enabled () =
       not (List.mem normalized [ "0"; "false"; "no"; "off" ])
   | None -> true
 
+let schedule_timer_enabled () =
+  match Sys.getenv_opt "C2C_MCP_SCHEDULE_TIMER" with
+  | Some v ->
+      let n = String.lowercase_ascii (String.trim v) in
+      List.mem n ["1"; "true"; "yes"; "on"]
+  | None -> false
+
 let inbox_watcher_delay_seconds () =
   match Sys.getenv_opt "C2C_MCP_INBOX_WATCHER_DELAY" with
   | Some value -> (
@@ -305,6 +312,138 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
           in
           loop ~broker_root ~negotiated_capabilities_ref)
 
+(* S6b: compute_next_fire — given current time and a schedule_entry,
+   return the next wall-clock fire timestamp.
+   For aligned schedules (s_align <> ""), parse the alignment spec using
+   C2c_start.parse_heartbeat_schedule and compute the next aligned time.
+   For non-aligned: now + s_interval_s. *)
+let compute_next_fire (now : float) (entry : C2c_mcp.schedule_entry) : float =
+  if entry.s_align <> "" then
+    match C2c_start.parse_heartbeat_schedule entry.s_align with
+    | Ok (C2c_start.Aligned_interval { interval_s; offset_s }) ->
+        let shifted = now -. offset_s in
+        let slots = floor (shifted /. interval_s) +. 1.0 in
+        (slots *. interval_s) +. offset_s
+    | Ok (C2c_start.Interval n) ->
+        (* parse returned a plain interval from the align field — treat as non-aligned *)
+        now +. n
+    | Error _ ->
+        (* Unparseable align string — fall back to interval *)
+        now +. entry.s_interval_s
+  else
+    now +. entry.s_interval_s
+
+(* S6b: Lwt background loop that reads .c2c/schedules/<alias>/*.toml,
+   hot-reloads on directory changes (via mtime), and fires due schedules
+   as self-DMs via C2c_schedule_fire.enqueue_heartbeat.
+
+   State: Hashtbl of (filename -> (schedule_entry * file_mtime * next_fire_at)).
+   Every 5s tick:
+     1. Stat the schedule dir — if dir mtime changed, re-scan files.
+     2. For each tracked entry: if now >= next_fire_at AND should_fire,
+        fire and advance next_fire_at. *)
+let start_schedule_timer ~(broker_root : string) ~(alias : string) =
+  let open Lwt.Syntax in
+  let poll_interval = 5.0 in
+  let sched_dir = C2c_mcp.schedule_base_dir alias in
+  (* filename -> (schedule_entry, file_mtime, next_fire_at) *)
+  let entries : (string, C2c_mcp.schedule_entry * float * float) Hashtbl.t =
+    Hashtbl.create 16
+  in
+  let last_dir_mtime = ref 0.0 in
+  let reload_schedules () =
+    let dir_mtime =
+      try (Unix.stat sched_dir).Unix.st_mtime
+      with Unix.Unix_error _ -> 0.0
+    in
+    if dir_mtime <> !last_dir_mtime then begin
+      last_dir_mtime := dir_mtime;
+      let now = Unix.gettimeofday () in
+      let current_files =
+        try
+          Array.to_list (Sys.readdir sched_dir)
+          |> List.filter (fun n ->
+              String.length n > 5
+              && String.sub n (String.length n - 5) 5 = ".toml")
+        with Sys_error _ | Unix.Unix_error _ -> []
+      in
+      (* Add or update entries *)
+      List.iter (fun fname ->
+        let path = Filename.concat sched_dir fname in
+        let file_mtime =
+          try (Unix.stat path).Unix.st_mtime
+          with Unix.Unix_error _ -> 0.0
+        in
+        let needs_update =
+          match Hashtbl.find_opt entries fname with
+          | None -> true
+          | Some (_, cached_mtime, _) -> file_mtime <> cached_mtime
+        in
+        if needs_update then begin
+          let content =
+            try C2c_io.read_file_opt path
+            with _ -> ""
+          in
+          if content <> "" then begin
+            let entry = C2c_mcp.parse_schedule content in
+            if entry.s_name <> "" && entry.s_enabled then begin
+              let next_fire = compute_next_fire now entry in
+              debug_log (Printf.sprintf "schedule_timer: loaded %s, next_fire in %.1fs"
+                fname (next_fire -. now));
+              Hashtbl.replace entries fname (entry, file_mtime, next_fire)
+            end else
+              (* Disabled or unnamed — remove if previously tracked *)
+              Hashtbl.remove entries fname
+          end else
+            Hashtbl.remove entries fname
+        end
+      ) current_files;
+      (* Remove entries for deleted files *)
+      let to_remove = Hashtbl.fold (fun fname _ acc ->
+        if List.mem fname current_files then acc else fname :: acc
+      ) entries [] in
+      List.iter (fun fname ->
+        debug_log (Printf.sprintf "schedule_timer: removed deleted schedule %s" fname);
+        Hashtbl.remove entries fname
+      ) to_remove
+    end
+  in
+  let check_and_fire () =
+    let now = Unix.gettimeofday () in
+    Hashtbl.iter (fun fname (entry, file_mtime, next_fire) ->
+      if now >= next_fire then begin
+        if C2c_schedule_fire.should_fire ~broker_root ~alias entry then begin
+          debug_log (Printf.sprintf "schedule_timer: firing %s (%s)"
+            fname entry.s_name);
+          (try
+            C2c_schedule_fire.enqueue_heartbeat ~broker_root ~alias
+              ~content:entry.s_message
+          with exn ->
+            debug_log (Printf.sprintf "schedule_timer: fire error for %s: %s"
+              fname (Printexc.to_string exn)))
+        end else
+          debug_log (Printf.sprintf "schedule_timer: skipping %s (idle gate)"
+            fname);
+        (* Advance next_fire_at regardless of whether we fired —
+           prevents re-firing every 5s if idle gate blocks *)
+        let next = compute_next_fire now entry in
+        Hashtbl.replace entries fname (entry, file_mtime, next)
+      end
+    ) entries
+  in
+  let rec loop () =
+    let* () = Lwt_unix.sleep poll_interval in
+    Lwt.catch
+      (fun () ->
+        reload_schedules ();
+        check_and_fire ();
+        loop ())
+      (fun exn ->
+        debug_log ("schedule_timer error: " ^ Printexc.to_string exn);
+        loop ())
+  in
+  loop ()
+
 (* #514: stale broker-root detection.
    The parent process (c2c start, kimi, opencode plugin) passes C2C_MCP_BROKER_ROOT
    to the MCP server child. If the parent's git context differs from the child's
@@ -376,6 +515,16 @@ let run_inner_server ~broker_root =
    | true, Some sid -> debug_log ("starting inbox watcher for " ^ sid); Lwt.async (fun () ->
          start_inbox_watcher ~broker_root ~session_id:sid
            ~emit_notification_fn ~negotiated_capabilities_ref)
+   | _, _ -> ());
+  (* S6b: MCP-server-side schedule timer *)
+  (match (schedule_timer_enabled (), session_id ()) with
+   | true, Some sid ->
+       let alias = match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+         | Some a when String.trim a <> "" -> String.trim a
+         | _ -> sid
+       in
+       debug_log ("starting schedule timer for " ^ alias);
+       Lwt.async (fun () -> start_schedule_timer ~broker_root ~alias)
    | _, _ -> ());
   try
     Lwt_main.run (loop ~broker_root ~negotiated_capabilities_ref);
