@@ -94,13 +94,22 @@ let output_chain_warning ~sha ~ancestors =
   let oldest = List.nth ancestors (n - 1) in
   Printf.eprintf "      Cherry-pick the full chain: git cherry-pick %s^..%s\n" oldest sha
 
-let run_check sha =
+let run_check sha_input =
   (* Find the repo toplevel *)
   let git_dir = match Git_helpers.git_repo_toplevel () with
     | None ->
         Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
         exit 1
     | Some d -> d
+  in
+
+  (* 0. Resolve abbreviated SHA to full 40-char form so that
+     classify_chain's string comparison works against rev-list output. *)
+  let sha =
+    try List.hd (git_run ~cwd:git_dir ("rev-parse " ^ Filename.quote sha_input)) |> String.trim
+    with Failure _ ->
+      Printf.eprintf "error: could not resolve SHA %s\n" sha_input;
+      exit 1
   in
 
   (* 1. Resolve merge-base with master *)
@@ -190,7 +199,8 @@ let cmd_term =
   const (fun sha -> ignore (run_check sha)) $ sha_term
 
 let doc = "Check if a SHA's branch is safe to cherry-pick onto current master \
-           (detects stale-base --theirs data-loss risk)."
+           (detects stale-base --theirs data-loss risk and multi-commit chain \
+           dependencies)."
 
 let c2c_doctor_cherry_pick_readiness_cmd =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "cherry-pick-readiness" ~doc) cmd_term
