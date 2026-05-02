@@ -31,7 +31,8 @@ let get_theme (theme_name:string option) : theme =
   | None -> Hashtbl.find themes "default"
 
 let timestamp () =
-  C2c_time.human_utc (Unix.gettimeofday ()) ^ " UTC"
+  (* human_utc already includes " UTC" — no need to append *)
+  C2c_time.human_utc (Unix.gettimeofday ())
 
 let pad_right (s:string) (n:int) : string =
   if String.length s >= n then String.sub s 0 n

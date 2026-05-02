@@ -22,6 +22,7 @@
    - c2c peer-pass verify
    - c2c install (dry-run)
    - c2c install --dry-run (kimi, opencode, codex)
+   - c2c agent new banner (double-UTC regression)
 
    Each test invokes the c2c binary via Sys.command and verifies
    exit code + output shape. *)
@@ -1205,6 +1206,29 @@ let test_install_gemini_dry_run_shows_config_preview () =
         (string_contains content "Configured Gemini"))
 
 (* ------------------------------------------------------------------------- *)
+(* c2c agent new banner — verify timestamp has no double "UTC UTC"           *)
+(* ------------------------------------------------------------------------- *)
+
+(* Regression test: Banner.timestamp() was appending " UTC" on top of
+   human_utc() which already includes "UTC", producing "2026-05-02 22:59:07 UTC UTC".
+   Fixed by removing the redundant " ^ \" UTC\"" from Banner.timestamp (). *)
+let test_agent_new_banner_no_double_utc () =
+  let alias = Printf.sprintf "willow-test-banner-%d" (Unix.getpid ()) in
+  let tmpfile = Filename.temp_file "c2c-agent-new-banner" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf "c2c agent new %s > %s 2>&1"
+        (Filename.quote alias) tmpfile in
+      ignore (Sys.command cmd);
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      let lower = String.lowercase_ascii content in
+      check bool "banner has no double UTC (no 'utc utc')" true
+        (not (string_contains lower "utc utc")))
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -1333,5 +1357,8 @@ let () =
         ; ( "install kimi --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_kimi )
         ; ( "install opencode --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_opencode )
         ; ( "install codex --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_codex )
+        ] )
+    ; ( "agent_new_banner",
+        [ ( "agent new banner has no double UTC", `Quick, test_agent_new_banner_no_double_utc )
         ] )
     ]
