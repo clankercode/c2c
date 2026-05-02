@@ -45,7 +45,7 @@ let git_spawn_window () =
 
 let git_spawn_max () =
   int_of_string_opt (Sys.getenv_opt "C2C_GIT_SPAWN_MAX" |> Option.value ~default:"")
-  |> Option.value ~default:5
+  |> Option.value ~default:15
 
 let git_backoff_sec () =
   float_of_string_opt (Sys.getenv_opt "C2C_GIT_BACKOFF_SEC" |> Option.value ~default:"")
