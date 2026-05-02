@@ -4389,8 +4389,8 @@ let test_sweep_emits_peer_offline_for_confirmed_dead_reg () =
       (* Verify peer_offline envelope format *)
       check bool "content has peer_offline event" true
         (string_contains msg.content "<c2c event=\"peer_offline\"");
-      check bool "content has storm-bob alias" true
-        (string_contains msg.content "alias=\"storm-bob\"");
+      check bool "content has storm-bob peer" true
+        (string_contains msg.content "peer=\"storm-bob\"");
       check bool "content has reason=killed" true
         (string_contains msg.content "reason=\"killed\"");
       check bool "content has detected_at" true
@@ -4451,8 +4451,8 @@ let test_sweep_peer_offline_message_format () =
           (* All 5 attributes must be present *)
           check bool "event attr" true
             (string_contains c "<c2c event=\"peer_offline\"");
-          check bool "alias attr" true
-            (string_contains c "alias=\"storm-dead\"");
+          check bool "peer attr" true
+            (string_contains c "peer=\"storm-dead\"");
           check bool "detected_at attr" true
             (string_contains c "detected_at=\"");
           check bool "reason attr" true
@@ -4518,18 +4518,8 @@ let test_sweep_multiple_confirmed_dead_regs_each_emit_peer_offline () =
           alice_inbox
       in
       check int "alice got two peer_offline messages" 2 (List.length peer_offline_messages);
-      let aliases =
-        List.map
-          (fun (msg : C2c_mcp.message) ->
-             let start_idx = try String.index msg.content 'a' + String.length "alias=\"" with Not_found -> -1 in
-             if start_idx < 0 then "" else
-               let rest = String.sub msg.content start_idx (String.length msg.content - start_idx) in
-               try String.sub rest 0 (String.index_from rest 0 '"')
-               with _ -> "")
-          peer_offline_messages
-      in
-      let has_bob = List.exists (fun a -> string_contains a "storm-bob") aliases in
-      let has_carol = List.exists (fun a -> string_contains a "storm-carol") aliases in
+      let has_bob = List.exists (fun (msg : C2c_mcp.message) -> string_contains msg.content "peer=\"storm-bob\"") peer_offline_messages in
+      let has_carol = List.exists (fun (msg : C2c_mcp.message) -> string_contains msg.content "peer=\"storm-carol\"") peer_offline_messages in
       check bool "has bob's peer_offline" true has_bob;
       check bool "has carol's peer_offline" true has_carol)
 

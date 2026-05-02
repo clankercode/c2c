@@ -2700,7 +2700,7 @@ open C2c_mcp_helpers
        host/slug qualifiers that make pattern-matching harder for recipients.
        Bare alias is what agents naturally expect to match against. *)
     Printf.sprintf
-      "<c2c event=\"peer_offline\" alias=\"%s\" detected_at=\"%s\" reason=\"%s\" last_seen=\"%s\"/>"
+      "<c2c event=\"peer_offline\" peer=\"%s\" detected_at=\"%s\" reason=\"%s\" last_seen=\"%s\"/>"
       reg.alias
       detected_at reason last_seen
 
