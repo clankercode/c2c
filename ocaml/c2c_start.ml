@@ -3091,7 +3091,17 @@ let prepare_launch_args ~(name : string) ~(client : string)
            dev-channels or PTY auto-answer (Gemini uses settings.json
            `trust: true` instead of an interactive consent prompt). *)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "gemini") : CLIENT_ADAPTER) in
+        (* #143d: kickoff_prompt as positional trailing arg, fresh spawn only *)
+        let prompt_args =
+          match resume_session_id with
+          | Some _ -> []  (* resuming — don't re-kickoff *)
+          | None ->
+            match kickoff_prompt with
+            | Some p when p <> "" -> [ p ]
+            | _ -> []
+        in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ()
+        @ prompt_args
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
@@ -3411,19 +3421,12 @@ module CodexAdapter : CLIENT_ADAPTER = struct
        pty_inject: checked dynamically via check_pty_inject_capability in probed_capabilities. *)
     [ "codex_xml_fd", codex_supports_xml_input_fd binary_path ]
 
-  (* Warn-and-skip stub.  Codex has no in-tree kickoff path today; a real
-     impl is filed as #143c (likely via the deliver-daemon XML pipe).
-     We deliberately succeed (no [failwith]) so the launch path is
-     unchanged for codex sessions that didn't have working kickoff
-     before #143 either. *)
-  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text ?broker_root:_ () =
-    if kickoff_text = "" then Ok []
-    else begin
-      prerr_endline
-        "[c2c-start] kickoff not delivered to codex — see task #143c \
-         for a real impl; continuing without kickoff.";
-      Ok []
-    end
+  (* #143c: Codex kickoff is delivered via the XML pipe in the launch loop
+     (parent-side, after fork, before the deliver daemon starts).  The
+     adapter's deliver_kickoff is a no-op — the real write happens in the
+     launch loop where codex_xml_pipe is in scope. *)
+  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text:_ ?broker_root:_ () =
+    Ok []
 end
 
 module KimiAdapter : CLIENT_ADAPTER = struct
@@ -3603,18 +3606,11 @@ module GeminiAdapter : CLIENT_ADAPTER = struct
        The MCP delivery channel is configured by `c2c install gemini`. *)
     [ "gemini_mcp", true ]
 
-  (* Warn-and-skip stub.  Gemini has no in-tree kickoff path today; a
-     real impl is filed as #143d (likely via Gemini's MCP-server message
-     surface).  We deliberately succeed (no [failwith]) so the launch
-     path is unchanged for gemini sessions. *)
-  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text ?broker_root:_ () =
-    if kickoff_text = "" then Ok []
-    else begin
-      prerr_endline
-        "[c2c-start] kickoff not delivered to gemini — see task #143d \
-         for a real impl; continuing without kickoff.";
-      Ok []
-    end
+  (* #143d: Gemini kickoff is delivered via positional argv in
+     prepare_launch_args (same pattern as Claude and Kimi).  The
+     adapter's deliver_kickoff is a no-op. *)
+  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text:_ ?broker_root:_ () =
+    Ok []
 end
 
 let () = Stdlib.Hashtbl.add client_adapters "claude" (module ClaudeAdapter)
@@ -4662,6 +4658,30 @@ let run_outer_loop ~(name : string) ~(client : string)
                   persist it lazily when the bridge emits it after the first real input. *)
                ignore (start_headless_thread_id_watcher ~name ~path)
            | None -> ());
+          (* #143c: deliver kickoff to codex via XML pipe (before deliver daemon
+             starts).  The pipe write_fd is in scope from the fork block above.
+             We write the kickoff as a <message> XML frame that Codex reads from
+             its --xml-input-fd. *)
+          (match client, kickoff_prompt, codex_xml_pipe with
+           | "codex", Some p, Some (_read_fd, write_fd) when p <> "" ->
+               (try
+                  let escaped = C2c_mcp.xml_escape p in
+                  let frame =
+                    Printf.sprintf
+                      "<message type=\"user\" queue=\"AfterAnyItem\">%s</message>\n"
+                      escaped
+                  in
+                  let bytes = Bytes.of_string frame in
+                  let len = Bytes.length bytes in
+                  let _written = Unix.write write_fd bytes 0 len in
+                  Printf.eprintf
+                    "[c2c-start] kickoff delivered to codex via XML pipe (%d bytes)\n%!"
+                    len
+                with e ->
+                  Printf.eprintf
+                    "[c2c-start] kickoff XML pipe write failed: %s — continuing without kickoff\n%!"
+                    (Printexc.to_string e))
+           | _ -> ());
           (* Start deliver daemon (PTY notify path, used for Codex). *)
           (if !deliver_pid = None && cfg.needs_deliver then
              let xml_output_fd, xml_output_path =
