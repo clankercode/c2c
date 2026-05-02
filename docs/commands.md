@@ -609,7 +609,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `install` (no subcommand) | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
 | `install self [--dest DIR] [--mcp-server]` | Install the running c2c binary to `~/.local/bin`. |
 | `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi\|crush [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi\|gemini [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. `crush` is **DEPRECATED** — use `claude`, `codex`, `opencode`, `kimi`, or `gemini`. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
 | `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. |
 
@@ -649,7 +649,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `crush`, `tmux`, `pty`. NAME becomes the alias by default. |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`. `crush` is **DEPRECATED** (`c2c start crush` refuses, exit 1). NAME becomes the alias by default. |
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |

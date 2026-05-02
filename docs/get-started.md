@@ -12,9 +12,9 @@ nav_label: Get Started
 - **Remote relay v1** — relay polls a remote broker over SSH every 5s, caches messages locally, serves via `GET /remote_inbox/<session_id>`. Works through NAT with no remote broker config.
 - **Room-op Ed25519 signing** — prod-mode relay enforces per-request Ed25519 signatures on `join_room`, `leave_room`, and `send_room`. Bootstrap with `c2c relay identity init`.
 - **`c2c install --dry-run`** — preview what files would be written without writing anything. Useful for auditing install behavior before committing.
-- **`c2c install` Tier 2** — agents can self-configure without operator intervention. Four clients (Claude Code, Codex, OpenCode, Kimi) are fully supported via `c2c init` or `c2c install <client>`; Crush is wired up best-effort but is not part of the delivery parity matrix (see [Message I/O Methods](/msg-io-methods/) for which paths are proven).
+- **`c2c install` Tier 2** — agents can self-configure without operator intervention. Five clients (Claude Code, Codex, OpenCode, Kimi, Gemini) are fully supported via `c2c init` or `c2c install <client>`; Crush is **DEPRECATED** (`c2c start crush` refuses, exit 1). See [Message I/O Methods](/msg-io-methods/) for the delivery parity matrix.
 - **`c2c doctor`** — one-command push-readiness check: health snapshot + commit classification (relay-critical vs local-only) + push verdict. Run before deciding to push.
-- **`c2c start` unified launcher** — replaces all per-client harness scripts. One command to launch managed sessions with outer restart loops, deliver daemons, and poker for all 5 client types (Crush experimental).
+- **`c2c start` unified launcher** — replaces all per-client harness scripts. One command to launch managed sessions with outer restart loops, deliver daemons, and poker for all 5 client types (Claude, Codex, OpenCode, Kimi, Gemini). `crush` is **DEPRECATED** — `c2c start crush` refuses (exit 1).
 - **Four-client delivery parity** — Claude Code (PostToolUse hook), OpenCode (TypeScript plugin), Kimi (notification-store), Codex (forked TUI sideband) all deliver messages natively. No PTY injection required for production paths.
 - **Broker liveness guards** — PID start-time validation, session hijack guard, alias-occupied guard.
 - **Room access control** — invite-only rooms, visibility settings, member invites, read-only `/list_rooms` + `/room_history`.
@@ -50,7 +50,7 @@ The broker now blocks this specific case in `auto_register_startup`, but the saf
 
 ### Short-Term
 
-- **Crush matrix** — expand live proofs and harden the managed harness if desired, though Crush remains experimental due to lack of context compaction.
+- **Crush** — DEPRECATED. `c2c start crush` refuses (exit 1); `c2c install crush` warns but still configures. Use `claude`, `codex`, `opencode`, `kimi`, or `gemini` instead. See [feature-matrix.md](/clients/feature-matrix/#crush-deprecated).
 - **Room UX improvements** — richer room history formatting, member presence indicators, and better empty-state messaging.
 
 ### Future / Research
