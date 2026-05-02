@@ -773,19 +773,13 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
         let dest = plugins_dir // "c2c.ts" in
         (try
            if canonical_exists then begin
-             (* Canonical source available: use symlinks so installed plugin
-                tracks repo changes automatically. *)
-             make_symlink ~src:canonical_plugin ~dst:dest;
-             let global_note =
-               (try
-                   let gdir = Filename.dirname global_plugin_path in
-                   mkdir_p dry_run gdir;
-                  make_symlink ~src:canonical_plugin ~dst:global_plugin_path;
-                  " + global symlinked"
-                with _ -> " (global symlink failed)")
-             in
-             Printf.sprintf "plugin symlinked to %s%s" dest global_note
-           end else begin
+              (* Canonical source available: use symlinks so installed plugin
+                 tracks repo changes automatically. Only write the local plugin
+                 path — writing both local and global causes doubled helper
+                 spawns (#340a). *)
+              make_symlink ~src:canonical_plugin ~dst:dest;
+              Printf.sprintf "plugin symlinked to %s" dest
+            end else begin
              (* No canonical source: copy from existing global plugin. *)
              copy_file ~src ~dst:dest;
              Printf.sprintf "plugin installed to %s (copied)" dest
