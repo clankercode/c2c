@@ -332,9 +332,10 @@ while IFS= read -r line; do
   files=$(git diff-tree --no-commit-id -r --name-only "$sha" 2>/dev/null || true)
   is_server=0
   is_connector=0
-  # Server-critical: relay SERVER code deployed on Railway (ocaml/server/, relay.ml).
+  # Server-critical: relay SERVER code deployed on Railway.
   # Railway runs `c2c relay serve` — only these files need a Railway deploy.
-  if echo "$files" | grep -qE "ocaml/server/|ocaml/relay\.ml|ocaml/relay_server|ocaml/server_http|^railway\.json|^Dockerfile"; then
+  # ocaml/server/ is the local MCP broker binary, NOT relay-critical.
+  if echo "$files" | grep -qE "ocaml/relay\.ml|^railway\.json|^Dockerfile"; then
     is_server=1
   fi
   # Connector-only: c2c_relay_connector.ml and relay_client*.ml run in each agent's
