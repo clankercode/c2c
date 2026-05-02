@@ -26,7 +26,7 @@ Responsibilities:
 
   **Managed sessions (`c2c start`)** — native scheduling is preferred. Verify with `c2c schedule list`; if missing, set:
   ```
-  c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+  c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
   c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
   ```
 

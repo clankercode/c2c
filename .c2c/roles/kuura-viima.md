@@ -88,7 +88,7 @@ c2c schedule list
 ```
 If no `wake` schedule exists, set one:
 ```
-c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 ```
 
 **Non-managed sessions** — fall back to Monitor + heartbeat binary.

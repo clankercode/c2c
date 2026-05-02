@@ -100,7 +100,7 @@ canonical recipes copy-paste-able instead of "go read the runbook":
    ```
    If no `wake` schedule exists, set one:
    ```
-   c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+   c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
    ```
    Coordinator roles also set a sitrep schedule:
    ```

@@ -79,7 +79,7 @@ a prior session). To verify or set from inside a running session:
 c2c schedule list
 
 # Set wake schedule (4.1m off-minute cadence, only fires when idle)
-c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 
 # Coordinator roles also set a sitrep schedule
 c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
@@ -92,8 +92,9 @@ c2c schedule rm wake
 `schedule_rm` — same semantics as the CLI.
 
 **Flags:**
-- `--only-when-idle` — only fires the message when the agent is not
-  actively processing a turn. Avoids interrupting deep work.
+- `--only-when-idle=BOOL` (default: `true`) — only fires the message when
+  the agent is not actively processing a turn. Avoids interrupting deep work.
+  Omit from commands to use the default; pass `--only-when-idle=false` to disable.
 - `--align @1h+7m` — wall-clock alignment (e.g. fire at :07 past each hour).
 
 **Tradeoffs:**

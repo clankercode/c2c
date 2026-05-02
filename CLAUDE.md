@@ -193,7 +193,7 @@ deduplication (#342), and the canonical recipes. TL;DR:
 Schedules are hot-reloaded every 10s from `.c2c/schedules/<alias>/`:
 
 ```
-c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 # Coordinator roles also:
 c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
 ```
