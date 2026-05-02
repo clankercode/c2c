@@ -139,9 +139,10 @@ let schedule_set_cmd =
       & info ["message"; "m"] ~docv:"TEXT" ~doc)
   in
   let only_when_idle_arg =
-    let doc = "Only fire when the agent is idle (default: true). Pass --no-only-when-idle to disable." in
-    Cmdliner.Arg.(value & opt bool true
-      & info ["only-when-idle"] ~doc)
+    Cmdliner.Arg.(value & vflag true
+      [ (true,  info ["only-when-idle"]    ~doc:"Only fire when the agent is idle (default).")
+      ; (false, info ["no-only-when-idle"] ~doc:"Fire even when the agent is busy.")
+      ])
   in
   let idle_threshold_arg =
     let doc = "Idle threshold duration (default: same as --interval)." in
@@ -149,9 +150,10 @@ let schedule_set_cmd =
       & info ["idle-threshold"] ~docv:"DURATION" ~doc)
   in
   let enabled_arg =
-    let doc = "Create schedule as enabled (default true)." in
-    Cmdliner.Arg.(value & opt bool true
-      & info ["enabled"] ~doc)
+    Cmdliner.Arg.(value & vflag true
+      [ (true,  info ["enabled"]  ~doc:"Create schedule as enabled (default).")
+      ; (false, info ["disabled"] ~doc:"Create schedule as disabled.")
+      ])
   in
   let+ json = json_flag
   and+ name = name_arg
