@@ -285,7 +285,7 @@ describe('c2c plugin unit tests', () => {
     const text = call.body.parts[0].text;
     expect(text).toContain('<c2c event="message"');
     expect(text).toContain('from="alice"');
-    expect(text).toContain('alias="bob"');
+    expect(text).toContain('to="bob"');
     expect(text).toContain('hello world');
     expect(text).toContain('</c2c>');
   });
