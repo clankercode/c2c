@@ -119,7 +119,7 @@ open C2c_mcp_helpers
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; ed25519_pubkey; pubkey_signed_at; pubkey_sig; compacting; last_activity_ts; role; compaction_count; automated_delivery; tmux_location = _ } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; ed25519_pubkey; pubkey_signed_at; pubkey_sig; compacting; last_activity_ts; role; compaction_count; automated_delivery; tmux_location = _; cwd } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -219,7 +219,12 @@ open C2c_mcp_helpers
       | Some b -> with_compaction_count @ [ ("automated_delivery", `Bool b) ]
       | None -> with_compaction_count
     in
-    `Assoc with_automated_delivery
+    let with_cwd =
+      match cwd with
+      | Some c -> with_automated_delivery @ [ ("cwd", `String c) ]
+      | None -> with_automated_delivery
+    in
+    `Assoc with_cwd
 
   let int_opt_member name json =
     let open Yojson.Safe.Util in
@@ -284,6 +289,7 @@ open C2c_mcp_helpers
              | _ -> None
          with _ -> None)
     ; tmux_location = str_opt "tmux_location" json
+    ; cwd = str_opt "cwd" json
     }
 
   let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral; message_id } =
@@ -1823,7 +1829,7 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) () =
     if List.mem alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -1856,8 +1862,8 @@ open C2c_mcp_helpers
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery, r.tmux_location)
-          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None, tmux_location)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery, r.tmux_location, r.cwd)
+          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None, tmux_location, cwd)
         in
         (* #529: log when a fresh registration has session_id ≠ alias.
            The inbox filename is based on session_id (original value), so when they
@@ -1878,8 +1884,8 @@ open C2c_mcp_helpers
             in
             log_broker_event ~broker_root:(root t) "session_id_differs_from_alias" fields
           with _ -> ());
-        let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery, old_tmux_location) = old_state in
+          let new_reg =
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery, old_tmux_location, _old_cwd) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -1928,7 +1934,8 @@ open C2c_mcp_helpers
           ; role = effective_role
           ; compaction_count = old_compaction_count
           ; automated_delivery = old_automated_delivery
-          ; tmux_location = effective_tmux_location }
+          ; tmux_location = effective_tmux_location
+          ; cwd }
         in
         let kept =
           match

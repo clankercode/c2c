@@ -8957,7 +8957,11 @@ let registration_to_json (r : C2c_mcp.registration) : Yojson.Safe.t =
     | Some loc -> with_dnd @ [("tmux_location", `String loc)]
     | None -> with_dnd
   in
-  `Assoc with_tmux
+  let with_cwd = match r.cwd with
+    | Some c -> with_tmux @ [("cwd", `String c)]
+    | None -> with_tmux
+  in
+  `Assoc with_cwd
 
 let room_to_json (ri : C2c_mcp.Broker.room_info) : Yojson.Safe.t =
   `Assoc

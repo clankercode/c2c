@@ -267,7 +267,8 @@ let register ~broker ~session_id_override ~arguments =
               | None, None ->
                   Broker.register broker ~session_id ~alias ~pid ~pid_start_time
                     ~client_type ~plugin_version ~enc_pubkey ~ed25519_pubkey
-                    ~pubkey_signed_at ~pubkey_sig ~role ~tmux_location ();
+                    ~pubkey_signed_at ~pubkey_sig ~role ~tmux_location
+                    ~cwd:(Some (Sys.getcwd ()));
                   Broker.touch_session broker ~session_id;
               List.iter
                 (fun room_id ->

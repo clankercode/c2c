@@ -63,11 +63,17 @@ type registration =
        support. [None] = unknown (pre-Phase compat or the session has
        not yet handshaked). Set in the initialize handler; consumers
        treat [None] conservatively as "not push-capable". *)
-   ; tmux_location : string option
-   (** Tmux session:window.pane target for the pane running this session.
-       Captured at registration time for managed sessions (c2c start);
-       None for unmanaged / foreign MCP clients. Format: "session:window.pane". *)
-   }
+    ; tmux_location : string option
+    (** Tmux session:window.pane target for the pane running this session.
+        Captured at registration time for managed sessions (c2c start);
+        None for unmanaged / foreign MCP clients. Format: "session:window.pane". *)
+    ; cwd : string option
+    (** Working directory of the session at registration time.
+        Captured via Sys.getcwd () at register time. Used by Hardening B
+        (shell-launch-location guard) to detect when a session's shell cwd
+        differs from its registered worktree — a signal of main-tree
+        branch contamination (Pattern 6/13/14). *)
+    }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool; message_id : string option }
 (** [message_id] is set when the message arrived via the relay (which assigns
     a UUID to every sent message). It is used to anchor sticker reactions:

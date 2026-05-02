@@ -99,6 +99,12 @@ type registration =
   (** Tmux session:window.pane target for the pane running this session.
       Captured at registration time for managed sessions (c2c start);
       None for unmanaged / foreign MCP clients. Format: "session:window.pane". *)
+  ; cwd : string option
+  (** Working directory of the session at registration time.
+      Captured via Sys.getcwd () at register time. Used by Hardening B
+      (shell-launch-location guard) to detect when a session's shell cwd
+      differs from its registered worktree — a signal of main-tree
+      branch contamination (Pattern 6/13/14). *)
   }
 type message =
   { from_alias : string
@@ -241,7 +247,7 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> ?cwd:string option -> unit -> unit
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
