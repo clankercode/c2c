@@ -241,7 +241,7 @@ Shell ate a space in `--agent foo`. Use `-a foo` or `--agent=foo`.
 ### `error: unknown client: 'foo'`
 
 The client name is wrong. Use one of: `claude`, `codex`, `codex-headless`,
-`opencode`, `kimi`, `crush`.
+`opencode`, `kimi`.
 
 ### `c2c roles compile` says "done" but no files written
 

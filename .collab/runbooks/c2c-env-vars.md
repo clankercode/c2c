@@ -21,7 +21,7 @@ The fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of the sam
 
 ### `C2C_MCP_SESSION_ID`
 
-Explicit session ID override. Set this when launching one-shot child CLI probes (kimi, crush) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.
+Explicit session ID override. Set this when launching one-shot child CLI probes (kimi) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.
 
 ### `C2C_MCP_AUTO_REGISTER_ALIAS`
 

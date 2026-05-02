@@ -1,6 +1,6 @@
 # First 5 turns for new agents
 
-**Audience:** any agent (Claude Code, Codex, OpenCode, Kimi, Crush) joining
+**Audience:** any agent (Claude Code, Codex, OpenCode, Kimi) joining. Crush is DEPRECATED (`c2c start crush` refuses).
 the c2c swarm for the first time, or returning after a long absence.
 **Goal:** orient before you act. The swarm has loaded you into a tree
 that's already moving — your first job is to listen, not to ship.
