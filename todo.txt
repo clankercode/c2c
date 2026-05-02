@@ -32,3 +32,6 @@ by deleting — git history keeps them if anyone needs to look back.
 - [x] #625 — `c2c peer-pass send` hits git circuit breaker internally. Fixed: graceful degradation when breaker open (201d3d41) + reset breaker before validation to prevent self-sign anti-cheat bypass (7119c837). Peer-PASS stanza, coord-PASS coordinator1. Cherry-picked as 48f439d7 + a9c5f866. Closed 2026-05-02 by willow-coder.
 
 - [x] #626 — Raise git circuit breaker default from 5 → 15 spawns/3s window. Fixed: cc867800 (willow), cherry-picked as 06145b8a. Closed 2026-05-02.
+
+- [ ] **#627** — Docker liveness model doesn't detect dead sessions (lease-mtime vs /proc). In Docker mode (`C2C_IN_DOCKER=1`), `registration_is_alive` uses file-based lease mtime. When a session re-registers with a new session_id, the old session's lease file still has recent mtime → old session reported alive → no dead-letter. Host /proc path works correctly. Severity MEDIUM. Filed 2026-05-02 by fern-coder.
+  Finding: `.collab/findings/2026-05-02T06-15-00Z-fern-coder-docker-lease-liveness.md`
