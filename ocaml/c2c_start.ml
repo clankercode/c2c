@@ -3860,7 +3860,15 @@ let pty_deliver_loop ~(master_fd : Unix.file_descr) ~(broker_root : string)
   while pid_alive child_pid do
     let messages = C2c_mcp.Broker.drain_inbox ~drained_by:"pty" broker ~session_id in
     List.iter (fun (msg : C2c_mcp.message) ->
-      C2c_pty_inject.pty_inject ~master_fd msg.content
+      (try C2c_pty_inject.pty_inject ~master_fd msg.content
+       with e ->
+         (* Race 1 fix: per-message error isolation — one failed inject must not
+            abort the remaining messages in the batch. The drain_inbox lock is
+            already released before this iteration starts, so failures here do
+            not affect broker state. Log and continue. *)
+         Printf.eprintf "warning: pty_inject failed for message %s: %s\n%!"
+           (Option.value msg.message_id ~default:"<no-id>")
+           (Printexc.to_string e))
     ) messages;
     ignore (Unix.select [] [] [] poll_interval)
   done
