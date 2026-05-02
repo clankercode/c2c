@@ -150,16 +150,24 @@ let ts = Unix.gettimeofday () in
                              a SHA whose git author != from_alias, this is a
                              cross-agent review announcement, not a self-
                              pass. Suppress the warning. *)
-                          let sha_author_differs_from_sender =
-                            match peer_pass_claim with
-                            | None -> false
-                            | Some (_claimed_alias, sha) ->
-                                (match Git_helpers.git_commit_author_name sha with
-                                 | None -> false
-                                 | Some author ->
-                                     String.lowercase_ascii author
-                                     <> String.lowercase_ascii from_alias)
-                          in
+                           let sha_author_differs_from_sender =
+                             (* Reset the circuit breaker before the git spawn so
+                                prior activity in the same process doesn't cause
+                                this check to return None (false positive: the
+                                send gets rejected because the self-pass detector
+                                treats "git unavailable" as "author ≠ sender",
+                                bypassing the suppression logic). Matches the
+                                pattern in validate_signing_allowed (c2c_peer_pass.ml:92). *)
+                             Git_helpers.reset_git_circuit_breaker ();
+                             match peer_pass_claim with
+                             | None -> false
+                             | Some (_claimed_alias, sha) ->
+                                 (match Git_helpers.git_commit_author_name sha with
+                                  | None -> false
+                                  | Some author ->
+                                      String.lowercase_ascii author
+                                      <> String.lowercase_ascii from_alias)
+                           in
                           if sha_author_differs_from_sender then None
                           else if self_pass_detector_strictness () = `Strict
                           then Some (`Reject msg)
@@ -181,6 +189,7 @@ let ts = Unix.gettimeofday () in
                              pin for this alias (or be first-seen). *)
                           match
                             Peer_review.verify_claim_with_pin
+                              ~root:(Broker.root broker)
                               ~path:peer_pass_pin_path ~alias ~sha ()
                           with
                           | Peer_review.Claim_valid msg -> Some (`Ok msg)

@@ -756,12 +756,12 @@ let assert_validator_rejects ~alias ~sha label =
   | Error _ -> ()
 
 let assert_artifact_path_raises ~alias ~sha label =
-  match Peer_review.artifact_path ~sha ~alias with
+  match Peer_review.artifact_path ~sha ~alias () with
   | exception Invalid_argument _ -> ()
   | _ -> failwith (Printf.sprintf "%s: artifact_path unexpectedly returned for alias=%S sha=%S" label alias sha)
 
 let assert_verify_claim_rejects ~alias ~sha label =
-  match Peer_review.verify_claim ~alias ~sha with
+  match Peer_review.verify_claim ~alias ~sha () with
   | Peer_review.Claim_invalid msg ->
     if not (String.starts_with ~prefix:"alias/sha" msg) then
       failwith (Printf.sprintf "%s: Claim_invalid had unexpected reason: %s" label msg)
@@ -856,10 +856,10 @@ let test_legitimate_alias_and_sha_accepted () =
    | Ok () -> ()
    | Error msg -> failwith ("legitimate alias/sha rejected: " ^ msg));
   (* artifact_path must compose without raising. *)
-  let _ = Peer_review.artifact_path ~sha:valid_sha ~alias:valid_alias in
+  let _ = Peer_review.artifact_path ~sha:valid_sha ~alias:valid_alias () in
   (* verify_claim returns Claim_missing (file does not exist), not
      Claim_invalid — proves we're past the validator. *)
-  (match Peer_review.verify_claim ~alias:valid_alias ~sha:valid_sha with
+  (match Peer_review.verify_claim ~alias:valid_alias ~sha:valid_sha () with
    | Peer_review.Claim_missing _ -> ()
    | Peer_review.Claim_valid _ -> failwith "verify_claim returned valid for non-existent artifact"
    | Peer_review.Claim_invalid msg ->

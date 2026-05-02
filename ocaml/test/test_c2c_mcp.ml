@@ -10735,10 +10735,13 @@ let test_hook_drains_for_non_channel_capable () =
 
 (* Build a peer-pass artifact path the way Peer_review does (must match
    ocaml/peer_review.ml:artifact_path). *)
-let h2_artifact_path ~sha ~alias =
-  let base = match Git_helpers.git_common_dir_parent () with
-    | Some parent -> Filename.concat parent ".c2c"
-    | None -> ".c2c"
+let h2_artifact_path ?root ~sha ~alias () =
+  let base = match root with
+    | Some r -> Filename.concat r ".c2c"
+    | None ->
+      match Git_helpers.git_common_dir_parent () with
+      | Some parent -> Filename.concat parent ".c2c"
+      | None -> ".c2c"
   in
   let dir = Filename.concat base "peer-passes" in
   (try Unix.mkdir base 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
@@ -10754,7 +10757,7 @@ let h2_unique_sha () =
     (Random.bits ()) (Random.bits ())
 
 let h2_with_artifact ~sha ~alias ~json f =
-  let path = h2_artifact_path ~sha ~alias in
+  let path = h2_artifact_path ~sha ~alias () in
   Fun.protect
     ~finally:(fun () -> try Sys.remove path with _ -> ())
     (fun () ->
@@ -10894,7 +10897,7 @@ let test_peer_pass_dm_with_valid_signature_accepted () =
    can pre-seed pin store entries that match (or deliberately diverge from)
    it. The artifact file is left on disk; caller wraps with
    [h2_with_artifact_pre_existing] to clean up. *)
-let h2b_make_artifact ~sha ~alias ~identity ~verdict =
+let h2b_make_artifact ?root ~sha ~alias ~identity ~verdict () =
   let art : Peer_review.t = {
     version = 1;
     reviewer = alias;
@@ -10912,14 +10915,14 @@ let h2b_make_artifact ~sha ~alias ~identity ~verdict =
   } in
   let signed = Peer_review.sign ~identity art in
   let json = Peer_review.t_to_string signed in
-  let path = h2_artifact_path ~sha ~alias in
+  let path = h2_artifact_path ?root ~sha ~alias () in
   let oc = open_out path in
   output_string oc json;
   close_out oc;
   signed
 
-let h2b_remove_artifact ~sha ~alias =
-  let path = h2_artifact_path ~sha ~alias in
+let h2b_remove_artifact ?root ~sha ~alias () =
+  let path = h2_artifact_path ?root ~sha ~alias () in
   try Sys.remove path with _ -> ()
 
 (* Pre-seed the broker pin store at <root>/peer-pass-trust.json with a
@@ -10945,6 +10948,7 @@ let h2b_seed_pin ~broker_root ~alias ~pubkey =
    rejected. *)
 let test_peer_pass_dm_h2b_fresh_key_forgery_rejected () =
   with_temp_dir (fun dir ->
+      Git_helpers.reset_git_circuit_breaker ();
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"h2b-fk-s" ~alias:"h2b-fk-sender"
         ~pid:None ~pid_start_time:None ();
@@ -10959,10 +10963,10 @@ let test_peer_pass_dm_h2b_fresh_key_forgery_rejected () =
       let attacker_id = Relay_identity.generate ~alias_hint:"h2b-fk-attacker" () in
       let sha = h2_unique_sha () in
       Fun.protect
-        ~finally:(fun () -> h2b_remove_artifact ~sha ~alias:"h2b-fk-sender")
+        ~finally:(fun () -> h2b_remove_artifact ~root:dir ~sha ~alias:"h2b-fk-sender" ())
         (fun () ->
-          let _ = h2b_make_artifact ~sha ~alias:"h2b-fk-sender"
-                    ~identity:attacker_id ~verdict:"PASS" in
+          let _ = h2b_make_artifact ~root:dir ~sha ~alias:"h2b-fk-sender"
+                    ~identity:attacker_id ~verdict:"PASS" () in
           let content =
             Printf.sprintf "peer-PASS by h2b-fk-sender for SHA=%s — forged" sha
           in
@@ -10987,6 +10991,7 @@ let test_peer_pass_dm_h2b_fresh_key_forgery_rejected () =
    rotation is a separate operator action. *)
 let test_peer_pass_dm_h2b_rotated_key_rejected () =
   with_temp_dir (fun dir ->
+      Git_helpers.reset_git_circuit_breaker ();
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"h2b-rk-s" ~alias:"h2b-rk-sender"
         ~pid:None ~pid_start_time:None ();
@@ -10999,10 +11004,10 @@ let test_peer_pass_dm_h2b_rotated_key_rejected () =
       let new_id = Relay_identity.generate ~alias_hint:"h2b-rk-new" () in
       let sha = h2_unique_sha () in
       Fun.protect
-        ~finally:(fun () -> h2b_remove_artifact ~sha ~alias:"h2b-rk-sender")
+        ~finally:(fun () -> h2b_remove_artifact ~root:dir ~sha ~alias:"h2b-rk-sender" ())
         (fun () ->
-          let _ = h2b_make_artifact ~sha ~alias:"h2b-rk-sender"
-                    ~identity:new_id ~verdict:"PASS" in
+          let _ = h2b_make_artifact ~root:dir ~sha ~alias:"h2b-rk-sender"
+                    ~identity:new_id ~verdict:"PASS" () in
           let content =
             Printf.sprintf "peer-PASS by h2b-rk-sender for SHA=%s" sha
           in
@@ -11022,6 +11027,7 @@ let test_peer_pass_dm_h2b_rotated_key_rejected () =
    the DM. Regression that we did not flip first-seen into a hard reject. *)
 let test_peer_pass_dm_h2b_first_seen_allowed () =
   with_temp_dir (fun dir ->
+      Git_helpers.reset_git_circuit_breaker ();
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"h2b-fs-s" ~alias:"h2b-fs-sender"
         ~pid:None ~pid_start_time:None ();
@@ -11030,10 +11036,10 @@ let test_peer_pass_dm_h2b_first_seen_allowed () =
       let id = Relay_identity.generate ~alias_hint:"h2b-fs-r1" () in
       let sha = h2_unique_sha () in
       Fun.protect
-        ~finally:(fun () -> h2b_remove_artifact ~sha ~alias:"h2b-fs-sender")
+        ~finally:(fun () -> h2b_remove_artifact ~root:dir ~sha ~alias:"h2b-fs-sender" ())
         (fun () ->
-          let _ = h2b_make_artifact ~sha ~alias:"h2b-fs-sender"
-                    ~identity:id ~verdict:"PASS" in
+          let _ = h2b_make_artifact ~root:dir ~sha ~alias:"h2b-fs-sender"
+                    ~identity:id ~verdict:"PASS" () in
           let content =
             Printf.sprintf "peer-PASS by h2b-fs-sender for SHA=%s" sha
           in
@@ -11060,6 +11066,7 @@ let test_peer_pass_dm_h2b_first_seen_allowed () =
    the pin. *)
 let test_peer_pass_dm_h2b_sha_mismatch_rejected () =
   with_temp_dir (fun dir ->
+      Git_helpers.reset_git_circuit_breaker ();
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"h2b-sm-s" ~alias:"h2b-sm-sender"
         ~pid:None ~pid_start_time:None ();
@@ -11069,7 +11076,7 @@ let test_peer_pass_dm_h2b_sha_mismatch_rejected () =
       let real_sha = h2_unique_sha () in
       let claimed_sha = h2_unique_sha () in
       Fun.protect
-        ~finally:(fun () -> h2b_remove_artifact ~sha:claimed_sha ~alias:"h2b-sm-sender")
+        ~finally:(fun () -> h2b_remove_artifact ~root:dir ~sha:claimed_sha ~alias:"h2b-sm-sender" ())
         (fun () ->
           (* The artifact at the path-for claimed_sha actually has
              art.sha = real_sha, so the inner sha check fires. *)
@@ -11090,7 +11097,7 @@ let test_peer_pass_dm_h2b_sha_mismatch_rejected () =
           } in
           let signed = Peer_review.sign ~identity:id art in
           let json = Peer_review.t_to_string signed in
-          let path = h2_artifact_path ~sha:claimed_sha ~alias:"h2b-sm-sender" in
+          let path = h2_artifact_path ~root:dir ~sha:claimed_sha ~alias:"h2b-sm-sender" () in
           let oc = open_out path in
           output_string oc json;
           close_out oc;
@@ -11115,6 +11122,7 @@ let test_peer_pass_dm_h2b_sha_mismatch_rejected () =
    missing: ..." but the message is delivered.) *)
 let test_peer_pass_dm_h2b_missing_artifact_allows_dm () =
   with_temp_dir (fun dir ->
+      Git_helpers.reset_git_circuit_breaker ();
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"h2b-ms-s" ~alias:"h2b-ms-sender"
         ~pid:None ~pid_start_time:None ();

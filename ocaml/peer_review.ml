@@ -348,14 +348,17 @@ let validate_artifact_path_components ~alias ~sha : (unit, string) result =
     [Claim_invalid] result so the broker's reject-logging machinery picks
     it up. Direct callers should pre-validate or be prepared to handle the
     exception. *)
-let artifact_path ~sha ~alias =
+let artifact_path ?(root=None) ~sha ~alias () =
   (match validate_artifact_path_components ~alias ~sha with
    | Ok () -> ()
    | Error msg ->
        invalid_arg (Printf.sprintf "artifact_path: alias/sha rejected by path-validator: %s" msg));
-  let base = match Git_helpers.git_common_dir_parent () with
-    | Some parent -> Filename.concat parent ".c2c"
-    | None -> ".c2c"
+  let base = match root with
+    | Some r -> Filename.concat r ".c2c"
+    | None ->
+      match Git_helpers.git_common_dir_parent () with
+      | Some parent -> Filename.concat parent ".c2c"
+      | None -> ".c2c"
   in
   Filename.concat base (Printf.sprintf "peer-passes/%s-%s.json" sha alias)
 
@@ -474,12 +477,12 @@ type claim_verification =
 
     #57: rejects up-front if alias/sha fail the path-validator, so a
     caller passing unfiltered input never reaches [Filename.concat]. *)
-let verify_claim ~alias ~sha =
+let verify_claim ?root ~alias ~sha () =
   match validate_artifact_path_components ~alias ~sha with
   | Error msg ->
     Claim_invalid (Printf.sprintf "alias/sha rejected by path-validator: %s" msg)
   | Ok () ->
-  let path = artifact_path ~sha ~alias in
+  let art_path = artifact_path ?root ~sha ~alias () in
   if not (Sys.file_exists path) then
     Claim_missing (Printf.sprintf "no peer-pass artifact at %s" path)
   else
@@ -926,12 +929,12 @@ let verify_claim_for_artifact ?path ~(art : t) ~alias ~sha () : claim_verificati
            m.alias m.pinned_pubkey m.artifact_pubkey m.first_seen)
   end
 
-let verify_claim_with_pin ?path ~alias ~sha () =
+let verify_claim_with_pin ?root ?path ~alias ~sha () =
   match validate_artifact_path_components ~alias ~sha with
   | Error msg ->
     Claim_invalid (Printf.sprintf "alias/sha rejected by path-validator: %s" msg)
   | Ok () ->
-  let art_path = artifact_path ~sha ~alias in
+  let art_path = artifact_path ?root ~sha ~alias () in
   if not (Sys.file_exists art_path) then
     Claim_missing (Printf.sprintf "no peer-pass artifact at %s" art_path)
   else
