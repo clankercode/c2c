@@ -3899,7 +3899,11 @@ let run_outer_loop ~(name : string) ~(client : string)
     ?(model_override : string option)
     ?(one_hr_cache = false) ?(kickoff_prompt : string option)
     ?(auto_join_rooms : string option)
-    ?(agent_name : string option) ?(reply_to : string option) () : int =
+    ?(agent_name : string option) ?(reply_to : string option)
+    ?no_prompt () : int =
+  let no_prompt =
+    (Option.value no_prompt ~default:false) || (Sys.getenv_opt "C2C_NO_PROMPT" = Some "1")
+  in
   let session_id = Option.value session_id ~default:name in
   let cfg =
     try Stdlib.Hashtbl.find clients client
@@ -4285,11 +4289,12 @@ let run_outer_loop ~(name : string) ~(client : string)
           (if not (Sys.file_exists config_path) then begin
             let stdin_is_tty = (try Unix.isatty Unix.stdin with _ -> false) in
             let do_install =
-              if stdin_is_tty then begin
+              if no_prompt then false
+              else if stdin_is_tty then begin
                 Printf.eprintf
                   "  [c2c start] .opencode/opencode.json not found — \
                    c2c install opencode has not been run.\n\
-                  \  Run it now? [Y/n] %!";
+                   \  Run it now? [Y/n] %!";
                 let answer = try String.trim (input_line stdin) with End_of_file -> "" in
                 let lower = String.lowercase_ascii answer in
                 lower = "" || lower = "y" || lower = "yes"
@@ -4865,7 +4870,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(one_hr_cache = false)
     ?(kickoff_prompt : string option) ?(auto_join_rooms : string option)
     ?(agent_name : string option) ?(reply_to : string option)
-    ?(tmux_location : string option) ?(tmux_command : string list option) () : int =
+    ?(tmux_location : string option) ?(tmux_command : string list option)
+    ?no_prompt () : int =
   (* Deprecation guard: reject crush early with banner, before unknown-client path *)
   (if client = "crush" then
      let use_color = Unix.isatty Unix.stderr in
@@ -5207,7 +5213,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?codex_resume_target:cfg.codex_resume_target
     ?model_override:cfg.model_override
     ~one_hr_cache ?kickoff_prompt ?auto_join_rooms
-    ?agent_name ?reply_to ()
+    ?agent_name ?reply_to ?no_prompt ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed
    to be callable by an agent running *inside* that client, so the outer

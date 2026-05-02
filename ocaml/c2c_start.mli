@@ -608,6 +608,7 @@ val run_outer_loop :
   ?auto_join_rooms:string ->
   ?agent_name:string ->
   ?reply_to:string ->
+  ?no_prompt:bool ->
   unit ->
   int
 (** [run_outer_loop] runs the outer restart loop for the given instance
@@ -652,6 +653,7 @@ val cmd_start :
   ?reply_to:string ->
   ?tmux_location:string ->
   ?tmux_command:string list ->
+  ?no_prompt:bool ->
   unit ->
   int
 (** [cmd_start] validates and starts a managed instance. Returns 0 on success,

@@ -8396,6 +8396,13 @@ let start_cmd =
   let one_hr_cache =
     Cmdliner.Arg.(value & flag & info [ "1hr-cache" ] ~doc:"Set ENABLE_PROMPT_CACHING_1H=1 (claude only; default off — 1h cache writes cost 2x, only worth it if you hit the cache).")
   in
+  let no_prompt_flag =
+    Cmdliner.Arg.(value & flag & info [ "no-prompt"; "non-interactive" ]
+      ~doc:"Skip all interactive prompts. Prompts that have a sane default take the \
+            default silently; prompts with no default (e.g. missing opencode.json with no \
+            --agent) exit non-zero with a clear error naming the missing input. \
+            Also respected when C2C_NO_PROMPT=1 is set in the environment.")
+  in
   let auto_flag =
     Cmdliner.Arg.(value & flag & info [ "auto" ] ~doc:"Write a getting-started kickoff prompt that the plugin delivers on first session.idle. OpenCode only.")
   in
@@ -8452,6 +8459,7 @@ let start_cmd =
   and+ bin_opt = bin
   and+ session_id_opt = session_id
   and+ one_hr_cache = one_hr_cache
+  and+ no_prompt = no_prompt_flag
   and+ auto_flag = auto_flag
   and+ kickoff_prompt_text_raw = kickoff_prompt_opt
   and+ kickoff_prompt_file = kickoff_prompt_file_opt
@@ -8818,6 +8826,7 @@ let start_cmd =
       ?reply_to
       ?tmux_location:tmux_loc
       ~tmux_command:tmux_tail
+      ~no_prompt
       ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd
