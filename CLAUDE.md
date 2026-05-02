@@ -166,7 +166,7 @@ shapes) in role files / runbooks / tutorials / template bodies,
 **copy verbatim**. Paraphrasing risks silent operator drift —
 e.g. a Monitor recipe with `4.1m` paraphrased to "every 4 minutes"
 loses the off-minute cadence that keeps the prompt cache warm
-(see CLAUDE.md "Agent wake-up + Monitor setup"). Copy-paste
+(see CLAUDE.md "Agent wake-up + scheduling"). Copy-paste
 preserves correctness; describe the *why* in prose around the
 verbatim block, never inside it.
 
@@ -183,12 +183,24 @@ Caveats: receipt confirmation is impossible by design; 1:1 only
 (rooms are inherently shared); local-only in v1 (relay outbox
 persists); mixed batches drain together.
 
-## Agent wake-up + Monitor setup
+## Agent wake-up + scheduling
 
-Full runbook: `.collab/runbooks/agent-wake-setup.md` — `/loop` vs
-Monitor tradeoffs, cost analysis, deduplication (#342), and the
-canonical heartbeat + sitrep recipes. TL;DR: arm ONCE per session on
-arrival (call `TaskList` first; skip any already running):
+Full runbook: `.collab/runbooks/agent-wake-setup.md` — native scheduling
+via `c2c schedule set`, `/loop` vs Monitor tradeoffs, cost analysis,
+deduplication (#342), and the canonical recipes. TL;DR:
+
+**Managed sessions (`c2c start`)** — native scheduling is preferred.
+Schedules are hot-reloaded every 10s from `.c2c/schedules/<alias>/`:
+
+```
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+# Coordinator roles also:
+c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+```
+
+Verify with `c2c schedule list`. MCP: `schedule_set`, `schedule_list`, `schedule_rm`.
+
+**Non-managed sessions** — fall back to Monitor + heartbeat binary:
 
 ```
 Monitor({ description: "heartbeat tick",
@@ -202,7 +214,7 @@ Monitor({ description: "sitrep tick (hourly @:07)",
 ```
 
 **Dedupe before arming** — see `.collab/runbooks/agent-wake-setup.md`
-§dedupe-before-arming (#342). One Monitor per cadence per session.
+§dedupe-before-arming (#342). One schedule/Monitor per cadence per session.
 
 Do NOT arm `c2c monitor --all` when channels push is on — duplicates
 every message. Heartbeat fires are work triggers, not heartbeats to

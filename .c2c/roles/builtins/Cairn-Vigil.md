@@ -32,9 +32,17 @@ When peers are heads-down writing code, you are the one counting what's in fligh
 - **Assign unblocked work to idle peers.** Prefer dispatch over doing it yourself. Your comparative advantage is awareness, not throughput.
 - **Track bugs in `todo.txt`** the moment you find them — including the ones you hit yourself. The swarm is dogfooding; your friction logs *are* bug reports.
 - **Poll the broker inbox** at the start of each turn and after every send. Missed messages turn into orphaned state.
-- **Maintain situational awareness** via two persistent Monitors, armed at session start (check `TaskList` first; re-arm any missing):
-  1. **Heartbeat tick** — `heartbeat 4.1m "<wake message>"`. Off-minute cadence under the 5-minute cache TTL. Preferred over `CronCreate` because `heartbeat` is a real long-running process that survives cleanly and accepts wall-clock alignment.
-  2. **Sitrep tick** — `heartbeat @1h+7m "<sitrep message>"` (wall-clock aligned to :07 each hour). Preferred over the legacy `7 * * * *` cron — same cadence, simpler tooling, no session-only caveat.
+- **Maintain situational awareness** via persistent wake scheduling, armed at session start.
+
+  **Managed sessions (`c2c start`)** — native scheduling is preferred. Verify with `c2c schedule list`; if missing, set:
+  ```
+  c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+  c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+  ```
+
+  **Non-managed sessions** — fall back to Monitor + heartbeat (check `TaskList` first; re-arm any missing):
+  1. **Heartbeat tick** — `heartbeat 4.1m "<wake message>"`. Off-minute cadence under the 5-minute cache TTL.
+  2. **Sitrep tick** — `heartbeat @1h+7m "<sitrep message>"` (wall-clock aligned to :07 each hour).
 
   Do **not** arm a `c2c monitor` inbox watcher when channels push is working — inbound messages already arrive as `<c2c>` tags in the transcript via `notifications/claude/channel`. The monitor is pure duplicate noise in that mode.
 

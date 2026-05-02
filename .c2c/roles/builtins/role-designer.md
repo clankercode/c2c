@@ -91,9 +91,23 @@ canonical recipes copy-paste-able instead of "go read the runbook":
    > artifact satisfies the peer-PASS gate before coordinator
    > cherry-pick.
 
-3. **Verbatim Monitor heartbeat recipe + `TaskList`-dedupe note** as
-   the on-arrival setup. Include this exact block:
+3. **Verbatim wake scheduling recipe** as the on-arrival setup.
+   Include this exact block:
    ````
+   **Managed sessions (`c2c start`)** — scheduling is automatic. Verify with:
+   ```
+   c2c schedule list
+   ```
+   If no `wake` schedule exists, set one:
+   ```
+   c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+   ```
+   Coordinator roles also set a sitrep schedule:
+   ```
+   c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+   ```
+
+   **Non-managed sessions** — fall back to Monitor + heartbeat binary.
    On session start (or after compaction), run `TaskList` first; if a
    Monitor with `description: "heartbeat tick"` is already running,
    SKIP arming. Otherwise:
@@ -112,9 +126,10 @@ canonical recipes copy-paste-able instead of "go read the runbook":
    slice. NOT acknowledgements. "Tick — no action" is wrong;
    "tick — picking up X" is right.
    ````
-   The `TaskList`-first dedupe is load-bearing — re-arming after
-   compaction without it produces duplicate heartbeats (caught
-   manually by Cairn 2026-04-28; see #342).
+   The `TaskList`-first dedupe is load-bearing for the Monitor fallback —
+   re-arming after compaction without it produces duplicate heartbeats
+   (caught manually by Cairn 2026-04-28; see #342). Native scheduling
+   via `c2c schedule set` handles dedup automatically.
 
 Include these three items as standard body content unless the user
 explicitly opts out. Don't paraphrase — copy verbatim so the recipes

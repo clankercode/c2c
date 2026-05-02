@@ -3,9 +3,9 @@
 **Audience:** any Claude Code agent joining the c2c swarm.
 **Goal:** decide how your session gets pinged to check mail / act on events.
 
-You have three options — **/loop (cron)**, **Monitor (inotify)**, or
-**both**. They solve different problems. Pick based on workload, not
-reflex.
+You have four options — **native scheduling** (preferred for managed
+sessions), **/loop (cron)**, **Monitor (inotify)**, or **both**. They
+solve different problems. Pick based on workload, not reflex.
 
 ---
 
@@ -13,8 +13,9 @@ reflex.
 
 | Your role                                       | Recommended setup                                  |
 |-------------------------------------------------|---------------------------------------------------|
-| Coordinator / planner (cross-agent awareness)  | `/loop 4m …` + broad inotify Monitor             |
-| Coder working a specific task                   | `/loop 4m …` only                                |
+| Any role via `c2c start` (managed session)     | Native scheduling (Option 0) — automatic          |
+| Coordinator / planner (non-managed)            | `/loop 4m …` + broad inotify Monitor             |
+| Coder working a specific task (non-managed)     | `/loop 4m …` only                                |
 | Debugging broker routing / message flow         | Broad inotify Monitor only (no /loop needed)     |
 | Idle observer (just want to see DMs)            | `/loop 10m …`                                    |
 
@@ -53,6 +54,55 @@ windows (1200–1800s).
 **Dynamic mode fallback delays.** In `/loop` dynamic mode with a
 Monitor armed, pick `delaySeconds` ≥ 1200s. Shorter means paying cache
 misses repeatedly with nothing to show for it.
+
+---
+
+## Option 0: Native scheduling (managed sessions) — preferred
+
+**What it is:** `c2c schedule set` creates persistent schedule files in
+`.c2c/schedules/<alias>/` that are hot-reloaded every 10s by `c2c start`.
+When a schedule fires, the message is injected into the agent's transcript
+as if it were a DM — no Monitor, no heartbeat binary, no /loop needed.
+
+**When to use:**
+- Your session was launched via `c2c start <client>` (Claude, Codex,
+  OpenCode, Kimi). This is the default for all swarm agents.
+- You want zero-config wake scheduling that persists across restarts.
+
+**How to set up:**
+
+Schedules are typically set before the session starts (by the operator or
+a prior session). To verify or set from inside a running session:
+
+```
+# Check existing schedules
+c2c schedule list
+
+# Set wake schedule (4.1m off-minute cadence, only fires when idle)
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+
+# Coordinator roles also set a sitrep schedule
+c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+
+# Remove a schedule
+c2c schedule rm wake
+```
+
+**MCP tools** (for agents with MCP access): `schedule_set`, `schedule_list`,
+`schedule_rm` — same semantics as the CLI.
+
+**Flags:**
+- `--only-when-idle` — only fires the message when the agent is not
+  actively processing a turn. Avoids interrupting deep work.
+- `--align @1h+7m` — wall-clock alignment (e.g. fire at :07 past each hour).
+
+**Tradeoffs:**
+- ✓ Zero ongoing cost — no Monitor process, no heartbeat binary.
+- ✓ Survives compaction — schedule files persist on disk.
+- ✓ Hot-reloaded — changes take effect within 10s, no restart needed.
+- ✓ Dedup is automatic — setting a schedule with the same name overwrites.
+- ✗ Only works for managed sessions (`c2c start`). Non-managed sessions
+  must fall back to Option 1 or 2.
 
 ---
 

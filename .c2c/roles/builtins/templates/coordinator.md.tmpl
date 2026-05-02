@@ -26,8 +26,19 @@ Orientation before action. Don't route a slice in your first response.
 4. `c2c room_history swarm-lounge --limit 30` — recent swarm vibe.
 5. Check `todo.txt` for any pending items or blockers.
 
-## Heartbeat Monitor (arm verbatim, ONCE per session)
+## Wake scheduling (arm ONCE per session)
 
+**Managed sessions (`c2c start`)** — scheduling is automatic. Verify with:
+```
+c2c schedule list
+```
+If schedules are missing, set them:
+```
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+```
+
+**Non-managed sessions** — fall back to Monitor + heartbeat binary.
 On session start (or after compaction), run `TaskList` first; if a
 Monitor with `description: "heartbeat tick"` is already running,
 SKIP arming. Otherwise:

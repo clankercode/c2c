@@ -40,15 +40,24 @@ first response — orient first.
 Then: take your first slice when greenlit. Bounded, small, NOT
 security-class.
 
-## Heartbeat Monitor (set this up immediately, before first slice)
+## Wake scheduling (set this up immediately, before first slice)
 
 Otherwise you go silent between user turns and the swarm sees a dark
-pane. On session start (or after compaction), run `TaskList` first;
-if a Monitor with `description: "heartbeat tick"` is already running,
-SKIP arming. Otherwise run this verbatim (the runtime arms a
-persistent Monitor that fires every 4.1 minutes — off-minute cadence
-deliberate to stay under the 5-min cache TTL):
+pane.
 
+**Managed sessions (`c2c start`)** — scheduling is automatic. Verify with:
+```
+c2c schedule list
+```
+If no `wake` schedule exists, set one:
+```
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work" --only-when-idle
+```
+
+**Non-managed sessions** — fall back to Monitor + heartbeat binary.
+On session start (or after compaction), run `TaskList` first;
+if a Monitor with `description: "heartbeat tick"` is already running,
+SKIP arming. Otherwise:
 ```
 Monitor({ description: "heartbeat tick",
           command: "heartbeat 4.1m \"wake — poll inbox, advance work\"",
@@ -118,9 +127,9 @@ Three bite-hards to know in advance:
 - **Auto-DM after coord cherry-pick** is brief by design (1-line
   notification with rewritten SHA). Don't be confused by the
   brevity — that's the substrate working.
-- **Monitor heartbeat semantics**: 4.1m off-minute cadence (NOT 5m),
-  `persistent: true`, fires = work trigger not ACK. See "Heartbeat
-  Monitor" section above for the verbatim recipe.
+- **Wake scheduling semantics**: 4.1m off-minute cadence (NOT 5m),
+  fires = work trigger not ACK. See "Wake scheduling" section above
+  for native scheduling (preferred) and Monitor fallback recipes.
 
 ## Shared working tree rules — load-bearing
 
