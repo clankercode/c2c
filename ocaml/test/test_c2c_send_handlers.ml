@@ -379,6 +379,107 @@ let test_send_all_no_recipients () =
       check (list string) "sent_to is empty" [] sent_aliases)
 
 (* ------------------------------------------------------------------------- *)
+(* send_all: receipt contains encrypted/plaintext arrays (#671 S1)           *)
+(* Local recipients always land in plaintext (encryption is relay-only).     *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_all_receipt_has_enc_arrays () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      register_alive broker ~session_id:"session-sender" ~alias:"sender";
+      register_alive broker ~session_id:"session-a" ~alias:"peer-a";
+      register_alive broker ~session_id:"session-b" ~alias:"peer-b";
+      let args = `Assoc [("content", `String "hello encrypted")] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send_all ~broker
+           ~session_id_override:(Some "session-sender") ~arguments:args)
+      in
+      check bool "isError=false" false (get_is_error result);
+      let body = yojson_of_string (get_text_content result) in
+      let open Yojson.Safe.Util in
+      (* Receipt must have encrypted, plaintext, and sent_to arrays *)
+      let encrypted =
+        body |> member "encrypted" |> to_list
+        |> List.map (fun j -> to_string j)
+        |> List.sort compare
+      in
+      let plaintext =
+        body |> member "plaintext" |> to_list
+        |> List.map (fun j -> to_string j)
+        |> List.sort compare
+      in
+      let sent_to =
+        body |> member "sent_to" |> to_list
+        |> List.map (fun j -> to_string j)
+        |> List.sort compare
+      in
+      (* Local peers → all plaintext, none encrypted *)
+      check (list string) "encrypted is empty for local peers" [] encrypted;
+      check (list string) "plaintext contains both peers"
+        ["peer-a"; "peer-b"] plaintext;
+      check (list string) "sent_to = plaintext (all local)"
+        ["peer-a"; "peer-b"] sent_to)
+
+(* ------------------------------------------------------------------------- *)
+(* send_all: empty broadcast receipt has empty enc arrays (#671 S1)          *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_all_empty_receipt_enc_arrays () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      register_alive broker ~session_id:"session-sender" ~alias:"sender";
+      let args = `Assoc [("content", `String "echo?")] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send_all ~broker
+           ~session_id_override:(Some "session-sender") ~arguments:args)
+      in
+      check bool "isError=false" false (get_is_error result);
+      let body = yojson_of_string (get_text_content result) in
+      let open Yojson.Safe.Util in
+      let encrypted =
+        body |> member "encrypted" |> to_list in
+      let plaintext =
+        body |> member "plaintext" |> to_list in
+      check int "encrypted empty" 0 (List.length encrypted);
+      check int "plaintext empty" 0 (List.length plaintext))
+
+(* ------------------------------------------------------------------------- *)
+(* send_all: messages actually delivered to each recipient (#671 S1)         *)
+(* Verifies per-recipient enqueue_message works (replaced Broker.send_all).  *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_all_per_recipient_delivery () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      register_alive broker ~session_id:"session-sender" ~alias:"sender";
+      register_alive broker ~session_id:"session-a" ~alias:"peer-a";
+      register_alive broker ~session_id:"session-b" ~alias:"peer-b";
+      register_alive broker ~session_id:"session-c" ~alias:"peer-c";
+      let args = `Assoc [
+        ("content", `String "broadcast msg");
+        ("exclude_aliases", `List [`String "peer-b"]);
+      ] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send_all ~broker
+           ~session_id_override:(Some "session-sender") ~arguments:args)
+      in
+      check bool "isError=false" false (get_is_error result);
+      (* peer-a and peer-c should have messages; peer-b excluded *)
+      let drain_a = Broker.drain_inbox ~drained_by:"test"
+        broker ~session_id:"session-a" in
+      check int "peer-a got one message" 1 (List.length drain_a);
+      let msg_a = List.hd drain_a in
+      check string "peer-a content" "broadcast msg" msg_a.C2c_mcp_helpers.content;
+      let drain_b = Broker.drain_inbox ~drained_by:"test"
+        broker ~session_id:"session-b" in
+      check int "peer-b excluded" 0 (List.length drain_b);
+      let drain_c = Broker.drain_inbox ~drained_by:"test"
+        broker ~session_id:"session-c" in
+      check int "peer-c got one message" 1 (List.length drain_c);
+      let msg_c = List.hd drain_c in
+      check string "peer-c content" "broadcast msg" msg_c.C2c_mcp_helpers.content)
+
+(* ------------------------------------------------------------------------- *)
 (* Test suite                                                                *)
 (* ------------------------------------------------------------------------- *)
 
@@ -396,6 +497,9 @@ let test_set = [
   "send_all exclude_aliases", `Quick, test_send_all_exclude_aliases;
   "send_all tag=fail prefix", `Quick, test_send_all_tag_fail_prefix;
   "send_all no recipients", `Quick, test_send_all_no_recipients;
+  "send_all receipt has encrypted/plaintext arrays", `Quick, test_send_all_receipt_has_enc_arrays;
+  "send_all empty receipt has empty enc arrays", `Quick, test_send_all_empty_receipt_enc_arrays;
+  "send_all per-recipient delivery", `Quick, test_send_all_per_recipient_delivery;
 ]
 
 let () =

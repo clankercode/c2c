@@ -11,7 +11,12 @@
    lines 60-131 (mechanical hoist, same pattern as S6).
 
    #450 Slice 10: [broadcast_to_all] extracted from [send_all]
-   (mechanical hoist, same pattern as S7-S9). *)
+   (mechanical hoist, same pattern as S7-S9).
+
+   #671 Slice 1: [broadcast_to_all] rewritten to encrypt per-recipient
+   via [encrypt_content_for_recipient] + [Broker.enqueue_message] instead
+   of the plaintext [Broker.send_all] fan-out.  Receipt enriched with
+   [encrypted], [plaintext], and [key_changed] arrays. *)
 
 open C2c_mcp_helpers
 open C2c_mcp_helpers_post_broker
@@ -349,21 +354,63 @@ let ts = Unix.gettimeofday () in
                         in
                         Lwt.return (tool_ok receipt)))))
 
-(** #450 S10: broadcast pipeline — mechanically hoisted from [send_all].
-    Free vars lifted to named parameters. No behavior change. *)
+(** #671 S1: per-recipient encrypted broadcast.  Replaces the old
+    plaintext [Broker.send_all] fan-out with a loop that calls
+    [encrypt_content_for_recipient] for each live recipient, then
+    [Broker.enqueue_message] with the (possibly encrypted) content.
+    Receipt is enriched: [encrypted], [plaintext], and [key_changed]
+    arrays so the sender knows what protection each peer got. *)
 let broadcast_to_all ~broker ~from_alias ~content ~exclude_aliases ~tag_arg
     : (Yojson.Safe.t, string) result =
   match parse_send_tag tag_arg with
   | Error msg -> Error (Printf.sprintf "send_all rejected: %s" msg)
   | Ok tag_opt ->
     let content = (tag_to_body_prefix tag_opt) ^ content in
-    let { Broker.sent_to; skipped } =
-      Broker.send_all broker ~from_alias ~content ~exclude_aliases
-    in
+    let regs = Broker.list_registrations broker in
+    (* Deduplicate by case-folded alias — mirrors Broker.send_all. *)
+    let seen : (string, unit) Hashtbl.t = Hashtbl.create 16 in
+    let sent_encrypted = ref [] in
+    let sent_plaintext = ref [] in
+    let skipped = ref [] in
+    let from_cf = Broker.alias_casefold from_alias in
+    List.iter (fun (reg : C2c_mcp_helpers.registration) ->
+      let alias_cf = Broker.alias_casefold reg.alias in
+      if Hashtbl.mem seen alias_cf then ()
+      else begin
+        Hashtbl.add seen alias_cf ();
+        if alias_cf = from_cf then ()
+        else if List.exists (fun ex -> Broker.alias_casefold ex = alias_cf) exclude_aliases then ()
+        else
+          let ts = Unix.gettimeofday () in
+          match encrypt_content_for_recipient ~broker ~from_alias ~to_alias:reg.alias ~content ~ts with
+          | `Key_changed alias ->
+            skipped := (alias, "key_changed") :: !skipped
+          | `Encrypted enc_content ->
+            (try
+               Broker.enqueue_message broker ~from_alias ~to_alias:reg.alias ~content:enc_content ();
+               sent_encrypted := reg.alias :: !sent_encrypted
+             with Invalid_argument _ ->
+               skipped := (reg.alias, "not_alive") :: !skipped)
+          | `Plain plain_content ->
+            (try
+               Broker.enqueue_message broker ~from_alias ~to_alias:reg.alias ~content:plain_content ();
+               sent_plaintext := reg.alias :: !sent_plaintext
+             with Invalid_argument _ ->
+               skipped := (reg.alias, "not_alive") :: !skipped)
+      end
+    ) regs;
+    let sent_encrypted = List.rev !sent_encrypted in
+    let sent_plaintext = List.rev !sent_plaintext in
+    let skipped = List.rev !skipped in
+    let all_sent = sent_encrypted @ sent_plaintext in
     let result_json =
       `Assoc
         [ ( "sent_to",
-            `List (List.map (fun alias -> `String alias) sent_to) )
+            `List (List.map (fun alias -> `String alias) all_sent) )
+        ; ( "encrypted",
+            `List (List.map (fun alias -> `String alias) sent_encrypted) )
+        ; ( "plaintext",
+            `List (List.map (fun alias -> `String alias) sent_plaintext) )
         ; ( "skipped",
             `List
               (List.map
