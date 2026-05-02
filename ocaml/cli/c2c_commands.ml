@@ -44,9 +44,10 @@ let command_tier_map () : (string * safety) list =
   ; "open-pending-reply", Tier1
   ; "check-pending-reply", Tier1
   ; "prune-rooms", Tier1
-  ; "rooms", Tier1
-  ; "room", Tier1
-  ; "my-rooms", Tier1
+   ; "rooms", Tier1
+   ; "room", Tier1
+   ; "my-rooms", Tier1
+   ; "deliver", Tier1
   ; "register", Tier1
   ; "refresh-peer", Tier1
   ; "instances", Tier1
