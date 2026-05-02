@@ -21,6 +21,7 @@
    - c2c peer-pass list
    - c2c peer-pass verify
    - c2c install (dry-run)
+   - c2c install --dry-run (kimi, opencode, codex)
 
    Each test invokes the c2c binary via Sys.command and verifies
    exit code + output shape. *)
@@ -713,7 +714,64 @@ let test_agent_delete_nonexistent_role_reports_error () =
         (string_contains content "not found" || string_contains content "error"))
 
 (* ------------------------------------------------------------------------- *)
-(* c2c config generation-client — verify generation client display          *)
+(* c2c install --dry-run                                                     *)
+(* ------------------------------------------------------------------------- *)
+
+(* Each test uses --dry-run so nothing is written to disk.
+   Each client gets a unique alias to avoid collisions. *)
+
+let test_install_dry_run_kimi () =
+  let alias = Printf.sprintf "willow-test-kimi-%d" (Unix.getpid ()) in
+  let tmpfile = Filename.temp_file "c2c-install-dry" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf "c2c install kimi --dry-run --alias %s > %s 2>&1"
+        (Filename.quote alias) tmpfile in
+      let rc = Sys.command cmd in
+      check int "install kimi --dry-run exits 0" 0 rc;
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "dry-run output contains [DRY-RUN]" true
+        (string_contains content "[DRY-RUN]");
+      check bool "dry-run output mentions kimi config" true
+        (string_contains content "kimi" || string_contains content "Kimi"))
+
+let test_install_dry_run_opencode () =
+  let alias = Printf.sprintf "willow-test-oc-%d" (Unix.getpid ()) in
+  let tmpfile = Filename.temp_file "c2c-install-dry" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf "c2c install opencode --dry-run --alias %s > %s 2>&1"
+        (Filename.quote alias) tmpfile in
+      let rc = Sys.command cmd in
+      check int "install opencode --dry-run exits 0" 0 rc;
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "dry-run output contains [DRY-RUN]" true
+        (string_contains content "[DRY-RUN]"))
+
+let test_install_dry_run_codex () =
+  let alias = Printf.sprintf "willow-test-codex-%d" (Unix.getpid ()) in
+  let tmpfile = Filename.temp_file "c2c-install-dry" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf "c2c install codex --dry-run --alias %s > %s 2>&1"
+        (Filename.quote alias) tmpfile in
+      let rc = Sys.command cmd in
+      check int "install codex --dry-run exits 0" 0 rc;
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "dry-run output contains [DRY-RUN]" true
+        (string_contains content "[DRY-RUN]"))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c config generation-client                                               *)
 (* ------------------------------------------------------------------------- *)
 
 let test_config_generation_client_exits_zero () =
@@ -1272,5 +1330,8 @@ let () =
         ; ( "install all --dry-run shows [DRY-RUN] markers", `Quick, test_install_all_dry_run_shows_dry_run_markers )
         ; ( "install gemini --dry-run exits 0 and mentions broker root", `Quick, test_install_gemini_dry_run_exits_zero )
         ; ( "install gemini --dry-run shows config preview", `Quick, test_install_gemini_dry_run_shows_config_preview )
+        ; ( "install kimi --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_kimi )
+        ; ( "install opencode --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_opencode )
+        ; ( "install codex --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_codex )
         ] )
     ]
