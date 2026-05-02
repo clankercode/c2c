@@ -1052,6 +1052,89 @@ open C2c_mcp_helpers
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
 
+  (* --- Hardening B: Shell-Launch-Location Guard helpers ------------------- *)
+
+  (* Derive instances_dir using the same logic as C2c_start.instances_dir.
+     The expected-cwd file lives at <instances_dir>/<alias>/expected-cwd.
+     Broker root is <root>/.git/c2c/mcp, while instances_dir is
+     $HOME/.local/share/c2c/instances — different base paths. *)
+  let instances_dir () =
+    match Sys.getenv_opt "C2C_INSTANCES_DIR" with
+    | Some d when String.trim d <> "" -> String.trim d
+    | _ ->
+        let home =
+          try Sys.getenv "HOME" with Not_found -> "/home/" ^ Sys.getenv "USER"
+        in
+        Filename.concat home (Filename.concat ".local" (Filename.concat "share" (Filename.concat "c2c" "instances")))
+
+  let expected_cwd_path alias =
+    Filename.concat (Filename.concat (instances_dir ()) alias) "expected-cwd"
+
+  (** [check_worktree_mismatch t ~from_alias] — Hardening B § Mechanism 2.
+      Reads the expected-cwd file for [from_alias] and compares it to the
+      sender's cwd stored in the registration. Logs [WORKTREE_MISMATCH] if
+      they differ (soft warn only). Coordinator and remote aliases are exempt.
+      Returns unit; never raises. *)
+  let check_worktree_mismatch t ~from_alias =
+    try
+      (* Skip for remote aliases (cross-host; cwd is not meaningful) *)
+      if String.exists (fun c -> c = '@') from_alias then () else
+      (* Skip when C2C_COORDINATOR=1 (coordinator may run from main tree) *)
+      if Sys.getenv_opt "C2C_COORDINATOR" = Some "1" then () else
+      let expected_path = expected_cwd_path from_alias in
+      if not (Sys.file_exists expected_path) then () else
+      (* Read expected cwd from file (one line, no trailing newline) *)
+      let expected_cwd =
+        let ic = open_in expected_path in
+        Fun.protect ~finally:(fun () -> close_in ic)
+          (fun () ->
+             try
+               let line = input_line ic in
+               String.trim line
+             with End_of_file -> "")
+      in
+      if expected_cwd = "" then () else
+      (* Load registrations to get sender's cwd at registration time.
+         Acquire the registry lock briefly. *)
+      let sender_cwd =
+        with_registry_lock t (fun () ->
+          let regs = load_registrations t in
+          let target = alias_casefold from_alias in
+          match List.find_opt (fun reg -> alias_casefold reg.alias = target) regs with
+          | Some reg -> reg.cwd
+          | None -> None)
+      in
+      (match sender_cwd with
+       | None -> () (* sender not registered — skip *)
+       | Some actual_cwd ->
+           if actual_cwd <> expected_cwd then
+             (try
+                let ts = Unix.gettimeofday () in
+                let fields =
+                  [ ("ts", `Float ts)
+                  ; ("event", `String "worktree_mismatch")
+                  ; ("alias", `String from_alias)
+                  ; ("expected_cwd", `String expected_cwd)
+                  ; ("actual_cwd", `String actual_cwd)
+                  ]
+                in
+                log_broker_event ~broker_root:(root t) "WORKTREE_MISMATCH" fields
+              with _ -> ())
+           else
+             (* Mismatch cleared — log at INFO level per § Mechanism 2 *)
+             (try
+                let ts = Unix.gettimeofday () in
+                let fields =
+                  [ ("ts", `Float ts)
+                  ; ("event", `String "worktree_match")
+                  ; ("alias", `String from_alias)
+                  ; ("cwd", `String expected_cwd)
+                  ]
+                in
+                log_broker_event ~broker_root:(root t) "WORKTREE_MATCH" fields
+              with _ -> ()))
+    with _ -> ()
+
   let list_registrations t = load_registrations t
 
   (* /proc/<pid>/stat line layout: "<pid> (<comm>) <state> <ppid> ... <starttime> ..."
@@ -1914,7 +1997,11 @@ open C2c_mcp_helpers
     if List.mem from_alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "send rejected: from_alias '%s' is a reserved system alias" from_alias)
-    else if is_remote_alias to_alias then
+    else
+      (* Hardening B: check shell-launch-location mismatch and warn if sender's
+         cwd has drifted from the expected path at launch time. *)
+      check_worktree_mismatch t ~from_alias;
+    if is_remote_alias to_alias then
       (* Remote alias: append to relay outbox for async forwarding by sync loop.
          Note: ephemeral semantics over the relay are not yet wired in v1 —
          the relay outbox path persists by design. Cross-host ephemeral is a

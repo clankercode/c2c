@@ -839,6 +839,127 @@ delete, rotate also bumps the epoch so the broker can distinguish
 
 ---
 
+### `json_cap_exceeded`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "json_cap_exceeded",
+  "file": "<path-to-file>",
+  "max_bytes": <int>
+}
+```
+
+**Fires when**: a JSON file read via `read_json_file` exceeds the 64 KiB
+cap and the read returns the default value instead. This is a defensive
+measure against operator-controlled but potentially attacker-adjacent files
+(registration blobs, relay state, config) that could be written with
+unbounded size.
+
+**File**: `ocaml/c2c_broker.ml` `log_json_cap_exceeded` (~line 43).
+
+**Operational meaning**: operators need observability when the cap triggers
+to distinguish "read returned default" from "read actually succeeded with
+a large but valid file." One line per capped read.
+
+**Cross-link**: Slice F follow-up.
+
+---
+
+### `session_id_differs_from_alias`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "session_id_differs_from_alias",
+  "session_id": "<registered-session-id>",
+  "alias": "<registered-alias>"
+}
+```
+
+**Fires when**: a registration is created or updated where `session_id ≠
+alias`. The broker handles this correctly — senders resolve alias→session_id
+via the registry so both enqueue and drain use the same session_id-based
+path — but operators may see unexpected inbox filenames (e.g.
+`session-a.inbox.json` instead of `storm-ember.inbox.json`).
+
+**File**: `ocaml/c2c_broker.ml` `register` function (~line 1871).
+
+**Operational meaning**: forensic visibility into when this configuration
+occurs. The inbox filename is based on session_id, so when they differ,
+operators may need to correlate by alias rather than session_id.
+
+**Cross-link**: #529.
+
+---
+
+### `worktree_mismatch`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "worktree_mismatch",
+  "alias": "<sender-alias>",
+  "expected_cwd": "<path-from-expected-cwd-file>",
+  "actual_cwd": "<cwd-at-registration-time>"
+}
+```
+
+**Fires when**: the sender's shell cwd at registration time differs from the
+expected path recorded in `<instances_dir>/<alias>/expected-cwd` at launch.
+This is a soft diagnostic — no hard block, agents may legitimately shell into
+other trees for read-only operations.
+
+**File**: `ocaml/c2c_broker.ml` `check_worktree_mismatch` (~line 1168).
+
+**Operational meaning**: visibility into when an agent's working directory has
+drifted from its launch-time expected path (e.g. shell `cd`-ed into the main
+tree while its worktree is `.worktrees/<slice>/`). Git operations from that
+shell could mutate the shared HEAD. Cross-host senders and the coordinator
+are exempt.
+
+**Cross-link**: `.collab/design/2026-05-02-hardening-b-shell-launch-location-guard.md`.
+
+---
+
+### `worktree_match`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "worktree_match",
+  "alias": "<sender-alias>",
+  "cwd": "<current-expected-cwd>"
+}
+```
+
+**Fires when**: a prior `worktree_mismatch` has cleared — the sender's cwd
+is again at the expected launch-time path. One line per recovery.
+
+**File**: `ocaml/c2c_broker.ml` `check_worktree_mismatch` (~line 1168).
+
+**Operational meaning**: confirms that the mismatch condition has been resolved.
+
+**Cross-link**: `.collab/design/2026-05-02-hardening-b-shell-launch-location-guard.md`.
+
+---
+
 ### `rpc`
 
 **Severity**: LOW

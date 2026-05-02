@@ -1763,6 +1763,26 @@ let bridge_events_fifo_path name = instance_dir name // "bridge-events.fifo"
 let bridge_responses_fifo_path name = instance_dir name // "bridge-responses.fifo"
 let deaths_jsonl_path broker_root = broker_root // "deaths.jsonl"
 let tmux_info_path name = instance_dir name // "tmux.json"
+let expected_cwd_path name = instance_dir name // "expected-cwd"
+
+(* Write the expected-CWD file at start and restart time.  The outer
+   wrapper's cwd at launch is the canonical expected path — if the agent's
+   inner shell drifts to a different tree, this file lets the broker detect
+   the mismatch.  Best-effort: silently skips on errors. *)
+let write_expected_cwd ~(name : string) : unit =
+  let path = expected_cwd_path name in
+  try
+    let cwd = Unix.realpath (Sys.getcwd ()) in
+    let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+    let oc = open_out_gen [Open_wronly; Open_creat; Open_trunc; Open_text] 0o600 tmp in
+    Fun.protect ~finally:(fun () -> try close_out oc with _ -> ())
+      (fun () ->
+         output_string oc cwd;
+         flush oc;
+         (try Unix.fsync (Unix.descr_of_out_channel oc)
+          with Unix.Unix_error _ -> ()));
+    Unix.rename tmp path
+  with _ -> ()
 
 (* Orphan-inbox replay: persists across the c2c restart exec gap.
    cmd_restart saves orphan messages here before exec; the MCP server
@@ -3990,6 +4010,7 @@ let run_outer_loop ~(name : string) ~(client : string)
       let inst_dir = instance_dir name in
       mkdir_p inst_dir;
       capture_and_write_tmux_location name;
+      write_expected_cwd ~name;
       if repo_config_git_attribution () then begin
         (* #462: install the canonical swarm-wide shim once per
            [c2c start]. Idempotent; the per-instance shim below
