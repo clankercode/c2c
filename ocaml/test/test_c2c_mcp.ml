@@ -4873,6 +4873,45 @@ let test_prune_rooms_evicts_orphan_room_members () =
       check string "remaining member is alive-peer" "alive-peer"
         (List.hd members).C2c_mcp.rm_alias)
 
+let test_prune_rooms_empty_room_after_all_members_leave () =
+  (* Scenario: all members explicitly leave a room via leave_room, then
+     prune_rooms is called. The room should still exist (list_rooms shows it)
+     with 0 members. prune_rooms returns empty list since members left gracefully
+     (not dead) — no evictions needed. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register two alive members *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-member-a" ~alias:"member-a"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-member-b" ~alias:"member-b"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      (* Both join the same room *)
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"test-room"
+           ~alias:"member-a" ~session_id:"s-member-a");
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"test-room"
+           ~alias:"member-b" ~session_id:"s-member-b");
+      (* Verify 2 members in room *)
+      let members_before = C2c_mcp.Broker.read_room_members broker ~room_id:"test-room" in
+      check int "two members before leave" 2 (List.length members_before);
+      (* Both leave gracefully *)
+      ignore (C2c_mcp.Broker.leave_room broker ~room_id:"test-room" ~alias:"member-a");
+      ignore (C2c_mcp.Broker.leave_room broker ~room_id:"test-room" ~alias:"member-b");
+      (* Room still exists in list_rooms but with 0 members *)
+      let rooms = C2c_mcp.Broker.list_rooms broker in
+      let empty_rooms = List.filter (fun (r : C2c_mcp.Broker.room_info) -> r.ri_member_count = 0) rooms in
+      check int "room with 0 members in list_rooms" 1 (List.length empty_rooms);
+      (* prune_rooms returns empty (no dead members to evict) *)
+      let evicted = C2c_mcp.Broker.prune_rooms broker in
+      check int "prune_rooms returns empty — no dead members to evict" 0 (List.length evicted);
+      (* Room still in list_rooms with 0 members after prune *)
+      let rooms_after_prune = C2c_mcp.Broker.list_rooms broker in
+      let empty_rooms_after = List.filter (fun (r : C2c_mcp.Broker.room_info) -> r.ri_member_count = 0) rooms_after_prune in
+      check int "room still listed after prune" 1 (List.length empty_rooms_after))
+
 let test_register_redelivers_dead_letter_on_same_session_id () =
   (* Scenario: a managed session (e.g. kimi-local) is swept while the outer
      loop is between iterations — PID dead, no live process. Messages queued to
@@ -11764,6 +11803,8 @@ let () =
              test_prune_rooms_keeps_unverified_pid_member
          ; test_case "prune_rooms evicts orphan room members" `Quick
              test_prune_rooms_evicts_orphan_room_members
+         ; test_case "prune_rooms empty room after all members leave" `Quick
+             test_prune_rooms_empty_room_after_all_members_leave
          ; test_case "register redelivers dead-letter on same session_id" `Quick
              test_register_redelivers_dead_letter_on_same_session_id
          ; test_case "register redelivers dead-letter by alias (new session_id)" `Quick
