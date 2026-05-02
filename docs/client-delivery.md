@@ -282,48 +282,17 @@ Broker returns pending messages
 
 Recommended practice: call `mcp__c2c__poll_inbox` at the start of each turn.
 
-### Message delivery - Wire bridge (deprecated for Kimi)
+### Message delivery - Notification-store push (canonical)
 
-> **Deprecated for Kimi (2026-04-29).** The wire-bridge is superseded by
-> [notification-store delivery](#message-delivery---kimi-notification-store-preferred)
-> below. The wire-bridge code (`c2c wire-daemon` CLI, `c2c_wire_bridge.ml`)
-> is retained for opencode/codex and future clients that set
-> `needs_wire_daemon=true`.
+`C2c_kimi_notifier` (OCaml; see `ocaml/c2c_kimi_notifier.ml`) delivers
+queued broker messages by writing notification JSON files into kimi-cli's
+native notification directory. The notifier daemon is started automatically
+by `c2c start kimi`. It polls the broker every 2 seconds and sends a tmux
+`send-keys` wake when the pane appears idle.
 
-`c2c wire-daemon` (OCaml; see `ocaml/c2c_wire_bridge.ml` /
-`ocaml/c2c_wire_daemon.ml`) delivers queued broker messages through Kimi's
-Wire JSON-RPC `prompt` method. This keeps message content broker-native
-until the bridge drains the inbox, stores it in a crash-safe spool, and
-sends one `<c2c ...>` prompt into the Wire session.
-
-```bash
-# For opencode/codex (needs_wire_daemon=true clients):
-c2c wire-daemon start --session-id <session-id>
-c2c wire-daemon status --session-id <session-id>
-c2c wire-daemon list
-```
-
-**Live-proven 2026-04-14** by codex: a `--once` invocation launched a real
-`kimi --wire` subprocess, delivered 1 broker-native message, received a Kimi
-acknowledgment, cleared the spool, and exited rc=0. See finding
-`.collab/findings/2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`.
-
-The bridge is crash-safe: messages are persisted to a local spool file before
-Wire delivery; if delivery fails, the spool retains them for the next run.
-Loop mode uses a cheap non-destructive inbox/spool peek and only launches a
-Wire subprocess when there is work to deliver. Detached daemon mode is
-managed via `c2c wire-daemon start|stop|status|restart|list`, which stores
-pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
-
-### Message delivery - Kimi notification-store (preferred)
-
-> **Canonical delivery path for Kimi (2026-04-29).** Supersedes the wire-bridge.
-
-`c2c start kimi` automatically starts the **kimi-notifier daemon** alongside
-the kimi TUI. The notifier polls the broker inbox every 2 seconds and writes
-notification JSON files to `~/.kimi/sessions/<wh>/<sid>/notifications/<id>/`,
-which kimi-cli's built-in notification subsystem surfaces as toasts (shell-sink)
-and agent-context injections (llm-sink).
+The previous wire-bridge path (`c2c wire-daemon`, `c2c_wire_daemon.ml`,
+`c2c_kimi_wire_bridge.py`) was removed due to a dual-agent registration
+bug. See `.collab/runbooks/kimi-notification-store-delivery.md`.
 
 See [`.collab/runbooks/kimi-notification-store-delivery.md`]({% link
 .collab/runbooks/kimi-notification-store-delivery.md %}) for the full
@@ -343,7 +312,7 @@ c2c instances                      # list running instances
 c2c stop my-kimi                   # stop the instance
 ```
 
-The managed harness starts Kimi with a Wire bridge deliver daemon and a poker
+The managed harness starts Kimi with a kimi-notifier daemon and a poker
 sidecar. On exit it prints a resume command rather than looping automatically.
 
 ### Self-restart

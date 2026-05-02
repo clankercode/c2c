@@ -1303,7 +1303,7 @@ module type CLIENT_ADAPTER = sig
 
   val binary : string
   val needs_deliver : bool
-  val needs_wire_daemon : bool
+
   val needs_poker : bool
   val poker_event : string option
   val poker_from : string option
@@ -1359,7 +1359,6 @@ type client_config = {
   binary : string;
   deliver_client : string;
   needs_deliver : bool;
-  needs_wire_daemon : bool;   (* use OCaml wire-daemon instead of PTY deliver *)
   needs_poker : bool;
   poker_event : string option;
   poker_from : string option;
@@ -1374,12 +1373,12 @@ let () =
      adds the CAP_SYS_PTRACE preflight banner for no benefit. *)
   Stdlib.Hashtbl.add clients "claude"
     { binary = "claude"; deliver_client = "claude";
-      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
+      needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None;
       extra_env = [] };
   Stdlib.Hashtbl.add clients "codex"
     { binary = "codex"; deliver_client = "codex";
-      needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
+      needs_deliver = true; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
   (* opencode: the TypeScript c2c plugin (.opencode/plugins/c2c.ts) handles
      delivery in-process via client.session.promptAsync. Python deliver
@@ -1387,23 +1386,19 @@ let () =
      TUI when setcap is missing. *)
   Stdlib.Hashtbl.add clients "opencode"
     { binary = "opencode"; deliver_client = "opencode";
-      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
+      needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
-  (* kimi: delivers via C2c_kimi_notifier (file-based notification-store push
-     to ~/.kimi/sessions/<wh>/<sid>/notifications/). The notifier replaced the
-     deprecated wire-bridge path (which spawned a fully-agentic `kimi --wire`
-     subprocess per batch — see finding b6455d8e). The wire-bridge code
-     (c2c_wire_bridge.ml, c2c_wire_daemon.ml, start_wire_daemon) stays in
-     place for opencode/codex; any future ephemeral-no-TUI runner can opt in
-     by setting needs_wire_daemon=true on its client_config. *)
+  (* kimi: delivery via C2c_kimi_notifier — file-based notification-store push.
+     The deprecated wire-bridge path was removed in the kimi-wire-bridge-cleanup
+     slice. *)
   Stdlib.Hashtbl.add clients "kimi"
     { binary = "kimi"; deliver_client = "kimi";
-      needs_deliver = false; needs_wire_daemon = false; needs_poker = true;
+      needs_deliver = false; needs_poker = true;
       poker_event = Some "heartbeat"; poker_from = Some "kimi-poker";
       extra_env = [] };
   Stdlib.Hashtbl.add clients "crush"
     { binary = "crush"; deliver_client = "crush";
-      needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
+      needs_deliver = true; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
   (* gemini (#406b): Google's Gemini CLI. MCP-server-based delivery via
      `gemini mcp` config (written by `c2c install gemini` — slice #406a),
@@ -1413,21 +1408,21 @@ let () =
      auto-answer (unlike Claude's #399b dance). *)
   Stdlib.Hashtbl.add clients "gemini"
     { binary = "gemini"; deliver_client = "gemini";
-      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
+      needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
   (* codex-headless: minimal unblocker for broker-driven XML delivery.
      We wire the bridge behind a c2c-owned stdin pipe and use the deliver daemon
      to feed that pipe. Richer operator steering / queue management remains future work. *)
   Stdlib.Hashtbl.add clients "codex-headless"
     { binary = "codex-turn-start-bridge"; deliver_client = "codex-headless";
-      needs_deliver = true; needs_wire_daemon = false; needs_poker = false;
+      needs_deliver = true; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
   (* pty: generic PTY-backed client. forks a PTY pair, execs the user's command
      on the slave, and delivers inbound c2c messages by writing to the master fd
      (bracketed paste + delay + Enter, a la pty_inject). *)
   Stdlib.Hashtbl.add clients "pty"
     { binary = "pty"; deliver_client = "pty";
-      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
+      needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
   ;
   (* tmux: generic lifecycle-decoupled delivery to an existing pane. The
@@ -1435,7 +1430,7 @@ let () =
      client process in this mode. *)
   Stdlib.Hashtbl.add clients "tmux"
     { binary = "tmux"; deliver_client = "tmux";
-      needs_deliver = false; needs_wire_daemon = false; needs_poker = false;
+      needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
 
 let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []
@@ -1456,7 +1451,7 @@ module OpenCodeAdapter : CLIENT_ADAPTER = struct
 
   let binary = "opencode"
   let needs_deliver = false
-  let needs_wire_daemon = false
+
   let needs_poker = false
   let poker_event = None
   let poker_from = None
@@ -3302,7 +3297,6 @@ let probed_capabilities ~(client : string) ~(binary_path : string) : string list
   |> add_if Pty_inject
        (pty_inject_ok
         && List.mem client [ "claude"; "codex"; "opencode"; "crush" ])
-  |> add_if Kimi_wire (client = "kimi")
   |> add_if Codex_xml_fd (client = "codex" && codex_supports_xml_input_fd binary_path)
   |> add_if Codex_headless_thread_id_fd
        (client = "codex-headless" && bridge_supports_thread_id_fd binary_path)
@@ -3327,7 +3321,7 @@ module ClaudeAdapter : CLIENT_ADAPTER = struct
 
   let binary = "claude"
   let needs_deliver = false
-  let needs_wire_daemon = false
+
   let needs_poker = false
   let poker_event = None
   let poker_from = None
@@ -3382,7 +3376,7 @@ module CodexAdapter : CLIENT_ADAPTER = struct
 
   let binary = "codex"
   let needs_deliver = true
-  let needs_wire_daemon = false
+
   let needs_poker = false
   let poker_event = None
   let poker_from = None
@@ -3440,10 +3434,9 @@ module KimiAdapter : CLIENT_ADAPTER = struct
 
   let binary = "kimi"
   let needs_deliver = false
-  (* Wire-bridge deprecated for kimi (root cause: dual-agent bug per finding
-     b6455d8e). Replaced by C2c_kimi_notifier (file-based notification-store
-     push). The wire-bridge code stays for opencode/codex. *)
-  let needs_wire_daemon = false
+  (* Delivery via C2c_kimi_notifier (file-based notification-store push).
+     The deprecated wire-bridge path was removed in the kimi-wire-bridge-cleanup
+     slice. *)
   let needs_poker = true
   let poker_event = Some "heartbeat"
   let poker_from = Some "kimi-poker"
@@ -3521,9 +3514,8 @@ module KimiAdapter : CLIENT_ADAPTER = struct
     ()
 
   let probe_capabilities ~binary_path:_ =
-    (* kimi_wire: always available for managed kimi sessions.
-       Wire bridge delivers via JSON-RPC; no PTY access needed. *)
-    [ "kimi_wire", true ]
+    (* Kimi delivery is via C2c_kimi_notifier; no special capabilities needed. *)
+    []
 
   (* Kickoff for kimi is delivered via [--prompt] argv injected in
      [prepare_launch_args] (see the "kimi" branch).  This contract
@@ -3564,7 +3556,7 @@ module GeminiAdapter : CLIENT_ADAPTER = struct
 
   let binary = "gemini"
   let needs_deliver = false
-  let needs_wire_daemon = false
+
   let needs_poker = false
   let poker_event = None
   let poker_from = None
@@ -3760,8 +3752,7 @@ let delivery_mode ?(now = Unix.gettimeofday ()) ?(startup_grace_s = 60.0)
              "plugin_grace"
          | _ when has C2c_capability.Pty_inject -> "native_pty_fallback"
          | _ -> "plugin_stale_no_fallback")
-  | "kimi" ->
-      if has C2c_capability.Kimi_wire then "wire" else "poll_only"
+  | "kimi" -> "notifier"
   | "codex" ->
       if has C2c_capability.Codex_xml_fd then "xml_fd"
       else if has C2c_capability.Pty_inject then "pty_notify"
@@ -3902,17 +3893,6 @@ let start_poker ~(name : string) ~(client : string)
       let sender = match cfg.poker_from with None -> "c2c-poker" | Some s -> s in
       let event = match cfg.poker_event with None -> "heartbeat" | Some e -> e in
       C2c_poker.start ~name ~pid ~interval:600.0 ~event ~sender ~alias:"" ~broker_root
-
-let start_wire_daemon ~(name : string) ~(alias : string)
-    ~(broker_root : string) () : int option =
-  let command = "kimi" in
-  let work_dir = Sys.getcwd () in
-  let interval = 5.0 in
-  let (_status, _action) =
-    C2c_wire_daemon.start_daemon
-      ~session_id:name ~alias ~broker_root ~command ~work_dir ~interval
-  in
-  _status.C2c_wire_daemon.pid
 
 let start_headless_thread_id_watcher ~(name : string) ~(path : string) : Thread.t =
   Thread.create
@@ -4114,7 +4094,7 @@ let run_outer_loop ~(name : string) ~(client : string)
         exit 1
       end;
       (* Leave SIGCHLD at default so waitpid works for the managed inner child.
-         Sidecar children (deliver, poker, wire) are started with their own
+         Sidecar children (deliver, poker) are started with their own
          process groups; they will eventually become zombies until the outer
          process itself exits, which is acceptable — the outer loop is short-lived. *)
 
@@ -4150,7 +4130,6 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       let deliver_pid = ref None in
       let poker_pid = ref None in
-      let wire_pid = ref None in
       (* Inner child PID — set after fork so the SIGTERM handler can kill it. *)
       let inner_child_pid = ref None in
 
@@ -4193,7 +4172,6 @@ let run_outer_loop ~(name : string) ~(client : string)
              kill_inner_target Sys.sigkill p);
         stop_sidecar !deliver_pid;
         stop_sidecar !poker_pid;
-        stop_sidecar !wire_pid;
         remove_pidfile (outer_pid_path name);
         remove_pidfile (inner_pid_path name);
         remove_pidfile (deliver_pid_path name);
@@ -4819,15 +4797,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                (try Unix.close read_fd with _ -> ());
                (try Unix.close write_fd with _ -> ())
            | None -> ());
-          (* Start wire-daemon for clients that set needs_wire_daemon=true
-             (opencode/codex; kimi uses C2c_kimi_notifier instead). *)
-          (if !wire_pid = None && cfg.needs_wire_daemon then begin
-             let alias = Option.value alias_override ~default:name in
-             match start_wire_daemon ~name ~alias ~broker_root () with
-             | Some p -> wire_pid := Some p
-             | None -> ()
-           end);
-          (* Start kimi-notifier (replaces wire-bridge for kimi).
+          (* Start kimi-notifier (file-based notification-store push).
              File-based notification push to ~/.kimi/sessions/<wh>/<sid>/notifications/.
              Optionally tmux send-keys-wakes the kimi pane when idle. See
              c2c_kimi_notifier.mli + .collab/research/2026-04-29T10-27-00Z-stanza-
@@ -4988,8 +4958,7 @@ let run_outer_loop ~(name : string) ~(client : string)
          wait for our own outer PID (deadlock). Instead, we inline the orphan
          capture + execvp path directly. *)
       if exit_code = 42 then begin
-        (* Stop sidecars (deliver, wire, poker). *)
-        stop_sidecar !wire_pid;
+        (* Stop sidecars (deliver, poker). *)
         stop_sidecar !deliver_pid;
         stop_sidecar !poker_pid;
         (* Capture orphan inbox — messages that arrived during the restart gap.

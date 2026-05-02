@@ -91,7 +91,7 @@ available and stable.
 |--------|--------------|-------|
 | `c2c_claude_wake_daemon.py` | ⏳ | Still Python (PTY injection) |
 | `c2c_kimi_wake_daemon.py` | ⏳ | Still Python (PTY injection) |
-| `c2c_kimi_wire_bridge.py` | ⏳ | Still Python (Wire protocol) |
+| `c2c_kimi_wire_bridge.py` | REMOVED | Wire-bridge deprecated; kimi uses C2c_kimi_notifier |
 | `c2c_opencode_wake_daemon.py` | ⏳ | Still Python (PTY injection) |
 | `c2c_crush_wake_daemon.py` | ⏳ | Still Python (PTY injection) |
 | `c2c_deliver_inbox.py` | ⏳ | Still Python (inotify-based delivery) |
@@ -154,7 +154,7 @@ some have OCaml equivalents, and some are retained as experimental fallback path
 | `c2c_deliver_inbox.py` | root | 🔄 inotify-based delivery daemon; OCaml `c2c-deliver-inbox` is primary |
 | `c2c_claude_wake_daemon.py` | deprecated/ | 🔄 PTY-based; retained for experimental use |
 | `c2c_kimi_wake_daemon.py` | deprecated/ | 🔄 PTY-based; retained for experimental use |
-| `c2c_kimi_wire_bridge.py` | deprecated/ | 🔄 Wire protocol bridge; OCaml `c2c wire-daemon` is primary |
+| `c2c_kimi_wire_bridge.py` | deprecated/ | REMOVED from OCaml side; Python script still present but unused |
 | `c2c_opencode_wake_daemon.py` | deprecated/ | 🔄 PTY-based; retained for experimental use |
 | `c2c_crush_wake_daemon.py` | deprecated/ | 🔄 PTY-based; Crush not first-class peer |
 | `c2c_pts_inject.py` | root | 🔄 PTY injection utility; deprecated path |
@@ -204,7 +204,7 @@ Key: 🔄 = deprecated/root but still imported or used as fallback; ✅ = fully 
 ### Phase 3: Wake Daemons
 - [ ] c2c_claude_wake_daemon.py → OCaml?
 - [ ] c2c_kimi_wake_daemon.py → OCaml?
-- [ ] c2c_kimi_wire_bridge.py → OCaml?
+- [x] c2c_kimi_wire_bridge.py → REMOVED (replaced by C2c_kimi_notifier)
 - [ ] c2c_opencode_wake_daemon.py → OCaml?
 - [ ] c2c_crush_wake_daemon.py → OCaml?
 - [ ] c2c_deliver_inbox.py → OCaml?

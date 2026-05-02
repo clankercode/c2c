@@ -246,7 +246,8 @@ let deprecated_py_scripts = SS.of_list [
   "c2c_sweep_dryrun.py"; "c2c_refresh_peer.py"; "c2c_configure_claude_code.py";
   "c2c_configure_codex.py"; "c2c_configure_opencode.py";
   "c2c_configure_kimi.py"; "c2c_configure_crush.py";
-  "c2c_kimi_wire_bridge.py"; "c2c_wire_daemon.py";
+  (* c2c_kimi_wire_bridge.py and c2c_wire_daemon.py removed — wire-bridge
+     deprecated and deleted in the kimi-wire-bridge-cleanup slice. *)
   "c2c_opencode_wake_daemon.py"; "c2c_kimi_wake_daemon.py";
   "c2c_claude_wake_daemon.py"; "c2c_crush_wake_daemon.py"; "c2c_poker.py";
   "c2c_inject.py"; "c2c_pts_inject.py"; "relay.py"; "c2c_relay.py";

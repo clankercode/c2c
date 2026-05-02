@@ -1,7 +1,7 @@
-(** Cross-impl parity tests: OCaml wire bridge vs Python c2c_kimi_wire_bridge.py.
+(** Tests for C2c_wire_bridge envelope formatting and spool I/O.
 
-    These tests verify that the OCaml envelope formatting produces output
-    identical to the Python reference implementation. *)
+    These tests verify that the OCaml envelope formatting and crash-safe spool
+    functions work correctly. *)
 
 let msg ?(from_alias="") ?(to_alias="") ?(reply_via=None) ?(enc_status=None) content =
   C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via; enc_status; ts = 0.0; ephemeral = false; message_id = None }

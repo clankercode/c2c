@@ -5,7 +5,6 @@ type t =
   | Opencode_plugin
   | Opencode_plugin_active
   | Pty_inject
-  | Kimi_wire
   | Codex_xml_fd
   | Codex_headless_thread_id_fd
 

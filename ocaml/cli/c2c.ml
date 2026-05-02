@@ -277,8 +277,7 @@ let commands_by_safety_cmd =
     ("roles validate", "Validate canonical role files for completeness");
     ("config show", "Show current c2c config values");
     ("config generation-client", "Show generation-client config");
-    ("wire-daemon list", "List all wire-daemon state files");
-    ("wire-daemon status", "Show status of a wire-daemon");
+
     ("get-tmux-location", "Print the current tmux pane address (session:window.pane)");
     ("schedule", "Manage per-agent wake schedules");
   ] in
@@ -300,8 +299,7 @@ let commands_by_safety_cmd =
     ("install", "Install c2c + client integrations");
     ("init", "Generate a new Ed25519 identity keypair");
     ("hook", "PostToolUse hook: drain inbox and emit messages");
-    ("wire-daemon start", "Start a wire-daemon for a session");
-    ("wire-daemon stop", "Stop a running wire-daemon");
+
   ] in
   let tier4 = [
     ("serve", "Run the MCP server (JSON-RPC over stdio)");
@@ -309,9 +307,6 @@ let commands_by_safety_cmd =
     ("oc-plugin stream-write-statefile", "[internal] Stream statefile writes");
     ("oc-plugin drain-inbox-to-spool", "[internal] Drain inbox to spool");
     ("cc-plugin write-statefile", "[internal] Write Claude Code statefile");
-    ("wire-daemon format-prompt", "[diagnostic] Format broker messages as Wire prompt text");
-    ("wire-daemon spool-write", "[diagnostic] Write messages to a spool file");
-    ("wire-daemon spool-read", "[diagnostic] Read messages from a spool file");
     ("statefile", "Read/write broker statefile");
     ("supervisor", "Supervisor subcommands");
     ("refresh-peer", "Refresh a stale broker registration");
@@ -1810,7 +1805,7 @@ let check_deprecated_daemons () :
     ; ( "c2c_opencode_wake_daemon.py"
       , "deprecated: TypeScript plugin handles delivery; kill this daemon" )
     ; ( "c2c_kimi_wake_daemon.py"
-      , "deprecated: use Wire bridge (c2c wire-daemon start) instead" )
+      , "deprecated: kimi delivery now uses C2c_kimi_notifier" )
     ; ( "c2c_crush_wake_daemon.py"
       , "deprecated: Crush PTY wake is unreliable; no replacement" )
     ]
@@ -3695,7 +3690,7 @@ let hook_cmd =
               (* Centralized via C2c_mcp.format_c2c_envelope (#392b
                  convergence) so #392 tag attrs and xml-escaping stay
                  consistent across all envelope-emitting surfaces
-                 (c2c_wire_bridge.ml, this PostToolUse hook,
+                 this PostToolUse hook,
                  tools/c2c_inbox_hook.ml). *)
               let tag = C2c_mcp.extract_tag_from_content m.content in
               let role = lookup_role m.from_alias in
@@ -10033,201 +10028,6 @@ let inject_cmd =
 
 let inject = Cmdliner.Cmd.v (Cmdliner.Cmd.info "inject" ~doc:"Inject messages or keycodes into a live session.") inject_cmd
 
-(* --- subcommand group: wire-daemon ---------------------------------------- *)
-
-let wire_daemon_start_cmd =
-  let session_id =
-    Cmdliner.Arg.(required & opt (some string) None & info ["session-id"] ~docv:"ID"
-                    ~doc:"Session ID for the wire daemon (used as pidfile key).")
-  in
-  let alias =
-    Cmdliner.Arg.(value & opt (some string) None & info ["alias"] ~docv:"ALIAS"
-                    ~doc:"Alias to register (defaults to session-id).")
-  in
-  let command =
-    Cmdliner.Arg.(value & opt string "kimi" & info ["command"] ~docv:"CMD"
-                    ~doc:"kimi binary to invoke (default: kimi).")
-  in
-  let work_dir =
-    Cmdliner.Arg.(value & opt string "." & info ["work-dir"] ~docv:"DIR"
-                    ~doc:"Working directory for kimi --wire (default: .).")
-  in
-  let interval =
-    Cmdliner.Arg.(value & opt float 5.0 & info ["interval"] ~docv:"SEC"
-                    ~doc:"Seconds between inbox polls (default: 5.0).")
-  in
-  let+ json = json_flag
-  and+ session_id = session_id
-  and+ alias_opt = alias
-  and+ command = command
-  and+ work_dir = work_dir
-  and+ interval = interval in
-  let alias = Option.value alias_opt ~default:session_id in
-  let broker_root = resolve_broker_root () in
-  let (st, action) =
-    C2c_wire_daemon.start_daemon
-      ~session_id ~alias ~broker_root ~command ~work_dir ~interval
-  in
-  (match action with
-   | `Already_running ->
-       if json then
-         print_json (`Assoc [ ("ok", `Bool true); ("already_running", `Bool true);
-                               ("status", C2c_wire_daemon.status_to_json st) ])
-       else
-         Printf.printf "wire-daemon already running for %s (pid %s)\n"
-           session_id (Option.fold ~none:"?" ~some:string_of_int st.pid)
-   | `Started ->
-       if json then
-         print_json (`Assoc [ ("ok", `Bool true); ("started", `Bool true);
-                               ("status", C2c_wire_daemon.status_to_json st) ])
-       else begin
-         if st.running then
-           Printf.printf "wire-daemon started for %s (pid %s)\n"
-             session_id (Option.fold ~none:"?" ~some:string_of_int st.pid)
-         else
-           Printf.printf "wire-daemon fork failed for %s\n" session_id
-       end)
-
-let wire_daemon_stop_cmd =
-  let session_id =
-    Cmdliner.Arg.(required & opt (some string) None & info ["session-id"] ~docv:"ID"
-                    ~doc:"Session ID of the daemon to stop.")
-  in
-  let+ json = json_flag
-  and+ session_id = session_id in
-  let (st, action) = C2c_wire_daemon.stop_daemon session_id in
-  (match action with
-   | `Not_running ->
-       if json then
-         print_json (`Assoc [ ("ok", `Bool true); ("not_running", `Bool true) ])
-       else
-         Printf.printf "wire-daemon not running for %s\n" session_id
-   | `Stopped ->
-       if json then
-         print_json (`Assoc [ ("ok", `Bool true); ("stopped", `Bool true);
-                               ("status", C2c_wire_daemon.status_to_json st) ])
-       else
-         Printf.printf "wire-daemon stopped for %s\n" session_id)
-
-let wire_daemon_status_cmd =
-  let session_id =
-    Cmdliner.Arg.(required & opt (some string) None & info ["session-id"] ~docv:"ID"
-                    ~doc:"Session ID to query.")
-  in
-  let+ json = json_flag
-  and+ session_id = session_id in
-  let st = C2c_wire_daemon.get_status session_id in
-  if json then
-    print_json (C2c_wire_daemon.status_to_json st)
-  else begin
-    Printf.printf "session_id: %s\n" st.session_id;
-    Printf.printf "running:    %s\n" (string_of_bool st.running);
-    (match st.pid with
-     | Some p -> Printf.printf "pid:        %d\n" p
-     | None   -> Printf.printf "pid:        (none)\n");
-    Printf.printf "pidfile:    %s\n" st.pidfile;
-    (match st.logfile with
-     | Some l -> Printf.printf "log:        %s\n" l
-     | None   -> ())
-  end
-
-let wire_daemon_list_cmd =
-  let+ json = json_flag in
-  let daemons = C2c_wire_daemon.list_daemons () in
-  if json then
-    print_json (`List (List.map C2c_wire_daemon.status_to_json daemons))
-  else begin
-    if daemons = [] then
-      Printf.printf "no wire daemons found\n"
-    else
-      List.iter (fun (st : C2c_wire_daemon.daemon_status) ->
-          let pid_str = Option.fold ~none:"(none)" ~some:string_of_int st.pid in
-          Printf.printf "%s  pid=%-8s  %s\n"
-            st.session_id pid_str
-            (if st.running then "running" else "stopped"))
-        daemons
-  end
-
-let wire_daemon_format_prompt_cmd =
-  let json_messages =
-    Cmdliner.Arg.(required & opt (some string) None & info [ "json-messages" ] ~docv:"JSON"
-      ~doc:"JSON array of {from_alias,to_alias,content} message objects.")
-  in
-  let+ json_messages = json_messages in
-  let msgs_json = Yojson.Safe.from_string json_messages in
-  let msgs = match msgs_json with
-    | `List items -> List.filter_map (function
-        | `Assoc _ as obj ->
-            let get_str key = match List.assoc_opt key (match obj with `Assoc f -> f | _ -> []) with
-              | Some (`String s) -> s | _ -> "" in
-            Some C2c_mcp.{ from_alias = get_str "from_alias"
-                          ; to_alias   = get_str "to_alias"
-                          ; content    = get_str "content"
-                          ; deferrable = false
-                          ; reply_via = None
-                          ; enc_status = None
-                          ; ts = 0.0; ephemeral = false; message_id = None }
-        | _ -> None) items
-    | _ -> []
-  in
-  print_string (C2c_wire_bridge.format_prompt msgs)
-
-let wire_daemon_spool_write_cmd =
-  let spool_path_arg =
-    Cmdliner.Arg.(required & opt (some string) None & info [ "spool-path" ] ~docv:"PATH"
-      ~doc:"Path to spool file.")
-  in
-  let json_messages =
-    Cmdliner.Arg.(required & opt (some string) None & info [ "json-messages" ] ~docv:"JSON"
-      ~doc:"JSON array of {from_alias,to_alias,content} message objects.")
-  in
-  let+ spool_path = spool_path_arg and+ json_messages = json_messages in
-  let msgs_json = Yojson.Safe.from_string json_messages in
-  let msgs = match msgs_json with
-    | `List items -> List.filter_map (function
-        | `Assoc _ as obj ->
-            let get_str key = match List.assoc_opt key (match obj with `Assoc f -> f | _ -> []) with
-              | Some (`String s) -> s | _ -> "" in
-            Some C2c_mcp.{ from_alias = get_str "from_alias"
-                          ; to_alias   = get_str "to_alias"
-                          ; content    = get_str "content"
-                          ; deferrable = false
-                          ; reply_via = None
-                          ; enc_status = None
-                          ; ts = 0.0; ephemeral = false; message_id = None }
-        | _ -> None) items
-    | _ -> []
-  in
-  let sp = C2c_wire_bridge.spool_of_path spool_path in
-  C2c_wire_bridge.spool_write sp msgs
-
-let wire_daemon_spool_read_cmd =
-  let spool_path_arg =
-    Cmdliner.Arg.(required & opt (some string) None & info [ "spool-path" ] ~docv:"PATH"
-      ~doc:"Path to spool file.")
-  in
-  let+ spool_path = spool_path_arg in
-  let sp = C2c_wire_bridge.spool_of_path spool_path in
-  let msgs = C2c_wire_bridge.spool_read sp in
-  let items = List.map (fun (m : C2c_mcp.message) ->
-      `Assoc [ ("from_alias", `String m.from_alias)
-             ; ("to_alias",   `String m.to_alias)
-             ; ("content",    `String m.content) ]) msgs in
-  print_json (`List items)
-
-let wire_daemon_group =
-  Cmdliner.Cmd.group
-    (Cmdliner.Cmd.info "wire-daemon"
-       ~doc:"Manage Kimi Wire bridge daemon lifecycle (start/stop/status/list).")
-    [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "start"  ~doc:"Start a wire-daemon for a session.") wire_daemon_start_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop"   ~doc:"Stop a running wire-daemon.") wire_daemon_stop_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show status of a wire-daemon.") wire_daemon_status_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "list"   ~doc:"List all wire-daemon state files.") wire_daemon_list_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "format-prompt" ~doc:"[diagnostic] Format broker messages as Wire prompt text.") wire_daemon_format_prompt_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "spool-write" ~doc:"[diagnostic] Write messages to a spool file.") wire_daemon_spool_write_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "spool-read"  ~doc:"[diagnostic] Read messages from a spool file as JSON.") wire_daemon_spool_read_cmd
-    ]
-
 (* --- subcommand group: repo ------------------------------------------------ *)
 
 let repo_set_supervisor_cmd =
@@ -11147,7 +10947,6 @@ let commands_man is_agent =
     ; `P "$(b,c2c rooms) $(b,send|join|leave|list|members|history|invite|visibility|delete)"
     ; `P "$(b,c2c agent) $(b,c2c roles) $(b,compile|validate) — role file management"
     ; `P "$(b,c2c config) $(b,show|generation-client)"
-    ; `P "$(b,c2c wire-daemon) $(b,start|stop|status|list)"
     ; `P "$(b,init) $(b,repo)"
     ; `P "$(b,Tier 3 and 4 commands hidden when running as an agent.)"
     ]
@@ -11165,7 +10964,6 @@ let commands_man is_agent =
     ; `P "$(b,start), $(b,stop), $(b,restart), $(b,reset-thread), $(b,init), $(b,install), \
          $(b,agent), $(b,roles), $(b,compile), $(b,roles-validate), \
           $(b,config), $(b,config-show), $(b,generation-client), \
-         $(b,wire-daemon), $(b,wire-daemon-list), $(b,wire-daemon-status), \
          $(b,repo)"
     ; `P "== TIER 3: SYSTEM (do NOT run from inside an agent) =="
     ; `P "$(b,restart-self) — signals the inner client; running inside a managed \
@@ -11179,9 +10977,7 @@ let commands_man is_agent =
     ; `P "== TIER 4: INTERNAL (plumbing, never shown in agent help) =="
     ; `P "$(b,serve), $(b,mcp), $(b,hook), $(b,inject), $(b,oc-plugin), \
          $(b,cc-plugin), $(b,state-read), $(b,state-write), \
-         $(b,wire-daemon-start), $(b,wire-daemon-stop), \
-         $(b,wire-daemon-format-prompt), $(b,wire-daemon-spool-write), \
-         $(b,wire-daemon-spool-read), $(b,supervisor)"
+         $(b,supervisor)"
     ]
 
 (* Fast-path dispatch (#418): handle a small set of subcommands BEFORE
@@ -11307,8 +11103,7 @@ let fast_path_commands () =
     ("roles validate", "Validate canonical role files for completeness");
     ("config show", "Show current c2c config values");
     ("config generation-client", "Show generation-client config");
-    ("wire-daemon list", "List all wire-daemon state files");
-    ("wire-daemon status", "Show status of a wire-daemon");
+
     ("get-tmux-location", "Print the current tmux pane address (session:window.pane)");
     ("schedule", "Manage per-agent wake schedules");
   ] in
@@ -11330,8 +11125,7 @@ let fast_path_commands () =
     ("install", "Install c2c + client integrations");
     ("init", "Generate a new Ed25519 identity keypair");
     ("hook", "PostToolUse hook: drain inbox and emit messages");
-    ("wire-daemon start", "Start a wire-daemon for a session");
-    ("wire-daemon stop", "Stop a running wire-daemon");
+
   ] in
   let tier4 = [
     ("serve", "Run the MCP server (JSON-RPC over stdio)");
@@ -11339,9 +11133,6 @@ let fast_path_commands () =
     ("oc-plugin stream-write-statefile", "[internal] Stream statefile writes");
     ("oc-plugin drain-inbox-to-spool", "[internal] Drain inbox to spool");
     ("cc-plugin write-statefile", "[internal] Write Claude Code statefile");
-    ("wire-daemon format-prompt", "[diagnostic] Format broker messages as Wire prompt text");
-    ("wire-daemon spool-write", "[diagnostic] Write messages to a spool file");
-    ("wire-daemon spool-read", "[diagnostic] Read messages from a spool file");
     ("statefile", "Read/write broker statefile");
     ("supervisor", "Supervisor subcommands");
     ("refresh-peer", "Refresh a stale broker registration");
@@ -11620,7 +11411,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
-    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; wire_daemon_group; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
+    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit

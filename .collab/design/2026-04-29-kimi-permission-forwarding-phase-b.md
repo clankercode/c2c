@@ -1,9 +1,16 @@
 # Kimi permission forwarding — Phase B design (room + CLI)
 
+> **NOTE (2026-05-02):** The kimi wire-bridge path referenced throughout this
+> document was removed in the kimi-wire-bridge-cleanup slice. If permission
+> forwarding via wire-bridge is revisited, this design needs revision to
+> account for the notification-store delivery mechanism (C2c_kimi_notifier)
+> that replaced it.
+
 - **Author:** stanza-coder
 - **Date:** 2026-04-29
 - **Status:** DRAFT — design-only; impl waits on Phase A (which waits on
-  upstream feature ask #145 / U1, with U2 local-fork as fallback)
+  upstream feature ask #145 / U1, with U2 local-fork as fallback).
+  Wire-bridge IPC path removed; design needs revision.
 - **Cross-references:**
   - Phase 3 master design: `.collab/design/2026-04-29T12-36-11Z-stanza-coder-kimi-permission-forwarding-phase3.md`
   - O1 finding (Phase A blocker): `.collab/findings/2026-04-29T12-40-00Z-stanza-coder-kimi-wire-tui-mutually-exclusive.md`

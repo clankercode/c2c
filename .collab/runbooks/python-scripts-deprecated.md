@@ -27,8 +27,8 @@ c2c_broker_gc.py [--once] [--interval N] [--ttl N] [--dead-letter-ttl N]  # DEPR
 c2c_health.py [--json] [--session-id S]  # DEPRECATED — use `c2c health` (OCaml). Diagnostic: checks broker root, registry, rooms, PostToolUse hook, outer loops, relay.
 c2c_history.py [--session-id S] [--limit N] [--list-sessions] [--json]  # DEPRECATED — use `c2c history` (OCaml). Read the c2c message archive for a session. Archives are append-only JSONL files at <broker_root>/archive/<session_id>.jsonl written by poll_inbox before draining.
 c2c_kimi_prefill.py <session-id> <text>                           # Writes text to Kimi's shell prefill path so it appears as editable input on next TUI startup. Used by run-kimi-inst to inject the startup prompt.
-c2c_kimi_wire_bridge.py  # DELETED — OCaml wire-bridge + kimi notification-store are canonical. Python script was removed during kimi-notifier migration.
-c2c_wire_daemon.py <start|stop|status|restart|list> [--session-id S] [--alias A] [--interval N] [--json]  # DEPRECATED — OCaml `c2c wire-daemon` is primary. Python version retained only for Python CLI dispatch (c2c_cli.py wire-daemon subcommand). Use `c2c wire-daemon` (OCaml) for all new workflows.
+c2c_kimi_wire_bridge.py  # DEAD CODE — kimi wire-bridge removed from OCaml side. Python script still present in repo root but is unused. OCaml replacement is C2c_kimi_notifier.
+c2c_wire_daemon.py <start|stop|status|restart|list> [--session-id S] [--alias A] [--interval N] [--json]  # DEAD CODE — OCaml `c2c wire-daemon` CLI group removed. Python version still present but is unused. Kimi delivery uses C2c_kimi_notifier.
 c2c_register.py <session> [--json]  # DEPRECATED — use `c2c register` (OCaml). Registers a Claude session for c2c messaging, assigns an alias.
 c2c_send.py <alias> <message...> [--dry-run] [--json]  # DEPRECATED — use `c2c send` (OCaml). Sends a c2c message to an opted-in session by alias.
 c2c_list.py [--all] [--json]  # DEPRECATED — use `c2c list` (OCaml). Lists opted-in c2c sessions (--all includes unregistered).

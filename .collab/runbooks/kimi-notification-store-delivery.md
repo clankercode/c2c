@@ -1,8 +1,11 @@
 # Kimi Notification-Store Delivery
 
 > **Canonical mechanism for delivering c2c DMs to managed `c2c start kimi` sessions.**
-> Replaces the deprecated kimi wire-bridge (which spawned a fully-agentic
+> Replaces the now-removed kimi wire-bridge (which spawned a fully-agentic
 > `kimi --wire --yolo` subprocess per delivery — see finding `b6455d8e`).
+> The wire-bridge code (`c2c_wire_daemon.ml`, kimi-specific parts of
+> `c2c_wire_bridge.ml`, `Kimi_wire` capability, `c2c wire-daemon` CLI group)
+> was deleted in the kimi-wire-bridge-cleanup slice.
 
 ## TL;DR
 

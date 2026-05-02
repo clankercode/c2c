@@ -87,14 +87,11 @@ These are Max's target experiences, verbatim:
 - **Room rename alias drift** ✓: register renames propagate to room memberships;
   `join_room` deduplicates by both alias and session_id; auto-join prefers the
   current registered alias over stale env aliases (1fb4b6c, 2026-04-14).
-- **Kimi Wire bridge** ✓: `c2c_kimi_wire_bridge.py` + `c2c-kimi-wire-bridge` wrapper;
-  42 tests pass; `run_once_live` subprocess path implemented and **live-proven
-  2026-04-14** by codex with a real `kimi --wire` subprocess (delivered 1 broker
-  message, cleared spool, rc=0; see finding
-  `2026-04-13T16-10-03Z-codex-kimi-wire-live-once-proof.md`). Native JSON-RPC
-  delivery via `kimi --wire` without PTY injection. `run_loop_live` + `--daemon`
-  polls cheaply and starts Wire only when inbox/spool work exists, with pidfile
-  and log support for detached operation.
+- **Kimi Wire bridge** REMOVED: was `c2c_kimi_wire_bridge.py` + OCaml
+  `c2c_wire_daemon.ml`; deprecated due to dual-agent bug (finding `b6455d8e`)
+  and replaced by `C2c_kimi_notifier` (file-based notification-store push).
+  OCaml wire-bridge code and `c2c wire-daemon` CLI group deleted in the
+  kimi-wire-bridge-cleanup slice.
 - **Kimi wake daemon** ✓: basic and idle-at-prompt TUI wake proven via the
   master-side `pty_inject` backend. Kimi uses a longer default submit delay
   (1.5s) so prompt_toolkit accepts and submits the notify-only poll prompt.

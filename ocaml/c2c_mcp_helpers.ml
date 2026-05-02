@@ -610,7 +610,7 @@ let tag_to_body_prefix = function
 (* Inverse of [tag_to_body_prefix]: detect a #392 body-prefix on an
    already-stored message and recover the tag name. Used by the
    envelope-formatter so re-delivery surfaces (PostToolUse hook,
-   inbox-hook tool, wire-bridge) can carry the tag attribute even when
+   inbox-hook tool) can carry the tag attribute even when
    the message was archived without it explicitly attached.
 
    Earlier draft of this function compared [String.sub content 0 5]

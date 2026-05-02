@@ -252,7 +252,7 @@ let () =
     (* Output messages in c2c event envelope format. Centralized via
        C2c_mcp.format_c2c_envelope (#392b convergence) so #392 tag
        attrs and xml-escaping are consistent across all surfaces
-       (c2c_wire_bridge.ml, cli/c2c.ml monitor path, this hook). *)
+       (cli/c2c.ml monitor path, this hook). *)
     List.iter
       (fun (m : C2c_mcp.message) ->
         let tag = C2c_mcp.extract_tag_from_content m.content in

@@ -1181,8 +1181,8 @@ let test_probed_capabilities_for_kimi () =
   let caps =
     C2c_start.probed_capabilities ~client:"kimi" ~binary_path:"/bin/true"
   in
-  check (list string) "kimi capability set"
-    [ "kimi_wire" ] caps
+  check (list string) "kimi capability set (empty — notifier-based delivery)"
+    [] caps
 
 (* #153: kimi-cli's default --max-steps-per-turn is 1000, too low for
    long-running agentic swarm work. Managed kimi sessions should default
@@ -3096,7 +3096,7 @@ let test_parse_send_tag_rejects_unknown () =
    parse_send_tag + tag_to_body_prefix round-trips cleanly through
    extract_tag_from_content, and that format_c2c_envelope emits the
    expected envelope shape and copies the tag attribute. The three
-   in-tree callers (c2c_wire_bridge, c2c_inbox_hook, cli/c2c.ml's
+   in-tree callers (c2c_inbox_hook, cli/c2c.ml's
    PostToolUse hook) all rely on this round-trip; if it ever drifts,
    tagged DMs will lose their visual indicator on one surface but
    not another. *)

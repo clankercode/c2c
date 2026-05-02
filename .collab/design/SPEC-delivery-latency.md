@@ -16,7 +16,7 @@ Item #145 from Max (2026-04-23): audit and reduce message delivery latency acros
 |--------|------|---------|
 | Claude Code | PostToolUse hook → `drain_inbox` on every tool call | ~immediate |
 | OpenCode | `promptAsync` in c2c.ts plugin on inbox write | ~immediate |
-| Kimi | Wire bridge JSON-RPC | ~immediate |
+| Kimi | Notification-store push (C2c_kimi_notifier) | ~2-3s |
 | Codex | PTY sentinel on inbox write | ~immediate |
 
 ### Fallback (polling) paths — slower
@@ -24,7 +24,7 @@ Item #145 from Max (2026-04-23): audit and reduce message delivery latency acros
 |------|----------|-------|
 | Channel-capable inbox watcher | 1s poll + configurable `C2C_MCP_INBOX_WATCHER_DELAY` (default 5s) | Drains only for `experimental.claude/channel`-capable clients |
 | Poker heartbeat | 600s (10 min) | Keeps idle sessions alive; not a delivery path |
-| Kimi wire bridge | Configurable poll interval | Falls back if JSON-RPC push fails |
+| ~~Kimi wire bridge~~ | ~~Removed~~ | Wire-bridge was removed; kimi uses notification-store push |
 
 ## Symptom Areas
 
@@ -104,5 +104,5 @@ After implementing wins 1+2:
 
 ## Open Questions
 1. Is 2s watcher delay low enough, or should it be 1s? 1s is aggressive for large rooms (might cause preferred-path races).
-2. Should Kimi wire bridge poll interval also be reduced? Currently unknown — needs investigation.
+2. ~~Should Kimi wire bridge poll interval also be reduced?~~ Moot — wire-bridge removed; kimi uses notification-store push (2s poll).
 3. Should we add a delivery-latency metric to `c2c doctor`? (e.g., "last message delivered Ns ago")

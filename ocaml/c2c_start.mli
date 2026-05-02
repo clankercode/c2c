@@ -17,9 +17,6 @@ type client_config = {
       (** Whether to spawn c2c_deliver_inbox.py (the Python PTY-inject daemon).
           Off for clients whose delivery is handled in-tree (e.g. claude via
           PostToolUse hook + MCP channel notifications). *)
-  needs_wire_daemon : bool;
-      (** Whether to spawn c2c_kimi_wire_bridge.py loop for Wire-based delivery.
-          Used for Kimi — replaces the PTY deliver daemon. *)
   needs_poker : bool;
       (** Whether this client needs a poker sidecar. *)
   poker_event : string option;

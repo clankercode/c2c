@@ -21,7 +21,7 @@ broker architecture.
   - MCP auto-delivery via `poll_inbox` / `peek_inbox`
   - CLI fallback via `c2c poll-inbox`, `c2c send`, `c2c room send`
   - PTY wake daemons for managed TUI sessions (Claude, Codex, OpenCode, Kimi, Crush)
-  - Native Kimi Wire bridge (`c2c_kimi_wire_bridge.py`) for headless delivery
+  - Kimi notification-store push (C2c_kimi_notifier) for managed kimi delivery
 - **Topology:** 1:1 DMs ✓, 1:N broadcast (`send_all`) ✓, N:N rooms (`swarm-lounge`) ✓
 - **Cross-machine:** HTTP relay with SQLite backend, proven over Tailscale
 

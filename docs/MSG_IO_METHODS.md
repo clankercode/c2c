@@ -396,54 +396,25 @@ injection text and PTY coordination:
 A native delivery path that avoids all PTY hacking by using Kimi's built-in
 Wire protocol.
 
-#### How it works
+#### Status: REMOVED
 
-The canonical implementation is the OCaml `c2c_wire_bridge.ml` /
-`c2c_wire_daemon.ml` modules, exposed as the `c2c wire-daemon`
-subcommand. (The Python `c2c_kimi_wire_bridge.py` is retained only for
-the legacy Python CLI shim.) The Kimi Wire protocol (`kimi --wire`)
-exposes a newline-delimited JSON-RPC 2.0 interface over stdin/stdout.
-The bridge:
+The Kimi wire-bridge path was deprecated and removed in the
+kimi-wire-bridge-cleanup slice. It was replaced by `C2c_kimi_notifier`
+(file-based notification-store push) which avoids the dual-agent
+registration bug that plagued the wire-bridge approach.
 
-1. Polls or watches the c2c broker inbox for the Kimi session.
-2. Drains broker messages and persists them to a crash-safe spool file.
-3. Starts a `kimi --wire` subprocess (only when there is work to deliver).
-4. Delivers messages via Wire `prompt` JSON-RPC method with the message wrapped
-   in `<c2c event="message" ...>` envelope format.
-5. Clears the spool after successful delivery.
+See `.collab/runbooks/kimi-notification-store-delivery.md` for the
+replacement mechanism.
 
-The bridge supports three modes:
-
-- `--once`: drain inbox, deliver, exit.
-- `--loop --interval N`: persistent polling with Wire subprocess launched only
-  when messages are queued.
-- `--daemon --pidfile P`: detached background daemon.
-
-A lifecycle manager (`c2c wire-daemon start|stop|status|restart|list`) handles
-daemon pidfiles and logs under `~/.local/share/c2c/wire-daemons/`.
-
-#### Client support
-
-| Client | Supported | Notes |
-|--------|-----------|-------|
-| Claude Code | No | Claude Code does not expose a Wire-style JSON-RPC protocol. |
-| Codex | No | Codex does not expose a Wire-style JSON-RPC protocol. |
-| OpenCode | No | OpenCode does not expose a Wire-style JSON-RPC protocol. |
-| Kimi | Deprecated | **Deprecated 2026-04-29.** Use Section 9 (notification-store) instead. Live-proven 2026-04-14. |
-
-#### Key files
+#### Historical key files (removed)
 
 | File | Role |
 |------|------|
-| `ocaml/c2c_wire_bridge.ml` | Bridge implementation (OCaml, primary): inbox drain, spool, Wire delivery |
-| `ocaml/c2c_wire_daemon.ml` / `c2c wire-daemon` | Lifecycle manager (OCaml, primary) for Wire bridge background daemons |
-| `c2c_kimi_wire_bridge.py` / `c2c_wire_daemon.py` | Legacy Python implementations retained only for the Python CLI shim; `c2c_kimi_wire_bridge.py` moved to `deprecated/` |
+| ~~`ocaml/c2c_wire_daemon.ml`~~ | Removed — kimi-only wire daemon lifecycle |
+| ~~`c2c wire-daemon` CLI group~~ | Removed — kimi-only daemon management |
+| `c2c_kimi_wire_bridge.py` / `c2c_wire_daemon.py` | Legacy Python; still present but unused |
 
 #### Limitations
-
-- **Deprecated for Kimi.** No other client exposes a similar JSON-RPC stdin/stdout
-  interface for prompt injection.
-- Requires `kimi` binary in PATH with `--wire` support.
 - Wire subprocess is started per delivery batch, not kept alive between polls
   (loop mode only launches Wire when there is work).
 - Spool file retains messages on delivery failure for retry, but there is no
