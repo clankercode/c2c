@@ -1,8 +1,9 @@
-(* test_c2c_cli.ml — CLI subcommand tests (#670, #698)
+(* test_c2c_cli.ml — CLI subcommand tests (#670, #698, follow-up)
    Tests for c2c CLI commands with zero prior test coverage:
-   - c2c doctor
+   - c2c doctor (basic + deeper relay/peer output checks)
    - c2c config show
    - c2c agent list
+   - c2c agent new (role file creation)
    - c2c roles validate
    - c2c list
    - c2c send (fixture-gated)
@@ -10,6 +11,10 @@
    - c2c history
    - c2c schedule list
    - c2c memory list
+   - c2c rooms list
+   - c2c rooms join
+   - c2c worktree list
+   - c2c instances
 
    Each test invokes the c2c binary via Sys.command and verifies
    exit code + output shape. *)
@@ -346,6 +351,147 @@ let test_roles_validate_runs_and_shows_summary () =
         (string_contains content "[roles validate]"))
 
 (* ------------------------------------------------------------------------- *)
+(* c2c rooms list — verify room listing                                     *)
+(* ------------------------------------------------------------------------- *)
+
+let test_rooms_list_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 c2c rooms list > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c rooms list exits 0" 0 rc
+
+let test_rooms_list_output_contains_room_entries () =
+  let tmpfile = Filename.temp_file "c2c-rooms-list" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c rooms list > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      (* Output contains room entries: "room-id (N members" *)
+      check bool "rooms list contains room entry pattern" true
+        (string_contains content "(" && string_contains content "members"))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c rooms join — verify room join / missing-arg handling                 *)
+(* ------------------------------------------------------------------------- *)
+
+let test_rooms_join_missing_room_exits_nonzero () =
+  (* No ROOM argument provided → should exit non-zero *)
+  let cmd = "C2C_CLI_FORCE=1 c2c rooms join > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check bool "c2c rooms join with no args exits non-zero" true (rc <> 0)
+
+let test_rooms_join_help_exits_zero () =
+  (* --help should exit 0 even with missing required arg *)
+  let cmd = "C2C_CLI_FORCE=1 c2c rooms join --help > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c rooms join --help exits 0" 0 rc
+
+(* ------------------------------------------------------------------------- *)
+(* c2c doctor — deeper output checks                                         *)
+(* ------------------------------------------------------------------------- *)
+
+let test_doctor_output_contains_relay_info () =
+  let tmpfile = Filename.temp_file "c2c-doctor-relay" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      (* doctor should mention relay or broker root in output *)
+      let has_relay_or_broker =
+        string_contains content "relay" || string_contains content "broker"
+      in
+      check bool "doctor output mentions relay or broker" true has_relay_or_broker)
+
+let test_doctor_output_contains_peer_summary () =
+  let tmpfile = Filename.temp_file "c2c-doctor-peers" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      (* doctor should show peer/registry info *)
+      let has_peer_info =
+        string_contains content "peer" || string_contains content "registry"
+        || string_contains content "alive"
+      in
+      check bool "doctor output contains peer/registry info" true has_peer_info)
+
+(* ------------------------------------------------------------------------- *)
+(* c2c worktree list — verify worktree listing                             *)
+(* ------------------------------------------------------------------------- *)
+
+let test_worktree_list_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 c2c worktree list > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c worktree list exits 0" 0 rc
+
+let test_worktree_list_output_contains_refs_heads () =
+  let tmpfile = Filename.temp_file "c2c-worktree-list" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c worktree list > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      (* Worktree list shows "refs/heads/" for each entry *)
+      check bool "worktree list contains refs/heads entries" true
+        (string_contains content "refs/heads"))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c instances — verify managed-instance listing                           *)
+(* ------------------------------------------------------------------------- *)
+
+let test_instances_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 c2c instances > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c instances exits 0" 0 rc
+
+let test_instances_output_contains_managed_header () =
+  let tmpfile = Filename.temp_file "c2c-instances" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c instances > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      (* instances output shows "Managed instances" header and count *)
+      let has_header =
+        string_contains content "Managed instances"
+        && (string_contains content "alive" || string_contains content "total")
+      in
+      check bool "instances output contains managed header and counts" true has_header)
+
+let test_instances_json_output_is_valid () =
+  let tmpfile = Filename.temp_file "c2c-instances-json" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c instances --json > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      (* JSON output starts with '{' and contains "alive" field *)
+      let is_valid_json =
+        String.length content > 0
+        && String.get content 0 = '{'
+        && string_contains content "\"alive\""
+      in
+      check bool "instances --json output is valid JSON with alive field" true is_valid_json)
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -393,5 +539,26 @@ let () =
         ] )
     ; ( "roles_validate",
         [ ( "roles validate shows summary line", `Quick, test_roles_validate_runs_and_shows_summary )
+        ] )
+    ; ( "rooms_list",
+        [ ( "rooms list exits 0", `Quick, test_rooms_list_exits_zero )
+        ; ( "rooms list contains room entries", `Quick, test_rooms_list_output_contains_room_entries )
+        ] )
+    ; ( "rooms_join",
+        [ ( "rooms join missing room exits non-zero", `Quick, test_rooms_join_missing_room_exits_nonzero )
+        ; ( "rooms join --help exits 0", `Quick, test_rooms_join_help_exits_zero )
+        ] )
+    ; ( "doctor_deep",
+        [ ( "doctor output contains relay/broker info", `Quick, test_doctor_output_contains_relay_info )
+        ; ( "doctor output contains peer/registry info", `Quick, test_doctor_output_contains_peer_summary )
+        ] )
+    ; ( "worktree_list",
+        [ ( "worktree list exits 0", `Quick, test_worktree_list_exits_zero )
+        ; ( "worktree list contains refs/heads entries", `Quick, test_worktree_list_output_contains_refs_heads )
+        ] )
+    ; ( "instances",
+        [ ( "instances exits 0", `Quick, test_instances_exits_zero )
+        ; ( "instances output contains managed header", `Quick, test_instances_output_contains_managed_header )
+        ; ( "instances --json is valid JSON", `Quick, test_instances_json_output_is_valid )
         ] )
     ]
