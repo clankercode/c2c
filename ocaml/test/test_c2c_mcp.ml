@@ -6073,8 +6073,79 @@ let test_tools_call_send_room_via_mcp () =
 (* Regression: OpenCode's backing model substitutes `alias` for
    `from_alias` when calling send_room (because join_room uses
    `alias`). The broker must accept either key so the three-way
-   (Claude Code + Codex + OpenCode) chat actually works. *)
-let test_tools_call_send_room_accepts_alias_as_from_alias_alias () =
+    (Claude Code + Codex + OpenCode) chat actually works. *)
+
+(* #450 S9: my_rooms tool call — create a room, join it, verify my_rooms returns it. *)
+ let test_my_rooms_tool_returns_joined_room () =
+   with_temp_dir (fun dir ->
+       Unix.putenv "C2C_MCP_SESSION_ID" "session-my-rooms-test";
+       Fun.protect
+         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+         (fun () ->
+           let broker = C2c_mcp.Broker.create ~root:dir in
+           C2c_mcp.Broker.register broker ~session_id:"session-my-rooms-test"
+             ~alias:"birch-test" ~pid:None ~pid_start_time:None ();
+           (* Join a room via tools/call JSON-RPC *)
+           let join_request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 901)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "join_room")
+                     ; ( "arguments",
+                         `Assoc [ ("room_id", `String "test-room-alpha") ] )
+                     ] )
+               ]
+           in
+           let join_response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir join_request)
+           in
+           (match join_response with
+            | None -> fail "expected join_room response"
+            | Some json ->
+                let open Yojson.Safe.Util in
+                let text =
+                  json |> member "result" |> member "content" |> index 0
+                  |> member "text" |> to_string
+                in
+                let parsed = Yojson.Safe.from_string text in
+                check string "join_room returns the room_id"
+                  "test-room-alpha"
+                  (parsed |> member "room_id" |> to_string));
+           (* Call my_rooms via tools/call JSON-RPC *)
+           let my_rooms_request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 902)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "my_rooms")
+                     ; ("arguments", `Assoc [])
+                     ] )
+               ]
+           in
+           let my_rooms_response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir my_rooms_request)
+           in
+           match my_rooms_response with
+           | None -> fail "expected my_rooms response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let parsed = Yojson.Safe.from_string text in
+               let rooms = parsed |> to_list in
+               check int "my_rooms returns exactly one room" 1 (List.length rooms);
+               check string "my_rooms returns the joined room"
+                 "test-room-alpha"
+                 (List.hd rooms |> member "room_id" |> to_string)))
+
+ let test_tools_call_send_room_accepts_alias_as_from_alias_alias () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-sender-alias";
       Fun.protect
@@ -11624,9 +11695,11 @@ let () =
              test_tools_call_peek_inbox_ignores_session_id_argument
          ; test_case "my_rooms returns only caller's memberships" `Quick
              test_my_rooms_returns_only_sessions_memberships
-         ; test_case "tools/call my_rooms uses env session_id, ignores args" `Quick
-             test_tools_call_my_rooms_uses_env_session_id
-         ; test_case "tools/call tail_log returns audit entries" `Quick
+          ; test_case "tools/call my_rooms uses env session_id, ignores args" `Quick
+              test_tools_call_my_rooms_uses_env_session_id
+          ; test_case "tools/call my_rooms returns joined room" `Quick
+              test_my_rooms_tool_returns_joined_room
+          ; test_case "tools/call tail_log returns audit entries" `Quick
              test_tools_call_tail_log_returns_audit_entries
          ; test_case "tools/call appends to broker.log" `Quick
              test_tools_call_appends_to_broker_log
