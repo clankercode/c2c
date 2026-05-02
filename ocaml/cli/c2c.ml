@@ -511,11 +511,19 @@ let list_cmd =
     Cmdliner.Arg.(value & flag & info [ "global"; "g" ]
       ~doc:"Scan all known broker roots (across all repos) and list every registered session system-wide. Each session is annotated with its repo fingerprint and path. Use this to find sessions started in other repos or on other brokers.")
   in
+  let alive_only =
+    Cmdliner.Arg.(value & flag & info [ "alive"; "A" ]
+      ~doc:"Show only alive sessions. By default, dead sessions (those whose PID has exited) are listed with a 'dead' state annotation. Use this flag to suppress them from the output.")
+  in
   let+ json = json_flag
   and+ all = all
   and+ enriched = enriched
-  and+ global = global in
+  and+ global = global
+  and+ alive_only = alive_only in
   mcp_nudge_if_needed ~cmd:"list";
+
+  let is_alive r = C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive in
+  let regs_filter = if alive_only then List.filter is_alive else Fun.id in
 
   (* --- helpers shared between single-broker and global modes --- *)
   let registration_to_json ?(repo_fp="") ?(repo_path="") ~(enriched:bool) (r : C2c_mcp.registration) =
@@ -581,7 +589,7 @@ let list_cmd =
         List.fold_left (fun acc (fp, root) ->
           try
             let broker = C2c_mcp.Broker.create ~root in
-            let regs = C2c_mcp.Broker.list_registrations broker in
+            let regs = C2c_mcp.Broker.list_registrations broker |> regs_filter in
             List.map (fun r -> (fp, root, r)) regs @ acc
           with _ -> acc
         ) [] all_roots
@@ -642,7 +650,7 @@ let list_cmd =
   else
     (* single-broker (default): use current repo's broker root *)
     let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-    let regs = C2c_mcp.Broker.list_registrations broker in
+    let regs = C2c_mcp.Broker.list_registrations broker |> regs_filter in
     if regs = [] then (
       match output_mode with
       | Json -> print_json (`List [])
