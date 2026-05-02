@@ -20,6 +20,7 @@
    - c2c schedule enable/disable
    - c2c peer-pass list
    - c2c peer-pass verify
+   - c2c install (dry-run)
 
    Each test invokes the c2c binary via Sys.command and verifies
    exit code + output shape. *)
@@ -1095,6 +1096,57 @@ let test_peer_pass_verify_nonexistent () =
   check bool "peer-pass verify nonexistent exits non-zero" true (rc <> 0)
 
 (* ------------------------------------------------------------------------- *)
+(* c2c install --dry-run — verify install preview without side effects       *)
+(* ------------------------------------------------------------------------- *)
+
+let test_install_all_dry_run_exits_zero () =
+  let cmd = "c2c install all --dry-run > /dev/null 2>&1 < /dev/null" in
+  let rc = Sys.command cmd in
+  check int "c2c install all --dry-run exits 0" 0 rc
+
+let test_install_all_dry_run_shows_dry_run_markers () =
+  let tmpfile = Filename.temp_file "c2c-install-all-dry" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "c2c install all --dry-run > %s 2>&1 < /dev/null" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "output contains [DRY-RUN] marker" true
+        (string_contains content "[DRY-RUN]"))
+
+let test_install_gemini_dry_run_exits_zero () =
+  let tmpfile = Filename.temp_file "c2c-install-gemini-dry" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let rc = Sys.command (Printf.sprintf
+        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile) in
+      check int "c2c install gemini --dry-run exits 0" 0 rc;
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "output contains broker root" true
+        (string_contains content "broker root"))
+
+let test_install_gemini_dry_run_shows_config_preview () =
+  let tmpfile = Filename.temp_file "c2c-install-gemini-dry2" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "output contains [DRY-RUN] would write" true
+        (string_contains content "[DRY-RUN] would write");
+      check bool "output contains Configured Gemini" true
+        (string_contains content "Configured Gemini"))
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -1214,5 +1266,11 @@ let () =
     ; ( "peer_pass_verify",
         [ ( "peer-pass verify valid artifact exits 0", `Quick, test_peer_pass_verify_valid_artifact )
         ; ( "peer-pass verify nonexistent file exits non-zero", `Quick, test_peer_pass_verify_nonexistent )
+        ] )
+    ; ( "install_dry_run",
+        [ ( "install all --dry-run exits 0", `Quick, test_install_all_dry_run_exits_zero )
+        ; ( "install all --dry-run shows [DRY-RUN] markers", `Quick, test_install_all_dry_run_shows_dry_run_markers )
+        ; ( "install gemini --dry-run exits 0 and mentions broker root", `Quick, test_install_gemini_dry_run_exits_zero )
+        ; ( "install gemini --dry-run shows config preview", `Quick, test_install_gemini_dry_run_shows_config_preview )
         ] )
     ]
