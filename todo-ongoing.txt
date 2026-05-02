@@ -116,9 +116,9 @@ Project Folder: **todo** (cluster spans #335/#336/#337/#340/#341/#342)
 
 Goal: every restart path (compact, OOM, resume, fresh boot, install-then-restart) must be safe and predictable. The 2026-04-28 OOM exposed a class of restart-only bugs invisible during steady-state operation.
 
-Status: **active** — surfaced through the OOM-recovery pass on 2026-04-28. #336 (just build silent exit-0) closed `aaffb39c→18e1d695`. #335 v1a (nudge instrumentation) cherry-picked `b6ce5348→253d4eac` + fix `3bf645cb→fce11a0b`; v2a (pidless-skip implementation) shipped `43695999..8ff19204`. #340a OpenCode dual-plugin fix shipped. #337/#341/#342 still pending. #344 sweep-predicate hardening + #345 auto_register_startup-guards queued; impl in flight.
+Status: **done (all 6 items closed 2026-05-02)** — #335 v2a (pidless-skip) shipped `43695999..8ff19204` (willow/galaxy/fern PASS). #336 closed. #337 (`106747ab`), #341 (`53ac8494`), #342 (`7a56b68a`) all confirmed landed (birch verified 2026-05-02). #340a OpenCode dual-plugin fix shipped (`0659ac36`).
 
-Next: galaxy ships #318 v3 (heartbeat-config thunk refactor, post-stanza-FAIL); close #337/#341/#342.
+Next: monitor in dogfood. #344/#345 remain as follow-up hardening if needed.
 
 ### Coord workflow + peer-PASS process
 
