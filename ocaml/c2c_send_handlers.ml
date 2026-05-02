@@ -8,7 +8,10 @@
    parameters ([broker], [session_id_override], [arguments]).
 
    #450 Slice 7: [encrypt_content_for_recipient] extracted from [send]
-   lines 60-131 (mechanical hoist, same pattern as S6). *)
+   lines 60-131 (mechanical hoist, same pattern as S6).
+
+   #450 Slice 10: [broadcast_to_all] extracted from [send_all]
+   (mechanical hoist, same pattern as S7-S9). *)
 
 open C2c_mcp_helpers
 open C2c_mcp_helpers_post_broker
@@ -346,6 +349,34 @@ let ts = Unix.gettimeofday () in
                         in
                         Lwt.return (tool_ok receipt)))))
 
+(** #450 S10: broadcast pipeline — mechanically hoisted from [send_all].
+    Free vars lifted to named parameters. No behavior change. *)
+let broadcast_to_all ~broker ~from_alias ~content ~exclude_aliases ~tag_arg
+    : (Yojson.Safe.t, string) result =
+  match parse_send_tag tag_arg with
+  | Error msg -> Error (Printf.sprintf "send_all rejected: %s" msg)
+  | Ok tag_opt ->
+    let content = (tag_to_body_prefix tag_opt) ^ content in
+    let { Broker.sent_to; skipped } =
+      Broker.send_all broker ~from_alias ~content ~exclude_aliases
+    in
+    let result_json =
+      `Assoc
+        [ ( "sent_to",
+            `List (List.map (fun alias -> `String alias) sent_to) )
+        ; ( "skipped",
+            `List
+              (List.map
+                 (fun (alias, reason) ->
+                   `Assoc
+                     [ ("alias", `String alias)
+                     ; ("reason", `String reason)
+                     ])
+                 skipped) )
+        ]
+    in
+    Ok result_json
+
 let send_all ~broker ~session_id_override ~arguments =
       let content = string_member "content" arguments in
       (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
@@ -383,29 +414,9 @@ let send_all ~broker ~session_id_override ~arguments =
                     | `String s -> Some s | _ -> None
                   with _ -> None
                 in
-                match parse_send_tag tag_arg with
-                  | Error msg ->
-                      Lwt.return (tool_err (Printf.sprintf "send_all rejected: %s" msg))
-                  | Ok tag_opt ->
-                      let content = (tag_to_body_prefix tag_opt) ^ content in
-                      let { Broker.sent_to; skipped } =
-                        Broker.send_all broker ~from_alias ~content ~exclude_aliases
-                      in
-                      (match session_id_override with Some sid -> Broker.touch_session broker ~session_id:sid | None -> (match current_session_id () with Some sid -> Broker.touch_session broker ~session_id:sid | None -> ()));
-                      let result_json =
-                        `Assoc
-                          [ ( "sent_to",
-                              `List (List.map (fun alias -> `String alias) sent_to) )
-                          ; ( "skipped",
-                              `List
-                                (List.map
-                                   (fun (alias, reason) ->
-                                     `Assoc
-                                       [ ("alias", `String alias)
-                                       ; ("reason", `String reason)
-                                       ])
-                                   skipped) )
-                          ]
-                        |> Yojson.Safe.to_string
-                      in
-                      Lwt.return (tool_ok result_json)))
+                match broadcast_to_all ~broker ~from_alias ~content ~exclude_aliases ~tag_arg with
+                | Error msg ->
+                    Lwt.return (tool_err msg)
+                | Ok result_json ->
+                    (match session_id_override with Some sid -> Broker.touch_session broker ~session_id:sid | None -> (match current_session_id () with Some sid -> Broker.touch_session broker ~session_id:sid | None -> ()));
+                    Lwt.return (tool_ok (Yojson.Safe.to_string result_json))))
