@@ -8900,8 +8900,81 @@ let test_pending_check_audit_log_outcome () =
             List.hd (read_broker_log_lines dir
                      |> List.filter (fun l -> string_contains l "pending_check"))
           in
-          check bool "raw perm_id absent" false
-            (string_contains raw_line "perm:audit:slice-d-unknown")))
+           check bool "raw perm_id absent" false
+             (string_contains raw_line "perm:audit:slice-d-unknown")))
+
+(* [#432 Slice D] check_pending_reply for an expired perm_id emits a
+   "pending_check" line with outcome="expired". The expired vs unknown
+   distinction is made by scanning the unfiltered persisted list. *)
+let test_pending_check_audit_log_expired () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-requester-d3";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let broker = C2c_mcp.Broker.create ~root:dir in
+           C2c_mcp.Broker.register broker ~session_id:"session-requester-d3"
+             ~alias:"stanza-coder" ~pid:None ~pid_start_time:None ();
+           (* Open a pending permission with a 1-second TTL. *)
+           Unix.putenv "C2C_PERMISSION_TTL" "1";
+           Fun.protect
+             ~finally:(fun () -> Unix.putenv "C2C_PERMISSION_TTL" "")
+             (fun () ->
+                let open_req =
+                  `Assoc
+                    [ ("jsonrpc", `String "2.0")
+                    ; ("id", `Int 9003)
+                    ; ("method", `String "tools/call")
+                    ; ( "params",
+                        `Assoc
+                          [ ("name", `String "open_pending_reply")
+                          ; ( "arguments",
+                              `Assoc
+                                [ ("perm_id", `String "perm:audit:slice-d-expired")
+                                ; ("kind", `String "permission")
+                                ; ("supervisors", `List [`String "coordinator1"])
+                                ] )
+                          ] )
+                    ]
+                in
+                let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir open_req) in
+                (* Wait for expiry. *)
+                Unix.sleepf 1.2;
+                (* Check the now-expired perm — outcome must be "expired". *)
+                let check_req =
+                  `Assoc
+                    [ ("jsonrpc", `String "2.0")
+                    ; ("id", `Int 9004)
+                    ; ("method", `String "tools/call")
+                    ; ( "params",
+                        `Assoc
+                          [ ("name", `String "check_pending_reply")
+                          ; ( "arguments",
+                              `Assoc [ ("perm_id", `String "perm:audit:slice-d-expired") ] )
+                          ] )
+                    ]
+                in
+                let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir check_req) in
+                let lines = parse_broker_log_lines_with_event dir "pending_check" in
+                check int "exactly one pending_check line" 1 (List.length lines);
+                let json = List.hd lines in
+                let open Yojson.Safe.Util in
+                check string "outcome expired" "expired"
+                  (json |> member "outcome" |> to_string);
+                let perm_id_hash = json |> member "perm_id_hash" |> to_string in
+                check bool "perm_id_hash is 16 hex" true (is_hex16 perm_id_hash);
+                (* reply_from_alias is session-derived: session-requester-d3 is
+                   registered as "stanza-coder". *)
+                check string "reply_from_alias session-derived"
+                  "stanza-coder"
+                  (json |> member "reply_from_alias" |> to_string);
+                (* Raw perm_id MUST NOT appear in the line. *)
+                let raw_line =
+                  List.hd (read_broker_log_lines dir
+                           |> List.filter (fun l -> string_contains l "pending_check"))
+                in
+                check bool "raw perm_id absent" false
+                  (string_contains raw_line "perm:audit:slice-d-expired"))))
 
 (* M4: alias-reuse guard — registration is blocked when the alias has an
    active pending permission from a prior owner, even if that owner is dead.
@@ -12985,6 +13058,8 @@ let () =
                 test_pending_open_audit_log_written
            ; test_case "[#432 Slice D] check_pending_reply unknown_perm outcome audit line" `Quick
                 test_pending_check_audit_log_outcome
+           ; test_case "[#432 Slice D] check_pending_reply expired outcome audit line" `Quick
+                test_pending_check_audit_log_expired
            ; test_case "[coord-backup-fallthrough] audit line written" `Quick
                 test_coord_fallthrough_audit_line_written
            ; test_case "[coord-backup-fallthrough] broadcast-tier audit line shape" `Quick
