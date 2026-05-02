@@ -189,7 +189,7 @@ let ts = Unix.gettimeofday () in
                              pin for this alias (or be first-seen). *)
                           match
                             Peer_review.verify_claim_with_pin
-                              ~root:(Broker.root broker)
+                              ~root:(Some (Broker.root broker))
                               ~path:peer_pass_pin_path ~alias ~sha ()
                           with
                           | Peer_review.Claim_valid msg -> Some (`Ok msg)

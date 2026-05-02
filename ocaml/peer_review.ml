@@ -483,10 +483,10 @@ let verify_claim ?root ~alias ~sha () =
     Claim_invalid (Printf.sprintf "alias/sha rejected by path-validator: %s" msg)
   | Ok () ->
   let art_path = artifact_path ?root ~sha ~alias () in
-  if not (Sys.file_exists path) then
-    Claim_missing (Printf.sprintf "no peer-pass artifact at %s" path)
+  if not (Sys.file_exists art_path) then
+    Claim_missing (Printf.sprintf "no peer-pass artifact at %s" art_path)
   else
-    match read_artifact path with
+    match read_artifact art_path with
     | Error e -> Claim_invalid (Printf.sprintf "artifact read error: %s" e)
     | Ok art ->
         match verify art with

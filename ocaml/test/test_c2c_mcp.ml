@@ -10756,8 +10756,8 @@ let h2_unique_sha () =
     (Random.bits ()) (Random.bits ()) (Random.bits ())
     (Random.bits ()) (Random.bits ())
 
-let h2_with_artifact ~sha ~alias ~json f =
-  let path = h2_artifact_path ~sha ~alias () in
+let h2_with_artifact ?root ~sha ~alias ~json f =
+  let path = h2_artifact_path ?root ~sha ~alias () in
   Fun.protect
     ~finally:(fun () -> try Sys.remove path with _ -> ())
     (fun () ->
@@ -10827,7 +10827,7 @@ let test_peer_pass_dm_with_invalid_signature_rejected () =
       (* Tamper: change verdict but keep the old signature. *)
       let tampered = { signed with Peer_review.verdict = "FAIL" } in
       let json = Peer_review.t_to_string tampered in
-      h2_with_artifact ~sha ~alias:"h2-sender-alias" ~json (fun () ->
+      h2_with_artifact ~root:dir ~sha ~alias:"h2-sender-alias" ~json (fun () ->
         let content =
           Printf.sprintf "peer-PASS by h2-sender-alias for SHA=%s — looks good" sha
         in
@@ -10872,7 +10872,7 @@ let test_peer_pass_dm_with_valid_signature_accepted () =
       } in
       let signed = Peer_review.sign ~identity:id art in
       let json = Peer_review.t_to_string signed in
-      h2_with_artifact ~sha ~alias:"h2v-sender-alias" ~json (fun () ->
+      h2_with_artifact ~root:dir ~sha ~alias:"h2v-sender-alias" ~json (fun () ->
         let content =
           Printf.sprintf "peer-PASS by h2v-sender-alias for SHA=%s" sha
         in
