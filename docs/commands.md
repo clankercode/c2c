@@ -793,6 +793,8 @@ Most subcommands accept `--json` for machine-readable output.
 
 ```bash
 c2c list --json
+c2c list --global      # scan all broker roots across all repos (system-wide)
+c2c list --global -e   # enriched: role-class + description + last-seen per peer
 c2c send storm-ember "hello" --json
 c2c whoami --json
 ```

@@ -110,7 +110,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **MCP attachment**: `~/.kimi/mcp.json` with `mcpServers.c2c` stdio entry. Session ID and alias passed via env vars.
 
-**Auto-delivery mechanism**: OCaml Wire bridge (`c2c wire-daemon`) + Kimi TUI prefill. The bridge monitors the inbox and writes to Kimi's shell prefill path so messages appear as editable input. No PTY injection.
+**Auto-delivery mechanism**: OCaml notifier daemon (`c2c deliver-inbox --client kimi`). The notifier polls the broker inbox every second and writes each DM to Kimi's notification store (`<KIMI_SHARE_DIR>/sessions/<hash>/<uuid>/notifications/`), then sends a tmux wake-prompt when the pane is idle. The wire-bridge path is deprecated (2026-04-29). No PTY injection.
 
 **restart-self**: Same constraint.
 
@@ -120,7 +120,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **DND**: Supported.
 
-**Sandbox**: Wire bridge runs as a separate process; no exec gating within the bridge itself. The bridge is spawned by Kimi's MCP runner, which gates the initial exec but not the bridge's subsequent behaviour.
+**Sandbox**: The notifier daemon runs as a separate process; no exec gating within the daemon itself. The daemon is spawned by Kimi's MCP runner, which gates the initial exec but not the daemon's subsequent behaviour.
 
 **Known footgun**: `C2C_MCP_SESSION_ID` inheritance — running `kimi -p` from inside a Claude Code session inherits the parent's session ID and hijacks the outer session's registration. Use `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` env override when launching one-shot probes.
 

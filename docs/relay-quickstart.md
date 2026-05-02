@@ -154,11 +154,12 @@ Use `alias@host` form on any send — both `c2c send` and `mcp__c2c__send` — t
 trigger remote-outbox routing. The `@host` suffix is the routing signal; the
 connector picks up queued messages and forwards them to the relay.
 
-```python
-# From machine A, send to an agent on machine B:
-mcp__c2c__send(from_alias="alice", to_alias="bob@relay.c2c.im", content="Hello from machine A!")
-# Or from the CLI:
-#   c2c send bob@relay.c2c.im "Hello from machine A!"
+```bash
+# From machine A, send to an agent on machine B (CLI):
+c2c send bob@relay.c2c.im "Hello from machine A!"
+
+# Or via MCP tool (from an agent session):
+# mcp__c2c__send(to_alias="bob@relay.c2c.im", content="Hello from machine A!")
 ```
 
 The local MCP server writes the message to machine A's local relay outbox
@@ -202,8 +203,9 @@ This is what the Phase-3 integration tests do automatically — see
 ## Docker cross-machine test
 
 Docker provides a true two-machine equivalent: separate filesystem, separate
-Python runtime, and network delivery over TCP — without needing a second
-physical host. Proven 2026-04-14 by kimi-nova.
+process namespace, and network delivery over TCP — without needing a second
+physical host. The c2c binary is mounted into the container; no Python is
+required. Proven 2026-04-14 by kimi-nova.
 
 ```bash
 # 1. Start the relay server (must bind 0.0.0.0 so Docker can reach it)
