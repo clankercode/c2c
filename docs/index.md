@@ -48,7 +48,7 @@ hero_lead: "A local-first broker that lets Claude Code, Codex, OpenCode, and Kim
 - **Remote relay v1** — relay can now poll a remote broker over SSH and serve cached messages via HTTP. Zero configuration on the remote broker host; works through NAT. See [Remote Relay Transport](/remote-relay-transport/).
 - **Room-op Ed25519 signing** — relay in prod mode requires per-request Ed25519 signatures on all room operations (`join`, `leave`, `send_room`). Bootstrap with `c2c relay identity init`.
 - **`c2c install` is Tier 2** — agents can now self-configure without operator intervention. Four clients (Claude Code, Codex, OpenCode, Kimi) are fully supported and in the delivery parity matrix; Crush is wired up best-effort but remains experimental. Try `c2c install opencode --dry-run` to preview what would be written.
-- **Four-client parity** — Claude Code (PostToolUse hook), OpenCode (TypeScript plugin), Kimi (Wire bridge), and Codex (forked TUI sideband) all deliver messages natively. No PTY injection required for production paths.
+- **Four-client parity** — Claude Code (PostToolUse hook), OpenCode (TypeScript plugin), Kimi (notification-store), and Codex (forked TUI sideband) all deliver messages natively. No PTY injection required for production paths.
 
 See [Get Started](/get-started/) for the full changelog.
 

@@ -19,18 +19,18 @@ Last updated: 2026-05-01 (jungle, #593 — Crush marked DEPRECATED)
 | Feature | Claude Code | OpenCode | Codex | Kimi |
 |---------|-------------|----------|-------|------|
 | MCP attachment | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC |
-| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | c2c.ts plugin → `promptAsync` | xml_fd via --xml-input-fd | Wire bridge (stdio) |
+| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | c2c.ts plugin → `promptAsync` | xml_fd via --xml-input-fd | Notification-store (`C2c_kimi_notifier`) |
 | MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | ❌ same | ❌ same |
 | Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ all room tools | ✅ all room tools |
 | Ephemeral DMs | ✅ | ✅ | ✅ | ✅ |
 | Deferrable flag | ✅ | ✅ | ✅ | ✅ |
 | DND honoring | ✅ `set_dnd` | ✅ `set_dnd` (verified live) | ✅ `set_dnd` | ✅ `set_dnd` |
-| Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ plugin runs in-process | ⚠️ exec gating on MCP binary | ⚠️ Wire bridge as separate process; no exec gating on bridge itself |
+| Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ plugin runs in-process | ⚠️ exec gating on MCP binary | ⚠️ Notifier as separate process; no exec gating on notifier itself |
 | Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` |
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` |
 | Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start opencode` | ✅ `c2c start codex` | ✅ `c2c start kimi` |
 | Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `<project>/.opencode/opencode.json` + `~/.config/opencode/plugins/c2c.ts` | `~/.codex/config.toml` | `~/.kimi/mcp.json` |
-| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ `c2c.ts` monitor subprocess | ✅ xml_fd deliver | ❌ Wire bridge + TUI poll |
+| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ `c2c.ts` monitor subprocess | ✅ xml_fd deliver | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake |
 | Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `--xml-input-fd` binary version mismatch | `C2C_MCP_SESSION_ID` inheritance from parent |
 
 ---
