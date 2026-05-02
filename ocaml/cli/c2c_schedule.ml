@@ -1,0 +1,405 @@
+(* c2c_schedule — per-agent schedule CLI commands
+ *
+ * S1: CLI set/list/rm/enable/disable schedule entries.
+ * Storage: .c2c/schedules/<alias>/  (in repo root)
+ * Format: TOML key-value (no library, hand-parsed)
+ *   [schedule]
+ *   name = "wake"
+ *   interval_s = 246.0
+ *   align = ""
+ *   message = "wake — poll inbox, advance work"
+ *   only_when_idle = true
+ *   idle_threshold_s = 246.0
+ *   enabled = true
+ *   created_at = "2026-05-02T07:00:00Z"
+ *   updated_at = "2026-05-02T07:00:00Z"
+ *)
+
+open Cmdliner.Term.Syntax
+
+(* --- path helpers ---------------------------------------------------------- *)
+
+(* Resolve the schedules root: .c2c/schedules under the repo root.
+   Honors C2C_SCHEDULE_ROOT_OVERRIDE for tests. *)
+let schedules_root_uncached () =
+  match Sys.getenv_opt "C2C_SCHEDULE_ROOT_OVERRIDE" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ ->
+      let git_dir =
+        let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
+        (try
+          let line = input_line ic in
+          ignore (Unix.close_process_in ic);
+          Some line
+        with _ -> ignore (Unix.close_process_in ic); None)
+      in
+      let base = match git_dir with
+        | Some d -> Filename.dirname d
+        | None -> Sys.getcwd ()
+      in
+      Filename.concat (Filename.concat base ".c2c") "schedules"
+
+let schedules_root =
+  let cache = ref None in
+  fun () ->
+    match Sys.getenv_opt "C2C_SCHEDULE_ROOT_OVERRIDE" with
+    | Some d when String.trim d <> "" -> String.trim d
+    | _ ->
+        match !cache with
+        | Some v -> v
+        | None ->
+            let v = schedules_root_uncached () in
+            cache := Some v; v
+
+let schedules_base_dir alias =
+  Filename.concat (schedules_root ()) alias
+
+let schedule_file_path alias name =
+  (* Sanitize name so it's safe as a filename: keep alphanumerics, '-', '_'. *)
+  let safe = Stdlib.String.map (fun c ->
+    match c with
+    | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
+    | _ -> let code = Char.code c in
+           if (code >= 48 && code <= 57) || (code >= 65 && code <= 90)
+              || (code >= 97 && code <= 122) || code = 95 || code = 45
+           then c else '_')
+    name
+  in
+  Filename.concat (schedules_base_dir alias) (safe ^ ".toml")
+
+let ensure_schedules_dir alias =
+  let dir = schedules_base_dir alias in
+  C2c_mcp.mkdir_p dir;
+  dir
+
+(* --- current alias --------------------------------------------------------- *)
+
+let current_alias_or_die () =
+  match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+  | Some a when String.trim a <> "" -> String.trim a
+  | _ ->
+      Printf.eprintf "error: set C2C_MCP_AUTO_REGISTER_ALIAS to identify the current agent\n%!";
+      exit 1
+
+(* --- TOML helpers ---------------------------------------------------------- *)
+
+(* Hand-write a schedule entry to TOML. No library needed — the format is
+   simple key-value pairs. *)
+let render_schedule ~name ~interval_s ~align ~message ~only_when_idle
+    ~idle_threshold_s ~enabled ~created_at ~updated_at () =
+  let buf = Buffer.create 256 in
+  Buffer.add_string buf "[schedule]\n";
+  Buffer.add_string buf (Printf.sprintf "name = \"%s\"\n" name);
+  Buffer.add_string buf (Printf.sprintf "interval_s = %.6g\n" interval_s);
+  Buffer.add_string buf (Printf.sprintf "align = \"%s\"\n" align);
+  Buffer.add_string buf (Printf.sprintf "message = \"%s\"\n" message);
+  Buffer.add_string buf (Printf.sprintf "only_when_idle = %b\n" only_when_idle);
+  Buffer.add_string buf (Printf.sprintf "idle_threshold_s = %.6g\n" idle_threshold_s);
+  Buffer.add_string buf (Printf.sprintf "enabled = %b\n" enabled);
+  Buffer.add_string buf (Printf.sprintf "created_at = \"%s\"\n" created_at);
+  Buffer.add_string buf (Printf.sprintf "updated_at = \"%s\"\n" updated_at);
+  Buffer.contents buf
+
+(* Parse a schedule entry from TOML. Skip [schedule] section headers.
+   Strip quotes from string values. *)
+type schedule_entry = {
+  s_name : string;
+  s_interval_s : float;
+  s_align : string;
+  s_message : string;
+  s_only_when_idle : bool;
+  s_idle_threshold_s : float;
+  s_enabled : bool;
+  s_created_at : string;
+  s_updated_at : string;
+}
+
+let strip_quotes s =
+  let s = String.trim s in
+  let n = String.length s in
+  if n >= 2 && s.[0] = '"' && s.[n-1] = '"'
+  then String.sub s 1 (n - 2)
+  else s
+
+let parse_schedule content =
+  let lines = String.split_on_char '\n' content in
+  let kv = List.filter_map (fun line ->
+    let line = String.trim line in
+    if line = "" || line.[0] = '[' || line.[0] = '#' then None
+    else match String.index_opt line '=' with
+    | None -> None
+    | Some idx ->
+        let key = String.trim (String.sub line 0 idx) in
+        let value = String.trim (String.sub line (idx + 1) (String.length line - idx - 1)) in
+        Some (key, value))
+    lines
+  in
+  let find key default_v =
+    match List.assoc_opt key kv with Some v -> v | None -> default_v
+  in
+  let find_float key default_v =
+    match List.assoc_opt key kv with
+    | Some v -> (try float_of_string (String.trim v) with Failure _ -> default_v)
+    | None -> default_v
+  in
+  let find_bool key default_v =
+    match List.assoc_opt key kv with
+    | Some v -> String.trim v = "true"
+    | None -> default_v
+  in
+  { s_name = strip_quotes (find "name" "")
+  ; s_interval_s = find_float "interval_s" 0.0
+  ; s_align = strip_quotes (find "align" "")
+  ; s_message = strip_quotes (find "message" "")
+  ; s_only_when_idle = find_bool "only_when_idle" true
+  ; s_idle_threshold_s = find_float "idle_threshold_s" 0.0
+  ; s_enabled = find_bool "enabled" true
+  ; s_created_at = strip_quotes (find "created_at" "")
+  ; s_updated_at = strip_quotes (find "updated_at" "")
+  }
+
+(* --- file I/O -------------------------------------------------------------- *)
+
+let read_file path =
+  C2c_io.read_file_opt path
+
+let write_file path content =
+  C2c_io.write_file path content
+
+(* List .toml files in a schedules dir, sorted by filename. *)
+let list_schedule_files dir =
+  try
+    Array.to_list (Sys.readdir dir)
+    |> List.filter (fun n ->
+        String.length n > 5
+        && String.sub n (String.length n - 5) 5 = ".toml")
+    |> List.sort String.compare
+  with
+  | Sys_error _ -> []
+  | Unix.Unix_error _ -> []
+
+(* --- flags ----------------------------------------------------------------- *)
+
+let json_flag =
+  let doc = "Emit JSON output." in
+  Cmdliner.Arg.(value & flag & info [ "json" ] ~doc)
+
+let name_arg =
+  Cmdliner.Arg.(required & pos 0 (some string) None
+    & info [] ~docv:"NAME" ~doc:"Schedule name (stored as <name>.toml).")
+
+let default_message = "Session heartbeat — pick up the next slice"
+
+(* --- schedule set ---------------------------------------------------------- *)
+
+let schedule_set_cmd =
+  let interval_arg =
+    let doc = "Interval duration, e.g. 4.1m, 1h, 30s, 240 (seconds)." in
+    Cmdliner.Arg.(required & opt (some string) None
+      & info ["interval"; "i"] ~docv:"DURATION" ~doc)
+  in
+  let align_arg =
+    let doc = "Wall-clock alignment spec, e.g. @1h+7m." in
+    Cmdliner.Arg.(value & opt string ""
+      & info ["align"] ~docv:"SPEC" ~doc)
+  in
+  let message_arg =
+    let doc = Printf.sprintf "Message text (default: \"%s\")." default_message in
+    Cmdliner.Arg.(value & opt string default_message
+      & info ["message"; "m"] ~docv:"TEXT" ~doc)
+  in
+  let only_when_idle_arg =
+    let doc = "Only fire when the agent is idle (default: true). Pass --no-only-when-idle to disable." in
+    Cmdliner.Arg.(value & opt bool true
+      & info ["only-when-idle"] ~doc)
+  in
+  let idle_threshold_arg =
+    let doc = "Idle threshold duration (default: same as --interval)." in
+    Cmdliner.Arg.(value & opt (some string) None
+      & info ["idle-threshold"] ~docv:"DURATION" ~doc)
+  in
+  let enabled_arg =
+    let doc = "Create schedule as enabled (default true)." in
+    Cmdliner.Arg.(value & opt bool true
+      & info ["enabled"] ~doc)
+  in
+  let+ json = json_flag
+  and+ name = name_arg
+  and+ interval_raw = interval_arg
+  and+ align_raw = align_arg
+  and+ message = message_arg
+  and+ only_when_idle = only_when_idle_arg
+  and+ idle_threshold_raw = idle_threshold_arg
+  and+ enabled = enabled_arg in
+  let alias = current_alias_or_die () in
+  (* Parse interval *)
+  let interval_s = match C2c_start.parse_heartbeat_duration_s interval_raw with
+    | Ok s -> s
+    | Error e ->
+        Printf.eprintf "error: --interval: %s\n%!" e;
+        exit 1
+  in
+  (* Parse align spec — extract align string (store as raw string for S2 loader) *)
+  let align =
+    if align_raw = "" then ""
+    else match C2c_start.parse_heartbeat_schedule align_raw with
+    | Ok _ -> align_raw
+    | Error e ->
+        Printf.eprintf "error: --align: %s\n%!" e;
+        exit 1
+  in
+  (* Parse idle threshold — default to interval *)
+  let idle_threshold_s = match idle_threshold_raw with
+    | None -> interval_s
+    | Some raw -> match C2c_start.parse_heartbeat_duration_s raw with
+      | Ok s -> s
+      | Error e ->
+          Printf.eprintf "error: --idle-threshold: %s\n%!" e;
+          exit 1
+  in
+  let _ = ensure_schedules_dir alias in
+  let path = schedule_file_path alias name in
+  let now_ts = C2c_time.now_iso8601_utc () in
+  (* If file exists, preserve created_at *)
+  let created_at =
+    if Sys.file_exists path then
+      let existing = parse_schedule (read_file path) in
+      if existing.s_created_at <> "" then existing.s_created_at else now_ts
+    else now_ts
+  in
+  let content = render_schedule ~name ~interval_s ~align ~message
+    ~only_when_idle ~idle_threshold_s ~enabled ~created_at
+    ~updated_at:now_ts ()
+  in
+  write_file path content;
+  if json then
+    print_endline (Yojson.Safe.to_string ~std:false (`Assoc [
+      ("saved", `String name)
+    ; ("alias", `String alias)
+    ; ("interval_s", `Float interval_s)
+    ; ("enabled", `Bool enabled)
+    ]))
+  else
+    Printf.printf "saved: %s (interval=%.6gs, enabled=%b)\n" name interval_s enabled
+
+(* --- schedule list --------------------------------------------------------- *)
+
+let schedule_list_cmd =
+  let+ json = json_flag in
+  let alias = current_alias_or_die () in
+  let dir = schedules_base_dir alias in
+  let files = list_schedule_files dir in
+  let entries = List.map (fun fname ->
+    let path = Filename.concat dir fname in
+    let e = parse_schedule (read_file path) in
+    (fname, e))
+    files
+  in
+  if json then begin
+    let items = List.map (fun (fname, e) ->
+      `Assoc [
+        ("file", `String fname)
+      ; ("name", `String e.s_name)
+      ; ("interval_s", `Float e.s_interval_s)
+      ; ("align", `String e.s_align)
+      ; ("message", `String e.s_message)
+      ; ("only_when_idle", `Bool e.s_only_when_idle)
+      ; ("idle_threshold_s", `Float e.s_idle_threshold_s)
+      ; ("enabled", `Bool e.s_enabled)
+      ; ("created_at", `String e.s_created_at)
+      ; ("updated_at", `String e.s_updated_at)
+      ]) entries
+    in
+    print_endline (Yojson.Safe.to_string ~std:false (`List items))
+  end else if entries = [] then
+    print_endline "(no schedules)"
+  else begin
+    Printf.printf "%-20s  %-12s  %-6s  %s\n" "NAME" "INTERVAL(s)" "ENABLED" "MESSAGE";
+    Printf.printf "%s\n" (String.make 72 '-');
+    List.iter (fun (_fname, e) ->
+      Printf.printf "%-20s  %-12.6g  %-6b  %s\n"
+        e.s_name e.s_interval_s e.s_enabled
+        (if String.length e.s_message > 40
+         then String.sub e.s_message 0 37 ^ "..."
+         else e.s_message)
+    ) entries
+  end
+
+(* --- schedule rm ----------------------------------------------------------- *)
+
+let schedule_rm_cmd =
+  let+ json = json_flag
+  and+ name = name_arg in
+  let alias = current_alias_or_die () in
+  let path = schedule_file_path alias name in
+  if not (Sys.file_exists path) then (
+    Printf.eprintf "error: schedule '%s' not found\n%!" name;
+    exit 1);
+  (try Sys.remove path with Sys_error _ -> ());
+  if json then
+    print_endline (Yojson.Safe.to_string ~std:false (`Assoc [("deleted", `String name)]))
+  else
+    Printf.printf "deleted: %s\n" name
+
+(* --- schedule enable / disable --------------------------------------------- *)
+
+let set_enabled_flag ~name ~enabled =
+  let alias = current_alias_or_die () in
+  let path = schedule_file_path alias name in
+  if not (Sys.file_exists path) then (
+    Printf.eprintf "error: schedule '%s' not found\n%!" name;
+    exit 1);
+  let e = parse_schedule (read_file path) in
+  let now_ts = C2c_time.now_iso8601_utc () in
+  let content = render_schedule ~name:e.s_name ~interval_s:e.s_interval_s
+    ~align:e.s_align ~message:e.s_message ~only_when_idle:e.s_only_when_idle
+    ~idle_threshold_s:e.s_idle_threshold_s ~enabled
+    ~created_at:e.s_created_at ~updated_at:now_ts ()
+  in
+  write_file path content
+
+let schedule_enable_cmd =
+  let+ json = json_flag
+  and+ name = name_arg in
+  set_enabled_flag ~name ~enabled:true;
+  if json then
+    print_endline (Yojson.Safe.to_string ~std:false (`Assoc [("enabled", `String name)]))
+  else
+    Printf.printf "enabled: %s\n" name
+
+let schedule_disable_cmd =
+  let+ json = json_flag
+  and+ name = name_arg in
+  set_enabled_flag ~name ~enabled:false;
+  if json then
+    print_endline (Yojson.Safe.to_string ~std:false (`Assoc [("disabled", `String name)]))
+  else
+    Printf.printf "disabled: %s\n" name
+
+(* --- group ----------------------------------------------------------------- *)
+
+let schedule_group =
+  Cmdliner.Cmd.group ~default:schedule_list_cmd
+    (Cmdliner.Cmd.info "schedule"
+       ~doc:"Manage per-agent wake schedules. Stored in .c2c/schedules/<alias>/.")
+    [ Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "set"
+           ~doc:"Create or update a schedule entry.")
+        schedule_set_cmd
+    ; Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "list"
+           ~doc:"List schedule entries for the current agent.")
+        schedule_list_cmd
+    ; Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "rm"
+           ~doc:"Remove a schedule entry.")
+        schedule_rm_cmd
+    ; Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "enable"
+           ~doc:"Enable a schedule entry.")
+        schedule_enable_cmd
+    ; Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "disable"
+           ~doc:"Disable a schedule entry.")
+        schedule_disable_cmd
+    ]
