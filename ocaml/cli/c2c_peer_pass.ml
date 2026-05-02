@@ -83,6 +83,13 @@ let reviewer_is_author ~reviewer ~sha =
   || List.exists local_part_eq co_author_emails
 
 let validate_signing_allowed ~alias ~sha ~allow_self =
+  (* Belt-and-suspenders: reset the circuit-breaker so that both the
+     existence check AND the self-sign anti-cheat (which also calls git)
+     have a clean slate. Without this, a tripped breaker would silently
+     bypass the reviewer-is-author check (reviewer_is_author returns false
+     when git queries return None, causing the && not allow_self guard to
+     evaluate false even when the reviewer IS the author). *)
+  Git_helpers.reset_git_circuit_breaker ();
   (* When the circuit-breaker is tripped from prior git spawns in the same
      session, git_commit_exists returns false even for valid SHAs.
      Rather than hard-error (which crashes peer-pass send after the artifact
@@ -91,7 +98,8 @@ let validate_signing_allowed ~alias ~sha ~allow_self =
      check is an anti-abuse measure, not a security boundary. *)
   if not (Git_helpers.git_commit_exists sha) then begin
     Printf.eprintf "warning: could not verify SHA %s exists (git unavailable — circuit-breaker open?); skipping existence check.\n%!" sha;
-    Printf.eprintf "  artifact was written to disk; signature + TOFU pin still protect integrity.\n%!"
+    Printf.eprintf "  Self-sign anti-cheat may also be degraded (git-based author lookup unavailable).\n%!";
+    Printf.eprintf "  Artifact was written to disk; signature + TOFU pin still protect integrity.\n%!"
     (* do not exit — continue with anti-author check *)
   end;
   if reviewer_is_author ~reviewer:alias ~sha && not allow_self then begin
