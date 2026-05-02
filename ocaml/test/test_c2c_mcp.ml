@@ -11315,6 +11315,157 @@ let test_with_session_forwards_override () =
          positively above. *)
       ignore raised)
 
+let make_tool_call_request ~session_id ~tool_name ~arguments =
+  (* Build a handle_request-compatible JSON-RPC request for tools/call.
+     Sets C2C_MCP_SESSION_ID so handle_request resolves the session. *)
+  Unix.putenv "C2C_MCP_SESSION_ID" session_id;
+  `Assoc
+    [ ("jsonrpc", `String "2.0")
+    ; ("id", `Int 999)
+    ; ("method", `String "tools/call")
+    ; ("params", `Assoc [ ("name", `String tool_name)
+                        ; ("arguments", arguments) ])
+    ]
+
+let test_set_compact_marks_session () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-id"
+        ~alias:"compactor" ~pid:None ~pid_start_time:None ();
+      let request =
+        make_tool_call_request ~session_id:"session-id"
+          ~tool_name:"set_compact"
+          ~arguments:(`Assoc [ ("reason", `String "context summarization") ])
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+      in
+      match response with
+      | None -> fail "expected set_compact response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let result = json |> member "result" in
+          let is_error = try result |> member "isError" |> to_bool with _ -> false in
+          check bool "set_compact is not an error" false is_error;
+          let text =
+            result |> member "content" |> index 0 |> member "text" |> to_string
+          in
+          let parsed = Yojson.Safe.from_string text in
+          let compacting = parsed |> member "compacting" in
+          let started_at = compacting |> member "started_at" |> to_float in
+          check bool "started_at is a positive float" true (started_at > 0.0);
+          let reason = compacting |> member "reason" |> to_string in
+          check string "reason matches" "context summarization" reason;
+          let is_c = C2c_mcp.Broker.is_compacting broker ~session_id:"session-id" in
+          check bool "broker reports compacting" true (is_c <> None))
+
+let test_clear_compact_removes_flag () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-id"
+        ~alias:"compactor" ~pid:None ~pid_start_time:None ();
+      (* Mark as compacting first *)
+      let set_req =
+        make_tool_call_request ~session_id:"session-id"
+          ~tool_name:"set_compact"
+          ~arguments:(`Assoc [])
+      in
+      let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir set_req) in
+      (* Clear it *)
+      let clear_req =
+        make_tool_call_request ~session_id:"session-id"
+          ~tool_name:"clear_compact"
+          ~arguments:(`Assoc [])
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir clear_req)
+      in
+      match response with
+      | None -> fail "expected clear_compact response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let result = json |> member "result" in
+          let is_error = try result |> member "isError" |> to_bool with _ -> false in
+          check bool "clear_compact is not an error" false is_error;
+          let text =
+            result |> member "content" |> index 0 |> member "text" |> to_string
+          in
+          let parsed = Yojson.Safe.from_string text in
+          let ok = parsed |> member "ok" |> to_bool in
+          check bool "clear_compact returns ok:true" true ok;
+          let is_c = C2c_mcp.Broker.is_compacting broker ~session_id:"session-id" in
+          check bool "broker reports not compacting" true (is_c = None))
+
+let test_send_to_compacting_peer_has_warning () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-sender"
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-rcpt"
+        ~alias:"rcpt" ~pid:None ~pid_start_time:None ();
+      (* Mark recipient as compacting *)
+      let set_req =
+        make_tool_call_request ~session_id:"session-rcpt"
+          ~tool_name:"set_compact"
+          ~arguments:(`Assoc [ ("reason", `String "context limit") ])
+      in
+      let _ = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir set_req) in
+      (* Send a message from sender to rcpt *)
+      let send_req =
+        make_tool_call_request ~session_id:"session-sender"
+          ~tool_name:"send"
+          ~arguments:(`Assoc [ ("to_alias", `String "rcpt")
+                             ; ("content", `String "hello") ])
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir send_req)
+      in
+      match response with
+      | None -> fail "expected send response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let result = json |> member "result" in
+          let is_error = try result |> member "isError" |> to_bool with _ -> false in
+          check bool "send is not an error" false is_error;
+          let text =
+            result |> member "content" |> index 0 |> member "text" |> to_string
+          in
+          let parsed = Yojson.Safe.from_string text in
+          let warning = parsed |> member "compacting_warning" |> to_string in
+          check bool "compacting_warning mentions compacting" true
+            (String.length warning > 0 && string_contains warning "compacting"))
+
+let test_set_compact_no_session_returns_error () =
+  with_temp_dir (fun dir ->
+      (* Ensure no env session is set *)
+      let old_env = try Some (Unix.getenv "C2C_MCP_SESSION_ID") with Not_found -> None in
+      (try Unix.putenv "C2C_MCP_SESSION_ID" "" with _ -> ());
+      Fun.protect
+        ~finally:(fun () ->
+          match old_env with
+          | Some v -> Unix.putenv "C2C_MCP_SESSION_ID" v
+          | None -> (try Unix.putenv "C2C_MCP_SESSION_ID" "" with _ -> ()))
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 999)
+              ; ("method", `String "tools/call")
+              ; ("params", `Assoc [ ("name", `String "set_compact")
+                                  ; ("arguments", `Assoc [ ("reason", `String "test") ]) ])
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected set_compact error response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let result = json |> member "result" in
+              let is_error = result |> member "isError" |> to_bool in
+              check bool "set_compact with no session is error" true is_error))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -11933,4 +12084,12 @@ let () =
                 test_message_id_assigned_on_local_enqueue
             ; test_case "reaction DM archived with target_msg_id for discovery (#S2 Fix #3)" `Quick
                 test_reaction_archived_with_target_msg_id
+            ; test_case "set_compact marks session compacting" `Quick
+                test_set_compact_marks_session
+            ; test_case "clear_compact removes compacting flag" `Quick
+                test_clear_compact_removes_flag
+            ; test_case "send to compacting peer has compacting_warning" `Quick
+                test_send_to_compacting_peer_has_warning
+            ; test_case "set_compact with no session returns error" `Quick
+                test_set_compact_no_session_returns_error
             ] ) ]
