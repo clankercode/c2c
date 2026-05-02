@@ -7930,6 +7930,150 @@ let test_tools_call_set_dnd_on_invalid_input_defaults_false () =
   check bool "set_dnd on:1.0 does not enable" false
     (result_float |> member "dnd" |> to_bool)
 
+(* --- dnd_status tests --- *)
+
+(* dnd_status: returns dnd=false when not set *)
+let test_tools_call_dnd_status_false_when_not_set () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-dnd-status"
+        ~alias:"dnd-status-test" ~pid:None ~pid_start_time:None ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-dnd-status";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 9510)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "dnd_status")
+                     ; ("arguments", `Assoc [])
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let result = Yojson.Safe.from_string text in
+               (* dnd_status response: { "dnd": bool, "dnd_since"?: float, "dnd_until"?: float } *)
+               let dnd_val =
+                 match result |> member "dnd" with
+                 | `Bool b -> b
+                 | _ -> false
+               in
+               check bool "dnd_status dnd=false when not set" false dnd_val))
+
+(* dnd_status: returns dnd=true after set_dnd on=true *)
+let test_tools_call_dnd_status_true_after_set_dnd_on () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-dnd-status2"
+        ~alias:"dnd-status-test2" ~pid:None ~pid_start_time:None ();
+      (* Enable DND first *)
+      ignore (C2c_mcp.Broker.set_dnd broker ~session_id:"session-dnd-status2" ~dnd:true ());
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-dnd-status2";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 9511)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "dnd_status")
+                     ; ("arguments", `Assoc [])
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let result = Yojson.Safe.from_string text in
+               (* dnd_status response: { "dnd": bool, "dnd_since"?: float, "dnd_until"?: float } *)
+               let dnd_val =
+                 match result |> member "dnd" with
+                 | `Bool b -> b
+                 | _ -> false
+               in
+               let since_val = result |> member "dnd_since" in
+               check bool "dnd_status dnd=true after set_dnd on" true dnd_val;
+               check bool "dnd_status dnd_since present when active" true
+                 (match since_val with `Float _ -> true | _ -> false)))
+
+(* dnd_status: returns dnd=true with dnd_until after set_dnd on with until_epoch *)
+let test_tools_call_dnd_status_shows_until_after_set_dnd_with_until () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-dnd-status3"
+        ~alias:"dnd-status-test3" ~pid:None ~pid_start_time:None ();
+      (* Enable DND with expiry *)
+      let now = Unix.gettimeofday () in
+      let until_ts = now +. 3600.0 in
+      ignore (C2c_mcp.Broker.set_dnd broker ~session_id:"session-dnd-status3"
+        ~dnd:true ~until:until_ts ());
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-dnd-status3";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 9512)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "dnd_status")
+                     ; ("arguments", `Assoc [])
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let result = Yojson.Safe.from_string text in
+               (* dnd_status response: { "dnd": bool, "dnd_since"?: float, "dnd_until"?: float } *)
+               let dnd_val =
+                 match result |> member "dnd" with
+                 | `Bool b -> b
+                 | _ -> false
+               in
+               let since_val = result |> member "dnd_since" in
+               let until_val = result |> member "dnd_until" in
+               check bool "dnd_status dnd=true with until" true dnd_val;
+               check bool "dnd_status dnd_since present" true
+                 (match since_val with `Float _ -> true | _ -> false);
+               check bool "dnd_status dnd_until present" true
+                 (match until_val with `Float _ -> true | _ -> false)))
+
 (* --- prompts/list and prompts/get tests (run via subprocess to isolate Sys.chdir) --- *)
 
 let run_prompts_test_skeleton ~dir ~skill_name ~test_code =
@@ -12297,8 +12441,14 @@ let () =
            ; test_case "tools/call set_dnd on:0 int disables DND" `Quick
                 test_tools_call_set_dnd_on_int_zero_disables_dnd
            ; test_case "tools/call set_dnd on invalid input defaults false" `Quick
-                test_tools_call_set_dnd_on_invalid_input_defaults_false
-           ; test_case "prompts/list returns skills as prompts" `Quick
+                 test_tools_call_set_dnd_on_invalid_input_defaults_false
+            ; test_case "tools/call dnd_status returns false when not set" `Quick
+                 test_tools_call_dnd_status_false_when_not_set
+            ; test_case "tools/call dnd_status returns true after set_dnd on" `Quick
+                 test_tools_call_dnd_status_true_after_set_dnd_on
+            ; test_case "tools/call dnd_status shows dnd_until after set_dnd with until_epoch" `Quick
+                 test_tools_call_dnd_status_shows_until_after_set_dnd_with_until
+            ; test_case "prompts/list returns skills as prompts" `Quick
                test_prompts_list_via_subprocess
            ; test_case "prompts/get returns skill content" `Quick
                test_prompts_get_via_subprocess
