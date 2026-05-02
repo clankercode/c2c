@@ -1299,7 +1299,7 @@ open C2c_mcp_helpers
   let ensure_lease_dir t =
     let dir = Filename.concat t.root docker_lease_dir_name in
     if not (Sys.file_exists dir) then
-      (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ())
+      mkdir_p ~mode:0o755 dir
 
   (* Touch the lease file for session_id, creating it if absent.
      Called on every broker interaction via touch_session so the mtime
@@ -2000,13 +2000,13 @@ open C2c_mcp_helpers
               Printf.eprintf "[touch_session] docker_broker_root error: %s\n%!" e
           | Ok root ->
               let dir = Filename.concat root docker_lease_dir_name in
-              if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
+              mkdir_p ~mode:0o755 dir;
               let path = Filename.concat dir session_id in
               (* Use open+O_CREAT to create, then utimes to set mtime *)
               let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
               Unix.close fd;
               Unix.utimes path 0.0 (Unix.gettimeofday ()))
-       with Unix.Unix_error _ -> ())
+        with Unix.Unix_error _ -> ())
 
   (** True if [alias] contains '@' — indicating a remote alias that cannot be
       resolved via the local registry and must be sent via the relay outbox. *)
@@ -2052,12 +2052,12 @@ open C2c_mcp_helpers
                       Printf.eprintf "[enqueue_message] docker_broker_root error: %s\n%!" e
                   | Ok root ->
                       let dir = Filename.concat root docker_lease_dir_name in
-                      if not (Sys.file_exists dir) then Unix.mkdir dir 0o755;
+                      mkdir_p ~mode:0o755 dir;
                       let path = Filename.concat dir session_id in
                       let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
                       Unix.close fd;
                       Unix.utimes path 0.0 (Unix.gettimeofday ()))
-               end
+                end
              with Unix.Unix_error _ -> ());
             if debug_enabled then Printf.eprintf "[DEBUG enqueue] from=%s to=%s session_id=%s\n%!"
               from_alias to_alias session_id;
