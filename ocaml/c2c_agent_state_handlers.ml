@@ -129,44 +129,44 @@ let stop_self ~broker ~session_id_override ~arguments =
           call it. Reduces duplication and ensures any future change
           to the predicate (e.g. case-fold consistency, pidless-zombie
           policy) lands at one site. *)
-       (match send_alias_impersonation_check ?session_id_override:session_id_override broker name with
-        | Some conflict ->
-            Lwt.return
-              (tool_result
-                 ~content:
-                   (Printf.sprintf
-                      "stop_self rejected: name '%s' is currently registered to \
-                       alive session '%s' — stop_self only stops the calling \
-                       session's own instance. Use a CLI/admin path to stop a \
-                       different instance."
-                      name conflict.session_id)
-                 ~is_error:true)
-        | None ->
-       (* Reconstruct outer.pid path without creating a C2c_start dep cycle. *)
-       let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
-       let instances_dir =
-         match Sys.getenv_opt "C2C_INSTANCES_DIR" with
-         | Some d when String.trim d <> "" -> String.trim d
-         | _ -> Filename.concat home ".local/share/c2c/instances"
-       in
-       let pid_path = Filename.concat (Filename.concat instances_dir name) "outer.pid" in
-       let ok =
-         if not (Sys.file_exists pid_path) then false
-         else
-           try
-             let ic = open_in pid_path in
-             let line = try input_line ic with End_of_file -> "" in
-             close_in_noerr ic;
-             match int_of_string_opt (String.trim line) with
-             | Some pid ->
-               (try Unix.kill pid Sys.sigterm; true
-                with Unix.Unix_error _ -> false)
-             | None -> false
-           with _ -> false
-       in
-       let content =
-         `Assoc [ ("ok", `Bool ok); ("name", `String name); ("reason", `String reason);
-                  ("pid_path", `String pid_path) ]
-         |> Yojson.Safe.to_string
+        (match send_alias_impersonation_check ?session_id_override:session_id_override broker name with
+         | Some conflict ->
+             Lwt.return
+               (tool_result
+                  ~content:
+                    (Printf.sprintf
+                       "stop_self rejected: name '%s' is currently registered to \
+                        alive session '%s' — stop_self only stops the calling \
+                        session's own instance. Use a CLI/admin path to stop a \
+                        different instance."
+                       name conflict.session_id)
+                  ~is_error:true)
+         | None ->
+        (* Reconstruct outer.pid path without creating a C2c_start dep cycle. *)
+        let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+        let instances_dir =
+          match Sys.getenv_opt "C2C_INSTANCES_DIR" with
+          | Some d when String.trim d <> "" -> String.trim d
+          | _ -> Filename.concat home ".local/share/c2c/instances"
         in
-         Lwt.return (tool_result ~content ~is_error:(not ok))))
+        let pid_path = Filename.concat (Filename.concat instances_dir name) "outer.pid" in
+        let ok, is_error =
+          if not (Sys.file_exists pid_path) then false, false
+          else
+            try
+              let ic = open_in pid_path in
+              let line = try input_line ic with End_of_file -> "" in
+              close_in_noerr ic;
+              match int_of_string_opt (String.trim line) with
+              | Some pid ->
+                (try Unix.kill pid Sys.sigterm; true, false
+                 with Unix.Unix_error _ -> false, false)
+              | None -> false, true  (* malformed pid file content = handler error *)
+            with _ -> false, true    (* I/O error reading pid file = handler error *)
+        in
+        let content =
+          `Assoc [ ("ok", `Bool ok); ("name", `String name); ("reason", `String reason);
+                   ("pid_path", `String pid_path) ]
+          |> Yojson.Safe.to_string
+        in
+        Lwt.return (tool_result ~content ~is_error)))

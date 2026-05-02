@@ -11918,6 +11918,92 @@ let make_tool_call_request ~session_id ~tool_name ~arguments =
                         ; ("arguments", arguments) ])
     ]
 
+(* MCP handler layer: stop_self happy path — registered session calling stop_self
+   for its own alias (no impersonation) gets a valid response, not an error.
+   The outer.pid for this alias does not exist in the instances dir, so ok=false
+   is expected — but the handler must not raise or return isError=true. *)
+let test_stop_self_handler_happy_path () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register a live session with the current process pid. The outer.pid
+         for this alias won't exist in the instances dir, so the handler will
+         return ok=false — but that's still a valid non-error response. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-self" ~alias:"self-handler-test"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let request =
+        make_tool_call_request ~session_id:"session-self"
+          ~tool_name:"stop_self"
+          ~arguments:(`Assoc [ ("reason", `String "handler test") ])
+      in
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      match response with
+      | None -> fail "expected stop_self response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let result = json |> member "result" in
+          let is_error = try result |> member "isError" |> to_bool with _ -> false in
+          check bool "stop_self handler returns isError=false" false is_error;
+          let content_str =
+            result |> member "content" |> index 0 |> member "text" |> to_string
+          in
+          let content_json = Yojson.Safe.from_string content_str in
+          check string "name field is self Alias" "self-handler-test"
+            (content_json |> member "name" |> to_string);
+          check string "reason echoed back" "handler test"
+            (content_json |> member "reason" |> to_string);
+          (* ok=false because outer.pid does not exist for this fake alias —
+             this is fine; the point is the handler returned a valid response *)
+          check bool "ok is false (pid file missing)" false
+            (content_json |> member "ok" |> to_bool))
+
+(* MCP handler layer: sweep happy path — calling sweep via tools/call returns
+   dropped_regs and deleted_inboxes matching what Broker.sweep produces. *)
+let test_sweep_handler_drops_dead_reg () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register a dead session (pid that will never be alive). *)
+      let dead = 0x7f00_0000 in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-dead-sweep" ~alias:"dead-sweep-alias"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      (* Seed a non-empty inbox for the dead reg (preserved to dead-letter). *)
+      write_file (Filename.concat dir "session-dead-sweep.inbox.json")
+        {|[{"from_alias":"x","to_alias":"dead-sweep-alias","content":"orphan msg"}]|};
+      let request =
+        make_tool_call_request ~session_id:"session-dead-sweep"
+          ~tool_name:"sweep"
+          ~arguments:(`Assoc [])
+      in
+      (* C2C_MCP_SESSION_ID is already set to session-dead-sweep by
+         make_tool_call_request; sweep won't kill the caller (it checks pid). *)
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      match response with
+      | None -> fail "expected sweep response"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let result = json |> member "result" in
+          let is_error = try result |> member "isError" |> to_bool with _ -> false in
+          check bool "sweep handler returns isError=false" false is_error;
+          (* The sweep data is inside content[0].text as a JSON string — parse it. *)
+          let content_str =
+            result |> member "content" |> index 0 |> member "text" |> to_string
+          in
+          let inner = Yojson.Safe.from_string content_str in
+          let dropped =
+            inner |> member "dropped_regs" |> to_list
+          in
+          check int "one dropped reg via handler" 1 (List.length dropped);
+          check string "dropped alias matches" "dead-sweep-alias"
+            (List.hd dropped |> member "alias" |> to_string);
+          let deleted =
+            inner |> member "deleted_inboxes" |> to_list
+          in
+          check int "one deleted inbox via handler" 1 (List.length deleted);
+          check string "deleted inbox sid" "session-dead-sweep"
+            (List.hd deleted |> to_string))
+
 let test_set_compact_marks_session () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -12723,9 +12809,13 @@ let () =
              test_delete_room_impersonation_rejected
          ; test_case "tools/call leave_room rejects impersonation (#432)" `Quick
              test_leave_room_impersonation_rejected
-         ; test_case "tools/call stop_self cannot kill other instance (#432)" `Quick
-             test_stop_self_cannot_kill_other
-         ; test_case "send_room_invite adds to invite list" `Quick
+           ; test_case "tools/call stop_self cannot kill other instance (#432)" `Quick
+               test_stop_self_cannot_kill_other
+           ; test_case "tools/call stop_self handler happy path" `Quick
+               test_stop_self_handler_happy_path
+           ; test_case "tools/call sweep handler drops dead reg" `Quick
+               test_sweep_handler_drops_dead_reg
+           ; test_case "send_room_invite adds to invite list" `Quick
              test_send_room_invite_adds_to_invite_list
          ; test_case "send_room_invite auto-DMs invitee (#433)" `Quick
              test_send_room_invite_auto_dms_invitee
