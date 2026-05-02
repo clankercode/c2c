@@ -34,13 +34,9 @@ module Broker = C2c_broker
    the-fact. The 2026-04-27 #327 case had no broker-side trace until
    this logging existed. *)
 
-(* #388 deduplication: one shared writer for all structured broker.log
-   audit lines. Each named logger delegates here instead of repeating
-   the try/ts/path/Yojson/append_jsonl pattern. Best-effort: audit
-   failures must never block the broker's primary path. *)
-let log_broker_event ~broker_root event_name fields =
-  let json = `Assoc (("event", `String event_name) :: fields) in
-  Broker_log.append_json ~broker_root ~json
+(* #388: log_broker_event lives in C2c_mcp_helpers (shared with Broker).
+   All other helpers below are post-Broker layer; C2c_mcp_helpers has
+   no dependency on Broker types. *)
 
 let log_handoff_attempt ~broker_root ~from_alias ~to_alias ~name ~ok ~error =
   let ts = Unix.gettimeofday () in
