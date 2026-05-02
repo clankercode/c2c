@@ -181,6 +181,19 @@ let base_tool_definitions =
         ; prop "content" "Memory body text." ]
   ]
 
+(** Extract the tool name from a tool_definition JSON value. *)
+let tool_definition_name (td : Yojson.Safe.t) : string =
+  match td with
+  | `Assoc pairs ->
+    (match List.assoc_opt "name" pairs with
+     | Some (`String n) -> n
+     | _ -> failwith "tool_definition missing name")
+  | _ -> failwith "tool_definition is not an object"
+
+(** All base tool names as bare strings (e.g. ["register"; "list"; "send"; ...]). *)
+let base_tool_names : string list =
+  List.map tool_definition_name base_tool_definitions
+
 let tool_definitions =
   if Build_flags.mcp_debug_tool_enabled
   then base_tool_definitions @ [ debug_tool_definition ]

@@ -2808,23 +2808,11 @@ let resolve_repo_root ~(broker_root : string) : string =
 
 let build_kimi_mcp_config (name : string) (br : string) (alias_override : string option) : Yojson.Safe.t =
   let alias = Option.value alias_override ~default:name in
-  (* #478: enumerate all c2c MCP tools so kimi auto-approves them without
-     prompting. Must stay in sync with C2c_mcp.base_tool_definitions. *)
-  let c2c_mcp_tools = [
-    "mcp__c2c__register"; "mcp__c2c__list"; "mcp__c2c__send";
-    "mcp__c2c__whoami"; "mcp__c2c__poll_inbox"; "mcp__c2c__peek_inbox";
-    "mcp__c2c__sweep"; "mcp__c2c__send_all"; "mcp__c2c__join_room";
-    "mcp__c2c__leave_room"; "mcp__c2c__delete_room"; "mcp__c2c__send_room";
-    "mcp__c2c__list_rooms"; "mcp__c2c__my_rooms"; "mcp__c2c__room_history";
-    "mcp__c2c__history"; "mcp__c2c__tail_log"; "mcp__c2c__server_info";
-    "mcp__c2c__prune_rooms"; "mcp__c2c__send_room_invite";
-    "mcp__c2c__set_room_visibility"; "mcp__c2c__set_dnd";
-    "mcp__c2c__dnd_status"; "mcp__c2c__open_pending_reply";
-    "mcp__c2c__check_pending_reply"; "mcp__c2c__set_compact";
-    "mcp__c2c__clear_compact"; "mcp__c2c__stop_self";
-    "mcp__c2c__memory_list"; "mcp__c2c__memory_read";
-    "mcp__c2c__memory_write";
-  ] in
+  (* #479: derive from C2c_mcp.base_tool_names (single source of truth).
+     Previously hand-maintained — see #478 comment. *)
+  let c2c_mcp_tools =
+    List.map (fun name -> "mcp__c2c__" ^ name) C2c_mcp.base_tool_names
+  in
   (* Drift-prevention (kimi-mcp-canonical-server, follow-up to #504):
      omit C2C_MCP_BROKER_ROOT from the env block when it equals the
      resolver default. Same rule as write_config in #504 — persisting

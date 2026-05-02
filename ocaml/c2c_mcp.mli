@@ -638,6 +638,10 @@ val handle_tool_call :
     detection. Use this in tests instead of [Broker.register] when testing S2/S3
     pubkey-handling logic. *)
 
+val base_tool_names : string list
+(** All base tool names as bare strings (e.g. ["register"; "list"; "send"; ...]).
+    Single source of truth — derived from [base_tool_definitions]. *)
+
 val handle_request : broker_root:string -> Yojson.Safe.t -> Yojson.Safe.t option Lwt.t
 
 val log_coord_fallthrough_fired :
