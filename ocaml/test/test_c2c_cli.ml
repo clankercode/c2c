@@ -4,6 +4,7 @@
    - c2c config show
    - c2c agent list
    - c2c agent new (role file creation)
+   - c2c agent rename (role file renaming)
    - c2c roles validate
    - c2c list
    - c2c send (fixture-gated)
@@ -234,6 +235,78 @@ let test_agent_new_role_file_is_valid_yaml () =
        (* The file should start with a YAML frontmatter marker *)
        check bool "role file starts with --- yaml marker" true
          (String.length content >= 3 && String.sub content 0 3 = "---")))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c agent rename — verify role file renaming                              *)
+(* ------------------------------------------------------------------------- *)
+
+let test_agent_rename_exits_zero () =
+  (* Create a role in a temp dir, then rename it. *)
+  with_temp_dir (fun tmpdir ->
+    let old_name = Printf.sprintf "e2e-rename-test-%08x" (Random.bits ()) in
+    let new_name = Printf.sprintf "e2e-renamed-test-%08x" (Random.bits ()) in
+    (* Create the role *)
+    ignore (Sys.command (Printf.sprintf
+      "cd %s && c2c agent new %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) old_name));
+    (* Rename it *)
+    let cmd = Printf.sprintf
+      "cd %s && c2c agent rename %s %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) old_name new_name in
+    let rc = Sys.command cmd in
+    check int "c2c agent rename exits 0" 0 rc)
+
+let test_agent_rename_old_file_gone () =
+  with_temp_dir (fun tmpdir ->
+    let old_name = Printf.sprintf "e2e-rename-src-%08x" (Random.bits ()) in
+    let new_name = Printf.sprintf "e2e-rename-dst-%08x" (Random.bits ()) in
+    ignore (Sys.command (Printf.sprintf
+      "cd %s && c2c agent new %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) old_name));
+    ignore (Sys.command (Printf.sprintf
+      "cd %s && c2c agent rename %s %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) old_name new_name));
+    let old_path = Filename.concat tmpdir (Printf.sprintf ".c2c/roles/%s.md" old_name) in
+    check bool "old role file is gone after rename" false (Sys.file_exists old_path))
+
+let test_agent_rename_new_file_exists () =
+  with_temp_dir (fun tmpdir ->
+    let old_name = Printf.sprintf "e2e-rename-src2-%08x" (Random.bits ()) in
+    let new_name = Printf.sprintf "e2e-rename-dst2-%08x" (Random.bits ()) in
+    ignore (Sys.command (Printf.sprintf
+      "cd %s && c2c agent new %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) old_name));
+    ignore (Sys.command (Printf.sprintf
+      "cd %s && c2c agent rename %s %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) old_name new_name));
+    let new_path = Filename.concat tmpdir (Printf.sprintf ".c2c/roles/%s.md" new_name) in
+    check bool "new role file exists after rename" true (Sys.file_exists new_path))
+
+let test_agent_rename_missing_old_exits_nonzero () =
+  let nonexistent = Printf.sprintf "nonexistent-role-%08x" (Random.bits ()) in
+  let new_name = Printf.sprintf "some-new-name-%08x" (Random.bits ()) in
+  let cmd = Printf.sprintf "c2c agent rename %s %s > /dev/null 2>&1"
+    nonexistent new_name in
+  let rc = Sys.command cmd in
+  check bool "rename nonexistent role exits non-zero" true (rc <> 0)
+
+let test_agent_rename_existing_new_exits_nonzero () =
+  with_temp_dir (fun tmpdir ->
+    let name_a = Printf.sprintf "e2e-rename-a-%08x" (Random.bits ()) in
+    let name_b = Printf.sprintf "e2e-rename-b-%08x" (Random.bits ()) in
+    (* Create two roles *)
+    ignore (Sys.command (Printf.sprintf
+      "cd %s && c2c agent new %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) name_a));
+    ignore (Sys.command (Printf.sprintf
+      "cd %s && c2c agent new %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) name_b));
+    (* Try to rename A to B — B already exists, should fail *)
+    let cmd = Printf.sprintf
+      "cd %s && c2c agent rename %s %s > /dev/null 2>&1"
+      (Filename.quote tmpdir) name_a name_b in
+    let rc = Sys.command cmd in
+    check bool "rename to existing name exits non-zero" true (rc <> 0))
 
 (* ------------------------------------------------------------------------- *)
 (* c2c list — verify peer listing                                           *)
@@ -899,5 +972,12 @@ let () =
         [ ( "gc with no matching worktrees exits 0", `Quick, test_worktree_gc_no_worktrees )
         ; ( "gc --clean removes clean merged worktree", `Quick, test_worktree_gc_clean_removes_merged )
         ; ( "gc dry-run refuses dirty worktree", `Quick, test_worktree_gc_refuses_dirty )
+        ] )
+    ; ( "agent_rename",
+        [ ( "agent rename exits 0", `Quick, test_agent_rename_exits_zero )
+        ; ( "agent rename old file is gone", `Quick, test_agent_rename_old_file_gone )
+        ; ( "agent rename new file exists", `Quick, test_agent_rename_new_file_exists )
+        ; ( "agent rename missing old exits non-zero", `Quick, test_agent_rename_missing_old_exits_nonzero )
+        ; ( "agent rename existing new exits non-zero", `Quick, test_agent_rename_existing_new_exits_nonzero )
         ] )
     ]
