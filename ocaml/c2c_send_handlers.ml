@@ -198,6 +198,47 @@ let verify_peer_pass_dm ~broker ~from_alias ~to_alias ~content
   | None, None ->
       `Allow, extras
 
+(** Build a send receipt JSON string from accumulated send state.
+    Extracted from [send] for readability (#450 S8); no behavior change.
+    Updated to accept [pp_receipt_extras] from S9's [verify_peer_pass_dm]. *)
+let build_send_receipt
+      ~(pp_extras : pp_receipt_extras)
+      ~ts
+      ~from_alias
+      ~to_alias
+      ~recipient_dnd
+      ~recipient_compacting
+      ~deferrable
+  : string =
+  let receipt_fields = ref
+    [ ("queued", `Bool true)
+    ; ("ts", `Float ts)
+    ; ("from_alias", `String from_alias)
+    ; ("to_alias", `String to_alias)
+    ]
+  in
+  (match pp_extras.pp_self_pass_warning with
+   | Some (`Warn msg) ->
+       receipt_fields := !receipt_fields @ [("self_pass_warning", `String msg)]
+   | _ -> ());
+  (match pp_extras.pp_verification with
+   | Some (`Ok msg) ->
+       receipt_fields := !receipt_fields @ [("peer_pass_verification", `String msg)]
+   | Some (`Missing m) ->
+       receipt_fields := !receipt_fields @ [("peer_pass_verification", `String ("missing: " ^ m))]
+   | Some (`Invalid m) ->
+       receipt_fields := !receipt_fields @ [("peer_pass_verification", `String ("invalid: " ^ m))]
+   | None -> ());
+  if recipient_dnd then receipt_fields := !receipt_fields @ [("recipient_dnd", `Bool true)];
+  (match recipient_compacting with
+   | Some (dur, reason) ->
+       let reason_str = match reason with Some r -> " (" ^ r ^ ")" | None -> "" in
+       let warning = Printf.sprintf "recipient compacting for %.0fs%s" dur reason_str in
+       receipt_fields := !receipt_fields @ [("compacting_warning", `String warning)]
+   | None -> ());
+  if deferrable then receipt_fields := !receipt_fields @ [("deferrable", `Bool true)];
+  `Assoc !receipt_fields |> Yojson.Safe.to_string
+
 let send ~broker ~session_id_override ~arguments =
       let to_alias = string_member_any [ "to_alias"; "alias" ] arguments in
       let content = string_member "content" arguments in
@@ -293,42 +334,16 @@ let ts = Unix.gettimeofday () in
                                | None -> None)
                           | None -> None
                         in
-                        let receipt_fields =
-                          [ ("queued", `Bool true)
-                          ; ("ts", `Float ts)
-                          ; ("from_alias", `String from_alias)
-                          ; ("to_alias", `String to_alias)
-                          ]
+                        let receipt =
+                          build_send_receipt
+                            ~pp_extras
+                            ~ts
+                            ~from_alias
+                            ~to_alias
+                            ~recipient_dnd
+                            ~recipient_compacting
+                            ~deferrable
                         in
-                        let receipt_fields =
-                          match pp_extras.pp_self_pass_warning with
-                          | Some (`Warn msg) -> receipt_fields @ [("self_pass_warning", `String msg)]
-                          | _ -> receipt_fields
-                        in
-                        let receipt_fields =
-                          match pp_extras.pp_verification with
-                          | Some (`Ok msg) -> receipt_fields @ [("peer_pass_verification", `String msg)]
-                          | Some (`Missing m) -> receipt_fields @ [("peer_pass_verification", `String ("missing: " ^ m))]
-                          | Some (`Invalid m) -> receipt_fields @ [("peer_pass_verification", `String ("invalid: " ^ m))]
-                          | None -> receipt_fields
-                        in
-                        let receipt_fields =
-                          if recipient_dnd then receipt_fields @ [("recipient_dnd", `Bool true)]
-                          else receipt_fields
-                        in
-                        let receipt_fields =
-                          match recipient_compacting with
-                          | Some (dur, reason) ->
-                              let reason_str = match reason with Some r -> " (" ^ r ^ ")" | None -> "" in
-                              let warning = Printf.sprintf "recipient compacting for %.0fs%s" dur reason_str in
-                              receipt_fields @ [("compacting_warning", `String warning)]
-                          | None -> receipt_fields
-                        in
-                        let receipt_fields =
-                          if deferrable then receipt_fields @ [("deferrable", `Bool true)]
-                          else receipt_fields
-                        in
-                        let receipt = `Assoc receipt_fields |> Yojson.Safe.to_string in
                         Lwt.return (tool_ok receipt)))))
 
 let send_all ~broker ~session_id_override ~arguments =
