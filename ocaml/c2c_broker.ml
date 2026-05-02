@@ -1974,6 +1974,13 @@ open C2c_mcp_helpers
                     (try Unix.unlink
                            (inbox_path t ~session_id:reg.session_id)
                      with Unix.Unix_error _ -> ());
+                    (* #627: delete the lease file for the evicted registration.
+                       Without this, the old session's lease retains recent mtime,
+                       causing registration_is_alive to return true → stale session
+                       not dead-lettered. Lease deletion mirrors inbox deletion above. *)
+                    (try Unix.unlink
+                           (lease_file_path t ~session_id:reg.session_id)
+                     with Unix.Unix_error _ -> ());
                     msgs)
               in
               if migrated <> [] then
