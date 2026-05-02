@@ -886,24 +886,6 @@ let managed_heartbeat_of_schedule_entry (e : C2c_mcp.schedule_entry) : managed_h
   ; idle_threshold_s = e.s_idle_threshold_s
   }
 
-let schedule_dir_managed_heartbeats ~(alias : string) : managed_heartbeat list =
-  let dir = C2c_mcp.schedule_base_dir alias in
-  try
-    Array.to_list (Sys.readdir dir)
-    |> List.filter (fun n ->
-        String.length n > 5
-        && String.sub n (String.length n - 5) 5 = ".toml")
-    |> List.sort String.compare
-    |> List.filter_map (fun fname ->
-        match C2c_io.read_file_opt (Filename.concat dir fname) with
-        | "" -> None
-        | content ->
-            let e = C2c_mcp.parse_schedule content in
-            if e.s_name = "" then None
-            else Some (managed_heartbeat_of_schedule_entry e))
-  with
-  | Sys_error _ -> []
-  | Unix.Unix_error _ -> []
 
 let heartbeat_name_from_role_key ~(prefix : string) (key : string) :
     (string * string) option =
