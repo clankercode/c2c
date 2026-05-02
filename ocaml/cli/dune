@@ -48,7 +48,8 @@
 (test
  (name test_c2c_approval_paths)
  (modules test_c2c_approval_paths c2c_approval_paths)
- (libraries c2c_mcp alcotest unix))
+ (libraries c2c_mcp alcotest unix)
+ (deps c2c.exe))
 
 (test
  (name test_c2c_migrate)

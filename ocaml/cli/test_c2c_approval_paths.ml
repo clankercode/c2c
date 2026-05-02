@@ -403,6 +403,115 @@ let test_read_pending_broker_root () =
             (Some root)
             (C2c_approval_paths.parse_string_field s "broker_root"))
 
+(* #484 MCP-strengthening: subprocess-based tests for approval-reply
+   reviewer validation against pending-reply supervisors list. *)
+
+(* Resolve c2c.exe relative to this test binary — same pattern as
+   test_c2c_await_reply.ml. Works both via `dune runtest` (which stages
+   c2c.exe alongside this test via the [(deps c2c.exe)] dune stanza) and
+   direct invocation as _build/default/ocaml/cli/test_c2c_approval_paths.exe. *)
+let c2c_binary =
+  let exe = Sys.executable_name in
+  Filename.concat (Filename.dirname exe) "c2c.exe"
+
+let run_approval_reply ~broker_root ~token ~verdict ~reviewer =
+  (* Returns (rc, stdout, stderr) *)
+  let stdout_path = Filename.temp_file "c2c-approval-out-" "" in
+  let stderr_path = Filename.temp_file "c2c-approval-err-" "" in
+  let cmd =
+    Printf.sprintf
+      "C2C_MCP_BROKER_ROOT=%s %s approval-reply %s %s --reviewer %s --broker-root %s > %s 2> %s"
+      (Filename.quote broker_root) c2c_binary
+      (Filename.quote token) (Filename.quote verdict)
+      (Filename.quote reviewer) (Filename.quote broker_root)
+      (Filename.quote stdout_path) (Filename.quote stderr_path)
+  in
+  let rc = Sys.command cmd in
+  let read_file path =
+    let ic = open_in path in
+    let buf = Buffer.create 128 in
+    (try while true do Buffer.add_channel buf ic 1024 done
+     with End_of_file -> ());
+    close_in ic;
+    Sys.remove path;
+    Buffer.contents buf
+  in
+  let out = read_file stdout_path in
+  let err = read_file stderr_path in
+  (rc, String.trim out, String.trim err)
+
+let test_approval_reply_rejects_non_supervisor () =
+  with_tmp_dir (fun root ->
+      (* Set up broker with a pending permission entry *)
+      let broker = C2c_mcp.Broker.create ~root in
+      let pending : C2c_mcp.pending_permission =
+        { perm_id = "ka_test_nonsupervisor"
+        ; kind = C2c_mcp.Permission
+        ; requester_session_id = "test-session"
+        ; requester_alias = "test-kimi"
+        ; supervisors = ["coordinator1"; "jungle-coder"]
+        ; created_at = Unix.gettimeofday ()
+        ; expires_at = Unix.gettimeofday () +. 600.0
+        ; fallthrough_fired_at = []
+        ; resolved_at = None
+        }
+      in
+      C2c_mcp.Broker.open_pending_permission broker pending;
+      (* Set up approval paths dirs *)
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      (* Run approval-reply as non-supervisor *)
+      let (rc, _out, _err) =
+        run_approval_reply ~broker_root:root
+          ~token:"ka_test_nonsupervisor" ~verdict:"allow"
+          ~reviewer:"stanza-coder"
+      in
+      Alcotest.(check int) "exit code 1 for non-supervisor" 1 rc;
+      (* Verify no verdict file was written *)
+      Alcotest.(check bool) "no verdict file written" false
+        (C2c_approval_paths.has_verdict ~override_root:root
+           ~token:"ka_test_nonsupervisor" ()))
+
+let test_approval_reply_allows_supervisor () =
+  with_tmp_dir (fun root ->
+      let broker = C2c_mcp.Broker.create ~root in
+      let pending : C2c_mcp.pending_permission =
+        { perm_id = "ka_test_supervisor"
+        ; kind = C2c_mcp.Permission
+        ; requester_session_id = "test-session"
+        ; requester_alias = "test-kimi"
+        ; supervisors = ["coordinator1"; "jungle-coder"]
+        ; created_at = Unix.gettimeofday ()
+        ; expires_at = Unix.gettimeofday () +. 600.0
+        ; fallthrough_fired_at = []
+        ; resolved_at = None
+        }
+      in
+      C2c_mcp.Broker.open_pending_permission broker pending;
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      let (rc, _out, _err) =
+        run_approval_reply ~broker_root:root
+          ~token:"ka_test_supervisor" ~verdict:"allow"
+          ~reviewer:"coordinator1"
+      in
+      Alcotest.(check int) "exit code 0 for supervisor" 0 rc;
+      Alcotest.(check bool) "verdict file written" true
+        (C2c_approval_paths.has_verdict ~override_root:root
+           ~token:"ka_test_supervisor" ()))
+
+let test_approval_reply_backward_compat_no_pending () =
+  with_tmp_dir (fun root ->
+      (* No broker pending entry — old-style token or expired *)
+      C2c_approval_paths.ensure_dirs ~override_root:root ();
+      let (rc, _out, _err) =
+        run_approval_reply ~broker_root:root
+          ~token:"ka_test_oldstyle" ~verdict:"allow"
+          ~reviewer:"anyone"
+      in
+      Alcotest.(check int) "exit code 0 for backward compat" 0 rc;
+      Alcotest.(check bool) "verdict file written" true
+        (C2c_approval_paths.has_verdict ~override_root:root
+           ~token:"ka_test_oldstyle" ()))
+
 let () =
   Alcotest.run "c2c_approval_paths"
     [
@@ -442,4 +551,13 @@ let () =
            Alcotest.test_case "update_primary_authorizer" `Quick
              test_update_primary_authorizer;
           ] );
+      ( "#484 MCP-strengthening",
+        [
+          Alcotest.test_case "non-supervisor rejected" `Quick
+            test_approval_reply_rejects_non_supervisor;
+          Alcotest.test_case "supervisor allowed" `Quick
+            test_approval_reply_allows_supervisor;
+          Alcotest.test_case "backward compat no pending" `Quick
+            test_approval_reply_backward_compat_no_pending;
+        ] );
     ]
