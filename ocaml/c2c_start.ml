@@ -2,6 +2,8 @@
 
 let ( // ) = Filename.concat
 
+module StringSet = Set.Make(String)
+
 (** [fds_to_close ~preserve] is a pure function that returns the list of
     file descriptors that [close_unlisted_fds] would close — i.e. all fds in
     /proc/self/fd except those in [preserve] and stdin/stdout/stderr.
@@ -432,6 +434,41 @@ let start_managed_heartbeat ~(broker_root : string) ~(alias : string)
       loop false
     in
     loop true) ())
+
+(* Stoppable variant — returns an [Atomic.t bool] stop flag.  Setting it to
+   [true] causes the thread to exit within ~5s (it checks between sleep
+   chunks).  Used by the schedule-watcher thread for hot-reload. *)
+let start_managed_heartbeat_stoppable ~(broker_root : string) ~(alias : string)
+    (hb : managed_heartbeat) : bool Atomic.t =
+  let stop = Atomic.make false in
+  ignore (Thread.create (fun () ->
+    let rec loop first =
+      if Atomic.get stop then ()
+      else begin
+        let sleep_s =
+          if first then next_heartbeat_delay_s ~now:(Unix.gettimeofday ()) hb
+          else hb.interval_s
+        in
+        (* Sleep in small chunks so stop flag is checked frequently *)
+        let sleep_chunk = 5.0 in
+        let remaining = ref sleep_s in
+        while !remaining > 0.0 && not (Atomic.get stop) do
+          let chunk = Float.min sleep_chunk !remaining in
+          Unix.sleepf chunk;
+          remaining := !remaining -. chunk
+        done;
+        if not (Atomic.get stop) then begin
+          (try
+             if should_fire_heartbeat ~broker_root ~alias hb then
+               enqueue_heartbeat ~broker_root ~alias
+                 ~content:(render_heartbeat_content ~broker_root ~alias hb)
+           with _ -> ());
+          loop false
+        end
+      end
+    in
+    loop true) ());
+  stop
 
 let start_codex_heartbeat ~(broker_root : string) ~(alias : string)
     ~(interval_s : float) : unit =
@@ -986,6 +1023,84 @@ let resolve_managed_heartbeats ~(client : string) ~(deliver_started : bool)
   merged
   |> List.filter (should_heartbeat_apply_to_client ~client ~deliver_started)
   |> List.filter (should_heartbeat_apply_to_role ~role)
+
+(* Schedule watcher thread — stat-polls the schedule directory every 10s,
+   starting/stopping heartbeat threads as files are added, changed, or
+   removed.  Handles the initial load on first iteration, so the startup
+   path no longer needs to call [schedule_dir_managed_heartbeats] directly. *)
+let start_schedule_watcher ~(broker_root : string) ~(alias : string)
+    ~(client : string) ~(deliver_started : bool)
+    ~(role : C2c_role.t option) : unit =
+  ignore (Thread.create (fun () ->
+    let poll_interval = 10.0 in
+    (* fname -> (stop flag, mtime) *)
+    let active : (string, bool Atomic.t * float) Hashtbl.t =
+      Hashtbl.create 16
+    in
+    let try_start_schedule fname path mtime =
+      match C2c_io.read_file_opt path with
+      | "" -> ()
+      | content ->
+          let e = C2c_mcp.parse_schedule content in
+          if e.s_name <> "" && e.s_enabled then begin
+            let hb = managed_heartbeat_of_schedule_entry e in
+            if should_heartbeat_apply_to_client ~client ~deliver_started hb
+               && should_heartbeat_apply_to_role ~role hb then begin
+              let stop =
+                start_managed_heartbeat_stoppable ~broker_root ~alias hb
+              in
+              Hashtbl.replace active fname (stop, mtime)
+            end
+          end
+    in
+    let load_schedules () =
+      let dir = C2c_mcp.schedule_base_dir alias in
+      let current_files =
+        try
+          Array.to_list (Sys.readdir dir)
+          |> List.filter (fun n ->
+              String.length n > 5
+              && String.sub n (String.length n - 5) 5 = ".toml")
+          |> List.sort String.compare
+        with Sys_error _ | Unix.Unix_error _ -> []
+      in
+      let current_set =
+        List.fold_left (fun s n -> StringSet.add n s)
+          StringSet.empty current_files
+      in
+      (* Stop threads for removed files *)
+      let to_remove = ref [] in
+      Hashtbl.iter (fun fname (stop, _) ->
+        if not (StringSet.mem fname current_set) then begin
+          Atomic.set stop true;
+          to_remove := fname :: !to_remove
+        end) active;
+      List.iter (Hashtbl.remove active) !to_remove;
+      (* Check for new/changed files *)
+      List.iter (fun fname ->
+        let path = Filename.concat dir fname in
+        let mtime =
+          try (Unix.stat path).Unix.st_mtime with _ -> 0.0
+        in
+        match Hashtbl.find_opt active fname with
+        | Some (_, old_mtime) when mtime = old_mtime ->
+            () (* unchanged *)
+        | Some (stop, _) ->
+            (* Changed — stop old thread, start new *)
+            Atomic.set stop true;
+            Hashtbl.remove active fname;
+            try_start_schedule fname path mtime
+        | None ->
+            (* New file *)
+            try_start_schedule fname path mtime)
+        current_files
+    in
+    let rec loop () =
+      (try load_schedules () with _ -> ());
+      Unix.sleepf poll_interval;
+      loop ()
+    in
+    loop ()) ())
 
 let load_role_for_heartbeat ~(client : string) (agent_name : string option) :
     C2c_role.t option =
@@ -4757,17 +4872,22 @@ let run_outer_loop ~(name : string) ~(client : string)
              use the same inbox transport as ordinary c2c messages; per-client
              delivery sidecars/plugins then handle actual presentation. *)
           let heartbeat_role = load_role_for_heartbeat ~client agent_name in
-          let schedule_specs = schedule_dir_managed_heartbeats ~alias:effective_alias in
           let heartbeat_specs =
             resolve_managed_heartbeats ~client
               ~deliver_started:(Option.is_some !deliver_pid)
               ~role:heartbeat_role
-              ~per_agent_specs:(per_agent_managed_heartbeats ~name @ schedule_specs)
+              ~per_agent_specs:(per_agent_managed_heartbeats ~name)
               (repo_config_managed_heartbeats ())
           in
           List.iter
             (start_managed_heartbeat ~broker_root ~alias:effective_alias)
             heartbeat_specs;
+          (* Schedule-dir heartbeats are managed by the watcher thread,
+             which handles both the initial load and hot-reload of
+             .c2c/schedules/<alias>/*.toml files. *)
+          start_schedule_watcher ~broker_root ~alias:effective_alias
+            ~client ~deliver_started:(Option.is_some !deliver_pid)
+            ~role:heartbeat_role;
           pid
         with Unix.Unix_error (Unix.EINTR, _, _) -> 0
       in
