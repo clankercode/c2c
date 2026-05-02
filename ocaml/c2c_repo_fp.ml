@@ -3,11 +3,15 @@
 
 let ( // ) = Filename.concat
 
-(** Compute a short fingerprint for the current repo, used to derive
-    the per-repo broker root so distinct repos don't share a broker.
-    Uses SHA-256 of remote.origin.url (when present) so clones of the
-    same upstream share a broker; falls back to git toplevel path. *)
-let repo_fingerprint () =
+(** {1 Repo fingerprint}
+
+    The fingerprint is runtime-stable (git remote URL or toplevel path never
+    change during a process lifetime). Memoize after first computation so we
+    call git at most once per process, not once per RPC dispatch. *)
+
+(** Uncached computation — shells out to git. Exposed for tests that need
+    to force recomputation with a different git state. *)
+let repo_fingerprint_uncached () =
   let data =
     match Git_helpers.git_first_line ["config"; "--get"; "remote.origin.url"] with
     | Some url when url <> "" -> url
@@ -21,6 +25,16 @@ let repo_fingerprint () =
     let hash = Digestif.SHA256.digest_string data in
     let hex = Digestif.SHA256.to_hex hash in
     String.sub hex 0 12
+
+(** Memoized fingerprint — one git shell-out per process lifetime. *)
+let repo_fingerprint =
+  let cache = ref None in
+  fun () ->
+    match !cache with
+    | Some v -> v
+    | None ->
+        let v = repo_fingerprint_uncached () in
+        cache := Some v; v
 
 (** XDG_STATE_HOME per XDG spec, with HOME fallback.
     Duplicated here because c2c_utils (CLI executable) can't be called from
