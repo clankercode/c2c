@@ -36,6 +36,24 @@ let sign_register identity ~alias ~relay_url =
   let sig_ = Relay_identity.sign identity blob in
   { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
 
+(** Build a signed registration receipt JSON object.
+    Signs with the relay's Ed25519 identity over the canonical receipt blob
+    (alias || client_identity_pk || relay_identity_pk || ts || nonce). *)
+let build_registration_receipt_json ~identity ~alias ~client_identity_pk_b64 ~nonce ~ts =
+  let relay_pk_b64 = b64url_nopad identity.Relay_identity.public_key in
+  let blob = Relay_identity.canonical_msg ~ctx:receipt_sign_ctx
+    [ alias; client_identity_pk_b64; relay_pk_b64; ts; nonce ]
+  in
+  let sig_ = Relay_identity.sign identity blob in
+  `Assoc [
+    ("alias", `String alias);
+    ("client_identity_pk", `String client_identity_pk_b64);
+    ("relay_identity_pk", `String relay_pk_b64);
+    ("ts", `String ts);
+    ("nonce", `String nonce);
+    ("sig", `String (b64url_nopad sig_));
+  ]
+
 let sign_room_op identity ~ctx ~room_id ~alias =
   let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
   let ts = now_rfc3339_utc () in
