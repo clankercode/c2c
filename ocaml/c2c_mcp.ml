@@ -223,6 +223,8 @@ module Memory_handlers = C2c_memory_handlers
 (* #450 Slice 1: body hoisted to [c2c_memory_handlers.ml]. Module-alias
    preserves [Memory_handlers.handle_memory_*] callers below. *)
 
+let handle_memory_write = Memory_handlers.handle_memory_write
+
 module Schedule_handlers = C2c_schedule_handlers
 
 let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~arguments =

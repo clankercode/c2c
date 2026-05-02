@@ -696,3 +696,10 @@ val log_coord_fallthrough_fired :
     1 = first-backup DM, N = Nth-backup DM, [tier > len(chain)-1] =
     swarm-lounge broadcast tier. Best-effort write; errors swallowed
     (failed audit must never break a working scheduler tick). *)
+
+val handle_memory_write :
+  broker:Broker.t ->
+  session_id_override:string option ->
+  arguments:Yojson.Safe.t ->
+  Yojson.Safe.t Lwt.t
+(** [handle_memory_write] implements the [memory_write] MCP tool. *)

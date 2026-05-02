@@ -6154,7 +6154,7 @@ let test_memory_read_returns_content_for_existing_key () =
               in
               let result = Yojson.Safe.from_string text in
               check string "content matches"
-                "Stored content here" (result |> member "content" |> to_string);
+                "Stored content here" (String.trim (result |> member "content" |> to_string));
               check string "name is read-test"
                 "read-test" (result |> member "name" |> to_string)))
 
@@ -10541,6 +10541,139 @@ let test_resolve_alias_no_match_when_session_dead () =
    refresh_pid_if_dead_with unit tests above (mock scanners) plus the
    live-binary dogfood after install-all. *)
 
+(* --- memory_write: broker-level tests (cedar-coder) --- *)
+
+(* memory_write creates file with correct frontmatter + body *)
+let test_memory_write_creates_file () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-writer" ~alias:"writer"
+        ~pid:None ~pid_start_time:None ();
+      let args = `Assoc [
+        ("name", `String "my-note");
+        ("description", `String "a test note");
+        ("content", `String "hello world")
+      ] in
+      let result = Lwt_main.run
+        (C2c_mcp.handle_memory_write ~broker
+           ~session_id_override:(Some "s-writer") ~arguments:args)
+      in
+      let open Yojson.Safe.Util in
+      let is_error = try result |> member "isError" |> to_bool with _ -> false in
+      check bool "isError=false" false is_error;
+      let entry_path = C2c_mcp.memory_entry_path "writer" "my-note" in
+      check bool "entry file exists" true (Sys.file_exists entry_path);
+      let ic = open_in entry_path in
+      let content = Fun.protect ~finally:(fun () -> close_in ic)
+        (fun () -> really_input_string ic (in_channel_length ic))
+      in
+      check bool "file contains name" true
+        (string_contains content "name: my-note");
+      check bool "file contains description" true
+        (string_contains content "description: a test note");
+      check bool "file contains shared: false" true
+        (string_contains content "shared: false");
+      check bool "file contains body" true
+        (string_contains content "hello world"))
+
+(* memory_write with shared=true creates file in shared path *)
+let test_memory_write_shared_true () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-writer2" ~alias:"writer2"
+        ~pid:None ~pid_start_time:None ();
+      let args = `Assoc [
+        ("name", `String "shared-note");
+        ("shared", `Bool true);
+        ("content", `String "shared content here")
+      ] in
+      let result = Lwt_main.run
+        (C2c_mcp.handle_memory_write ~broker
+           ~session_id_override:(Some "s-writer2") ~arguments:args)
+      in
+      let open Yojson.Safe.Util in
+      let is_error = try result |> member "isError" |> to_bool with _ -> false in
+      check bool "isError=false" false is_error;
+      let entry_path = C2c_mcp.memory_entry_path "writer2" "shared-note" in
+      check bool "entry file exists" true (Sys.file_exists entry_path);
+      let ic = open_in entry_path in
+      let content = Fun.protect ~finally:(fun () -> close_in ic)
+        (fun () -> really_input_string ic (in_channel_length ic))
+      in
+      check bool "file has shared: true" true
+        (string_contains content "shared: true"))
+
+(* memory_write with shared_with=[alias] triggers a handoff DM *)
+let test_memory_write_shared_with_triggers_dm () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-writer3" ~alias:"writer3"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-recipient" ~alias:"recipient3"
+        ~pid:None ~pid_start_time:None ();
+      let args = `Assoc [
+        ("name", `String "target-note");
+        ("shared_with", `List [`String "recipient3"]);
+        ("content", `String "note for you")
+      ] in
+      let result = Lwt_main.run
+        (C2c_mcp.handle_memory_write ~broker
+           ~session_id_override:(Some "s-writer3") ~arguments:args)
+      in
+      let open Yojson.Safe.Util in
+      let is_error = try result |> member "isError" |> to_bool with _ -> false in
+      check bool "isError=false" false is_error;
+      let inbox = C2c_mcp.Broker.drain_inbox ~drained_by:"test"
+        broker ~session_id:"s-recipient" in
+      check int "recipient got one DM" 1 (List.length inbox);
+      let msg = List.hd inbox in
+      check string "DM from writer3" "writer3" msg.from_alias;
+      check bool "DM content references the note path" true
+        (string_contains msg.content "target-note"))
+
+(* memory_write overwrites existing entry *)
+let test_memory_write_overwrites_existing () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"s-writer4" ~alias:"writer4"
+        ~pid:None ~pid_start_time:None ();
+      let args1 = `Assoc [
+        ("name", `String "overwrite-test");
+        ("content", `String "original content")
+      ] in
+      let (_ : Yojson.Safe.t) = Lwt_main.run
+        (C2c_mcp.handle_memory_write ~broker
+           ~session_id_override:(Some "s-writer4") ~arguments:args1)
+      in
+      let entry_path = C2c_mcp.memory_entry_path "writer4" "overwrite-test" in
+      let ic1 = open_in entry_path in
+      let content1 = Fun.protect ~finally:(fun () -> close_in ic1)
+        (fun () -> really_input_string ic1 (in_channel_length ic1))
+      in
+      check bool "original content present" true
+        (string_contains content1 "original content");
+      let args2 = `Assoc [
+        ("name", `String "overwrite-test");
+        ("content", `String "new content")
+      ] in
+      let (_ : Yojson.Safe.t) = Lwt_main.run
+        (C2c_mcp.handle_memory_write ~broker
+           ~session_id_override:(Some "s-writer4") ~arguments:args2)
+      in
+      let ic2 = open_in entry_path in
+      let content2 = Fun.protect ~finally:(fun () -> close_in ic2)
+        (fun () -> really_input_string ic2 (in_channel_length ic2))
+      in
+      check bool "new content present after overwrite" true
+        (string_contains content2 "new content");
+      check bool "original content gone after overwrite" false
+        (string_contains content2 "original content"))
+
 (* --- #286: send-memory handoff --- *)
 
 let test_notify_shared_with_dms_listed_recipients () =
@@ -12488,6 +12621,14 @@ let () =
                test_resolve_alias_case_insensitive
            ; test_case "#432 stale dead row not resurrected by case-fold lookup" `Quick
                test_resolve_alias_no_match_when_session_dead
+           ; test_case "memory_write creates file with correct content" `Quick
+               test_memory_write_creates_file
+           ; test_case "memory_write shared=true creates shared file" `Quick
+               test_memory_write_shared_true
+           ; test_case "memory_write shared_with triggers handoff DM" `Quick
+               test_memory_write_shared_with_triggers_dm
+           ; test_case "memory_write overwrites existing entry" `Quick
+               test_memory_write_overwrites_existing
            ; test_case "notify_shared_with DMs listed recipients" `Quick
                test_notify_shared_with_dms_listed_recipients
            ; test_case "notify_shared_with skips self in recipients" `Quick
