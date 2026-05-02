@@ -94,7 +94,7 @@ docker compose \
 | `test_two_container_roundtrip.py` | `test.yml` + `two-container.yml` | Two containers register, DM each other bidirectionally. ~12 assertions (bidir DMs, concurrent registration). |
 | `test_four_client_mesh.py` | `test.yml` + `two-container.yml` + `4-client.yml` | Four-container mesh — all 6 ordered-pair DMs + concurrent registration. ~20+ assertions. |
 | `test_kimi_first_class_peer.py` | `test.yml` via `test-kimi` service | Kimi as first-class peer in sealed Docker environment. ~12 assertions (auth files, install, start, send). |
-| `test_kimi_opencode_cross_host.py` | `docker-compose.e2e-multi-agent.yml` | #674 — Kimi + OpenCode cross-host relay E2E. Bidir DMs, room join + message delivery, echo roundtrip task. |
+| `test_kimi_opencode_cross_host.py` | `docker-compose.e2e-multi-agent.yml` | #674 — Kimi + OpenCode cross-host relay E2E. 8 tests total: 4 pass (registration, room join); 4 blocked on relay alias@host:port parsing bug (#686, fix pending deploy in `09b4d871`). Bidir DMs, room message delivery, echo roundtrip task. |
 | `test_relay_mesh_probe.py` | `docker-compose.2-relay-probe.yml` | #330 V3 — 2-relay mesh, cross-host dead-letter contract. ~9 assertions: SQLite dead_letter row counts, reason strings. |
 | `test_dead_letter_e2e.py` | None (host subprocess) | `c2c list --alive` filter correctness. ~12 assertions (alive:true exclusivity, alive ⊆ all). **Host subprocess — no compose needed.** |
 | `test_deferrable_e2e.py` | `docker-compose.e2e-multi-agent.yml` | Deferrable DM push suppression across broker boundary. ~8 assertions via relay tail_log. |
@@ -152,6 +152,23 @@ relay image (debian:12-slim) does not include `curl` or `wget`. The probe sends
 a literal HTTP GET and greps for `"ok":true` in the response body. This is
 functional but non-standard — an image with `wget` (e.g., `debian:12-slim`
 with `apt-get install -y wget`) would be cleaner.
+
+### Relay `alias@host:port` parsing — cross-host delivery silently fails (#686)
+
+**Symptom:** `c2c send alias@host:port "msg"` appends to `remote-outbox.jsonl`
+but the relay returns `unknown_alias` — it looks up the full
+`"agent-b1@c2c-e2e-relay:7331"` string rather than the bare alias.
+
+**Root cause:** The outbox stores `to_alias` verbatim. The relay's inbox
+lookup does not strip the `@host:port` suffix before registry lookup.
+
+**Affected tests:** `test_kimi_opencode_cross_host.py` (all 4 cross-host DM
+and room delivery assertions), `test_cross_host_relay.py`.
+
+**Fix:** `09b4d871` (`fix(#686): strip @host:port suffix from to_alias in
+relay send`) — strips the suffix before relay-side lookup. Pending deploy.
+
+**Finding:** `.collab/findings/2026-05-03T05-11-00Z-test-agent-relay-alias-at-host-not-parsed.md`
 
 ### Cross-host relay coverage gaps
 
