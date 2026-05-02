@@ -26,16 +26,17 @@ set -euo pipefail
 # Runaway-spawn guard: defense-in-depth against rev-parse storms.
 # Count live shim/git processes; if too many are running, pass through to
 # the real git directly so we don't add yet another process to an already
-# overloaded system.  Threshold of 5 is low enough to catch a storm early,
-# high enough to not trigger on normal concurrent git usage.
+# overloaded system.  C2C_SHIM_SPAWN_MAX (default 15) controls the
+# threshold, aligned with the OCaml circuit breaker default.
 # ---------------------------------------------------------------------------
 if [ -z "${C2C_SHIM_GUARD_DISABLE:-}" ]; then
     # pgrep matches this process too (we are 'git' in PATH), so subtract 1.
     # This is approximate — if the real /usr/bin/git is also in PATH (it
     # shouldn't be), those processes are harmless noise here.
     shim_count=$(pgrep -c -f "git-shim|git-pre-reset" 2>/dev/null || echo "0")
-    if [ "$shim_count" -gt 5 ]; then
-        echo "git-shim: WARNING: $shim_count shim processes running (threshold 5); bypassing shim to avoid spawn storm." >&2
+    spawn_max="${C2C_SHIM_SPAWN_MAX:-15}"
+    if [ "$shim_count" -gt "$spawn_max" ]; then
+        echo "git-shim: WARNING: $shim_count shim processes running (threshold $spawn_max); bypassing shim to avoid spawn storm." >&2
         exec /usr/bin/git "$@"
     fi
 fi

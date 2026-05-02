@@ -297,6 +297,63 @@ else
     fail "main repo + non-master branch should refuse, got: $(echo "$output" | head -1)"
 fi
 
+# ── Test 14: runaway-spawn guard — threshold via env var ───────────────────
+# Verify C2C_SHIM_SPAWN_MAX controls the guard threshold. We set it to 1
+# and spawn one background shim process, which should trip the guard.
+echo "--- Test 14: runaway-spawn guard fires with C2C_SHIM_SPAWN_MAX=1 ---"
+ENSURE_CLONE
+# Launch a background shim process that will count toward the total.
+# Use 'sleep 30' as a stand-in for a long-running git operation.
+bg_pid=""
+spawn_guard_test() {
+    local dir="$1"
+    (
+        export PATH="$(dirname "$SHIM"):$PATH"
+        export C2C_GIT_SHIM_MAIN_TREE="$CLONE_DIR"
+        export C2C_SHIM_SPAWN_MAX=1
+        unset C2C_COORDINATOR
+        unset C2C_SHIM_GUARD_DISABLE
+        cd "$dir"
+        # This should trigger the guard (1 existing + 1 this = 2 > threshold 1)
+        # and exec to /usr/bin/git, bypassing the shim.
+        output=$("$SHIM" rev-parse --show-trip 2>&1 || true)
+        echo "$output"
+    )
+}
+# Start a background shim that holds the lock (sleeping)
+bg_shim_pid=""
+(
+    export PATH="$(dirname "$SHIM"):$PATH"
+    export C2C_GIT_SHIM_MAIN_TREE="$CLONE_DIR"
+    export C2C_SHIM_SPAWN_MAX=1
+    unset C2C_COORDINATOR
+    cd "$CLONE_DIR"
+    sleep 60 &
+    wait $!
+) &
+bg_shim_pid=$!
+# Give it a moment to start
+sleep 0.1
+# Now run a command through the shim — guard should fire
+output=$(spawn_guard_test "$CLONE_DIR" 2>&1 || true)
+# Clean up background process
+kill "$bg_shim_pid" 2>/dev/null || true
+wait "$bg_shim_pid" 2>/dev/null || true
+# The guard should have fired: output contains the bypass warning
+if echo "$output" | grep -q "bypassing shim to avoid spawn storm"; then
+    pass "runaway-spawn guard fires (threshold env var respected)"
+else
+    fail "runaway-spawn guard should fire, got: $(echo "$output" | head -1)"
+fi
+
+# ── Test 15: bash -n smoke test for git-shim.sh ───────────────────────────
+echo "--- Test 15: bash -n syntax check ---"
+if bash -n "$SHIM" 2>&1; then
+    pass "bash -n: no syntax errors"
+else
+    fail "bash -n: syntax errors: $(bash -n "$SHIM" 2>&1)"
+fi
+
 echo ""
 echo "=== Results: $passed passed, $failed failed ==="
 if [ $failed -gt 0 ]; then exit 1; fi
