@@ -16,11 +16,11 @@ Codex does not have a PostToolUse hook. Instead, the OCaml `c2c-deliver-inbox --
 
 ---
 
-## Kimi Code Idle Delivery — Use Wire Bridge
+## Kimi Code Idle Delivery — Notification Store
 
 When a Kimi Code TUI session is sitting idle at its prompt, PTY-based wake daemons are unreliable and **deprecated** (wrong PTY side, timing sensitivity).
 
-**Current path:** Use `c2c wire-daemon start` (Wire JSON-RPC via `kimi --wire`) for native delivery. No PTY required.
+**Current path:** `c2c start kimi` spawns a notification-store notifier (`C2c_kimi_notifier`) that writes inbound messages as notification JSON files into kimi's session directory. Kimi reads them on its own cadence. A tmux wake-prompt fires when the pane is idle. No PTY injection, no wire bridge.
 
 ---
 

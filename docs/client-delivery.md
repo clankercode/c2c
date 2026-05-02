@@ -385,9 +385,9 @@ c2c stop my-gemini                      # stop
 c2c restart my-gemini                   # restart (no consent prompt → safe to automate)
 ```
 
-The managed harness is the simplest of any client: needs_deliver,
-needs_wire_daemon, needs_poker are all `false` because Gemini's MCP
-delivery is in-process via the configured MCP server.
+The managed harness is the simplest of any client: needs_deliver
+and needs_poker are both `false` because Gemini's MCP delivery is
+in-process via the configured MCP server.
 
 ### Resume semantics
 

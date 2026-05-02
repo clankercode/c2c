@@ -71,8 +71,6 @@ let command_tier_map () : (string * safety) list =
   ; "roles-validate", Tier2
   ; "config", Tier2
   ; "config-show", Tier2
-  ; "wire-daemon", Tier2
-  (* wire-daemon subcommands (list, status) are not top-level. *)
   ; "init", Tier2
   ; "repo", Tier2
    ; "restart-self", Tier3
@@ -98,11 +96,6 @@ let command_tier_map () : (string * safety) list =
   ; "cc-plugin", Tier1
   ; "state-read", Tier4
   ; "state-write", Tier4
-  ; "wire-daemon-start", Tier4
-  ; "wire-daemon-stop", Tier4
-  ; "wire-daemon-format-prompt", Tier4
-  ; "wire-daemon-spool-write", Tier4
-  ; "wire-daemon-spool-read", Tier4
   ; "supervisor", Tier4
   ; "supervisor-answer", Tier4
   ; "supervisor-question-reject", Tier4

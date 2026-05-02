@@ -752,38 +752,6 @@ kimi session's notification store (`<KIMI_SHARE_DIR>/sessions/<hash>/<uuid>/noti
 and sends a tmux wake-prompt when the pane is idle. See
 `.collab/runbooks/kimi-notification-store-delivery.md` for full architecture.
 
-#### Wire Daemon Lifecycle (`c2c wire-daemon`)
-
-`c2c wire-daemon` manages background wire bridge daemon processes. State is
-stored in `~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
-
-| Subcommand | Description |
-|------------|-------------|
-| `coord-cherry-pick [--no-install] [--no-dm] [--no-fail-on-install] SHA…` | Cherry-pick SHAs with dirty-tree stash + auto-install. `--no-dm` skips author DM notifications. `--no-fail-on-install` (#401) downgrades install failure from exit-1 to a stderr warning + continue (use when the coord tree has a transient build issue independent of the cherry-picked SHAs). Requires `C2C_COORDINATOR=1`. |
-| `git …` | Git wrapper that auto-injects `--author` for commits when `git.attribution=true` in `.c2c/config.toml`. |
-| `worktree list\|setup\|start\|status\|prune\|check-bases\|gc` | Manage per-agent git worktrees. `gc` (#313) detects worktrees safe to delete (clean working tree + HEAD ancestor of `origin/master` + no live `cwd` holder + not the main worktree); default dry-run, `--clean` to remove, `--ignore-active` to skip the cwd-holder check, `--json` for tooling, `--path-prefix=PFX` to bound the candidate set. The `--active-window-hours=H` (#314, default `2`) freshness heuristic soft-refuses worktrees where HEAD == `origin/master` AND the admin dir is younger than `H` hours, marking them `[!] POSSIBLY_ACTIVE` rather than REMOVABLE so `--clean` skips fresh checkouts whose owner may be reading code elsewhere; set `--active-window-hours=0` to disable. |
-| `peer-pass sign\|send\|verify\|list\|clean` | Sign, send, and verify peer-PASS review artifacts. The broker enforces signature + TOFU pubkey pin on `peer-pass send` (H2 + H2b, 2026-04-28): forged-signature, missing-artifact, and pin-mismatched DMs are rejected with `"send rejected: peer-pass verification failed (H2b: forged or pin-mismatched peer-pass DM not enqueued; see broker.log for details)"`. The string names the failing check class but does NOT echo attacker-placed artifact contents (claim_alias/sha/pubkey) back to the sender. Details land in broker.log under `event:"peer_pass_reject"`. Pin store at `<broker_root>/peer-pass-trust.json` (flock-serialized save per S1 `ef09077c`); rotate via `c2c peer-pass verify --rotate-pin`. See `.collab/design/SPEC-signed-peer-pass.md`. |
-| `sticker send\|list\|wall\|verify` | Agent appreciation stickers. |
-| `sitrep commit [--message M]` | Stage and commit the current local-hour sitrep file. |
-| `stats [--alias A] [--since DUR] [--top N] [--json] [--append-sitrep]` | Per-agent message statistics (with `stats history` sub for daily rollups). |
-
-### Wire Daemon (`c2c wire-daemon`)
-
-`c2c wire-daemon` manages background OCaml wire bridge daemon processes for
-claude/codex/opencode PTY injection delivery. For kimi delivery, use
-`c2c-deliver-inbox --client kimi` instead (see above). State is stored in
-`~/.local/share/c2c/wire-daemons/` (one pidfile + log per session).
-
-| Subcommand | Description |
-|------------|-------------|
-| `wire-daemon start --session-id S [--alias A] [--interval N]` | Spawn a detached wire bridge daemon. |
-| `wire-daemon stop --session-id S` | Send SIGTERM to the daemon. |
-| `wire-daemon status --session-id S [--json]` | Show running/stopped state and pid. |
-| `wire-daemon list [--json]` | List all known wire daemons. |
-| `wire-daemon format-prompt\|spool-read\|spool-write` | Diagnostic helpers. |
-
-`c2c health` reports wire daemon state automatically when the session alias contains `kimi`.
-
 ### Cross-machine relay (`c2c relay …`)
 
 | Subcommand | Description |

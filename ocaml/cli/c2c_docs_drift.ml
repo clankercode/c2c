@@ -189,7 +189,7 @@ let fallback_commands = SS.of_list [
   "set-compact"; "clear-compact"; "open-pending-reply"; "check-pending-reply";
   "start"; "stop"; "restart"; "install"; "init"; "register"; "sweep";
   "sweep-dryrun"; "refresh-peer"; "broker-gc"; "monitor"; "screen";
-  "wire-daemon"; "deliver-inbox"; "agent"; "roles"; "config"; "repo";
+  "deliver-inbox"; "agent"; "roles"; "config"; "repo";
   "memory"; "peer-pass"; "worktree"; "sticker"; "sitrep"; "room";
   "relay"; "skills"; "gui"; "mcp"; "serve"; "hook"; "inject";
   "restart-self"; "reset-thread"; "diag"; "commands"; "completion";

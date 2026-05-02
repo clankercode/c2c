@@ -52,8 +52,9 @@ These are Max's target experiences, verbatim:
   `--session <ses_*>` on restart to continue the exact conversation.
   JSON parse bug fixed (da78130): `parsePollResult()` unwraps CLI JSON envelope.
   HTTP permission resolution v2 (9ee7383): supervisor DM → 10min timeout → approve/reject API.
-- **Kimi**: `c2c start kimi` managed harness + Wire bridge (`kimi --wire` JSON-RPC).
-  PTY wake deprecated; Wire bridge proven; kimi-nova↔opencode-local DM roundtrip proven.
+- **Kimi**: `c2c start kimi` managed harness + notification-store delivery (`C2c_kimi_notifier`).
+  PTY wake deprecated; wire bridge removed (replaced by notification-store push);
+  kimi-nova↔opencode-local DM roundtrip proven.
   All Kimi↔{Claude, Codex, OpenCode} pairs proven 2026-04-13.
 - **Rooms** ✓: `join_room`, `send_room`, `room_history`, `my_rooms`,
   `list_rooms`, `leave_room`. `swarm-lounge` is active. Sweep evicts dead
@@ -98,15 +99,10 @@ These are Max's target experiences, verbatim:
   Direct `/dev/pts/<N>` slave writes are display-side only and must not be used
   as an interactive input path (see finding
   2026-04-13T16-12-18Z-codex-kimi-pts-slave-write-not-input.md).
-- **Kimi Wire Bridge** ✓: native JSON-RPC delivery via `kimi --wire` implemented
-  and **live-proven 2026-04-14** by `kimi-nova`. Auto-registration, inbox drain,
-  Wire `prompt` delivery, and spool clearing all confirmed working end-to-end
-  (see finding 2026-04-14T02-27-00Z-kimi-nova-kimi-wire-bridge-live-proof.md).
-  Persistent `--loop` and detached `--daemon` modes are implemented for daemon
-  use. `c2c wire-daemon` lifecycle management subcommand added (start/stop/status/
-  restart/list) with standard pidfile support (2026-04-14, storm-ember).
-  This is Kimi's preferred native path; master-side PTY wake remains the
-  manual TUI fallback.
+- **Kimi Wire Bridge** REMOVED: was native JSON-RPC delivery via `kimi --wire`,
+  live-proven 2026-04-14. Replaced by notification-store delivery (`C2c_kimi_notifier`)
+  which writes inbound messages as notification JSON files. Wire bridge code and
+  `c2c wire-daemon` CLI group deleted in the kimi-wire-bridge-cleanup slice.
 - **Crush DM proof** ✓: `c2c setup crush` MCP config proven. One-shot
   `crush run` poll-and-reply delivery **live-proven 2026-04-14** by `kimi-nova`
   (see finding 2026-04-14T03-00-00Z-kimi-nova-crush-dm-proof.md). The

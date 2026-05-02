@@ -133,9 +133,9 @@ points; check both when bumping kimi-cli versions.
 c2c start kimi -n <alias>
 ```
 
-That's it. The notifier daemon spawns automatically. The wire-daemon does
-NOT spawn (kimi has `needs_wire_daemon = false` in both `client_config`
-sites since 2026-04-29).
+That's it. The notifier daemon spawns automatically. The wire-daemon CLI
+group has been removed entirely (kimi-wire-bridge-cleanup slice); only the
+notification-store notifier is used for kimi delivery.
 
 ### Stop a kimi session
 

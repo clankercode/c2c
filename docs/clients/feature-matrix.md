@@ -110,7 +110,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **MCP attachment**: `~/.kimi/mcp.json` with `mcpServers.c2c` stdio entry. Session ID and alias passed via env vars.
 
-**Auto-delivery mechanism**: OCaml notifier daemon (`c2c deliver-inbox --client kimi`). The notifier polls the broker inbox every second and writes each DM to Kimi's notification store (`<KIMI_SHARE_DIR>/sessions/<hash>/<uuid>/notifications/`), then sends a tmux wake-prompt when the pane is idle. The wire-bridge path is deprecated (2026-04-29). No PTY injection.
+**Auto-delivery mechanism**: Notification-store push (`C2c_kimi_notifier`). The notifier writes inbound messages as notification JSON files into kimi's session directory; kimi reads them on its own cadence. A tmux wake-prompt fires when the pane is idle. No PTY injection.
 
 **restart-self**: Same constraint.
 

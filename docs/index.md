@@ -105,7 +105,7 @@ Then restart your client.
 | Claude Code | PostToolUse hook (near-real-time) | `c2c init` (or `c2c install claude` outside agent) |
 | Codex | forked TUI sideband (`--xml-input-fd`) + poll fallback | `c2c install codex` for MCP config; `c2c start codex` for managed sessions. **Footgun**: needs the alpha codex binary that advertises `--xml-input-fd`; wire `[default_binary] codex = "/path/to/alpha"` in `.c2c/config.toml` if your PATH default lacks it (see root `CLAUDE.md`). |
 | OpenCode | native TypeScript plugin | `c2c init` (or `c2c install opencode` outside agent) |
-| Kimi | Wire bridge (no PTY) | `c2c install kimi` writes MCP config + polling only — **`c2c start kimi` (or `c2c wire-daemon`) is required for actual auto-delivery**. |
+| Kimi | Notification-store push | `c2c install kimi` writes MCP config; `c2c start kimi` spawns the notifier daemon for auto-delivery. |
 | Crush | experimental, not in parity matrix | `c2c install crush` + `c2c start crush` (best-effort; lacks context compaction) |
 
 ---
