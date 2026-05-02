@@ -5598,6 +5598,9 @@ let cmd_restart ?(session_id_override : string option)
         { updated with last_launch_at = Some (Unix.gettimeofday ()) }
   in
   write_config cfg;
+  (* Hardening B: re-write expected-cwd so the new outer process's cwd
+     (wherever restart was run from) is captured as the new canonical path. *)
+  write_expected_cwd ~name;
   (* Kill inner — SIGTERM to whole process group for TUI clients (inner ran with
      setpgid 0 0 so PGID == inner PID; kill(-pid) kills the whole group).
      codex-headless stays in outer's PGID so use positive kill(pid). *)

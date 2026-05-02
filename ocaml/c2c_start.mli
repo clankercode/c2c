@@ -107,6 +107,11 @@ val instances_dir : string
 val instance_dir : string -> string
 (** [instance_dir name] returns the state directory for a named instance. *)
 
+val expected_cwd_path : string -> string
+(** [expected_cwd_path name] returns the path to the expected-cwd file for [name].
+    The file lives at [<instances_dir>/<name>/expected-cwd] and is written by
+    [write_expected_cwd] at startup and restart. *)
+
 val config_path : string -> string
 (** [config_path name] returns the config.json path for an instance. *)
 

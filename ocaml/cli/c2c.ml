@@ -2045,7 +2045,7 @@ let health_cmd =
 
 (* --- subcommand: status --------------------------------------------------- *)
 
-type managed_instance_view =
+ type managed_instance_view =
   { mi_name : string
   ; mi_client : string
   ; mi_status : string
@@ -2053,6 +2053,7 @@ type managed_instance_view =
   ; mi_pid : int option
   ; mi_created_at : float option
   ; mi_tmux_location : string option
+  ; mi_expected_cwd : string option
   }
 
 let read_managed_instances () =
@@ -2145,13 +2146,24 @@ let read_managed_instances () =
               with _ -> None)
             else None
           in
-          { mi_name = name
+           let expected_cwd =
+             let ec_path = C2c_start.expected_cwd_path name in
+             if Sys.file_exists ec_path then
+               (try
+                  let ic = open_in ec_path in
+                  Fun.protect ~finally:(fun () -> close_in ic)
+                    (fun () -> try Some (String.trim (input_line ic)) with End_of_file -> None)
+                with _ -> None)
+             else None
+           in
+           { mi_name = name
           ; mi_client = client
           ; mi_status = status
           ; mi_delivery_mode = delivery_mode
           ; mi_pid = pid
           ; mi_created_at = created_at
           ; mi_tmux_location = tmux_location
+          ; mi_expected_cwd = expected_cwd
           })
 
 let safe_is_directory path =
@@ -7028,6 +7040,7 @@ let instances_cmd =
       ; ("outer_alive", `Bool (inst.mi_status = "running"))
       ; ("outer_pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
       ; ("tmux_location", match inst.mi_tmux_location with Some s -> `String s | None -> `Null)
+      ; ("expected_cwd", match inst.mi_expected_cwd with Some s -> `String s | None -> `Null)
       ]
     in
     let fields = match inst.mi_pid with
@@ -7061,8 +7074,15 @@ let instances_cmd =
           List.iter (fun (inst : managed_instance_view) ->
             let pid_str = match inst.mi_pid with Some n -> Printf.sprintf " (pid %d)" n | None -> "" in
             let tmux_str = match inst.mi_tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
-            Printf.printf "  %-20s %-10s %-12s %s%s%s\n"
-              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str
+            let cwd_str = match inst.mi_expected_cwd with
+              | Some c ->
+                  let len = String.length c in
+                  let display = if len > 18 then "..." ^ String.sub c (len - 18) 18 else c in
+                  " {" ^ display ^ "}"
+              | None -> ""
+            in
+            Printf.printf "  %-20s %-10s %-12s %s%s%s%s\n"
+              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str cwd_str
           ) displayed
       end
 
