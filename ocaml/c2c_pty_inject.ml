@@ -104,3 +104,90 @@ let pty_deliver_loop_daemon
   Printf.printf "[c2c-deliver-inbox] PTY: finished, %d total delivered\n%!"
     !total_delivered;
   flush stdout
+
+(* xml_deliver_loop_daemon: daemon-mode XML sideband delivery loop for Codex.
+   Polls the broker inbox every poll_interval seconds and writes XML sideband
+   frames to the given output fd. Codex reads these via --xml-input-fd.
+
+   The XML frame format (per Codex client spec) is:
+     <message type="user" queue="AfterAnyItem"><c2c event="message" from="..." to="...">...</c2c></message>
+
+   queue="AfterAnyItem" holds the message until a tool call completes,
+   preventing mid-turn validation errors in Codex's active turn controller.
+
+   Runs until watched_pid exits (if provided) or max_iterations reached. *)
+let xml_deliver_loop_daemon
+    ~(out_fd : Unix.file_descr)
+    ~(broker_root : string)
+    ~(session_id : string)
+    ~(watched_pid : int option)
+    ~(poll_interval : float)
+    ~(max_iterations : int option)
+    : unit =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let oc = Unix.out_channel_of_descr out_fd in
+  let iterations = ref 0 in
+  let total_delivered = ref 0 in
+  let xml_escape (s : string) : string =
+    let b = Bytes.make (String.length s * 6) '\000' in
+    let j = ref 0 in
+    for i = 0 to String.length s - 1 do
+      let c = s.[i] in
+      match c with
+      | '&' ->
+        Bytes.blit_string "&amp;" 0 b !j 5; j := !j + 5
+      | '<' ->
+        Bytes.blit_string "&lt;" 0 b !j 4; j := !j + 4
+      | '>' ->
+        Bytes.blit_string "&gt;" 0 b !j 4; j := !j + 4
+      | _ ->
+        Bytes.set b !j c; incr j
+    done;
+    Bytes.sub_string b 0 !j
+  in
+  let rec loop () =
+    match max_iterations with
+    | Some m when !iterations >= m ->
+      Printf.printf "[c2c-deliver-inbox] XML: max iterations (%d) reached, stopping\n%!" m;
+      flush stdout
+    | _ ->
+      (match watched_pid with
+       | Some wp when not (pid_is_alive wp) ->
+         Printf.printf "[c2c-deliver-inbox] XML: watched pid %d exited, stopping\n%!" wp;
+         flush stdout;
+         ()
+       | _ ->
+         incr iterations;
+         let messages =
+           C2c_mcp.Broker.drain_inbox ~drained_by:"xml" broker ~session_id
+         in
+         List.iter
+           (fun (msg : C2c_mcp.message) ->
+              let content_escaped = xml_escape msg.content in
+              let xml_frame =
+                Printf.sprintf
+                  "<message type=\"user\" queue=\"AfterAnyItem\"><c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c></message>\n"
+                  msg.from_alias session_id content_escaped
+              in
+              output_string oc xml_frame;
+              flush oc;
+              Printf.printf "[c2c-deliver-inbox] XML: delivered from %s: %s\n%!"
+                msg.from_alias
+                (String.sub msg.content 0
+                   (min (String.length msg.content) 80)))
+           messages;
+         total_delivered := !total_delivered + List.length messages;
+         (if List.length messages > 0 then
+            Printf.printf "[c2c-deliver-inbox] XML: iteration %d: %d message(s)\n%!"
+              !iterations (List.length messages)
+          else
+            Printf.printf "[c2c-deliver-inbox] XML: iteration %d: no messages\n%!"
+              !iterations);
+         flush stdout;
+         ignore (Unix.select [] [] [] poll_interval);
+         loop ())
+  in
+  loop ();
+  Printf.printf "[c2c-deliver-inbox] XML: finished, %d total delivered\n%!"
+    !total_delivered;
+  flush stdout

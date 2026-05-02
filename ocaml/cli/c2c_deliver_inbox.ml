@@ -161,7 +161,7 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
      flush stderr;
      exit 1);
   let session_id = Option.get session_id in
-  (* S4: if a PTY master fd was provided, use PTY delivery *)
+  (* S4/S5: delivery path selection based on available fd *)
   match args.pty_master_fd with
   | Some fd ->
       let master_fd : Unix.file_descr = Obj.magic fd in
@@ -173,7 +173,19 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
         ~poll_interval:args.interval
         ~max_iterations:args.max_iterations
   | None ->
-      let iterations = ref 0 in
+      (* S5: XML sideband delivery via --xml-output-fd for Codex *)
+      (match args.xml_output_fd with
+       | Some fd ->
+           let out_fd : Unix.file_descr = Obj.magic fd in
+           C2c_pty_inject.xml_deliver_loop_daemon
+             ~out_fd
+             ~broker_root:args.broker_root
+             ~session_id
+             ~watched_pid
+             ~poll_interval:args.interval
+             ~max_iterations:args.max_iterations
+       | None ->
+           let iterations = ref 0 in
       let total_delivered = ref 0 in
       let max_iterations = args.max_iterations in
       let is_kimi = args.client = "kimi" in
@@ -233,9 +245,9 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
              loop ())
       in
       loop ();
-      Printf.printf "[c2c-deliver-inbox] loop finished after %d iterations, %d total delivered\n%!"
-        !iterations !total_delivered;
-      flush stdout
+          Printf.printf "[c2c-deliver-inbox] loop finished after %d iterations, %d total delivered\n%!"
+            !iterations !total_delivered;
+          flush stdout)
 
 (* ---------------------------------------------------------------------------
  * CLI argument parsing
