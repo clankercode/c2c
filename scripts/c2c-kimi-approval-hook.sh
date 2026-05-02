@@ -109,6 +109,10 @@ fi
 # #484: Register token with MCP pending-reply system for auth-binding.
 # Gives the broker session-derived identity, supervisor-list validation,
 # and TTL enforcement.  Non-fatal: text-based flow still works without it.
+# NOTE: This standalone script uses the legacy single-reviewer model
+# ($REVIEWER), so only that alias is registered as supervisor.  The
+# embedded copy in c2c_kimi_hook.ml passes the full $authorizers_csv
+# from repo.json supervisors[].  "Rough sync" per slice 2 convention.
 "$C2C_BIN" open-pending-reply "$TOKEN" \
   --kind permission \
   --supervisors "$REVIEWER" 2>/dev/null || true
