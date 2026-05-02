@@ -67,7 +67,8 @@ they don't regress silently.
 | `nudge_enqueue` | LOW | nudge diagnostic | #335 |
 | `nudge_tick` | LOW | nudge diagnostic | #335 |
 | `dm_enqueue` | MED | delivery audit | #488 |
-| `session_id_canonicalized` | MED | session_id≠alias canonicalization | #529 |
+| `json_cap_exceeded` | MED | JSON read-cap triggered | Slice F follow-up |
+| `session_id_differs_from_alias` | MED | session_id≠alias on registration | #529 |
 | `relay_pin_delete` | MED | operator pin management | #432 Slice D |
 | `relay_pin_rotate` | MED | operator pin management | #432 Slice D |
 | `rpc` | LOW | RPC audit | pre-existing (always present) |
@@ -716,7 +717,7 @@ investigation.
 
 ---
 
-### `session_id_canonicalized`
+### `json_cap_exceeded`
 
 **Severity**: MED
 
@@ -725,28 +726,57 @@ investigation.
 ```json
 {
   "ts": <float>,
-  "event": "session_id_canonicalized",
-  "original_session_id": "<session-id-passed-to-register>",
-  "canonical_session_id": "<alias-value>",
-  "alias": "<alias>"
+  "event": "json_cap_exceeded",
+  "file": "<path-to-file>",
+  "max_bytes": <int>
 }
 ```
 
-**Fires when**: a fresh registration (no prior entry for this session_id)
-passes a `session_id` that differs from `alias`. The broker canonicalizes
-`session_id := alias` and logs this event. A conflicting registration with
-the same alias but a different session_id is evicted first, and its
-inbox messages are migrated to the new canonical session_id.
+**Fires when**: a JSON file read via `read_json_file` exceeds the 64 KiB
+cap and the read returns the default value instead. This is a defensive
+measure against operator-controlled but potentially attacker-adjacent files
+(registration blobs, relay state, config) that could be written with
+unbounded size.
 
-**File**: `ocaml/c2c_broker.ml` `register` function (~line 1720).
+**File**: `ocaml/c2c_broker.ml` `log_json_cap_exceeded` (~line 37)
+and call sites at ~lines 67, 685, 2861.
 
-**Operational meaning**: audit trail for the #529 session_id≠alias hygiene
-fix. Every fresh registration with a mismatched session_id is now canonicalized
-automatically, ensuring inbox filenames always match the alias. This event
-lets operators audit when canonicalization occurred and what the original
-session_id was.
+**Operational meaning**: operators need observability when the cap triggers
+to distinguish "read returned default" from "read actually succeeded with
+a large but valid file." One line per capped read.
 
-**Cross-link**: #529 (session_id=alias enforcement).
+**Cross-link**: Slice F follow-up (fern non-blocking note).
+
+---
+
+### `session_id_differs_from_alias`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "session_id_differs_from_alias",
+  "session_id": "<registered-session-id>",
+  "alias": "<registered-alias>"
+}
+```
+
+**Fires when**: a registration is created or updated where `session_id ≠
+alias`. The broker handles this correctly — senders resolve alias→session_id
+via the registry so both enqueue and drain use the same session_id-based
+path — but operators may see unexpected inbox filenames (e.g.
+`session-a.inbox.json` instead of `storm-ember.inbox.json`).
+
+**File**: `ocaml/c2c_broker.ml` `register` function (~line 1778).
+
+**Operational meaning**: forensic visibility into when this configuration
+occurs. The inbox filename is based on session_id, so when they differ,
+operators may see unexpected filenames.
+
+**Cross-link**: #529 (session_id=alias hygiene).
 
 ---
 
