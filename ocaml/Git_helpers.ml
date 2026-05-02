@@ -60,28 +60,7 @@ let find_real_git () =
   in
   search dirs
 
-(** C2C_PROBE_GIT_INVOCATIONS=1 telemetry counter.
-    Counts every call to [git_first_line] (i.e., every git subprocess spawn)
-    and writes the running total to stderr so it appears in broker.log
-    or the outer-process monitor output.  Low-overhead: one counter compare
-    and optional fprintf per git call when the env var is set. *)
-let probe_count =
-  if Sys.getenv_opt "C2C_PROBE_GIT_INVOCATIONS" = Some "1"
-  then ref 0
-  else ref (-1)  (* sentinel: counter disabled *)
-
-let maybe_log_git_probe () =
-  match !probe_count with
-  | n when n >= 0 ->
-      incr probe_count;
-      if n mod 10 = 0 || n = 1  (* log on 1st and every 10th thereafter *)
-      then Printf.fprintf stderr "[git-probe] pid=%d count=%d\n%!" (Unix.getpid ()) !probe_count
-  | _ -> ()
-
-let git_probe_count () = if !probe_count < 0 then None else Some !probe_count
-
 let git_first_line args =
-  maybe_log_git_probe ();
   let git_path = find_real_git () in
   let argv = Array.of_list (git_path :: args) in
   match Unix.open_process_args_in git_path argv with
@@ -149,8 +128,6 @@ let git_all_lines args =
       let raw = List.rev_map String.trim !lines in
       List.filter (fun s -> s <> "") raw
   | exception _ -> []
-
-
 
 (** Extract the email from a [Co-authored-by:] trailer value of the form
     ["Name <email>"]. Returns the trimmed email, or [None] if no
