@@ -11,6 +11,7 @@ let b64url_nopad s =
 (* Sign contexts — must match spec §3.4 *)
 let request_sign_ctx = "c2c/v1/request"
 let register_sign_ctx = "c2c/v1/register"
+let receipt_sign_ctx = "c2c/v1/register-receipt"
 let room_send_sign_ctx = "c2c/v1/room-send"
 
 (* Build the canonical request blob per spec §5.1. Fields are joined
