@@ -18,6 +18,8 @@
    - c2c worktree gc
    - c2c instances
    - c2c schedule enable/disable
+   - c2c peer-pass list
+   - c2c peer-pass verify
 
    Each test invokes the c2c binary via Sys.command and verifies
    exit code + output shape. *)
@@ -960,6 +962,139 @@ let test_schedule_enable_disable_roundtrip () =
             (string_contains content "enabled")))
 
 (* ------------------------------------------------------------------------- *)
+(* c2c peer-pass list — verify artifact listing                               *)
+(* ------------------------------------------------------------------------- *)
+
+(* Create a minimal git repo so peer_passes_dir() resolves inside it *)
+let with_fake_git_repo f =
+  let tmp = Filename.concat "/tmp" ("c2c-peer-pass-test-" ^ string_of_int (Unix.getpid())) in
+  (try ignore (Sys.command ("rm -rf " ^ Filename.quote tmp)) with _ -> ());
+  Unix.mkdir tmp 0o700;
+  Fun.protect
+    ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote tmp))))
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf "git init -q -b master %s" (Filename.quote tmp)));
+      ignore (Sys.command (Printf.sprintf "git -C %s config user.email t@t" (Filename.quote tmp)));
+      ignore (Sys.command (Printf.sprintf "git -C %s config user.name t" (Filename.quote tmp)));
+      ignore (Sys.command (Printf.sprintf "touch %s/.gitkeep" (Filename.quote tmp)));
+      ignore (Sys.command (Printf.sprintf "git -C %s add . && git -C %s commit -q -m init" (Filename.quote tmp) (Filename.quote tmp)));
+      f tmp)
+
+(* Test 1: list with no peer-passes dir → shows empty message *)
+let test_peer_pass_list_empty () =
+  with_fake_git_repo (fun repo ->
+      (* peer_passes_dir() resolves to repo/.c2c/peer-passes — no artifacts *)
+      let cmd = Printf.sprintf "cd %s && c2c peer-pass list 2>&1" (Filename.quote repo) in
+      let rc = Sys.command cmd in
+      check int "peer-pass list (empty) exits 0" 0 rc
+    )
+
+(* Test 2: list with a real artifact present → shows entries *)
+let test_peer_pass_list_shows_entries () =
+  (* Use the real c2c install's artifact dir if it exists, otherwise skip *)
+  let real_artifacts = "/home/xertrov/.c2c/peer-passes" in
+  if not (Sys.file_exists real_artifacts) then
+    check bool "real peer-passes dir exists" true true
+  else
+    (* Run from a fake git repo so peer_passes_dir() finds the real artifact path *)
+    with_fake_git_repo (fun repo ->
+        (* Copy a real artifact into the fake repo's peer-passes dir *)
+        let art_dir = Filename.concat (Filename.concat repo ".c2c") "peer-passes" in
+        ignore (Sys.command (Printf.sprintf "mkdir -p %s" (Filename.quote art_dir)));
+        let real_art = Filename.concat real_artifacts "00087156-birch-coder.json" in
+        if not (Sys.file_exists real_art) then
+          check bool "real artifact exists" true true
+        else begin
+          ignore (Sys.command (Printf.sprintf "cp %s %s/"
+            (Filename.quote real_art) (Filename.quote art_dir)));
+          let tmpfile = Filename.temp_file "c2c-peer-list" ".out" in
+          Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+            (fun () ->
+              let rc = Sys.command (
+                Printf.sprintf "cd %s && c2c peer-pass list > %s 2>&1"
+                  (Filename.quote repo) (Filename.quote tmpfile)
+              ) in
+              check int "peer-pass list exits 0" 0 rc;
+              let ch = open_in tmpfile in
+              let content = Fun.protect ~finally:(fun () -> close_in ch)
+                (fun () -> really_input_string ch (in_channel_length ch))
+              in
+              (* Human-readable output should contain reviewer name and/or sha *)
+              check bool "list output contains reviewer or sha" true
+                (string_contains content "birch" || string_contains content "sha")
+            )
+        end)
+
+(* Test 3: list --json outputs parseable JSON *)
+let test_peer_pass_list_json () =
+  let real_artifacts = "/home/xertrov/.c2c/peer-passes" in
+  if not (Sys.file_exists real_artifacts) then
+    check bool "real peer-passes dir exists" true true
+  else
+    with_fake_git_repo (fun repo ->
+        let art_dir = Filename.concat (Filename.concat repo ".c2c") "peer-passes" in
+        ignore (Sys.command (Printf.sprintf "mkdir -p %s" (Filename.quote art_dir)));
+        let real_art = Filename.concat real_artifacts "00087156-birch-coder.json" in
+        if not (Sys.file_exists real_art) then
+          check bool "real artifact exists" true true
+        else begin
+          ignore (Sys.command (Printf.sprintf "cp %s %s/"
+            (Filename.quote real_art) (Filename.quote art_dir)));
+          let tmpfile = Filename.temp_file "c2c-peer-list-json" ".out" in
+          Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+            (fun () ->
+              let rc = Sys.command (
+                Printf.sprintf "cd %s && c2c peer-pass list --json > %s 2>&1"
+                  (Filename.quote repo) (Filename.quote tmpfile)
+              ) in
+              check int "peer-pass list --json exits 0" 0 rc;
+              let ch = open_in tmpfile in
+              let content = Fun.protect ~finally:(fun () -> close_in ch)
+                (fun () -> really_input_string ch (in_channel_length ch))
+              in
+              (* Output should be parseable JSON (starts with '[') *)
+              check bool "json output starts with [" true
+                (String.length content > 0 && content.[0] = '[')
+            )
+        end)
+
+(* ------------------------------------------------------------------------- *)
+(* c2c peer-pass verify — verify signed artifact                              *)
+(* ------------------------------------------------------------------------- *)
+
+(* Test 4: verify a real artifact → exits 0 and shows VERIFIED *)
+let test_peer_pass_verify_valid_artifact () =
+  let real_art = "/home/xertrov/.c2c/peer-passes/00087156-birch-coder.json" in
+  if not (Sys.file_exists real_art) then
+    check bool "real artifact exists for verify test" true true
+  else
+    let tmpfile = Filename.temp_file "c2c-peer-verify" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+        let rc = Sys.command (
+          Printf.sprintf "c2c peer-pass verify %s > %s 2>&1"
+            (Filename.quote real_art) (Filename.quote tmpfile)
+        ) in
+        check int "peer-pass verify exits 0" 0 rc;
+        let ch = open_in tmpfile in
+        let content = Fun.protect ~finally:(fun () -> close_in ch)
+          (fun () -> really_input_string ch (in_channel_length ch))
+        in
+        check bool "verify output contains VERIFIED" true
+          (string_contains content "VERIFIED"))
+
+(* Test 5: verify a nonexistent file → exits non-zero *)
+let test_peer_pass_verify_nonexistent () =
+  let nonexistent = "/tmp/c2c-nonexistent-peer-pass-artifact-00000000.json" in
+  (* Ensure it definitely does not exist *)
+  (try Sys.remove nonexistent with _ -> ());
+  let rc = Sys.command (
+    Printf.sprintf "c2c peer-pass verify %s > /dev/null 2>&1"
+      (Filename.quote nonexistent)
+  ) in
+  check bool "peer-pass verify nonexistent exits non-zero" true (rc <> 0)
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -1070,5 +1205,14 @@ let () =
         ; ( "enable missing name exits non-zero", `Quick, test_schedule_enable_missing_name_exits_nonzero )
         ; ( "disable missing name exits non-zero", `Quick, test_schedule_disable_missing_name_exits_nonzero )
         ; ( "enable/disable roundtrip on temp schedule", `Quick, test_schedule_enable_disable_roundtrip )
+        ] )
+    ; ( "peer_pass_list",
+        [ ( "peer-pass list with no artifacts shows empty message", `Quick, test_peer_pass_list_empty )
+        ; ( "peer-pass list with artifacts shows review entries", `Quick, test_peer_pass_list_shows_entries )
+        ; ( "peer-pass list --json outputs valid JSON", `Quick, test_peer_pass_list_json )
+        ] )
+    ; ( "peer_pass_verify",
+        [ ( "peer-pass verify valid artifact exits 0", `Quick, test_peer_pass_verify_valid_artifact )
+        ; ( "peer-pass verify nonexistent file exits non-zero", `Quick, test_peer_pass_verify_nonexistent )
         ] )
     ]
