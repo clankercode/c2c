@@ -1508,29 +1508,59 @@ let instances_dir =
 
 let mkdir_p dir = C2c_io.mkdir_p dir
 
-let write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path =
-  let oc = open_out shim_bin_path in
+let write_git_shim_atomic ~(shim_bin_path : string) ~(c2c_bin_path : string)
+    ~(real_git_path : string) : unit =
+  (* Atomic install: write to a temp file in the same directory, fsync it,
+     then rename to the target path. Same pattern as write_json_file_atomic.
+     Temp file is in the same directory so fsync guarantees rename sees it
+     on the same filesystem. Best-effort fsync — EINVAL on unusual filesystems
+     is silently ignored. *)
   let q = Filename.quote in
-  Fun.protect ~finally:(fun () -> close_out oc) @@ fun () ->
-  output_string oc "#!/bin/bash\n";
-  output_string oc
-    "# Delegation shim: git attribution for managed sessions.\n";
-  output_string oc
-    "# Delegates allowed operations to git-pre-reset (pre-reset guard) on PATH.\n";
-  output_string oc
-    "# git-pre-reset is installed in the same directory and handles dangerous-op\n";
-  output_string oc
-    "# guard (reset --hard, commit on main, checkout -f on main).\n";
-  output_string oc "if [ \"${C2C_GIT_SHIM_ACTIVE:-}\" = \"1\" ]; then\n";
-  output_string oc (Printf.sprintf "  exec %s \"$@\"\n" (q real_git_path));
-  output_string oc "fi\n";
-  output_string oc "export C2C_GIT_SHIM_ACTIVE=1\n";
-  (* Delegate to git-pre-reset (the pre-reset/pre-commit guard) for allowed
-     operations. git-pre-reset is installed alongside this shim in the same
-     directory (swarm_git_shim_dir) and handles the dangerous-op guard.
-     Using just "git-pre-reset" relies on PATH ordering: the shim dir
-     is prepended to PATH by build_inner_env, so git-pre-reset is found first. *)
-  output_string oc "exec git-pre-reset \"$@\"\n"
+  let tmp = shim_bin_path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc =
+    open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_text ] 0o600 tmp
+  in
+  let cleanup_tmp () = try Unix.unlink tmp with _ -> () in
+  (try
+     Fun.protect
+       ~finally:(fun () -> try close_out oc with _ -> ())
+       (fun () ->
+          output_string oc "#!/bin/bash\n";
+          output_string oc
+            "# Delegation shim: git attribution for managed sessions.\n";
+          output_string oc
+            "# Delegates allowed operations to git-pre-reset (pre-reset guard) on PATH.\n";
+          output_string oc
+            "# git-pre-reset is installed in the same directory and handles dangerous-op\n";
+          output_string oc
+            "# guard (reset --hard, commit on main, checkout -f on main).\n";
+          output_string oc "if [ \"${C2C_GIT_SHIM_ACTIVE:-}\" = \"1\" ]; then\n";
+          output_string oc (Printf.sprintf "  exec %s \"$@\"\n" (q real_git_path));
+          output_string oc "fi\n";
+          output_string oc "export C2C_GIT_SHIM_ACTIVE=1\n";
+          (* Delegate to git-pre-reset (the pre-reset/pre-commit guard) for allowed
+             operations. git-pre-reset is installed alongside this shim in the same
+             directory (swarm_git_shim_dir) and is found via PATH ordering. *)
+          output_string oc "exec git-pre-reset \"$@\"\n";
+          flush oc;
+          (try Unix.fsync (Unix.descr_of_out_channel oc)
+           with Unix.Unix_error _ -> ()))
+   with e ->
+     cleanup_tmp ();
+     raise e);
+  try Unix.rename tmp shim_bin_path
+  with e ->
+    cleanup_tmp ();
+    raise e
+
+(* smoke-check: run bash -n on the installed shim. Refuse to proceed if the
+   file is syntax-broken. This guards against a partial write (from a previous
+   crash) leaving a broken shim that then gets installed. *)
+let shim_syntax_check (path : string) : unit =
+  let cmd = Printf.sprintf "bash -n %s" (Filename.quote path) in
+  let rc = Sys.command cmd in
+  if rc <> 0 then
+    failwith ("shim_syntax_check failed: " ^ path)
 
 (* ----------------------------------------------------------------------------
  * #462 — swarm-wide git-shim install.
@@ -1586,7 +1616,8 @@ let ensure_swarm_git_shim_installed () =
   let shim_bin_path = dir // "git" in
   let c2c_bin_path = current_c2c_command () in
   let real_git_path = Git_helpers.find_real_git () in
-  write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path;
+  write_git_shim_atomic ~shim_bin_path ~c2c_bin_path ~real_git_path;
+  shim_syntax_check shim_bin_path;
   (try Unix.chmod shim_bin_path 0o755 with _ -> ());
   (* Also install the pre-reset guard (git-pre-reset) from the repo's
      git-shim.sh into the same shim directory. Idempotent. *)
@@ -3962,7 +3993,8 @@ let run_outer_loop ~(name : string) ~(client : string)
         let shim_bin_path = shim_bin_dir // "git" in
         let c2c_bin_path = current_c2c_command () in
         let real_git_path = Git_helpers.find_real_git () in
-        write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path;
+        write_git_shim_atomic ~shim_bin_path ~c2c_bin_path ~real_git_path;
+        shim_syntax_check shim_bin_path;
         (try Unix.chmod shim_bin_path 0o755 with _ -> ());
         (* Also install git-pre-reset in the per-instance dir for
            defense-in-depth — matches ensure_swarm_git_shim_installed. *)
