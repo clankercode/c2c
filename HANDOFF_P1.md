@@ -176,7 +176,7 @@ still shows `status: open`. Should be updated to `status: fixed — c849031`.
    ```
    If the aliases are truly dead (no outer loop), do:
    ```bash
-   pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"
+    pgrep -a -f "run-(kimi|codex|opencode|claude)-inst-outer"
    python3 c2c_broker_gc.py --once   # only after confirming no outer loops
    ```
 

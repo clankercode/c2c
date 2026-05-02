@@ -45,4 +45,5 @@ Added `c2c configure-kimi` and `c2c setup kimi` commands. Kimi Code CLI has nati
 
 ## add support for `crush`
 status: done
-Added `c2c configure-crush` and `c2c setup crush` commands. Crush CLI has native MCP support via `~/.config/crush/crush.json` under a `mcp` key. The command writes a `c2c` stdio server entry with the same env configuration. Wrapper script `c2c-configure-crush` installed by `c2c install`. Quality tier: full parity — Crush supports stdio/http/sse transports and uses Charmbracelet's standard JSON config.
+~~Added `c2c configure-crush` and `c2c setup crush` commands. Crush CLI has native MCP support via `~/.config/crush/crush.json` under a `mcp` key. The command writes a `c2c` stdio server entry with the same env configuration. Wrapper script `c2c-configure-crush` installed by `c2c install`. Quality tier: full parity — Crush supports stdio/http/sse transports and uses Charmbracelet's standard JSON config.~~
+**DEPRECATED (#357 follow-up, 2026-05-02):** `c2c start crush` is no longer available. Crush is no longer a first-class c2c client. `c2c configure-crush` and the Crush setup/install commands are removed.
