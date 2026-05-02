@@ -13,7 +13,7 @@ Use case: when a user (human) chats to their agents, the agents should see the u
 ## Current envelope shape
 
 ```xml
-<c2c event="message" from="alice" alias="jungle-coder" source="broker" reply_via="c2c_send" action_after="continue">
+<c2c event="message" from="alice" to="jungle-coder" source="broker" reply_via="c2c_send" action_after="continue">
 hello jungle!
 </c2c>
 ```
@@ -21,7 +21,7 @@ hello jungle!
 ## Proposed envelope shape
 
 ```xml
-<c2c event="message" from="alice" alias="jungle-coder" source="broker" reply_via="c2c_send" action_after="continue" role="human">
+<c2c event="message" from="alice" to="jungle-coder" source="broker" reply_via="c2c_send" action_after="continue" role="human">
 hello jungle!
 </c2c>
 ```
@@ -29,7 +29,7 @@ hello jungle!
 Or, to express permissions directly:
 
 ```xml
-<c2c event="message" from="alice" alias="jungle-coder" source="broker" reply_via="c2c_send" action_after="continue" role="operator">
+<c2c event="message" from="alice" to="jungle-coder" source="broker" reply_via="c2c_send" action_after="continue" role="operator">
 hello jungle!
 </c2c>
 ```

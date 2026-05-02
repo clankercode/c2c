@@ -62,4 +62,4 @@ Early c2c experiments used PTY injection to communicate with running sessions. T
 | `claude_read_history.py` | Deprecated (Tier 4 / legacy) |
 | `c2c_inject.py` | Deprecated; moved to `deprecated/` |
 
-Wire format note: C2C traffic uses `<c2c event="message" from="<name>" alias="<alias>">...</c2c>`.
+Wire format note: C2C traffic uses `<c2c event="message" from="<sender>" to="<recipient>">...</c2c>`.

@@ -75,7 +75,7 @@ plus a relay container in the middle. This is the missing piece.
 - New `docker-tests/test_channel_push_envelope.py`.
 - Spawn `c2c start claude` (or a stubbed channel-capable client) in
   agent-b1 inside tmux, send DM from a1, capture pane, assert
-  `<c2c event="message" from="..." alias="...">` present.
+  `<c2c event="message" from="..." to="...">` present.
 - AC: envelope present + only one (no duplicate from watcher race).
 - Depends on: S1, tmux-in-container (S6).
 

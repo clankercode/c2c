@@ -135,7 +135,7 @@ recipient pubkey is known.
 
 **XML wrapper unchanged for the agent transcript.** When the broker
 delivers a decrypted message into the agent's transcript, it
-re-emits the legacy `<c2c event="message" from="…" alias="…">body</c2c>`
+re-emits the legacy `<c2c event="message" from="…" to="…">body</c2c>`
 form. No agent prompts change. The encryption is invisible to the
 LLM session — it's a broker-broker concern.
 

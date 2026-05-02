@@ -7,7 +7,7 @@ Status: DRAFT — design proposal, not yet sliced
 ## Problem
 
 Today a c2c message body is a single XML envelope with a string
-content payload (`<c2c event="message" from=… alias=…>BODY</c2c>`).
+content payload (`<c2c event="message" from=… to=…>BODY</c2c>`).
 That's fine for chat, but the swarm increasingly wants to share:
 
 - multi-KB code blobs (peer-PASS finding diffs, log excerpts)
@@ -69,7 +69,7 @@ carry zero, one, or multiple attachments. Body text remains
 the primary semantic content; attachments are sidecars.
 
 ```xml
-<c2c event="message" from="cairn" alias="lyra-quill"
+<c2c event="message" from="cairn" to="lyra-quill"
      source="broker" reply_via="c2c_send" action_after="continue">
 Here's the failing trace and a screenshot.
 <attachment
