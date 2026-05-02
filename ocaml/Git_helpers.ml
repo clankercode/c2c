@@ -35,7 +35,7 @@ let is_c2c_shim path =
 
     Env-var configuration:
     - C2C_GIT_SPAWN_WINDOW   float  sliding window in seconds  (default 3.0)
-    - C2C_GIT_SPAWN_MAX      int    max spawns per window      (default 5)
+    - C2C_GIT_SPAWN_MAX      int    max spawns per window      (default 15)
     - C2C_GIT_BACKOFF_SEC     float  backoff after trip (s)    (default 2.0) *)
 
 (** Current sliding-window counter state. *)
