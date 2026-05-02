@@ -11,6 +11,118 @@ open C2c_mcp_helpers
 open C2c_mcp_helpers_post_broker
 module Broker = C2c_broker
 
+(** Receipt-visible side-channel data produced by [verify_peer_pass_dm].
+    Available on [Allow] and [Warn] paths; callers include these fields
+    in the send receipt JSON so the sender can see peer-pass status. *)
+type pp_receipt_extras = {
+  pp_verification : [ `Ok of string | `Missing of string | `Invalid of string ] option;
+  pp_self_pass_warning : [ `Reject of string | `Warn of string ] option;
+}
+
+(** #450 S9: peer-pass verification pipeline extracted from [send].
+    Returns the verification decision for a peer-pass-bearing DM:
+    - [`Allow]       — message should be enqueued normally
+    - [`Reject of string] — message should be rejected (reason in string)
+    - [`Warn of string]   — message allowed but self-pass warning emitted
+
+    Also returns [pp_receipt_extras] carrying the raw [peer_pass_verification]
+    and [self_pass_warning] values needed to build the send receipt on the
+    [Allow] / [Warn] paths. These are irrelevant on the [Reject] path.
+
+    The function is pure modulo the broker log write on H2b reject and
+    the git-commit-author lookup in the self-pass suppression path. *)
+let verify_peer_pass_dm ~broker ~from_alias ~to_alias ~content
+  : [`Allow | `Reject of string | `Warn of string] * pp_receipt_extras =
+  let peer_pass_claim = Peer_review.claim_of_content content in
+  let self_pass_warning =
+    match check_self_pass_content ~from_alias content with
+    | None -> None
+    | Some msg ->
+        (* Cross-check: if the body claims a peer-PASS for
+           a SHA whose git author != from_alias, this is a
+           cross-agent review announcement, not a self-
+           pass. Suppress the warning. *)
+         let sha_author_differs_from_sender =
+           (* Reset the circuit breaker before the git spawn so
+              prior activity in the same process doesn't cause
+              this check to return None (false positive: the
+              send gets rejected because the self-pass detector
+              treats "git unavailable" as "author ≠ sender",
+              bypassing the suppression logic). Matches the
+              pattern in validate_signing_allowed (c2c_peer_pass.ml:92). *)
+           Git_helpers.reset_git_circuit_breaker ();
+           match peer_pass_claim with
+           | None -> false
+           | Some (_claimed_alias, sha) ->
+               (match Git_helpers.git_commit_author_name sha with
+                | None -> false
+                | Some author ->
+                    String.lowercase_ascii author
+                    <> String.lowercase_ascii from_alias)
+         in
+        if sha_author_differs_from_sender then None
+        else if self_pass_detector_strictness () = `Strict
+        then Some (`Reject msg)
+        else Some (`Warn msg)
+  in
+  let peer_pass_pin_path =
+    Filename.concat (Broker.root broker) "peer-pass-trust.json"
+  in
+  let peer_pass_verification =
+    match peer_pass_claim with
+    | None -> None
+    | Some (alias, sha) ->
+        (* #29 H2b: pin-aware variant. The plain
+           [verify_claim] only validates the signature
+           against the artifact-embedded reviewer_pk, so
+           a fresh-keypair forgery passed strict-mode H2.
+           [verify_claim_with_pin] adds TOFU pubkey-pin
+           enforcement: artifact pubkey must match the
+           pin for this alias (or be first-seen). *)
+        match
+          Peer_review.verify_claim_with_pin
+            ~root:(Some (Broker.root broker))
+            ~path:peer_pass_pin_path ~alias ~sha ()
+        with
+        | Peer_review.Claim_valid msg -> Some (`Ok msg)
+        | Peer_review.Claim_missing m -> Some (`Missing m)
+        | Peer_review.Claim_invalid m -> Some (`Invalid m)
+  in
+  let invalid_peer_pass =
+    match peer_pass_verification with
+    | Some (`Invalid m) ->
+        let claim_alias, claim_sha = match peer_pass_claim with
+          | Some (a, s) -> a, s
+          | None -> "", ""
+        in
+        (* Detailed reason -> stderr + broker.log only.
+           User-facing message (below) is generic to
+           avoid echoing attacker-placed artifact contents
+           back to the sender (I3 from slate's review). *)
+        Printf.eprintf
+          "[peer-pass] WARN: rejecting forged peer-pass DM from=%s to=%s alias=%s sha=%s: %s\n%!"
+          from_alias to_alias claim_alias claim_sha m;
+        log_peer_pass_reject
+          ~broker_root:(Broker.root broker)
+          ~from_alias ~to_alias
+          ~claim_alias ~claim_sha ~reason:m
+          ~ts:(Unix.gettimeofday ());
+        Some m
+    | _ -> None
+  in
+  let extras = { pp_verification = peer_pass_verification; pp_self_pass_warning = self_pass_warning } in
+  match invalid_peer_pass, self_pass_warning with
+  | Some _m, _ ->
+      `Reject "send rejected: peer-pass verification failed \
+               (H2b: forged or pin-mismatched peer-pass DM not enqueued; \
+               see broker.log for details)", extras
+  | None, Some (`Reject msg) ->
+      `Reject ("send rejected: " ^ msg), extras
+  | None, Some (`Warn msg) ->
+      `Warn msg, extras
+  | None, None ->
+      `Allow, extras
+
 let send ~broker ~session_id_override ~arguments =
       let to_alias = string_member_any [ "to_alias"; "alias" ] arguments in
       let content = string_member "content" arguments in
@@ -135,101 +247,16 @@ let ts = Unix.gettimeofday () in
                    let err = Printf.sprintf "send rejected: enc_status:key-changed — %s's x25519 key differs from known pin (possible relay tamper). Re-send after trust --repin %s." alias alias in
                    Lwt.return (tool_err err)
                   | `Plain s | `Encrypted s ->
-                    (* Compute peer_pass_claim first so we can use it to
-                       suppress self_pass_warning false-positives on the
-                       canonical "peer-PASS by <reviewer>, SHA=<X>" handoff
-                       when the reviewer's alias matches from_alias but the
-                       SHA was authored by someone else (= legitimate cross-
-                       agent peer-PASS announcement). #163. *)
-                    let peer_pass_claim = Peer_review.claim_of_content content in
-                    let self_pass_warning =
-                      match check_self_pass_content ~from_alias content with
-                      | None -> None
-                      | Some msg ->
-                          (* Cross-check: if the body claims a peer-PASS for
-                             a SHA whose git author != from_alias, this is a
-                             cross-agent review announcement, not a self-
-                             pass. Suppress the warning. *)
-                           let sha_author_differs_from_sender =
-                             (* Reset the circuit breaker before the git spawn so
-                                prior activity in the same process doesn't cause
-                                this check to return None (false positive: the
-                                send gets rejected because the self-pass detector
-                                treats "git unavailable" as "author ≠ sender",
-                                bypassing the suppression logic). Matches the
-                                pattern in validate_signing_allowed (c2c_peer_pass.ml:92). *)
-                             Git_helpers.reset_git_circuit_breaker ();
-                             match peer_pass_claim with
-                             | None -> false
-                             | Some (_claimed_alias, sha) ->
-                                 (match Git_helpers.git_commit_author_name sha with
-                                  | None -> false
-                                  | Some author ->
-                                      String.lowercase_ascii author
-                                      <> String.lowercase_ascii from_alias)
-                           in
-                          if sha_author_differs_from_sender then None
-                          else if self_pass_detector_strictness () = `Strict
-                          then Some (`Reject msg)
-                          else Some (`Warn msg)
+                    (* #450 S9: peer-pass pipeline hoisted into [verify_peer_pass_dm].
+                       [content] is the raw (pre-encryption) body; [s] is the
+                       effective wire content (may be encrypted). *)
+                    let pp_decision, pp_extras =
+                      verify_peer_pass_dm ~broker ~from_alias ~to_alias ~content
                     in
-                    let peer_pass_pin_path =
-                      Filename.concat (Broker.root broker) "peer-pass-trust.json"
-                    in
-                    let peer_pass_verification =
-                      match peer_pass_claim with
-                      | None -> None
-                      | Some (alias, sha) ->
-                          (* #29 H2b: pin-aware variant. The plain
-                             [verify_claim] only validates the signature
-                             against the artifact-embedded reviewer_pk, so
-                             a fresh-keypair forgery passed strict-mode H2.
-                             [verify_claim_with_pin] adds TOFU pubkey-pin
-                             enforcement: artifact pubkey must match the
-                             pin for this alias (or be first-seen). *)
-                          match
-                            Peer_review.verify_claim_with_pin
-                              ~root:(Some (Broker.root broker))
-                              ~path:peer_pass_pin_path ~alias ~sha ()
-                          with
-                          | Peer_review.Claim_valid msg -> Some (`Ok msg)
-                          | Peer_review.Claim_missing m -> Some (`Missing m)
-                          | Peer_review.Claim_invalid m -> Some (`Invalid m)
-                    in
-                    let invalid_peer_pass =
-                      match peer_pass_verification with
-                      | Some (`Invalid m) ->
-                          let claim_alias, claim_sha = match peer_pass_claim with
-                            | Some (a, s) -> a, s
-                            | None -> "", ""
-                          in
-                          (* Detailed reason -> stderr + broker.log only.
-                             User-facing message (below) is generic to
-                             avoid echoing attacker-placed artifact contents
-                             back to the sender (I3 from slate's review). *)
-                          Printf.eprintf
-                            "[peer-pass] WARN: rejecting forged peer-pass DM from=%s to=%s alias=%s sha=%s: %s\n%!"
-                            from_alias to_alias claim_alias claim_sha m;
-                          log_peer_pass_reject
-                            ~broker_root:(Broker.root broker)
-                            ~from_alias ~to_alias
-                            ~claim_alias ~claim_sha ~reason:m
-                            ~ts:(Unix.gettimeofday ());
-                          Some m
-                      | _ -> None
-                    in
-                    match invalid_peer_pass, self_pass_warning with
-                    | Some _m, _ ->
-                        Lwt.return
-                          (tool_result
-                             ~content:
-                               "send rejected: peer-pass verification failed \
-                                (H2b: forged or pin-mismatched peer-pass DM not enqueued; \
-                                see broker.log for details)"
-                             ~is_error:true)
-                    | None, Some (`Reject msg) ->
-                        Lwt.return (tool_err ("send rejected: " ^ msg))
-                    | None, (Some (`Warn _) | None) ->
+                    (match pp_decision with
+                    | `Reject msg ->
+                        Lwt.return (tool_err msg)
+                    | `Warn _ | `Allow ->
                         Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ~ephemeral ();
                         (match session_id_override with
                          | Some sid -> Broker.touch_session broker ~session_id:sid
@@ -268,12 +295,12 @@ let ts = Unix.gettimeofday () in
                           ]
                         in
                         let receipt_fields =
-                          match self_pass_warning with
+                          match pp_extras.pp_self_pass_warning with
                           | Some (`Warn msg) -> receipt_fields @ [("self_pass_warning", `String msg)]
                           | _ -> receipt_fields
                         in
                         let receipt_fields =
-                          match peer_pass_verification with
+                          match pp_extras.pp_verification with
                           | Some (`Ok msg) -> receipt_fields @ [("peer_pass_verification", `String msg)]
                           | Some (`Missing m) -> receipt_fields @ [("peer_pass_verification", `String ("missing: " ^ m))]
                           | Some (`Invalid m) -> receipt_fields @ [("peer_pass_verification", `String ("invalid: " ^ m))]
@@ -296,7 +323,7 @@ let ts = Unix.gettimeofday () in
                           else receipt_fields
                         in
                         let receipt = `Assoc receipt_fields |> Yojson.Safe.to_string in
-                        Lwt.return (tool_ok receipt))))
+                        Lwt.return (tool_ok receipt)))))
 
 let send_all ~broker ~session_id_override ~arguments =
       let content = string_member "content" arguments in
