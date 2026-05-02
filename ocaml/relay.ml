@@ -2605,9 +2605,11 @@ end = struct
     | `Duplicate ts -> json_ok [ ("result", `String "duplicate"); ("ts", `Float ts) ]
     | `Error (code, msg) -> json_error code msg []
 
-  let json_of_register_result (status, lease) =
+  let json_of_register_result ?(receipt = `Null) (status, lease) =
     if status = "ok" then
-      json_ok [ ("result", `String status); ("lease", RegistrationLease.to_json lease) ]
+      let fields = [ ("result", `String status); ("lease", RegistrationLease.to_json lease) ] in
+      let fields = if receipt = `Null then fields else fields @ [("receipt", receipt)] in
+      json_ok fields
     else
       json_error status (Printf.sprintf "alias conflict with existing lease") [ ("existing_lease", RegistrationLease.to_json lease) ]
 
@@ -3272,7 +3274,18 @@ generateKeys();
                       R.register relay ~node_id ~session_id ~alias
                         ~client_type ~ttl ~identity_pk ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64 ()
                     in
-                    respond_ok (json_of_register_result result)
+                    let receipt =
+                      let relay_identity = R.relay_identity relay in
+                      let ts = Relay_signed_ops.now_rfc3339_utc () in
+                      let nonce = Relay_signed_ops.random_nonce_b64 () in
+                      Relay_signed_ops.build_registration_receipt_json
+                        ~identity:relay_identity
+                        ~alias
+                        ~client_identity_pk_b64:identity_pk_b64
+                        ~nonce
+                        ~ts
+                    in
+                    respond_ok (json_of_register_result ~receipt result)
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
         let result =

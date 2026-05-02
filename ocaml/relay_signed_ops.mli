@@ -71,7 +71,17 @@ val sign_request :
 (** Sign-context constants — must match spec §3.4 *)
 val request_sign_ctx : string
 val register_sign_ctx : string
+val receipt_sign_ctx : string
 val room_send_sign_ctx : string
+
+(** [build_registration_receipt_json ~identity ~alias ~client_identity_pk_b64
+    ~nonce ~ts] builds a signed registration receipt as a JSON object.
+    Signs with the relay's Ed25519 identity over the canonical receipt blob
+    (alias || client_identity_pk || relay_identity_pk || ts || nonce). *)
+val build_registration_receipt_json :
+  identity:Relay_identity.t -> alias:string ->
+  client_identity_pk_b64:string -> nonce:string -> ts:string ->
+  Yojson.Safe.t
 
 (** Build the canonical request blob per spec §5.1. *)
 val canonical_request_blob :
