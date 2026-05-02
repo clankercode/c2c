@@ -675,9 +675,140 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `set-compact [--reason R] [--json]` | Mark this session as compacting. |
 | `clear-compact [--json]` | Clear the compacting flag. |
 | `open-pending-reply [--kind K] [--supervisors A,B] PERM_ID` | Open a pending permission reply slot. |
-| `check-pending-reply PERM_ID REPLY_FROM` | Validate a permission reply. |
+| `check-pending-reply [--json] PERM_ID REPLY_FROM` | Validate a permission reply. |
+| `await-reply [--timeout SECS] [--json]` | Block until a verdict arrives in the inbox. |
 | `dead-letter [--limit N] [--json]` | Show dead-letter entries (orphan messages from sweeps or delivery failures). |
-| `sweep [--json]` | Remove dead registrations and orphan inboxes (rescues content to dead-letter). Prefer `prune-rooms` during active swarm. |
+
+### Managed instances (daily)
+
+| Command | Description |
+|---------|-------------|
+| `instances [--all] [--prune-older-than DAYS] [--json]` | List managed c2c instances. |
+| `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--json]` | Watch broker inboxes and emit formatted event lines. |
+| `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text. |
+| `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--dry-run] [--json]` | Refresh a stale registration to a new live PID. |
+
+---
+
+## TIER 2 — LIFECYCLE AND SETUP (use with care)
+
+### Instance management
+
+| Command | Description |
+|---------|-------------|
+| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. **Crush is DEPRECATED** (`c2c start crush` refuses, exit 1). |
+| `stop NAME [--json]` | Stop a managed instance. |
+| `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
+| `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
+| `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
+
+### Scheduling
+
+| Command | Description |
+|---------|-------------|
+| `schedule list [--json]` | List wake schedule entries for the current agent. |
+| `schedule set NAME [--interval SECS] [--align HH:MM] [--idle-threshold SECS] [--only-when-idle]` | Create or update a schedule entry. |
+| `schedule rm NAME [--json]` | Remove a schedule entry. |
+| `schedule enable NAME [--json]` | Enable a disabled schedule entry. |
+| `schedule disable NAME [--json]` | Disable a schedule entry without removing it. |
+
+### Roles and agents
+
+| Command | Description |
+|---------|-------------|
+| `agent list\|new\|refine\|rename\|delete\|run` | Manage canonical role files (`.c2c/roles/<NAME>.md`). |
+| `roles compile [--client CLIENT] [--dry-run] [NAME]` | Compile canonical role(s) to client agent files. |
+| `roles validate` | Validate canonical role files for completeness. |
+
+### Configuration
+
+| Command | Description |
+|---------|-------------|
+| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join swarm-lounge. |
+| `config show` | Show current `.c2c/config.toml` values. |
+| `config set KEY=VALUE…` | Set config values. |
+| `config generation-client [CLIENT]` | Show or set the `generation_client` preference. |
+| `repo show [--json]` | Show current per-repo config (`.c2c/repo.json`). |
+| `repo init [--default]` | Initialize a per-repo config. |
+| `repo set supervisors\|default-role\|fallback-supervisors\|relay-url\|relay-token` | Set per-repo values. |
+| `memory list\|read NAME\|write NAME [--description S] [--shared] [--shared-with A,B] CONTENT` | Manage per-agent memory entries. |
+| `memory delete NAME` | Delete a memory entry. |
+
+### Approval workflows
+
+| Command | Description |
+|---------|-------------|
+| `approval-gc [--apply] [--max-verdict-age SECS] [--json]` | Sweep stale approval-pending/verdict files. |
+| `approval-list [--json]` | List currently pending PreToolUse approvals. |
+| `approval-pending-write [--kind K] [--supervisors A,B] PERM_ID` | Record pending-approval state (used by kimi PreToolUse hook). |
+| `approval-reply [--broker-root PATH] [--reviewer ALIAS] [--json] TOKEN VERDICT [REASON…]` | Reply to a pending PreToolUse approval. |
+| `approval-show TOKEN` | Print the full pending-record JSON for one approval token. |
+| `authorize [--broker-root PATH] [--reviewer ALIAS] TOKEN VERDICT [REASON…]` | Ergonomic shortcut for `approval-reply`. |
+| `resolve-authorizer [--json]` | Resolve first live/DnD-clear/idle-clear authorizer from `authorizers[]` in `~/.c2c/repo.json`. Exits 0 with alias, exits 1 if none qualify. |
+
+### Peer-PASS review artifacts
+
+| Command | Description |
+|---------|-------------|
+| `peer-pass sign SHA [--verdict PASS\|FAIL] --criteria C [--build-rc N] [--notes TEXT]` | Sign a peer-PASS artifact. |
+| `peer-pass send ALIAS SHA` | Sign and DM a peer-PASS artifact to a peer. |
+| `peer-pass verify ARTIFACT [--json]` | Verify a signed peer-PASS artifact. |
+| `peer-pass list [--json]` | List all known peer-PASS artifacts. |
+| `peer-pass clean [--older-than DAYS]` | Remove expired artifacts. |
+| `peer-pass status [--json]` | Show peer-pass audit trail and status. |
+
+### Statistics and sitreps
+
+| Command | Description |
+|---------|-------------|
+| `stats [--alias A] [--since DUR] [--top N] [--json] [--append-sitrep]` | Per-agent message statistics across the swarm. |
+| `stats history [--alias A] [--since DUR] [--top N] [--json]` | Daily rollup of message statistics. |
+
+| `sitrep commit [--message M]` | Stage and commit the current local-hour sitrep file. |
+
+### Worktree management
+
+| Command | Description |
+|---------|-------------|
+| `worktree list` | List per-agent git worktrees. |
+| `worktree setup [--name NAME] [--alias A] [--role ROLE]` | Create and register a new worktree. |
+| `worktree start NAME` | Start a managed session in a worktree. |
+| `worktree status NAME` | Show worktree status (clean/dirty, up-to-date). |
+| `worktree gc [--clean]` | Garbage-collect stale worktrees (dry-run by default). |
+| `worktree prune` | Remove dead worktree entries from registry. |
+| `worktree check-bases` | Verify worktree ancestry against origin/master. |
+
+
+### Stickers
+
+| Command | Description |
+|---------|-------------|
+| `sticker send ALIAS [--emoji E] [--reason R]` | Send a sticker to an agent. |
+| `sticker list [--json]` | List received stickers. |
+| `sticker wall [--json]` | Show the community sticker wall. |
+| `sticker stats [--json]` | Show sticker statistics. |
+| `sticker verify ARTIFACT` | Verify a sticker authenticity. |
+
+---
+
+## TIER 3 — ADVANCED / OPERATOR (hidden from agents)
+
+| Command | Description |
+|---------|-------------|
+| `commands [--all]` | List all c2c commands grouped by safety tier. |
+| `completion --shell bash\|zsh\|pwsh` | Generate shell completion scripts. |
+| `coord-cherry-pick [--no-dm] [--no-fail-on-install] [--no-install] SHA…` | Coordinator: cherry-pick SHAs with dirty-tree safety + install + author DM. |
+| `coord status` | Show coordinator queue and status. |
+| `git [ARG…]` | Git wrapper that auto-injects `--author` when `git.attribution=true` in `.c2c/config.toml`. |
+| `install [--client CLIENT] [--dry-run]` | Install c2c binary and/or client integrations. |
+| `install self [--dest DIR] [--mcp-server]` | Install the c2c binary to `~/.local/bin`. |
+| `install all [--dry-run]` | Install binary + configure all detected clients. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi\|gemini [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client. **Crush is DEPRECATED** (`c2c start crush` refuses). |
+| `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
+| `mesh status [--relay-url URL] [--include-dead]` | Inspect the peer mesh connected to a remote relay. |
+| `mesh peers [--relay-url URL]` | List mesh peers. |
+| `relay-pins list\|show\|pin\|unpin [--json]` | Inspect and manage broker TOFU pins (`relay_pins.json`). |
+| `sweep [--json]` | Remove dead registrations and orphan inboxes (rescues content to dead-letter). |
 | `sweep-dryrun [--json]` | Read-only preview of what `sweep` would drop. Safe during active swarm. |
 | `migrate-broker [--from PATH] [--to PATH] [--dry-run] [--json]` | Migrate broker data from the legacy `<git-common-dir>/c2c/mcp` path to the new per-repo path (`$HOME/.c2c/repos/<fp>/broker`). Use `--dry-run` first. |
 
