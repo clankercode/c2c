@@ -171,7 +171,7 @@ plus a relay container in the middle. This is the missing piece.
 | S8 | (open) | |
 | S9 | (open) | |
 | S10 | (open) | |
-| S11 | (open) | |
+| S11 | stanza-coder | committed: e2e-docker.yml + --skip-build + image tags (267098f0) |
 
 ## Out of scope for #407
 

@@ -73,7 +73,7 @@ jobs:
           cache-from: ${{ github.event.inputs.skip_cache != 'true' && 'type=gha,scope=relay' || '' }}
           cache-to: type=gha,mode=max,scope=relay
           build-args: |
-            BUILD_DATE=${{ github.sha }}
+            BUILD_DATE=${{ github.event.pull_request.updated_at || github.event.repository.pushed_at || 'ci' }}
 
       - name: Build test image
         uses: docker/build-push-action@v6
