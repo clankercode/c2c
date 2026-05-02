@@ -11,6 +11,19 @@ open C2c_mcp_helpers
 open C2c_mcp_helpers_post_broker
 module Broker = C2c_broker
 
+(** Resolve the caller's session_id and registered alias for a room operation.
+    Shared by list_rooms, room_history, send_room_invite, and set_room_visibility.
+    The session_id_override wins if provided; otherwise falls back to the
+    current session from the broker's request context. *)
+let resolve_caller_identity ~broker ~session_id_override =
+  let caller_session_id =
+    match session_id_override with
+    | Some s -> Some s
+    | None -> current_session_id ()
+  in
+  let caller_alias = current_registered_alias ?session_id_override broker in
+  (caller_session_id, caller_alias)
+
 let prune_rooms ~broker ~session_id_override:_ ~arguments:_ =
   let evicted = Broker.prune_rooms broker in
   let content =
@@ -202,12 +215,7 @@ let list_rooms ~broker ~session_id_override ~arguments:_ =
      - Invite_only + caller in invited_members but not yet joined:
        include but redact members/details/invited_members.
      - Invite_only + caller unrelated: exclude entirely. *)
-  let caller_session_id =
-    match session_id_override with
-    | Some s -> Some s
-    | None -> current_session_id ()
-  in
-  let caller_alias = current_registered_alias ?session_id_override:session_id_override broker in
+  let caller_session_id, caller_alias = resolve_caller_identity ~broker ~session_id_override in
   let filtered =
     List.filter_map
       (fun (r : Broker.room_info) ->
@@ -288,12 +296,7 @@ let room_history ~broker ~session_id_override ~arguments =
     match meta.visibility with
     | Public -> true
     | Invite_only ->
-        let caller_session_id =
-          match session_id_override with
-          | Some s -> Some s
-          | None -> current_session_id ()
-        in
-        let caller_alias = current_registered_alias ?session_id_override:session_id_override broker in
+        let caller_session_id, caller_alias = resolve_caller_identity ~broker ~session_id_override in
         let members = Broker.read_room_members broker ~room_id in
         let by_session =
           match caller_session_id with
