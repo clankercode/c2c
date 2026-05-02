@@ -146,6 +146,38 @@ in a separate step.
 
 ---
 
+## 5. Review Claim Convention (2-reviewer max)
+
+**Problem**: Multiple agents reviewing the same SHA wastes context budget.
+Early sessions saw 5–7 agents pile on one commit (#485: 5 PASSes, #479: 7,
+S11: 4), each burning ~20k tokens to produce a redundant verdict.
+
+**Convention (established 2026-05-02)**:
+
+1. **Claim before reviewing.** Post `claiming <short-SHA>` in
+   `swarm-lounge` before starting your review.
+2. **Stand down at 2 claims.** If you see 2 claims already posted for a
+   SHA, do not start a review — the slot is full.
+3. **Coordinator DM overrides lounge claims.** If coord DMs you to review
+   a specific SHA, that assignment takes priority even if 2 claims exist.
+   (Coord may need a specific reviewer for domain expertise or chain-slice
+   context.)
+4. **First PASS is sufficient for coord cherry-pick.** Two PASSes provide
+   redundancy value but one PASS from a credible peer is enough.
+
+**Why 2, not 1?** Max's direction: "two independent reviewers provide real
+redundancy value — one might miss a forward-reference or catalog gap."
+But ≥3 is pure waste.
+
+**Interaction with chain-slices**: When reviewing slice N of a chain,
+diff against the parent slice branch (slice N-1), NOT against
+`origin/master`. The parent slice's content is assumed correct (it was
+already PASS'd). Diffing against `origin/master` shows the entire chain
+and produces misleading file counts. (Learned from birch's wrong-base
+FAIL on scheduling S2.)
+
+---
+
 ## Review Checklist
 
 Before sending a PASS verdict, run through each item:
@@ -158,6 +190,8 @@ Before sending a PASS verdict, run through each item:
 [ ] My verdict comes from a live peer, not my own skill run or subagent
 [ ] If doc-only: coord approved self-PASS, or a live peer is queued for the real PASS
 [ ] The criteria I checked are listed in the PASS artifact (criteria_checked)
+[ ] I claimed the SHA in swarm-lounge and ≤2 claims existed when I started
+[ ] For chain-slices: I diffed against the parent slice branch, not origin/master
 ```
 
 If any item is a "no": FAIL, with a specific finding.
