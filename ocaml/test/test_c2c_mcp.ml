@@ -12026,6 +12026,226 @@ let test_send_to_compacting_peer_has_warning () =
           check bool "compacting_warning mentions compacting" true
             (String.length warning > 0 && string_contains warning "compacting"))
 
+(* --- native scheduling: schedule_set / schedule_list tests --- *)
+
+let test_schedule_set_creates_toml_file () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-sched-test";
+      Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" dir;
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sched-test"
+            ~alias:"sched-agent" ~pid:None ~pid_start_time:None ();
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 501)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_set")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("name", `String "wake")
+                          ; ("interval_s", `Float 300.0)
+                          ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected schedule_set response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              check string "schedule_set returns saved name" "wake"
+                (parsed |> member "saved" |> to_string);
+              check string "schedule_set returns correct alias" "sched-agent"
+                (parsed |> member "alias" |> to_string);
+              check bool "schedule_set returns enabled=true" true
+                (parsed |> member "enabled" |> to_bool)))
+
+let test_schedule_list_returns_empty_when_none () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-sched-empty";
+      Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" dir;
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sched-empty"
+            ~alias:"sched-empty" ~pid:None ~pid_start_time:None ();
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 502)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_list")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected schedule_list response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              check int "schedule_list returns empty list" 0
+                (parsed |> Yojson.Safe.Util.to_list |> List.length)))
+
+let test_schedule_set_then_list_shows_entry () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-sched-list";
+      Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" dir;
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sched-list"
+            ~alias:"sched-list" ~pid:None ~pid_start_time:None ();
+          (* schedule_set *)
+          let set_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 503)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_set")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("name", `String "heartbeat")
+                          ; ("interval_s", `Float 246.0)
+                          ; ("message", `String "wake — poll inbox")
+                          ] )
+                    ] )
+              ]
+          in
+          let _ =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir set_request)
+          in
+          (* schedule_list *)
+          let list_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 504)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_list")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let list_response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir list_request)
+          in
+          match list_response with
+          | None -> fail "expected schedule_list response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              let items = parsed |> to_list in
+              check int "schedule_list returns exactly 1 entry" 1 (List.length items);
+              let first = List.hd items in
+              check string "entry has name heartbeat" "heartbeat"
+                (first |> member "name" |> to_string);
+              check bool "entry has correct interval_s"
+                ((first |> member "interval_s" |> fun j ->
+                  match j with `Float f -> f = 246.0 | `Int i -> i = 246 | _ -> false))
+                true;
+              check string "entry has message" "wake — poll inbox"
+                (first |> member "message" |> to_string)))
+
+let test_schedule_set_with_align () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-sched-align";
+      Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" dir;
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sched-align"
+            ~alias:"sched-align" ~pid:None ~pid_start_time:None ();
+          let set_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 505)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_set")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("name", `String "sitrep")
+                          ; ("interval_s", `Float 3600.0)
+                          ; ("align", `String "@1h+7m")
+                          ] )
+                    ] )
+              ]
+          in
+          let _ =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir set_request)
+          in
+          let list_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 506)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_list")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let list_response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir list_request)
+          in
+          match list_response with
+          | None -> fail "expected schedule_list response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              let items = parsed |> to_list in
+              check int "schedule_list returns exactly 1 entry" 1 (List.length items);
+              let first = List.hd items in
+              check string "align is @1h+7m" "@1h+7m"
+                (first |> member "align" |> to_string)))
+
 let test_set_compact_no_session_returns_error () =
   with_temp_dir (fun dir ->
       (* Ensure no env session is set *)
@@ -12711,4 +12931,13 @@ let () =
                 test_send_to_compacting_peer_has_warning
             ; test_case "set_compact with no session returns error" `Quick
                 test_set_compact_no_session_returns_error
+            (* --- native scheduling: schedule_set / schedule_list --- *)
+            ; test_case "schedule_set creates TOML file in .c2c/schedules/<alias>/" `Quick
+                test_schedule_set_creates_toml_file
+            ; test_case "schedule_list returns empty when none set" `Quick
+                test_schedule_list_returns_empty_when_none
+            ; test_case "schedule_set then schedule_list shows entry with interval/message" `Quick
+                test_schedule_set_then_list_shows_entry
+            ; test_case "schedule_set with align parameter stores align" `Quick
+                test_schedule_set_with_align
             ] ) ]
