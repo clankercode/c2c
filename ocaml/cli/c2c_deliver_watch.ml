@@ -51,6 +51,12 @@ let watch_loop
       C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-watch" broker ~session_id
     in
     total := !total + List.length messages;
+    C2c_deliver_inbox_log.log_drain
+      ~broker_root
+      ~session_id
+      ~client:"deliver-watch"
+      ~count:(List.length messages)
+      ~drained_by_pid:(Unix.getpid ());
     List.iter
       (fun (msg : C2c_mcp.message) ->
         match mode with
