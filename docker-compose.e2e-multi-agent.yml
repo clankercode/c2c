@@ -70,6 +70,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
+    image: c2c-test:latest
     container_name: c2c-e2e-agent-a1
     depends_on:
       relay:
@@ -99,6 +100,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
+    image: c2c-test:latest
     container_name: c2c-e2e-agent-a2
     depends_on:
       relay:
@@ -128,6 +130,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
+    image: c2c-test:latest
     container_name: c2c-e2e-agent-b1
     depends_on:
       relay:
@@ -157,6 +160,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
+    image: c2c-test:latest
     container_name: c2c-e2e-agent-b2
     depends_on:
       relay:

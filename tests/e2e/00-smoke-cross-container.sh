@@ -11,6 +11,7 @@
 #   00-smoke-cross-container.sh --validate      # `docker compose config` only
 #   00-smoke-cross-container.sh --build-only    # build images, do not `up`
 #   00-smoke-cross-container.sh --no-teardown   # leave stack up on success
+#   00-smoke-cross-container.sh --skip-build    # assume images pre-built (CI)
 #
 # Idempotent: cleanup trap always runs unless --no-teardown is passed.
 # Exits 0 only on actual receipt verification.
@@ -21,13 +22,15 @@ set -euo pipefail
 
 MODE="full"
 NO_TEARDOWN=0
+SKIP_BUILD=0
 for arg in "$@"; do
   case "$arg" in
     --validate|--validate-only) MODE="validate" ;;
     --build-only) MODE="build" ;;
     --no-teardown) NO_TEARDOWN=1 ;;
+    --skip-build) SKIP_BUILD=1 ;;
     -h|--help)
-      sed -n '2,17p' "$0"
+      sed -n '2,18p' "$0"
       exit 0
       ;;
     *) echo "[smoke] unknown arg: $arg" >&2; exit 2 ;;
@@ -81,8 +84,13 @@ if [[ "$MODE" == "build" ]]; then
 fi
 
 # --- full smoke path.
-echo "[smoke] building + starting topology..."
-DOCKER_BUILDKIT=1 "${COMPOSE[@]}" up -d --build --wait --wait-timeout 60
+if [[ "$SKIP_BUILD" == "1" ]]; then
+  echo "[smoke] starting topology (images pre-built)..."
+  "${COMPOSE[@]}" up -d --wait --wait-timeout 60
+else
+  echo "[smoke] building + starting topology..."
+  DOCKER_BUILDKIT=1 "${COMPOSE[@]}" up -d --build --wait --wait-timeout 60
+fi
 
 echo "[smoke] confirming relay healthy..."
 status=$(docker inspect --format '{{.State.Health.Status}}' c2c-e2e-relay 2>/dev/null || echo "missing")

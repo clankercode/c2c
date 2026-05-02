@@ -1,0 +1,116 @@
+# #407 S11 — E2E Docker smoke tests on PR.
+#
+# Runs the cross-host relay roundtrip smoke (S2) against the full
+# multi-agent topology: two independent broker volumes + relay container.
+# Cross-broker delivery MUST traverse the relay — this is the only CI
+# gate that exercises the real relay path.
+#
+# Cache strategy: Docker BuildKit layer cache (GHA backend) pins the
+# opam-install layer (~4min cold) so subsequent runs rebuild only the
+# source-change layers (~30s). Target: <8min wall-time on cache hit.
+#
+# See: .collab/design/2026-04-28T10-22-00Z-coordinator1-407-e2e-docker-scope.md
+
+name: E2E Docker Smoke
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      # Only run when Docker/OCaml/test infra changes — skip for
+      # docs-only or .collab-only PRs.
+      - 'Dockerfile'
+      - 'Dockerfile.test'
+      - 'docker-compose.e2e-multi-agent.yml'
+      - 'dune-project'
+      - 'ocaml/**'
+      - 'docker-tests/**'
+      - 'tests/e2e/**'
+      - '.github/workflows/e2e-docker.yml'
+  workflow_dispatch:
+    inputs:
+      skip_cache:
+        description: 'Skip Docker layer cache (cold build)'
+        required: false
+        default: 'false'
+        type: boolean
+
+# Cancel in-flight runs for the same PR — only latest matters.
+concurrency:
+  group: e2e-docker-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # docker-container driver required for GHA cache backend.
+          # --load transfers images to the local daemon for compose.
+          driver: docker-container
+
+      # Pre-build both images with GHA layer cache. The opam-install
+      # layer (~4min cold) is the bottleneck; once cached, source-only
+      # changes rebuild in ~30s. Images are loaded into the local
+      # daemon so `docker compose up` (without --build) can use them.
+      - name: Build relay image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: c2c-relay:e2e
+          cache-from: ${{ github.event.inputs.skip_cache != 'true' && 'type=gha,scope=relay' || '' }}
+          cache-to: type=gha,mode=max,scope=relay
+          build-args: |
+            BUILD_DATE=${{ github.sha }}
+
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.test
+          load: true
+          tags: c2c-test:latest
+          cache-from: ${{ github.event.inputs.skip_cache != 'true' && 'type=gha,scope=test' || '' }}
+          cache-to: type=gha,mode=max,scope=test
+
+      # Validate compose syntax before starting the stack — catches
+      # YAML errors without daemon interaction.
+      - name: Validate compose file
+        run: docker compose -f docker-compose.e2e-multi-agent.yml config --quiet
+
+      # Run the full cross-host relay smoke test. --skip-build uses the
+      # pre-built images loaded above instead of rebuilding inside compose.
+      - name: Run cross-host relay smoke
+        run: bash tests/e2e/00-smoke-cross-container.sh --skip-build
+        timeout-minutes: 5
+
+      # On failure, dump diagnostic logs so CI artifacts are useful.
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          for svc in c2c-e2e-relay c2c-e2e-agent-a1 c2c-e2e-agent-b1; do
+            echo "=== ${svc} logs ==="
+            docker logs "${svc}" 2>&1 | tail -60 || true
+            echo ""
+          done
+          echo "=== docker compose ps ==="
+          docker compose -f docker-compose.e2e-multi-agent.yml ps 2>&1 || true
+
+      # Belt-and-suspenders teardown. The smoke script's EXIT trap
+      # handles normal runs, but cancelled/timed-out runs skip it.
+      - name: Teardown
+        if: always()
+        run: |
+          docker compose -f docker-compose.e2e-multi-agent.yml down -v --remove-orphans 2>/dev/null || true
