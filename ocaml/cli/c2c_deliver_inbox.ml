@@ -226,7 +226,10 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
              flush stdout;
              ()
            | _ ->
-             Unix.sleepf args.interval;
+             (* #612: clamp interval to 0.01s minimum to prevent edge-case
+                zero/negative sleep (interval can be set to 0.1 for testing) *)
+             let safe_interval = max 0.01 args.interval in
+             Unix.sleepf safe_interval;
              loop ())
       in
       loop ();
