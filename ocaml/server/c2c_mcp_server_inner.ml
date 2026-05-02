@@ -315,7 +315,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
 (* S6b: parse_duration_s — parse "4.1m", "1h", "30s" into seconds.
    Minimal self-contained parser so the MCP server doesn't depend on
    C2c_start (which is a CLI executable, not a library). *)
-let parse_duration_s (raw : string) : float option =
+let parse_duration_s ?(allow_zero = false) (raw : string) : float option =
   let s = String.trim raw in
   if s = "" then None
   else
@@ -330,7 +330,9 @@ let parse_duration_s (raw : string) : float option =
     in
     try
       let v = float_of_string (String.trim number_part) *. multiplier in
-      if v > 0.0 then Some v else None
+      if v > 0.0 then Some v
+      else if allow_zero && v = 0.0 then Some 0.0
+      else None
     with Failure _ -> None
 
 (* S6b: compute_next_fire — given current time and a schedule_entry,
@@ -354,7 +356,7 @@ let compute_next_fire (now : float) (entry : C2c_mcp.schedule_entry) : float =
           (String.sub body 0 idx,
            String.sub body (idx + 1) (String.length body - idx - 1))
     in
-    (match parse_duration_s interval_part, parse_duration_s offset_part with
+    (match parse_duration_s interval_part, parse_duration_s ~allow_zero:true offset_part with
      | Some interval_s, Some offset_s ->
          let shifted = now -. offset_s in
          let slots = floor (shifted /. interval_s) +. 1.0 in
@@ -442,6 +444,10 @@ let start_schedule_timer ~(broker_root : string) ~(alias : string) =
   in
   let check_and_fire () =
     let now = Unix.gettimeofday () in
+    (* Collect updates to apply after iteration — Hashtbl.replace during
+       Hashtbl.iter is technically undefined behavior for structural changes,
+       even though replace-existing-key is safe in practice. *)
+    let updates = ref [] in
     Hashtbl.iter (fun fname (entry, file_mtime, next_fire) ->
       if now >= next_fire then begin
         if C2c_schedule_fire.should_fire ~broker_root ~alias entry then begin
@@ -459,9 +465,10 @@ let start_schedule_timer ~(broker_root : string) ~(alias : string) =
         (* Advance next_fire_at regardless of whether we fired —
            prevents re-firing every 5s if idle gate blocks *)
         let next = compute_next_fire now entry in
-        Hashtbl.replace entries fname (entry, file_mtime, next)
+        updates := (fname, (entry, file_mtime, next)) :: !updates
       end
-    ) entries
+    ) entries;
+    List.iter (fun (fname, v) -> Hashtbl.replace entries fname v) !updates
   in
   let rec loop () =
     let* () = Lwt_unix.sleep poll_interval in
