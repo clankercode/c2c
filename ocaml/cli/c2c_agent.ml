@@ -284,22 +284,53 @@ let agent_new_term =
     match Role_templates.render ~role_class:role ~alias:name ~display_name_hint:"" with
     | Some rendered -> rendered
     | None ->
+        (* The generic template (used when --role does not match a built-in
+           role class like "coder" or "coordinator"). Inline comments show
+           example values; replace placeholders with real ones. *)
         Printf.sprintf
           "---\n\
-           description: %s\n\
-           role: %s\n\
+           # One-line summary of what this agent does.\n\
+           # Example: Senior coder on the c2c swarm — OCaml/dune + Python dogfood.\n\
+           description: %s\n\n\
+           # Role type: subagent (default), primary (coordinator), or all.\n\
+           # Example: subagent\n\
+           role: %s\n\n\
+           # Which clients can run this role. \"all\" = any client.\n\
+           # Other examples: claude, opencode, codex, kimi, gemini\n\
+           # (comma-separated, no spaces).\n\
            compatible_clients: [%s]\n\
            %s\
-           required_capabilities: []\n\
+           # Feature requirements. Leave empty unless the agent needs\n\
+           # specific capabilities (e.g. mcp, shell, database).\n\
+           required_capabilities: []\n\n\
+           # c2c broker settings.\n\
            c2c:\n\
+           # Alias on the broker. Must be unique in the swarm.\n\
+           # Example: willow-coder\n\
+           # alias: TODO-fill-in\n\
+           # Rooms to auto-join on start (comma-separated, no spaces).\n\
+           # Examples: swarm-lounge, onboarding\n\
            %s\
+           # Heartbeat settings (optional — omit if unsure).\n\
+           # Example:\n\
+           #   heartbeat:\n\
+           #     interval: 4.1m\n\
+           #     message: \"wake — poll inbox, advance work\"\n\
+           #     idle_threshold_s: 300\n\n\
+           # OpenCode-specific settings (optional).\n\
            opencode:\n\
+           # Example:\n\
+           #   tools: [Read, Bash, Edit, Write, Task]\n\
            %s\
            ---\n\
-           You are a %s agent.\n\
-           Your responsibilities:\n\
+           You are a %s agent.\n\n\
+           ## Your purpose\n\
+           Briefly describe why this agent exists and what it owns.\n\n\
+           ## Your responsibilities\n\
            - _(list primary responsibilities)_\n\
-           - _(add more as needed)_\n"
+           - _(add more as needed)_\n\n\
+           ## Conventions you follow\n\
+           - _(link to CLAUDE.md, runbooks, or key conventions)_\n"
           description
           role
           (String.concat ", " compatible_clients)
