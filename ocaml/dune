@@ -29,7 +29,7 @@
   (library
    (name c2c_mcp)
    (wrapped false)
-   (modules C2c_io C2c_time Json_util Build_flags Version Version_git_sha Git_helpers C2c_name C2c_capability c2c_role Banner Peer_review C2c_mcp_helpers C2c_broker C2c_mcp_helpers_post_broker C2c_memory_handlers C2c_room_handlers C2c_agent_state_handlers C2c_pending_reply_handlers C2c_identity_handlers C2c_inbox_handlers C2c_send_handlers c2c_mcp C2c_alias_words C2c_start C2c_repo_fp Relay_signed_ops C2c_wire_bridge C2c_wire_daemon C2c_kimi_notifier C2c_pty_inject C2c_poker Relay_remote_broker C2c_relay_connector Relay_identity Relay_nudge Coord_fallthrough Relay Relay_forwarder Relay_enc Relay_ratelimit Relay_e2e Relay_ws_frame Relay_short_queue)
+   (modules C2c_io C2c_time Json_util Build_flags Version Version_git_sha Git_helpers C2c_name C2c_capability c2c_role Banner Peer_review C2c_mcp_helpers C2c_broker C2c_mcp_helpers_post_broker C2c_memory_handlers C2c_schedule_handlers C2c_room_handlers C2c_agent_state_handlers C2c_pending_reply_handlers C2c_identity_handlers C2c_inbox_handlers C2c_send_handlers c2c_mcp C2c_alias_words C2c_start C2c_repo_fp Relay_signed_ops C2c_wire_bridge C2c_wire_daemon C2c_kimi_notifier C2c_pty_inject C2c_poker Relay_remote_broker C2c_relay_connector Relay_identity Relay_nudge Coord_fallthrough Relay Relay_forwarder Relay_enc Relay_ratelimit Relay_e2e Relay_ws_frame Relay_short_queue)
   (foreign_stubs (language c) (names c2c_posix_stubs))
   (libraries yojson logs lwt.unix cohttp-lwt-unix uuidm sqlite3
                base64 digestif.ocaml mirage-crypto-ec mirage-crypto-rng.unix

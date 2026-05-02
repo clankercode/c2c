@@ -179,6 +179,25 @@ let base_tool_definitions =
         ; prop "shared" "Mark as globally shared (visible to all agents). Default false."
         ; prop "shared_with" "Optional comma-separated list of aliases granted read access (alternative to global shared)."
         ; prop "content" "Memory body text." ]
+  ; tool_definition ~name:"schedule_set"
+      ~description:"Create or update a named self-schedule. The schedule fires a self-DM at the given interval. Requires name and interval_s; other fields are optional."
+      ~required:["name"; "interval_s"]
+      ~properties:
+        [ prop "name" "Schedule name (e.g. wake, sitrep)."
+        ; float_prop "interval_s" "Interval in seconds between fires."
+        ; prop "message" "Message text for the self-DM."
+        ; prop "align" "Wall-clock alignment spec (e.g. @1h+7m)."
+        ; bool_prop "only_when_idle" "Only fire when agent is idle (default true)."
+        ; float_prop "idle_threshold_s" "Idle threshold in seconds (default: same as interval_s)."
+        ; bool_prop "enabled" "Whether the schedule is enabled (default true)." ]
+  ; tool_definition ~name:"schedule_list"
+      ~description:"List all schedule entries for the current agent."
+      ~required:[]
+      ~properties:[]
+  ; tool_definition ~name:"schedule_rm"
+      ~description:"Remove a named schedule entry."
+      ~required:["name"]
+      ~properties:[ prop "name" "Schedule name to remove." ]
   ]
 
 (** Extract the tool name from a tool_definition JSON value. *)
@@ -203,6 +222,8 @@ let tool_definitions =
 module Memory_handlers = C2c_memory_handlers
 (* #450 Slice 1: body hoisted to [c2c_memory_handlers.ml]. Module-alias
    preserves [Memory_handlers.handle_memory_*] callers below. *)
+
+module Schedule_handlers = C2c_schedule_handlers
 
 let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~arguments =
   match tool_name with
@@ -270,6 +291,12 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
       Memory_handlers.handle_memory_read ~broker ~session_id_override ~arguments
   | "memory_write" ->
       Memory_handlers.handle_memory_write ~broker ~session_id_override ~arguments
+  | "schedule_set" ->
+      Schedule_handlers.handle_schedule_set ~broker ~session_id_override ~arguments
+  | "schedule_list" ->
+      Schedule_handlers.handle_schedule_list ~broker ~session_id_override ~arguments
+  | "schedule_rm" ->
+      Schedule_handlers.handle_schedule_rm ~broker ~session_id_override ~arguments
   | _ -> Lwt.return (tool_err ("unknown tool: " ^ tool_name))
 
 (* Append one structured line to <broker_root>/broker.log for every
