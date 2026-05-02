@@ -1336,12 +1336,18 @@ module type CLIENT_ADAPTER = sig
       env array (e.g. opencode's [C2C_AUTO_KICKOFF=1] / kickoff-path
       handshake with its plugin).
 
-      Adapters that have nothing to do (claude — its kickoff is a
-      positional argv passed in [build_start_args]; codex / gemini —
-      no real impl yet, see #143c / #143d) return [Ok []].  The launch
-      loop is expected to call this contract method instead of inlining
-      per-client kickoff branches, so #143b-style follow-ups can extend
-      coverage adapter-by-adapter.  See task #143. *)
+      Adapters that have nothing to do return [Ok []]:
+      - claude: kickoff is a positional argv in [prepare_launch_args].
+      - kimi: kickoff is [--prompt] argv in [prepare_launch_args].
+      - codex (#143c): kickoff is an XML pipe write in [run_outer_loop]
+        (parent-side, after fork, before the deliver daemon starts).
+      - gemini (#143d): kickoff is a positional argv in
+        [prepare_launch_args].
+
+      The launch loop calls this contract method for every client so
+      adapters that DO have side-effects (opencode writes a kickoff
+      file + returns env pairs) can extend coverage without inlining
+      per-client gates.  See task #143. *)
   val deliver_kickoff :
     name:string ->
     alias:string ->
@@ -4661,7 +4667,14 @@ let run_outer_loop ~(name : string) ~(client : string)
           (* #143c: deliver kickoff to codex via XML pipe (before deliver daemon
              starts).  The pipe write_fd is in scope from the fork block above.
              We write the kickoff as a <message> XML frame that Codex reads from
-             its --xml-input-fd. *)
+             its --xml-input-fd.
+
+             Note: the frame format here is deliberately simpler than the
+             deliver-daemon's format (which wraps content in a <c2c event=
+             "message" from="..." to="..."> inner envelope — see
+             [c2c_pty_inject.ml:xml_deliver_loop_daemon]).  The kickoff is
+             a raw user turn, not a c2c peer message, so the inner c2c
+             envelope is omitted. *)
           (match client, kickoff_prompt, codex_xml_pipe with
            | "codex", Some p, Some (_read_fd, write_fd) when p <> "" ->
                (try
