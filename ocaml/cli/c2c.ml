@@ -723,7 +723,12 @@ let list_cmd =
 (* --- subcommand: whoami --------------------------------------------------- *)
 
 let whoami_cmd =
-  let+ json = json_flag in
+  let keys =
+    Cmdliner.Arg.(value & flag & info [ "keys"; "K" ]
+      ~doc:"Also show the per-alias Ed25519 public key and fingerprint (from <broker-root>/keys/<alias>.ed25519).")
+  in
+  let+ json = json_flag
+  and+ keys = keys in
   mcp_nudge_if_needed ~cmd:"whoami";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let output_mode = if json then Json else Human in
@@ -746,17 +751,50 @@ hint: Run 'c2c init' to register and get started, or pass --session-id explicitl
                   | Some r -> Some r.alias
                   | None -> None))
       in
+      (* Load per-alias Ed25519 key if --keys was requested and alias is known *)
+      let identity_data =
+        if keys then
+          match alias with
+          | None -> None
+          | Some a ->
+              (match C2c_signing_helpers.per_alias_key_path ~alias:a with
+               | None -> None
+               | Some path ->
+                   (match Sys.file_exists path with
+                    | false -> None
+                    | true ->
+                        (match Relay_identity.load ~path () with
+                         | Ok id -> Some id
+                         | Error _ -> None)))
+        else None
+      in
       match output_mode with
       | Json ->
-          print_json
-            (`Assoc
-              [ ("session_id", `String sid)
-              ; ("alias", `String (Option.value alias ~default:""))
-              ])
+          let base = [
+            ("session_id", `String sid);
+            ("alias", `String (Option.value alias ~default:""));
+          ] in
+          let with_keys = match identity_data with
+            | None -> base
+            | Some id ->
+                let pk_b64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet id.Relay_identity.public_key in
+                base @ [
+                  ("public_key", `String pk_b64);
+                  ("fingerprint", `String id.Relay_identity.fingerprint);
+                  ("alg", `String id.Relay_identity.alg);
+                ]
+          in
+          print_json (`Assoc with_keys)
       | Human ->
           Printf.printf "alias:     %s\nsession_id: %s\n"
             (Option.value alias ~default:"(not registered)")
-            sid
+            sid;
+          (match identity_data with
+           | None -> ()
+           | Some id ->
+               let pk_b64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet id.Relay_identity.public_key in
+               Printf.printf "public_key: %s\nfingerprint: %s\nalg:        %s\n"
+                 pk_b64 id.Relay_identity.fingerprint id.Relay_identity.alg)
 
 (* --- subcommand: set-compact --------------------------------------------- *)
 
