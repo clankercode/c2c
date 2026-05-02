@@ -320,6 +320,43 @@ let test_send_all_exclude_aliases () =
         ["peer-b"] sent_aliases)
 
 (* ------------------------------------------------------------------------- *)
+(* send_all: tag=fail prepends 🔴 FAIL: prefix to queued content             *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_all_tag_fail_prefix () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      register_alive broker ~session_id:"session-sender" ~alias:"sender";
+      register_alive broker ~session_id:"session-a" ~alias:"peer-a";
+      register_alive broker ~session_id:"session-b" ~alias:"peer-b";
+      let args = `Assoc [
+        ("content", `String "review verdict");
+        ("tag", `String "fail");
+      ] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send_all ~broker
+           ~session_id_override:(Some "session-sender") ~arguments:args)
+      in
+      check bool "isError=false on tag=fail" false (get_is_error result);
+      (* peer-a and peer-b should both have received the FAIL:-prefixed message *)
+      let drain_a = Broker.drain_inbox ~drained_by:"test"
+        broker ~session_id:"session-a" in
+      check int "peer-a got one message" 1 (List.length drain_a);
+      let msg_a = List.hd drain_a in
+      check bool "peer-a content has fail-tag prefix" true
+        (contains_substring ~haystack:msg_a.C2c_mcp_helpers.content ~needle:"FAIL:");
+      check bool "peer-a content preserves body" true
+        (contains_substring ~haystack:msg_a.C2c_mcp_helpers.content ~needle:"review verdict");
+      let drain_b = Broker.drain_inbox ~drained_by:"test"
+        broker ~session_id:"session-b" in
+      check int "peer-b got one message" 1 (List.length drain_b);
+      let msg_b = List.hd drain_b in
+      check bool "peer-b content has fail-tag prefix" true
+        (contains_substring ~haystack:msg_b.C2c_mcp_helpers.content ~needle:"FAIL:");
+      check bool "peer-b content preserves body" true
+        (contains_substring ~haystack:msg_b.C2c_mcp_helpers.content ~needle:"review verdict"))
+
+(* ------------------------------------------------------------------------- *)
 (* send_all: sender is the only registration → sent_to is empty              *)
 (* ------------------------------------------------------------------------- *)
 
@@ -357,6 +394,7 @@ let test_set = [
   "send_all missing sender", `Quick, test_send_all_missing_sender;
   "send_all basic broadcast", `Quick, test_send_all_basic_broadcast;
   "send_all exclude_aliases", `Quick, test_send_all_exclude_aliases;
+  "send_all tag=fail prefix", `Quick, test_send_all_tag_fail_prefix;
   "send_all no recipients", `Quick, test_send_all_no_recipients;
 ]
 

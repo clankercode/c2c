@@ -377,24 +377,35 @@ let send_all ~broker ~session_id_override ~arguments =
                     | _ -> []
                   with _ -> []
                 in
-                let { Broker.sent_to; skipped } =
-                  Broker.send_all broker ~from_alias ~content ~exclude_aliases
+                (* #392: optional `tag` for fail/blocking/urgent body prefix. *)
+                let tag_arg =
+                  try match Yojson.Safe.Util.member "tag" arguments with
+                    | `String s -> Some s | _ -> None
+                  with _ -> None
                 in
-                (match session_id_override with Some sid -> Broker.touch_session broker ~session_id:sid | None -> (match current_session_id () with Some sid -> Broker.touch_session broker ~session_id:sid | None -> ()));
-                let result_json =
-                  `Assoc
-                    [ ( "sent_to",
-                        `List (List.map (fun alias -> `String alias) sent_to) )
-                    ; ( "skipped",
-                        `List
-                          (List.map
-                             (fun (alias, reason) ->
-                               `Assoc
-                                 [ ("alias", `String alias)
-                                 ; ("reason", `String reason)
-                                 ])
-                             skipped) )
-                    ]
-                  |> Yojson.Safe.to_string
-                in
-                Lwt.return (tool_ok result_json)))
+                match parse_send_tag tag_arg with
+                  | Error msg ->
+                      Lwt.return (tool_err (Printf.sprintf "send_all rejected: %s" msg))
+                  | Ok tag_opt ->
+                      let content = (tag_to_body_prefix tag_opt) ^ content in
+                      let { Broker.sent_to; skipped } =
+                        Broker.send_all broker ~from_alias ~content ~exclude_aliases
+                      in
+                      (match session_id_override with Some sid -> Broker.touch_session broker ~session_id:sid | None -> (match current_session_id () with Some sid -> Broker.touch_session broker ~session_id:sid | None -> ()));
+                      let result_json =
+                        `Assoc
+                          [ ( "sent_to",
+                              `List (List.map (fun alias -> `String alias) sent_to) )
+                          ; ( "skipped",
+                              `List
+                                (List.map
+                                   (fun (alias, reason) ->
+                                     `Assoc
+                                       [ ("alias", `String alias)
+                                       ; ("reason", `String reason)
+                                       ])
+                                   skipped) )
+                          ]
+                        |> Yojson.Safe.to_string
+                      in
+                      Lwt.return (tool_ok result_json)))
