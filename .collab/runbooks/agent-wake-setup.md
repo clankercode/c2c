@@ -14,7 +14,8 @@ solve different problems. Pick based on workload, not reflex.
 | Your role                                       | Recommended setup                                  |
 |-------------------------------------------------|---------------------------------------------------|
 | Any role via `c2c start` (managed session)     | Native scheduling (Option 0) — automatic          |
-| Coordinator / planner (non-managed)            | `/loop 4m …` + broad inotify Monitor             |
+| Raw `claude` with c2c MCP (non-managed)        | MCP timer (Option 0b) — set `C2C_MCP_SCHEDULE_TIMER=1` |
+| Coordinator / planner (non-managed, no MCP)    | `/loop 4m …` + broad inotify Monitor             |
 | Coder working a specific task (non-managed)     | `/loop 4m …` only                                |
 | Debugging broker routing / message flow         | Broad inotify Monitor only (no /loop needed)     |
 | Idle observer (just want to see DMs)            | `/loop 10m …`                                    |
@@ -103,7 +104,53 @@ c2c schedule rm wake
 - ✓ Hot-reloaded — changes take effect within 10s, no restart needed.
 - ✓ Dedup is automatic — setting a schedule with the same name overwrites.
 - ✗ Only works for managed sessions (`c2c start`). Non-managed sessions
-  must fall back to Option 1 or 2.
+  must fall back to Option 0b, Option 1, or Option 2.
+
+---
+
+## Option 0b: MCP-server-side scheduling (raw Claude Code sessions)
+
+**What it is:** The MCP server (`c2c-mcp-server`) has a built-in Lwt
+schedule timer that reads `.c2c/schedules/<alias>/*.toml` — the same
+schedule files as Option 0 — and fires due schedules as self-DMs. This
+means any session with c2c MCP configured gets native scheduling
+automatically, even without `c2c start`.
+
+**When to use:**
+- Your session is a raw `claude` invocation (not launched via `c2c start`)
+  but has the c2c MCP server configured in its MCP settings.
+- You want native scheduling without the external `heartbeat` binary or
+  Monitor tool.
+
+**How to activate:**
+
+Set the environment variable before launching:
+```bash
+export C2C_MCP_SCHEDULE_TIMER=1
+claude
+```
+
+Or configure it in your MCP settings environment block.
+
+**How it works internally:**
+- The MCP server starts a background Lwt task that stat-polls the
+  schedule directory every 5s.
+- When a schedule is due and the idle gate passes (`should_fire` via
+  `C2c_schedule_fire`), it fires a self-DM via
+  `C2c_schedule_fire.enqueue_heartbeat`.
+- The inbox watcher detects the new message and emits a channel
+  notification (for channel-capable clients) or the message waits for
+  the next `poll_inbox` call.
+
+**Dedup with `c2c start` (S6c):** Managed sessions (`c2c start`) set
+`C2C_MCP_SCHEDULE_TIMER=1` in the MCP child's env automatically and
+skip their own schedule watcher thread. No double-firing.
+
+**Tradeoffs:**
+- ✓ Same zero-cost, hot-reload, survives-compaction benefits as Option 0.
+- ✓ Works without `c2c start` — any MCP-configured session qualifies.
+- ✗ Requires `C2C_MCP_SCHEDULE_TIMER=1` env var (opt-in, default OFF).
+- ✗ Only works for sessions with c2c MCP configured (no MCP = no timer).
 
 ---
 
