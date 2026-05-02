@@ -25,6 +25,88 @@ let is_c2c_shim path =
     scan 0
   with _ -> false
 
+(** {1 Git-spawn circuit breaker}
+
+    Process-level counter that trips when git spawn rate exceeds the
+    configured threshold (default: 5 spawns / 3-second window).
+
+    All git invocations MUST go through [git_first_line] or [git_all_lines].
+    The counter is checked BEFORE each spawn, so no caller can bypass it.
+
+    Env-var configuration:
+    - C2C_GIT_SPAWN_WINDOW   float  sliding window in seconds  (default 3.0)
+    - C2C_GIT_SPAWN_MAX      int    max spawns per window      (default 5)
+    - C2C_GIT_BACKOFF_SEC     float  backoff after trip (s)    (default 2.0) *)
+
+(** Current sliding-window counter state. *)
+let git_spawn_window () =
+  float_of_string_opt (Sys.getenv_opt "C2C_GIT_SPAWN_WINDOW" |> Option.value ~default:"")
+  |> Option.value ~default:3.0
+
+let git_spawn_max () =
+  int_of_string_opt (Sys.getenv_opt "C2C_GIT_SPAWN_MAX" |> Option.value ~default:"")
+  |> Option.value ~default:5
+
+let git_backoff_sec () =
+  float_of_string_opt (Sys.getenv_opt "C2C_GIT_BACKOFF_SEC" |> Option.value ~default:"")
+  |> Option.value ~default:2.0
+
+type git_counter = {
+  mutable events : float list;  (* timestamps of recent git spawns *)
+  mutable tripped : bool;       (* circuit is open *)
+  mutable trip_epoch : float;   (* Unix.gettimeofday () when circuit tripped *)
+  mutable logged_this_trip : bool; (* already logged this trip epoch *)
+}
+
+let git_counter : git_counter = {
+  events = [];
+  tripped = false;
+  trip_epoch = 0.0;
+  logged_this_trip = false;
+}
+
+(** Check and record one git spawn. Returns [true] if the spawn is allowed,
+    [false] if the circuit is open (throttled). Must be called before every
+    git process spawn. *)
+let check_and_record_git_spawn () : bool =
+  let now = Unix.gettimeofday () in
+  let window = git_spawn_window () in
+  let max_spawns = git_spawn_max () in
+  let backoff = git_backoff_sec () in
+  (* Already tripped — check if backoff has elapsed *)
+  if git_counter.tripped then
+    if now -. git_counter.trip_epoch >= backoff then
+      (* Backoff elapsed — reset and allow *)
+      (git_counter.tripped <- false;
+       git_counter.events <- [];
+       git_counter.logged_this_trip <- false;
+       true)
+    else
+      false
+  else
+    (* Prune events outside the sliding window *)
+    let cutoff = now -. window in
+    let recent = List.filter (fun t -> t > cutoff) git_counter.events in
+    git_counter.events <- recent;
+    if List.length recent >= max_spawns then
+      (* Trip the circuit — log once per trip epoch *)
+      (git_counter.tripped <- true;
+       git_counter.trip_epoch <- now;
+       git_counter.logged_this_trip <- false;
+       if not git_counter.logged_this_trip then
+         (prerr_endline
+            (Printf.sprintf
+               "C2C_GIT_CIRCUIT_BREAKER: git spawn rate %.0f/s exceeds threshold \
+                (%d spawns / %.1fs window). Circuit tripped. Backoff %.1fs."
+               (float (List.length recent) /. window)
+               max_spawns window backoff);
+          git_counter.logged_this_trip <- true);
+       false)
+    else
+      (git_counter.events <- now :: recent; true)
+
+(** {1 Git binary resolution} *)
+
 let find_real_git () =
   let shim_dir = Sys.getenv_opt "C2C_GIT_SHIM_DIR" in
   let same_path a b =
@@ -61,21 +143,23 @@ let find_real_git () =
   search dirs
 
 let git_first_line args =
-  let git_path = find_real_git () in
-  let argv = Array.of_list (git_path :: args) in
-  match Unix.open_process_args_in git_path argv with
-  | ic ->
-      let line =
-        try
-          let l = input_line ic in
-          ignore (Unix.close_process_in ic);
-          String.trim l
-        with End_of_file ->
-          ignore (Unix.close_process_in ic);
-          ""
-      in
-      if line = "" then None else Some line
-  | exception _ -> None
+  if not (check_and_record_git_spawn ()) then None
+  else
+    let git_path = find_real_git () in
+    let argv = Array.of_list (git_path :: args) in
+    match Unix.open_process_args_in git_path argv with
+    | ic ->
+        let line =
+          try
+            let l = input_line ic in
+            ignore (Unix.close_process_in ic);
+            String.trim l
+          with End_of_file ->
+            ignore (Unix.close_process_in ic);
+            ""
+        in
+        if line = "" then None else Some line
+    | exception _ -> None
 
 let git_common_dir () =
   match git_first_line [ "rev-parse"; "--git-common-dir" ] with
@@ -114,20 +198,22 @@ let git_commit_author_name sha =
 (** Multi-line variant of [git_first_line] — returns all stdout lines
     (trimmed; empty lines dropped). *)
 let git_all_lines args =
-  let git_path = find_real_git () in
-  let argv = Array.of_list (git_path :: args) in
-  match Unix.open_process_args_in git_path argv with
-  | ic ->
-      let lines = ref [] in
-      (try
-         while true do
-           lines := input_line ic :: !lines
-         done
-       with End_of_file -> ());
-      ignore (Unix.close_process_in ic);
-      let raw = List.rev_map String.trim !lines in
-      List.filter (fun s -> s <> "") raw
-  | exception _ -> []
+  if not (check_and_record_git_spawn ()) then []
+  else
+    let git_path = find_real_git () in
+    let argv = Array.of_list (git_path :: args) in
+    match Unix.open_process_args_in git_path argv with
+    | ic ->
+        let lines = ref [] in
+        (try
+           while true do
+             lines := input_line ic :: !lines
+           done
+         with End_of_file -> ());
+        ignore (Unix.close_process_in ic);
+        let raw = List.rev_map String.trim !lines in
+        List.filter (fun s -> s <> "") raw
+    | exception _ -> []
 
 (** Extract the email from a [Co-authored-by:] trailer value of the form
     ["Name <email>"]. Returns the trimmed email, or [None] if no
