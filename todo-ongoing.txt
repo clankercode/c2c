@@ -16,9 +16,9 @@ Project Folder: `.collab/design/2026-05-02-c2c-native-scheduling.md`
 
 Goal: replace external `heartbeat` binary + Monitor tool dependency with c2c-native self-scheduling. Agents write TOML schedule files to `.c2c/schedules/<alias>/`; the managed session timer thread delivers self-DMs at configured intervals with idle-gating and hot-reload.
 
-Status: **active (S1+S2+S3 shipped, S4 in flight)** — S1 `1341222e`+`20cadb20` (CLI: `c2c schedule set/list/rm/enable/disable`), S2 `8315b0fd` (startup loader reads `.c2c/schedules/` at launch), S3 `a67b731f`+`a496deb6` (stat-poll hot-reload — schedule changes picked up within one interval without restart). stanza-coder authored all slices. Design doc complete with 5-slice plan.
+Status: **done (S1–S5 all shipped 2026-05-02)** — S1 `1341222e`+`20cadb20` (CLI), S2 `8315b0fd` (startup loader), S3 `a67b731f`+`a496deb6` (hot-reload), S4 `fc03328b` (MCP tools), S5 `1fabf720` (migration — role files + runbook). stanza-coder authored all 5 slices. Design doc to production in one session cycle.
 
-Next: S4 (MCP tool surface: `schedule_set/list/rm`) — stanza has subagent dispatched. S5 (migration: update role files + runbook to use `c2c schedule set` instead of Monitor + heartbeat) follows.
+Next: monitor in dogfood. Agents on managed sessions can now use `c2c schedule set` instead of Monitor+heartbeat. External heartbeat binary remains as fallback for non-managed sessions.
 
 ### Kimi-as-peer
 
