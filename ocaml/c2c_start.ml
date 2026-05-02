@@ -4448,6 +4448,19 @@ let run_outer_loop ~(name : string) ~(client : string)
               Some (Unix.pipe ~cloexec:false ())
             else None
           in
+          (* S10 (#482): compute pre-deliver hook path for codex clients.
+             The hook is sourced before exec so deliver-watch runs as a sibling
+             of the client (same outer wrapper), not a child of the client.
+             Only for clients that need deliver (codex, codex-headless). *)
+          let pre_deliver_hook_opt =
+            if cfg.needs_deliver then
+              let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+              let hook_path =
+                Filename.concat home (Printf.sprintf ".c2c/clients/%s/start-hooks/pre-deliver.sh" client)
+              in
+              if Sys.file_exists hook_path then Some hook_path else None
+            else None
+          in
           let pid = match Unix.fork () with
             | 0 ->
                 (try ignore (Sys.signal Sys.sigchld Sys.Signal_default) with _ -> ());
@@ -4497,15 +4510,32 @@ let run_outer_loop ~(name : string) ~(client : string)
                      dup_fifo_to_fd events_path [ Unix.O_WRONLY ] fd6;
                      dup_fifo_to_fd responses_path [ Unix.O_RDWR ] fd7
                  | _ -> ());
-                (try Unix.close outer_stderr_fd with _ -> ());
-                (* [#504] Echo the resolved launch command from the child so operators can
-                   see exactly what execvpe received — after all fd redirects are done. *)
-                Printf.eprintf "[c2c-start] launch (child): %s\n%!"
-                  (String.concat " " (List.map Filename.quote cmd));
-                (try Unix.execvpe (List.hd cmd) (Array.of_list cmd) env
-                 with e ->
-                   Printf.eprintf "exec %s failed: %s\n%!" binary_path (Printexc.to_string e);
-                   exit 127)
+                 (try Unix.close outer_stderr_fd with _ -> ());
+                 (* [#504] Echo the resolved launch command from the child so operators can
+                    see exactly what execvpe received — after all fd redirects are done. *)
+                 Printf.eprintf "[c2c-start] launch (child): %s\n%!"
+                   (String.concat " " (List.map Filename.quote cmd));
+                 (match pre_deliver_hook_opt with
+                  | Some hook_path ->
+                      (* S10 (#482): source the pre-deliver hook before exec.
+                         The hook forks deliver-watch.sh as a sibling of the client.
+                         C2C_DELIVER_XML_FD=4 is hardcoded: fd 4 is duped to the codex
+                         xml pipe write end in the child before this point. *)
+                      let args_str = String.concat " " (List.map Filename.quote cmd) in
+                      let hook_cmd =
+                        Printf.sprintf "C2C_DELIVER_XML_FD=4 source %s && exec %s"
+                          (Filename.quote hook_path) args_str
+                      in
+                      let bash_argv = [|"bash"; "-c"; hook_cmd|] in
+                      (try Unix.execvpe "bash" bash_argv env
+                       with e ->
+                         Printf.eprintf "exec bash (hook) failed: %s\n%!" (Printexc.to_string e);
+                         exit 127)
+                  | None ->
+                      (try Unix.execvpe (List.hd cmd) (Array.of_list cmd) env
+                       with e ->
+                         Printf.eprintf "exec %s failed: %s\n%!" binary_path (Printexc.to_string e);
+                         exit 127))
             | p -> p
           in
           (* Record inner pid so `c2c restart-self` can SIGTERM just the
