@@ -113,9 +113,9 @@ The GUI will:
 
 | Item | Status |
 |------|--------|
-| `just gui-check` fails: TS5101 baseUrl deprecation | Pre-existing — `tsconfig.json` line 18 uses deprecated `baseUrl`; use `just gui-dev` for development |
-| `@tanstack/react-virtual` not installed | Run `bun install` in `gui/` directory first |
-| Implicit `any` types on `el` and `virtualRow` params in EventFeed.tsx | Benign pre-existing; code runs fine |
+| `just gui-check` fails: TS5101 baseUrl deprecation | ✅ FIXED (2026-05-03) — TS 5.9.3 does not emit TS5101 for `baseUrl` with `moduleResolution: bundler`; `tsc --noEmit` passes cleanly |
+| `@tanstack/react-virtual` not installed | ✅ FIXED (2026-05-03) — run `bun install` in `gui/` first time; both `el` and `virtualRow` implicit-`any` errors were secondary effects of the missing package |
+| Implicit `any` types on `el` and `virtualRow` params in EventFeed.tsx | ✅ FIXED (2026-05-03) — resolved by `bun install` installing `@tanstack/react-virtual` types |
 | Dark/light theme toggle | Not implemented |
 | Message search | UI placeholder; not wired up |
 | File/paste attachments | Not implemented |
@@ -133,10 +133,8 @@ The GUI will:
 - Check `~/.local/bin/c2c list` to confirm peers are registered
 
 **Build fails (`just gui-check` or `tsc`):**
-- First time: run `bun install` in the `gui/` directory
-- If TS5101 baseUrl error: use `just gui-dev` for development
-  (Vite dev server bypasses the broken type check). Production build
-  (`vite build`) works fine — only `tsc` type-checking is affected.
+- First time: run `bun install` in the `gui/` directory — installs all dependencies including `@tanstack/react-virtual`
+- If any tsc type errors: `just gui-dev` (Vite dev server) still works; report the type error to the maintainers
 
 **Permission panel not appearing:**
 - The panel only shows for incoming permission requests from other agents
