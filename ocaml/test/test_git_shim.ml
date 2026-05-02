@@ -40,6 +40,7 @@ let shell cmd =
 (** Generate both shims into a fresh tmpdir using the real install path.
     Returns the tmpdir path. Caller must [rmrf] when done. *)
 let generate_shims () =
+  Git_helpers.reset_git_circuit_breaker ();
   let dir = tmpdir "test_git_shim" in
   let old_env = Sys.getenv_opt "C2C_GIT_SHIM_DIR" in
   Unix.putenv "C2C_GIT_SHIM_DIR" dir;

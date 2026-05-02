@@ -105,6 +105,13 @@ let check_and_record_git_spawn () : bool =
     else
       (git_counter.events <- now :: recent; true)
 
+(** Reset the in-process circuit breaker (for test use). *)
+let reset_git_circuit_breaker () =
+  git_counter.events <- [];
+  git_counter.tripped <- false;
+  git_counter.trip_epoch <- 0.0;
+  git_counter.logged_this_trip <- false
+
 (** {1 Git binary resolution} *)
 
 let find_real_git () =
