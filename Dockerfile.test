@@ -43,7 +43,7 @@ FROM python:3.12-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates libgmp10 libssl3 libev4 libsqlite3-0 tini curl openssh-client inotify-tools sudo git tmux \
-    && rm -rf /var/lib/apt/lists/ \
+    && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home /home/testagent --shell /usr/sbin/nologin testagent \
     && mkdir -p /home/testagent /var/lib/c2c \
     && pip install --no-cache-dir pytest pytest-timeout \
