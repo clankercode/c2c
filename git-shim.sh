@@ -102,6 +102,7 @@ main() {
     case "$1" in
         reset)
             # "git reset" — check for --hard
+            local orig_args=("$@")
             local target=""
             local saw_hard=false
             local saw_double_hyphen=false
@@ -128,8 +129,8 @@ main() {
             done
 
             if [ "$saw_hard" != "true" ]; then
-                # Not --hard; let git handle it (pass through full arg list including reset)
-                exec /usr/bin/git reset "$@"
+                # Not --hard; let git handle it (pass through full arg list)
+                exec /usr/bin/git "${orig_args[@]}"
             fi
 
             # Interception point: git reset --hard <target>
