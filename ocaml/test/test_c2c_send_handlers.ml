@@ -413,10 +413,15 @@ let test_send_all_receipt_has_enc_arrays () =
         |> List.map (fun j -> to_string j)
         |> List.sort compare
       in
-      (* Local peers → all plaintext, none encrypted *)
+      let key_changed =
+        body |> member "key_changed" |> to_list
+        |> List.map (fun j -> to_string j)
+      in
+      (* Local peers → all plaintext, none encrypted, none key_changed *)
       check (list string) "encrypted is empty for local peers" [] encrypted;
       check (list string) "plaintext contains both peers"
         ["peer-a"; "peer-b"] plaintext;
+      check (list string) "key_changed is empty" [] key_changed;
       check (list string) "sent_to = plaintext (all local)"
         ["peer-a"; "peer-b"] sent_to)
 

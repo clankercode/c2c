@@ -371,6 +371,7 @@ let broadcast_to_all ~broker ~from_alias ~content ~exclude_aliases ~tag_arg
     let seen : (string, unit) Hashtbl.t = Hashtbl.create 16 in
     let sent_encrypted = ref [] in
     let sent_plaintext = ref [] in
+    let key_changed = ref [] in
     let skipped = ref [] in
     let from_cf = Broker.alias_casefold from_alias in
     List.iter (fun (reg : C2c_mcp_helpers.registration) ->
@@ -384,7 +385,7 @@ let broadcast_to_all ~broker ~from_alias ~content ~exclude_aliases ~tag_arg
           let ts = Unix.gettimeofday () in
           match encrypt_content_for_recipient ~broker ~from_alias ~to_alias:reg.alias ~content ~ts with
           | `Key_changed alias ->
-            skipped := (alias, "key_changed") :: !skipped
+            key_changed := alias :: !key_changed
           | `Encrypted enc_content ->
             (try
                Broker.enqueue_message broker ~from_alias ~to_alias:reg.alias ~content:enc_content ();
@@ -401,6 +402,7 @@ let broadcast_to_all ~broker ~from_alias ~content ~exclude_aliases ~tag_arg
     ) regs;
     let sent_encrypted = List.rev !sent_encrypted in
     let sent_plaintext = List.rev !sent_plaintext in
+    let key_changed = List.rev !key_changed in
     let skipped = List.rev !skipped in
     let all_sent = sent_encrypted @ sent_plaintext in
     let result_json =
@@ -411,6 +413,8 @@ let broadcast_to_all ~broker ~from_alias ~content ~exclude_aliases ~tag_arg
             `List (List.map (fun alias -> `String alias) sent_encrypted) )
         ; ( "plaintext",
             `List (List.map (fun alias -> `String alias) sent_plaintext) )
+        ; ( "key_changed",
+            `List (List.map (fun alias -> `String alias) key_changed) )
         ; ( "skipped",
             `List
               (List.map
