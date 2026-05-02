@@ -401,6 +401,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
   Buffer.add_string buf "C2C_MCP_CLIENT_TYPE = \"codex\"\n";
+  Buffer.add_string buf "C2C_MCP_AUTO_DRAIN_CHANNEL = \"0\"\n";
   Buffer.add_string buf "C2C_MCP_AUTO_JOIN_ROOMS = \"swarm-lounge\"\n";
   Buffer.add_string buf "C2C_AUTO_JOIN_ROLE_ROOM = \"1\"\n";
   List.iter (fun tool ->
@@ -468,8 +469,8 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path existing : Yojson.Safe.t
       ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
       ; ("env", `Assoc
           [ ("C2C_MCP_BROKER_ROOT", `String root)
-          ; ("C2C_MCP_SESSION_ID", `String alias_val)
           ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+          ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
           ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
           ])
@@ -581,8 +582,8 @@ let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_comman
       ; ("args", `List args_list)
       ; ("env", `Assoc
           [ ("C2C_MCP_BROKER_ROOT", `String root)
-          ; ("C2C_MCP_SESSION_ID", `String alias_val)
           ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+          ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
           ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
           ])
@@ -967,6 +968,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
   let env_pairs =
     [ ("C2C_MCP_BROKER_ROOT", `String root)
     ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+    ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
     ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
     ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
     ] @ (if channel_delivery then [ ("C2C_MCP_CHANNEL_DELIVERY", `String "1") ] else [])
@@ -1215,8 +1217,8 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_wat
       ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
       ; ("env", `Assoc
           [ ("C2C_MCP_BROKER_ROOT", `String root)
-          ; ("C2C_MCP_SESSION_ID", `String alias_val)
           ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+          ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
           ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
           ])

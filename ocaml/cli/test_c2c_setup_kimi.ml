@@ -177,7 +177,7 @@ let test_other_servers_preserved () =
                 (match List.assoc_opt "env" entry_fields with
                  | Some (`Assoc env_fields) ->
                      Alcotest.(check bool) "new alias in env"
-                       true (List.mem_assoc "C2C_MCP_SESSION_ID" env_fields)
+                       true (List.mem_assoc "C2C_MCP_AUTO_REGISTER_ALIAS" env_fields)
                  | _ -> Alcotest.fail "env missing from c2c entry")
             | _ -> Alcotest.fail "c2c entry missing")
        | _ -> Alcotest.fail "mcpServers missing")
