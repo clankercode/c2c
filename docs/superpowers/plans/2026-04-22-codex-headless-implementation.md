@@ -1,5 +1,7 @@
 # Codex Headless Managed Client Implementation Plan
 
+> **Archived (2026-05-02):** This plan is historical — `codex-headless` was not implemented as described. The `needs_wire_daemon = false` field references in this document reflect an obsolete client descriptor schema that was removed in the Kimi S4 wire-bridge cleanup (#kimi-wire-bridge-cleanup). Do not use this as a implementation guide.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `c2c start codex-headless` as a managed client that launches `codex-turn-start-bridge`, uses one durable XML user-message lane for broker delivery and operator steering, and persists an opaque Codex `thread_id` for resume.
