@@ -4867,7 +4867,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id_override : string option) ?(model_override : string option)
     ?(role_pmodel_override : string option)
-    ?(one_hr_cache = false)
+    ?(one_hr_cache = false) ?(new_session = false)
     ?(kickoff_prompt : string option) ?(auto_join_rooms : string option)
     ?(agent_name : string option) ?(reply_to : string option)
     ?(tmux_location : string option) ?(tmux_command : string list option)
@@ -5067,6 +5067,10 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
              "error: instance '%s' was previously a %s instance. Cannot resume as %s. Use 'c2c stop %s' first.\n%!"
              name ex.client client name;
            exit 1);
+        if new_session then
+          Printf.eprintf "[c2c start] --new-session: starting fresh session for '%s' (discarding saved session %s).\n%!" name ex.resume_session_id
+        else
+          Printf.eprintf "[c2c start] resuming session for '%s'. Use --new-session to start fresh.\n%!" name;
         let bo = if binary_override = None then None else binary_override in
         let ao = if alias_override = None then Some ex.alias else alias_override in
         (* #471: do NOT silently inherit persisted extra_args on a plain
@@ -5104,6 +5108,15 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
             | None -> None
         in
         let rs =
+          if new_session then begin
+            (* Force fresh session — don't resume the old one *)
+            (* For opencode, also remove the ses_* file so it doesn't resume *)
+            if client = "opencode" then begin
+              let ses_file = instance_dir name // "opencode-session.txt" in
+              (try Sys.remove ses_file with _ -> ())
+            end;
+            Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))
+          end else
           match session_id_override with
           | Some s -> Some s
           | None ->

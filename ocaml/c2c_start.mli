@@ -647,6 +647,7 @@ val cmd_start :
   ?model_override:string ->
   ?role_pmodel_override:string ->
   ?one_hr_cache:bool ->
+  ?new_session:bool ->
   ?kickoff_prompt:string ->
   ?auto_join_rooms:string ->
   ?agent_name:string ->
@@ -658,7 +659,8 @@ val cmd_start :
   int
 (** [cmd_start] validates and starts a managed instance. Returns 0 on success,
     1 on error. Handles duplicate-running checks, config inheritance, and
-    stable session ID generation. *)
+    stable session ID generation. When [~new_session:true], discards the saved
+    session ID and starts a fresh session even when an existing config exists. *)
 
 val filter_env_for_restart : unit -> string array
 (** [filter_env_for_restart ()] returns a copy of the current process environment

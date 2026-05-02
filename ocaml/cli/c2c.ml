@@ -8438,6 +8438,12 @@ let start_cmd =
     Cmdliner.Arg.(value & pos_right 1 string [] & info [] ~docv:"CMD"
       ~doc:"For CLIENT=tmux, optional command argv to type into the target pane. Use -- before the command.")
   in
+  let new_session_flag =
+    Cmdliner.Arg.(value & flag & info [ "new-session" ]
+      ~doc:"Start a fresh session even when an existing instance config is found. \
+            Discards the saved session ID; the agent starts with a clean transcript. \
+            Use when resumed sessions have grown too large.")
+  in
   let foreground_flag =
     Cmdliner.Arg.(value & flag & info [ "foreground"; "fg" ]
       ~doc:"For CLIENT=relay-connect: run connector in the foreground instead of \
@@ -8472,6 +8478,7 @@ let start_cmd =
   and+ tmux_loc = tmux_loc
   and+ tmux_tail = tmux_tail
   and+ extra_argv = extra_argv
+  and+ new_session = new_session_flag
   and+ foreground_flag = foreground_flag
   and+ relay_url_opt = relay_url_opt
   and+ interval_opt = interval_opt in
@@ -8819,7 +8826,7 @@ let start_cmd =
       ?session_id_override:session_id_opt
       ?model_override
       ?role_pmodel_override
-      ~one_hr_cache
+      ~one_hr_cache ~new_session
       ?kickoff_prompt
       ?agent_name
       ?auto_join_rooms
