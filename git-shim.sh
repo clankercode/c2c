@@ -24,16 +24,22 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Runaway-spawn guard: defense-in-depth against rev-parse storms.
-# Count live shim/git processes; if too many are running, pass through to
-# the real git directly so we don't add yet another process to an already
-# overloaded system.  C2C_SHIM_SPAWN_MAX (default 15) controls the
-# threshold, aligned with the OCaml circuit breaker default.
+# Count live git-pre-reset processes; if too many are running, pass through
+# to the real git directly so we don't pile onto an overloaded system.
+#
+# C2C_SHIM_SPAWN_MAX (default 15) controls the threshold, aligned with
+# the OCaml circuit breaker default.
+#
+# #672 fix: the old pgrep -f count was inflated because:
+#   (a) pgrep matched itself — its own argv contains the pattern string
+#   (b) no self-exclusion — the comment said "subtract 1" but the code
+#       never did
+# Fix: pipe pgrep output through grep -v to exclude our own PID ($$).
+# The pgrep process exits before wc runs (pipeline scheduling), so it
+# doesn't self-count in the pipe-based variant.
 # ---------------------------------------------------------------------------
 if [ -z "${C2C_SHIM_GUARD_DISABLE:-}" ]; then
-    # pgrep matches this process too (we are 'git' in PATH), so subtract 1.
-    # This is approximate — if the real /usr/bin/git is also in PATH (it
-    # shouldn't be), those processes are harmless noise here.
-    shim_count=$(pgrep -c -f "git-shim|git-pre-reset" 2>/dev/null || echo "0")
+    shim_count=$(pgrep -f "git-pre-reset" 2>/dev/null | grep -vc "^$$\$" || echo "0")
     spawn_max="${C2C_SHIM_SPAWN_MAX:-15}"
     if [ "$shim_count" -gt "$spawn_max" ]; then
         echo "git-shim: WARNING: $shim_count shim processes running (threshold $spawn_max); bypassing shim to avoid spawn storm." >&2
