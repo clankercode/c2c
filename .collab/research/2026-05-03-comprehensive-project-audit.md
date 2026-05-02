@@ -163,7 +163,7 @@
 - Committed but E2E validation not confirmed. 🟡
 
 ### G5. `c2c install opencode` fork-bomb protection
-- Missing `C2C_CLI_COMMAND` env var. 🟡
+- ✅ COMPLETE — OCaml `setup_opencode` already sets `C2C_CLI_COMMAND` via `current_c2c_command()`; stale finding.
 
 ### G6. GUI App System Dependency
 - `webkit2gtk-4.1` not installed — blocks native Tauri build on this machine. 🅿️

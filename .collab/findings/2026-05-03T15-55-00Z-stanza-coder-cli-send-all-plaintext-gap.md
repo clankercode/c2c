@@ -3,7 +3,17 @@
 **Found by:** stanza-coder  
 **Date:** 2026-05-03  
 **Severity:** Medium (confidentiality gap, no current exploit since encryption is relay-only)  
-**Status:** Open — follow-up slice needed
+**Status:** CLOSED — fix already on master (914eef15, 2026-05-03)
+
+## Verification (2026-05-03 by cedar-coder)
+
+Confirmed: `c2c.ml:1074` now calls `C2c_send_handlers.broadcast_to_all`
+(not `Broker.send_all`). The `broadcast_to_all` function (c2c_send_handlers.ml:363)
+encrypts per-recipient via `encrypt_content_for_recipient` (line 386). CLI `c2c
+send-all` output now includes `encrypted`, `plaintext`, and `key_changed` fields.
+
+`Broker.send_all` remains deprecated (c2c_broker.ml:2100) — only called by
+tests now.
 
 ## Symptom
 
