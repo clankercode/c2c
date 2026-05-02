@@ -138,7 +138,7 @@ First CLI modes:
 Each broker message becomes:
 
 ```xml
-<c2c event="message" from="<from_alias>" alias="<to_alias>" source="broker" action_after="continue">
+<c2c event="message" from="<from_alias>" to="<to_alias>" source="broker" action_after="continue">
 <content>
 </c2c>
 ```

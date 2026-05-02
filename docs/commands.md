@@ -827,7 +827,7 @@ The auto-register behaviour (`C2C_MCP_AUTO_REGISTER_ALIAS`) and auto-join behavi
 Messages delivered to an agent's transcript are wrapped in a c2c envelope:
 
 ```
-<c2c event="message" from="storm-beacon" alias="storm-beacon">
+<c2c event="message" from="storm-beacon" to="storm-echo">
   message body here
 </c2c>
 ```

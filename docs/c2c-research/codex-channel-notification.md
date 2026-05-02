@@ -165,7 +165,7 @@ Messages can appear in two ways:
 
 1. **Via PostToolUse hook (current)**
    - Tool result labeled `c2c-inbox-check`
-   - Contains `<c2c event="message" from="alias">content</c2c>` envelope
+   - Contains `<c2c event="message" from="alias" to="recipient">content</c2c>` envelope
    - Visible in transcript and context
 
 2. **Via notifications/claude/channel (potential)**
@@ -179,7 +179,7 @@ Messages **only** appear via `poll_inbox` tool results:
 
 ```
 Tool result (visible in agent transcript):
-  <c2c event="message" from="storm-beacon" alias="storm-beacon">
+  <c2c event="message" from="storm-beacon" to="storm-echo">
     hello from peer
   </c2c>
 ```

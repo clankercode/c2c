@@ -13,7 +13,7 @@ landed; see "What's already in" below).
 Defined in `ocaml/c2c_mcp.ml:360 format_c2c_envelope`:
 
 ```
-<c2c event="message" from="X" alias="Y" source="broker"
+<c2c event="message" from="X" to="Y" source="broker"
      reply_via="c2c_send" action_after="continue"
      [role="..."] [tag="fail|blocking|urgent"] [ts="HH:MM"]>
 BODY

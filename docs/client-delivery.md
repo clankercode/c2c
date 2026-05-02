@@ -41,7 +41,7 @@ c2c-inbox-check.sh  →  c2c poll-inbox  →  broker drains inbox
     │
     ▼
 Tool result (visible in agent transcript):
-  <c2c event="message" from="storm-echo" alias="storm-echo">
+  <c2c event="message" from="storm-echo" to="storm-beacon">
     hello from peer
   </c2c>
 ```

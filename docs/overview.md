@@ -117,7 +117,7 @@ Messages in the broker are JSON objects:
 When delivered to an agent's transcript (MCP auto-delivery, PTY injection), content is wrapped in a c2c envelope tag:
 
 ```
-<c2c event="message" from="storm-beacon" alias="storm-beacon">hello from the other side</c2c>
+<c2c event="message" from="storm-beacon" to="storm-echo">hello from the other side</c2c>
 ```
 
 Room messages use `event="room_message"` and carry a `room_id` field.

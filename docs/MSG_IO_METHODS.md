@@ -132,7 +132,7 @@ c2c-inbox-check.sh  -->  c2c hook  -->  broker drains inbox
     |
     v
 Tool result (visible in agent transcript):
-  <c2c event="message" from="storm-echo" alias="storm-echo">
+  <c2c event="message" from="storm-echo" to="storm-beacon">
     hello from peer
   </c2c>
 ```
@@ -290,7 +290,7 @@ When called, it:
    `rename`).
 5. Returns the drained messages as the tool result.
 
-Messages are returned in `<c2c event="message" from="..." alias="...">` envelope
+Messages are returned in `<c2c event="message" from="..." to="...">` envelope
 format. A companion tool `peek_inbox` performs the same read without draining
 (non-destructive).
 
@@ -603,7 +603,7 @@ Recipient's inbox file
 poll_inbox drains inbox --> archive --> returns messages
     |
     v
-Agent receives <c2c event="message" from="..." alias="...">body</c2c>
+Agent receives <c2c event="message" from="..." to="...">body</c2c>
 ```
 
 ---

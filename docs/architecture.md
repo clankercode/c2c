@@ -126,7 +126,7 @@ For delivery surfaces that inject into the agent's transcript (MCP
 auto-delivery, PTY injection fallback), the content is wrapped in:
 
 ```
-<c2c event="message" from="<name>" alias="<alias>">body</c2c>
+<c2c event="message" from="<sender>" to="<recipient>">body</c2c>
 ```
 
 `c2c verify` counts these markers to prove delivery end-to-end.

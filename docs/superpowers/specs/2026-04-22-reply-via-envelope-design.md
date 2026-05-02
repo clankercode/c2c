@@ -14,7 +14,7 @@ The `<c2c event="message" ...>` XML envelope currently has no explicit reply med
 Add `reply_via="c2c_send"` attribute to the envelope:
 
 ```
-<c2c event="message" from="coordinator1" alias="jungel-coder"
+<c2c event="message" from="coordinator1" to="jungel-coder"
      source="broker" reply_via="c2c_send" action_after="continue">
 message content here
 </c2c>

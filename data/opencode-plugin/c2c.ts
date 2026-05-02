@@ -1494,7 +1494,7 @@ const C2CDelivery: Plugin = async (ctx) => {
   function formatEnvelope(msg: Msg): string {
     const from = msg.from_alias || "unknown";
     const to = msg.to_alias || sessionId;
-    return `<c2c event="message" from="${from}" alias="${to}" source="broker" reply_via="c2c_send" action_after="continue">\n${msg.content}\n</c2c>`;
+    return `<c2c event="message" from="${from}" to="${to}" source="broker" reply_via="c2c_send" action_after="continue">\n${msg.content}\n</c2c>`;
   }
 
   /** Deliver drained messages to the active session via promptAsync. */
