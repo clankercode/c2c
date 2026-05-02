@@ -2097,12 +2097,25 @@ open C2c_mcp_helpers
     ; skipped : (string * string) list
     }
 
-  (* 1:N broadcast primitive. Fan out [content] to every unique alias in
-     the registry except the sender and any alias in [exclude_aliases].
-     A recipient whose registrations are all dead is skipped with reason
-     "not_alive" rather than raising — partial failure is the normal case
-     for broadcast. Per-recipient enqueue reuses [with_inbox_lock] so this
-     interlocks with concurrent 1:1 sends on the same inbox. *)
+  (** @deprecated Use [C2c_send_handlers.broadcast_to_all] instead.
+
+      This plaintext fan-out does NOT encrypt per-recipient even when
+      recipients have published [enc_pubkey] values.  #671 S1 replaced
+      the MCP path with a per-recipient [encrypt_content_for_recipient]
+      loop; the CLI path ([c2c send-all] in [c2c.ml]) still calls this
+      function directly — that's the remaining plaintext gap.
+
+      Follow-up: extract a non-Lwt helper from [broadcast_to_all] that
+      both the MCP handler and the CLI can share, then remove this
+      function.  See [.collab/findings/2026-05-03T15-55-00Z-stanza-coder-cli-send-all-plaintext-gap.md].
+
+      Original doc: 1:N broadcast primitive. Fan out [content] to every
+      unique alias in the registry except the sender and any alias in
+      [exclude_aliases]. A recipient whose registrations are all dead is
+      skipped with reason "not_alive" rather than raising — partial
+      failure is the normal case for broadcast. Per-recipient enqueue
+      reuses [with_inbox_lock] so this interlocks with concurrent 1:1
+      sends on the same inbox. *)
   let send_all t ~from_alias ~content ~exclude_aliases =
     if debug_enabled then Printf.eprintf "[DEBUG send_all] from=%s content=%s exclude=%s\n%!" from_alias content
       (String.concat "," exclude_aliases);
