@@ -487,7 +487,7 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path existing : Yojson.Safe.t
               @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
   | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
 
-let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch =
+let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ?(force=false) =
   let home = Sys.getenv "HOME" in
   let config_path = Filename.concat home (".kimi" // "mcp.json") in
   let toml_config_path = Filename.concat home (".kimi" // "config.toml") in
@@ -497,7 +497,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
     else `Assoc []
   in
   let config = build_kimi_mcp_config ~root ~alias_val ~server_path existing in
-  mkdir_or_dryrun dry_run (Filename.dirname config_path);
+  mkdir_p dry_run (Filename.dirname config_path);
   json_write_file_or_dryrun dry_run config_path config;
   (* Slice 2 of #142: install the PreToolUse approval hook script and
      append a fully-commented [[hooks]] block to ~/.kimi/config.toml.
@@ -541,7 +541,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
       (* Write deliver-watch supervisor scripts for non-MCP clients. *)
       let home = Sys.getenv "HOME" in
       let client_dir = home // ".c2c" // "clients" // "kimi" in
-      mkdir_or_dryrun dry_run client_dir;
+      mkdir_p dry_run client_dir;
       if deliver_watch then
         write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"kimi"
       else if not dry_run then begin
@@ -1330,7 +1330,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
   match client with
   | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt
   | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch
-  | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch
+  | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~force
   | "gemini" -> setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~deliver_watch
   | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~force ~deliver_watch ()
   | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch
