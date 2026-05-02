@@ -5983,6 +5983,222 @@ let test_tools_call_my_rooms_uses_env_session_id () =
               check string "room_id is env's own room" "visible-to-env"
                 (List.hd rooms |> member "room_id" |> to_string)))
 
+(* ------------------------------------------------------------------------- *)
+(* memory_list + memory_read MCP tool coverage (#450 untested CLI)           *)
+(* ------------------------------------------------------------------------- *)
+
+(* memory_list: empty when no memories written *)
+let test_memory_list_empty_when_no_memories () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-memory-test";
+      Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" dir;
+      Fun.protect ~finally:(fun () ->
+        Unix.putenv "C2C_MCP_SESSION_ID" "";
+        Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-memory-test"
+            ~alias:"memory-agent" ~pid:None ~pid_start_time:None ();
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 7001)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "memory_list")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected memory_list response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              check bool "isError=false" false
+                (json |> member "result" |> member "isError" |> to_bool);
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              check int "memory_list is empty array" 0
+                (parsed |> to_list |> List.length)))
+
+(* memory_write then memory_list shows the entry *)
+let test_memory_write_then_list_shows_entry () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-memory-test";
+      Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" dir;
+      Fun.protect ~finally:(fun () ->
+        Unix.putenv "C2C_MCP_SESSION_ID" "";
+        Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-memory-test"
+            ~alias:"memory-agent" ~pid:None ~pid_start_time:None ();
+          (* Write a memory entry. *)
+          let write_req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 7002)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "memory_write")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("name", `String "test-note")
+                          ; ("description", `String "A test entry")
+                          ; ("content", `String "Hello world")
+                          ] )
+                    ] )
+              ]
+          in
+          let _write_resp =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir write_req)
+          in
+          (* Now list memories. *)
+          let list_req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 7003)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "memory_list")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let list_resp =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir list_req)
+          in
+          match list_resp with
+          | None -> fail "expected memory_list response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text |> to_list in
+              check int "memory_list has 1 entry" 1 (List.length parsed);
+              let item = List.hd parsed in
+              check string "entry name is test-note"
+                "test-note" (item |> member "name" |> to_string);
+              check string "description matches"
+                "A test entry" (item |> member "description" |> to_string)))
+
+(* memory_read returns content for existing key *)
+let test_memory_read_returns_content_for_existing_key () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-memory-test";
+      Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" dir;
+      Fun.protect ~finally:(fun () ->
+        Unix.putenv "C2C_MCP_SESSION_ID" "";
+        Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-memory-test"
+            ~alias:"memory-agent" ~pid:None ~pid_start_time:None ();
+          (* Write a memory entry. *)
+          let write_req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 7004)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "memory_write")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("name", `String "read-test")
+                          ; ("content", `String "Stored content here")
+                          ] )
+                    ] )
+              ]
+          in
+          let _write_resp =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir write_req)
+          in
+          (* Read it back. *)
+          let read_req =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 7005)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "memory_read")
+                    ; ( "arguments",
+                        `Assoc [ ("name", `String "read-test") ] )
+                    ] )
+              ]
+          in
+          let read_resp =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir read_req)
+          in
+          match read_resp with
+          | None -> fail "expected memory_read response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              check bool "isError=false" false
+                (json |> member "result" |> member "isError" |> to_bool);
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let result = Yojson.Safe.from_string text in
+              check string "content matches"
+                "Stored content here" (result |> member "content" |> to_string);
+              check string "name is read-test"
+                "read-test" (result |> member "name" |> to_string)))
+
+(* memory_read returns error for missing key *)
+let test_memory_read_returns_error_for_missing_key () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-memory-test";
+      Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" dir;
+      Fun.protect ~finally:(fun () ->
+        Unix.putenv "C2C_MCP_SESSION_ID" "";
+        Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-memory-test"
+            ~alias:"memory-agent" ~pid:None ~pid_start_time:None ();
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 7006)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "memory_read")
+                    ; ( "arguments",
+                        `Assoc [ ("name", `String "does-not-exist") ] )
+                    ] )
+              ]
+          in
+          let response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+          in
+          match response with
+          | None -> fail "expected memory_read response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              check bool "isError=true for missing entry" true
+                (json |> member "result" |> member "isError" |> to_bool);
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              check bool "error message mentions 'not found'" true
+                (String.length text > 0)))
+
 let test_tools_call_join_room_respects_history_limit_zero () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-optout";
@@ -11950,9 +12166,17 @@ let () =
              test_tools_call_peek_inbox_ignores_session_id_argument
          ; test_case "my_rooms returns only caller's memberships" `Quick
              test_my_rooms_returns_only_sessions_memberships
-          ; test_case "tools/call my_rooms uses env session_id, ignores args" `Quick
-              test_tools_call_my_rooms_uses_env_session_id
-          ; test_case "tools/call my_rooms returns joined room" `Quick
+           ; test_case "tools/call my_rooms uses env session_id, ignores args" `Quick
+               test_tools_call_my_rooms_uses_env_session_id
+           ; test_case "memory_list empty when no memories" `Quick
+               test_memory_list_empty_when_no_memories
+           ; test_case "memory_write then list shows entry" `Quick
+               test_memory_write_then_list_shows_entry
+           ; test_case "memory_read returns content for existing key" `Quick
+               test_memory_read_returns_content_for_existing_key
+           ; test_case "memory_read returns error for missing key" `Quick
+               test_memory_read_returns_error_for_missing_key
+           ; test_case "tools/call my_rooms returns joined room" `Quick
               test_my_rooms_tool_returns_joined_room
           ; test_case "tools/call tail_log returns audit entries" `Quick
              test_tools_call_tail_log_returns_audit_entries
