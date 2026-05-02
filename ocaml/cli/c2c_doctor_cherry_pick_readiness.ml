@@ -8,7 +8,7 @@
    - CLEAN: master is <20 commits ahead, OR no touched file has >100 new lines on master
    - HARD: master is >20 commits ahead AND a touched file has >100 new lines on master since merge-base
 
-   Exit codes: 0 = CLEAN, 2 = HARD *)
+   Exit codes: 0 = CLEAN, 2 = HARD, 3 = CHAIN-WARN *)
 
 open Cmdliner.Term.Syntax
 
@@ -23,6 +23,17 @@ let classification_to_string = function
 let classification_exit_code = function
   | `Clean -> 0
   | `Hard -> 2
+
+(** Pure chain-classification: [rev_list_shas] is the list of SHAs from
+    [git rev-list <sha> ^origin/master ^master], newest first.
+    Returns [`Ok] when the list has 0-1 entries (single commit or already
+    on master), [`Chain_warn ancestors] when >1 (ancestors = all except
+    the tip). *)
+let classify_chain ~tip_sha ~rev_list_shas =
+  let ancestors = List.filter (fun s -> s <> tip_sha) rev_list_shas in
+  match ancestors with
+  | [] -> `Ok
+  | _ -> `Chain_warn ancestors
 
 (* Run a git command, return stdout as list of lines on success, raise on failure *)
 let git_run ~cwd cmd =
@@ -40,6 +51,16 @@ let git_run_int ~cwd cmd =
   let lines = git_run ~cwd cmd in
   let s = String.concat "" lines |> String.trim in
   try int_of_string s with _ -> 0
+
+(** Return the list of SHAs reachable from [sha] but NOT on
+    [origin/master] or [master]. Includes [sha] itself if unlanded. *)
+let chain_ancestors ~cwd sha =
+  try
+    let lines = git_run ~cwd
+      (Printf.sprintf "rev-list %s ^origin/master ^master --" (Filename.quote sha))
+    in
+    List.map String.trim lines |> List.filter (fun s -> s <> "")
+  with _ -> []
 
 (* Classify a cherry-pick readiness check *)
 let classify ~master_ahead ~risky_file_count =
@@ -63,6 +84,15 @@ let output_result ~sha ~merge_base ~master_ahead ~slice_ins ~slice_del
   match classification with
   | `Clean -> eprintf "\n  ✓ CLEAN — cherry-pick is low-risk.\n"
   | `Hard -> eprintf "\n  🔴 HARD-WARN — high risk of --theirs data loss. Consider rebasing first.\n"
+
+let output_chain_warning ~sha ~ancestors =
+  let n = List.length ancestors in
+  Printf.eprintf "\n  ⚠️  CHAIN-WARN — SHA %s has %d unlanded ancestor%s:\n" sha n (if n = 1 then "" else "s");
+  Printf.eprintf "      %s\n" (String.concat " " ancestors);
+  Printf.eprintf "      Cherry-picking the tip alone may break the build.\n";
+  (* oldest ancestor is last in the list (rev-list is newest-first) *)
+  let oldest = List.nth ancestors (n - 1) in
+  Printf.eprintf "      Cherry-pick the full chain: git cherry-pick %s^..%s\n" oldest sha
 
 let run_check sha =
   (* Find the repo toplevel *)
@@ -132,7 +162,21 @@ let run_check sha =
   output_result ~sha ~merge_base ~master_ahead ~slice_ins ~slice_del
     ~risky_file_count:risky_count ~classification;
 
-  exit (classification_exit_code classification)
+  (* 8. Chain-ancestor check *)
+  let rev_list_shas = chain_ancestors ~cwd:git_dir sha in
+  let chain_class = classify_chain ~tip_sha:sha ~rev_list_shas in
+  (match chain_class with
+   | `Ok -> ()
+   | `Chain_warn ancestors ->
+       output_chain_warning ~sha ~ancestors);
+
+  (* Exit: HARD (2) takes precedence, then CHAIN (3), then CLEAN (0) *)
+  let exit_code = match classification, chain_class with
+    | `Hard, _ -> 2
+    | _, `Chain_warn _ -> 3
+    | `Clean, `Ok -> 0
+  in
+  exit exit_code
 
 let sha_term =
   let open Cmdliner in
