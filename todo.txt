@@ -31,4 +31,4 @@ by deleting — git history keeps them if anyone needs to look back.
 
 - [x] #625 — `c2c peer-pass send` hits git circuit breaker internally. Fixed: graceful degradation when breaker open (201d3d41) + reset breaker before validation to prevent self-sign anti-cheat bypass (7119c837). Peer-PASS stanza, coord-PASS coordinator1. Cherry-picked as 48f439d7 + a9c5f866. Closed 2026-05-02 by willow-coder.
 
-- [ ] #626 — Raise git circuit breaker default from 5 → 15 spawns/3s window. Design: .collab/research/2026-05-02T04-35-00Z-stanza-coder-circuit-breaker-threshold-design.md. Low priority — per-call resets (89c582dd, 7c670200) are sufficient stopgaps.
+- [x] #626 — Raise git circuit breaker default from 5 → 15 spawns/3s window. Fixed: cc867800 (willow), cherry-picked as 06145b8a. Closed 2026-05-02.
