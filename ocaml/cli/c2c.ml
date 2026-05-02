@@ -593,40 +593,51 @@ let list_cmd =
       | Human ->
           if all_regs = [] then Printf.printf "No registered peers across %d broker root(s).\n" (List.length all_roots)
           else begin
-            (* Group output by broker root *)
+            (* Group registrations by (fp, root) for human output *)
+            let by_broker : (string * string, C2c_mcp.registration list) Hashtbl.t = Hashtbl.create 16 in
             List.iter (fun (fp, root, r) ->
+              let key = (fp, root) in
+              let existing = try Hashtbl.find by_broker key with Not_found -> [] in
+              Hashtbl.replace by_broker key (r :: existing)
+            ) all_regs;
+            (* Print one broker section at a time *)
+            List.iter (fun (fp, root) ->
+              let regs = try Hashtbl.find by_broker (fp, root) with Not_found -> [] in
               Printf.printf "\n[%s]\n  repo: %s\n  root: %s\n"
                 (if enriched then "enriched" else "sessions")
                 fp root;
-              let alive_str =
-                match C2c_mcp.Broker.registration_liveness_state r with
-                | C2c_mcp.Broker.Alive -> "alive"
-                | C2c_mcp.Broker.Dead -> "dead "
-                | C2c_mcp.Broker.Unknown -> "??? (unknown client_type)"
-              in
-              let pid_str = match r.pid with Some p -> Printf.sprintf " pid=%d" p | None -> "" in
-              if enriched then
-                let (role_class, description) = lookup_role_info r.alias in
-                let role_class = if role_class = "" then "—" else role_class in
-                let description = if description = "" then "—" else description in
-                let last_seen = format_last_seen r.registered_at in
-                Printf.printf "  %-20s %-13s %-40s %-12s %s%s\n"
-                  (truncate_str r.alias 20)
-                  (truncate_str role_class 13)
-                  (truncate_str description 40)
-                  last_seen
-                  alive_str pid_str
-              else if all then
-                let session_short = let s = r.session_id in if String.length s > 12 then String.sub s 0 12 ^ "..." else s in
-                let time_str = match r.registered_at with None -> "" | Some ts ->
-                  let t = Unix.gmtime ts in Printf.sprintf " %04d-%02d-%02d %02d:%02d" (1900+t.tm_year) (1+t.tm_mon) t.tm_mday t.tm_hour t.tm_min
+              List.iter (fun r ->
+                let alive_str =
+                  match C2c_mcp.Broker.registration_liveness_state r with
+                  | C2c_mcp.Broker.Alive -> "alive"
+                  | C2c_mcp.Broker.Dead -> "dead "
+                  | C2c_mcp.Broker.Unknown -> "??? (unknown client_type)"
                 in
-                let tmux_str = match r.tmux_location with Some s -> " ["^s^"]" | _ -> "" in
-                Printf.printf "  %-20s %s%s  %s%s%s\n" r.alias alive_str pid_str session_short time_str tmux_str
-              else
-                let tmux_str = match r.tmux_location with Some s -> " ["^s^"]" | _ -> "" in
-                Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str
-            ) all_regs
+                let pid_str = match r.pid with Some p -> Printf.sprintf " pid=%d" p | None -> "" in
+                if enriched then
+                  let (role_class, description) = lookup_role_info r.alias in
+                  let role_class = if role_class = "" then "—" else role_class in
+                  let description = if description = "" then "—" else description in
+                  let last_seen = format_last_seen r.registered_at in
+                  Printf.printf "  %-20s %-13s %-40s %-12s %s%s\n"
+                    (truncate_str r.alias 20)
+                    (truncate_str role_class 13)
+                    (truncate_str description 40)
+                    last_seen
+                    alive_str pid_str
+                else if all then
+                  let session_short = let s = r.session_id in if String.length s > 12 then String.sub s 0 12 ^ "..." else s in
+                  let time_str = match r.registered_at with None -> "" | Some ts ->
+                    let t = Unix.gmtime ts in Printf.sprintf " %04d-%02d-%02d %02d:%02d" (1900+t.tm_year) (1+t.tm_mon) t.tm_mday t.tm_hour t.tm_min
+                  in
+                  let tmux_str = match r.tmux_location with Some s -> " ["^s^"]" | _ -> "" in
+                  Printf.printf "  %-20s %s%s  %s%s%s\n" r.alias alive_str pid_str session_short time_str tmux_str
+                else begin
+                  let tmux_str = match r.tmux_location with Some s -> " ["^s^"]" | _ -> "" in
+                  Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str
+                end
+              ) regs
+            ) all_roots
           end
   else
     (* single-broker (default): use current repo's broker root *)
