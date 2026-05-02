@@ -3963,7 +3963,11 @@ let run_outer_loop ~(name : string) ~(client : string)
         let c2c_bin_path = current_c2c_command () in
         let real_git_path = Git_helpers.find_real_git () in
         write_git_shim ~shim_bin_path ~c2c_bin_path ~real_git_path;
-        (try Unix.chmod shim_bin_path 0o755 with _ -> ())
+        (try Unix.chmod shim_bin_path 0o755 with _ -> ());
+        (* Also install git-pre-reset in the per-instance dir for
+           defense-in-depth — matches ensure_swarm_git_shim_installed. *)
+        (try install_pre_reset_shim ~dir:shim_bin_dir with _ ->
+           Printf.eprintf "warning: per-instance git-pre-reset install failed\n%!")
       end;
       (* Registry precheck: human-readable "alias alive" error before flock. *)
       check_registry_alias_alive ~broker_root ~name;
