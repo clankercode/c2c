@@ -280,6 +280,7 @@ let commands_by_safety_cmd =
     ("wire-daemon list", "List all wire-daemon state files");
     ("wire-daemon status", "Show status of a wire-daemon");
     ("get-tmux-location", "Print the current tmux pane address (session:window.pane)");
+    ("schedule", "Manage per-agent wake schedules");
   ] in
   let tier3 = [
     ("relay serve", "Start relay server (background, requires operator)");
@@ -11309,6 +11310,7 @@ let fast_path_commands () =
     ("wire-daemon list", "List all wire-daemon state files");
     ("wire-daemon status", "Show status of a wire-daemon");
     ("get-tmux-location", "Print the current tmux pane address (session:window.pane)");
+    ("schedule", "Manage per-agent wake schedules");
   ] in
   let tier3 = [
     ("relay serve", "Start relay server (background, requires operator)");

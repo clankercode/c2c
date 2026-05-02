@@ -19,53 +19,11 @@ open Cmdliner.Term.Syntax
 
 (* --- path helpers ---------------------------------------------------------- *)
 
-(* Resolve the schedules root: .c2c/schedules under the repo root.
-   Honors C2C_SCHEDULE_ROOT_OVERRIDE for tests. *)
-let schedules_root_uncached () =
-  match Sys.getenv_opt "C2C_SCHEDULE_ROOT_OVERRIDE" with
-  | Some d when String.trim d <> "" -> String.trim d
-  | _ ->
-      let git_dir =
-        let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
-        (try
-          let line = input_line ic in
-          ignore (Unix.close_process_in ic);
-          Some line
-        with _ -> ignore (Unix.close_process_in ic); None)
-      in
-      let base = match git_dir with
-        | Some d -> Filename.dirname d
-        | None -> Sys.getcwd ()
-      in
-      Filename.concat (Filename.concat base ".c2c") "schedules"
+(* Delegate to C2c_mcp which hosts the canonical single source of truth for
+   schedule path resolution (honors C2C_SCHEDULE_ROOT_OVERRIDE for tests). *)
+let schedules_base_dir alias = C2c_mcp.schedule_base_dir alias
 
-let schedules_root =
-  let cache = ref None in
-  fun () ->
-    match Sys.getenv_opt "C2C_SCHEDULE_ROOT_OVERRIDE" with
-    | Some d when String.trim d <> "" -> String.trim d
-    | _ ->
-        match !cache with
-        | Some v -> v
-        | None ->
-            let v = schedules_root_uncached () in
-            cache := Some v; v
-
-let schedules_base_dir alias =
-  Filename.concat (schedules_root ()) alias
-
-let schedule_file_path alias name =
-  (* Sanitize name so it's safe as a filename: keep alphanumerics, '-', '_'. *)
-  let safe = Stdlib.String.map (fun c ->
-    match c with
-    | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
-    | _ -> let code = Char.code c in
-           if (code >= 48 && code <= 57) || (code >= 65 && code <= 90)
-              || (code >= 97 && code <= 122) || code = 95 || code = 45
-           then c else '_')
-    name
-  in
-  Filename.concat (schedules_base_dir alias) (safe ^ ".toml")
+let schedule_file_path alias name = C2c_mcp.schedule_entry_path alias name
 
 let ensure_schedules_dir alias =
   let dir = schedules_base_dir alias in
@@ -83,21 +41,35 @@ let current_alias_or_die () =
 
 (* --- TOML helpers ---------------------------------------------------------- *)
 
+(* Escape a string value for embedding inside TOML double-quoted strings.
+   Backslash is escaped to double-backslash; double-quote is escaped to
+   backslash-double-quote, per the TOML basic string spec. *)
+let escape_toml_string s =
+  let buf = Buffer.create (String.length s) in
+  String.iter (fun c ->
+    match c with
+    | '\\' -> Buffer.add_string buf "\\\\"
+    | '"'  -> Buffer.add_string buf "\\\""
+    | c    -> Buffer.add_char buf c)
+    s;
+  Buffer.contents buf
+
 (* Hand-write a schedule entry to TOML. No library needed — the format is
-   simple key-value pairs. *)
+   simple key-value pairs. String fields are escaped via escape_toml_string
+   so values containing '"' or '\' produce valid TOML. *)
 let render_schedule ~name ~interval_s ~align ~message ~only_when_idle
     ~idle_threshold_s ~enabled ~created_at ~updated_at () =
   let buf = Buffer.create 256 in
   Buffer.add_string buf "[schedule]\n";
-  Buffer.add_string buf (Printf.sprintf "name = \"%s\"\n" name);
+  Buffer.add_string buf (Printf.sprintf "name = \"%s\"\n" (escape_toml_string name));
   Buffer.add_string buf (Printf.sprintf "interval_s = %.6g\n" interval_s);
-  Buffer.add_string buf (Printf.sprintf "align = \"%s\"\n" align);
-  Buffer.add_string buf (Printf.sprintf "message = \"%s\"\n" message);
+  Buffer.add_string buf (Printf.sprintf "align = \"%s\"\n" (escape_toml_string align));
+  Buffer.add_string buf (Printf.sprintf "message = \"%s\"\n" (escape_toml_string message));
   Buffer.add_string buf (Printf.sprintf "only_when_idle = %b\n" only_when_idle);
   Buffer.add_string buf (Printf.sprintf "idle_threshold_s = %.6g\n" idle_threshold_s);
   Buffer.add_string buf (Printf.sprintf "enabled = %b\n" enabled);
-  Buffer.add_string buf (Printf.sprintf "created_at = \"%s\"\n" created_at);
-  Buffer.add_string buf (Printf.sprintf "updated_at = \"%s\"\n" updated_at);
+  Buffer.add_string buf (Printf.sprintf "created_at = \"%s\"\n" (escape_toml_string created_at));
+  Buffer.add_string buf (Printf.sprintf "updated_at = \"%s\"\n" (escape_toml_string updated_at));
   Buffer.contents buf
 
 (* Parse a schedule entry from TOML. Skip [schedule] section headers.
@@ -114,11 +86,33 @@ type schedule_entry = {
   s_updated_at : string;
 }
 
+(* Unescape TOML basic-string escape sequences written by escape_toml_string.
+   Handles \\" → " and \\\\ → \\. Other backslash sequences are passed through. *)
+let unescape_toml_string s =
+  let buf = Buffer.create (String.length s) in
+  let n = String.length s in
+  let i = ref 0 in
+  while !i < n do
+    if s.[!i] = '\\' && !i + 1 < n then begin
+      (match s.[!i + 1] with
+       | '"'  -> Buffer.add_char buf '"'
+       | '\\' -> Buffer.add_char buf '\\'
+       | c    -> Buffer.add_char buf '\\'; Buffer.add_char buf c);
+      i := !i + 2
+    end else begin
+      Buffer.add_char buf s.[!i];
+      i := !i + 1
+    end
+  done;
+  Buffer.contents buf
+
+(* Strip surrounding double-quotes from a TOML string value and unescape
+   the contents. If the value is not quoted, return it as-is. *)
 let strip_quotes s =
   let s = String.trim s in
   let n = String.length s in
   if n >= 2 && s.[0] = '"' && s.[n-1] = '"'
-  then String.sub s 1 (n - 2)
+  then unescape_toml_string (String.sub s 1 (n - 2))
   else s
 
 let parse_schedule content =

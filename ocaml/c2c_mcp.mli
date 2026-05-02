@@ -175,6 +175,18 @@ val memory_entry_path : string -> string -> string
 (** [memory_entry_path alias name] = [memory_base_dir alias / safe(name).md]
     where [safe] replaces unsafe filename chars with ['_']. *)
 
+val schedule_root : unit -> string
+(** [schedule_root ()] returns the [.c2c/schedules] root path. Honors
+    [C2C_SCHEDULE_ROOT_OVERRIDE] (test hook); otherwise resolves via
+    [git rev-parse --git-common-dir] dirname / [.c2c] / [schedules]. *)
+
+val schedule_base_dir : string -> string
+(** [schedule_base_dir alias] = [schedule_root () / alias]. *)
+
+val schedule_entry_path : string -> string -> string
+(** [schedule_entry_path alias name] = [schedule_base_dir alias / safe(name).toml]
+    where [safe] replaces unsafe filename chars with ['_']. *)
+
 module Broker : sig
   type t
   val create : root:string -> t

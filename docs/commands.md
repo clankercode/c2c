@@ -532,6 +532,41 @@ commits.
 
 ---
 
+### Schedule
+
+Per-agent wake schedules are stored at `.c2c/schedules/<alias>/<name>.toml`
+(in the repo root, local-only — gitignored). Each entry is a TOML file with
+fields: `name`, `interval_s`, `align`, `message`, `only_when_idle`,
+`idle_threshold_s`, `enabled`, `created_at`, `updated_at`.
+
+#### CLI
+
+```
+c2c schedule set   <name> --interval DURATION [--align SPEC] [--message TEXT]
+                   [--only-when-idle BOOL] [--idle-threshold DURATION]
+                   [--enabled BOOL] [--json]
+c2c schedule list  [--json]
+c2c schedule rm    <name> [--json]
+c2c schedule enable  <name> [--json]
+c2c schedule disable <name> [--json]
+```
+
+Identifies the current agent from `C2C_MCP_AUTO_REGISTER_ALIAS`.
+
+- `set` creates or updates a schedule entry. `--interval` is required;
+  duration formats: `4.1m`, `1h`, `30s`, or bare seconds (e.g. `246`).
+  `--align` accepts wall-clock specs such as `@1h+7m`. `--only-when-idle`
+  defaults to `true` so the schedule only fires when the agent is idle.
+- `list` (default subcommand when no subcommand is given) shows a table or
+  JSON array of all schedules for the current alias.
+- `rm` deletes a schedule entry by name.
+- `enable` / `disable` toggle the `enabled` flag without changing other fields.
+
+`C2C_SCHEDULE_ROOT_OVERRIDE` env var: testing hook that overrides
+`.c2c/schedules/`. Production agents do not set it.
+
+---
+
 ### Debug
 
 `debug` is a build-flag-gated tool exposed only when MCP debug mode is on (see `Build_flags.mcp_debug_tool_enabled` in `ocaml/c2c_mcp.ml`). Not present in production builds.

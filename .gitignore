@@ -4,6 +4,7 @@
 .c2c/personal-logs/
 .c2c/memory/*
 !.c2c/memory/.gitkeep
+.c2c/schedules/
 .c2c/roles/*.md
 
 node_modules/

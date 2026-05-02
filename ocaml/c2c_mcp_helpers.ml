@@ -423,6 +423,57 @@ let memory_entry_path alias name =
   in
   Filename.concat (memory_base_dir alias) (safe ^ ".md")
 
+(* Shared schedule-helpers used by cli/c2c_schedule.ml.
+   Single source of truth for [.c2c/schedules/<alias>/<name>.toml] resolution.
+
+   [C2C_SCHEDULE_ROOT_OVERRIDE]: test hook — when set (and non-empty after
+   trim), replaces the [.c2c/schedules] root. Production agents never set
+   this; the in-repo path is canonical. *)
+let schedule_root_uncached () =
+  match Sys.getenv_opt "C2C_SCHEDULE_ROOT_OVERRIDE" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ ->
+      let git_dir =
+        let ic = Unix.open_process_in "git rev-parse --git-common-dir 2>/dev/null" in
+        try
+          let line = input_line ic in
+          ignore (Unix.close_process_in ic);
+          Some line
+        with _ -> ignore (Unix.close_process_in ic); None
+      in
+      let base = match git_dir with
+        | Some d -> Filename.dirname d
+        | None -> Sys.getcwd ()
+      in
+      Filename.concat (Filename.concat base ".c2c") "schedules"
+
+let schedule_root =
+  let cache = ref None in
+  fun () ->
+    match Sys.getenv_opt "C2C_SCHEDULE_ROOT_OVERRIDE" with
+    | Some d when String.trim d <> "" -> String.trim d
+    | _ ->
+        match !cache with
+        | Some v -> v
+        | None ->
+            let v = schedule_root_uncached () in
+            cache := Some v; v
+
+let schedule_base_dir alias =
+  Filename.concat (schedule_root ()) alias
+
+let schedule_entry_path alias name =
+  let safe = Stdlib.String.map (fun c ->
+    match c with
+    | ' ' | '/' | '\\' | ':' | '"' | '\'' -> '_'
+    | _ -> let code = Char.code c in
+           if (code >= 48 && code <= 57) || (code >= 65 && code <= 90)
+              || (code >= 97 && code <= 122) || code = 95 || code = 45
+           then c else '_')
+    name
+  in
+  Filename.concat (schedule_base_dir alias) (safe ^ ".toml")
+
 (* Property schema helpers for tool inputSchema declarations *)
 let prop name description =
   (name, `Assoc [("type", `String "string"); ("description", `String description)])

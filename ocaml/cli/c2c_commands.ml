@@ -77,6 +77,7 @@ let command_tier_map () : (string * safety) list =
   ; "repo", Tier2
    ; "restart-self", Tier3
    ; "relay", Tier2
+   ; "schedule", Tier2
    (* relay subcommands (serve, gc, setup, connect, register, dm, status, list, rooms, poll-inbox)
       are not top-level commands. *)
    ; "setcap", Tier3
