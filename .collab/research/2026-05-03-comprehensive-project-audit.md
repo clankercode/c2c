@@ -180,10 +180,15 @@
 3. **Kimi↔OpenCode relay task** — Docker compose with 2 hosts + relay
 
 ### Tier 2 — High-value completions
-4. **CLI command test coverage (#670)** — ~14 commands, parallelizable
-5. **#432 Slice B** (pending perms auth) — ~150 LoC, high security value
+4. **CLI command test coverage (#670)** — ✅ DONE this session (2026-05-03)
+5. **#432 Slice B** (pending perms auth) — ✅ ALREADY SHIPPED (prior session)
 6. **Peer-PASS build verification** (finding #6) — tighten review-and-fix skill
-7. **CLI send-all plaintext gap** (#671 follow-up) — wire through broadcast_to_all
+7. **CLI send-all plaintext gap** (#671 follow-up) — 🟡 IN PROGRESS (stanza #671 S2)
+
+### Tier 2 — Completions this session (2026-05-03)
+- **#675 Docker audit** — ✅ DONE (jungle-coder audit committed)
+- **#674 Cross-host kimi+opencode relay test** — ✅ DONE (`test_kimi_opencode_cross_host.py`)
+- **#680 Docker docs** — ✅ DONE (`docs/docker-testing.md` committed bf5989d2)
 
 ### Tier 3 — Medium-priority
 8. **#490 Slice 5b** (approval CLI surface)
@@ -197,3 +202,44 @@
 14. Mobile app M1 spec finalization
 15. Relay-crypto strict-flip
 16. PoW email proxy implementation
+
+---
+
+## I. Session Progress Record — 2026-05-03
+
+Commits landed this session (HEAD, `bf5989d2` = master tip):
+
+| SHA | One-liner |
+|-----|-----------|
+| `058cc2d7` | sitrep 14:00 UTC — test wave complete (320→339), all 35 MCP tools covered |
+| `419d6a30` | sitrep 15:00 UTC — empty-hour marker, swarm dormant |
+| `338df1b6` | feat(#671 S1): per-recipient encrypted broadcast in broadcast_to_all |
+| `d3fcf88d` | fix(#671 S1): promote key_changed to top-level receipt array |
+| `24700c79` | fix(#672): git shim spawn guard — self-exclusion + accurate counting |
+| `07953d0c` | fix(#672): correct comment + fix pipefail edge case in spawn guard |
+| `8bc945c3` | chore(#671 S2): mark Broker.send_all deprecated + file CLI gap finding |
+| `8a111c5b` | feat(#670): CLI command test coverage — doctor, config show, agent list, roles validate |
+| `b2409aec` | docs(#675): docker-tests/ suite audit — 16 real, 2 stubs, broker bug found |
+| `817f0889` | test(#674): cross-host kimi+opencode relay E2E test |
+| `103b3ae9` | sitrep 16:00 UTC + comprehensive project audit |
+| `bf5989d2` | docs(#675): document Docker E2E test suite |
+
+**Prior-session commits that landed this session (from earlier pushes):**
+| SHA | One-liner |
+|-----|-----------|
+| `5e8c34d7`…`a3de8f75` | 131 commits pushed to origin/master — relay deploy live, test count 312→320, worktree GC (3 removed, 62MB freed) |
+
+**Peer-PASS verdicts this session:**
+- fern #450 S8 `eb4a1f32` — PASS
+- cedar dedup log_broker_event `be414916` — PASS
+- jungle relay_e2e Result fix `41cd112b` — PASS
+- galaxy commands.md `466e8752`→`7b3bfe64` — FAIL→PASS (3 issues)
+- broker-root resolution order `9e15b6e1` — PASS
+- cedar #357b `b82ef41c` — PASS
+- stanza compact tests `c58667e0` — PASS
+- cedar prune_rooms test `2033b073` — PASS
+- my-rooms E2E `fb05a67d`→`c1649e8d` — PASS (cherry-picked master)
+- stanza #671 S1 `e436b0eb`+`891c467f` — PASS (test-agent review)
+- stanza #672 shim `7305694b`+`6f6e4474` — PASS (test-agent review)
+
+**Test count:** 313 → 339 (this session, MCP suite)
