@@ -312,24 +312,56 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
           in
           loop ~broker_root ~negotiated_capabilities_ref)
 
+(* S6b: parse_duration_s — parse "4.1m", "1h", "30s" into seconds.
+   Minimal self-contained parser so the MCP server doesn't depend on
+   C2c_start (which is a CLI executable, not a library). *)
+let parse_duration_s (raw : string) : float option =
+  let s = String.trim raw in
+  if s = "" then None
+  else
+    let len = String.length s in
+    let unit_char = s.[len - 1] in
+    let multiplier, number_part =
+      match unit_char with
+      | 's' | 'S' -> (1.0, String.sub s 0 (len - 1))
+      | 'm' | 'M' -> (60.0, String.sub s 0 (len - 1))
+      | 'h' | 'H' -> (3600.0, String.sub s 0 (len - 1))
+      | _ -> (1.0, s)
+    in
+    try
+      let v = float_of_string (String.trim number_part) *. multiplier in
+      if v > 0.0 then Some v else None
+    with Failure _ -> None
+
 (* S6b: compute_next_fire — given current time and a schedule_entry,
    return the next wall-clock fire timestamp.
-   For aligned schedules (s_align <> ""), parse the alignment spec using
-   C2c_start.parse_heartbeat_schedule and compute the next aligned time.
+   For aligned schedules (s_align <> ""), parse the "@<period>+<offset>"
+   alignment spec and compute the next aligned wall-clock time.
    For non-aligned: now + s_interval_s. *)
 let compute_next_fire (now : float) (entry : C2c_mcp.schedule_entry) : float =
   if entry.s_align <> "" then
-    match C2c_start.parse_heartbeat_schedule entry.s_align with
-    | Ok (C2c_start.Aligned_interval { interval_s; offset_s }) ->
-        let shifted = now -. offset_s in
-        let slots = floor (shifted /. interval_s) +. 1.0 in
-        (slots *. interval_s) +. offset_s
-    | Ok (C2c_start.Interval n) ->
-        (* parse returned a plain interval from the align field — treat as non-aligned *)
-        now +. n
-    | Error _ ->
-        (* Unparseable align string — fall back to interval *)
-        now +. entry.s_interval_s
+    let align = String.trim entry.s_align in
+    (* Strip leading '@' if present *)
+    let body =
+      if String.length align > 0 && align.[0] = '@' then
+        String.sub align 1 (String.length align - 1)
+      else align
+    in
+    let interval_part, offset_part =
+      match String.index_opt body '+' with
+      | None -> (body, "0s")
+      | Some idx ->
+          (String.sub body 0 idx,
+           String.sub body (idx + 1) (String.length body - idx - 1))
+    in
+    (match parse_duration_s interval_part, parse_duration_s offset_part with
+     | Some interval_s, Some offset_s ->
+         let shifted = now -. offset_s in
+         let slots = floor (shifted /. interval_s) +. 1.0 in
+         (slots *. interval_s) +. offset_s
+     | _ ->
+         (* Unparseable align string — fall back to plain interval *)
+         now +. entry.s_interval_s)
   else
     now +. entry.s_interval_s
 
