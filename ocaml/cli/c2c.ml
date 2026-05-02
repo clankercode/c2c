@@ -5683,6 +5683,32 @@ let do_approval_reply
     ~(json : bool)
     ~(cmd_name : string)
   : unit =
+  (* #484: MCP-strengthening — validate reviewer via pending-reply system *)
+  let broker_root = match override_root with
+    | Some r -> r
+    | None -> resolve_broker_root ()
+  in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  (match C2c_mcp.Broker.find_pending_permission broker token with
+   | Some pending ->
+       if not (List.exists
+                 (fun s ->
+                   C2c_mcp.Broker.alias_casefold s
+                   = C2c_mcp.Broker.alias_casefold reviewer_alias)
+                 pending.supervisors)
+       then begin
+         Printf.eprintf
+           "%s: reviewer %s is not in supervisors list for token %s; rejecting\n%!"
+           cmd_name reviewer_alias token;
+         exit 1
+       end
+   | None ->
+       (* Backward compat: no pending entry means either old-style token
+          (open-pending-reply was never called) or entry expired.
+          Warn but allow. *)
+       Printf.eprintf
+         "%s: note: no pending-reply entry for token %s (old-style or expired); proceeding without auth check\n%!"
+         cmd_name token);
   C2c_approval_paths.ensure_dirs ?override_root ();
   let ts = int_of_float (Unix.gettimeofday ()) in
   let payload =
@@ -5699,6 +5725,8 @@ let do_approval_reply
           cmd_name (Printexc.to_string exn);
         exit 2
   in
+  (* #484: Mark the pending permission as resolved so broker stops fallthrough *)
+  let _resolved = C2c_mcp.Broker.mark_pending_resolved broker ~perm_id:token ~ts:(float_of_int ts) in
   if json then
     Printf.printf
       "{\"ok\":true,\"verdict\":\"%s\",\"token\":\"%s\",\"path\":\"%s\",\"reviewer_alias\":\"%s\"}\n%!"

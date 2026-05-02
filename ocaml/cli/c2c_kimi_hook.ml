@@ -279,6 +279,13 @@ authorizers_csv="$(IFS=,; echo "${AUTHORIZERS[*]}")"
   --primary-authorizer "${AUTHORIZERS[0]}" \
   --timeout "$TIMEOUT" >/dev/null 2>&1 || true
 
+# #484: Register token with MCP pending-reply system for auth-binding.
+# Gives the broker session-derived identity, supervisor-list validation,
+# and TTL enforcement.  Non-fatal: text-based flow still works without it.
+"$C2C_BIN" open-pending-reply "$TOKEN" \
+  --kind permission \
+  --supervisors "$authorizers_csv" 2>/dev/null || true
+
 # --------------------------------------------------------------------------
 # Resolve supervisor strategy from repo.json (default: first-alive).
 # [#524] Routing is driven by this strategy.

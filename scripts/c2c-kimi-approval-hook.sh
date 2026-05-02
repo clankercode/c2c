@@ -106,6 +106,13 @@ else
   TOKEN="ka_${payload_hash}_$(date +%s%N)"
 fi
 
+# #484: Register token with MCP pending-reply system for auth-binding.
+# Gives the broker session-derived identity, supervisor-list validation,
+# and TTL enforcement.  Non-fatal: text-based flow still works without it.
+"$C2C_BIN" open-pending-reply "$TOKEN" \
+  --kind permission \
+  --supervisors "$REVIEWER" 2>/dev/null || true
+
 # Build the DM body the reviewer sees.  The reply syntax we expect is
 # any DM whose content contains the token plus "allow" or "deny".
 body="$(cat <<EOF
