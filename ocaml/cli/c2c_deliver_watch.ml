@@ -4,26 +4,7 @@ open Cmdliner.Term.Syntax
 
 let ( // ) = Filename.concat
 
-let xml_escape (s : string) : string =
-  let b = Bytes.make (String.length s * 7) '\000' in
-  let j = ref 0 in
-  for i = 0 to String.length s - 1 do
-    let c = s.[i] in
-    match c with
-    | '&' ->
-        Bytes.blit_string "&amp;" 0 b !j 5; j := !j + 5
-    | '<' ->
-        Bytes.blit_string "&lt;" 0 b !j 4; j := !j + 4
-    | '>' ->
-        Bytes.blit_string "&gt;" 0 b !j 4; j := !j + 4
-    | '"' ->
-        Bytes.blit_string "&quot;" 0 b !j 6; j := !j + 6
-    | '\'' ->
-        Bytes.blit_string "&apos;" 0 b !j 6; j := !j + 6
-    | _ ->
-        Bytes.set b !j c; incr j
-  done;
-  Bytes.sub_string b 0 !j
+(* xml_escape sourced from C2c_mcp (c2c_mcp_helpers.ml) — canonical def *)
 
 type output_mode =
   | Stdout
@@ -64,9 +45,9 @@ let watch_loop
             Printf.printf "[%s] %s\n%!" msg.from_alias msg.content;
             flush stdout
         | XmlFd fd ->
-            let from_e = xml_escape msg.from_alias in
-            let to_e   = xml_escape session_id in
-            let body_e = xml_escape msg.content in
+            let from_e = C2c_mcp.xml_escape msg.from_alias in
+            let to_e   = C2c_mcp.xml_escape session_id in
+            let body_e = C2c_mcp.xml_escape msg.content in
             let frame =
               Printf.sprintf
                 "<message type=\"user\" queue=\"AfterAnyItem\"><c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c></message>\n"
