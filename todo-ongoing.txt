@@ -136,9 +136,9 @@ Project Folder: **todo** (cluster spans #326/#327/#331/#332/#346)
 
 Goal: MCP tool surface should be testable, observable, and free of silent-mismatch hazards. Two MCP-only regressions in one hour on 2026-04-27 (#326/#327) showed CLI-only verification is insufficient.
 
-Status: **active** — #326 (memory_list shared_with_me=true semantics) closed `e9c39714→a70b32df`. #327 (send-memory handoff DM did not fire on memory_write with shared_with) closed `b7b4997a` with broker.log diagnostic. #331 MCP regression test suite landed `a49480d0`. #332 (mkdir_p ENOENT for missing parent dirs) in progress (test-agent). #346 (`C2C_MCP_AUTO_DRAIN_CHANNEL` default-flip) queued — Max approved straight default-flip 2026-04-28; ~5 LoC code change + 1 test.
+Status: **active** — #326 (memory_list shared_with_me=true semantics) closed `e9c39714→a70b32df`. #327 (send-memory handoff DM did not fire on memory_write with shared_with) closed `b7b4997a` with broker.log diagnostic. #331 MCP regression test suite landed `a49480d0`. #332 (mkdir_p ENOENT for missing parent dirs) closed `68d087d4`. #346 (`C2C_MCP_AUTO_DRAIN_CHANNEL` default-flip) closed `b5316cd0` — 5 LoC code change + 4 tests, CLAUDE.md updated `edc6ef0d`.
 
-Next: ship #346 default-flip; close #332; track for next regression class.
+Next: track for next regression class.
 
 ### Relay-crypto E2E (CRIT-1+2)
 
