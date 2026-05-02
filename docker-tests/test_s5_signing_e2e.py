@@ -29,6 +29,7 @@ from _signing_helpers import (
     artifact_copy_across_broker,
     verify_peer_pass,
     artifact_path_in_container,
+    whoami_keys,
 )
 
 COMPOSE_FILE = "docker-compose.e2e-multi-agent.yml"
@@ -118,6 +119,22 @@ def test_pubkey_is_returned(agent_a1):
     pk = get_pubkey(agent_a1)
     assert pk, "Public key should be non-empty"
     assert len(pk) > 10, "Public key seems too short: {}".format(pk)
+
+
+def test_whoami_keys_shows_pubkey(agent_a1):
+    """S5 AC: `c2c whoami --keys` shows Ed25519 pubkey + fingerprint.
+
+    After init_identity (which calls c2c register to create the broker key
+    path at <broker-root>/keys/<alias>.ed25519), `whoami --keys` must
+    return public_key, fingerprint, and alg fields.
+    """
+    init_identity(agent_a1, ALIAS_A1, relay_url=RELAY_URL)
+    data = whoami_keys(agent_a1)
+    assert data.get("public_key"), "public_key missing from whoami --keys: {}".format(data)
+    assert data.get("fingerprint"), "fingerprint missing from whoami --keys: {}".format(data)
+    assert data.get("alg") == "ed25519", "Expected alg=ed25519, got: {}".format(data)
+    assert data.get("alias") == ALIAS_A1, "Expected alias {}, got: {}".format(ALIAS_A1, data.get("alias"))
+    assert data.get("session_id"), "session_id missing from whoami --keys: {}".format(data)
 
 
 def test_peer_pass_sign_and_verify_cross_broker(agent_a1, agent_b1):

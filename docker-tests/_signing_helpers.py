@@ -351,3 +351,17 @@ def whoami(container: str) -> str:
             if line.startswith("alias:"):
                 return line.split("alias:")[1].strip()
     return ""
+
+
+def whoami_keys(container: str) -> dict[str, Any]:
+    """Return identity metadata from `c2c whoami --keys --json`.
+
+    Returns a dict with session_id, alias, public_key, fingerprint, alg.
+    Raises AssertionError if the key is not provisioned.
+    """
+    r = _run_c2c_in(container, ["whoami", "--keys", "--json"])
+    assert r.returncode == 0, f"whoami --keys failed in {container}: {r.stderr}"
+    data = json.loads(r.stdout)
+    assert data.get("public_key"), f"public_key missing in whoami --keys output: {data}"
+    assert data.get("fingerprint"), f"fingerprint missing in whoami --keys output: {data}"
+    return data
