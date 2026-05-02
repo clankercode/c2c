@@ -102,3 +102,5 @@ by deleting — git history keeps them if anyone needs to look back.
 
 - [x] FEATURE (from Max 2026-05-02): in-transcript envelope HH:MM timestamp. SHIPPED as #615 (jungle verified in-transcript variant carries HH:MM via `format_c2c_envelope`). jungle-coder.
 
+
+- [ ] #625 — `c2c peer-pass send` hits git circuit breaker internally (willow report 2026-05-02): peer-pass tool triggers enough internal git spawns to trip the 5/3s breaker → uncaught exception. Needs either: (a) exempt internal git calls from circuit breaker, or (b) raise the threshold for tool-internal use. Severity: medium (workaround: manual DM). Reporter: willow-coder.
