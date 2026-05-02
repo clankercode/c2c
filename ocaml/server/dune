@@ -7,3 +7,8 @@
  (name c2c_mcp_server_inner_bin)
  (modules c2c_mcp_server_inner_bin c2c_mcp_server_inner)
  (libraries c2c_mcp cmdliner yojson logs lwt.unix))
+
+(test
+ (name test_c2c_mcp_server_inner)
+ (modules test_c2c_mcp_server_inner c2c_mcp_server_inner)
+ (libraries c2c_mcp alcotest unix))
