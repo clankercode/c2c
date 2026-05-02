@@ -9140,6 +9140,65 @@ let test_relay_pin_malformed_json_clears_in_memory () =
       check bool "x25519 cleared after malformed JSON" true
         (C2c_mcp.Broker.get_pinned_x25519 "beta" = None))
 
+(* remove_pending_permission: opened entry can be removed and is gone *)
+let test_remove_pending_permission () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let now = Unix.gettimeofday () in
+      let entry =
+        ({ perm_id = "perm-remove-test"
+         ; kind = C2c_mcp.Permission
+         ; requester_session_id = "session-remover"
+         ; requester_alias = "remover"
+         ; supervisors = [ "coord" ]
+         ; created_at = now
+         ; expires_at = now +. 600.0
+         ; fallthrough_fired_at = []
+         ; resolved_at = None
+         } : C2c_mcp.pending_permission)
+      in
+      C2c_mcp.Broker.open_pending_permission broker entry;
+      check bool "entry found before remove" true
+        (C2c_mcp.Broker.find_pending_permission broker "perm-remove-test" <> None);
+      C2c_mcp.Broker.remove_pending_permission broker "perm-remove-test";
+      check bool "entry gone after remove" true
+        (C2c_mcp.Broker.find_pending_permission broker "perm-remove-test" = None))
+
+(* mark_pending_resolved: stamps resolved_at on the entry, returns true on first resolve *)
+let test_mark_pending_resolved () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let now = Unix.gettimeofday () in
+      let ts = now +. 100.0 in
+      let entry =
+        ({ perm_id = "perm-resolve-test"
+         ; kind = C2c_mcp.Permission
+         ; requester_session_id = "session-resolver"
+         ; requester_alias = "resolver"
+         ; supervisors = [ "coord" ]
+         ; created_at = now
+         ; expires_at = now +. 600.0
+         ; fallthrough_fired_at = []
+         ; resolved_at = None
+         } : C2c_mcp.pending_permission)
+      in
+      C2c_mcp.Broker.open_pending_permission broker entry;
+      let changed1 = C2c_mcp.Broker.mark_pending_resolved broker ~perm_id:"perm-resolve-test" ~ts in
+      check bool "first mark_pending_resolved returns true" true changed1;
+      let stored = C2c_mcp.Broker.find_pending_permission broker "perm-resolve-test" in
+      (match stored with
+       | None -> fail "entry should still be findable (not removed)"
+       | Some p ->
+           check bool "resolved_at is now Some"
+             true
+             (p.resolved_at <> None);
+           check bool "resolved_at is the timestamp we set"
+             true
+             (p.resolved_at = Some ts));
+      (* Idempotent: calling again returns false. *)
+      let changed2 = C2c_mcp.Broker.mark_pending_resolved broker ~perm_id:"perm-resolve-test" ~ts in
+      check bool "second mark_pending_resolved returns false (already resolved)" false changed2)
+
 (* [#432 Slice E] Mirrors Slice A's [test_concurrent_open_pending_permission]:
    N forked children each pin a distinct alias from a fresh broker
    handle (independent flock state). After all children exit, the
@@ -11631,6 +11690,10 @@ let () =
               test_open_pending_permission_expired_dont_count
           ; test_case "[#432 C] open_pending_reply handler returns isError at cap" `Quick
               test_open_pending_reply_handler_returns_error_at_cap
+          ; test_case "remove_pending_permission removes entry" `Quick
+              test_remove_pending_permission
+          ; test_case "mark_pending_resolved stamps resolved_at" `Quick
+              test_mark_pending_resolved
           ; test_case "[#432 Slice E] relay-e2e x25519 pin persists across broker recreate" `Quick
               test_relay_pin_x25519_persists_across_broker_recreate
           ; test_case "[#432 Slice E] relay-e2e ed25519 pin persists across broker recreate" `Quick
