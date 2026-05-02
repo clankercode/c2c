@@ -126,9 +126,9 @@ Project Folder: **todo** (cross-cuts #323/#324/#325/#334/#360)
 
 Goal: coordinator surface (cherry-pick, peer-PASS rubric, push-gate, install-path policy) is mature enough that swarm-cycles don't need Max-direct intervention. Two recent landings sharpened the discipline: peer-PASS bug-class-recurs check (#324) + coord-cherry-pick from divergent base (#325).
 
-Status: **active** — #323 auto-DM-on-cherry-pick landed today (`5951194a + 15afd38f`); first sustained auto-fire run validated post-#334 push. #324 peer-PASS rubric bug-class-recurs check landed earlier and is already catching things (used in 2026-04-28 stanza self-review on #335 v2a). #325 divergent-base runbook landed. #334 (`c2c install claude` repo-scoped) PUSHED to origin/master at `817dbf33` (Max's PC-pull trigger satisfied). 🚨 **#360 (`c2c migrate-broker` silent data loss)** — URGENT hotfix queued; stanza's finding doc ready as near-spec; routing: galaxy after #318 v3 (plan A), coord-direct fallback (plan C, Max-sanctioned 2026-04-28).
+Status: **active** — #323 auto-DM-on-cherry-pick landed. #324 peer-PASS rubric live. #325 divergent-base runbook landed. #334 PUSHED. **#360 FIXED** (`99d7b6cf` — two-phase copy, dry-run, fail-loud). 2-claim review convention documented in rubric (4a0aacbe, 2026-05-02). Chain-slice diff guidance added.
 
-Next: ship #360 hotfix → unblock #352 doctor migration-prompt → broker-by-broker rollout. #328 coord-cherry-pick scope-audit + auto-build deferred.
+Next: #352 doctor migration-prompt (unblocked by #360). #328 coord-cherry-pick scope-audit + auto-build deferred.
 
 ### MCP surface reliability
 
