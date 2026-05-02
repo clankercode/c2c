@@ -29,6 +29,7 @@ COMPOSE_FILE = os.path.join(
 )
 C2C = os.environ.get("C2C_CLI", "c2c")
 RELAY_URL = "http://c2c-e2e-relay:7331"
+RELAY_HOST = "c2c-e2e-relay:7331"  # for alias@host addressing (no scheme)
 
 AGENT_A = "agent-a1"  # simulates kimi peer (host A)
 AGENT_B = "agent-b1"  # simulates opencode peer (host B)
@@ -57,8 +58,8 @@ def c2c_in(container: str, subcmd: str, timeout: int = 30) -> str:
 
 
 def register(container: str, alias: str):
-    """Register an alias in a container."""
-    c2c_in(container, f"register --alias {alias} --relay-url {RELAY_URL}")
+    """Register an alias in a container. Relay URL is set via C2C_RELAY_URL env."""
+    c2c_in(container, f"register --alias {alias}")
 
 
 def send_dm(from_container: str, to_alias: str, content: str):
@@ -149,13 +150,10 @@ class TestCrossHostRegistration:
         assert AGENT_B in whoami
 
     def test_agents_see_each_other(self, registered_agents):
-        container_a, container_b = registered_agents
-        # Agent A should see agent B in list (via relay)
+        container_a, _ = registered_agents
+        # Agent A sees itself in local list after registration
         list_a = c2c_in(container_a, "list")
-        # At minimum, agent-a1 sees itself; cross-host visibility
-        # depends on relay federation — check relay list instead
-        relay_list = c2c_in(container_a, f"list --relay-url {RELAY_URL}")
-        assert AGENT_B in relay_list or AGENT_A in relay_list
+        assert AGENT_A in list_a
 
 
 class TestCrossHostDM:
@@ -165,7 +163,7 @@ class TestCrossHostDM:
         container_a, container_b = registered_agents
         test_msg = f"hello-from-kimi-{int(time.time())}"
 
-        send_dm(container_a, f"{AGENT_B}@{RELAY_URL}", test_msg)
+        send_dm(container_a, f"{AGENT_B}@{RELAY_HOST}", test_msg)
 
         msg = poll_until_message(container_b, AGENT_A, timeout_s=15)
         assert msg is not None, f"Agent B never received DM from Agent A"
@@ -175,7 +173,7 @@ class TestCrossHostDM:
         container_a, container_b = registered_agents
         test_msg = f"hello-from-opencode-{int(time.time())}"
 
-        send_dm(container_b, f"{AGENT_A}@{RELAY_URL}", test_msg)
+        send_dm(container_b, f"{AGENT_A}@{RELAY_HOST}", test_msg)
 
         msg = poll_until_message(container_a, AGENT_B, timeout_s=15)
         assert msg is not None, f"Agent A never received DM from Agent B"
@@ -214,7 +212,7 @@ class TestCrossHostTaskEcho:
         challenge = f"echo-challenge-{int(time.time())}"
 
         # A sends a "task" to B
-        send_dm(container_a, f"{AGENT_B}@{RELAY_URL}", f"ECHO:{challenge}")
+        send_dm(container_a, f"{AGENT_B}@{RELAY_HOST}", f"ECHO:{challenge}")
 
         # B polls, reads the challenge, sends it back
         msg = poll_until_message(container_b, AGENT_A, timeout_s=15)
@@ -225,7 +223,7 @@ class TestCrossHostTaskEcho:
         payload = content.split("ECHO:", 1)[1]
 
         # B echoes back
-        send_dm(container_b, f"{AGENT_A}@{RELAY_URL}", f"ACK:{payload}")
+        send_dm(container_b, f"{AGENT_A}@{RELAY_HOST}", f"ACK:{payload}")
 
         # A receives the echo
         ack = poll_until_message(container_a, AGENT_B, timeout_s=15)
