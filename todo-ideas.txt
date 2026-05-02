@@ -113,6 +113,76 @@ Open questions:
 
 ---
 
-Idea:
+Idea: OpenCode heartbeat should suppress when agent is active (send only when idle)
+
+Submitted by: Max Kaye (via coordinator1) · 2026-05-02T06:38Z
+Status: new
+Related: agent-wake-setup runbook, heartbeat Monitor, OpenCode statefile
+
+Context:
+The heartbeat tick (4.1m cadence) fires unconditionally for OpenCode peers.
+When the agent is actively generating (statefile shows active/in-progress),
+the heartbeat notification is wasted — it interrupts the model mid-generation
+or queues a redundant wake. The heartbeat should only fire when the agent is
+idle, so it acts as a true "poke the idle agent" mechanism.
+
+Open questions:
+- Where does OpenCode expose idle/active state? Statefile path + format?
+- Should the heartbeat binary itself check the statefile, or should the
+  outer-loop wrapper gate heartbeat delivery?
+- Does this apply to other clients (Claude Code, Codex) or only OpenCode?
+- Edge case: agent is "active" but stuck on a permission prompt — heartbeat
+  is still useful there. Need to distinguish generating vs waiting-for-input.
+
+**Update (Max 2026-05-02T07:00Z):** Superseded by broader idea below — c2c-native
+self-scheduling. This idle-gating becomes `only_when_idle` flag on the schedule.
+
+---
+
+Idea: c2c-native agent self-scheduling (replaces external heartbeat/Monitor)
+
+Submitted by: Max Kaye (via coordinator1) · 2026-05-02T07:00Z
+Status: new
+Related: heartbeat binary, Monitor tool, agent-wake-setup runbook, idle-gating idea above
+
+Context:
+Since c2c can send messages to agents, agents can schedule their own wake-ups
+via c2c self-DMs on a timer. State persisted in `.c2c/schedules/<alias>/`.
+Eliminates the external `heartbeat` binary + Monitor tool dependency entirely.
+Agents control their own cadence; schedules survive compaction (on-disk).
+
+Proposed shape:
+```
+c2c schedule set --interval 4.1m --message "wake — poll inbox" --only-when-idle
+c2c schedule set --interval 1h --align :07 --message "sitrep tick"
+```
+
+Design decisions needed:
+- Timer host: MCP server background thread (long-lived, sees tool calls) vs
+  `c2c start` outer wrapper vs standalone daemon
+- Idle detection: "no tool call in last N seconds" (MCP server has this signal)
+  vs client-specific statefile vs both
+- `only_when_idle` semantics: skip delivery entirely, or queue and deliver on
+  next idle transition?
+- Cross-client parity: OpenCode statefile vs Claude Code tool-call cadence vs
+  Codex activity signal
+- CLI surface: `c2c schedule {set,list,rm}` subcommand group
+
+Additional trigger: file-change detection
+- Schedule config lives in `.c2c/schedules/<alias>/` — the MCP server (or
+  daemon) should watch this path with inotify. When an agent updates its
+  own schedule (e.g. `c2c schedule set ...`), the timer reconfigures
+  automatically without restart.
+- Extends naturally: watch `.c2c/config.toml` changes too, so agents can
+  hot-reload their own configuration.
+- Could also watch inbox files for size changes (replacing the current
+  inbox watcher polling loop with inotify).
+
+Benefits:
+- No Monitor re-arming on restart — schedule is on disk
+- Idle-gating built in — no wasted heartbeats during active generation
+- Agent self-governance — each agent controls its own wake cadence
+- Eliminates heartbeat binary dependency
+- File-change autodetect — schedule updates take effect immediately
 
 ---
