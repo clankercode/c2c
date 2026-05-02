@@ -6,6 +6,12 @@ open C2c_mcp_helpers
 
   type t = { root : string }
 
+  (* Hardening B: prior-mismatch state — tracks which aliases were last
+     observed in mismatch state. Used to suppress WORKTREE_MATCH log spam:
+     only log when transitioning mismatch→match, not on every send.
+     Keys are casefolded aliases; values are bool (true=mismatch, false=match). *)
+  let prior_mismatch_state : (string, bool) Hashtbl.t = Hashtbl.create 64
+
   (* Process-scan hooks for the pid self-heal path. Default to real
      /proc; tests can swap in mocks via [set_proc_hooks_for_test]. The
      hooks are module-globals (a single test running at a time is the
@@ -1105,34 +1111,42 @@ open C2c_mcp_helpers
           | None -> None)
       in
       (match sender_cwd with
-       | None -> () (* sender not registered — skip *)
-       | Some actual_cwd ->
-           if actual_cwd <> expected_cwd then
-             (try
-                let ts = Unix.gettimeofday () in
-                let fields =
-                  [ ("ts", `Float ts)
-                  ; ("event", `String "worktree_mismatch")
-                  ; ("alias", `String from_alias)
-                  ; ("expected_cwd", `String expected_cwd)
-                  ; ("actual_cwd", `String actual_cwd)
-                  ]
-                in
-                log_broker_event ~broker_root:(root t) "WORKTREE_MISMATCH" fields
-              with _ -> ())
-           else
-             (* Mismatch cleared — log at INFO level per § Mechanism 2 *)
-             (try
-                let ts = Unix.gettimeofday () in
-                let fields =
-                  [ ("ts", `Float ts)
-                  ; ("event", `String "worktree_match")
-                  ; ("alias", `String from_alias)
-                  ; ("cwd", `String expected_cwd)
-                  ]
-                in
-                log_broker_event ~broker_root:(root t) "WORKTREE_MATCH" fields
-              with _ -> ()))
+        | None -> () (* sender not registered — skip *)
+        | Some actual_cwd ->
+            let key = alias_casefold from_alias in
+            if actual_cwd <> expected_cwd then begin
+              (* Mismatch: log + update state to true *)
+              (try
+                 let ts = Unix.gettimeofday () in
+                 let fields =
+                   [ ("ts", `Float ts)
+                   ; ("event", `String "worktree_mismatch")
+                   ; ("alias", `String from_alias)
+                   ; ("expected_cwd", `String expected_cwd)
+                   ; ("actual_cwd", `String actual_cwd)
+                   ]
+                 in
+                 log_broker_event ~broker_root:(root t) "WORKTREE_MISMATCH" fields
+               with _ -> ());
+              Hashtbl.replace prior_mismatch_state key true
+            end else
+              (* Match: only log if prior state was mismatch (transition) *)
+              (match Hashtbl.find_opt prior_mismatch_state key with
+               | Some true ->
+                   (* Transition mismatch→match: log recovery + update state *)
+                   (try
+                      let ts = Unix.gettimeofday () in
+                      let fields =
+                        [ ("ts", `Float ts)
+                        ; ("event", `String "worktree_match")
+                        ; ("alias", `String from_alias)
+                        ; ("cwd", `String expected_cwd)
+                        ]
+                      in
+                      log_broker_event ~broker_root:(root t) "WORKTREE_MATCH" fields
+                    with _ -> ());
+                   Hashtbl.replace prior_mismatch_state key false
+               | _ -> ()))
     with _ -> ()
 
   let list_registrations t = load_registrations t
@@ -1993,15 +2007,15 @@ open C2c_mcp_helpers
 
     let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) ?(ephemeral = false) () =
     if debug_enabled then Printf.eprintf "[DEBUG enqueue ENTER] from=%s to=%s\n%!" from_alias to_alias;
+    (* Hardening B: check shell-launch-location mismatch and warn if sender's
+       cwd has drifted from the expected path at launch time. Called here for
+       all sends (reserved-alias check is separate below). *)
+    check_worktree_mismatch t ~from_alias;
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
     if List.mem from_alias reserved_system_aliases then
       invalid_arg (Printf.sprintf
         "send rejected: from_alias '%s' is a reserved system alias" from_alias)
-    else
-      (* Hardening B: check shell-launch-location mismatch and warn if sender's
-         cwd has drifted from the expected path at launch time. *)
-      check_worktree_mismatch t ~from_alias;
-    if is_remote_alias to_alias then
+    else if is_remote_alias to_alias then
       (* Remote alias: append to relay outbox for async forwarding by sync loop.
          Note: ephemeral semantics over the relay are not yet wired in v1 —
          the relay outbox path persists by design. Cross-host ephemeral is a
