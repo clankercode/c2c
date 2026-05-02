@@ -104,3 +104,5 @@ by deleting — git history keeps them if anyone needs to look back.
 
 
 - [ ] #625 — `c2c peer-pass send` hits git circuit breaker internally (willow report 2026-05-02): peer-pass tool triggers enough internal git spawns to trip the 5/3s breaker → uncaught exception. Needs either: (a) exempt internal git calls from circuit breaker, or (b) raise the threshold for tool-internal use. Severity: medium (workaround: manual DM). Reporter: willow-coder.
+
+- [ ] #626 — Raise git circuit breaker default from 5 → 15 spawns/3s window. Design: .collab/research/2026-05-02T04-35-00Z-stanza-coder-circuit-breaker-threshold-design.md. Low priority — per-call resets (89c582dd, 7c670200) are sufficient stopgaps.
