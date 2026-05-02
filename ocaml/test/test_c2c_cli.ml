@@ -66,6 +66,44 @@ let test_doctor_output_contains_health_checks () =
       check bool "output contains registry check" true
         (string_contains content "registry"))
 
+let test_doctor_output_contains_commits_ahead () =
+  let tmpfile = Filename.temp_file "c2c-doctor" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "output contains commits ahead header" true
+        (string_contains content "commits ahead"))
+
+let test_doctor_output_contains_push_verdict () =
+  let tmpfile = Filename.temp_file "c2c-doctor" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "output contains push verdict category" true
+        (string_contains content "Relay/deploy critical"
+         || string_contains content "Local-only"))
+
+let test_doctor_output_contains_relay_classification () =
+  let tmpfile = Filename.temp_file "c2c-doctor" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      let lower = String.lowercase_ascii content in
+      check bool "output contains relay or local-only classification" true
+        (string_contains lower "relay" || string_contains lower "local-only"))
+
 (* ------------------------------------------------------------------------- *)
 (* c2c config show — verify config rendering                                   *)
 (* ------------------------------------------------------------------------- *)
@@ -500,6 +538,9 @@ let () =
     [ ( "doctor",
         [ ( "doctor exits 0 on clean run", `Quick, test_doctor_runs_and_exits_zero )
         ; ( "doctor output contains health checks", `Quick, test_doctor_output_contains_health_checks )
+        ; ( "doctor output contains commits ahead", `Quick, test_doctor_output_contains_commits_ahead )
+        ; ( "doctor output contains push verdict", `Quick, test_doctor_output_contains_push_verdict )
+        ; ( "doctor output contains relay classification", `Quick, test_doctor_output_contains_relay_classification )
         ] )
     ; ( "config_show",
         [ ( "config show exits 0", `Quick, test_config_show_exits_zero )
