@@ -99,6 +99,31 @@ let test_roundtrip_opencode () =
   Alcotest.(check string) "roundtrip: role preserved" "primary" re_parsed.C2c_role.role;
   Alcotest.(check int) "roundtrip: c2c_auto_join_rooms count" 2 (List.length re_parsed.C2c_role.c2c_auto_join_rooms)
 
+(* [#423 Stage 1] array fields that were silently dropped in rendering:
+   compatible_clients, required_capabilities, include_.  These must survive
+   a parse → OpenCode_renderer.render → parse roundtrip. *)
+let test_roundtrip_array_fields () =
+  let input = {|
+---
+description: Array fields test
+role: primary
+include: [snippet-a, snippet-b]
+compatible_clients: [opencode, claude]
+required_capabilities: [mcp, stdio]
+---
+body
+|}
+  in
+  let role = C2c_role.parse_string input in
+  Alcotest.(check (list string)) "parse: include_" ["snippet-a"; "snippet-b"] role.C2c_role.include_;
+  Alcotest.(check (list string)) "parse: compatible_clients" ["opencode"; "claude"] role.C2c_role.compatible_clients;
+  Alcotest.(check (list string)) "parse: required_capabilities" ["mcp"; "stdio"] role.C2c_role.required_capabilities;
+  let rendered = C2c_role.OpenCode_renderer.render role in
+  let re_parsed = C2c_role.parse_string rendered in
+  Alcotest.(check (list string)) "roundtrip: include_ preserved" ["snippet-a"; "snippet-b"] re_parsed.C2c_role.include_;
+  Alcotest.(check (list string)) "roundtrip: compatible_clients preserved" ["opencode"; "claude"] re_parsed.C2c_role.compatible_clients;
+  Alcotest.(check (list string)) "roundtrip: required_capabilities preserved" ["mcp"; "stdio"] re_parsed.C2c_role.required_capabilities
+
 let test_pronouns_parse () =
   Alcotest.(check (option string)) "pronouns parsed from input" (Some "she/her") role_input_with_pronouns.C2c_role.pronouns
 
@@ -195,6 +220,7 @@ let tests = [
   "codex_renderer",              `Quick, test_codex_renderer;
   "kimi_renderer",               `Quick, test_kimi_renderer;
   "roundtrip",                   `Quick, test_roundtrip_opencode;
+  "roundtrip_array_fields",      `Quick, test_roundtrip_array_fields;
   "pronouns_parse",              `Quick, test_pronouns_parse;
   "pronouns_render_opencode",     `Quick, test_pronouns_render_opencode;
   "pronouns_render_claude",       `Quick, test_pronouns_render_claude;

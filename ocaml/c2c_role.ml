@@ -404,6 +404,15 @@ module OpenCode_renderer = struct
     let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
     emit_c2c_section lines r;
+    (* #423 Stage 1: render array-valued fields that were previously
+       silently dropped on roundtrip (compatible_clients,
+       required_capabilities, include_). *)
+    (match r.include_ with [] -> () | vals ->
+      lines := ("include: [" ^ String.concat ", " vals ^ "]") :: !lines);
+    (match r.compatible_clients with [] -> () | vals ->
+      lines := ("compatible_clients: [" ^ String.concat ", " vals ^ "]") :: !lines);
+    (match r.required_capabilities with [] -> () | vals ->
+      lines := ("required_capabilities: [" ^ String.concat ", " vals ^ "]") :: !lines);
     let rec emit_entries current_section entries =
       match entries with
       | [] -> ()
