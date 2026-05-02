@@ -26,9 +26,9 @@ Project Folder: `.collab/runbooks/kimi-notification-store-delivery.md` + finding
 
 Goal: Kimi as a first-class c2c peer with reliable inbound delivery — previously broken via wire-bridge dual-agent bug; now uses file-based notification-store push delivery via `C2c_kimi_notifier`.
 
-Status: **active (3 of 4 slices shipped today 2026-04-29)** — Slice 1 `9f0609b3` (deprecate wire-bridge for kimi), Slice 2 `642f6b63` (notifier module), Slice 3a `47bd76b9` (runbook + RESOLVED finding). Validated end-to-end with kuura-viima + lumi-tyyni live peers. Slice 4 (wire-bridge code+docs cleanup, ~1400 LoC) deferred.
+Status: **done (all 4 slices shipped)** — Slice 1 `9f0609b3` (deprecate wire-bridge for kimi), Slice 2 `642f6b63` (notifier module), Slice 3a `47bd76b9` (runbook + RESOLVED finding), Slice 4 `11da86d1`+`28519c20`+`422643fc` (wire-bridge code+docs cleanup, -750/+102 net). Wire-bridge fully removed for kimi; retained for opencode/codex/claude PTY path.
 
-Next: schedule Slice 4 cleanup pass; monitor in dogfood for any notification-store delivery edge cases.
+Next: monitor in dogfood for notification-store delivery edge cases. No open sub-tasks.
 
 ### Agent-file epic
 
@@ -56,9 +56,9 @@ Project Folder: **todo**
 
 Goal: deprecate all Python in the c2c runtime. Every `c2c` feature should be pure OCaml. Python only for test scaffolding / one-shot scripts.
 
-Status: **active** — CLI surface, broker, MCP server, relay, agent-file parser/renderer, Banner all OCaml. Deprecated scripts moved to `deprecated/`. Core runtime fully ported. Recent landings: #310 multi-container Docker E2E (closed); #311 mcp-inner/mcp-outer proxy (slice A landed `5d49b94`); #312 codex harness fd leaks + hang fix (closed); #313/#314 worktree gc + freshness heuristic (closed); #322 install-stamp drift (closed). c2c-mcp-inner binary live; install-guard at `~/.local/bin/.c2c-install.lock` prevents cross-worktree races.
+Status: **done (v1 port complete)** — CLI surface, broker, MCP server, relay, agent-file parser/renderer, Banner all OCaml. Deprecated runtime scripts moved to `deprecated/`. Core runtime fully ported. c2c binary is canonical. Recent landings: #310 multi-container Docker E2E (closed); #311 mcp-inner/mcp-outer proxy (closed); #312 codex harness fd leaks + hang fix (closed); #313/#314 worktree gc + freshness heuristic (closed); #322 install-stamp drift (closed); #340a OpenCode dual-plugin fix (closed). c2c-mcp-inner binary live; install-guard at `~/.local/bin/.c2c-install.lock` prevents cross-worktree races.
 
-Next: persistent relay.toml config; multi-broker support (v2); remaining script-deprecation pass.
+Next: v2 items tracked separately — relay.toml persistent config; multi-broker support.
 
 ### Sitrep discipline
 
@@ -98,7 +98,7 @@ Goal: capability-gated live tests for `c2c start <client>` that can launch real 
 
 Status: **active** — design + plan docs committed. Tests landed incrementally (`tests/test_terminal_e2e_framework.py`, `tests/e2e/framework/artifacts.py`).
 
-Next: continued incremental hardening; will unblock codex-headless Task 7 (tmux smoke coverage).
+Next: continued incremental hardening; codex-headless Task 7 (tmux smoke) already shipped.
 
 ### Remote relay transport
 
@@ -116,9 +116,9 @@ Project Folder: **todo** (cluster spans #335/#336/#337/#340/#341/#342)
 
 Goal: every restart path (compact, OOM, resume, fresh boot, install-then-restart) must be safe and predictable. The 2026-04-28 OOM exposed a class of restart-only bugs invisible during steady-state operation.
 
-Status: **active** — surfaced through the OOM-recovery pass on 2026-04-28. #336 (just build silent exit-0) closed `aaffb39c→18e1d695`. #335 v1a (nudge instrumentation) cherry-picked `b6ce5348→253d4eac` + fix `3bf645cb→fce11a0b`; v2a (pidless-skip implementation) ready at `43695999..8ff19204` awaiting peer-PASS. #340 (OpenCode dual-plugin paths doubling helper spawns) diagnosed at OC source level — fix shape filed as #340a (`c2c_setup.ml:534-546`). Stopgap rm of `.opencode/plugins/c2c.ts` applied. #337/#341/#342 still pending. #344 sweep-predicate hardening + #345 auto_register_startup-guards both queued; impl in flight.
+Status: **active** — surfaced through the OOM-recovery pass on 2026-04-28. #336 (just build silent exit-0) closed `aaffb39c→18e1d695`. #335 v1a (nudge instrumentation) cherry-picked `b6ce5348→253d4eac` + fix `3bf645cb→fce11a0b`; v2a (pidless-skip implementation) shipped `43695999..8ff19204`. #340a OpenCode dual-plugin fix shipped. #337/#341/#342 still pending. #344 sweep-predicate hardening + #345 auto_register_startup-guards queued; impl in flight.
 
-Next: galaxy ships #318 v3 (heartbeat-config thunk refactor, post-stanza-FAIL); land #335 v2a + #340a; close #337/#341/#342.
+Next: galaxy ships #318 v3 (heartbeat-config thunk refactor, post-stanza-FAIL); close #337/#341/#342.
 
 ### Coord workflow + peer-PASS process
 
@@ -126,7 +126,7 @@ Project Folder: **todo** (cross-cuts #323/#324/#325/#334/#360)
 
 Goal: coordinator surface (cherry-pick, peer-PASS rubric, push-gate, install-path policy) is mature enough that swarm-cycles don't need Max-direct intervention. Two recent landings sharpened the discipline: peer-PASS bug-class-recurs check (#324) + coord-cherry-pick from divergent base (#325).
 
-Status: **active** — #323 auto-DM-on-cherry-pick landed. #324 peer-PASS rubric live. #325 divergent-base runbook landed. #334 PUSHED. **#360 FIXED** (`99d7b6cf` — two-phase copy, dry-run, fail-loud). 2-claim review convention documented in rubric (4a0aacbe, 2026-05-02). Chain-slice diff guidance added.
+Status: **active** — #323 auto-DM-on-cherry-pick landed. #324 peer-PASS rubric live. #325 divergent-base runbook landed. #334 PUSHED. **#360 FIXED** (`99d7b6cf` — two-phase copy, dry-run, fail-loud). All #360-era fixes landed. 2-claim max documented in rubric §5 (5bdf81a2, 2026-05-02). Phantom-reviewer cascade finding filed (`2026-05-02T08-45-00Z-coordinator1-phantom-reviewer-cascade`). Chain-slice diff guidance added.
 
 Next: #352 doctor migration-prompt (unblocked by #360). #328 coord-cherry-pick scope-audit + auto-build deferred.
 
