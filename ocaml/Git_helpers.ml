@@ -92,7 +92,6 @@ let check_and_record_git_spawn () : bool =
       (* Trip the circuit — log once per trip epoch *)
       (git_counter.tripped <- true;
        git_counter.trip_epoch <- now;
-       git_counter.logged_this_trip <- false;
        if not git_counter.logged_this_trip then
          (prerr_endline
             (Printf.sprintf
