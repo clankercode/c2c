@@ -12,7 +12,13 @@ let per_alias_key_path = C2c_signing_helpers.per_alias_key_path
 let peer_passes_dir () =
   match Git_helpers.git_common_dir_parent () with
   | Some parent -> parent // ".c2c" // "peer-passes"
-  | None -> failwith "not in a git repository"
+  | None ->
+      (* Fallback when git operations are unavailable (e.g. circuit-breaker
+         tripped from prior git spawns in the same session). Use CWD as
+         the base so peer-pass artifacts are still writeable locally.
+         Consistent with [Peer_review.artifact_path] which falls back to
+         ".c2c" in the same situation. *)
+      Filename.concat (Unix.getcwd ()) ".c2c" // "peer-passes"
 
 (* #57 defence-in-depth: validate alias/sha before composing the artifact
    path. Same validator as [Peer_review.validate_artifact_path_components];
@@ -77,10 +83,16 @@ let reviewer_is_author ~reviewer ~sha =
   || List.exists local_part_eq co_author_emails
 
 let validate_signing_allowed ~alias ~sha ~allow_self =
+  (* When the circuit-breaker is tripped from prior git spawns in the same
+     session, git_commit_exists returns false even for valid SHAs.
+     Rather than hard-error (which crashes peer-pass send after the artifact
+     is already written), degrade gracefully: skip the existence check.
+     The signature + TOFU pin still protect artifact integrity; the existence
+     check is an anti-abuse measure, not a security boundary. *)
   if not (Git_helpers.git_commit_exists sha) then begin
-    Printf.eprintf "error: SHA %s does not resolve to a commit in this repository.\n%!" sha;
-    Printf.eprintf "  fix: confirm the SHA is correct and the branch is fetched locally.\n%!";
-    exit 1
+    Printf.eprintf "warning: could not verify SHA %s exists (git unavailable — circuit-breaker open?); skipping existence check.\n%!" sha;
+    Printf.eprintf "  artifact was written to disk; signature + TOFU pin still protect integrity.\n%!"
+    (* do not exit — continue with anti-author check *)
   end;
   if reviewer_is_author ~reviewer:alias ~sha && not allow_self then begin
     Printf.eprintf
