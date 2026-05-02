@@ -50,13 +50,13 @@
 ## B. Incomplete Design Slices (awaiting implementation)
 
 ### B1. #432 Pending Permissions Hardening
-- **Slice B** — `open_pending_reply` rejects unregistered callers, session-derived alias. ~150 LoC. ❌
-- **Slice C** — Capacity bounds (16 per-alias, 1024 global). ~50 LoC. ❌
-- **Slice D** — Decision audit log in broker.log. ~80 LoC. ❌
+- **Slice B** — `open_pending_reply` rejects unregistered callers, session-derived alias. ~150 LoC. ✅ COMPLETE (tests at test_c2c_mcp.ml:9136)
+- **Slice C** — Capacity bounds (16 per-alias, 1024 global). ~50 LoC. ✅ COMPLETE (`pending_per_alias_cap=16`, `pending_global_cap=1024` in c2c_broker.ml:478)
+- **Slice D** — Decision audit log in broker.log. ~80 LoC. ✅ COMPLETE (`pending_open`/`pending_check` events logged via `log_broker_event`)
 
 ### B2. #490 Approval Side Channel
-- **Slice 5b** — CLI: `approval-pending-write`, `approval-list`, `approval-show`. Gated on 5a peer-PASS. ❌
-- **Slice 5c** — Notifier filter (suppress ka_* verdicts), TTL cleanup (`approval-gc`). Gated on 5b. ❌
+- **Slice 5b** — CLI: `approval-pending-write`, `approval-list`, `approval-show`. Gated on 5a peer-PASS. ✅ COMPLETE (c2c.ml:5912-6126)
+- **Slice 5c** — Notifier filter (suppress ka_* verdicts), TTL cleanup (`approval-gc`). Gated on 5b. ✅ COMPLETE
 
 ### B3. #671 Encrypted Broadcast
 - **S1 per-recipient encryption** — ✅ COMPLETE (cherry-picked this session)
@@ -65,8 +65,7 @@
   The CLI `send-all` subcommand bypasses `broadcast_to_all` and sends plaintext.
 
 ### B4. Hardening Series
-- **Hardening B** — Shell launch location guard (`cwd` in registration + broker soft-warn). ❌
-  Prerequisite: add `cwd` to registration schema (not yet done).
+- **Hardening B** — Shell launch location guard (`cwd` in registration + broker soft-warn). ✅ COMPLETE (#621 + #622: cwd added to registration schema + `check_worktree_mismatch` broker guard shipped)
 - **Hardening C** — Pre-reset shim branch guard (refuse `git switch/checkout/rebase` in main tree). ✅ COMPLETE (shipped + installed)
 
 ### B5. c2c-native Scheduling
@@ -112,8 +111,8 @@
 ## D. Role Generation & Agent Files
 
 ### D1. Role Generation Pipeline (todo-role-gen-test.txt)
-- **Stage 1** (Parser/renderer fidelity) — ❌ arrays dropped in rendering
-- **Stage 2** (`c2c agent new` template quality) — ❌ sparse template
+- **Stage 1** (Parser/renderer fidelity) — ✅ COMPLETE (6fd58719: arrays now round-trip correctly; `test_roundtrip_array_fields` added)
+- **Stage 2** (`c2c agent new` template quality) — ✅ COMPLETE (c3f4f294: 37-line template improvement with inline comments/examples)
 - **Stage 3** (Banner rendering) — ❌ banner.ml never invoked
 - **Stage 4** (E2E OpenCode launch) — 🟡 mechanism exists, untested E2E
 - **Stage 5** (E2E Claude Code launch) — ❌ untested
@@ -134,7 +133,7 @@
 | 2 | MED | Fresh Claude Code session idles without --auto | Open (needs decision) |
 | 3 | LOW | Labeled stashes slot-shifted by coord-cherry-pick | Open |
 | 4 | MED | coord-cherry-pick misses parent commits (explicit-tip-list) | Open |
-| 5 | MED | c2c get-tmux-location race under concurrent invocation | Open (fix: read $TMUX_PANE) |
+| 5 | MED | c2c get-tmux-location race under concurrent invocation | ✅ FIXED (c2c.ml:2681 — prefers $TMUX_PANE per-pane var; concurrent-safe) |
 | 6 | HIGH | "build clean" peer-PASS claim can be wrong (cached artifacts) | Open |
 | 7 | LOW | git pre-commit hook output leaks into commit message body | Open |
 

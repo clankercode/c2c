@@ -4,7 +4,7 @@ ts: 2026-04-28T12:55:00Z
 slice: tmux-location-race
 related: scripts/c2c_tmux.py — peek/keys/exec callers
 severity: MED
-status: OPEN
+status: CLOSED
 ---
 
 # `c2c get-tmux-location` returns wrong pane under concurrent invocation
