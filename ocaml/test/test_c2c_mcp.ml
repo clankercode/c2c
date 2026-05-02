@@ -12332,6 +12332,134 @@ let test_schedule_set_with_align () =
               check string "align is @1h+7m" "@1h+7m"
                 (first |> member "align" |> to_string)))
 
+(* schedule_rm: remove a schedule then verify schedule_list is empty *)
+let test_schedule_rm_removes_entry () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-sched-rm";
+      Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" dir;
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sched-rm"
+            ~alias:"sched-rm" ~pid:None ~pid_start_time:None ();
+          (* Create a schedule first *)
+          let set_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 601)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_set")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("name", `String "to-remove")
+                          ; ("interval_s", `Float 120.0)
+                          ; ("message", `String "will be removed")
+                          ] )
+                    ] )
+              ]
+          in
+          let _ =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir set_request)
+          in
+          (* Remove it *)
+          let rm_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 602)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_rm")
+                    ; ( "arguments",
+                        `Assoc [ ("name", `String "to-remove") ] )
+                    ] )
+              ]
+          in
+          let rm_response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir rm_request)
+          in
+          (match rm_response with
+           | None -> fail "expected schedule_rm response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 try json |> member "result" |> member "isError" |> to_bool
+                 with _ -> false
+               in
+               check bool "schedule_rm isError=false" false is_error);
+          (* Verify list is now empty *)
+          let list_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 603)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_list")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let list_response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir list_request)
+          in
+          match list_response with
+          | None -> fail "expected schedule_list response after rm"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let text =
+                json |> member "result" |> member "content" |> index 0
+                |> member "text" |> to_string
+              in
+              let parsed = Yojson.Safe.from_string text in
+              let items = parsed |> to_list in
+              check int "schedule_list empty after rm" 0 (List.length items)))
+
+(* schedule_rm on nonexistent entry returns gracefully *)
+let test_schedule_rm_nonexistent_is_noop () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-sched-rm2";
+      Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" dir;
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_SCHEDULE_ROOT_OVERRIDE" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-sched-rm2"
+            ~alias:"sched-rm2" ~pid:None ~pid_start_time:None ();
+          let rm_request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 604)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "schedule_rm")
+                    ; ( "arguments",
+                        `Assoc [ ("name", `String "does-not-exist") ] )
+                    ] )
+              ]
+          in
+          let rm_response =
+            Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir rm_request)
+          in
+          match rm_response with
+          | None -> fail "expected schedule_rm response"
+          | Some json ->
+              let open Yojson.Safe.Util in
+              let is_error =
+                try json |> member "result" |> member "isError" |> to_bool
+                with _ -> false
+              in
+              (* Removing a nonexistent schedule returns isError=true *)
+              check bool "schedule_rm nonexistent isError=true" true is_error))
+
 let test_set_compact_no_session_returns_error () =
   with_temp_dir (fun dir ->
       (* Ensure no env session is set *)
@@ -13030,4 +13158,8 @@ let () =
                 test_schedule_set_then_list_shows_entry
             ; test_case "schedule_set with align parameter stores align" `Quick
                 test_schedule_set_with_align
+            ; test_case "schedule_rm removes entry and list is empty" `Quick
+                test_schedule_rm_removes_entry
+            ; test_case "schedule_rm on nonexistent entry is a no-op" `Quick
+                test_schedule_rm_nonexistent_is_noop
             ] ) ]
