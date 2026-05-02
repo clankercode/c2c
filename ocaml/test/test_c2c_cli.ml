@@ -14,6 +14,7 @@
    - c2c rooms list
    - c2c rooms join
    - c2c worktree list
+   - c2c worktree gc
    - c2c instances
 
    Each test invokes the c2c binary via Sys.command and verifies
@@ -659,6 +660,149 @@ let test_config_generation_client_shows_client_name () =
          || string_contains content "codex"))
 
 (* ------------------------------------------------------------------------- *)
+(* c2c worktree gc — verify GC classification and --clean removal             *)
+(* ------------------------------------------------------------------------- *)
+
+(* Shell helper — captures stderr on failure for diagnostics.
+   Uses a fixed stderr path to avoid temp-file-in-sandbox issues. *)
+let sh fmt =
+  let sh_err = "/tmp/sh-err-c2c-wt-gc.txt" in
+  Printf.ksprintf (fun cmd ->
+      let code = Sys.command (Printf.sprintf "%s 2>%s" cmd (Filename.quote sh_err)) in
+      if code <> 0 then
+        let err_msg =
+          try
+            let ch = open_in sh_err in
+            Fun.protect ~finally:(fun () -> close_in ch) (fun () ->
+              let content = really_input_string ch (in_channel_length ch) in
+              if String.trim content = "" then "(no stderr)" else content)
+          with _ -> "(could not read stderr)"
+        in
+        failwith (Printf.sprintf "shell command failed (%d): %s\nstderr: %s" code cmd err_msg)
+      else
+        ())
+    fmt
+
+(* Build a minimal git repo with refs/remotes/origin/master pointing at HEAD
+   (synthesized via update-ref so we don't need a real remote), plus an
+   optional worktree inside .worktrees/. Only worktrees inside .worktrees/
+   are considered by scan_worktrees_for_gc.
+
+   Note: creates the test repo in /tmp directly (not via temp_file) because
+   Dune sandboxes the test temp dir and prevents mkdir inside it. *)
+let with_test_repo_and_worktree state f =
+  let tmp = Filename.concat "/tmp" ("c2c-wt-gc-test-" ^ string_of_int (Unix.getpid())) in
+  (try ignore (Sys.command ("rm -rf " ^ Filename.quote tmp)) with _ -> ());
+  Unix.mkdir tmp 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      (* Best-effort cleanup: gc --clean may have already removed the worktree *)
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote tmp))))
+    (fun () ->
+      let repo = tmp in  (* repo IS the temp dir itself *)
+      let wt_name = "wt" in
+      let wt_path = Filename.concat (Filename.concat repo ".worktrees") wt_name in
+      sh "git init -q -b master %s" (Filename.quote repo);
+      sh "git -C %s config user.email t@t" (Filename.quote repo);
+      sh "git -C %s config user.name t" (Filename.quote repo);
+      sh "echo initial > %s/f" (Filename.quote repo);
+      sh "git -C %s add f" (Filename.quote repo);
+      sh "git -C %s commit -q -m initial" (Filename.quote repo);
+      (* Synthesize origin/master without needing a real remote *)
+      sh "git -C %s update-ref refs/remotes/origin/master HEAD"
+        (Filename.quote repo);
+      (match state with
+       | `Clean ->
+           (* Create .worktrees/<name> worktree at origin/master.
+              Path .worktrees/wt is relative to the repo dir (resolved by git
+              from the repo's gitdir parent), giving repo/.worktrees/wt. *)
+           sh "mkdir -p %s" (Filename.quote (Filename.concat repo ".worktrees"));
+           sh "git -C %s worktree add %s origin/master"
+             (Filename.quote repo) (Filename.quote (Filename.concat ".worktrees" wt_name))
+       | `Dirty ->
+           sh "mkdir -p %s" (Filename.quote (Filename.concat repo ".worktrees"));
+           sh "git -C %s worktree add %s origin/master"
+             (Filename.quote repo) (Filename.quote (Filename.concat ".worktrees" wt_name));
+           sh "echo modified >> %s/f" (Filename.quote wt_path)
+       | `None -> ());
+      f repo wt_path)
+
+(* Test 1: gc with a path-prefix that matches nothing exits 0 and shows 0 worktrees *)
+let test_worktree_gc_no_worktrees () =
+  with_test_repo_and_worktree `None (fun repo _wt ->
+      (* Repo exists but has no worktrees (wt was never created) *)
+      let tmpfile = Filename.temp_file "c2c-wt-gc" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+        (fun () ->
+          (* gc from repo with a prefix that matches nothing *)
+          let rc = Sys.command (
+            Printf.sprintf
+              "cd %s && c2c worktree gc --path-prefix=no-such-wt-gc-test > %s 2>&1"
+              (Filename.quote repo)
+              (Filename.quote tmpfile)
+          ) in
+          check int "gc with no matching worktrees exits 0" 0 rc;
+          let ch = open_in tmpfile in
+          let content = Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () -> really_input_string ch (in_channel_length ch))
+          in
+          (* Output should mention "0 worktrees" *)
+          check bool "output mentions 0 worktrees" true
+            (string_contains content "0 worktree")
+        )
+    )
+
+(* Test 2: gc --clean removes a clean merged worktree *)
+let test_worktree_gc_clean_removes_merged () =
+  with_test_repo_and_worktree `Clean (fun repo wt ->
+      (* Verify worktree exists before gc via [ -d ]. *)
+      let dir_exists () =
+        Sys.command (Printf.sprintf "if [ -d %s ]; then exit 0; else exit 1; fi"
+          (Filename.quote wt)) = 0
+      in
+      check bool "worktree exists before gc" true (dir_exists ());
+      (* Run c2c worktree gc --clean.
+         --active-window-hours=0 bypasses freshness heuristic for new worktrees.
+         --path-prefix=wt matches the test worktree name. *)
+      let rc = Sys.command (
+        Printf.sprintf "cd %s && c2c worktree gc --path-prefix=wt --active-window-hours=0 --clean > /dev/null 2>&1"
+          (Filename.quote repo)
+      ) in
+      check int "gc --clean exits 0" 0 rc;
+      (* Verify worktree is gone *)
+      check bool "worktree removed after --clean" false (dir_exists ())
+    )
+
+(* Test 3: gc (dry-run) refuses a dirty worktree — does NOT remove it *)
+let test_worktree_gc_refuses_dirty () =
+  with_test_repo_and_worktree `Dirty (fun repo wt ->
+      let tmpfile = Filename.temp_file "c2c-wt-gc" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+        (fun () ->
+          (* gc without --clean: dry-run, should refuse dirty worktree *)
+          let rc = Sys.command (
+            Printf.sprintf
+              "cd %s && c2c worktree gc --path-prefix=wt > %s 2>&1"
+              (Filename.quote repo)
+              (Filename.quote tmpfile)
+          ) in
+          check int "gc dry-run exits 0" 0 rc;
+          let ch = open_in tmpfile in
+          let content = Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () -> really_input_string ch (in_channel_length ch))
+          in
+          (* Output should mention REFUSE and "dirty" *)
+          check bool "output mentions REFUSE" true
+            (string_contains content "REFUSE");
+          check bool "output mentions dirty" true
+            (string_contains content "dirty");
+          (* Worktree must NOT be removed (it's a dry-run) *)
+          check bool "dirty worktree still exists after dry-run" true
+            (Sys.file_exists wt)
+        )
+    )
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -750,5 +894,10 @@ let () =
     ; ( "config_generation_client",
         [ ( "config generation-client exits 0", `Quick, test_config_generation_client_exits_zero )
         ; ( "config generation-client shows client name", `Quick, test_config_generation_client_shows_client_name )
+        ] )
+    ; ( "worktree_gc",
+        [ ( "gc with no matching worktrees exits 0", `Quick, test_worktree_gc_no_worktrees )
+        ; ( "gc --clean removes clean merged worktree", `Quick, test_worktree_gc_clean_removes_merged )
+        ; ( "gc dry-run refuses dirty worktree", `Quick, test_worktree_gc_refuses_dirty )
         ] )
     ]
