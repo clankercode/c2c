@@ -44,7 +44,7 @@ The PostToolUse hook only fires when Claude Code is actively running tools. A tr
 
 ## PTY Injection Is Linux/Privilege-Specific (Deprecated Path)
 
-PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_ptrace`. This path is **deprecated** — OpenCode uses the TypeScript plugin, Kimi uses Wire bridge, Claude Code uses PostToolUse hook + `/loop`.
+PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_ptrace`. This path is **deprecated** — OpenCode uses the TypeScript plugin, Kimi uses notification-store delivery, Claude Code uses PostToolUse hook + `/loop`.
 
 **Current path:** Broker-native `poll_inbox` works everywhere without PTY. Only Codex managed sessions still use the PTY notify daemon.
 
