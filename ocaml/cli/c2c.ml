@@ -507,131 +507,199 @@ let list_cmd =
     Cmdliner.Arg.(value & flag & info [ "enriched"; "e" ]
       ~doc:"Show role-class + description + last-seen for each peer (looked up from .c2c/roles/<alias>.md). Useful for new agents orienting on who's who in the swarm.")
   in
+  let global =
+    Cmdliner.Arg.(value & flag & info [ "global"; "g" ]
+      ~doc:"Scan all known broker roots (across all repos) and list every registered session system-wide. Each session is annotated with its repo fingerprint and path. Use this to find sessions started in other repos or on other brokers.")
+  in
   let+ json = json_flag
   and+ all = all
-  and+ enriched = enriched in
+  and+ enriched = enriched
+  and+ global = global in
   mcp_nudge_if_needed ~cmd:"list";
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let regs = C2c_mcp.Broker.list_registrations broker in
+
+  (* --- helpers shared between single-broker and global modes --- *)
+  let registration_to_json ?(repo_fp="") ?(repo_path="") ~(enriched:bool) (r : C2c_mcp.registration) =
+    let base : (string * Yojson.Safe.t) list =
+      [ ("session_id", `String r.session_id)
+      ; ("alias", `String r.alias)
+      ]
+    in
+    let with_repo = if repo_fp <> "" then base @ [ ("repo_fp", `String repo_fp); ("repo_path", `String repo_path) ] else base in
+    let with_pid =
+      match r.pid with
+      | Some n -> with_repo @ [ ("pid", `Int n) ]
+      | None -> with_repo
+    in
+    let alive_val : Yojson.Safe.t =
+      match C2c_mcp.Broker.registration_liveness_state r with
+      | C2c_mcp.Broker.Alive -> `Bool true
+      | C2c_mcp.Broker.Dead -> `Bool false
+      | C2c_mcp.Broker.Unknown -> `Null
+    in
+    let with_alive = with_pid @ [ ("alive", alive_val) ] in
+    let fields =
+      match r.registered_at with
+      | Some ts -> with_alive @ [ ("registered_at", `Float ts) ]
+      | None -> with_alive
+    in
+    let fields =
+      match r.tmux_location with
+      | Some loc -> fields @ [ ("tmux_location", `String loc) ]
+      | None -> fields
+    in
+    let fields =
+      match r.compacting with
+      | Some c ->
+          let reason_json = match c.reason with Some r -> `String r | None -> `Null in
+          fields @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
+      | None -> fields
+    in
+    let fields =
+      if enriched then
+        let (role_class, description) = lookup_role_info r.alias in
+        fields @ [
+          ("role_class", `String role_class);
+          ("description", `String description);
+          ("last_seen", `String (format_last_seen r.registered_at));
+        ]
+      else fields
+    in
+    `Assoc fields
+  in
+
   let output_mode = if json then Json else Human in
-  if regs = [] then (
-    match output_mode with
-    | Json -> print_json (`List [])
-    | Human -> Printf.printf "No registered peers.\n")
-  else
-    match output_mode with
-    | Json ->
-        let json_regs =
-          List.map
-            (fun (r : C2c_mcp.registration) ->
-              let base : (string * Yojson.Safe.t) list =
-                [ ("session_id", `String r.session_id)
-                ; ("alias", `String r.alias)
-                ]
-              in
-              let with_pid =
-                match r.pid with
-                | Some n -> base @ [ ("pid", `Int n) ]
-                | None -> base
-              in
-              let alive_val : Yojson.Safe.t =
-                match C2c_mcp.Broker.registration_liveness_state r with
-                | C2c_mcp.Broker.Alive -> `Bool true
-                | C2c_mcp.Broker.Dead -> `Bool false
-                | C2c_mcp.Broker.Unknown -> `Null
-              in
-              let with_alive = with_pid @ [ ("alive", alive_val) ] in
-              let fields =
-                match r.registered_at with
-                | Some ts -> with_alive @ [ ("registered_at", `Float ts) ]
-                | None -> with_alive
-              in
-              let fields =
-                match r.tmux_location with
-                | Some loc -> fields @ [ ("tmux_location", `String loc) ]
-                | None -> fields
-              in
-              let fields =
-                match r.compacting with
-                | Some c ->
-                    let reason_json = match c.reason with Some r -> `String r | None -> `Null in
-                    fields @ [ ("compacting", `Assoc [ ("started_at", `Float c.started_at); ("reason", reason_json) ]) ]
-                | None -> fields
-              in
-              let fields =
-                if enriched then
-                  let (role_class, description) = lookup_role_info r.alias in
-                  fields @ [
-                    ("role_class", `String role_class);
-                    ("description", `String description);
-                    ("last_seen", `String (format_last_seen r.registered_at));
-                  ]
-                else fields
-              in
-              `Assoc fields)
-            regs
-        in
-        print_json (`List json_regs)
-    | Human ->
-        if enriched then begin
-          (* Header for enriched view. *)
-          Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
-            "ALIAS" "ROLE" "DESCRIPTION" "LAST-SEEN" "STATE";
-          Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
-            (String.make 20 '-') (String.make 13 '-') (String.make 40 '-')
-            (String.make 12 '-') (String.make 5 '-');
-          List.iter
-            (fun (r : C2c_mcp.registration) ->
+
+  if global then
+    (* --global: scan all known broker roots *)
+    let all_roots = C2c_repo_fp.list_all_broker_roots () in
+    if all_roots = [] then (
+      match output_mode with
+      | Json -> print_json (`List [])
+      | Human -> Printf.printf "No broker roots found.\n")
+    else
+      let all_regs =
+        List.fold_left (fun acc (fp, root) ->
+          try
+            let broker = C2c_mcp.Broker.create ~root in
+            let regs = C2c_mcp.Broker.list_registrations broker in
+            List.map (fun r -> (fp, root, r)) regs @ acc
+          with _ -> acc
+        ) [] all_roots
+      in
+      match output_mode with
+      | Json ->
+          let json_regs = List.map (fun (fp, root, r) -> registration_to_json ~repo_fp:fp ~repo_path:root ~enriched r) all_regs in
+          print_json (`List json_regs)
+      | Human ->
+          if all_regs = [] then Printf.printf "No registered peers across %d broker root(s).\n" (List.length all_roots)
+          else begin
+            (* Group output by broker root *)
+            List.iter (fun (fp, root, r) ->
+              Printf.printf "\n[%s]\n  repo: %s\n  root: %s\n"
+                (if enriched then "enriched" else "sessions")
+                fp root;
               let alive_str =
                 match C2c_mcp.Broker.registration_liveness_state r with
                 | C2c_mcp.Broker.Alive -> "alive"
-                | C2c_mcp.Broker.Dead -> "dead"
-                | C2c_mcp.Broker.Unknown -> "?"
+                | C2c_mcp.Broker.Dead -> "dead "
+                | C2c_mcp.Broker.Unknown -> "??? (unknown client_type)"
               in
-              let (role_class, description) = lookup_role_info r.alias in
-              let role_class = if role_class = "" then "—" else role_class in
-              let description = if description = "" then "—" else description in
-              let last_seen = format_last_seen r.registered_at in
-              Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
-                (truncate_str r.alias 20)
-                (truncate_str role_class 13)
-                (truncate_str description 40)
-                last_seen
-                alive_str)
-            regs
-        end else
-        List.iter
-          (fun (r : C2c_mcp.registration) ->
-            let alive_str =
-              match C2c_mcp.Broker.registration_liveness_state r with
-              | C2c_mcp.Broker.Alive -> "alive"
-              | C2c_mcp.Broker.Dead -> "dead "
-              | C2c_mcp.Broker.Unknown -> "??? (unknown client_type)"
-            in
-            let pid_str =
-              match r.pid with
-              | Some p -> Printf.sprintf " pid=%d" p
-              | None -> ""
-            in
-            if all then
-              let session_short =
-                let s = r.session_id in
-                if String.length s > 12 then String.sub s 0 12 ^ "..." else s
-              in
-              let time_str =
-                match r.registered_at with
-                | None -> ""
-                | Some ts ->
-                    let t = Unix.gmtime ts in
-                    Printf.sprintf " %04d-%02d-%02d %02d:%02d"
-                      (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour t.tm_min
-              in
-              let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
-              Printf.printf "  %-20s %s%s  %s%s%s\n" r.alias alive_str pid_str session_short time_str tmux_str
-            else
-              let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
-              Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
-          regs
+              let pid_str = match r.pid with Some p -> Printf.sprintf " pid=%d" p | None -> "" in
+              if enriched then
+                let (role_class, description) = lookup_role_info r.alias in
+                let role_class = if role_class = "" then "—" else role_class in
+                let description = if description = "" then "—" else description in
+                let last_seen = format_last_seen r.registered_at in
+                Printf.printf "  %-20s %-13s %-40s %-12s %s%s\n"
+                  (truncate_str r.alias 20)
+                  (truncate_str role_class 13)
+                  (truncate_str description 40)
+                  last_seen
+                  alive_str pid_str
+              else if all then
+                let session_short = let s = r.session_id in if String.length s > 12 then String.sub s 0 12 ^ "..." else s in
+                let time_str = match r.registered_at with None -> "" | Some ts ->
+                  let t = Unix.gmtime ts in Printf.sprintf " %04d-%02d-%02d %02d:%02d" (1900+t.tm_year) (1+t.tm_mon) t.tm_mday t.tm_hour t.tm_min
+                in
+                let tmux_str = match r.tmux_location with Some s -> " ["^s^"]" | _ -> "" in
+                Printf.printf "  %-20s %s%s  %s%s%s\n" r.alias alive_str pid_str session_short time_str tmux_str
+              else
+                let tmux_str = match r.tmux_location with Some s -> " ["^s^"]" | _ -> "" in
+                Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str
+            ) all_regs
+          end
+  else
+    (* single-broker (default): use current repo's broker root *)
+    let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+    let regs = C2c_mcp.Broker.list_registrations broker in
+    if regs = [] then (
+      match output_mode with
+      | Json -> print_json (`List [])
+      | Human -> Printf.printf "No registered peers.\n")
+    else
+      match output_mode with
+      | Json ->
+          let json_regs = List.map (fun r -> registration_to_json ~enriched r) regs in
+          print_json (`List json_regs)
+      | Human ->
+          if enriched then begin
+            Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
+              "ALIAS" "ROLE" "DESCRIPTION" "LAST-SEEN" "STATE";
+            Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
+              (String.make 20 '-') (String.make 13 '-') (String.make 40 '-')
+              (String.make 12 '-') (String.make 5 '-');
+            List.iter
+              (fun (r : C2c_mcp.registration) ->
+                let alive_str =
+                  match C2c_mcp.Broker.registration_liveness_state r with
+                  | C2c_mcp.Broker.Alive -> "alive"
+                  | C2c_mcp.Broker.Dead -> "dead"
+                  | C2c_mcp.Broker.Unknown -> "?"
+                in
+                let (role_class, description) = lookup_role_info r.alias in
+                let role_class = if role_class = "" then "—" else role_class in
+                let description = if description = "" then "—" else description in
+                let last_seen = format_last_seen r.registered_at in
+                Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
+                  (truncate_str r.alias 20)
+                  (truncate_str role_class 13)
+                  (truncate_str description 40)
+                  last_seen
+                  alive_str)
+              regs
+          end else
+            List.iter
+              (fun (r : C2c_mcp.registration) ->
+                let alive_str =
+                  match C2c_mcp.Broker.registration_liveness_state r with
+                  | C2c_mcp.Broker.Alive -> "alive"
+                  | C2c_mcp.Broker.Dead -> "dead "
+                  | C2c_mcp.Broker.Unknown -> "??? (unknown client_type)"
+                in
+                let pid_str =
+                  match r.pid with
+                  | Some p -> Printf.sprintf " pid=%d" p
+                  | None -> ""
+                in
+                if all then
+                  let session_short =
+                    let s = r.session_id in
+                    if String.length s > 12 then String.sub s 0 12 ^ "..." else s
+                  in
+                  let time_str =
+                    match r.registered_at with
+                    | None -> ""
+                    | Some ts ->
+                        let t = Unix.gmtime ts in
+                        Printf.sprintf " %04d-%02d-%02d %02d:%02d"
+                          (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour t.tm_min
+                  in
+                  let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
+                  Printf.printf "  %-20s %s%s  %s%s%s\n" r.alias alive_str pid_str session_short time_str tmux_str
+                else
+                  let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
+                  Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
+              regs
 
 (* --- subcommand: whoami --------------------------------------------------- *)
 
