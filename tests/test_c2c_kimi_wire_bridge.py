@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-import c2c_kimi_wire_bridge as bridge
+import deprecated.c2c_kimi_wire_bridge as bridge
 
 
 class WireStateTests(unittest.TestCase):
@@ -64,7 +64,7 @@ class FormattingTests(unittest.TestCase):
 
         self.assertIn('<c2c event="message"', text)
         self.assertIn('from="codex"', text)
-        self.assertIn('alias="kimi-wire"', text)
+        self.assertIn('to="kimi-wire"', text)
         self.assertIn('source="broker"', text)
         self.assertIn("hello", text)
 
@@ -112,7 +112,7 @@ class SpoolTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     def test_build_kimi_mcp_config_has_explicit_c2c_env(self):
-        with mock.patch("c2c_kimi_wire_bridge.os.getpid", return_value=424242):
+        with mock.patch("deprecated.c2c_kimi_wire_bridge.os.getpid", return_value=424242):
             cfg = bridge.build_kimi_mcp_config(
                 broker_root=Path("/broker"),
                 session_id="kimi-wire",
@@ -525,7 +525,7 @@ class RunLoopLiveTests(unittest.TestCase):
             sleep_calls = []
 
             with mock.patch("subprocess.Popen", side_effect=OSError("no kimi")):
-                with mock.patch("c2c_kimi_wire_bridge.time.sleep",
+                with mock.patch("deprecated.c2c_kimi_wire_bridge.time.sleep",
                                 side_effect=lambda s: sleep_calls.append(s)):
                     bridge.run_loop_live(
                         session_id="kimi-wire-backoff",
@@ -574,7 +574,7 @@ class RunLoopLiveTests(unittest.TestCase):
             sleep_calls = []
 
             with mock.patch("subprocess.Popen", side_effect=popen_factory):
-                with mock.patch("c2c_kimi_wire_bridge.time.sleep",
+                with mock.patch("deprecated.c2c_kimi_wire_bridge.time.sleep",
                                 side_effect=lambda s: sleep_calls.append(s)):
                     result = bridge.run_loop_live(
                         session_id="kimi-wire-recover",
@@ -662,8 +662,8 @@ class DaemonManagementTests(unittest.TestCase):
                 pidfile.write_text("9191\n", encoding="utf-8")
 
             with (
-                mock.patch("c2c_kimi_wire_bridge.subprocess.Popen", return_value=proc) as popen,
-                mock.patch("c2c_kimi_wire_bridge.time.sleep", side_effect=write_pidfile),
+                mock.patch("deprecated.c2c_kimi_wire_bridge.subprocess.Popen", return_value=proc) as popen,
+                mock.patch("deprecated.c2c_kimi_wire_bridge.time.sleep", side_effect=write_pidfile),
             ):
                 result = bridge.start_daemon(
                     child_argv=["--session-id", "kimi-wire-test", "--loop"],
@@ -687,8 +687,8 @@ class DaemonManagementTests(unittest.TestCase):
             proc.poll.return_value = 1  # already exited
 
             with (
-                mock.patch("c2c_kimi_wire_bridge.subprocess.Popen", return_value=proc),
-                mock.patch("c2c_kimi_wire_bridge.time.sleep"),
+                mock.patch("deprecated.c2c_kimi_wire_bridge.subprocess.Popen", return_value=proc),
+                mock.patch("deprecated.c2c_kimi_wire_bridge.time.sleep"),
             ):
                 result = bridge.start_daemon(
                     child_argv=["--session-id", "kimi-wire-test", "--loop"],
@@ -708,10 +708,10 @@ class DaemonManagementTests(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "c2c_kimi_wire_bridge._has_pending_messages",
+                    "deprecated.c2c_kimi_wire_bridge._has_pending_messages",
                     return_value=False,
                 ),
-                mock.patch("c2c_kimi_wire_bridge.time.sleep"),
+                mock.patch("deprecated.c2c_kimi_wire_bridge.time.sleep"),
                 mock.patch("sys.stdout", new_callable=io.StringIO),
             ):
                 rc = bridge.run_main([
@@ -761,7 +761,7 @@ class DaemonManagementTests(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "c2c_kimi_wire_bridge.start_daemon",
+                    "deprecated.c2c_kimi_wire_bridge.start_daemon",
                     return_value={
                         "ok": True,
                         "daemon": True,

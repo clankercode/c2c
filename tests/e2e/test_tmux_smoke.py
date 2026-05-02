@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from framework._docker_tmux_helpers import DockerTmux
+from tests.e2e.framework._docker_tmux_helpers import DockerTmux
 
 
 # Containers available in the e2e multi-agent topology.
