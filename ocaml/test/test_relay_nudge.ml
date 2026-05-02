@@ -6,10 +6,15 @@
 
 open Alcotest
 
+let () = Random.self_init ()
+
 let with_temp_dir f =
   let base = Filename.get_temp_dir_name () in
   let dir = Filename.concat base (Printf.sprintf "c2c-nudge-%06x" (Random.bits ())) in
-  Unix.mkdir dir 0o755;
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) ->
+    (* Stale dir from prior run — clean and recreate *)
+    ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)));
+    Unix.mkdir dir 0o755);
   Fun.protect
     ~finally:(fun () -> Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)) |> ignore)
     (fun () -> f dir)

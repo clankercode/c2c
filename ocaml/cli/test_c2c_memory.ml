@@ -8,10 +8,15 @@
 
 open Alcotest
 
-let with_temp_dir f =
-  let dir = Filename.temp_file "c2c_memory_test" "" in
-  Sys.remove dir;
-  Unix.mkdir dir 0o700;
+let () = Random.self_init ()
+
+  let with_temp_dir f =
+    let dir = Filename.temp_file "c2c_memory_test" "" in
+    Sys.remove dir;
+    (try Unix.mkdir dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) ->
+      (* Stale dir from prior run — clean and recreate *)
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)));
+      Unix.mkdir dir 0o700);
   let cleanup () =
     let rec rm_rf path =
       if Sys.is_directory path then begin

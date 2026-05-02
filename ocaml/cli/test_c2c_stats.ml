@@ -1,5 +1,7 @@
 open Alcotest
 
+let () = Random.self_init ()
+
 let ( // ) = Filename.concat
 
 let rec remove_tree path =
@@ -14,7 +16,7 @@ let mkdir_p path =
     if Sys.file_exists p then ()
     else begin
       loop (Filename.dirname p);
-      Unix.mkdir p 0o755
+      try Unix.mkdir p 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
     end
   in
   if path <> "" && path <> Filename.dirname path then loop path
