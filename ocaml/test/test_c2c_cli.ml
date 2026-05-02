@@ -530,6 +530,135 @@ let test_instances_json_output_is_valid () =
       check bool "instances --json output is valid JSON with alive field" true is_valid_json)
 
 (* ------------------------------------------------------------------------- *)
+(* c2c prune-rooms — verify room pruning                                    *)
+(* ------------------------------------------------------------------------- *)
+
+let test_prune_rooms_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 c2c prune-rooms > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c prune-rooms exits 0" 0 rc
+
+let test_prune_rooms_output_contains_eviction_info () =
+  (* Output is either "Evicted N dead members:" or "No dead members to evict." *)
+  let tmpfile = Filename.temp_file "c2c-prune-rooms" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf "C2C_CLI_FORCE=1 c2c prune-rooms > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "prune-rooms mentions eviction or no dead members" true
+        (string_contains content "Evicted" || string_contains content "No dead members"
+         || string_contains content "evict"))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c set-compact / clear-compact — verify compacting flag operations      *)
+(* ------------------------------------------------------------------------- *)
+
+let test_set_compact_unregistered_session () =
+  (* With a fake session ID, set-compact reports error and exits non-zero *)
+  let tmpfile = Filename.temp_file "c2c-set-compact" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let rc = Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-compact c2c set-compact --reason test > %s 2>&1"
+        tmpfile) in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "set-compact exits non-zero for unregistered session" true (rc <> 0);
+      check bool "set-compact reports session not registered" true
+        (string_contains content "not registered" || string_contains content "error"))
+
+let test_clear_compact_unregistered_session () =
+  let tmpfile = Filename.temp_file "c2c-clear-compact" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let rc = Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-compact c2c clear-compact > %s 2>&1"
+        tmpfile) in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "clear-compact exits non-zero for unregistered session" true (rc <> 0);
+      check bool "clear-compact reports no compacting flag" true
+        (string_contains content "not registered" || string_contains content "error"
+         || string_contains content "no compacting"))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c check-pending-reply — verify pending reply checks                    *)
+(* ------------------------------------------------------------------------- *)
+
+let test_check_pending_reply_missing_args_exits_nonzero () =
+  let cmd = "C2C_CLI_FORCE=1 c2c check-pending-reply > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check bool "check-pending-reply with no args exits non-zero" true (rc <> 0)
+
+let test_check_pending_reply_invalid_perm_reports_error () =
+  let tmpfile = Filename.temp_file "c2c-check-pending" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c check-pending-reply nonexistent-perm fake-alias > %s 2>&1"
+        tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "check-pending-reply invalid perm produces output" true
+        (String.length content > 0))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c agent delete — verify role deletion                                  *)
+(* ------------------------------------------------------------------------- *)
+
+let test_agent_delete_missing_name_exits_nonzero () =
+  let cmd = "c2c agent delete > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check bool "agent delete with no name exits non-zero" true (rc <> 0)
+
+let test_agent_delete_nonexistent_role_reports_error () =
+  let tmpfile = Filename.temp_file "c2c-agent-delete" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let rc = Sys.command (Printf.sprintf
+        "c2c agent delete nonexistent-test-role-xyz > %s 2>&1" tmpfile) in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "agent delete nonexistent role exits non-zero" true (rc <> 0);
+      check bool "agent delete nonexistent role reports error" true
+        (string_contains content "not found" || string_contains content "error"))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c config generation-client — verify generation client display          *)
+(* ------------------------------------------------------------------------- *)
+
+let test_config_generation_client_exits_zero () =
+  let cmd = "C2C_CLI_FORCE=1 c2c config generation-client > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "config generation-client exits 0" 0 rc
+
+let test_config_generation_client_shows_client_name () =
+  let tmpfile = Filename.temp_file "c2c-config-gen" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c config generation-client > %s 2>&1" tmpfile));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      (* Should output one of: claude, opencode, codex *)
+      check bool "config generation-client shows a valid client name" true
+        (string_contains content "claude" || string_contains content "opencode"
+         || string_contains content "codex"))
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -601,5 +730,25 @@ let () =
         [ ( "instances exits 0", `Quick, test_instances_exits_zero )
         ; ( "instances output contains managed header", `Quick, test_instances_output_contains_managed_header )
         ; ( "instances --json is valid JSON", `Quick, test_instances_json_output_is_valid )
+        ] )
+    ; ( "prune_rooms",
+        [ ( "prune-rooms exits 0", `Quick, test_prune_rooms_exits_zero )
+        ; ( "prune-rooms output mentions eviction", `Quick, test_prune_rooms_output_contains_eviction_info )
+        ] )
+    ; ( "compact",
+        [ ( "set-compact unregistered session", `Quick, test_set_compact_unregistered_session )
+        ; ( "clear-compact unregistered session", `Quick, test_clear_compact_unregistered_session )
+        ] )
+    ; ( "check_pending_reply",
+        [ ( "check-pending-reply missing args exits non-zero", `Quick, test_check_pending_reply_missing_args_exits_nonzero )
+        ; ( "check-pending-reply invalid perm produces output", `Quick, test_check_pending_reply_invalid_perm_reports_error )
+        ] )
+    ; ( "agent_delete",
+        [ ( "agent delete missing name exits non-zero", `Quick, test_agent_delete_missing_name_exits_nonzero )
+        ; ( "agent delete nonexistent role reports error", `Quick, test_agent_delete_nonexistent_role_reports_error )
+        ] )
+    ; ( "config_generation_client",
+        [ ( "config generation-client exits 0", `Quick, test_config_generation_client_exits_zero )
+        ; ( "config generation-client shows client name", `Quick, test_config_generation_client_shows_client_name )
         ] )
     ]
