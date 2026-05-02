@@ -129,7 +129,7 @@ let xml_deliver_loop_daemon
   let iterations = ref 0 in
   let total_delivered = ref 0 in
   let xml_escape (s : string) : string =
-    let b = Bytes.make (String.length s * 6) '\000' in
+    let b = Bytes.make (String.length s * 7) '\000' in
     let j = ref 0 in
     for i = 0 to String.length s - 1 do
       let c = s.[i] in
@@ -140,6 +140,10 @@ let xml_deliver_loop_daemon
         Bytes.blit_string "&lt;" 0 b !j 4; j := !j + 4
       | '>' ->
         Bytes.blit_string "&gt;" 0 b !j 4; j := !j + 4
+      | '"' ->
+        Bytes.blit_string "&quot;" 0 b !j 6; j := !j + 6
+      | '\'' ->
+        Bytes.blit_string "&apos;" 0 b !j 6; j := !j + 6
       | _ ->
         Bytes.set b !j c; incr j
     done;
@@ -163,14 +167,21 @@ let xml_deliver_loop_daemon
          in
          List.iter
            (fun (msg : C2c_mcp.message) ->
+              (* Escape all user-supplied values before interpolating into XML *)
+              let from_escaped = xml_escape msg.from_alias in
+              let to_escaped = xml_escape session_id in
               let content_escaped = xml_escape msg.content in
               let xml_frame =
                 Printf.sprintf
                   "<message type=\"user\" queue=\"AfterAnyItem\"><c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c></message>\n"
-                  msg.from_alias session_id content_escaped
+                  from_escaped to_escaped content_escaped
               in
-              output_string oc xml_frame;
-              flush oc;
+              (try
+                 output_string oc xml_frame;
+                 flush oc
+               with exn ->
+                 Printf.eprintf "[c2c-deliver-inbox] XML: write failed: %s\n%!"
+                   (Printexc.to_string exn));
               Printf.printf "[c2c-deliver-inbox] XML: delivered from %s: %s\n%!"
                 msg.from_alias
                 (String.sub msg.content 0
