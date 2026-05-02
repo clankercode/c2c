@@ -187,6 +187,27 @@ val schedule_entry_path : string -> string -> string
 (** [schedule_entry_path alias name] = [schedule_base_dir alias / safe(name).toml]
     where [safe] replaces unsafe filename chars with ['_']. *)
 
+type schedule_entry = {
+  s_name : string;
+  s_interval_s : float;
+  s_align : string;
+  s_message : string;
+  s_only_when_idle : bool;
+  s_idle_threshold_s : float;
+  s_enabled : bool;
+  s_created_at : string;
+  s_updated_at : string;
+}
+
+val unescape_toml_string : string -> string
+(** Unescape TOML basic-string escape sequences. *)
+
+val strip_quotes : string -> string
+(** Strip surrounding double-quotes from a TOML string value and unescape. *)
+
+val parse_schedule : string -> schedule_entry
+(** Parse a schedule entry from TOML content. *)
+
 module Broker : sig
   type t
   val create : root:string -> t

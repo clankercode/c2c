@@ -828,6 +828,46 @@ let managed_heartbeats_from_toml_path (path : string) : managed_heartbeat list =
          { builtin_managed_heartbeat with heartbeat_name = name }
          entries)
 
+let managed_heartbeat_of_schedule_entry (e : C2c_mcp.schedule_entry) : managed_heartbeat =
+  let schedule =
+    if e.s_align <> "" then
+      match parse_heartbeat_schedule e.s_align with
+      | Ok s -> s
+      | Error _ -> Interval e.s_interval_s
+    else Interval e.s_interval_s
+  in
+  { heartbeat_name = e.s_name
+  ; schedule
+  ; interval_s = e.s_interval_s
+  ; message = e.s_message
+  ; command = None
+  ; command_timeout_s = 30.0
+  ; clients = []  (* empty = all clients except codex-headless, per should_heartbeat_apply_to_client *)
+  ; role_classes = []
+  ; enabled = e.s_enabled
+  ; idle_only = e.s_only_when_idle
+  ; idle_threshold_s = e.s_idle_threshold_s
+  }
+
+let schedule_dir_managed_heartbeats ~(alias : string) : managed_heartbeat list =
+  let dir = C2c_mcp.schedule_base_dir alias in
+  try
+    Array.to_list (Sys.readdir dir)
+    |> List.filter (fun n ->
+        String.length n > 5
+        && String.sub n (String.length n - 5) 5 = ".toml")
+    |> List.sort String.compare
+    |> List.filter_map (fun fname ->
+        match C2c_io.read_file_opt (Filename.concat dir fname) with
+        | "" -> None
+        | content ->
+            let e = C2c_mcp.parse_schedule content in
+            if e.s_name = "" then None
+            else Some (managed_heartbeat_of_schedule_entry e))
+  with
+  | Sys_error _ -> []
+  | Unix.Unix_error _ -> []
+
 let heartbeat_name_from_role_key ~(prefix : string) (key : string) :
     (string * string) option =
   let dotted = prefix ^ "." in
@@ -4717,11 +4757,12 @@ let run_outer_loop ~(name : string) ~(client : string)
              use the same inbox transport as ordinary c2c messages; per-client
              delivery sidecars/plugins then handle actual presentation. *)
           let heartbeat_role = load_role_for_heartbeat ~client agent_name in
+          let schedule_specs = schedule_dir_managed_heartbeats ~alias:effective_alias in
           let heartbeat_specs =
             resolve_managed_heartbeats ~client
               ~deliver_started:(Option.is_some !deliver_pid)
               ~role:heartbeat_role
-              ~per_agent_specs:(per_agent_managed_heartbeats ~name)
+              ~per_agent_specs:(per_agent_managed_heartbeats ~name @ schedule_specs)
               (repo_config_managed_heartbeats ())
           in
           List.iter

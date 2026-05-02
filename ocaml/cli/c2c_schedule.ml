@@ -72,9 +72,9 @@ let render_schedule ~name ~interval_s ~align ~message ~only_when_idle
   Buffer.add_string buf (Printf.sprintf "updated_at = \"%s\"\n" (escape_toml_string updated_at));
   Buffer.contents buf
 
-(* Parse a schedule entry from TOML. Skip [schedule] section headers.
-   Strip quotes from string values. *)
-type schedule_entry = {
+(* Schedule entry type and parsing are now in the library (C2c_mcp).
+   Re-export for local use. *)
+type schedule_entry = C2c_mcp.schedule_entry = {
   s_name : string;
   s_interval_s : float;
   s_align : string;
@@ -86,71 +86,7 @@ type schedule_entry = {
   s_updated_at : string;
 }
 
-(* Unescape TOML basic-string escape sequences written by escape_toml_string.
-   Handles \\" → " and \\\\ → \\. Other backslash sequences are passed through. *)
-let unescape_toml_string s =
-  let buf = Buffer.create (String.length s) in
-  let n = String.length s in
-  let i = ref 0 in
-  while !i < n do
-    if s.[!i] = '\\' && !i + 1 < n then begin
-      (match s.[!i + 1] with
-       | '"'  -> Buffer.add_char buf '"'
-       | '\\' -> Buffer.add_char buf '\\'
-       | c    -> Buffer.add_char buf '\\'; Buffer.add_char buf c);
-      i := !i + 2
-    end else begin
-      Buffer.add_char buf s.[!i];
-      i := !i + 1
-    end
-  done;
-  Buffer.contents buf
-
-(* Strip surrounding double-quotes from a TOML string value and unescape
-   the contents. If the value is not quoted, return it as-is. *)
-let strip_quotes s =
-  let s = String.trim s in
-  let n = String.length s in
-  if n >= 2 && s.[0] = '"' && s.[n-1] = '"'
-  then unescape_toml_string (String.sub s 1 (n - 2))
-  else s
-
-let parse_schedule content =
-  let lines = String.split_on_char '\n' content in
-  let kv = List.filter_map (fun line ->
-    let line = String.trim line in
-    if line = "" || line.[0] = '[' || line.[0] = '#' then None
-    else match String.index_opt line '=' with
-    | None -> None
-    | Some idx ->
-        let key = String.trim (String.sub line 0 idx) in
-        let value = String.trim (String.sub line (idx + 1) (String.length line - idx - 1)) in
-        Some (key, value))
-    lines
-  in
-  let find key default_v =
-    match List.assoc_opt key kv with Some v -> v | None -> default_v
-  in
-  let find_float key default_v =
-    match List.assoc_opt key kv with
-    | Some v -> (try float_of_string (String.trim v) with Failure _ -> default_v)
-    | None -> default_v
-  in
-  let find_bool key default_v =
-    match List.assoc_opt key kv with
-    | Some v -> String.trim v = "true"
-    | None -> default_v
-  in
-  { s_name = strip_quotes (find "name" "")
-  ; s_interval_s = find_float "interval_s" 0.0
-  ; s_align = strip_quotes (find "align" "")
-  ; s_message = strip_quotes (find "message" "")
-  ; s_only_when_idle = find_bool "only_when_idle" true
-  ; s_idle_threshold_s = find_float "idle_threshold_s" 0.0
-  ; s_enabled = find_bool "enabled" true
-  ; s_created_at = strip_quotes (find "created_at" "")
-  ; s_updated_at = strip_quotes (find "updated_at" "")
-  }
+let parse_schedule = C2c_mcp.parse_schedule
 
 (* --- file I/O -------------------------------------------------------------- *)
 
