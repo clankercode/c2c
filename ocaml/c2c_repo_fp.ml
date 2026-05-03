@@ -62,18 +62,51 @@ let resolve_broker_root_fallback () =
            String.trim h // ".c2c" // "repos" // fp // "broker"
        | _ -> xdg_root)  (* No HOME: fall back to XDG default *)
 
+(** Check if a broker-root path matches the pre-#294 legacy layout
+    (`<git-common-dir>/c2c/mcp`). Inline version of
+    [C2c_broker_root_check.is_legacy_broker_root] to avoid a circular
+    dependency (that module lives in the cli library). *)
+let is_legacy_path path =
+  let p = String.trim path in
+  if p = "" then false
+  else
+    let needle = ".git" // "c2c" // "mcp" in
+    let plen = String.length p and nlen = String.length needle in
+    let rec loop i =
+      if i + nlen > plen then false
+      else if String.sub p i nlen = needle then true
+      else loop (i + 1)
+    in
+    loop 0
+
 (** Pure broker-root path resolution — no side effects.
     Resolution order (coord1 2026-04-26):
       1. C2C_MCP_BROKER_ROOT env var (explicit override)
       2. $XDG_STATE_HOME/c2c/repos/<fp>/broker  (if XDG_STATE_HOME set)
       3. $HOME/.c2c/repos/<fp>/broker  (canonical default)
       4. ~/.local/state/c2c/repos/<fp>/broker  (XDG default fallback)
-    The broker directory is created lazily on first use via Broker.ensure_root. *)
+    The broker directory is created lazily on first use via Broker.ensure_root.
+
+    When C2C_MCP_BROKER_ROOT points to a legacy .git/c2c/mcp path, the env
+    var is ignored and the canonical fallback path is used instead. This
+    prevents split-brain where different processes silently write to
+    different registries. *)
 let resolve_broker_root () =
   match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
   | Some dir when String.trim dir <> "" ->
       let p = String.trim dir in
-      if Filename.is_relative p then Sys.getcwd () // p else p
+      let abs_p = if Filename.is_relative p then Sys.getcwd () // p else p in
+      if is_legacy_path abs_p then begin
+        let canonical = resolve_broker_root_fallback () in
+        Printf.eprintf
+          "[WARNING] C2C_MCP_BROKER_ROOT points to legacy .git/c2c/mcp path.\n\
+           \  Current value: %s\n\
+           \  Canonical path: %s\n\
+           \  Using canonical path to prevent split-brain.\n\
+           \  To fix: unset C2C_MCP_BROKER_ROOT, or run: c2c migrate-broker\n%!"
+          abs_p canonical;
+        canonical
+      end else abs_p
   | _ -> resolve_broker_root_fallback ()
 
 (** Same as resolve_broker_root but always uses the fallback chain (steps 2-4),

@@ -1229,6 +1229,58 @@ let test_agent_new_banner_no_double_utc () =
         (not (string_contains lower "utc utc")))
 
 (* ------------------------------------------------------------------------- *)
+(* broker_root_fallthrough — legacy .git/c2c/mcp env var rejection           *)
+(* ------------------------------------------------------------------------- *)
+
+(* Use the built binary from the dune build tree, not the installed one from PATH.
+   Sys.executable_name is the test runner; the c2c binary is a sibling under cli/. *)
+let c2c_exe =
+  let dir = Filename.dirname Sys.executable_name in
+  (* test binary is in _build/default/ocaml/test/;
+     c2c.exe is in _build/default/ocaml/cli/ *)
+  let candidate = Filename.concat (Filename.concat (Filename.dirname dir) "cli") "c2c.exe" in
+  if Sys.file_exists candidate then candidate
+  else "c2c"  (* fallback to PATH *)
+
+let test_legacy_broker_root_env_warns () =
+  let tmpfile = Filename.temp_file "c2c-broker-warn" ".err" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=/tmp/fake/.git/c2c/mcp %s list > /dev/null 2>%s; true"
+        c2c_exe tmpfile
+      in
+      ignore (Sys.command cmd);
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "stderr contains [WARNING]" true
+        (string_contains content "[WARNING]");
+      check bool "stderr mentions legacy" true
+        (string_contains content "legacy");
+      check bool "stderr mentions split-brain" true
+        (string_contains content "split-brain"))
+
+let test_legacy_broker_root_env_uses_canonical () =
+  let errfile = Filename.temp_file "c2c-broker-canonical" ".err" in
+  Fun.protect ~finally:(fun () -> Sys.remove errfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=/tmp/fake/.git/c2c/mcp %s list > /dev/null 2>%s; true"
+        c2c_exe errfile
+      in
+      ignore (Sys.command cmd);
+      let ch = open_in errfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "stderr mentions Canonical path" true
+        (string_contains content "Canonical path:");
+      check bool "canonical path is not legacy" false
+        (string_contains content "Canonical path: /tmp/fake/.git/c2c/mcp"))
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -1360,5 +1412,9 @@ let () =
         ] )
     ; ( "agent_new_banner",
         [ ( "agent new banner has no double UTC", `Quick, test_agent_new_banner_no_double_utc )
+        ] )
+    ; ( "broker_root_fallthrough",
+        [ ( "legacy broker root env warns on stderr", `Quick, test_legacy_broker_root_env_warns )
+        ; ( "legacy broker root env uses canonical path", `Quick, test_legacy_broker_root_env_uses_canonical )
         ] )
     ]
