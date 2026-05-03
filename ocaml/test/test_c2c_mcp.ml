@@ -12672,6 +12672,82 @@ let test_register_different_sessions_coexist () =
       check int "one session-b entry" 1 (List.length bob_regs);
       check string "session-b alias unchanged" "bob" (List.hd bob_regs).alias)
 
+let test_delete_room_removes_from_list_rooms () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.create_room broker ~room_id:"ephemeral-room"
+                ~caller_alias:"alice" ~caller_session_id:"session-a"
+                ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:false);
+      let rooms_before = C2c_mcp.Broker.list_rooms broker in
+      let ids_before =
+        List.map (fun (r : C2c_mcp.Broker.room_info) -> r.ri_room_id) rooms_before
+      in
+      check bool "room exists before delete" true
+        (List.mem "ephemeral-room" ids_before);
+      C2c_mcp.Broker.delete_room broker ~room_id:"ephemeral-room"
+        ~caller_alias:"alice" ();
+      let rooms_after = C2c_mcp.Broker.list_rooms broker in
+      let ids_after =
+        List.map (fun (r : C2c_mcp.Broker.room_info) -> r.ri_room_id) rooms_after
+      in
+      check bool "room gone after delete" false
+        (List.mem "ephemeral-room" ids_after))
+
+let test_delete_room_nonexistent_raises () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let raised =
+        try
+          C2c_mcp.Broker.delete_room broker ~room_id:"no-such-room"
+            ~caller_alias:"alice" ();
+          false
+        with Invalid_argument msg -> String.length msg > 0
+      in
+      check bool "delete nonexistent room raises" true raised)
+
+let test_delete_room_non_creator_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.create_room broker ~room_id:"owned-room"
+                ~caller_alias:"alice" ~caller_session_id:"session-a"
+                ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:false);
+      let raised =
+        try
+          C2c_mcp.Broker.delete_room broker ~room_id:"owned-room"
+            ~caller_alias:"bob" ();
+          false
+        with Invalid_argument msg -> string_contains msg "only the creator"
+      in
+      check bool "non-creator delete rejected" true raised)
+
+let test_delete_room_cleans_up_history () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"alice"
+        ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.create_room broker ~room_id:"history-room"
+                ~caller_alias:"alice" ~caller_session_id:"session-a"
+                ~visibility:C2c_mcp.Public ~invited_members:[] ~auto_join:true);
+      ignore (C2c_mcp.Broker.append_room_history broker ~room_id:"history-room"
+                ~from_alias:"alice" ~content:"hello world");
+      ignore (C2c_mcp.Broker.append_room_history broker ~room_id:"history-room"
+                ~from_alias:"alice" ~content:"second message");
+      let history_before =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"history-room"
+          ~limit:10 ()
+      in
+      check bool "history non-empty before delete" true
+        (List.length history_before > 0);
+      ignore (C2c_mcp.Broker.leave_room broker ~room_id:"history-room"
+                ~alias:"alice");
+      C2c_mcp.Broker.delete_room broker ~room_id:"history-room"
+        ~caller_alias:"alice" ();
+      let history_after =
+        C2c_mcp.Broker.read_room_history broker ~room_id:"history-room"
+          ~limit:10 ()
+      in
+      check int "history empty after delete" 0 (List.length history_after))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -13353,4 +13429,13 @@ let () =
                 test_schedule_rm_removes_entry
             ; test_case "schedule_rm on nonexistent entry is a no-op" `Quick
                 test_schedule_rm_nonexistent_is_noop
+            (* --- delete_room --- *)
+            ; test_case "delete_room removes room from list_rooms" `Quick
+                test_delete_room_removes_from_list_rooms
+            ; test_case "delete_room on nonexistent room raises" `Quick
+                test_delete_room_nonexistent_raises
+            ; test_case "delete_room by non-creator is rejected" `Quick
+                test_delete_room_non_creator_rejected
+            ; test_case "delete_room cleans up room history" `Quick
+                test_delete_room_cleans_up_history
             ] ) ]
