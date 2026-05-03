@@ -93,6 +93,55 @@ let test_send_self_rejected () =
         (contains_substring ~haystack:text ~needle:"yourself"))
 
 (* ------------------------------------------------------------------------- *)
+(* send: concurrent reg with session_id == alias — no cross-contamination     *)
+(* Bug: current_registered_alias resolved the wrong alias after concurrent   *)
+(* registrations where session_id equaled the alias.                          *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_concurrent_session_id_equals_alias () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      register_alive broker ~session_id:"session-a" ~alias:"session-a";
+      register_alive broker ~session_id:"session-b" ~alias:"session-b";
+
+      let send_unchecked ~from_ss ~to_alias ~content =
+        let args = `Assoc [
+          ("to_alias", `String to_alias);
+          ("content", `String content);
+        ] in
+        Lwt_main.run
+          (C2c_send_handlers.send ~broker
+             ~session_id_override:(Some from_ss) ~arguments:args)
+      in
+
+      let send_ok ~from_ss ~to_alias ~content =
+        let result = send_unchecked ~from_ss ~to_alias ~content in
+        check bool (Printf.sprintf "%s→%s isError=false" from_ss to_alias)
+          false (get_is_error result);
+        ()
+      in
+
+      let send_self_err ~ss =
+        let result = send_unchecked ~from_ss:ss ~to_alias:ss ~content:"talking to self" in
+        check bool (Printf.sprintf "%s→%s isError=true" ss ss) true (get_is_error result);
+        let text = get_text_content result in
+        check bool "mentions yourself" true
+          (contains_substring ~haystack:text ~needle:"yourself")
+      in
+
+      (* step 3: A sends to B — must succeed *)
+      send_ok ~from_ss:"session-a" ~to_alias:"session-b" ~content:"hello from A";
+
+      (* step 4: B sends to A — must succeed *)
+      send_ok ~from_ss:"session-b" ~to_alias:"session-a" ~content:"hello from B";
+
+      (* step 5: A sends to A — must fail *)
+      send_self_err ~ss:"session-a";
+
+      (* step 6: B sends to B — must fail *)
+      send_self_err ~ss:"session-b")
+
+(* ------------------------------------------------------------------------- *)
 (* send: invalid tag value rejected before enqueue                            *)
 (* ------------------------------------------------------------------------- *)
 
@@ -491,6 +540,7 @@ let test_send_all_per_recipient_delivery () =
 let test_set = [
   "send missing sender alias", `Quick, test_send_missing_sender;
   "send self-send rejected", `Quick, test_send_self_rejected;
+  "send concurrent session_id==alias no cross-contamination", `Quick, test_send_concurrent_session_id_equals_alias;
   "send invalid tag rejected", `Quick, test_send_invalid_tag;
   "send happy path", `Quick, test_send_happy_path;
   "send deferrable flag", `Quick, test_send_deferrable_flag;
