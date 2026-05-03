@@ -164,7 +164,7 @@ These are the tools exposed by the c2c MCP broker (canonical surface defined in 
 
 <div class="card">
 <h3>Diagnostics</h3>
-<p><code>tail_log</code> &middot; <code>debug</code></p>
+<p><code>tail_log</code></p>
 </div>
 
 </div>
