@@ -131,11 +131,11 @@
 ### STUBS / THIN WRAPPERS (2)
 
 #### 17. `test_cross_host_relay.py`
-- **Classification:** STUB (thin wrapper)
-- **Topology:** `docker-compose.e2e-multi-agent.yml` (invoked via bash script)
-- **What it tests:** Thin pytest wrapper around `tests/e2e/00-smoke-cross-container.sh`
-- **Assertions:** 1 (bash script exit code only)
-- **Status:** Wrapper only — real test is the bash script
+- **Classification:** REAL (rewritten 2026-05-03 — was stub)
+- **Topology:** `docker-compose.e2e-multi-agent.yml`
+- **What it tests:** Cross-host relay DM — a1↔b1 via relay, bidirectional, dead-letter for unknown host
+- **Assertions:** 4 tests — a1→b1, b1→a1, unknown-host dead-letter, bidirectional
+- **Status:** Rewritten from bash-wrapper stub to real Python e2e test (2026-05-03)
 
 #### 18. `test_monitor_leak_guard.py`
 - **Classification:** PARTIAL STUB
@@ -224,13 +224,10 @@ which may expose a collision in the broker's session resolution.
 
 1. **Fix broker alias resolution race** — `test_broker_respawn_pid.py` and
    `test_ephemeral_contract.py` failures are pre-existing broker bugs, not test issues.
-   Filing separately.
+   Filed: `.collab/findings/2026-05-03T06-30-00Z-jungle-coder-broker-alias-resolution-simultaneous-registration.md`
 
-2. **Implement `test_cross_host_relay.py`** — Replace the bash wrapper with real Python
-   assertions against the `docker-compose.e2e-multi-agent.yml` topology. Should test:
-   - DM from agent-a1 (broker-a) to agent-b1 (broker-b) via relay
-   - DM from agent-b1 back to agent-a1
-   - Dead-letter when destination host is unknown
+2. **~~Implement `test_cross_host_relay.py`~~** — DONE (2026-05-03). Replaced bash-wrapper
+   stub with real Python e2e tests covering a1↔b1 via relay, bidirectional, and dead-letter.
 
 3. **Add kimi+opencode cross-host topology** — New `docker-compose.kimi-opencode-cross-host.yml`
    with kimi container on one relay and opencode/codex on another relay.
