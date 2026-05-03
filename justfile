@@ -390,6 +390,12 @@ gui-dev:
 gui-check:
     cd gui && bun run build
 
+# Run Playwright E2E tests for the GUI.
+# Requires browsers to be installed: bunx playwright install chromium
+# Requires the Tauri dev server to be running OR uses the webServer config in playwright.config.ts
+gui-e2e:
+    cd gui && bunx playwright test
+
 # Stage and commit all staged changes with a message
 # Usage: just gc "fix: something"
 gc *MSG:
