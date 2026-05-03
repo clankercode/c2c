@@ -1645,7 +1645,11 @@ let install_all_subcmd =
       do_install_self ~output_mode ~dest_opt:None ~with_mcp_server:false
     end;
     List.iter (fun (c, on_path, configured) ->
-      if on_path && not configured then begin
+      if not on_path then begin
+        if output_mode = Human then Printf.printf "  %s: [not on PATH]\n" c
+      end else if configured then begin
+        if output_mode = Human then Printf.printf "  %s: [configured — up-to-date]\n" c
+      end else begin
         if output_mode = Human then Printf.printf "\n→ Configuring %s...\n" c;
         do_install_client ~global ~output_mode ~dry_run ~client:c ~alias_opt ~broker_root_opt
           ~target_dir_opt:None ~force:false ~deliver_watch:(is_deliver_watch_client c) ()
