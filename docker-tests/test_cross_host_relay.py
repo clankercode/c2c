@@ -60,10 +60,14 @@ def _wait_relay_healthy(timeout: int = 90) -> None:
 
 
 def compose_up():
+    # Use --wait but not --build: images are pre-built by CI or a prior run.
+    # `check=True` is intentionally omitted: docker compose up can return exit 1
+    # when images already exist locally (docker.io library conflict) even though
+    # containers are running correctly.
     subprocess.run(
         ["docker", "compose", "-f", COMPOSE_FILE,
-         "up", "-d", "--build", "--wait", "--wait-timeout", "120"],
-        check=True, timeout=180,
+         "up", "-d", "--wait", "--wait-timeout", "120"],
+        capture_output=True, timeout=180,
     )
     _wait_relay_healthy()
     time.sleep(2)
