@@ -15,20 +15,17 @@ test("permissions panel hidden when no pending permissions", async ({ page }) =>
 });
 
 /**
- * Test: Permissions panel — expand button visible when there are pending
- * (We simulate pending permissions by injecting them into the page's localStorage/state)
+ * Test: Permissions panel — no badge text when there are no pending permissions
+ * Verifies that "permission" count badge text is absent from the UI when pending=0.
  */
-test("permissions panel toggle button appears when open", async ({ page }) => {
+test("no permission badge text when no pending permissions", async ({ page }) => {
   await page.goto("/");
 
-  // The PermissionPanel renders a toggle button when expanded or when pending > 0
-  // In the initial closed state with 0 pending, the badge is not rendered at all
-  // The toggle button only appears when the panel is open (expanded=true) OR pending > 0
-  // Since pending=0 and expanded=false, the panel renders as a fixed-position badge (count=0 → null)
-  // or nothing. Check the fixed-position div at bottom-right is present but empty
-  const fixedPanel = page.locator('[style*="position: fixed"]').filter({ hasText: "" });
-  // The panel div is there but with no visible text when no pending
-  const panel = page.locator("div").filter({ hasText: /^$/ }).first();
-  // Just verify the app loaded without errors
+  // The permission badge only shows when there are pending permissions.
+  // With 0 pending, no badge should be visible in the header or as a standalone badge.
+  // This checks the app loaded cleanly and the permissions panel correctly
+  // suppressed itself when there is nothing to approve.
   await expect(page.getByText("c2c")).toBeVisible();
+  // Verify no pending permission badge is present (would show "1 permission" or "N permissions")
+  await expect(page.locator("text=/\\d+ permission/")).toHaveCount(0);
 });
