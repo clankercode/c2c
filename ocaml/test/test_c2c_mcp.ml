@@ -1416,6 +1416,45 @@ let test_tools_call_register_uses_current_session_id_when_omitted () =
            check string "registered session" "session-live" reg.session_id;
            check string "registered alias" "storm-live" reg.alias))
 
+(* #dual-alias-fix: handler-level test — when session already has a
+   registration and the MCP register call uses auto_register_alias (no
+   explicit alias= argument), the handler should reuse the existing alias
+   instead of registering a new one. *)
+let test_handler_register_reuses_existing_alias_for_same_session () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-reuse";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "auto-alias-new";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          (* Step 1: register with explicit alias via Broker.register *)
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-reuse"
+            ~alias:"original-alias" ~pid:None ~pid_start_time:None ();
+          let regs1 = C2c_mcp.Broker.list_registrations broker in
+          check int "one reg after direct register" 1 (List.length regs1);
+          check string "alias is original" "original-alias" (List.hd regs1).alias;
+          (* Step 2: MCP register call WITHOUT explicit alias argument —
+             should reuse "original-alias", not "auto-alias-new" *)
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 99)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ("arguments", `Assoc [])
+                    ] )
+              ]
+          in
+          let _response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          let regs2 = C2c_mcp.Broker.list_registrations broker in
+          check int "still one registration" 1 (List.length regs2);
+          check string "alias reused from existing" "original-alias" (List.hd regs2).alias))
+
 let test_session_id_from_env_falls_back_to_codex_thread_id () =
   Unix.putenv "C2C_MCP_SESSION_ID" "";
   Unix.putenv "CODEX_THREAD_ID" "";
@@ -12725,6 +12764,8 @@ let () =
              test_mcp_ping_returns_empty_result
          ; test_case "tools/call register uses current session id when omitted" `Quick
               test_tools_call_register_uses_current_session_id_when_omitted
+         ; test_case "handler register reuses existing alias for same session" `Quick
+              test_handler_register_reuses_existing_alias_for_same_session
          ; test_case "session_id_from_env falls back to CODEX_THREAD_ID" `Quick
              test_session_id_from_env_falls_back_to_codex_thread_id
          ; test_case "session_id_from_env accepts managed CODEX_THREAD_ID" `Quick

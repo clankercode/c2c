@@ -56,6 +56,7 @@ they don't regress silently.
 | `relay_e2e_pin_first_seen` | MED | relay-crypto TOFU | CRIT-1 Slice B follow-up |
 | `send_memory_handoff` | MED | feature audit | #286 |
 | `session_id_differs_from_alias` | MED | session_id≠alias on registration | #529 |
+| `dual_alias_dedup` | MED | same session_id had multiple aliases — deduped | #dual-alias-fix |
 | `peer_pass_reject` | HIGH | peer-pass security | #29 H1 / H2b |
 | `peer_pass_pin_rotate` | HIGH | TOFU rotation success | #432 TOFU 5 |
 | `peer_pass_pin_rotate_unauth` | HIGH | TOFU rotation reject | #432 TOFU 4 |
@@ -295,6 +296,37 @@ their inbox.
 **Operational meaning**: audit trail for #529 session_id≠alias hygiene.
 A mismatch may indicate a client-side registration bug or a relay routing
 issue where the session_id doesn't match the expected alias.
+
+---
+
+### `dual_alias_dedup`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "event": "dual_alias_dedup",
+  "ts": <float>,
+  "session_id": "<session-id>",
+  "kept_alias": "<alias-that-was-kept>",
+  "dropped_aliases": "<comma-separated-list-of-dropped-aliases>"
+}
+```
+
+**Fires when**: the `register` function's defensive dedup sweep finds stale
+entries for the same `session_id` under different aliases after the primary
+partition logic. These orphan entries are dropped and only the new
+registration is kept.
+
+**File**: `ocaml/c2c_broker.ml` `register` function (#dual-alias-fix).
+
+**Operational meaning**: indicates a race or bug that allowed a single
+session to accumulate multiple registry entries under different aliases.
+The dedup guard cleaned up, but the root cause should be investigated if
+this fires frequently. See also the MCP handler guard in
+`c2c_identity_handlers.ml` that prevents implicit alias re-registration.
 
 **Cross-link**: #529.
 

@@ -50,16 +50,19 @@ declare -A OUT_OF_SCOPE=(
 # Two patterns are recognized:
 #   1. Yojson literal:   `"event", `String "name"` (legacy per-helper pattern)
 #   2. log_broker_event: `log_broker_event ~broker_root "name"` (shared-helper pattern, #388)
+#      Includes 3-arg form `log_broker_event ~broker_root:(expr) "name"` (#dual-alias-fix).
+# All names are lowercased for case-insensitive matching (some source uses
+# UPPERCASE event names while the Yojson literal uses lowercase).
 mapfile -t emitters < <(
   (
     grep -rohP '"event", `String "[^"]+"' ocaml/ \
       --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
     | grep -oP 'String "\K[^"]+'
   ) && {
-    grep -rohP 'log_broker_event ~broker_root "[^"]+"' ocaml/ \
+    grep -rohP 'log_broker_event ~broker_root[: ][^"]*"[^"]+"' ocaml/ \
       --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
-    | grep -oP 'log_broker_event ~broker_root "\K[^"]+'
-  } | sort -u
+    | grep -oP 'log_broker_event ~broker_root[: ][^"]*"\K[^"]+'
+  } | tr '[:upper:]' '[:lower:]' | sort -u
 )
 
 # ── Step 2: cataloged names (### `name` headers) ───────────────────────────
