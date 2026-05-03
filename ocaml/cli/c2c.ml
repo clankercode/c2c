@@ -1133,8 +1133,14 @@ let c2c_start_session_ids () =
       else acc)
       [] (Sys.readdir base)
 
+let force_flag =
+  Cmdliner.Arg.(value & flag & info [ "force"; "f" ]
+    ~doc:"Skip the alive-registration safety check and run sweep anyway.\
+          Use this only when you have verified no live sessions are present.")
+
 let sweep_cmd =
-  let+ json = json_flag in
+  let+ json = json_flag
+  and+ force = force_flag in
   let outer_loops_running =
     Sys.command "pgrep -c -f 'run-(kimi|codex|opencode|crush|claude)-inst-outer' > /dev/null 2>&1" = 0
   in
@@ -1148,6 +1154,23 @@ let sweep_cmd =
   end;
   let c2c_start_sids = c2c_start_session_ids () in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  (* Safety guard: refuse to sweep if any alive non-managed registrations exist. *)
+  let alive_nonmanaged_regs =
+    let all_regs = C2c_mcp.Broker.list_registrations broker in
+    List.filter (fun (r : C2c_mcp.registration) ->
+      not (List.mem r.session_id c2c_start_sids)
+      && C2c_mcp.Broker.registration_is_alive r
+    ) all_regs
+  in
+  if alive_nonmanaged_regs <> [] && not force then begin
+    Printf.eprintf "error: %d alive registration(s) would be dropped by sweep.\n"
+      (List.length alive_nonmanaged_regs);
+    List.iter (fun (r : C2c_mcp.registration) ->
+      Printf.eprintf "  alive: %s (%s)\n" r.alias r.session_id
+    ) alive_nonmanaged_regs;
+    Printf.eprintf "  Use --force to override this safety check.\n%!";
+    exit 1
+  end;
   let result = C2c_mcp.Broker.sweep broker in
   let dropped_regs, deleted_inboxes =
     List.filter (fun (r : C2c_mcp.registration) -> not (List.mem r.session_id c2c_start_sids)) result.dropped_regs,
