@@ -40,6 +40,7 @@ services:
     container_name: c2c-e2e-relay
     environment:
       C2C_RELAY_PERSIST_DIR: /var/lib/c2c
+      C2C_RELAY_NAME: relay
       PORT: "7331"
     networks:
       - c2c-e2e-net
@@ -89,12 +90,13 @@ services:
     environment:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay:7331
-      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_RELAY_CONNECTOR_BACKEND: ocaml
       C2C_IN_DOCKER: "1"
       C2C_MCP_AUTO_REGISTER_ALIAS: agent-a1
       C2C_MCP_SESSION_ID: agent-a1-session
       C2C_CLI_FORCE: "1"
-    command: ["sleep", "3600"]
+    command: ["sh", "-c", "c2c relay connect &
+sleep 3600"]
 
   agent-a2:
     build:
@@ -119,12 +121,13 @@ services:
     environment:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay:7331
-      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_RELAY_CONNECTOR_BACKEND: ocaml
       C2C_IN_DOCKER: "1"
       C2C_MCP_AUTO_REGISTER_ALIAS: agent-a2
       C2C_MCP_SESSION_ID: agent-a2-session
       C2C_CLI_FORCE: "1"
-    command: ["sleep", "3600"]
+    command: ["sh", "-c", "c2c relay connect &
+sleep 3600"]
 
   agent-b1:
     build:
@@ -149,12 +152,13 @@ services:
     environment:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay:7331
-      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_RELAY_CONNECTOR_BACKEND: ocaml
       C2C_IN_DOCKER: "1"
       C2C_MCP_AUTO_REGISTER_ALIAS: agent-b1
       C2C_MCP_SESSION_ID: agent-b1-session
       C2C_CLI_FORCE: "1"
-    command: ["sleep", "3600"]
+    command: ["sh", "-c", "c2c relay connect &
+sleep 3600"]
 
   agent-b2:
     build:
@@ -179,12 +183,13 @@ services:
     environment:
       C2C_MCP_BROKER_ROOT: /var/lib/c2c
       C2C_RELAY_URL: http://relay:7331
-      C2C_RELAY_CONNECTOR_BACKEND: http
+      C2C_RELAY_CONNECTOR_BACKEND: ocaml
       C2C_IN_DOCKER: "1"
       C2C_MCP_AUTO_REGISTER_ALIAS: agent-b2
       C2C_MCP_SESSION_ID: agent-b2-session
       C2C_CLI_FORCE: "1"
-    command: ["sleep", "3600"]
+    command: ["sh", "-c", "c2c relay connect &
+sleep 3600"]
 
 networks:
   c2c-e2e-net:

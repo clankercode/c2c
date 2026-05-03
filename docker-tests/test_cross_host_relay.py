@@ -88,33 +88,35 @@ def compose_down():
 C2C_CLI = "/usr/local/bin/c2c"
 
 
-def _run_in(container: str, argv: list[str]) -> subprocess.CompletedProcess:
-    """Run c2c CLI inside a container as testagent (uid 999)."""
+def _run_in(container: str, argv: list[str], session_id: str = "") -> subprocess.CompletedProcess:
+    """Run c2c CLI inside a container (runs as root since volumes are root-owned)."""
     env = {
         "C2C_CLI_FORCE": "1",
         "C2C_IN_DOCKER": "1",
-        "HOME": "/home/testagent",
-        "C2C_MCP_BROKER_ROOT": "/home/testagent/.c2c/broker",
+        "HOME": "/root",
+        "C2C_MCP_BROKER_ROOT": "/var/lib/c2c",
     }
+    if session_id:
+        env["C2C_MCP_SESSION_ID"] = session_id
     cmd = ["docker", "exec"]
     for k, v in env.items():
         cmd += ["-e", f"{k}={v}"]
-    cmd += ["-u", "999", container, C2C_CLI] + argv
+    cmd += [container, C2C_CLI] + argv
     return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
 
 def _run_shell_in(container: str, script: str) -> subprocess.CompletedProcess:
-    """Run a shell script inside a container as testagent."""
+    """Run a shell script inside a container (runs as root since volumes are root-owned)."""
     env = {
         "C2C_CLI_FORCE": "1",
         "C2C_IN_DOCKER": "1",
-        "HOME": "/home/testagent",
-        "C2C_MCP_BROKER_ROOT": "/home/testagent/.c2c/broker",
+        "HOME": "/root",
+        "C2C_MCP_BROKER_ROOT": "/var/lib/c2c",
     }
     cmd = ["docker", "exec"]
     for k, v in env.items():
         cmd += ["-e", f"{k}={v}"]
-    cmd += ["-u", "999", container, "bash", "-c", script]
+    cmd += [container, "bash", "-c", script]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
 
@@ -129,9 +131,14 @@ def send_msg(container: str, to_alias: str, msg: str) -> subprocess.CompletedPro
     return _run_in(container, ["send", to_alias, msg])
 
 
-def poll_inbox(container: str) -> list[dict]:
-    """Poll inbox and return messages."""
-    r = _run_in(container, ["poll-inbox", "--json"])
+def sync_now(container: str) -> subprocess.CompletedProcess:
+    """Trigger an immediate connector sync (register + forward outbox + poll inbound)."""
+    return _run_in(container, ["relay", "connect", "--once"])
+
+
+def poll_inbox(container: str, session_id: str) -> list[dict]:
+    """Poll inbox and return messages for the given session_id."""
+    r = _run_in(container, ["poll-inbox", "--json"], session_id=session_id)
     if r.returncode == 0:
         try:
             return json.loads(r.stdout)
@@ -152,13 +159,22 @@ def list_peers(container: str) -> list[dict]:
 
 
 def dead_letter_count(relay_container: str = RELAY) -> int:
-    """Return current dead_letter row count in the relay's broker."""
-    r = _run_in(relay_container, ["dead-letter", "--json"])
+    """Return current dead_letter row count in the relay's SQLite DB.
+
+    The relay stores dead-letters in its SqliteRelay database, NOT in the
+    broker's file-based dead-letter path that `c2c dead-letter --json` reads.
+    We query the relay DB directly via sqlite3.
+    """
+    r = subprocess.run(
+        ["docker", "exec", relay_container,
+         "sqlite3", "/var/lib/c2c/c2c_relay.db",
+         "SELECT COUNT(*) FROM dead_letter"],
+        capture_output=True, text=True, timeout=10,
+    )
     if r.returncode == 0:
         try:
-            entries = json.loads(r.stdout)
-            return len(entries) if isinstance(entries, list) else 0
-        except json.JSONDecodeError:
+            return int(r.stdout.strip())
+        except ValueError:
             pass
     return -1
 
@@ -211,6 +227,13 @@ def test_a1_to_b1_via_relay(a1, b1):
     assert r.returncode == 0, f"b1 register failed: {r.stderr}"
     time.sleep(1)
 
+    # Sync with relay: register aliases so relay knows about them
+    r = sync_now(a1)
+    assert r.returncode == 0, f"a1 sync failed: {r.stderr}"
+    r = sync_now(b1)
+    assert r.returncode == 0, f"b1 sync failed: {r.stderr}"
+    time.sleep(1)
+
     # Verify b1 is NOT in a1's peer list (cross-host — must go via relay)
     peers_a1 = list_peers(a1)
     peer_aliases_a1 = [p.get("alias", "") for p in peers_a1]
@@ -218,15 +241,24 @@ def test_a1_to_b1_via_relay(a1, b1):
         "b1 should NOT appear in a1's local peer list (cross-host via relay only)"
     print("[cross-host] a1 cannot see b1 in local broker peers ✅")
 
-    # a1 sends to b1 via relay
+    # a1 sends to b1 via relay (must use alias@relay format — broker does not
+    # fall back to relay for bare aliases; only remote-format aliases go via relay)
     msg = f"hello-b1-from-a1-{int(time.time() * 1000)}"
-    r = send_msg(a1, "b1", msg)
+    r = send_msg(a1, "b1@relay", msg)
     assert r.returncode == 0, f"a1→b1 send failed: {r.stderr}"
     print(f"[cross-host] a1 sent: {msg}")
 
+    # Sync a1 (forward outbox) then sync b1 (poll inbound) — connector runs every 30s
+    # so use sync_now to make it immediate
+    r = sync_now(a1)
+    assert r.returncode == 0, f"a1 sync failed: {r.stderr}"
+    time.sleep(1)
+    r = sync_now(b1)
+    assert r.returncode == 0, f"b1 sync failed: {r.stderr}"
+    time.sleep(1)
+
     # b1 polls and receives the message
-    time.sleep(2)
-    b1_inbox = poll_inbox(b1)
+    b1_inbox = poll_inbox(b1, "b1-session")
     assert any(msg in m.get("content", "") for m in b1_inbox), \
         f"b1 should receive a1's message via relay: {b1_inbox}"
     print("[cross-host] b1 received a1's message via relay ✅")
@@ -245,15 +277,31 @@ def test_b1_to_a1_via_relay(a1, b1):
     assert r.returncode == 0, f"a1 register failed: {r.stderr}"
     time.sleep(1)
 
-    # b1 sends to a1 via relay
+    # Sync with relay: register aliases so relay knows about them
+    r = sync_now(b1)
+    assert r.returncode == 0, f"b1 sync failed: {r.stderr}"
+    r = sync_now(a1)
+    assert r.returncode == 0, f"a1 sync failed: {r.stderr}"
+    time.sleep(1)
+
+    # b1 sends to a1 via relay (alias@relay format required — broker does not
+    # fall back to relay for bare aliases; only remote-format aliases go via relay)
     msg = f"hello-a1-from-b1-{int(time.time() * 1000)}"
-    r = send_msg(b1, "a1", msg)
+    r = send_msg(b1, "a1@relay", msg)
     assert r.returncode == 0, f"b1→a1 send failed: {r.stderr}"
     print(f"[cross-host] b1 sent: {msg}")
 
+    # Sync b1 (forward outbox) then sync a1 (poll inbound) — connector runs every 30s
+    # so use sync_now to make it immediate
+    r = sync_now(b1)
+    assert r.returncode == 0, f"b1 sync failed: {r.stderr}"
+    time.sleep(1)
+    r = sync_now(a1)
+    assert r.returncode == 0, f"a1 sync failed: {r.stderr}"
+    time.sleep(1)
+
     # a1 polls and receives the message
-    time.sleep(2)
-    a1_inbox = poll_inbox(a1)
+    a1_inbox = poll_inbox(a1, "a1-session")
     assert any(msg in m.get("content", "") for m in a1_inbox), \
         f"a1 should receive b1's message via relay: {a1_inbox}"
     print("[cross-host] a1 received b1's message via relay ✅")
@@ -273,10 +321,14 @@ def test_unknown_host_dead_letter(a1):
     print(f"[dead-letter] baseline: {baseline}")
 
     # Send to a non-existent alias on a non-existent host
-    r = send_msg(a1, "nobody@nowhere-host-xyz", f"ghost-msg-{int(time.time())}")
+    ghost = f"ghost-msg-{int(time.time())}"
+    r = send_msg(a1, "nobody@nowhere-host-xyz", ghost)
     # Send may succeed (queued) or fail — we're checking dead-letter increment
     print(f"[dead-letter] send result: rc={r.returncode}, stderr={r.stderr[:100]}")
 
+    # Sync to forward outbox to relay
+    r = sync_now(a1)
+    print(f"[dead-letter] a1 sync: {r.stdout.strip()}")
     time.sleep(2)
     after = dead_letter_count()
     print(f"[dead-letter] after: {after}")
@@ -296,19 +348,49 @@ def test_bidirectional_cross_host_dm(a1, b1):
     assert r.returncode == 0, f"b1 register failed: {r.stderr}"
     time.sleep(1)
 
+    # Pre-sync to register aliases with relay before sending.
+    # Without this, sends fire before the relay knows about the aliases,
+    # causing unknown_alias errors and outbox retries that hit rate limits.
+    r = sync_now(a1)
+    print(f"[bidir] a1 pre-sync: {r.stdout.strip()}")
+    assert r.returncode == 0, f"a1 pre-sync failed: {r.stderr}"
+    r = sync_now(b1)
+    print(f"[bidir] b1 pre-sync: {r.stdout.strip()}")
+    assert r.returncode == 0, f"b1 pre-sync failed: {r.stderr}"
+    time.sleep(35)  # avoid relay rate limits between sync rounds
+
     msg_a2b = f"a1-to-b1-bidir-{int(time.time() * 1000)}"
     msg_b2a = f"b1-to-a1-bidir-{int(time.time() * 1000)}"
 
-    # Send both simultaneously
-    r1 = send_msg(a1, "b1-bidir", msg_a2b)
-    r2 = send_msg(b1, "a1-bidir", msg_b2a)
+    # Send both directions
+    r1 = send_msg(a1, "b1-bidir@relay", msg_a2b)
+    r2 = send_msg(b1, "a1-bidir@relay", msg_b2a)
     assert r1.returncode == 0, f"a1→b1 failed: {r1.stderr}"
     assert r2.returncode == 0, f"b1→a1 failed: {r2.stderr}"
     print(f"[bidir] a1 sent: {msg_a2b}, b1 sent: {msg_b2a}")
 
-    time.sleep(2)
-    b1_inbox = poll_inbox(b1)
-    a1_inbox = poll_inbox(a1)
+    # Sync a1 (forward outbox) then b1 (poll inbound)
+    r = sync_now(a1)
+    print(f"[bidir] a1 fwd-sync: {r.stdout.strip()}")
+    assert r.returncode == 0, f"a1 fwd-sync failed: {r.stderr}"
+    time.sleep(1)
+    r = sync_now(b1)
+    print(f"[bidir] b1 poll-sync: {r.stdout.strip()}")
+    assert r.returncode == 0, f"b1 poll-sync failed: {r.stderr}"
+    time.sleep(1)
+
+    # Sync b1 (forward outbox) then a1 (poll inbound)
+    r = sync_now(b1)
+    print(f"[bidir] b1 fwd-sync: {r.stdout.strip()}")
+    assert r.returncode == 0, f"b1 fwd-sync failed: {r.stderr}"
+    time.sleep(1)
+    r = sync_now(a1)
+    print(f"[bidir] a1 poll-sync: {r.stdout.strip()}")
+    assert r.returncode == 0, f"a1 poll-sync failed: {r.stderr}"
+    time.sleep(1)
+
+    b1_inbox = poll_inbox(b1, "b1-bidir-session")
+    a1_inbox = poll_inbox(a1, "a1-bidir-session")
 
     assert any(msg_a2b in m.get("content", "") for m in b1_inbox), \
         f"b1 should receive a1's message: {b1_inbox}"
