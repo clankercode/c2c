@@ -11,7 +11,7 @@ test("app loads and shows connecting status", async ({ page }) => {
   await expect(page.getByText("c2c")).toBeVisible();
 
   // Status indicator should be present (connecting/live/error)
-  const statusEl = page.locator("span:text('●')").first();
+  const statusEl = page.getByText(/\u25CF/); // ● bullet character
   await expect(statusEl).toBeVisible();
 });
 

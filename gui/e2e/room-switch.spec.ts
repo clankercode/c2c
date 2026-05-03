@@ -8,7 +8,7 @@ test("sidebar renders rooms list", async ({ page }) => {
   await page.goto("/");
 
   // Rooms section header
-  const roomsSection = page.getByText("Rooms");
+  const roomsSection = page.getByText("Rooms", { exact: true });
   await expect(roomsSection).toBeVisible();
 
   // "No rooms joined" placeholder shown when no rooms
@@ -19,7 +19,7 @@ test("sidebar renders rooms list", async ({ page }) => {
   await expect(joinInput).toBeVisible();
 
   // Peers section is visible
-  await expect(page.getByText("Peers")).toBeVisible();
+  await expect(page.getByText("Peers", { exact: true })).toBeVisible();
 });
 
 /**
@@ -29,7 +29,7 @@ test("sidebar renders rooms list", async ({ page }) => {
 test("sidebar renders peers list", async ({ page }) => {
   await page.goto("/");
 
-  const peersSection = page.getByText("Peers");
+  const peersSection = page.getByText("Peers", { exact: true });
   await expect(peersSection).toBeVisible();
 
   // "No peers yet" placeholder shown when no peers

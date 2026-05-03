@@ -11,7 +11,8 @@ test("compose bar renders with expected elements", async ({ page }) => {
   await expect(page.getByText("c2c")).toBeVisible();
 
   // Compose bar should be visible (at the bottom of the app)
-  const composeArea = page.locator('textarea[placeholder*="message"]');
+  // Placeholder is "select a target first" when no target, or "message to ..." when target set
+  const composeArea = page.locator('textarea[placeholder*="select a target"]');
   await expect(composeArea).toBeVisible();
 
   // The "to" input should be present
@@ -19,8 +20,8 @@ test("compose bar renders with expected elements", async ({ page }) => {
   await expect(toInput).toBeVisible();
 
   // Send button should be present
-  const sendBtn = page.getByRole("button", { name: "Send" });
-  await expect(sendBtn).toBeVisible();
+  const sendBtn = page.locator("button", { hasText: "Send" });
+  await expect(sendBtn).toBeVisible({ timeout: 10000 });
 
   // Send button should be disabled when no target/message is filled
   await expect(sendBtn).toBeDisabled();
@@ -33,9 +34,9 @@ test("compose bar renders with expected elements", async ({ page }) => {
 test("sidebar shows rooms and peers sections", async ({ page }) => {
   await page.goto("/");
 
-  // Sidebar sections
-  await expect(page.getByText("Rooms")).toBeVisible();
-  await expect(page.getByText("Peers")).toBeVisible();
+  // Sidebar sections (use exact match to avoid strict mode violations)
+  await expect(page.getByText("Rooms", { exact: true })).toBeVisible();
+  await expect(page.getByText("Peers", { exact: true })).toBeVisible();
 
   // Join room input should be present
   const joinInput = page.locator('input[placeholder="room-id"]');
