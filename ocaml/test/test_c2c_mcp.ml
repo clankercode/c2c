@@ -12564,10 +12564,85 @@ let test_set_compact_no_session_returns_error () =
               let is_error = result |> member "isError" |> to_bool in
               check bool "set_compact with no session is error" true is_error))
 
+(* #dual-alias-fix: registering the same session_id with a different alias
+   must replace the old entry, not create a duplicate. *)
+let test_register_same_session_different_alias_dedup () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* First registration: session-x as alias-one *)
+      C2c_mcp.Broker.register broker ~session_id:"session-x" ~alias:"alias-one"
+        ~pid:None ~pid_start_time:None ();
+      let regs1 = C2c_mcp.Broker.list_registrations broker in
+      check int "one registration after first register" 1 (List.length regs1);
+      check string "alias is alias-one" "alias-one" (List.hd regs1).alias;
+      (* Second registration: same session, different alias *)
+      C2c_mcp.Broker.register broker ~session_id:"session-x" ~alias:"alias-two"
+        ~pid:None ~pid_start_time:None ();
+      let regs2 = C2c_mcp.Broker.list_registrations broker in
+      check int "still one registration after re-register" 1 (List.length regs2);
+      check string "alias updated to alias-two" "alias-two" (List.hd regs2).alias;
+      (* Third registration: same session, yet another alias *)
+      C2c_mcp.Broker.register broker ~session_id:"session-x" ~alias:"alias-three"
+        ~pid:None ~pid_start_time:None ();
+      let regs3 = C2c_mcp.Broker.list_registrations broker in
+      check int "still one registration after third" 1 (List.length regs3);
+      check string "alias updated to alias-three" "alias-three" (List.hd regs3).alias;
+      (* Verify no session-x duplicates *)
+      let session_x_regs =
+        List.filter (fun (r : C2c_mcp.registration) -> r.session_id = "session-x") regs3
+      in
+      check int "exactly one session-x entry" 1 (List.length session_x_regs))
+
+(* #dual-alias-fix: re-registering same session + same alias is idempotent *)
+let test_register_same_session_same_alias_idempotent () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-y" ~alias:"stable-alias"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-y" ~alias:"stable-alias"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-y" ~alias:"stable-alias"
+        ~pid:None ~pid_start_time:None ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "still one registration" 1 (List.length regs);
+      check string "alias unchanged" "stable-alias" (List.hd regs).alias)
+
+(* #dual-alias-fix: different sessions can coexist *)
+let test_register_different_sessions_coexist () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"alice"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b" ~alias:"bob"
+        ~pid:None ~pid_start_time:None ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "two registrations for two sessions" 2 (List.length regs);
+      (* Re-register session-a with new alias — should only affect session-a *)
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"alice-v2"
+        ~pid:None ~pid_start_time:None ();
+      let regs2 = C2c_mcp.Broker.list_registrations broker in
+      check int "still two registrations" 2 (List.length regs2);
+      let alice_regs =
+        List.filter (fun (r : C2c_mcp.registration) -> r.session_id = "session-a") regs2
+      in
+      check int "one session-a entry" 1 (List.length alice_regs);
+      check string "session-a alias updated" "alice-v2" (List.hd alice_regs).alias;
+      let bob_regs =
+        List.filter (fun (r : C2c_mcp.registration) -> r.session_id = "session-b") regs2
+      in
+      check int "one session-b entry" 1 (List.length bob_regs);
+      check string "session-b alias unchanged" "bob" (List.hd bob_regs).alias)
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
         [ test_case "register and list" `Quick test_register_and_list
+        ; test_case "register same session different alias dedup" `Quick
+            test_register_same_session_different_alias_dedup
+        ; test_case "register same session same alias idempotent" `Quick
+            test_register_same_session_same_alias_idempotent
+        ; test_case "register different sessions coexist" `Quick
+            test_register_different_sessions_coexist
         ; test_case "send enqueues target message" `Quick test_send_enqueues_message_for_target_alias
         ; test_case "drain inbox clears messages" `Quick test_drain_inbox_returns_and_clears_messages
         ; test_case "empty drain does not create inbox file" `Quick

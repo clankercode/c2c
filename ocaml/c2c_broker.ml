@@ -1947,10 +1947,35 @@ open C2c_mcp_helpers
           | [ _old_reg ], others ->
               (* prior entry found — update alias/pid/start_time in place *)
               new_reg :: others
-          | multiple, others ->
+          | _multiple, others ->
               (* edge case: same session had multiple entries (shouldn't happen
                  with the fixed logic, but guard defensively) — keep first, drop rest *)
               new_reg :: others
+        in
+        (* #dual-alias-fix: final defensive dedup — ensure no other entries
+           with the same session_id survived the partition logic. This guards
+           against races where two processes register different aliases for
+           the same session_id concurrently. *)
+        let kept =
+          let dominated, clean =
+            List.partition
+              (fun reg -> reg.session_id = session_id && reg.alias <> new_reg.alias)
+              kept
+          in
+          (if dominated <> [] then begin
+            let dominated_aliases =
+              String.concat ", " (List.map (fun r -> r.alias) dominated)
+            in
+            (try
+              log_broker_event ~broker_root:(root t) "dual_alias_dedup"
+                [ ("ts", `Float (Unix.gettimeofday ()))
+                ; ("session_id", `String session_id)
+                ; ("kept_alias", `String alias)
+                ; ("dropped_aliases", `String dominated_aliases)
+                ]
+            with _ -> ())
+          end);
+          clean
         in
         save_registrations t kept;
         (* Migrate undrained inbox messages from any evicted conflicting reg.

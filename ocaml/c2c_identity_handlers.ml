@@ -13,13 +13,33 @@ module Broker = C2c_broker
 
 let register ~broker ~session_id_override ~arguments =
       let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
+      let explicit_alias = optional_string_member "alias" arguments in
       let alias =
-        match optional_string_member "alias" arguments with
+        match explicit_alias with
         | Some a -> a
         | None ->
             (match auto_register_alias () with
              | Some a -> a
              | None -> invalid_arg "alias is required (pass {\"alias\":\"your-name\"} or set C2C_MCP_AUTO_REGISTER_ALIAS)")
+      in
+      (* #dual-alias-fix: if this session already has a registration with a
+         different alias and the caller did NOT explicitly request an alias
+         (i.e. relying on C2C_MCP_AUTO_REGISTER_ALIAS or default), reuse the
+         existing alias to prevent the same session accumulating multiple
+         registrations under different aliases. Explicit alias= argument
+         is treated as an intentional rename and proceeds normally. *)
+      let alias =
+        match explicit_alias with
+        | Some _ -> alias  (* explicit request — allow rename *)
+        | None ->
+            let existing =
+              List.find_opt
+                (fun reg -> reg.session_id = session_id)
+                (Broker.list_registrations broker)
+            in
+            (match existing with
+             | Some reg when reg.alias <> alias -> reg.alias
+             | _ -> alias)
       in
       (* Reserved aliases — always blocked. *)
       if List.mem alias Broker.reserved_system_aliases then
