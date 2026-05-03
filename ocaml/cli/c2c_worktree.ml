@@ -738,7 +738,7 @@ let render_gc_human ~candidates ~clean =
         | GcRemovable { reason } -> reason
         | _ -> ""
       in
-      Printf.printf "  %-50s %-30s %s\n" c.gc_path c.gc_branch r)
+      Printf.printf "  %-50s %8s  %-30s %s\n" c.gc_path (format_bytes c.gc_size) c.gc_branch r)
     removable;
   if possibly_active <> [] then begin
     (* `[!]` prefix flags POSSIBLY_ACTIVE as "review me" rather than
@@ -753,7 +753,7 @@ let render_gc_human ~candidates ~clean =
           | GcPossiblyActive { reason } -> reason
           | _ -> ""
         in
-        Printf.printf "  [!] %-46s %-30s %s\n" c.gc_path c.gc_branch r)
+        Printf.printf "  [!] %-46s %8s  %-30s %s\n" c.gc_path (format_bytes c.gc_size) c.gc_branch r)
       possibly_active
   end;
   Printf.printf "\nREFUSE (%d worktrees):\n" (List.length refused);
@@ -762,11 +762,14 @@ let render_gc_human ~candidates ~clean =
         | GcRefused { reason } -> reason
         | _ -> ""
       in
-      Printf.printf "  %-50s %-30s REFUSE: %s\n" c.gc_path c.gc_branch r)
+      Printf.printf "  %-50s %8s  %-30s REFUSE: %s\n" c.gc_path (format_bytes c.gc_size) c.gc_branch r)
     refused;
-  if not clean then
-    Printf.printf "\nRun with --clean to remove the REMOVABLE set \
+  if not clean then begin
+    Printf.printf "\nTotal reclaimable: %s (%d worktrees)\n"
+      (format_bytes removable_size) (List.length removable);
+    Printf.printf "Run with --clean to remove the REMOVABLE set \
                    (POSSIBLY_ACTIVE skipped). Dry-run by default.\n"
+  end
 
 (* Emit byte counts as numeric JSON: `Int when in 63-bit OCaml int
    range (effectively always for filesystem sizes), `Intlit otherwise.
