@@ -126,8 +126,7 @@ Project Folder: `.projects/coord-workflow-peer-pass/`
 
 Goal: coordinator surface (cherry-pick, peer-PASS rubric, push-gate, install-path policy) is mature enough that swarm-cycles don't need Max-direct intervention.
 
-Status: **active** — #323 auto-DM-on-cherry-pick landed. #324 peer-PASS rubric live. #325 divergent-base runbook landed. #334 PUSHED. **#360 FIXED** (`99d7b6cf` — two-phase copy, dry-run, fail-loud). All #360-era fixes landed. 2-claim max documented in rubric §5 (5bdf81a2, 2026-05-02). Phantom-reviewer cascade finding filed (`2026-05-02T08-45-00Z-coordinator1-phantom-reviewer-cascade`). Chain-slice diff guidance added. Findings triage (birch 2026-05-04) closed 3 OPEN findings + 1 partially closed.
-
+Status: **active** — #323 auto-DM-on-cherry-pick landed. #324 peer-PASS rubric live. #325 divergent-base runbook landed. #334 PUSHED. **#360 FIXED** (`99d7b6cf` — two-phase copy, dry-run, fail-loud). All #360-era fixes landed. 2-claim max documented in rubric §5 (5bdf81a2, 2026-05-02). Phantom-reviewer cascade finding filed (`2026-05-02T08-45-00Z-coordinator1-phantom-reviewer-cascade`). Chain-slice diff guidance added. Findings triage process added to coord workflow (birch 2026-05-04): coord includes finding-file paths in sweep dispatches; agents file triage closures + commit to worktree. 20+ findings closed in 2026-05-04 triage burst.
 Next: #352 doctor migration-prompt (unblocked by #360). #328 coord-cherry-pick scope-audit + auto-build deferred.
 
 ### MCP surface reliability
@@ -176,6 +175,8 @@ Project Folder: **todo** (cluster spans #350/#356/#357/#358/#359)
 
 Goal: c2c.im (Jekyll-published docs/) front-door pages match shipped behavior. Discovered via 2026-04-28 audit subagent.
 
-Status: **active** — #350 broker-root drift (7 files +30/-18) shipped `9e15b6e1`, awaiting peer-PASS (test-agent queued). Closes audit's #1 user-trust item (broker-root accuracy headline). #356 (MCP Tools cards advertise nonexistent tools, miss shipped surface) HIGH severity, queued. #357 (Crush parity inconsistency) MED. #358 (relay-quickstart Python-centric) MED. #359 (Setup table Kimi/Codex misleading) LOW. Bundleable as one public-docs-accuracy pass slice.
+Status: **done** — #350 broker-root drift (7 files +30/-18) shipped `9e15b6e1` (test-agent PASS). #356 FIXED (`763b6f53`): Schedule MCP tools subsection added to `docs/commands.md` — `schedule_set`, `schedule_list`, `schedule_rm` were shipped in the broker but undocumented in the MCP tools section. #357/#358/#359 NOT REPRODUCIBLE: audit found docs already accurate (Crush consistently marked DEPRECATED; relay-quickstart is OCaml/shell throughout; Setup table Kimi row correctly distinguishes install vs start). Full triage finding at `.collab/findings/2026-05-04T02-30-00Z-birch-coder-public-docs-accuracy-triage.md`.
 
-Next: peer-PASS #350; bundle #356-#359 for galaxy after #318 v3 lands (or whoever's free).
+Findings backlog note: this session's triage also closed 20+ OPEN findings across the findings archive (audit-and-findings-burst worktree). Public-docs cluster is fully resolved.
+
+Next: none — cluster closed.
