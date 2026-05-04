@@ -1395,6 +1395,104 @@ let test_sweep_force_bypasses_alive_guard () =
             (string_contains out "Dropped")))
 
 (* ------------------------------------------------------------------------- *)
+(* c2c registry-prune — dry-run and --force semantics                        *)
+(* ------------------------------------------------------------------------- *)
+
+(* Create a dead registration with a dead PID. *)
+let make_dead_reg broker ~session_id ~alias =
+  let dead = dead_pid () in
+  C2c_mcp.Broker.register broker
+    ~session_id ~alias ~pid:(Some dead) ~pid_start_time:None ()
+
+let test_registry_prune_dry_run_no_stale () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register a LIVE (pid=None) registration — not a candidate for pruning. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-alive" ~alias:"alive-alias"
+        ~pid:None ~pid_start_time:None ();
+      (* Run: c2c registry-prune (dry-run by default). *)
+      let outfile = Filename.temp_file "prune-dry" ".out" in
+      let errfile = Filename.temp_file "prune-dry" ".err" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s %s registry-prune > %s 2> %s"
+            (Filename.quote dir) c2c_exe outfile errfile
+          in
+          let rc = Sys.command cmd in
+          check int "registry-prune dry-run exits 0" 0 rc;
+          let out = read_file outfile in
+          check bool "output says no stale registrations" true
+            (string_contains out "No stale test registrations to prune.")))
+
+let test_registry_prune_force_removes_dead_reg () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register a dead registration whose alias matches the default prune pattern "eph-". *)
+      make_dead_reg broker ~session_id:"session-eph-dead" ~alias:"eph-test-agent";
+      (* Verify it exists via preview. *)
+      let managed_sids = [] in
+      let candidates = C2c_mcp.Broker.registry_prune_preview broker
+        ~managed_session_ids:managed_sids ~patterns:["eph-"; "heal-"; "mon-"; "test-"; "tmp-"; "zombie-"]
+      in
+      check int "preview finds 1 candidate" 1 (List.length candidates);
+      (* Run: c2c registry-prune --force *)
+      let outfile = Filename.temp_file "prune-force" ".out" in
+      let errfile = Filename.temp_file "prune-force" ".err" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s %s registry-prune --force > %s 2> %s"
+            (Filename.quote dir) c2c_exe outfile errfile
+          in
+          let rc = Sys.command cmd in
+          check int "registry-prune --force exits 0" 0 rc;
+          let out = read_file outfile in
+          check bool "output mentions pruned count" true
+            (string_contains out "Pruned 1 stale registration(s)");
+          check bool "output mentions alias" true
+            (string_contains out "eph-test-agent");
+          check bool "output mentions session_id" true
+            (string_contains out "session-eph-dead");
+          (* Verify the registry was actually modified by checking preview is now empty. *)
+          let remaining = C2c_mcp.Broker.registry_prune_preview broker
+            ~managed_session_ids:managed_sids ~patterns:["eph-"; "heal-"; "mon-"; "test-"; "tmp-"; "zombie-"]
+          in
+          check int "preview is empty after prune" 0 (List.length remaining)))
+
+let test_registry_prune_pattern_filter () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Register two dead registrations: one matches "eph-", one matches "zombie-". *)
+      make_dead_reg broker ~session_id:"session-eph-dead" ~alias:"eph-test-agent";
+      make_dead_reg broker ~session_id:"session-zombie-dead" ~alias:"zombie-test-agent";
+      (* Run: c2c registry-prune --force --pattern eph- (only eph- pattern). *)
+      let outfile = Filename.temp_file "prune-pattern" ".out" in
+      let errfile = Filename.temp_file "prune-pattern" ".err" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s %s registry-prune --force --pattern eph- > %s 2> %s"
+            (Filename.quote dir) c2c_exe outfile errfile
+          in
+          let rc = Sys.command cmd in
+          check int "registry-prune --force --pattern exits 0" 0 rc;
+          let out = read_file outfile in
+          check bool "output mentions pruned 1 stale" true
+            (string_contains out "Pruned 1 stale registration(s)");
+          check bool "output mentions eph-test-agent" true
+            (string_contains out "eph-test-agent");
+          check bool "output does not mention zombie alias" false
+            (string_contains out "zombie-test-agent");
+          (* Verify the zombie reg is still in the registry. *)
+          let managed_sids = [] in
+          let remaining = C2c_mcp.Broker.registry_prune_preview broker
+            ~managed_session_ids:managed_sids ~patterns:["zombie-"]
+          in
+          check int "zombie registration still present" 1 (List.length remaining)))
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -1535,5 +1633,10 @@ let () =
         [ ( "sweep --force removes dead registrations", `Quick, test_sweep_force_removes_dead_reg )
         ; ( "sweep refuses when alive non-managed registrations exist", `Quick, test_sweep_without_force_refuses_when_alive_reg_exists )
         ; ( "sweep --force bypasses alive guard", `Quick, test_sweep_force_bypasses_alive_guard )
+        ] )
+    ; ( "registry_prune",
+        [ ( "registry-prune dry-run with no stale entries exits 0", `Quick, test_registry_prune_dry_run_no_stale )
+        ; ( "registry-prune --force removes dead matching registrations", `Quick, test_registry_prune_force_removes_dead_reg )
+        ; ( "registry-prune --pattern filter works correctly", `Quick, test_registry_prune_pattern_filter )
         ] )
     ]
