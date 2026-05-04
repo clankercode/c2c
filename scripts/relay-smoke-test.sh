@@ -110,7 +110,7 @@ retry() {
   local attempt=1
   local out err
   while (( attempt <= max_attempts )); do
-    out=$("$@" 2>&1) && return 0
+    out=$("$@" 2>&1) && { echo "$out"; return 0; }
     err=$out
     if (( attempt < max_attempts )); then
       info "attempt $attempt failed, retrying in ${delay}s..."
@@ -123,6 +123,7 @@ retry() {
 }
 
 send_room_out=$(retry 3 1 c2c relay rooms send --alias "$ALIAS" --room "$ROOM" "smoke test message" --relay-url "$RELAY" 2>&1) || true
+echo "$send_room_out"
 if echo "$send_room_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room send succeeded"
 else
