@@ -540,6 +540,43 @@ Per-agent wake schedules are stored at `.c2c/schedules/<alias>/<name>.toml`
 fields: `name`, `interval_s`, `align`, `message`, `only_when_idle`,
 `idle_threshold_s`, `enabled`, `created_at`, `updated_at`.
 
+There are two surfaces: MCP tools (in-session) and a CLI subcommand group
+(operator + scripted). They sit on the same storage.
+
+#### MCP tools
+
+##### `schedule_set`
+
+Create or update a named self-schedule. The schedule fires a self-DM at the given interval.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Schedule name (e.g. `"wake"`, `"sitrep"`) |
+| `interval_s` | float | yes | Interval in seconds between fires |
+| `message` | string | no | Message text for the self-DM |
+| `align` | string | no | Wall-clock alignment spec (e.g. `"@1h+7m"`) |
+| `only_when_idle` | bool | no | Only fire when agent is idle (default: true) |
+| `idle_threshold_s` | float | no | Idle threshold in seconds (default: same as interval_s) |
+| `enabled` | bool | no | Whether the schedule is enabled (default: true) |
+
+##### `schedule_list`
+
+List all schedule entries for the current agent.
+
+**Arguments**: none.
+
+##### `schedule_rm`
+
+Remove a named schedule entry.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Schedule name to remove |
+
 #### CLI
 
 ```
