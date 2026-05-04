@@ -70,6 +70,8 @@ they don't regress silently.
 | `nudge_enqueue` | LOW | nudge diagnostic | #335 |
 | `nudge_tick` | LOW | nudge diagnostic | #335 |
 | `dm_enqueue` | MED | delivery audit | #488 |
+| `json_cap_exceeded` | MED | JSON file-size cap diagnostic | Slice F follow-up |
+| `session_id_differs_from_alias` | MED | session_id≠alias diagnostic | #529 |
 | `relay_pin_delete` | MED | operator pin management | #432 Slice D |
 | `relay_pin_rotate` | MED | operator pin management | #432 Slice D |
 | `rpc` | LOW | RPC audit | pre-existing (always present) |
@@ -814,23 +816,24 @@ investigation.
 {
   "ts": <float>,
   "event": "json_cap_exceeded",
-  "file": "<path-to-file>",
+  "file": "<path-to-rejected-file>",
   "max_bytes": <int>
 }
 ```
 
-**Fires when**: a JSON file read via `read_json_file` exceeds the 64 KiB
-cap and the read returns the default value instead. This is a defensive
-measure against operator-controlled but potentially attacker-adjacent files
-(registration blobs, relay state, config) that could be written with
-unbounded size.
+**Fires when**: a JSON file read is rejected because its size exceeds the
+read cap (64 KiB for registration/state files, 64 KiB for relay pin files).
+The read returns a default/empty value and the event is emitted so operators
+have visibility into cap triggers.
 
-**File**: `ocaml/c2c_broker.ml` `log_json_cap_exceeded` (~line 37)
-and call sites at ~lines 67, 685, 2861.
+**File**: `ocaml/c2c_broker.ml`:
+- ~line 37 (`log_json_cap_exceeded` helper definition)
+- ~line 67 (registration/state JSON cap, 64 KiB)
+- ~line 685 (relay pin JSON cap, 64 KiB)
 
-**Operational meaning**: operators need observability when the cap triggers
-to distinguish "read returned default" from "read actually succeeded with
-a large but valid file." One line per capped read.
+**Operational meaning**: cap triggers are expected when relay state files
+grow large, but can also indicate misconfiguration or an adversarial peer
+writing oversized artifacts to the shared relay directory.
 
 **Cross-link**: Slice F follow-up (fern non-blocking note).
 
@@ -851,17 +854,19 @@ a large but valid file." One line per capped read.
 }
 ```
 
-**Fires when**: a registration is created or updated where `session_id ≠
-alias`. The broker handles this correctly — senders resolve alias→session_id
-via the registry so both enqueue and drain use the same session_id-based
-path — but operators may see unexpected inbox filenames (e.g.
-`session-a.inbox.json` instead of `storm-ember.inbox.json`).
+**Fires when**: during `register`, a fresh registration (no prior entry for
+this session_id) passes a `session_id` that differs from `alias`. The broker
+correctly handles this by resolving alias→session_id for both enqueue and
+drain, so delivery is not affected — this event provides visibility into
+when the mismatch occurs (e.g. a sender wrote to a session_id-based inbox
+filename instead of an alias-based one).
 
-**File**: `ocaml/c2c_broker.ml` `register` function (~line 1778).
+**File**: `ocaml/c2c_broker.ml` `register` function (~line 1772).
 
-**Operational meaning**: forensic visibility into when this configuration
-occurs. The inbox filename is based on session_id, so when they differ,
-operators may see unexpected filenames.
+**Operational meaning**: audit trail for the #529 session_id≠alias hygiene
+fix. Operators can grep for this event to find registrations where the
+inbox filename (`<session_id>.inbox.json`) differs from the alias-derived
+path. The broker itself handles delivery correctly using registry resolution.
 
 **Cross-link**: #529 (session_id=alias hygiene).
 
