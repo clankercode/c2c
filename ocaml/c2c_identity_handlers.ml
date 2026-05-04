@@ -369,7 +369,9 @@ let list ~broker ~session_id_override:_ ~arguments =
         let all = Broker.list_registrations broker in
         if alive_only then
           List.filter (fun reg ->
-            Broker.registration_liveness_state reg = Broker.Alive) all
+            match Broker.registration_liveness_state reg with
+            | C2c_broker.Alive -> true
+            | C2c_broker.Dead | C2c_broker.Unknown -> false) all
         else all
       in
       let content =
