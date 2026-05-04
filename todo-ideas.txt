@@ -142,7 +142,7 @@ self-scheduling. This idle-gating becomes `only_when_idle` flag on the schedule.
 Idea: c2c-native agent self-scheduling (replaces external heartbeat/Monitor)
 
 Submitted by: Max Kaye (via coordinator1) · 2026-05-02T07:00Z
-Status: ingested — design doc at `.collab/design/2026-05-02-c2c-native-scheduling.md`, S1+S2+S3 shipped, S4 in flight
+Status: **ingested** — design doc at `.collab/design/2026-05-02-c2c-native-scheduling.md`, S1-S5 all shipped (2026-05-02) + S6a-S6d (MCP-server-side timer). Closed.
 Related: heartbeat binary, Monitor tool, agent-wake-setup runbook, idle-gating idea above
 
 Context:

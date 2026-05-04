@@ -165,9 +165,30 @@ Project Folder: `.collab/research/2026-04-29-code-health-audit-cairn.md`
 
 Goal: surface and shipfix latent code-health issues across the OCaml codebase — duplication, awkward `failwith` paths, oversized handlers, missing dedup helpers.
 
-Status: **Audit-4 shipped (2026-05-02)** — #450 send_handlers refactor complete (S6-S10: 5 helper extractions landed, `send` reduced to ~60 lines of dispatch). Room ACL dedup (`resolve_caller_identity`). MCP-helpers dedup (`log_broker_event`). relay_e2e `Result.t` migration. broker-log rotation. 320 tests, all passing.
+Status: **Audit-5 + XS batch shipped (2026-05-04)** — Audit-4 (#450) was send_handlers refactor (S6-S10, `send` reduced to ~60 lines), room ACL dedup, MCP-helpers dedup, relay_e2e Result.t migration, broker-log rotation.
 
-Next: monitor for regressions; schedule Audit-5 when bandwidth permits.
+Audit-5 (2026-05-04): jungle-coder surveyed c2c.ml (11,719 lines) → `4f717257`. Fixes landed:
+- `7f128bf3` birch: delete spurious duplicate `resolve_effective_extra_args` (stanza peer-PASS)
+- `aabd0a5b` jungle: add registry-prune + clean-stale to tier map (Tier3); dedup agent entry; share `tier_commands_list` (cedar peer-PASS)
+- `a34a43ff` test-agent: skills helpers — log errors to stderr instead of silent exception swallowing
+
+XS code-health batch (same day, on master):
+- `eecc2454` dedup `bool_member` — use `Json_util.bool_member` in `c2c_schedule_handlers.ml`
+- `0c6e8c1b` fix #396 — replace local `mkdir_p` def with `C2c_io.mkdir_p_dryrun` alias
+- `24b5f7b5` add canonical `read_file_trimmed`, `write_file_atomic`, `write_file_atomic_locked` (#388)
+- `d9367fc9` `c2c agent new` — replace TODO strings with italic placeholders
+- `9082fea3` fix findings: correct closure reasons (legacy scripts still present)
+
+Deferred from Audit-5 survey (larger scope, not XS):
+- §1 `alias_words` array duplicated verbatim (c2c_start.ml + c2c_setup.ml) — HIGH/XS, not yet picked up
+- §2 `mkdir_p` ~10 copies across tree — partially addressed by `0c6e8c1b` + earlier #396 work; some copies remain
+- §3 `Broker` module 2823 lines — MED/M, split into sibling modules (deferred)
+- §4 `c2c.ml` 9197+ lines, long handler bodies — MED/M, extract to sibling modules (deferred)
+- §5 `run_outer_loop` 850 lines — MED/S, extract helpers (deferred)
+
+320+ tests, all passing.
+
+Next: Audit-5 §1 (alias_words dedup) is the next XS candidate. §3-§5 are M-sized refactors — schedule when bandwidth permits. Three Audit-5 fix commits (`7f128bf3`, `aabd0a5b`, `a34a43ff`) pending cherry-pick to master.
 
 ### Public-docs accuracy
 
