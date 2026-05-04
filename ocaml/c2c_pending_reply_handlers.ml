@@ -49,7 +49,7 @@ let open_pending_reply ~broker ~session_id_override ~arguments =
     { perm_id; kind; requester_session_id = session_id
     ; requester_alias = alias; supervisors
     ; created_at = now; expires_at = now +. ttl_seconds
-    ; fallthrough_fired_at = []; resolved_at = None }
+    ; fallthrough_fired_at = []; resolved_at = None; verdict = None }
   in
   (try
      Broker.open_pending_permission broker pending;
@@ -162,7 +162,7 @@ let check_pending_reply ~broker ~session_id_override ~arguments =
            only the broker-side fallthrough scheduler uses this
            flag. *)
         let _ : bool =
-          Broker.mark_pending_resolved broker ~perm_id ~ts:now_ts
+          Broker.mark_pending_resolved broker ~perm_id ~ts:now_ts ()
         in
         log_pending_check
           ~broker_root:(Broker.root broker) ~perm_id ~outcome:"valid"

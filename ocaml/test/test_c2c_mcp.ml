@@ -8748,6 +8748,7 @@ let make_pending
     ?(supervisors = [ "coordinator1" ])
     ?(elapsed_s = 0.0)
     ?(resolved_at = None)
+    ?(verdict = None)
     ?(fallthrough_fired_at = [])
     ()
   : C2c_mcp.pending_permission =
@@ -8761,6 +8762,7 @@ let make_pending
   ; expires_at = now +. 600.0
   ; fallthrough_fired_at
   ; resolved_at
+  ; verdict
   }
 
 (* slice/coord-backup-scheduler-impl T1: at idle threshold the
@@ -9282,8 +9284,9 @@ let test_concurrent_open_pending_permission () =
                   ; created_at = now
                   ; expires_at = now +. 600.0
                   ; fallthrough_fired_at = []
-                  ; resolved_at = None
-                  }
+                   ; resolved_at = None
+                   ; verdict = None
+                   }
                 in
                 C2c_mcp.Broker.open_pending_permission child_broker entry;
                 exit 0
@@ -9509,8 +9512,9 @@ let test_open_pending_permission_per_alias_cap () =
          ; created_at = now
          ; expires_at = now +. 600.0
          ; fallthrough_fired_at = []
-         ; resolved_at = None
-         } : C2c_mcp.pending_permission)
+          ; resolved_at = None
+          ; verdict = None
+          } : C2c_mcp.pending_permission)
       in
       (* Open exactly cap entries — must all succeed. *)
       for i = 0 to C2c_mcp.Broker.pending_per_alias_cap - 1 do
@@ -9554,8 +9558,9 @@ let test_pending_permission_exists_for_alias_is_case_insensitive () =
          ; created_at = now
          ; expires_at = now +. 600.0
          ; fallthrough_fired_at = []
-         ; resolved_at = None
-         } : C2c_mcp.pending_permission)
+          ; resolved_at = None
+          ; verdict = None
+          } : C2c_mcp.pending_permission)
       in
       C2c_mcp.Broker.open_pending_permission broker entry;
       check bool "exact match (Foo-Bar) finds pending perm" true
@@ -9606,8 +9611,9 @@ let test_open_pending_permission_expired_dont_count () =
          ; created_at = now
          ; expires_at = now +. 600.0
          ; fallthrough_fired_at = []
-         ; resolved_at = None
-         } : C2c_mcp.pending_permission)
+          ; resolved_at = None
+          ; verdict = None
+          } : C2c_mcp.pending_permission)
       in
       for i = 0 to C2c_mcp.Broker.pending_per_alias_cap - 1 do
         C2c_mcp.Broker.open_pending_permission broker (make_fresh i)
@@ -9641,7 +9647,9 @@ let test_open_pending_reply_handler_returns_error_at_cap () =
           ; created_at = now
           ; expires_at = now +. 600.0
           ; fallthrough_fired_at = []
-          ; resolved_at = None }
+         ; resolved_at = None
+         ; verdict = None
+         }
       done;
       Unix.putenv "C2C_MCP_SESSION_ID" "session-flooder";
       Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")

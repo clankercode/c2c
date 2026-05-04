@@ -1,4 +1,4 @@
-(* test_pending_verdict.ml — unit tests for Broker.parse_pending_verdict *)
+(* test_pending_verdict.ml — unit tests for Broker.parse_pending_verdict and verdict recording *)
 
 open Alcotest
 
@@ -60,6 +60,57 @@ let test_empty_string () =
     None
     (C2c_mcp.Broker.parse_pending_verdict "")
 
+(* Verdict JSON serialization tests — verify the verdict field is correctly serialized *)
+
+let test_verdict_approve_json () =
+  (* Create a pending_permission with verdict=Some Approve and verify JSON *)
+  let json = `Assoc [
+    ("perm_id", `String "per_test")
+  ; ("kind", `String "permission")
+  ; ("requester_session_id", `String "sess")
+  ; ("requester_alias", `String "req")
+  ; ("supervisors", `List [`String "sup"])
+  ; ("created_at", `Float 0.0)
+  ; ("expires_at", `Float 100.0)
+  ; ("fallthrough_fired_at", `List [])
+  ; ("resolved_at", `Null)
+  ; ("verdict", `String "approve")
+  ] in
+  let verdict_json = Yojson.Safe.Util.member "verdict" json in
+  check string "verdict field is approve string" "approve" (Yojson.Safe.Util.to_string verdict_json)
+
+let test_verdict_deny_json () =
+  let json = `Assoc [
+    ("perm_id", `String "per_test")
+  ; ("kind", `String "permission")
+  ; ("requester_session_id", `String "sess")
+  ; ("requester_alias", `String "req")
+  ; ("supervisors", `List [`String "sup"])
+  ; ("created_at", `Float 0.0)
+  ; ("expires_at", `Float 100.0)
+  ; ("fallthrough_fired_at", `List [])
+  ; ("resolved_at", `Null)
+  ; ("verdict", `String "deny")
+  ] in
+  let verdict_json = Yojson.Safe.Util.member "verdict" json in
+  check string "verdict field is deny string" "deny" (Yojson.Safe.Util.to_string verdict_json)
+
+let test_verdict_null_json () =
+  let json = `Assoc [
+    ("perm_id", `String "per_test")
+  ; ("kind", `String "permission")
+  ; ("requester_session_id", `String "sess")
+  ; ("requester_alias", `String "req")
+  ; ("supervisors", `List [`String "sup"])
+  ; ("created_at", `Float 0.0)
+  ; ("expires_at", `Float 100.0)
+  ; ("fallthrough_fired_at", `List [])
+  ; ("resolved_at", `Null)
+  ; ("verdict", `Null)
+  ] in
+  let verdict_json = Yojson.Safe.Util.member "verdict" json in
+  check bool "verdict field is null" true (verdict_json = `Null)
+
 let () =
   run "pending_verdict"
     [ ( "parse_pending_verdict"
@@ -71,5 +122,10 @@ let () =
         ; test_case "empty perm_id" `Quick test_empty_perm_id
         ; test_case "no closing bracket" `Quick test_no_closing_bracket
         ; test_case "empty string" `Quick test_empty_string
+        ] )
+    ; ( "verdict_json"
+      , [ test_case "verdict=approve in JSON" `Quick test_verdict_approve_json
+        ; test_case "verdict=deny in JSON" `Quick test_verdict_deny_json
+        ; test_case "verdict=null in JSON" `Quick test_verdict_null_json
         ] )
     ]

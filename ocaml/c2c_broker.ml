@@ -539,7 +539,7 @@ open C2c_mcp_helpers
      perm_id matches. Returns true on first transition None→Some, false
      on no-op (already resolved or perm_id not found). Cross-process
      atomic via with_pending_lock. *)
-  let mark_pending_resolved t ~perm_id ~ts =
+  let mark_pending_resolved t ~perm_id ~ts ?(verdict:[ `Approve | `Deny] option=None) () =
     with_pending_lock t (fun () ->
       let entries = load_pending_permissions t in
       let changed = ref false in
@@ -548,7 +548,7 @@ open C2c_mcp_helpers
           (fun (p : pending_permission) ->
             if p.perm_id = perm_id && p.resolved_at = None then begin
               changed := true;
-              { p with resolved_at = Some ts }
+              { p with resolved_at = Some ts; verdict }
             end else p)
           entries
       in
@@ -601,7 +601,7 @@ open C2c_mcp_helpers
       Pattern: [[c2c:pending-verdict:<perm_id>:<approve|deny>]]
       Returns [Some (perm_id, verdict)] on the first match, [None] otherwise.
       Empty perm_id or unknown verdict → [None]. *)
-  let parse_pending_verdict content =
+  let parse_pending_verdict content : (string * [ `Approve | `Deny]) option =
     let prefix = "[c2c:pending-verdict:" in
     let prefix_len = String.length prefix in
     match String.index_opt content '[' with
@@ -2165,13 +2165,16 @@ open C2c_mcp_helpers
                is already delivered above — this is a pure side-effect. *)
             (try
               match parse_pending_verdict content with
-              | Some (perm_id, _verdict) ->
-                  (match find_pending_permission t perm_id with
-                   | Some pending when List.mem (alias_casefold from_alias)
-                                        (List.map alias_casefold pending.supervisors) ->
-                       let _changed = mark_pending_resolved t ~perm_id ~ts:(Unix.gettimeofday ()) in
-                       if debug_enabled then
-                         Printf.eprintf "[pending-verdict] resolved perm_id=%s by %s\n%!" perm_id from_alias
+               | Some (perm_id, v) ->
+                   (match find_pending_permission t perm_id with
+                    | Some pending when List.mem (alias_casefold from_alias)
+                                         (List.map alias_casefold pending.supervisors) ->
+                        let _changed = mark_pending_resolved t ~perm_id ~ts:(Unix.gettimeofday ()) ~verdict:(Some v) () in
+                        if debug_enabled then
+                          Printf.eprintf "[pending-verdict] resolved perm_id=%s verdict=%s by %s\n%!"
+                            perm_id
+                            (match v with `Approve -> "approve" | `Deny -> "deny")
+                            from_alias
                    | _ ->
                        if debug_enabled then
                          Printf.eprintf "[pending-verdict] perm_id not found or sender not supervisor\n%!")

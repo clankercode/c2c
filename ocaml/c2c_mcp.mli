@@ -155,7 +155,11 @@ type pending_permission =
     (** slice/coord-backup-fallthrough: stamped by [check_pending_reply]
         when a supervisor lands a valid reply. Scheduler skips entries
         with [Some _] so backup tiers don't fire after resolution. *)
-  }
+  ; verdict : [ `Approve | `Deny] option
+    (** Set by pending-verdict DM interception when a supervisor resolves
+        the entry via a DM containing [c2c:pending-verdict:<perm_id>:<approve|deny>].
+        None for entries resolved via other paths (e.g., await-reply timeout). *)
+   }
 
 val parse_alias_list : string -> string list
 (** Parse a YAML-flow list value (e.g. ["[alice, bob]"] or ["[]"]) into a
@@ -553,11 +557,11 @@ module Broker : sig
   val with_pending_lock : t -> (unit -> 'a) -> 'a
   (** Cross-process lock guarding pending_permissions.json. *)
 
-  val mark_pending_resolved : t -> perm_id:string -> ts:float -> bool
-  (** [mark_pending_resolved t ~perm_id ~ts] stamps [resolved_at = Some ts]
-      on the matching entry if it exists and was not already resolved.
-      Returns [true] if the field was newly set, [false] if no-op (already
-      resolved, or perm_id absent). Cross-process safe via
+  val mark_pending_resolved : t -> perm_id:string -> ts:float -> ?verdict:[ `Approve | `Deny] option -> unit -> bool
+  (** [mark_pending_resolved t ~perm_id ~ts ?verdict] stamps [resolved_at = Some ts]
+      and [verdict] on the matching entry if it exists and was not already
+      resolved. Returns [true] if the fields were newly set, [false] if
+      no-op (already resolved, or perm_id absent). Cross-process safe via
       [with_pending_lock]. First-writer-wins: a later call with a smaller
       ts is dropped. *)
 

@@ -898,7 +898,7 @@ hint: Run 'c2c init' to register and get started, or pass --session-id explicitl
     { perm_id; kind = kind_val; requester_session_id = session_id
     ; requester_alias = alias; supervisors = supervisors_list
     ; created_at = now; expires_at = now +. ttl_seconds
-    ; fallthrough_fired_at = []; resolved_at = None }
+    ; fallthrough_fired_at = []; resolved_at = None; verdict = None }
   in
   C2c_mcp.Broker.open_pending_permission broker pending;
   if json then

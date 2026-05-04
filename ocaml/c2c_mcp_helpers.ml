@@ -119,7 +119,11 @@ type pending_permission =
      later fallthrough ticks skip the entry. Late primary reply →
      stamp; early backup reply → stamp. First valid reply wins. *)
   ; resolved_at : float option
-  }
+  ; verdict : [ `Approve | `Deny] option
+   (** Set by pending-verdict DM interception when a supervisor resolves
+       the entry via a DM containing [c2c:pending-verdict:<perm_id>:<approve|deny>].
+       None for entries resolved via other paths (e.g., await-reply timeout). *)
+   }
 
 (** Recursive idempotent mkdir. Creates [d] and all missing parents.
     Tolerates EEXIST races (concurrent creators). Canonical filesystem
@@ -159,6 +163,11 @@ let pending_permission_to_json p =
     ; ("fallthrough_fired_at",
         `List (List.map float_opt_to_json p.fallthrough_fired_at))
     ; ("resolved_at", float_opt_to_json p.resolved_at)
+    ; ("verdict",
+        match p.verdict with
+        | Some `Approve -> `String "approve"
+        | Some `Deny -> `String "deny"
+        | None -> `Null)
     ]
 
 let pending_permission_of_json json =
@@ -176,6 +185,13 @@ let pending_permission_of_json json =
     | `Null -> None
     | other -> json_to_float_opt other
   in
+  let verdict =
+    match member "verdict" json with
+    | `Null -> None
+    | `String "approve" -> Some `Approve
+    | `String "deny" -> Some `Deny
+    | _ -> None
+  in
   { perm_id = json |> member "perm_id" |> to_string
   ; kind = json |> member "kind" |> to_string |> pending_kind_of_string
   ; requester_session_id = json |> member "requester_session_id" |> to_string
@@ -185,6 +201,7 @@ let pending_permission_of_json json =
   ; expires_at = json |> member "expires_at" |> to_float
   ; fallthrough_fired_at
   ; resolved_at
+  ; verdict
   }
 
 (* Debug output — gated by C2C_MCP_DEBUG env var *)
