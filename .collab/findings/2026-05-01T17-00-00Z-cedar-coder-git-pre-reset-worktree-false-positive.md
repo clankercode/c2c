@@ -2,7 +2,7 @@
 
 **Found**: 2026-05-01T17:xx UTC
 **By**: cedar-coder
-**Status**: open — fix needed
+**Status**: REOPENED — fix exists on cedar/master (009a160f) but NOT on origin/master; needs coord merge to origin/master
 
 ## Summary
 

@@ -3,7 +3,7 @@
 **Agent**: willow-coder
 **Date**: 2026-04-29
 **Severity**: MED
-**Status**: open
+**Status**: CLOSED — informational (no bug; migration is optional code health)
 
 ## Problem
 

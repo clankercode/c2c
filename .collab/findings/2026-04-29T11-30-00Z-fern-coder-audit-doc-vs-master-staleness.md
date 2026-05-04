@@ -2,7 +2,7 @@
 
 **Date**: 2026-04-29
 **Severity**: LOW
-**Status**: Open — recommendation only
+**Status**: CLOSED — process recommendation (no code fix needed; documented in findings hygiene runbook)
 
 ## Problem
 

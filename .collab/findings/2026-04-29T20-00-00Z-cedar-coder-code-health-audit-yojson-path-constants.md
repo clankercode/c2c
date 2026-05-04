@@ -2,7 +2,7 @@
 
 **Date**: 2026-04-29
 **Author**: cedar-coder
-**Status**: Open (investigation only, no fix committed)
+**Status**: CLOSED — informational, low priority (recommendation: not worth a dedicated slice)
 
 ## Context
 

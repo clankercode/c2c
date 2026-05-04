@@ -3,7 +3,7 @@
 **Filed by**: CEO
 **Date**: 2026-04-23
 **Severity**: medium
-**Status**: OpenCode-native bug — no c2c-side fix possible
+**Status**: CLOSED — OpenCode-native issue, no c2c-side fix possible (informational)
 
 ## Symptom
 
