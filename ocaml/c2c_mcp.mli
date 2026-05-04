@@ -382,6 +382,7 @@ module Broker : sig
   type sweep_result = { dropped_regs : registration list; deleted_inboxes : string list; preserved_messages : int }
   val sweep : t -> sweep_result
   val registry_prune : t -> managed_session_ids:string list -> patterns:string list -> registration list
+  val registry_prune_preview : t -> managed_session_ids:string list -> patterns:string list -> registration list
   val dead_letter_path : t -> string
   type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string; ae_deferrable : bool; ae_drained_by : string; ae_message_id : string option }
   val archive_path : t -> session_id:string -> string

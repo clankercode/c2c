@@ -1163,13 +1163,33 @@ let registry_prune_cmd =
             the command runs in dry-run mode and exits 0 if there are matches.")
   in
   let patterns = if patterns = [] then default_prune_patterns else patterns in
-  let dry_run = if force then false else dry_run in
   let managed_sids = c2c_start_session_ids () in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let pruned = C2c_mcp.Broker.registry_prune broker
+  (* Read-only preview: load all regs, classify without saving. *)
+  let candidate_pruned = C2c_mcp.Broker.registry_prune_preview broker
     ~managed_session_ids:managed_sids ~patterns
   in
-  if dry_run || force then
+  if candidate_pruned = [] then
+    Printf.printf "No stale test registrations to prune.\n"
+  else if not force then
+    (* Dry-run (default): show what would be pruned, don't modify. *)
+    let output_mode = if json then Json else Human in
+    match output_mode with
+    | Json ->
+        print_json
+          (`Assoc [ "pruned", `List (List.map (fun (r : C2c_mcp.registration) ->
+              `Assoc [ ("session_id", `String r.session_id); ("alias", `String r.alias) ])
+              candidate_pruned) ])
+    | Human ->
+        Printf.printf "Would prune %d stale registration(s) (dry-run):\n" (List.length candidate_pruned);
+        List.iter (fun (r : C2c_mcp.registration) ->
+          Printf.printf "  %s (%s)\n" r.alias r.session_id) candidate_pruned;
+        Printf.printf "Run with --force to actually remove them.\n"
+  else
+    (* --force: actually prune. *)
+    let pruned = C2c_mcp.Broker.registry_prune broker
+      ~managed_session_ids:managed_sids ~patterns
+    in
     let output_mode = if json then Json else Human in
     match output_mode with
     | Json ->
@@ -1178,23 +1198,10 @@ let registry_prune_cmd =
               `Assoc [ ("session_id", `String r.session_id); ("alias", `String r.alias) ])
               pruned) ])
     | Human ->
-        if pruned = [] then
-          Printf.printf "No stale test registrations to prune.\n"
-        else if dry_run then (
-          Printf.printf "Would prune %d stale registration(s) (dry-run):\n" (List.length pruned);
-          List.iter (fun (r : C2c_mcp.registration) ->
-            Printf.printf "  %s (%s)\n" r.alias r.session_id) pruned;
-          Printf.printf "Run with --force to actually remove them.\n"
-        ) else (
-          Printf.printf "Pruned %d stale registration(s):\n" (List.length pruned);
-          List.iter (fun (r : C2c_mcp.registration) ->
-            Printf.printf "  %s (%s)\n" r.alias r.session_id) pruned;
-          Printf.printf "Note: orphan inboxes still exist. Run 'c2c sweep --force' to clean those up.\n"
-        )
-  else
-    (* dry_run=true by default when neither --dry-run nor --force given *)
-    (Printf.eprintf "Nothing to do: use --dry-run to preview or --force to prune.\n";
-     exit 1)
+        Printf.printf "Pruned %d stale registration(s):\n" (List.length pruned);
+        List.iter (fun (r : C2c_mcp.registration) ->
+          Printf.printf "  %s (%s)\n" r.alias r.session_id) pruned;
+        Printf.printf "Note: orphan inboxes still exist. Run 'c2c sweep --force' to clean those up.\n"
 
 let force_flag =
   Cmdliner.Arg.(value & flag & info [ "force"; "f" ]

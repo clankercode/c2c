@@ -2833,6 +2833,7 @@ open C2c_mcp_helpers
       matches one of the [patterns] prefixes. Managed sessions (c2c start,
       identified by [managed_session_ids]) are always excluded regardless of
       alias or liveness. Returns the list of pruned registrations.
+      Saves the updated registry (removing pruned entries).
       Does NOT touch inboxes — use [sweep] for that. *)
   let registry_prune t ~managed_session_ids ~patterns =
     with_registry_lock t (fun () ->
@@ -2853,6 +2854,26 @@ open C2c_mcp_helpers
       in
       if to_prune <> [] then save_registrations t to_keep;
       to_prune)
+
+  (** [registry_prune_preview t ~managed_session_ids ~patterns] — read-only preview
+      of what [registry_prune] would remove. Same classification logic but does NOT
+      save the updated registry. Use for dry-run. *)
+  let registry_prune_preview t ~managed_session_ids ~patterns =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      let is_test_pattern alias =
+        List.exists (fun prefix ->
+          String.length alias >= String.length prefix
+          && String.sub alias 0 (String.length prefix) = prefix)
+          patterns
+      in
+      List.filter (fun reg ->
+        (* Exclude managed sessions *)
+        (not (List.mem reg.session_id managed_session_ids))
+        (* Only include dead registrations matching test patterns *)
+        && (not (is_sweep_keepable reg))
+        && is_test_pattern reg.alias)
+        regs)
 
   (* Scan dead-letter.jsonl for records belonging to this session and return
      them for redelivery, removing matched records from the file.
