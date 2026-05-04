@@ -102,11 +102,11 @@ Next: continued incremental hardening; codex-headless Task 7 (tmux smoke) alread
 
 ### Remote relay transport
 
-Project Folder: **todo**
+Project Folder: `.projects/remote-relay-transport/`
 
 Goal: enable a remote node to receive c2c messages through a relay server without requiring the local broker's file system.
 
-Status: **v1 shipped + #330 mesh closed (2026-04-29)** — Full e2e verified (25dc1b1): fake broker → SSH poll (5s) → relay cache → GET /remote_inbox/<session_id> → message delivered. Regression tests in `test_relay_remote_broker.ml`. **#330 cross-host relay-mesh validation closed today**: galaxy shipped `/forward` HTTP handler + URL path fix + netbase Dockerfile; cross-host mesh validated end-to-end.
+Status: **v1 shipped + #702 closed (2026-05-04)** — Full e2e verified (25dc1b1): fake broker → SSH poll (5s) → relay cache → GET /remote_inbox/<session_id> → message delivered. #702 bare-alias relay fallback fix landed `8399a22f`. Cross-host mesh validated end-to-end. `c2c relay dead-letter` CLI now reads relay SQLite store correctly (`ba93efb4` + `12fb0dbf`).
 
 Next: relay.toml persistent config; multi-broker support (v2).
 
@@ -122,21 +122,21 @@ Next: monitor in dogfood. #344/#345 remain as follow-up hardening if needed.
 
 ### Coord workflow + peer-PASS process
 
-Project Folder: **todo** (cross-cuts #323/#324/#325/#334/#360)
+Project Folder: `.projects/coord-workflow-peer-pass/`
 
-Goal: coordinator surface (cherry-pick, peer-PASS rubric, push-gate, install-path policy) is mature enough that swarm-cycles don't need Max-direct intervention. Two recent landings sharpened the discipline: peer-PASS bug-class-recurs check (#324) + coord-cherry-pick from divergent base (#325).
+Goal: coordinator surface (cherry-pick, peer-PASS rubric, push-gate, install-path policy) is mature enough that swarm-cycles don't need Max-direct intervention.
 
-Status: **active** — #323 auto-DM-on-cherry-pick landed. #324 peer-PASS rubric live. #325 divergent-base runbook landed. #334 PUSHED. **#360 FIXED** (`99d7b6cf` — two-phase copy, dry-run, fail-loud). All #360-era fixes landed. 2-claim max documented in rubric §5 (5bdf81a2, 2026-05-02). Phantom-reviewer cascade finding filed (`2026-05-02T08-45-00Z-coordinator1-phantom-reviewer-cascade`). Chain-slice diff guidance added.
+Status: **active** — #323 auto-DM-on-cherry-pick landed. #324 peer-PASS rubric live. #325 divergent-base runbook landed. #334 PUSHED. **#360 FIXED** (`99d7b6cf` — two-phase copy, dry-run, fail-loud). All #360-era fixes landed. 2-claim max documented in rubric §5 (5bdf81a2, 2026-05-02). Phantom-reviewer cascade finding filed (`2026-05-02T08-45-00Z-coordinator1-phantom-reviewer-cascade`). Chain-slice diff guidance added. Findings triage (birch 2026-05-04) closed 3 OPEN findings + 1 partially closed.
 
 Next: #352 doctor migration-prompt (unblocked by #360). #328 coord-cherry-pick scope-audit + auto-build deferred.
 
 ### MCP surface reliability
 
-Project Folder: **todo** (cluster spans #326/#327/#331/#332/#346)
+Project Folder: `.projects/mcp-surface-reliability/`
 
 Goal: MCP tool surface should be testable, observable, and free of silent-mismatch hazards. Two MCP-only regressions in one hour on 2026-04-27 (#326/#327) showed CLI-only verification is insufficient.
 
-Status: **active** — #326 (memory_list shared_with_me=true semantics) closed `e9c39714→a70b32df`. #327 (send-memory handoff DM did not fire on memory_write with shared_with) closed `b7b4997a` with broker.log diagnostic. #331 MCP regression test suite landed `a49480d0`. #332 (mkdir_p ENOENT for missing parent dirs) closed `68d087d4`. #346 (`C2C_MCP_AUTO_DRAIN_CHANNEL` default-flip) closed `b5316cd0` — 5 LoC code change + 4 tests, CLAUDE.md updated `edc6ef0d`.
+Status: **done** — #326 (memory_list shared_with_me=true semantics) closed `e9c39714→a70b32df`. #327 (send-memory handoff DM did not fire on memory_write with shared_with) closed `b7b4997a` with broker.log diagnostic. #331 MCP regression test suite landed `a49480d0`. #332 (mkdir_p ENOENT for missing parent dirs) closed `68d087d4`. #346 (`C2C_MCP_AUTO_DRAIN_CHANNEL` default-flip) closed `b5316cd0` — 5 LoC code change + 4 tests, CLAUDE.md updated `edc6ef0d`. All items in cluster closed as of 2026-05-04.
 
 Next: track for next regression class.
 
