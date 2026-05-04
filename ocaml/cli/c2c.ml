@@ -5937,7 +5937,7 @@ let do_approval_reply
         exit 2
   in
   (* #484: Mark the pending permission as resolved so broker stops fallthrough *)
-  let _resolved = C2c_mcp.Broker.mark_pending_resolved broker ~perm_id:token ~ts:(float_of_int ts) in
+  let _resolved = C2c_mcp.Broker.mark_pending_resolved broker ~perm_id:token ~ts:(float_of_int ts) () in
   if json then
     Printf.printf
       "{\"ok\":true,\"verdict\":\"%s\",\"token\":\"%s\",\"path\":\"%s\",\"reviewer_alias\":\"%s\"}\n%!"

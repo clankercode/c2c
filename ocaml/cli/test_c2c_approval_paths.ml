@@ -454,6 +454,7 @@ let test_approval_reply_rejects_non_supervisor () =
         ; expires_at = Unix.gettimeofday () +. 600.0
         ; fallthrough_fired_at = []
         ; resolved_at = None
+        ; verdict = None
         }
       in
       C2c_mcp.Broker.open_pending_permission broker pending;
@@ -484,6 +485,7 @@ let test_approval_reply_allows_supervisor () =
         ; expires_at = Unix.gettimeofday () +. 600.0
         ; fallthrough_fired_at = []
         ; resolved_at = None
+        ; verdict = None
         }
       in
       C2c_mcp.Broker.open_pending_permission broker pending;

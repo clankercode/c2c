@@ -9788,6 +9788,7 @@ let test_remove_pending_permission () =
          ; expires_at = now +. 600.0
          ; fallthrough_fired_at = []
          ; resolved_at = None
+         ; verdict = None
          } : C2c_mcp.pending_permission)
       in
       C2c_mcp.Broker.open_pending_permission broker entry;
@@ -9813,10 +9814,11 @@ let test_mark_pending_resolved () =
          ; expires_at = now +. 600.0
          ; fallthrough_fired_at = []
          ; resolved_at = None
+         ; verdict = None
          } : C2c_mcp.pending_permission)
       in
       C2c_mcp.Broker.open_pending_permission broker entry;
-      let changed1 = C2c_mcp.Broker.mark_pending_resolved broker ~perm_id:"perm-resolve-test" ~ts in
+      let changed1 = C2c_mcp.Broker.mark_pending_resolved broker ~perm_id:"perm-resolve-test" ~ts () in
       check bool "first mark_pending_resolved returns true" true changed1;
       let stored = C2c_mcp.Broker.find_pending_permission broker "perm-resolve-test" in
       (match stored with
@@ -9829,7 +9831,7 @@ let test_mark_pending_resolved () =
              true
              (p.resolved_at = Some ts));
       (* Idempotent: calling again returns false. *)
-      let changed2 = C2c_mcp.Broker.mark_pending_resolved broker ~perm_id:"perm-resolve-test" ~ts in
+      let changed2 = C2c_mcp.Broker.mark_pending_resolved broker ~perm_id:"perm-resolve-test" ~ts () in
       check bool "second mark_pending_resolved returns false (already resolved)" false changed2)
 
 (* [#432 Slice E] Mirrors Slice A's [test_concurrent_open_pending_permission]:
