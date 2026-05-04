@@ -359,8 +359,19 @@ let register ~broker ~session_id_override ~arguments =
               Lwt.return (tool_ok response_content)
             end)
 
-let list ~broker ~session_id_override:_ ~arguments:_ =
-      let registrations = Broker.list_registrations broker in
+let list ~broker ~session_id_override:_ ~arguments =
+      let alive_only =
+        try match Yojson.Safe.Util.member "alive_only" arguments with
+          | `Bool b -> b | _ -> false
+        with _ -> false
+      in
+      let registrations =
+        let all = Broker.list_registrations broker in
+        if alive_only then
+          List.filter (fun reg ->
+            Broker.registration_liveness_state reg = Broker.Alive) all
+        else all
+      in
       let content =
         `List
           (List.map
