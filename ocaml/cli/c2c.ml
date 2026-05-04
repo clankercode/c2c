@@ -5025,7 +5025,11 @@ let relay_dead_letter_cmd =
   and+ token = token
   and+ json_out = json_flag
   and+ limit = limit
-  and+ _purge = purge_flag in
+  and+ purge = purge_flag in
+  if purge then begin
+    Printf.eprintf "error: --purge is not yet implemented\n%!";
+    exit 1
+  end;
   match resolve_relay_url relay_url with
   | None ->
       Printf.eprintf "%s%!" relay_url_required_error;
@@ -5033,13 +5037,24 @@ let relay_dead_letter_cmd =
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       let result = Lwt_main.run (Relay.Relay_client.dead_letter client) in
-      let entries = match result with
+      let ok, entries = match result with
         | `Assoc fields ->
-            (match List.assoc_opt "dead_letter" fields with
-             | Some (`List l) -> l
-             | _ -> [])
-        | _ -> []
+            let ok_flag = match List.assoc_opt "ok" fields with Some (`Bool true) -> true | _ -> false in
+            let entry_list = match List.assoc_opt "dead_letter" fields with
+              | Some (`List l) -> l
+              | _ -> []
+            in
+            (ok_flag, entry_list)
+        | _ -> (false, [])
       in
+      if not ok then begin
+        let err = match result with
+          | `Assoc fields -> (try List.assoc "error" fields |> Yojson.Safe.Util.to_string with _ -> "unknown error")
+          | _ -> "unexpected response format"
+        in
+        Printf.eprintf "error: relay returned failure: %s\n%!" err;
+        exit 1
+      end;
       let n = List.length entries in
       let entries =
         if n <= limit then entries
