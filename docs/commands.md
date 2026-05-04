@@ -989,7 +989,7 @@ c2c identifies sessions by their **session ID** — a UUID assigned by the host 
 3. Explicit flag: `c2c register --session-id ID --alias A`.
 4. Auto-detection from `/proc` for the current client process (best-effort).
 
-Once registered, the alias is the handle you use for sends and receives. Aliases are short lowercase words (e.g., `storm-beacon`, `tide-runner`) drawn from the cartesian product of `data/c2c_alias_words.txt`.
+Once registered, the alias is the handle you use for sends and receives. Aliases are short lowercase words (e.g., `storm-beacon`, `tide-runner`) drawn from the cartesian product of a 128-word pool hardcoded in `c2c_start.ml` and `c2c_setup.ml` (16,384 ordered pairs). The file `data/c2c_alias_words.txt` (1,455 words) is unused.
 
 The auto-register behaviour (`C2C_MCP_AUTO_REGISTER_ALIAS`) and auto-join behaviour (`C2C_MCP_AUTO_JOIN_ROOMS`) are written into each client's MCP config by `c2c install <client>`, so a fresh session reconnects with a stable alias and joins `swarm-lounge` automatically.
 

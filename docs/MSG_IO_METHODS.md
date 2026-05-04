@@ -20,7 +20,7 @@ Last updated: 2026-04-26
 |---|--------|-----------|:-----------:|:-----:|:--------:|:----:|--------|
 | 1 | [MCP Channel Notifications](#1-mcp-channel-notifications) | Server pushes messages into the chat UI via JSON-RPC notification | Gated | No | No | No | Experimental / gated behind dev flag |
 | 2 | [PostToolUse Hook](#2-posttooluse-hook) | Auto-drains inbox after every tool call | Yes | No | No | No | Working (primary for Claude Code) |
-| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Sentinel only | Fallback | Fallback | Legacy for Claude Code; active for Codex/Kimi |
+| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Sentinel only | Fallback | No | Legacy for Claude Code; active for Codex only (Kimi uses notification-store) |
 | 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | Experimental; not real-time |
 | 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP tool that drains and returns pending messages | Yes | Yes | Yes | Yes | Working (universal baseline) |
 | 6 | [Wake Daemon](#6-wake-daemon) | inotifywait watches inbox, PTY-injects a poll sentinel to wake idle agents | Yes | Yes | Yes | Yes | Working; per-client variants |
@@ -97,7 +97,7 @@ just post-initialize).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `C2C_MCP_AUTO_DRAIN_CHANNEL` | `0` | Enable post-initialize inbox drain + channel notification emission. Only effective when the client declares `experimental.claude/channel`. |
+| `C2C_MCP_AUTO_DRAIN_CHANNEL` | `1` (server default; `c2c install` writes `0`) | Enable post-initialize inbox drain + channel notification emission. Only effective when the client declares `experimental.claude/channel`. |
 | `C2C_MCP_CHANNEL_DELIVERY` | `1` (when set by `c2c install claude`) | Controls whether the continuous inbox watcher emits channel notifications. |
 
 ---
@@ -199,7 +199,7 @@ it as keyboard input.
 | Claude Code | Deprecated | Full or sentinel | Legacy path. Superseded by PostToolUse hook. Still available via `claude_send_msg.py`. |
 | Codex | Yes (sentinel) | Notify-only | Managed harness starts `c2c_deliver_inbox.py --notify-only`. Sentinel triggers `poll_inbox`. |
 | OpenCode | Fallback | Sentinel (slash-command) | Wake daemon injects `/mcp__c2c__poll_inbox`. Superseded by native TypeScript plugin. |
-| Kimi | Fallback | Sentinel | Wake daemon uses master-side `pty_inject` with 1.5s submit delay. Superseded by Wire bridge. |
+| Kimi | No | — | Superseded by notification-store (`C2c_kimi_notifier`). |
 
 #### Key files
 
@@ -390,7 +390,7 @@ injection text and PTY coordination:
 
 ### 7. Kimi Wire Bridge
 
-> **Deprecated for Kimi (2026-04-29).** The [Kimi notification-store delivery](#9-kimi-notification-store) (Section 9) is the preferred path. The wire-bridge code (`c2c_wire_bridge.ml`, `c2c_wire_daemon.ml`) is retained for opencode/codex and future clients that set `needs_wire_daemon=true`.
+> **Deprecated for Kimi (2026-04-29).** The [Kimi notification-store delivery](#9-kimi-notification-store) (Section 9) is the preferred path. The wire-bridge code (`c2c_wire_bridge.ml`) is retained for opencode/codex and future clients that set `needs_wire_daemon=true`.
 
 **Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method** --
 A native delivery path that avoids all PTY hacking by using Kimi's built-in
@@ -412,7 +412,7 @@ replacement mechanism.
 |------|------|
 | ~~`ocaml/c2c_wire_daemon.ml`~~ | Removed — kimi-only wire daemon lifecycle |
 | ~~`c2c wire-daemon` CLI group~~ | Removed — kimi-only daemon management |
-| `c2c_kimi_wire_bridge.py` / `c2c_wire_daemon.py` | Legacy Python; still present but unused |
+| `deprecated/c2c_kimi_wire_bridge.py` / `c2c_wire_daemon.py` | Legacy Python; still present but unused |
 
 #### Limitations
 - Wire subprocess is started per delivery batch, not kept alive between polls
@@ -567,7 +567,7 @@ Recipient's inbox file
     |  +-- PostToolUse hook fires (Claude Code)
     |  +-- Notify daemon detects via inotifywait (Codex)
     |  +-- Native plugin polls and drains (OpenCode)
-    |  +-- Wire bridge drains and delivers (Kimi)
+    |  +-- Notification-store delivers via C2c_kimi_notifier (Kimi)
     |  +-- Wake daemon PTY-injects sentinel (any)
     |  +-- Agent manually calls poll_inbox (universal)
     v
@@ -589,7 +589,7 @@ Key environment variables that control delivery behavior across methods:
 | `C2C_MCP_SESSION_ID` | Auto-discovered | `c2c install` or `c2c start` | Session identifier for inbox resolution |
 | `C2C_MCP_AUTO_REGISTER_ALIAS` | Per-client default | `c2c install` | Stable alias across restarts |
 | `C2C_MCP_AUTO_JOIN_ROOMS` | `swarm-lounge` | `c2c install` | Comma-separated rooms to auto-join |
-| `C2C_MCP_AUTO_DRAIN_CHANNEL` | `0` | Manual | Enable post-initialize channel drain (requires client support) |
+| `C2C_MCP_AUTO_DRAIN_CHANNEL` | `1` (server default; `c2c install` writes `0`) | `c2c install` | Enable post-initialize channel drain (requires client support) |
 | `C2C_MCP_CHANNEL_DELIVERY` | `1` (Claude Code) | `c2c install claude` | Enable continuous inbox watcher for channel notifications |
 
 ---

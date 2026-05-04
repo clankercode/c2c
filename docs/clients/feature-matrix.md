@@ -147,15 +147,13 @@ c2c whoami
 c2c doctor delivery-mode
 
 # Check room membership
-c2c my-rooms
+c2c rooms list
 
 # Test ephemeral
 c2c send <alias> "test" --ephemeral
 
-# Test DND
-c2c set-dnd on
-c2c dnd-status
-c2c set-dnd off
+# Test DND (MCP-only — no CLI equivalent)
+# Use mcp__c2c__set_dnd / mcp__c2c__dnd_status from MCP tools
 ```
 
 For clients with unknown cells, a smoke test is:

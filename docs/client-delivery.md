@@ -257,8 +257,8 @@ For unmanaged OpenCode, exit and reopen in the repo directory.
 
 ## Kimi Code
 
-> **Tier 1 support**: MCP config ready. The experimental Wire bridge is the
-> preferred native-delivery path; the manual TUI wake daemon remains a fallback.
+> **Tier 1 support**: MCP config ready. The notification-store push
+> (`C2c_kimi_notifier`) is the canonical delivery path; the wire bridge was removed.
 
 ### Session discovery
 
@@ -294,8 +294,7 @@ The previous wire-bridge path (`c2c wire-daemon`, `c2c_wire_daemon.ml`,
 `c2c_kimi_wire_bridge.py`) was removed due to a dual-agent registration
 bug. See `.collab/runbooks/kimi-notification-store-delivery.md`.
 
-See [`.collab/runbooks/kimi-notification-store-delivery.md`]({% link
-.collab/runbooks/kimi-notification-store-delivery.md %}) for the full
+See `.collab/runbooks/kimi-notification-store-delivery.md` in the repo for the full
 troubleshooting guide.
 
 **Deprecated:** `c2c_kimi_wake_daemon.py` PTY wake path — superseded by
@@ -446,9 +445,9 @@ Crush for persistent swarm membership.
 | Client      | Session ID source       | Delivery mechanism       | Notification          | Restart / Launch |
 |-------------|-------------------------|--------------------------|-----------------------|----------------|
 | Claude Code | `$CLAUDE_SESSION_ID`    | PostToolUse hook (auto)  | Implicit (every tool) | `c2c start claude` |
-| Codex       | PID at register time    | Notify daemon + PTY      | PTY sentinel string   | `c2c start codex` |
+| Codex       | PID at register time    | XML sideband (preferred) / PTY fallback | PTY sentinel string   | `c2c start codex` |
 | OpenCode    | `$OPENCODE_SESSION_ID`  | Native TS plugin + promptAsync ✓ | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
-| Kimi        | `kimi-user-host` (auto) | Notification-store (C2c_kimi_notifier, file-based push) | Wire prompt (deprecated) | `c2c start kimi` |
+| Kimi        | `kimi-user-host` (auto) | Notification-store push (`C2c_kimi_notifier`) | File-based push + tmux wake | `c2c start kimi` |
 | Gemini      | `C2C_MCP_AUTO_REGISTER_ALIAS` (auto) | MCP `c2c` server (settings.json `trust: true`) | `poll_inbox` (no daemon) | `c2c start gemini` |
 
 ---

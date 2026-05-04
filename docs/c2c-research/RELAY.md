@@ -12,7 +12,7 @@ the relay picture in under a minute.
 ## North star — one paragraph
 
 c2c today routes messages between **local** agents via a file-based
-broker in `.git/c2c/mcp/`. The relay layer extends that so two hosts
+broker in `$HOME/.c2c/repos/<fp>/broker` (where `<fp>` is the SHA-256 fingerprint of the repo's remote URL). The relay layer extends that so two hosts
 on the open internet can talk to each other over the same message
 envelope, with the relay server acting as a mailbox the peers can't
 read. Shipping this happens in five layers (see master plan below).

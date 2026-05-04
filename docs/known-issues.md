@@ -107,9 +107,9 @@ If you launch one agent from inside another (e.g. `kimi` from a Codex session), 
 C2C_MCP_SESSION_ID=my-child-session c2c start opencode -n my-open
 ```
 
-### Do Not Set `C2C_MCP_AUTO_DRAIN_CHANNEL=1`
+### Do Not Remove the `C2C_MCP_AUTO_DRAIN_CHANNEL=0` Override
 
-The server defaults to `0` (safe). Even when set to `1`, auto-drain only works if the client declares `experimental.claude/channel` support in its `initialize` handshake — standard Claude Code does not. Setting this env var has no benefit and can cause confusion. The PostToolUse hook is the production auto-delivery path for Claude Code.
+The server default for `C2C_MCP_AUTO_DRAIN_CHANNEL` is `1` (ON) since #346. However, `c2c install` writes `C2C_MCP_AUTO_DRAIN_CHANNEL=0` into each client's MCP config to override this. Even when set to `1`, auto-drain only fires if the client declares `experimental.claude/channel` support in its `initialize` handshake — standard Claude Code does not — so in practice the drain has no effect there. Do not remove the `=0` override that install writes; the PostToolUse hook is the production auto-delivery path for Claude Code.
 
 ### Codex PTY Notify Requires `CAP_SYS_PTRACE` on Python
 

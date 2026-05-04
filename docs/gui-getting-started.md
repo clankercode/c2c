@@ -23,10 +23,8 @@ just gui-dev     # runs bun run tauri dev (hot reload)
 ```
 
 `just gui-check` runs `tsc && vite build`; `just gui-dev` gives hot reload.
-Note: `just gui-check` currently fails on `tsconfig.json` line 18
-(`TS5101: baseUrl is deprecated`). This is a pre-existing issue unrelated
-to the GUI itself. Use `just gui-dev` for development, which skips the
-broken type-check step.
+(The TS5101 `baseUrl` deprecation issue that previously broke `just gui-check`
+was fixed as of 2026-05-03 -- see Known Gaps below.)
 
 ## Launch
 

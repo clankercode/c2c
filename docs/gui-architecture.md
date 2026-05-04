@@ -88,7 +88,7 @@ message or drain event). Click a row to open a DM pane.
 
 ## Room Panel
 
-A panel listing rooms from `c2c list-rooms --json` (or equivalent). Click a
+A panel listing rooms from `c2c rooms list --json` (or equivalent). Click a
 room to open its history pane (loads `c2c room history <id> --json`), then
 live-updates from the observer feed filtering on `to_alias == room_id`.
 

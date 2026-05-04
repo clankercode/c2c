@@ -36,11 +36,8 @@ after a full run.
 ## Common setup (all clients)
 
 ```bash
-# Verify the binary is current
+# Verify the binary is current + confirm broker root is correct
 c2c doctor
-
-# Confirm broker root is correct
-c2c doctor broker-root
 
 # Check no stale sessions
 c2c list
@@ -106,17 +103,17 @@ c2c list
 - **Setup**:
   - Client running (from step 1)
 - **Action**:
-  - `c2c join-room e2e-test-room-<rand>`
-  - `c2c send-room e2e-test-room-<rand> "hello room"`
-  - `c2c room-history e2e-test-room-<rand> --limit 5`
-  - `c2c my-rooms`
-  - `c2c leave-room e2e-test-room-<rand>`
+  - `c2c rooms join e2e-test-room-<rand>`
+  - `c2c rooms send e2e-test-room-<rand> "hello room"`
+  - `c2c rooms history e2e-test-room-<rand> --limit 5`
+  - `c2c rooms list` (check membership)
+  - `c2c rooms leave e2e-test-room-<rand>`
 - **Expected**:
   - `join_room` succeeds (no error)
   - `send_room` returns delivered count > 0
   - `room_history` shows the sent message
-  - `my_rooms` lists `e2e-test-room-<rand>`
-  - `leave_room` succeeds
+  - `rooms list` shows `e2e-test-room-<rand>`
+  - `rooms leave` succeeds
 - **Failure modes**:
   - Full room tool suite not wired up → MCP error on any room tool
 - **Repro time**: ~45s
@@ -145,10 +142,10 @@ c2c list
 
 - **Setup**:
   - Client running
-  - Set DND on first: `c2c set-dnd on`
+  - Set DND on first via MCP: `mcp__c2c__set_dnd` (MCP-only, no CLI equivalent)
 - **Action**:
   - From another terminal: `c2c send <client-alias> "deferrable test" --deferrable`
-  - `c2c dnd-status` on client → should show DND on
+  - Check DND status via MCP: `mcp__c2c__dnd_status` (MCP-only)
   - `c2c poll-inbox` on client → message surfaces
 - **Expected**:
   - With DND on: message does NOT auto-deliver
@@ -165,11 +162,11 @@ c2c list
 - **Setup**:
   - Client running
 - **Action**:
-  - `c2c set-dnd on`
+  - Set DND on via MCP: `mcp__c2c__set_dnd` (MCP-only, no CLI equivalent)
   - From another terminal: `c2c send <client-alias> "DND test"`
   - Wait ~10s
   - `c2c poll-inbox` on client → should NOT auto-deliver
-  - `c2c set-dnd off`
+  - Set DND off via MCP: `mcp__c2c__set_dnd` (MCP-only)
   - Wait ~5s
   - `c2c poll-inbox` → message should now surface
 - **Expected**:
@@ -205,12 +202,12 @@ c2c list
 - **Setup**:
   - Client running (from step 1), verify `swarm-lounge` is a known room
 - **Action**:
-  - `c2c my-rooms`
+  - `c2c rooms list`
 - **Expected**:
-  - `swarm-lounge` appears in the `my_rooms` list
+  - `swarm-lounge` appears in the rooms list
   - If the client joined on first session (auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`), it should be there immediately
 - **Failure modes**:
-  - `swarm-lounge` not in `my_rooms` → `C2C_MCP_AUTO_JOIN_ROOMS` not set correctly
+  - `swarm-lounge` not in `rooms list` → `C2C_MCP_AUTO_JOIN_ROOMS` not set correctly
 - **Repro time**: ~15s
 
 ---
@@ -277,7 +274,7 @@ This is client-specific — different clients use different permission mechanism
 
 - **Setup**: Client running
 - **Action**:
-  - `c2c doctor broker-root`
+  - `c2c doctor`
   - Inspect the reported broker root path
 - **Expected**:
   - Broker root is `$HOME/.c2c/repos/<fp>/broker` (canonical default) OR matches `C2C_MCP_BROKER_ROOT` if explicitly set
