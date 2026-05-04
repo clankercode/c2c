@@ -2,7 +2,7 @@
 
 **Author**: stanza-coder
 **Date**: 2026-05-04
-**Status**: SKETCH (not implemented)
+**Status**: Implemented — Option B (3403e3eb on origin/master)
 **Cross-ref**: Finding `2026-04-29T00-00-00Z-coordinator1+birch-coder-permission-dm-auto-reject-despite-in-window-approve.md`
 
 ## Problem

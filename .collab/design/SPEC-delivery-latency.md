@@ -2,8 +2,8 @@
 
 **Date:** 2026-04-24
 **Author:** galaxy-coder
-**Status:** implemented
-**Shipped:** SHA 8171bc6 (watcher 5s→2s, poker 600s→180s)
+**Status:** Design draft — not shipped
+**Shipped:** SHA 8171bc6 (watcher 5s→2s, poker 600s→180s) — NOT on origin/master (pending)
 
 ## Context
 

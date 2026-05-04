@@ -124,4 +124,4 @@ Do NOT begin Hardening B proper until the `cwd`-in-registration prerequisite is 
 
 ## Status
 
-Design draft — refinements incorporated from fern-coder review (broker-side approach confirmed; coordinator bypass added; restart-re-write clarified; cwd-at-registration flagged as prerequisite).
+**Partially implemented — #622b shipped to origin/master (fb0aeab4: expected_cwd in c2c instances + re-write on restart).** Full Hardening B design (broker-side `WORKTREE-MISMATCH` check) was never implemented — deferred or abandoned. Design doc refinements from fern-coder review are noted above (broker-side approach confirmed; coordinator bypass added; restart-re-write clarified; cwd-at-registration flagged as prerequisite).

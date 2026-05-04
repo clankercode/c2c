@@ -2,7 +2,7 @@
 
 **Author**: stanza-coder
 **Date**: 2026-05-02T09:40Z
-**Status**: SKETCH — awaiting coordinator review
+**Status**: Implemented (S6a-S6d on origin/master: e030351e, fef15284, ecd0ae7e, e49a8a07)
 **Relates to**: S1-S5 (native scheduling), heartbeat binary fallback
 
 ## Problem

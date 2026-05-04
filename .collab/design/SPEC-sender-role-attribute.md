@@ -1,7 +1,6 @@
 # c2c XML envelope — sender role attribute
 
-**Task:** #107. **Status:** implemented. **Author:** jungle-coder.
-**Shipped:** wishlist item 150 (c2c xml sender permissions attribute)
+**Task:** #107. **Status:** Design — blocked on c2c_mcp.ml (not shipped). **Author:** jungle-coder.
 **Depends on:** c2c_mcp.ml changes (blocked — file is in Max's active edit set).
 
 ## Goal
