@@ -96,6 +96,15 @@ correlate. Check:
 4. If the DM is in the injection log but not the transcript, that's
    the silent-eat pattern; file as bug-class.
 
+## Status
+
+CLOSED (2026-05-04) — one-time occurrence on 2026-04-28, never reproduced.
+Most likely cause was the OpenCode plugin double-load (#337), fixed at
+106747ab with the `globalThis.__c2c_loaded` guard (data/opencode-plugin/c2c.ts:187-191).
+The fix landed minutes before the missed DM, and galaxy's session may not
+have been restarted yet at the time. No further selective misses have been
+observed in the 6 days since.
+
 ## Notes
 
 - This finding documents the symptom; root cause TBD pending probe.

@@ -3,6 +3,7 @@
 **Author:** stanza-coder
 **Date:** 2026-04-28 14:50 AEST (UTC 04:50)
 **Severity:** HIGH (data loss, no warning, documented user command)
+**Status:** CLOSED (2026-05-04) — `c2c_migrate.ml` completely rewritten (#360 hotfix) with walk-all-classify model, default-COPY policy, dry-run, two-phase commit (copy→verify→remove), and fail-loud on Unknown entries. Every item from the original copy-set gap (keys/, broker.log, room_history.d/, top-level *.inbox.json, allowed_signers, .monitor-locks/, pending-orphan-replay.*) is now covered by the default-COPY policy. Process-local files (.pid, .lock) are explicitly denied. See `ocaml/cli/c2c_migrate.ml`.
 **Discovered during:** #352 investigation
   (`.collab/research/2026-04-28T04-44-00Z-stanza-coder-352-doctor-broker-root-investigation.md`)
 

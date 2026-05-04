@@ -80,10 +80,12 @@ Other candidates worth ruling in/out:
 
 ## Status
 
-Open. No reproducer yet. Surfacing as a finding to capture
-the symptom + Cairn's hypothesis before the day's burn ends.
-Next investigation pass when quota cools off — likely tomorrow
-or whoever picks up the routing-debug ticket.
+CLOSED (2026-05-04) — bare-alias relay fallback (c2c_broker.ml:2066-2071)
+now routes Unknown_alias to relay outbox instead of bouncing. When a local
+alias lookup fails, the broker tries the relay path before reporting failure.
+Additionally, casefold guards (9a0cd880, e3c6aba0, b8ca6cb0) prevent the
+case-variant eviction that was one plausible root cause. The symptom has not
+been reproduced since the April 29 quota-burn window.
 
 ## Receipts
 
