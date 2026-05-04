@@ -4,8 +4,38 @@
 - **Severity**: HIGH (operator-experience defect; reviewer DM stream is unusable, real approvals get drowned)
 - **Class**: kimi-approval-hook UX / operator workflow
 - **Affected**: any kimi peer launched with the default `c2c install kimi` hook block + yolo mode
+- **Status**: FIXED (verified 2026-05-04 by willow-coder)
 
-## Symptom
+## Fix
+
+Path B was shipped. The allowlist is implemented in both the shell script
+and its OCaml embedded copy.
+
+### Commits on origin/master
+- `1a1d8ef4` — feat(#587): kimi PreToolUse hook safe-pattern allowlist
+- `7b3e29d1` — fix(#591): kimi hook git allowlist — `stash list` → `stash` + sync scripts/ mirror
+- `8fe78dae` — fix(#591): revert `stash` allowlist — bypassed destructive stash subcommands
+- `bf005083` — test(#587): add allowlist test cases to kimi hook test script
+
+### Implementation
+`scripts/c2c-kimi-approval-hook.sh` (lines 52–98): `is_safe_command()` function
+checks the first token of the shell command and exits 0 (no DM) for:
+- Read-only tools: `cat ls pwd head tail wc file stat which whereis type env printenv echo printf true false test [` plus `grep rg ag find fd tree du df free uptime date hostname whoami id ps pgrep pidof lsof jobs history column sort uniq cut paste tr sed awk jq yq xq tomlq`
+- Read-only git subcommands: `status log diff show branch tag remote config rev-parse rev-list describe blame reflog ls-files ls-tree fetch shortlog count status -h --help`
+- All other commands fall through to the reviewer DM flow.
+
+`ocaml/cli/c2c_kimi_hook.ml` (mirrored `is_safe_command()` at lines 115–159):
+same allowlist embedded in the string passed to `c2c install kimi`.
+
+### Test
+`scripts/test-c2c-kimi-approval-hook.sh`: test cases for `cat`, `ls`, `git status`
+(all exit 0, no DM sent) and `rm`, `git push` (forward to reviewer).
+
+## Verification 2026-05-04
+Confirmed both files contain the allowlist block matching the finding's Path B
+recommendation. Test script exists and covers the allowlist cases.
+
+## Original Symptom
 
 While dogfooding kimi peers (lumi-test, tyyni-test) with `c2c start kimi`,
 coord receives a `[kimi-approval] PreToolUse:` DM **for every single Shell
