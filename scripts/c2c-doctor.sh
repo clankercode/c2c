@@ -439,7 +439,13 @@ fi
 if [[ $SUMMARY -eq 0 && $JSON -eq 0 && -x "$SCRIPT_DIR/c2c-dup-scanner.py" ]]; then
   bold "=== duplication scan ==="
   echo ""
-  "$SCRIPT_DIR/c2c-dup-scanner.py" --repo "$PWD" --full --warn-only || true
+  timeout 30 "$SCRIPT_DIR/c2c-dup-scanner.py" --repo "$PWD" --full --warn-only || {
+    rc=$?
+    if [[ $rc -eq 124 ]]; then
+      echo "warning: duplication scan timed out (30s) — skipped"
+    fi
+    true
+  }
   echo ""
 fi
 
