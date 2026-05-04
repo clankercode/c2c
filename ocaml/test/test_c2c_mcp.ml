@@ -895,7 +895,77 @@ let test_list_alive_only_filters_dead () =
              registrations have pid=None → liveness=Unknown (per-AC: Unknown
              means "pre-S1 legacy row or check cannot complete"). Unknown ≠
              Alive, so both are filtered and 0 registrations are returned. *)
-          check int "alive_only=true: 0 (Unknown filtered, per-AC)" 0 (List.length regs'))
+           check int "alive_only=true: 0 (Unknown filtered, per-AC)" 0 (List.length regs'))
+
+let test_list_alive_only_mixed () =
+  (* Test alive_only with mixed liveness states:
+     - session-alive: live PID + correct pid_start_time → liveness=Alive
+     - session-unknown: pid=None → liveness=Unknown
+     alive_only=true should return 1 (Alive only).
+     alive_only=false should return 2 (both). *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* session-alive: live PID with matching start time → Alive *)
+      let live_pid = Unix.getpid () in
+      let pid_start_time = C2c_mcp.Broker.capture_pid_start_time (Some live_pid) in
+      C2c_mcp.Broker.register broker ~session_id:"session-alive"
+        ~alias:"willow-alive" ~pid:(Some live_pid) ~pid_start_time ();
+      (* session-unknown: pid=None → Unknown *)
+      C2c_mcp.Broker.register broker ~session_id:"session-unknown"
+        ~alias:"willow-unknown" ~pid:None ~pid_start_time:None ();
+
+      (* alive_only=false: both registrations returned *)
+      let request_no_filter =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 9010)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "list")
+                ; ("arguments", `Assoc [ ("alive_only", `Bool false) ]) ] )
+          ]
+      in
+      let resp = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request_no_filter) in
+      match resp with
+      | None -> fail "expected list response with alive_only=false"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let text = json |> member "result" |> member "content" |> to_list |> List.hd
+                   |> member "text" |> to_string in
+          let arr = Yojson.Safe.from_string text in
+          let regs' = match arr with `List l -> l | _ -> fail "expected list" in
+          check int "alive_only=false: 2 registrations (Alive+Unknown)" 2 (List.length regs');
+
+      (* alive_only=true: only Alive registration returned *)
+      let request_alive_only =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 9011)
+          ; ("method", `String "tools/call")
+          ; ( "params",
+              `Assoc
+                [ ("name", `String "list")
+                ; ("arguments", `Assoc [ ("alive_only", `Bool true) ]) ] )
+          ]
+      in
+      let resp2 = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request_alive_only) in
+      match resp2 with
+      | None -> fail "expected list response with alive_only=true"
+      | Some json ->
+          let open Yojson.Safe.Util in
+          let text = json |> member "result" |> member "content" |> to_list |> List.hd
+                   |> member "text" |> to_string in
+          let arr = Yojson.Safe.from_string text in
+          let regs' = match arr with `List l -> l | _ -> fail "expected list" in
+          (* session-alive is Alive; session-unknown is Unknown → filtered *)
+          check int "alive_only=true: 1 (Alive only, Unknown filtered)" 1 (List.length regs');
+          (* verify the returned registration is indeed session-alive/willow-alive *)
+          let aliases = regs' |> List.map (fun r ->
+            let open Yojson.Safe.Util in
+            r |> member "alias" |> to_string) in
+          check bool "alive returned is willow-alive" true
+            (List.mem "willow-alive" aliases))
 
 let test_tools_list_includes_debug_when_build_flag_enabled () =
   with_temp_dir (fun dir ->
@@ -13016,6 +13086,8 @@ let () =
               test_tools_list_marks_register_and_whoami_session_id_as_optional
            ; test_case "list alive_only=true includes Unknown-pid sessions" `Quick
                test_list_alive_only_filters_dead
+           ; test_case "list alive_only filters mixed Alive+Unknown correctly" `Quick
+               test_list_alive_only_mixed
            ; test_case "tools/list schema types: send.deferrable+ephemeral bool, set_dnd.on bool, set_dnd.until_epoch number" `Quick
                test_send_and_set_dnd_schema_types_are_correct
           ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
