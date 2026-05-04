@@ -81,14 +81,21 @@ let pty_deliver_loop_daemon
          let messages =
            C2c_mcp.Broker.drain_inbox ~drained_by:"pty" broker ~session_id
          in
-         List.iter
-           (fun (msg : C2c_mcp.message) ->
-              pty_inject ~master_fd msg.content;
-              Printf.printf "[c2c-deliver-inbox] PTY: injected from %s: %s\n%!"
-                msg.from_alias
-                (String.sub msg.content 0
-                   (min (String.length msg.content) 80)))
-           messages;
+          List.iter
+            (fun (msg : C2c_mcp.message) ->
+               (* Race 3 fix (#623): per-message error isolation — one failed
+                  pty_inject must not abort remaining messages in the batch.
+                  Log and continue so subsequent messages are still delivered. *)
+               (try pty_inject ~master_fd msg.content
+                with e ->
+                  let id = Option.value msg.message_id ~default:msg.from_alias in
+                  Printf.eprintf "[c2c-deliver-inbox] warning: pty_inject failed for message %s: %s\n%!"
+                    id (Printexc.to_string e));
+               Printf.printf "[c2c-deliver-inbox] PTY: injected from %s: %s\n%!"
+                 msg.from_alias
+                 (String.sub msg.content 0
+                    (min (String.length msg.content) 80)))
+            messages;
          total_delivered := !total_delivered + List.length messages;
          (if List.length messages > 0 then
             Printf.printf "[c2c-deliver-inbox] PTY: iteration %d: %d message(s)\n%!"
