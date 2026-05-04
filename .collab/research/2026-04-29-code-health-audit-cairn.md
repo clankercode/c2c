@@ -13,7 +13,7 @@ Top finding (one-liner): **128-word `alias_words` array is duplicated verbatim i
 
 ---
 
-## 1. `alias_words` array duplicated verbatim — HIGH / XS
+## 1. `alias_words` array duplicated verbatim — HIGH / XS — **DONE c38ced30**
 
 - **Refs**: `ocaml/c2c_start.ml:1791`, `ocaml/cli/c2c_setup.ml:168`
 - **Problem**: The 128-element pool is copy-pasted into both files. CLAUDE.md
@@ -28,7 +28,7 @@ Top finding (one-liner): **128-word `alias_words` array is duplicated verbatim i
 - **Severity**: HIGH (correctness drift, called out in CLAUDE.md).
 - **Slice**: XS.
 
-## 2. `mkdir_p` defined ~10 times across the tree — MED / S
+## 2. `mkdir_p` defined ~10 times across the tree — MED / S — **DONE a84f37b8** (cherry-pick 0c6e8c1b)
 
 - **Refs**: `ocaml/c2c_io.ml:23` (canonical), `ocaml/c2c_mcp.ml:89`
   (separate impl despite #396 dedup note above it!), `ocaml/c2c_mcp.ml:298`
@@ -121,7 +121,7 @@ Top finding (one-liner): **128-word `alias_words` array is duplicated verbatim i
 - **Slice**: S–M depending on appetite (start by extracting one
   shared scaffolding helper).
 
-## 7. Ad-hoc `Unix.gmtime` ISO-8601 formatting scattered ~20 sites — LOW / XS
+## 7. Ad-hoc `Unix.gmtime` ISO-8601 formatting scattered ~20 sites — LOW / XS — **IN PROGRESS (fern)
 
 - **Refs**: `ocaml/Banner.ml:34`, `ocaml/relay_signed_ops.ml:13`,
   `ocaml/c2c_mcp.ml:371`, `ocaml/c2c_mcp.ml:814`,
@@ -141,7 +141,7 @@ Top finding (one-liner): **128-word `alias_words` array is duplicated verbatim i
 - **Severity**: LOW (cosmetic/correctness on edge cases).
 - **Slice**: XS.
 
-## 8. `read_file` / `write_file` defined ad-hoc in ≥5 modules — LOW / XS
+## 8. `read_file` / `write_file` defined ad-hoc in ≥5 modules — LOW / XS — **DONE 24b5f7b5**
 
 - **Refs**: `ocaml/cli/c2c_memory.ml:70`,`:79`;
   `ocaml/cli/c2c.ml:3535`, `:7594`; `ocaml/c2c_mcp.ml:5802`;
@@ -158,7 +158,7 @@ Top finding (one-liner): **128-word `alias_words` array is duplicated verbatim i
 - **Severity**: LOW.
 - **Slice**: XS.
 
-## 9. `c2c_agent.ml` ships TODO placeholders into generated agent role files — LOW / XS
+## 9. `c2c_agent.ml` ships TODO placeholders into generated agent role files — LOW / XS — **DONE d9367fc9**
 
 - **Refs**: `ocaml/cli/c2c_agent.ml:252` ("TODO: describe this agent's
   purpose"), `:292`–`:293` ("TODO: list primary responsibilities" /
@@ -175,7 +175,7 @@ Top finding (one-liner): **128-word `alias_words` array is duplicated verbatim i
 - **Severity**: LOW.
 - **Slice**: XS.
 
-## 10. `c2c_mcp.ml` has both `string_member` (3666) and `string_member_any` (3693), `c2c_start.ml` has its own `string_member` (2858) — LOW / XS
+## 10. `c2c_mcp.ml` has both `string_member` (3666) and `string_member_any` (3693), `c2c_start.ml` has its own `string_member` (2858) — LOW / XS — **DONE 319f301c** (cherry-pick eecc2454)
 
 - **Refs**: `ocaml/c2c_mcp.ml:3666`, `:3693`; `ocaml/c2c_start.ml:2858`.
 - **Problem**: Tiny JSON helpers re-defined per file; `Yojson.Safe.Util`
@@ -226,11 +226,12 @@ Top finding (one-liner): **128-word `alias_words` array is duplicated verbatim i
 
 ## Suggested pickup order for the swarm
 
-1. #1 (alias_words) — XS, HIGH, kills CLAUDE.md drift hazard.
-2. #2 (mkdir_p dedup round 2) — S, MED, finishes #396.
-3. #7 (iso8601 helper) — XS, mechanical, sets up cleaner diffs.
-4. #8 (read_file/write_file) — XS, similar shape.
-5. #10 (json_util) — XS, prerequisite for #4 and #6 cleanups.
-6. #6 (per-client setup scaffolding) — S, then #4 and #5 in parallel.
-7. #3 and #11 (Broker / Relay splits) — M each, last because they
+1. ~~#1 (alias_words)~~ — ✅ DONE c38ced30.
+2. ~~#2 (mkdir_p dedup round 2)~~ — ✅ DONE a84f37b8/0c6e8c1b.
+3. ~~#7 (iso8601 helper)~~ — 🔄 IN PROGRESS (fern).
+4. ~~#8 (read_file/write_file)~~ — ✅ DONE 24b5f7b5.
+5. ~~#10 (json_util)~~ — ✅ DONE 319f301c/eecc2454.
+6. ~~#9 (c2c_agent TODO placeholders)~~ — ✅ DONE d9367fc9.
+7. #6 (per-client setup scaffolding) — S–M, hold for Max's go/no-go on M-sized refactors.
+8. #3 and #11 (Broker / Relay splits) — M each, last because they
    conflict-magnet during cherry-pick season.
