@@ -95,6 +95,35 @@ services:
       C2C_IN_DOCKER: "1"
     command: ["sh", "-c", "echo 'kimi test env ready; run tests manually' && sleep 3600"]
 
+  # Claude integration test environment.
+  # Claude binary may not be in PATH inside container — tests skip gracefully.
+  test-claude:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: c2c-test-claude
+    volumes:
+      - c2c-test-broker:/var/lib/c2c
+      - c2c-test-home:/home/testagent
+    networks:
+      - c2c-test-net
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          pids: 100
+        reservations:
+          memory: 256m
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      C2C_MCP_BROKER_ROOT: /var/lib/c2c
+      C2C_RELAY_CONNECTOR_BACKEND: ""
+      C2C_IN_DOCKER: "1"
+    command: ["sh", "-c", "echo 'claude test env ready; run tests manually' && sleep 3600"]
+
 networks:
   c2c-test-net:
     driver: bridge
