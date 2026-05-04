@@ -4941,6 +4941,7 @@ module Relay_client : sig
   val device_pair_init : t -> machine_ed25519_pubkey:string -> Yojson.Safe.t Lwt.t
   val device_pair_poll : t -> user_code:string -> Yojson.Safe.t Lwt.t
   val gc : t -> Yojson.Safe.t Lwt.t
+  val dead_letter : t -> Yojson.Safe.t Lwt.t
 end = struct
 
   type t = {
@@ -5262,5 +5263,7 @@ end = struct
     request t ~meth:`GET ~path:("/device-pair/" ^ user_code) ()
 
   let gc t = post t "/gc" (`Assoc [])
+
+  let dead_letter t = get t "/dead_letter"
 
 end

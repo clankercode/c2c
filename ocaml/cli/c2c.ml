@@ -5005,6 +5005,84 @@ let relay_gc_cmd =
         Lwt_main.run (loop ())
       end
 
+let relay_dead_letter_cmd =
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
+  in
+  let json_flag =
+    Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Output raw JSON.")
+  in
+  let limit =
+    Cmdliner.Arg.(value & opt int 50 & info [ "limit"; "l" ] ~docv:"N" ~doc:"Max entries to display.")
+  in
+  let purge_flag =
+    Cmdliner.Arg.(value & flag & info [ "purge" ] ~doc:"Delete all dead-letter entries after display (not yet implemented — reserved).")
+  in
+  let+ relay_url = relay_url
+  and+ token = token
+  and+ json_out = json_flag
+  and+ limit = limit
+  and+ _purge = purge_flag in
+  match resolve_relay_url relay_url with
+  | None ->
+      Printf.eprintf "%s%!" relay_url_required_error;
+      exit 1
+  | Some url ->
+      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      let result = Lwt_main.run (Relay.Relay_client.dead_letter client) in
+      let entries = match result with
+        | `Assoc fields ->
+            (match List.assoc_opt "dead_letter" fields with
+             | Some (`List l) -> l
+             | _ -> [])
+        | _ -> []
+      in
+      let n = List.length entries in
+      let entries =
+        if n <= limit then entries
+        else
+          let drop = n - limit in
+          let rec skip i = function
+            | [] -> []
+            | _ :: rest when i > 0 -> skip (i - 1) rest
+            | lst -> lst
+          in
+          skip drop entries
+      in
+      if json_out then
+        print_endline (Yojson.Safe.to_string (`List entries))
+      else if entries = [] then
+        Printf.printf "(no dead-letter entries on relay)\n"
+      else begin
+        Printf.printf "Relay dead-letter (%d entries%s):\n\n"
+          (List.length entries)
+          (if n > limit then Printf.sprintf ", showing last %d of %d" limit n else "");
+        List.iter (fun entry ->
+          let open Yojson.Safe.Util in
+          let from_a = try to_string (member "from_alias" entry) with _ -> "?" in
+          let to_a = try to_string (member "to_alias" entry) with _ -> "?" in
+          let reason = try to_string (member "reason" entry) with _ -> "?" in
+          let ts = try to_number (member "ts" entry) with _ -> 0.0 in
+          let msg_id = try to_string (member "message_id" entry) with _ -> "" in
+          let content = try to_string (member "content" entry) with _ -> "" in
+          let content_preview =
+            if String.length content <= 80 then content
+            else String.sub content 0 77 ^ "..."
+          in
+          let ts_str =
+            let t = Unix.gmtime ts in
+            Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+              (t.tm_year + 1900) (t.tm_mon + 1) t.tm_mday
+              t.tm_hour t.tm_min t.tm_sec
+          in
+          Printf.printf "  [%s] %s → %s\n    reason: %s | id: %s\n    %s\n\n"
+            ts_str from_a to_a reason msg_id content_preview)
+          entries
+      end
+
 (* c2c relay poll-inbox — poll a remote relay's /remote_inbox/<session_id> endpoint.
    Used by a remote node to receive messages ferried through the relay from a remote broker. *)
 let relay_poll_inbox_cmd =
@@ -5198,6 +5276,7 @@ let relay_status = Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show relay h
 let relay_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List relay peers.") relay_list_cmd
 let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay rooms.") relay_rooms_cmd
  let relay_gc = Cmdliner.Cmd.v (Cmdliner.Cmd.info "gc" ~doc:"Run relay garbage collection.") relay_gc_cmd
+ let relay_dead_letter = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dead-letter" ~doc:"Show relay dead-letter entries.") relay_dead_letter_cmd
  let relay_poll_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "poll-inbox" ~doc:"Poll a remote relay's /remote_inbox/<session_id> endpoint.") relay_poll_inbox_cmd
  let relay_register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register Ed25519 identity on the relay.") relay_register_cmd
  let relay_dm = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dm" ~doc:"Send or receive cross-host direct messages.") relay_dm_cmd
@@ -5207,12 +5286,12 @@ let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay r
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
     (Cmdliner.Cmd.info "relay"
-       ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, identity, register, dm, mobile-pair."
+       ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, dead-letter, identity, register, dm, mobile-pair."
        ~man:[ `S "DESCRIPTION"
             ; `P "The relay connects brokers across machines. Use $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
             ; `P "Common workflow: run $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
             ])
-    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair ]
+    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair ]
 
 (* --- mesh ------------------------------------------------------------------- *)
 
