@@ -359,24 +359,32 @@ let test_list_output_contains_peer_entries () =
 (* ------------------------------------------------------------------------- *)
 
 let test_send_missing_args_exits_nonzero () =
-  let cmd = "C2C_CLI_FORCE=1 C2C_SEND_MESSAGE_FIXTURE=1 c2c send > /dev/null 2>&1" in
+  (* Missing required ALIAS and MSG args => exits non-zero.
+     Cmdliner rejects missing positional args before touching the broker. *)
+  let cmd = "C2C_CLI_FORCE=1 c2c send > /dev/null 2>&1" in
   let rc = Sys.command cmd in
-  (* Missing required ALIAS and MSG args => exits non-zero *)
   check bool "c2c send with no args exits non-zero" true (rc <> 0)
 
-let test_send_unknown_alias_reports_error () =
-  let tmpfile = Filename.temp_file "c2c-send" ".out" in
-  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
-    (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "C2C_CLI_FORCE=1 C2C_SEND_MESSAGE_FIXTURE=1 c2c send nonexistent-test-alias 'hello' > %s 2>&1"
-        tmpfile));
-      let ch = open_in tmpfile in
-      let content = Fun.protect ~finally:(fun () -> close_in ch)
-        (fun () -> really_input_string ch (in_channel_length ch))
-      in
-      check bool "send to unknown alias reports error" true
-        (string_contains content "unknown alias" || string_contains content "error"))
+let test_send_unknown_alias_routes_to_relay_outbox () =
+  with_temp_dir (fun dir ->
+      (* Use a temp broker root with no registrations so the alias is
+         guaranteed unknown locally. With relay fallback, unknown aliases
+         are queued to remote-outbox.jsonl for cross-host delivery rather
+         than erroring. C2C_SEND_MESSAGE_FIXTURE was never checked by the
+         OCaml binary; the old test hit the real broker and was flaky. *)
+      let outfile = Filename.temp_file "c2c-send" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=cli-test-send \
+             c2c send nonexistent-test-alias 'hello' > %s 2>&1"
+            (Filename.quote dir) outfile
+          in
+          let rc = Sys.command cmd in
+          check int "send to unknown alias exits 0 (relay fallback)" 0 rc;
+          let outbox_path = Filename.concat dir "remote-outbox.jsonl" in
+          check bool "outbox file created for unknown alias" true
+            (Sys.file_exists outbox_path)))
 
 (* ------------------------------------------------------------------------- *)
 (* c2c whoami — verify alias display                                        *)
@@ -1418,7 +1426,7 @@ let () =
         ] )
     ; ( "send",
         [ ( "send missing args exits non-zero", `Quick, test_send_missing_args_exits_nonzero )
-        ; ( "send unknown alias reports error", `Quick, test_send_unknown_alias_reports_error )
+        ; ( "send unknown alias routes to relay outbox", `Quick, test_send_unknown_alias_routes_to_relay_outbox )
         ] )
     ; ( "whoami",
         [ ( "whoami exits 0", `Quick, test_whoami_exits_zero )
