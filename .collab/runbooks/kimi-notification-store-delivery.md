@@ -277,12 +277,56 @@ Root-cause finding: `36e9dfd7` (stale env propagation into c2c-kimi-notif during
 
 - Module: `ocaml/c2c_kimi_notifier.ml` + `.mli`
 - Tests: `ocaml/test/test_c2c_kimi_notifier.ml`
-- Wire-up: `ocaml/c2c_start.ml` — kimi-notifier branch right after the
-  (no-longer-firing-for-kimi) `start_wire_daemon` call site
 - Probe research: `.collab/research/2026-04-29T10-27-00Z-stanza-coder-
   kimi-notification-store-push-validated.md`
 - Root-cause finding: `.collab/findings/2026-04-29T10-04-00Z-stanza-
   coder-c2c-start-kimi-spawns-double-process.md`
+
+## Safe-pattern allowlist (#587, #142 Path B)
+
+The kimi PreToolUse approval hook (`c2c-kimi-approval-hook.sh`) filters
+read-only commands before forwarding to a reviewer. Safe commands exit 0
+immediately without a DM round-trip; everything else triggers a
+reviewer DM and awaits a verdict.
+
+**Why**: Without the allowlist, every `Shell` tool call fires the hook
+and floods the reviewer with DMs — even completely benign commands like
+`cat`, `ls`, `git status`. The allowlist makes the hook cheap for the
+common 90% case.
+
+**Policy** (embedded in `scripts/c2c-kimi-approval-hook.sh`):
+
+```bash
+# Safe commands — exit 0 immediately, no DM
+case "$first" in
+  cat|ls|pwd|head|tail|wc|file|stat|which|whereis|type|env|printenv|\
+  echo|printf|true|false|test|\[)
+    return 0 ;;
+  grep|rg|ag|find|fd|tree|du|df|free|uptime|date|hostname|whoami|id|\
+  ps|pgrep|pidof|lsof|jobs|history|column|sort|uniq|cut|paste|tr|sed|awk|\
+  jq|yq|xq|tomlq)
+    return 0 ;;
+  git)
+    # Only read-only git subcommands
+    case "$sub" in
+      status|log|diff|show|branch|tag|remote|config|rev-parse|\
+      rev-list|describe|blame|reflog|ls-files|ls-tree|fetch|\
+      shortlog|count|status|-h|--help)
+        return 0 ;;
+    esac ;;
+esac
+# Unsafe → falls through to reviewer DM path
+```
+
+**Test coverage**: `scripts/test-c2c-kimi-approval-hook.sh` has 14 test
+cases covering all major safe commands (`cat`, `ls`, `grep`, `git status`,
+`git log`, `pwd`) and unsafe commands that must forward (`rm`, `git push`,
+`curl|bash`).
+
+**Key files**:
+- `scripts/c2c-kimi-approval-hook.sh` — live script (source of truth)
+- `ocaml/cli/c2c_kimi_hook.ml` — embedded copy, deployed by `c2c install kimi`
+- `scripts/test-c2c-kimi-approval-hook.sh` — shell-level unit tests
 
 ## See also
 
