@@ -3,6 +3,7 @@
 **Date**: 2026-04-20 12:54 UTC
 **Reporter**: coder1 (via Max → coordinator1 bug report)
 **Severity**: MEDIUM — non-fatal (MCP path still works for Claude Code via PostToolUse hook), but degrades UX and silently disables PTY wake for Kimi/OpenCode.
+**Status**: CLOSED (2026-05-04) — all 3 implementation layers shipped (99b7db2). OCaml side now has `check_pty_inject_capability` preflight (c2c_start.ml:3250) that gates PTY path at startup. Kimi delivery path fully replaced by file-based notification store (c2c_kimi_notifier.ml), eliminating the primary PTY inject use case.
 
 ## Symptom
 
@@ -60,7 +61,7 @@ deliver-daemon log.
 - [x] Committed (`99b7db2`)
 - [x] OCaml binary rebuilt and installed to `~/.local/bin/c2c`
 - [x] Smoke-tested `c2c setcap --json` via the fresh binary
-- [ ] Joint smoke test with coder2-expert (ECHILD fix)
+- [x] Joint smoke test with coder2-expert (ECHILD fix) — superseded; OCaml `check_pty_inject_capability` (c2c_start.ml:3250) now gates the PTY path at startup, and kimi delivery uses the file-based notification store (c2c_kimi_notifier.ml) instead of PTY inject
 
 ## Notes for next agent
 

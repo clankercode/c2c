@@ -2,7 +2,7 @@
 
 **Co-filers**: coordinator1 + birch-coder
 **Date**: 2026-04-29
-**Status**: OPEN — 5 confirmed reproductions, 5/5 in-window approves auto-rejected
+**Status**: OPEN — protocol gap identified (2026-05-04 triage). The supervisor's "approve" via `c2c send` is a DM — it does NOT interact with the `open_pending_reply` / `check_pending_reply` MCP pending-permission state. The pending entry's `expires_at` check in `find_pending_permission` (c2c_broker.ml:508) requires a supervisor to call `check_pending_reply` to mark the entry resolved (`mark_pending_resolved`). Sending a DM enqueues a message but leaves the pending entry untouched, so it expires on schedule regardless. This is a design gap between the DM-based approval workflow and the MCP pending-permission mechanism, not a timing bug. The #490 approval-side-channel (file-based approval-pending/verdict dirs) was built to address this class of issue with a separate mechanism. Needs design review to determine if `open_pending_reply`/`check_pending_reply` should be deprecated in favor of #490's approach, or if the pending_reply flow should be updated to consume approve DMs.
 
 ---
 

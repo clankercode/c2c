@@ -21,4 +21,10 @@ Pattern is real, not noise. Coordinator filing as HIGH-severity routing bug task
 Broker's inbox-write path may have an alias-substitution vulnerability — possibly when to_alias resolution falls back via canonical-alias matching against an indexed prefix, OR when channel notification fan-out duplicates to an unintended recipient.
 
 ## Status
-Reported to coordinator1. Confirmed as HIGH-severity. Awaiting task assignment for root-cause investigation.
+MITIGATED (2026-05-04) — not reproduced since April 30. Multiple mitigations now in place:
+1. Case-insensitive alias resolution (c2c_broker.ml:1459, `alias_casefold`) prevents asymmetric eviction that was one plausible root cause
+2. Multi-alive-count detection (c2c_broker.ml:1467-1472) logs when duplicate alive registrations exist for the same alias — the smoking gun for this bug class
+3. Per-DM dm_enqueue trace logging (c2c_broker.ml:2110-2122) records to_alias + resolved_session_id + inbox_path unconditionally, providing diagnostic data if this recurs
+4. Casefold guards (9a0cd880, e3c6aba0, b8ca6cb0) on register-time eviction
+
+Root cause was never definitively identified — could have been a transient multi-registration race during high-load (10+ subagents during quota-burn). If reproduced, the dm_enqueue trace will reveal whether the session_id resolution was wrong or the inbox_path was wrong.
