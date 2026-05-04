@@ -11584,6 +11584,7 @@ let h2_response_is_error response =
 
 let test_peer_pass_dm_with_invalid_signature_rejected () =
   with_temp_dir (fun dir ->
+      Git_helpers.reset_git_circuit_breaker ();
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"h2-sender" ~alias:"h2-sender-alias"
         ~pid:None ~pid_start_time:None ();
@@ -11634,6 +11635,7 @@ let test_peer_pass_dm_with_invalid_signature_rejected () =
 
 let test_peer_pass_dm_with_valid_signature_accepted () =
   with_temp_dir (fun dir ->
+      Git_helpers.reset_git_circuit_breaker ();
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"h2v-sender" ~alias:"h2v-sender-alias"
         ~pid:None ~pid_start_time:None ();
