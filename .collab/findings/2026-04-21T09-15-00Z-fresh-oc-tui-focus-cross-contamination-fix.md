@@ -2,7 +2,7 @@
 
 **Date**: 2026-04-21  
 **Severity**: HIGH — causes wrong session to be driven; TUI stuck on "New session" or showing another peer's session  
-**Status**: FIXED in 7b063ac
+**Status**: FIXED — code change present in current master (lines 856-857 of `.opencode/plugins/c2c.ts`); original fix SHA `7b063ac3` was on a topic branch but the same change landed via a different path.
 
 ## Symptom
 
