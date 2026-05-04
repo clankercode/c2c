@@ -561,6 +561,12 @@ module Broker : sig
       [with_pending_lock]. First-writer-wins: a later call with a smaller
       ts is dropped. *)
 
+  val parse_pending_verdict : string -> (string * [`Approve | `Deny]) option
+  (** [parse_pending_verdict content] scans [content] for a
+      [[c2c:pending-verdict:<perm_id>:<approve|deny>]] tag. Returns
+      [Some (perm_id, verdict)] on the first match, [None] otherwise.
+      Empty perm_id or unknown verdict string yields [None]. *)
+
   val mark_pending_fallthrough_fired :
        t
     -> perm_id:string

@@ -2,7 +2,7 @@
 
 **Co-filers**: coordinator1 + birch-coder
 **Date**: 2026-04-29
-**Status**: OPEN — protocol gap identified (2026-05-04 triage). The supervisor's "approve" via `c2c send` is a DM — it does NOT interact with the `open_pending_reply` / `check_pending_reply` MCP pending-permission state. The pending entry's `expires_at` check in `find_pending_permission` (c2c_broker.ml:508) requires a supervisor to call `check_pending_reply` to mark the entry resolved (`mark_pending_resolved`). Sending a DM enqueues a message but leaves the pending entry untouched, so it expires on schedule regardless. This is a design gap between the DM-based approval workflow and the MCP pending-permission mechanism, not a timing bug. The #490 approval-side-channel (file-based approval-pending/verdict dirs) was built to address this class of issue with a separate mechanism. Needs design review to determine if `open_pending_reply`/`check_pending_reply` should be deprecated in favor of #490's approach, or if the pending_reply flow should be updated to consume approve DMs.
+**Status**: FIXED (2026-05-04). The `enqueue_message` function in `c2c_broker.ml` now intercepts DMs containing a `[c2c:pending-verdict:<perm_id>:<approve|deny>]` pattern as a side-effect after inbox delivery. When the sender is in the pending entry's `supervisors` list (case-insensitive match), the entry is resolved via `mark_pending_resolved`. This bridges the gap between the DM-based approval workflow and the MCP pending-permission mechanism: a supervisor can now approve/deny via a regular `c2c send` DM containing the verdict tag, and the pending entry will be marked resolved automatically. The DM is still delivered normally to the recipient's inbox. Added `parse_pending_verdict` helper and unit tests in `test_pending_verdict.ml`.
 
 ---
 
@@ -46,11 +46,7 @@ High — permission system is unreliable for any time-sensitive operations. Asyn
 
 ## Status
 
-Open. Needs investigation:
-- Broker permission grant TTL logic (where exactly does the deadline check happen?)
-- Clock-sync between broker instances
-- Approve-once consumption race condition
-- Whether `drain_inbox` ordering vs `check_pending_reply` ordering matters
+Fixed. The broker now parses `[c2c:pending-verdict:<perm_id>:<approve|deny>]` tags in DM bodies during `enqueue_message` and resolves the corresponding pending entry when the sender is an authorized supervisor.
 
 ## Related
 

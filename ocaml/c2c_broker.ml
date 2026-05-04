@@ -597,6 +597,43 @@ open C2c_mcp_helpers
       if !changed then save_pending_permissions t updated;
       !changed)
 
+  (** Parse a pending-verdict pattern from a message body.
+      Pattern: [[c2c:pending-verdict:<perm_id>:<approve|deny>]]
+      Returns [Some (perm_id, verdict)] on the first match, [None] otherwise.
+      Empty perm_id or unknown verdict → [None]. *)
+  let parse_pending_verdict content =
+    let prefix = "[c2c:pending-verdict:" in
+    let prefix_len = String.length prefix in
+    match String.index_opt content '[' with
+    | None -> None
+    | Some _ ->
+      (* Scan for the prefix substring anywhere in content *)
+      let content_len = String.length content in
+      let rec scan i =
+        if i + prefix_len > content_len then None
+        else if String.sub content i prefix_len = prefix then
+          (* Found prefix at position i; find the closing ']' *)
+          (match String.index_from_opt content (i + prefix_len) ']' with
+           | None -> None
+           | Some close_pos ->
+             let inner = String.sub content (i + prefix_len)
+                           (close_pos - i - prefix_len) in
+             (* inner should be "perm_id:verdict" *)
+             (match String.index_opt inner ':' with
+              | None -> None
+              | Some colon ->
+                let perm_id = String.sub inner 0 colon in
+                let verdict_str = String.sub inner (colon + 1)
+                                    (String.length inner - colon - 1) in
+                if perm_id = "" then None
+                else match verdict_str with
+                  | "approve" -> Some (perm_id, `Approve)
+                  | "deny" -> Some (perm_id, `Deny)
+                  | _ -> None))
+        else scan (i + 1)
+      in
+      scan 0
+
   (* [#432 Slice E] In-memory relay-e2e TOFU pins were process-local —
      every broker restart silently downgraded x25519/ed25519
      first-seen-wins to "first-seen-this-process". Persisted to disk at
@@ -2121,7 +2158,25 @@ open C2c_mcp_helpers
                   in
                   log_broker_event ~broker_root "dm_enqueue" fields
                 with _ -> ());
-                save_inbox t ~session_id next))
+                save_inbox t ~session_id next);
+            (* Pending-verdict DM interception: if the message body contains
+               [c2c:pending-verdict:<perm_id>:<approve|deny>] and the sender is
+               in the entry's supervisors list, resolve the pending entry. The DM
+               is already delivered above — this is a pure side-effect. *)
+            (try
+              match parse_pending_verdict content with
+              | Some (perm_id, _verdict) ->
+                  (match find_pending_permission t perm_id with
+                   | Some pending when List.mem (alias_casefold from_alias)
+                                        (List.map alias_casefold pending.supervisors) ->
+                       let _changed = mark_pending_resolved t ~perm_id ~ts:(Unix.gettimeofday ()) in
+                       if debug_enabled then
+                         Printf.eprintf "[pending-verdict] resolved perm_id=%s by %s\n%!" perm_id from_alias
+                   | _ ->
+                       if debug_enabled then
+                         Printf.eprintf "[pending-verdict] perm_id not found or sender not supervisor\n%!")
+              | None -> ()
+            with _ -> ()))
 
   type send_all_result =
     { sent_to : string list

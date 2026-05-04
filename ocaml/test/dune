@@ -197,3 +197,8 @@
  (name test_c2c_schedule_fire)
  (modules test_c2c_schedule_fire)
  (libraries c2c_mcp alcotest unix))
+
+(test
+ (name test_pending_verdict)
+ (modules test_pending_verdict)
+ (libraries c2c_mcp alcotest unix))
