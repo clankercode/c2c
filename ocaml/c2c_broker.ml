@@ -2063,7 +2063,13 @@ open C2c_mcp_helpers
     else
     with_registry_lock t (fun () ->
         match resolve_live_session_id_by_alias t to_alias with
-        | Unknown_alias -> invalid_arg ("unknown alias: " ^ to_alias)
+        | Unknown_alias ->
+            (* Bare alias not found locally — try relay outbox.
+               This handles cross-host delivery where the recipient's broker is
+               registered with the relay but not in the local registry.
+               Ephemeral semantics over relay are not wired in v1 (see remote-alias
+               path comment above), so [ephemeral] is ignored here. *)
+            C2c_relay_connector.append_outbox_entry t.root ~from_alias ~to_alias ~content ()
         | All_recipients_dead ->
             invalid_arg ("recipient is not alive: " ^ to_alias)
         | Resolved session_id ->
