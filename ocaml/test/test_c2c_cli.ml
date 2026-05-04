@@ -1493,6 +1493,42 @@ let test_registry_prune_pattern_filter () =
           check int "zombie registration still present" 1 (List.length remaining)))
 
 (* ------------------------------------------------------------------------- *)
+(* c2c relay dead-letter — help and error handling                           *)
+(* ------------------------------------------------------------------------- *)
+
+let test_relay_dead_letter_help_exits_zero () =
+  (* Cmdliner routes --help to the standard help system and exits 0. *)
+  let outfile = Filename.temp_file "relay-dead-letter-help" ".out" in
+  let errfile = Filename.temp_file "relay-dead-letter-help" ".err" in
+  Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf
+        "C2C_CLI_FORCE=1 %s relay dead-letter --help > %s 2> %s"
+        c2c_exe outfile errfile
+      in
+      let rc = Sys.command cmd in
+      check int "relay dead-letter --help exits 0" 0 rc)
+
+let test_relay_dead_letter_no_relay_url_exits_nonzero () =
+  (* Without C2C_RELAY_URL or --relay-url, command must exit non-zero.
+     Set C2C_MCP_BROKER_ROOT to a path with no relay.json so we reliably
+     hit the "no relay-url" error rather than picking up a stale config
+     from the jungle-coder broker inherited via dune exec environment. *)
+  let outfile = Filename.temp_file "relay-dead-letter-no-url" ".out" in
+  let errfile = Filename.temp_file "relay-dead-letter-no-url" ".err" in
+  Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=/tmp/nonexistent-broker-xyz123 %s relay dead-letter > %s 2> %s"
+        c2c_exe outfile errfile
+      in
+      let rc = Sys.command cmd in
+      check int "relay dead-letter without relay-url exits non-zero" 1 rc;
+      let err = read_file errfile in
+      check bool "stderr mentions --relay-url" true
+        (string_contains err "--relay-url"))
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -1638,5 +1674,9 @@ let () =
         [ ( "registry-prune dry-run with no stale entries exits 0", `Quick, test_registry_prune_dry_run_no_stale )
         ; ( "registry-prune --force removes dead matching registrations", `Quick, test_registry_prune_force_removes_dead_reg )
         ; ( "registry-prune --pattern filter works correctly", `Quick, test_registry_prune_pattern_filter )
+        ] )
+    ; ( "relay_dead_letter",
+        [ ( "relay dead-letter --help exits 0", `Quick, test_relay_dead_letter_help_exits_zero )
+        ; ( "relay dead-letter without relay-url exits non-zero", `Quick, test_relay_dead_letter_no_relay_url_exits_nonzero )
         ] )
     ]
