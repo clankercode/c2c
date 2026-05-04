@@ -104,7 +104,7 @@ registry validation. The collision means at least one alias is in a
 state inconsistent with the case-fold invariant the broker assumes
 (see `Broker.alias_casefold` and `c2c_mcp.ml`-line ~830).
 
-**File**: `ocaml/c2c_mcp.ml` ~line 841.
+**File**: `ocaml/c2c_broker.ml` ~line 403.
 
 **Operational meaning**: should NEVER fire post-#432-MED-bundle
 (`3947bb6c`). If you see this, an alias-takeover attempt slipped past
@@ -135,7 +135,7 @@ rows; coordinator may need to evict one.
 matching the requested alias. The broker picks one (deterministically;
 see `c2c_mcp.ml`) and proceeds, but the situation is worth recording.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 1722.
+**File**: `ocaml/c2c_broker.ml` ~line 1516.
 
 **Operational meaning**: usually benign — managed sessions on
 `c2c restart` legitimately produce overlapping rows for ~seconds while
@@ -167,7 +167,7 @@ because delivery is impossible. Common reasons: `unknown_alias`,
 `recipient_dead`, `cross_host_not_implemented`,
 `registration_loop_blocked`.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 2769.
+**File**: `ocaml/c2c_broker.ml` ~line 2721.
 
 **Operational meaning**: forensic — answer "why didn't agent X get
 the message Y sent at time T?" by greping `from_alias` + `msg_ts`.
@@ -224,7 +224,7 @@ first contact (no prior Ed25519 pin for `alias`, envelope carries a
 `from_ed25519` claim), and the claimed key is pinned via
 `Broker.pin_ed25519_sync`.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 4226.
+**File**: `ocaml/c2c_broker.ml` ~line 49.
 
 **Operational meaning**: forensic — answers "when did alias X first
 contact us and what Ed25519 key did they present?". Pairs with
@@ -260,7 +260,7 @@ that went undetected, or a key-rotation gap. Compare the
 **Fires when**: a `memory_write` with `shared_with: [aliases]` triggers
 the per-alias DM handoff (#286). One line per attempted recipient.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 4083.
+**File**: `ocaml/c2c_mcp_helpers_post_broker.ml` ~line 51.
 
 **Operational meaning**: visibility into whether memory-handoff DMs
 were enqueued. `ok=false` with `error=...` means the broker tried but
@@ -357,7 +357,7 @@ either the artifact's signature doesn't verify, the artifact's pubkey
 doesn't match the TOFU pin (H2b), or the claim_alias differs from the
 sender's identity.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 4115.
+**File**: `ocaml/c2c_mcp_helpers_post_broker.ml` ~line 59.
 
 **Operational meaning**: an attempted forged peer-PASS — investigate
 the sender. Reasons include `sig_invalid`, `pin_mismatch`,
@@ -388,7 +388,7 @@ transcript showing the rejection message.
 **Fires when**: an operator-attested `c2c peer-pass pin-rotate` call
 succeeds and the TOFU pin for `alias` is updated.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 4152.
+**File**: `ocaml/c2c_mcp_helpers_post_broker.ml` ~line 83.
 
 **Operational meaning**: legitimate identity rotation; record exists
 so a future attestation can be verified against the chain of rotates.
@@ -417,7 +417,7 @@ Pair with `peer_pass_pin_rotate_unauth` to see rejected attempts.
 attestation gate (sig missing, sig invalid, attestor not in
 configured operator set).
 
-**File**: `ocaml/c2c_mcp.ml` ~line 4252.
+**File**: `ocaml/c2c_mcp_helpers_post_broker.ml` ~line 176.
 
 **Operational meaning**: an unauthorized rotation attempt — possible
 attack. Compare `alias` against current expected rotators; correlate
@@ -449,7 +449,7 @@ strictly less than the per-alias pinned `min_observed_envelope_version`
 in `relay_pins.json`. Rejected BEFORE sig verify so the audit
 attribution is the policy decision, not sig-mismatch.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 4196.
+**File**: `ocaml/c2c_mcp_helpers_post_broker.ml` ~line 114.
 
 **Operational meaning**: a peer who has previously sent v2 envelopes
 just sent a v1. Either (a) the operator legitimately rolled back a
@@ -556,7 +556,7 @@ envelope-path sibling event.
 permission slot is created, awaiting reply. Pairs with
 `pending_check` to close the loop.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 4309.
+**File**: `ocaml/c2c_mcp_helpers_post_broker.ml` ~line 220.
 
 **Operational meaning**: forensic — answer "what permissions did
 agent X open and who could approve them?". Hash fields preserve
@@ -592,7 +592,7 @@ pending-permissions audit.
 one line per check call regardless of outcome. Optional fields are
 included when the matching `pending_open` is found.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 4333.
+**File**: `ocaml/c2c_mcp_helpers_post_broker.ml` ~line 255.
 
 **Operational meaning**: grep `outcome` for forensic patterns; high
 `invalid_non_supervisor` rate suggests an attacker probing
@@ -622,7 +622,7 @@ default 50, override via `C2C_PENDING_PERMISSIONS_CAP`). Note the
 distinct event name from `peer_pass_reject` so log readers can grep
 this independently.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 6897.
+**File**: `ocaml/c2c_pending_reply_handlers.ml` ~line 96.
 
 **Operational meaning**: cap exhaustion — either legitimate burst
 load or a slow-poisoning attack filling the perm table. Inspect
@@ -690,7 +690,7 @@ to reconstruct who was actually engaged.
 **Fires when**: the relay-nudge scheduler enqueues a nudge DM to an
 idle session.
 
-**File**: `ocaml/relay_nudge.ml` ~line 107.
+**File**: `ocaml/relay_nudge.ml` ~line 106.
 
 **Operational meaning**: diagnostic — verify which sessions got
 nudged and which were skipped.
@@ -726,7 +726,7 @@ nudged and which were skipped.
 cadence). One per tick per running broker — useful for detecting
 the multi-broker amplification hypothesis (#335).
 
-**File**: `ocaml/relay_nudge.ml` ~line 135.
+**File**: `ocaml/relay_nudge.ml` ~line 128.
 
 **Operational meaning**: counters for capacity planning + anomaly
 detection. If `sent` is consistently 0 despite `idle_eligible > 0`,
@@ -1071,7 +1071,7 @@ is again at the expected launch-time path. One line per recovery.
 regardless of outcome. Content fields are deliberately omitted to
 avoid leaking message content into a shared log file.
 
-**File**: `ocaml/c2c_mcp.ml` ~line 7530.
+**File**: `ocaml/c2c_mcp.ml` ~line 310.
 
 **Operational meaning**: audit trail of broker RPC volume and success
 rate. Aggregate by `tool` for per-tool latency profiling; filter by
