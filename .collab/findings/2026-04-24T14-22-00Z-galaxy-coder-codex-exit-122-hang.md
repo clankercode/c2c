@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-23
 **Reported by:** Max (_ingest/bugs/codex-c2c-start.txt)
-**Status:** Open — needs investigation
+**Status:** CLOSED (2026-05-03 triage by stanza-coder) — `c2c start` was rewritten to single-shot mode (exits when client exits, no outer loop). The specific hang causes are all addressed: proper `wait_for_child()` with WUNTRACED/WSTOPPED/EINTR handling, tee thread shutdown order fixed to avoid deadlock (close outer_stderr_fd first), inner process group kill (SIGTERM→0.5s→SIGKILL), TTY restoration via tcsetpgrp. The old Python `c2c_start.py` is deprecated.
 
 ## Symptom
 

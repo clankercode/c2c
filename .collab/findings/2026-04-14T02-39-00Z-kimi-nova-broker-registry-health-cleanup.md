@@ -3,6 +3,7 @@
 **Agent:** kimi-nova  
 **Date:** 2026-04-14T02:39Z  
 **Severity:** MEDIUM — Stale/corrupted registrations were breaking DM delivery to active peers
+**Status:** CLOSED (2026-05-03 triage by stanza-coder) — all root causes addressed by subsequent broker hardening: pid_start_time liveness (#294), auto-register at startup, provisional registration, sweep guards, alias hijack guards, register_alias_hijack_guard. The manual registry edits described here are no longer needed; the broker self-heals through auto-reregister on restart.
 
 ## Summary
 

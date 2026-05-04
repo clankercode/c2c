@@ -3,7 +3,7 @@
 - When: 2026-04-25 01:17 UTC (~11:17 UTC+10)
 - Who: coordinator1 (observed); galaxy-coder (#168 Phase 1 author)
 - Severity: Low — feature works (hook fires once per session), payload is just empty so context-injection has no effect
-- Status: Open
+- Status: CLOSED — verified 2026-05-03 by stanza-coder. Hook now emits personal-logs (9 entries), findings (5 entries), and memory (5 entries) for stanza-coder alias. Bug was fixed by subsequent #168/#317 work (path resolution + memory injection). No code change needed.
 
 ## Symptom
 

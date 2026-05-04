@@ -3,7 +3,7 @@
 **Date:** 2026-04-25T10:41:45Z  
 **Reporter:** Max via lyra-quill  
 **Severity:** high  
-**Status:** open
+**Status:** PARTIALLY CLOSED (2026-05-03 triage by stanza-coder) — infrastructure landed: `c2c_start.ml` wires `server_request_events_fd` (fd 6) and `server_request_responses_fd` (fd 7) for codex when the binary supports `--server-request-events-fd` (`codex_supports_server_request_fds`). The `codex-headless` adapter also enables the sideband unconditionally. **Remaining gap:** depends on the installed codex binary advertising the FD flags (alpha binary at `~/.local/bin/codex` has them; stable at `~/.bun/bin/codex` may not). If the binary lacks the flag, the sideband silently disables — permissions fall back to codex's built-in UX. No c2c code change needed; gap closes when codex stable ships the FD flags.
 
 ## Symptom
 
