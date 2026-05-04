@@ -56,17 +56,17 @@ let trimmed_env_value env_var =
     [C2c_utils.*] don't need a second [open]. *)
 let read_file = C2c_io.read_file
 let read_file_opt = C2c_io.read_file_opt
+let read_file_trimmed = C2c_io.read_file_trimmed
 let write_file = C2c_io.write_file
+let write_file_atomic = C2c_io.write_file_atomic
+let write_file_atomic_locked = C2c_io.write_file_atomic_locked
 
 (** [atomic_write_json path json] writes json to a temp file then atomically
     renames to [path], ensuring readers never see a partial write.
-    The payload is followed by a newline. *)
+    The payload is followed by a newline. #388: now delegates to
+    [C2c_io.write_file_atomic]. *)
 let atomic_write_json path json =
   let payload = Yojson.Safe.to_string json ^ "\n" in
-  let tmp = path ^ ".tmp" in
-  try
-    let oc = open_out tmp in
-    output_string oc payload;
-    close_out oc;
-    Unix.rename tmp path
-  with _ -> ()
+  match C2c_io.write_file_atomic path payload with
+  | Ok () -> ()
+  | Error _ -> ()

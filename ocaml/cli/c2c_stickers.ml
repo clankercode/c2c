@@ -225,15 +225,8 @@ let envelope_of_json json =
     }
   | _ -> Error "expected JSON object"
 
-let atomic_write_file path content =
-  let tmp = path ^ ".tmp" in
-  try
-    let oc = open_out tmp in
-    output_string oc content;
-    close_out oc;
-    Unix.rename tmp path;
-    Ok ()
-  with e -> Error (Printexc.to_string e)
+(* Delegated to C2c_io.write_file_atomic (#388) *)
+let atomic_write_file = C2c_io.write_file_atomic
 
 let store_envelope env : (unit, string) result =
   match sticker_dir_opt () with

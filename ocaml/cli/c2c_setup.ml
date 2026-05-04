@@ -223,11 +223,10 @@ let generate_session_id () =
 
 
 let json_write_file path json =
-  let tmp = path ^ ".tmp" in
-  let oc = open_out tmp in
-  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-    Yojson.Safe.pretty_to_channel oc json);
-  Unix.rename tmp path
+  let content = Yojson.Safe.pretty_to_string json ^ "\n" in
+  match C2c_io.write_file_atomic path content with
+  | Ok () -> ()
+  | Error e -> raise (Failure (Printf.sprintf "json_write_file: %s" e))
 
 let json_write_file_or_dryrun dry_run path json =
   if dry_run then

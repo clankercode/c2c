@@ -43,13 +43,61 @@ let read_file (path : string) : string =
 let read_file_opt (path : string) : string =
   try read_file path with _ -> ""
 
+(** [read_file_trimmed path] is [String.trim (read_file path)].
+    Convenience wrapper: reads the file and trims trailing/leading
+    whitespace. Raises on I/O error (same as [read_file]). #388 *)
+let read_file_trimmed (path : string) : string =
+  String.trim (read_file path)
+
 (** [write_file path content] writes [content] to [path], truncating any
     existing file. Non-atomic; callers wanting crash-safety should use
-    [C2c_utils.atomic_write_json] or write-to-tmp + [Unix.rename]. *)
+    [write_file_atomic] or [C2c_utils.atomic_write_json]. *)
 let write_file (path : string) (content : string) : unit =
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
     output_string oc content)
+
+(** [write_file_atomic path content] writes [content] to a temp file then
+    atomically renames it to [path] (Unix rename is atomic on POSIX).
+    Returns [Ok ()] on success, [Error msg] on I/O error.
+    Callers: use when crash-safety matters and the content is raw text/bytes.
+    For JSON, prefer [C2c_utils.atomic_write_json] which adds the canonical
+    newline terminator. #388 *)
+let write_file_atomic (path : string) (content : string) : (unit, string) result =
+  let tmp = path ^ ".tmp" in
+  try
+    let oc = open_out tmp in
+    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      output_string oc content);
+    Unix.rename tmp path;
+    Ok ()
+  with e -> Error (Printexc.to_string e)
+
+(** [write_file_atomic_locked path content] acquires an exclusive POSIX lock on
+    [path] before writing, then releases the lock. Use for multi-process
+    mutual exclusion (e.g. concurrent writers to the same state file).
+    Returns [Ok ()] on success, [Error msg] on lock or I/O failure.
+    Uses [Unix.lockf F_LOCK / F_ULOCK] — same pattern as [c2c_broker.ml]'s
+    relay-pins lock and [broker_log.ml]'s log write lock. #388 *)
+let write_file_atomic_locked (path : string) (content : string) : (unit, string) result =
+  let tmp = path ^ ".tmp" in
+  try
+    (* Lock the target file — concurrent writers block here until we release.
+       The lock is held for the entire write + rename sequence. *)
+    let fd = Unix.openfile path [Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC] 0o600 in
+    Unix.lockf fd Unix.F_LOCK 0;
+    Fun.protect ~finally:(fun () ->
+      (* Explicitly unlock before closing — best practice so the lock
+         is released as soon as possible, not waiting for GC. *)
+      (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+      Unix.close fd) (fun () ->
+      let oc = open_out_gen [Open_wronly; Open_creat; Open_trunc; Open_text] 0o600 tmp in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+        output_string oc content);
+      close_out oc;
+      Unix.rename tmp path;
+      Ok ())
+  with e -> Error (Printexc.to_string e)
 
 (** [append_jsonl ?perm path line] appends [line ^ "\n"] to [path],
     creating the file if needed. [perm] defaults to 0o600 (broker-private).

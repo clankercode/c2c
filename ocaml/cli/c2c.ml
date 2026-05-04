@@ -4149,10 +4149,8 @@ let relay_config_path () =
            let home = try Sys.getenv "HOME" with Not_found -> "." in
            Filename.concat home ".config/c2c/relay.json")
 
-let read_file_trimmed path =
-  let ic = open_in path in
-  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-    String.trim (really_input_string ic (in_channel_length ic)))
+(* Delegated to C2c_io.read_file_trimmed (#388) *)
+let read_file_trimmed = C2c_io.read_file_trimmed
 
 let load_relay_config () =
   let path = relay_config_path () in
