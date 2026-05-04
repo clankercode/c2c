@@ -48,6 +48,16 @@ let string_contains haystack needle =
   in
   needle_len = 0 || loop 0
 
+let write_file path contents =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc contents)
+
+let read_file path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    really_input_string ic (in_channel_length ic))
+
 (* ------------------------------------------------------------------------- *)
 (* c2c doctor — verify health check output and exit 0 on clean run          *)
 (* ------------------------------------------------------------------------- *)
@@ -1281,6 +1291,102 @@ let test_legacy_broker_root_env_uses_canonical () =
         (string_contains content "Canonical path: /tmp/fake/.git/c2c/mcp"))
 
 (* ------------------------------------------------------------------------- *)
+(* c2c sweep --force — safety-guard bypass                                   *)
+(* ------------------------------------------------------------------------- *)
+
+(* Reuse the dead_pid helper from test_c2c_mcp.ml (defined in same module). *)
+let dead_pid () =
+  match Unix.fork () with
+  | 0 -> exit 0
+  | child ->
+      let _ = Unix.waitpid [] child in
+      let rec wait n =
+        if n <= 0 then child
+        else if not (Sys.file_exists ("/proc/" ^ string_of_int child)) then child
+        else (
+          ignore (Unix.select [] [] [] 0.005);
+          wait (n - 1))
+      in
+      wait 20
+
+let test_sweep_force_removes_dead_reg () =
+  with_temp_dir (fun dir ->
+      (* Set up a temp broker with one dead registration. *)
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-dead" ~alias:"dead-alias"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      (* Seed a fake inbox file for the dead reg. *)
+      let inbox_path = Filename.concat dir "session-dead.inbox.json" in
+      write_file inbox_path "[]";
+      (* Run: c2c sweep --force *)
+      let outfile = Filename.temp_file "sweep-force" ".out" in
+      let errfile = Filename.temp_file "sweep-force" ".err" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s %s sweep --force > %s 2> %s"
+            (Filename.quote dir) c2c_exe outfile errfile
+          in
+          let rc = Sys.command cmd in
+          check int "sweep --force exits 0" 0 rc;
+          let out = read_file outfile in
+          check bool "output mentions dropped registration" true
+            (string_contains out "Dropped 1 registrations");
+          check bool "output mentions 1 inbox deleted" true
+            (string_contains out "1 inboxes");
+          check bool "inbox file removed" false
+            (Sys.file_exists inbox_path)))
+
+let test_sweep_without_force_refuses_when_alive_reg_exists () =
+  with_temp_dir (fun dir ->
+      (* Set up a temp broker with one LIVE (non-managed) registration.
+         registration_is_alive returns true for pid=None or our own pid. *)
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-alive" ~alias:"alive-alias"
+        ~pid:None ~pid_start_time:None ();
+      (* Run: c2c sweep (no --force) — should refuse. *)
+      let outfile = Filename.temp_file "sweep-no-force" ".out" in
+      let errfile = Filename.temp_file "sweep-no-force" ".err" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s %s sweep > %s 2> %s"
+            (Filename.quote dir) c2c_exe outfile errfile
+          in
+          let rc = Sys.command cmd in
+          check int "sweep without --force exits 1 when alive reg present" 1 rc;
+          let err = read_file errfile in
+          check bool "stderr mentions alive registration" true
+            (string_contains err "alive");
+          check bool "stderr mentions --force hint" true
+            (string_contains err "--force")))
+
+let test_sweep_force_bypasses_alive_guard () =
+  with_temp_dir (fun dir ->
+      (* Set up a temp broker with one alive (pid=None) registration. *)
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-alive" ~alias:"alive-alias"
+        ~pid:None ~pid_start_time:None ();
+      (* Run: c2c sweep --force — should bypass the guard and succeed. *)
+      let outfile = Filename.temp_file "sweep-force-bypass" ".out" in
+      let errfile = Filename.temp_file "sweep-force-bypass" ".err" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s %s sweep --force > %s 2> %s"
+            (Filename.quote dir) c2c_exe outfile errfile
+          in
+          let rc = Sys.command cmd in
+          check int "sweep --force exits 0 even with alive reg" 0 rc;
+          let out = read_file outfile in
+          check bool "output confirms sweep ran" true
+            (string_contains out "Dropped")))
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -1416,5 +1522,10 @@ let () =
     ; ( "broker_root_fallthrough",
         [ ( "legacy broker root env warns on stderr", `Quick, test_legacy_broker_root_env_warns )
         ; ( "legacy broker root env uses canonical path", `Quick, test_legacy_broker_root_env_uses_canonical )
+        ] )
+    ; ( "sweep",
+        [ ( "sweep --force removes dead registrations", `Quick, test_sweep_force_removes_dead_reg )
+        ; ( "sweep refuses when alive non-managed registrations exist", `Quick, test_sweep_without_force_refuses_when_alive_reg_exists )
+        ; ( "sweep --force bypasses alive guard", `Quick, test_sweep_force_bypasses_alive_guard )
         ] )
     ]
