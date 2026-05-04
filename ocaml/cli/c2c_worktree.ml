@@ -406,6 +406,63 @@ let head_ancestor_of_master path =
   in
   code = 0
 
+(** [head_equivalent_on_origin_master path] returns true if every commit
+    unique to this branch (not on origin/master) has a content-equivalent
+    on origin/master.
+
+    Detects cherry-picked slices where the content has landed but the
+    commit SHA is not an ancestor (cherry-picking creates a new commit object).
+
+    Algorithm:
+    1. Get the list of commits unique to this branch:
+         git log --format=%H refs/remotes/origin/master..HEAD
+    2. Run: git cherry refs/remotes/origin/master HEAD
+    3. Collect SHAs marked with "+" (not on origin/master)
+    4. Return true only if NONE of the branch-unique commits are in the "+" set
+
+    This correctly handles:
+    - Single-commit cherry-picked slice: only HEAD is branch-unique, and if it
+      shows "-" in cherry output, the whole branch is content-equivalent.
+    - Multi-commit branch: ALL branch-unique commits must show "-" to be GC-eligible.
+    - Pre-existing history commits (already on origin/master) are excluded from
+      the branch-unique set, so they don't cause false positives in cherry output. *)
+let head_equivalent_on_origin_master path =
+  (* Step 1: get commits unique to this branch (not on origin/master) *)
+  let (code1, branch_shas_out, _) =
+    git_command ~cwd:path ~quiet:true
+      [ "log"; "--format=%H"; "refs/remotes/origin/master..HEAD" ]
+  in
+  if code1 <> 0 then false
+  else
+    let branch_shas =
+      List.filter (fun s -> String.length s = 40)
+        (String.split_on_char '\n' (String.trim branch_shas_out))
+    in
+    (* Empty list = HEAD is already an ancestor (would have matched the
+       head_ancestor_of_origin_master check). Treat as false. *)
+    if branch_shas = [] then false
+    else
+      (* Step 2: get cherry output *)
+      let (code2, cherry_out, _) =
+        git_command ~cwd:path ~quiet:true
+          [ "cherry"; "refs/remotes/origin/master"; "HEAD" ]
+      in
+      if code2 <> 0 then false
+      else
+        (* Step 3: collect SHAs marked "+" in cherry output *)
+        let cherry_lines = String.split_on_char '\n' (String.trim cherry_out) in
+        let plus_shas =
+          List.fold_right (fun line acc ->
+            let trimmed = String.trim line in
+            if String.length trimmed >= 42 && trimmed.[0] = '+' then
+              let sha = String.sub trimmed 2 40 in
+              sha :: acc
+            else acc)
+            cherry_lines []
+        in
+        (* Step 4: return true only if NO branch-unique commits are in the "+" list *)
+        not (List.exists (fun sha -> List.mem sha plus_shas) branch_shas)
+
 (** [main_worktree_path ()] returns the absolute path of the repo's main
     worktree (the first entry in `git worktree list --porcelain`). *)
 let main_worktree_path () =
@@ -615,13 +672,12 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
     (_alias, path, branch) =
   let size = worktree_size_bytes path in
   let mk st = { gc_path = path; gc_branch = branch; gc_size = size; gc_status = st } in
-  (* #314 lyra review fix: snapshot the admin-dir age BEFORE any git
-     command runs. is_dirty (git status), head_ancestor_of_origin_master
-     (merge-base), and head_sha / origin_master_sha (rev-parse) all
-     touch the admin dir and bump its mtime to "now". Without this
-     snapshot, an actually-old worktree at HEAD==origin/master would
-     classify as POSSIBLY_ACTIVE because the act of classifying made
-     it appear fresh. *)
+  (* Snapshot admin-dir mtime BEFORE any git commands run (#314):
+     is_dirty (git status), head_ancestor_of_origin_master (merge-base),
+     head_equivalent_on_origin_master (git cherry), and head_sha /
+     origin_master_sha (rev-parse) all touch the admin dir and bump its
+     mtime. Without this snapshot, an actually-old worktree at
+     HEAD==origin/master would misclassify as POSSIBLY_ACTIVE. *)
   let age_snapshot = snapshot_age_seconds path in
   (* Defense-in-depth: never offer the main worktree even if list_worktrees
      surfaced it. *)
@@ -634,8 +690,8 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
     mk (GcRefused { reason = "main worktree (never offered)" })
   else if is_dirty path then
     mk (GcRefused { reason = "dirty working tree" })
-   else if not (head_ancestor_of_origin_master path || head_ancestor_of_master path) then
-     mk (GcRefused { reason = "HEAD not ancestor of origin/master or master" })
+  else if not (head_ancestor_of_origin_master path || head_ancestor_of_master path || head_equivalent_on_origin_master path) then
+    mk (GcRefused { reason = "HEAD not ancestor of origin/master or master (and not content-equivalent via git-cherry)" })
   else
     let holders = if ignore_active then [] else cwd_holders path in
     match holders with
