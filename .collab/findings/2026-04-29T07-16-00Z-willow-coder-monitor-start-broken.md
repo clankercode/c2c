@@ -25,4 +25,7 @@ Poll inbox manually each turn instead of relying on heartbeat Monitor. inbox is 
 Medium — I'm blocked from the canonical heartbeat pattern, but inbox polling covers the functional gap. No peer is blocked since channels push is on for this harness.
 
 ## Fix Status
-Not yet fixed. Would need a fix to the monitor plugin code in the OpenCode/c2c harness itself.
+**CLOSED 2026-05-04** — harness-specific, not a c2c repo bug. The error is in the
+OpenCode harness's MCP plugin (JS runtime, `runtime.record.triggers.filter`), not in the
+c2c OCaml server or CLI. The `heartbeat` CLI binary works correctly.
+Workaround (inbox polling) is already noted above. No fixable issue in c2c repo.

@@ -55,14 +55,16 @@ declare -A OUT_OF_SCOPE=(
 # UPPERCASE event names while the Yojson literal uses lowercase).
 mapfile -t emitters < <(
   (
-    grep -rohP '"event", `String "[^"]+"' ocaml/ \
-      --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
-    | grep -oP 'String "\K[^"]+'
-  ) && {
-    grep -rohP 'log_broker_event ~broker_root[: ][^"]*"[^"]+"' ocaml/ \
-      --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
-    | grep -oP 'log_broker_event ~broker_root[: ][^"]*"\K[^"]+'
-  } | tr '[:upper:]' '[:lower:]' | sort -u
+    (
+      grep -rohP '"event", `String "[^"]+"' ocaml/ \
+        --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
+      | grep -oP 'String "\K[^"]+'
+    ) && {
+      grep -rohP 'log_broker_event ~broker_root[: ][^"]*"[^"]+"' ocaml/ \
+        --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
+      | grep -oP 'log_broker_event ~broker_root[: ][^"]*"\K[^"]+'
+    }
+  ) | tr '[:upper:]' '[:lower:]' | sort -u
 )
 
 # ── Step 2: cataloged names (### `name` headers) ───────────────────────────
