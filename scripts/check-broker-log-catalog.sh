@@ -53,18 +53,19 @@ declare -A OUT_OF_SCOPE=(
 #      Includes 3-arg form `log_broker_event ~broker_root:(expr) "name"` (#dual-alias-fix).
 # All names are lowercased for case-insensitive matching (some source uses
 # UPPERCASE event names while the Yojson literal uses lowercase).
+# Two-stage collection avoids bash && precedence over | bug:
+# A && B | sort -u parses as A && (B | sort -u), so A bypasses sort.
+# We collect each group separately then combine with (echo; echo) | sort -u.
+_yg=$(grep -rohP '"event", `String "[^"]+"' ocaml/ \
+       --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
+     | grep -oP 'String "\K[^"]+' \
+     | tr '[:upper:]' '[:lower:]' | sort -u)
+_le=$(grep -rohP 'log_broker_event ~broker_root[: ][^"]*"[^"]+"' ocaml/ \
+       --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
+     | grep -oP 'log_broker_event ~broker_root[: ][^"]*"\K[^"]+' \
+     | tr '[:upper:]' '[:lower:]' | sort -u)
 mapfile -t emitters < <(
-  (
-    (
-      grep -rohP '"event", `String "[^"]+"' ocaml/ \
-        --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
-      | grep -oP 'String "\K[^"]+'
-    ) && {
-      grep -rohP 'log_broker_event ~broker_root[: ][^"]*"[^"]+"' ocaml/ \
-        --exclude-dir=test --exclude="test_*.ml" 2>/dev/null \
-      | grep -oP 'log_broker_event ~broker_root[: ][^"]*"\K[^"]+'
-    }
-  ) | tr '[:upper:]' '[:lower:]' | sort -u
+  (echo "$_yg" && echo "$_le") | sort -u
 )
 
 # ── Step 2: cataloged names (### `name` headers) ───────────────────────────
