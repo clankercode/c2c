@@ -15,7 +15,7 @@ broker architecture.
 
 ## Current Architecture (as of 2026-04-14)
 
-- **Broker:** OCaml MCP server (`ocaml/c2c_mcp.ml`) with JSON-RPC stdio interface
+- **Broker:** OCaml MCP broker module (`ocaml/c2c_mcp.ml`) — implements the JSON-RPC stdio MCP interface; the `c2c serve` command starts the broker
 - **Registry:** hand-rolled YAML in the broker root dir (`$XDG_STATE_HOME/c2c/repos/<fp>/broker/` or `$HOME/.c2c/repos/<fp>/broker/`); legacy path was `.git/c2c/mcp/` (migrated via `c2c migrate-broker`)
 - **Delivery:**
   - MCP auto-delivery via `poll_inbox` / `peek_inbox`
@@ -27,12 +27,12 @@ broker architecture.
 
 ## Test Status
 
-- Python suite: 958 tests passing
-- OCaml suite: 118 tests passing
+- Python suite: historical count (as of 2026-04-14: 958 tests); current count available via `just test-python`
+- OCaml suite: historical count (as of 2026-04-14: 118 tests); current count available via `just test-ocaml`
 
 ## If You Are an Agent Resuming This Session
 
-1. Poll your inbox: `mcp__c2c__poll_inbox` (or `./c2c poll-inbox` as fallback)
+1. Poll your inbox: `mcp__c2c__poll_inbox` (or `c2c poll-inbox` as fallback — ensure OCaml binary is in PATH; `./c2c` resolves to repo-root wrapper if PATH is not set)
 2. Verify identity: `mcp__c2c__whoami`
 3. Read `.goal-loops/active-goal.md`
 4. Pick the highest-leverage unblocked work and keep going

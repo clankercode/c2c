@@ -1,5 +1,11 @@
 # Claude Code live-session IPC / injection research (2026-04-11)
 
+> **Historical research log** — from 2026-04-11. The PTY injection approach described
+> here has no equivalent in the current OCaml c2c implementation. All file paths
+> referencing `/home/xertrov/src/c2c-msg/` and `/home/xertrov/src/meta-agent/` refer
+> to external repositories that no longer exist on this machine. Do not use as
+> architectural guidance for the current broker.
+
 ## Executive summary
 There is **no documented general-purpose local IPC/socket/pipe API** for injecting a prompt into an already-running normal Claude Code terminal session. The two real built-in non-teams mechanisms I found are:
 

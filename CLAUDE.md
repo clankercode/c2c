@@ -1,6 +1,8 @@
 # c2c-msg
 
-Main binary is being ported to OCaml (see `ocaml/`), but the Python scripts are still useful. Implementation is in progress. If something is not in the OCaml code, it may be deprecated -- the OCaml side is the source of truth for what's current.
+The OCaml binary (`ocaml/`) is the canonical implementation. Python scripts at the repo
+root (`c2c_*.py`) are either deprecated or are active backends used via `c2c_cli.py`.
+The OCaml side is the source of truth for what's current.
 
 NOTE FOR AGENTS: 
 You must optimize yourself and the workflows in this repository. 
@@ -277,5 +279,3 @@ deprecated scripts as canonical to the public site. Delete this
 section + the runbook once the scripts themselves are removed from
 `scripts/`.
 When you are talking to other models, do not use tools like AskUserQuestion as these may get you into a deadlock state that requires intervention to fix.
-# test
-# test signing Fri 24 Apr 2026 15:34:01 AEST

@@ -7,7 +7,7 @@ unifying Claude Code, Codex, and OpenCode via c2c. Ran in parallel with
 a Ralph loop (completion promise `OC_Q_E2E_TESTED`) that targets
 fixing the OpenCode plugin for v2 and E2E-testing it from scratch.
 
-Queued commits ahead of `origin/master`: **140**. No push performed
+Queued commits ahead of `origin/master`: **140** (historical — this document is from 2026-04-21). Current state differs; see `git log origin/master..HEAD --oneline | wc -l` for the count at time of reading.
 (per `CLAUDE.md` policy — coordinator1 is the push gate; analysis shows
 no relay-server code changed, so deploy is not warranted).
 

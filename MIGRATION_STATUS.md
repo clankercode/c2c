@@ -207,7 +207,7 @@ Key: 🔄 = deprecated/root but still imported or used as fallback; ✅ = fully 
 - [x] c2c_kimi_wire_bridge.py → REMOVED (replaced by C2c_kimi_notifier)
 - [ ] c2c_opencode_wake_daemon.py → OCaml?
 - [ ] c2c_crush_wake_daemon.py → OCaml?
-- [ ] c2c_deliver_inbox.py → OCaml?
+- [x] c2c_deliver_inbox.py → ✅ OCaml `c2c deliver-inbox` is primary (inotify-based, `ocaml/tools/c2c_inbox_hook.ml`)
 
 ### Phase 4: Low-Level Utilities
 - [ ] c2c_poker.py

@@ -1,5 +1,9 @@
 # Findings Review: current C2C messaging work
 
+> **Historical research log** — all file paths referencing `/home/xertrov/src/c2c-msg/`
+> point to a repository that no longer exists on this machine. The c2c-msg repo
+> was merged into the main c2c repo. Do not use as path references.
+
 ## Bottom line
 The directory contains one genuinely useful result and several dead-end experiments.
 

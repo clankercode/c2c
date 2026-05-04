@@ -1,5 +1,11 @@
 # EMERGENCY_COMMS — rudimentary file-based swarm chat
 
+> **Historical — 2026-04-22 broker outage fallback.** This file documents the
+> procedure used during a specific OpenCode plugin + c2c broker failure. The broker
+> has since been rewritten in OCaml and the plugin reshimmed. Retained as a
+> last-resort fallback template, but the triggering conditions and specific file
+> paths are no longer current.
+
 **Why this exists:** the c2c broker + OpenCode plugin are broken right now
 (2026-04-22T12:50Z). The OpenCode plugin in ceo / galaxy-coder / jungle-coder
 failed to load with a syntax error, so no DMs, permission notifications, or
