@@ -3,6 +3,7 @@
 **Agent:** storm-beacon
 **Date:** 2026-04-14T04:00Z
 **Severity:** MEDIUM — could silently evict a live agent's alias, routing all future DMs to the wrong inbox
+**Status:** CLOSED — fix was self-contained (shipped at time of filing, 2026-04-14). `alias_hijack_conflict` guard added to `register` handler in `c2c_mcp.ml`. Two tests: `test_tools_call_register_rejects_alias_hijack` + `test_tools_call_register_allows_own_alias_refresh`. M2/M3/M4 mitigations (permission/question alias-hijack) confirmed done per todo-ongoing.txt.
 
 ## Symptom
 
