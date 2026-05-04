@@ -390,6 +390,15 @@ gui-dev:
 gui-check:
     cd gui && bun run build
 
+# GUI production build (Tauri + frontend)
+build-gui:
+    cd gui && bun run tauri build
+
+# Install GUI binary to ~/.local/bin/
+install-gui: build-gui
+    @cp gui/src-tauri/target/release/c2c-gui ~/.local/bin/c2c-gui
+    @echo "installed c2c-gui to ~/.local/bin/c2c-gui"
+
 # Run Playwright E2E tests for the GUI.
 # Requires browsers to be installed: bunx playwright install chromium
 # Requires the Tauri dev server to be running OR uses the webServer config in playwright.config.ts
