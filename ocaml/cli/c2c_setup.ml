@@ -241,12 +241,7 @@ let mkdir_or_dryrun dry_run dir =
   else
     (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ())
 
-let mkdir_p dry_run dir =
-  (* Recursive mkdir: creates dir and all intermediate parents, like mkdir -p. *)
-  if dry_run then
-    Printf.printf "[DRY-RUN] would create directory tree %s\n%!" dir
-  else
-    C2c_mcp.mkdir_p dir
+let mkdir_p = C2c_io.mkdir_p_dryrun
 
 let default_alias_for_client client =
   let client = match String.lowercase_ascii client with

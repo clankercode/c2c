@@ -28,6 +28,15 @@ let rec mkdir_p ?(mode = 0o755) dir =
     try Unix.mkdir dir mode with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
+(** [mkdir_p_dryrun dry_run dir] is [mkdir_p dir] with dry-run semantics:
+    prints a message instead of creating the directory when [dry_run] is true.
+    The single canonical dry-run wrapper for the OCaml tree. #400b / #396. *)
+let mkdir_p_dryrun (dry_run : bool) (dir : string) =
+  if dry_run then
+    Printf.printf "[DRY-RUN] would create directory tree %s\n%!" dir
+  else
+    mkdir_p dir
+
 (** [read_file path] slurps the entire contents of [path] as a string.
     Raises [Sys_error] / [End_of_file] on I/O failure. Canonical helper
     (#388) — converges duplicates across c2c_stats, c2c_memory, c2c_mcp,
