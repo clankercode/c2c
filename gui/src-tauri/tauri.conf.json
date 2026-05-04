@@ -37,14 +37,7 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "scope": [
-        {
-          "name": "c2c",
-          "cmd": "~/.local/bin/c2c",
-          "args": true
-        }
-      ]
+      "open": true
     }
   }
 }
