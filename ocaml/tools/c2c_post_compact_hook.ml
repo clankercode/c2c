@@ -40,12 +40,7 @@ let memory_budget_chars = 700
 let logs_budget_chars = 700
 (* sections sum to 3600; remaining ~500 is for tags + alias + ts framing. *)
 
-let iso8601_now () =
-  let t = Unix.gettimeofday () in
-  let tm = Unix.gmtime t in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
-    tm.tm_hour tm.tm_min tm.tm_sec
+let iso8601_now () = C2c_time.now_iso8601_utc ()
 
 let truncate_to s n =
   if String.length s <= n then s

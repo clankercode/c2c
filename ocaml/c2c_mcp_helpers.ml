@@ -674,9 +674,7 @@ let xml_escape s =
 
 (** Format a Unix timestamp as UTC HH:MM. Used for ts attributes and
     channel notification meta. Shared helper to prevent format drift. *)
-let format_ts_hhmm (t : float) : string =
-  let tm = Unix.gmtime t in
-  Printf.sprintf "%02d:%02d" tm.tm_hour tm.tm_min
+let format_ts_hhmm (t : float) : string = C2c_time.hhmm t
 
 let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts ~content () =
   let tag_attr = match tag with

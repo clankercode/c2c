@@ -7524,11 +7524,7 @@ let diag_cmd =
        let exit_code = match List.assoc_opt "exit_code" fields with Some (`Int n) -> n | _ -> -1 in
        let duration_s = match List.assoc_opt "duration_s" fields with Some (`Float f) -> f | _ -> 0.0 in
        let ts = match List.assoc_opt "ts" fields with Some (`Float f) -> f | _ -> 0.0 in
-       let t = Unix.gmtime ts in
-       let ts_str = Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-         (t.Unix.tm_year + 1900) (t.Unix.tm_mon + 1) t.Unix.tm_mday
-         t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec in
-       Printf.printf "last death: exit=%d  duration=%.1fs  at=%s\n" exit_code duration_s ts_str);
+       Printf.printf "last death: exit=%d  duration=%.1fs  at=%s\n" exit_code duration_s (C2c_time.iso8601_utc ts));
   (* Print stderr.log tail *)
   let log_path = inst_dir // "stderr.log" in
   if not (Sys.file_exists log_path) then
@@ -9676,11 +9672,7 @@ let uuid_v4 () =
   Printf.sprintf "%s-%s-%s-%s-%s" segments.(0) segments.(1) segments.(2) segments.(3) segments.(4)
 
 (** Return current UTC timestamp as ISO 8601 string. *)
-let timestamp_utc () =
-  let t = Unix.gmtime (Unix.gettimeofday ()) in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (t.Unix.tm_year + 1900) (t.Unix.tm_mon + 1) t.Unix.tm_mday
-    t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec
+let timestamp_utc () = C2c_time.now_iso8601_utc ()
 
 (** Slugify a path for Claude project directory naming.
     "/home/xertrov/foo" -> "-home-xertrov-foo" *)
@@ -10697,13 +10689,7 @@ let debug_statefile_checkpoint_cmd =
       | Some n -> Filename.concat (Filename.concat base_dir "instances") n // "statefile-debug.jsonl"
       | None   -> Filename.concat base_dir "statefile-debug.jsonl"
     in
-    let now =
-      let t = Unix.gettimeofday () in
-      let tm = Unix.gmtime t in
-      let ms = int_of_float ((t -. Float.round t) *. 1000.0) |> abs in
-      Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ"
-        (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
-        tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec ms
+    let now = C2c_time.iso8601_utc_ms (Unix.gettimeofday ())
     in
     let entry =
       `Assoc

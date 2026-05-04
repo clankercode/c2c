@@ -1070,11 +1070,7 @@ open C2c_mcp_helpers
         match b64_key with
         | Error _ as e -> e
         | Ok b64_key ->
-            let now = Unix.gmtime (Unix.time ()) in
-            let date_str =
-              Printf.sprintf "%04d-%02d-%02d"
-                (now.Unix.tm_year + 1900) (now.Unix.tm_mon + 1) now.Unix.tm_mday
-            in
+            let date_str = C2c_time.ymd (Unix.time ()) in
             let line = Printf.sprintf "%s@c2c.im ssh-ed25519 %s # added %s\n"
               alias b64_key date_str
             in

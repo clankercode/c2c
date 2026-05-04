@@ -188,10 +188,9 @@ let rooms_join_cmd =
          List.iter (fun (m : room_member) -> Printf.printf "  %s\n" m.rm_alias) members;
          if backfill <> [] then begin
            Printf.printf "\nRecent history (%d msgs):\n" (List.length backfill);
-           List.iter (fun (m : room_message) ->
-             let t = Unix.gmtime m.rm_ts in
-             Printf.printf "[%02d:%02d] <%s> %s\n"
-               t.tm_hour t.tm_min m.rm_from_alias m.rm_content) backfill
+            List.iter (fun (m : room_message) ->
+              Printf.printf "[%s] <%s> %s\n"
+                (C2c_time.hhmm m.rm_ts) m.rm_from_alias m.rm_content) backfill
          end
    with Invalid_argument msg ->
      Printf.eprintf "error: %s\n%!" msg;
@@ -373,13 +372,9 @@ let rooms_history_cmd =
            Printf.printf "(no history)\n"
          else
            List.iter
-             (fun (m : room_message) ->
-               let time =
-                 let t = Unix.gmtime m.rm_ts in
-                 Printf.sprintf "%04d-%02d-%02d %02d:%02d"
-                   (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour t.tm_min
-               in
-               Printf.printf "[%s] <%s> %s\n" time m.rm_from_alias m.rm_content)
+              (fun (m : room_message) ->
+                let time = String.sub (C2c_time.human_utc m.rm_ts) 0 16 in
+                Printf.printf "[%s] <%s> %s\n" time m.rm_from_alias m.rm_content)
              messages
    with Invalid_argument msg ->
      Printf.eprintf "error: %s\n%!" msg;
@@ -543,16 +538,14 @@ let rooms_tail_cmd =
       else begin
         let from_alias = json |> member "from_alias" |> to_string in
         let content = json |> member "content" |> to_string in
-        let t = Unix.gmtime ts in
-        Printf.printf "[%02d:%02d:%02d] %s: %s\n%!" t.tm_hour t.tm_min t.tm_sec from_alias content
+        Printf.printf "[%s] %s: %s\n%!" (C2c_time.hms ts) from_alias content
       end
     with _ -> ()
   in
   if Sys.file_exists path then begin
     let messages = Broker.read_room_history broker ~room_id ~limit:lines ~since:since_ts () in
     List.iter (fun (m : room_message) ->
-      let t = Unix.gmtime m.rm_ts in
-      Printf.printf "[%02d:%02d:%02d] %s: %s\n%!" t.tm_hour t.tm_min t.tm_sec m.rm_from_alias m.rm_content
+      Printf.printf "[%s] %s: %s\n%!" (C2c_time.hms m.rm_ts) m.rm_from_alias m.rm_content
     ) messages
   end;
   if not do_follow then ()

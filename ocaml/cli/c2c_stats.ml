@@ -250,9 +250,7 @@ let scan_archives ~archive_dir ~cutoff =
   (sent, received)
 
 let fmt_time ts =
-  let t = Unix.gmtime ts in
-  Printf.sprintf "%04d-%02d-%02d %02d:%02d"
-    (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour t.tm_min
+  String.sub (C2c_time.human_utc ts) 0 16
 
 let fmt_token = function
   | None -> "N/A"
@@ -270,15 +268,12 @@ let sitrep_marker_end = "<!-- c2c-stats:end -->"
     sitrep regardless of the writer's local timezone). Both the path
     and the stub heading are UTC. *)
 let sitrep_path ~repo_root ~now =
-  let t = Unix.gmtime now in
   Filename.concat repo_root
-    (Printf.sprintf ".sitreps/%04d/%02d/%02d/%02d.md"
-       (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour)
+    (Printf.sprintf ".sitreps/%s.md" (C2c_time.ymd_hour_path now))
 
 let sitrep_stub ~now =
-  let t = Unix.gmtime now in
-  Printf.sprintf "# Sitrep — %04d-%02d-%02d %02d:00 UTC\n\n"
-    (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour
+  Printf.sprintf "# Sitrep — %s UTC\n\n"
+    (String.sub (C2c_time.human_utc now) 0 16)
 
 let mkdir_p = C2c_mcp.mkdir_p
 

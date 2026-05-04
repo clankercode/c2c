@@ -212,12 +212,7 @@ let register ~broker ~session_id_override ~arguments =
                     | Some ed_identity ->
                         let ed_pubkey_b64 = Relay_identity.b64url_encode ed_identity.Relay_identity.public_key in
                         let signed_at = Unix.gettimeofday () in
-                        let signed_at_str =
-                          let tm = Unix.gmtime signed_at in
-                          Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-                            (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
-                            tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
-                        in
+                        let signed_at_str = C2c_time.iso8601_utc signed_at in
                         let canonical_msg =
                           Relay_identity.canonical_msg ~ctx:Relay.pubkey_binding_sign_ctx
                             [ alias; ed_pubkey_b64; x25519_b64; signed_at_str ]

@@ -129,12 +129,7 @@ type sticker_envelope = {
 let b64url_nopad s =
   Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
-let now_rfc3339_utc () =
-  let t = Unix.gettimeofday () in
-  let tm = Unix.gmtime t in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
-    tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+let now_rfc3339_utc () = C2c_time.iso8601_utc (Unix.gettimeofday ())
 
 let random_nonce_b64 () =
   Mirage_crypto_rng_unix.use_default ();

@@ -15,7 +15,7 @@
  (name c2c_post_compact_hook_lib)
  (wrapped false)
  (modules c2c_post_compact_hook)
- (libraries unix yojson))
+ (libraries c2c_mcp unix yojson))
 
 (executable
  (name c2c_post_compact_hook_bin)

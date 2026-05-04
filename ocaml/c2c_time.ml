@@ -28,9 +28,38 @@ let iso8601_utc_ms (t : float) : string =
     (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
     tm.tm_hour tm.tm_min tm.tm_sec ms
 
+(** Format a Unix timestamp as HH:MM UTC. *)
+let hhmm (t : float) : string =
+  let tm = Unix.gmtime t in
+  Printf.sprintf "%02d:%02d" tm.tm_hour tm.tm_min
+
+(** Format a Unix timestamp as YYYY-MM-DD UTC. *)
+let ymd (t : float) : string =
+  let tm = Unix.gmtime t in
+  Printf.sprintf "%04d-%02d-%02d" (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
+
 (** Human-readable UTC: [YYYY-MM-DD HH:MM:SS UTC]. *)
 let human_utc (t : float) : string =
   let tm = Unix.gmtime t in
   Printf.sprintf "%04d-%02d-%02d %02d:%02d:%02d UTC"
     (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
     tm.tm_hour tm.tm_min tm.tm_sec
+
+(** Compact ISO-8601: YYYYMMDDTHHMMSS *)
+let compact_iso8601 (t : float) : string =
+  let tm = Unix.gmtime t in
+  Printf.sprintf "%04d%02d%02dT%02d%02d%02d"
+    (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
+    tm.tm_hour tm.tm_min tm.tm_sec
+
+(** Format for sitrep path: YYYY/MM/DD/HH *)
+let ymd_hour_path (t : float) : string =
+  let tm = Unix.gmtime t in
+  Filename.concat ""
+    (Printf.sprintf "%04d/%02d/%02d/%02d"
+       (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday tm.tm_hour)
+
+(** Format a Unix timestamp as [HH:MM:SS]. *)
+let hms (t : float) : string =
+  let tm = Unix.gmtime t in
+  Printf.sprintf "%02d:%02d:%02d" tm.tm_hour tm.tm_min tm.tm_sec

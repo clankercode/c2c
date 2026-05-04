@@ -177,11 +177,7 @@ let is_approval_verdict_body body =
         prefixed_with "allow" || prefixed_with "deny"
 
 (* ISO-8601 UTC timestamp for the sidecar log, e.g. 2026-04-29T12:34:56Z *)
-let iso8601_utc () =
-  let tm = Unix.gmtime (Unix.gettimeofday ()) in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
-    tm.tm_hour tm.tm_min tm.tm_sec
+let iso8601_utc () = C2c_time.iso8601_utc (Unix.gettimeofday ())
 
 (* Append a human-readable entry to the session's c2c-chat-log.md.
    This is the operator scrollback — it logs EVERYTHING including system
