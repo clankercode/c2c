@@ -44,10 +44,7 @@ let float_member name json =
   | `Int i -> Some (float_of_int i)
   | _ -> None
 
-let bool_member name json =
-  match json |> Yojson.Safe.Util.member name with
-  | `Bool b -> Some b
-  | _ -> None
+let bool_member = Json_util.bool_member
 
 let list_toml_files dir =
   try
