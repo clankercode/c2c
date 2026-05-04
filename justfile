@@ -390,6 +390,10 @@ gui-dev:
 gui-check:
     cd gui && bun run build
 
+# Validate Tauri config + environment (catches invalid tauri.conf.json fields)
+gui-validate:
+    cd gui && bun run tauri info
+
 # GUI production build (Tauri + frontend)
 build-gui:
     cd gui && bun run tauri build
