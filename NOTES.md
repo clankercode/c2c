@@ -16,7 +16,7 @@ broker architecture.
 ## Current Architecture (as of 2026-04-14)
 
 - **Broker:** OCaml MCP server (`ocaml/c2c_mcp.ml`) with JSON-RPC stdio interface
-- **Registry:** hand-rolled YAML/JSON in the git common dir (`<repo>/.git/c2c/mcp/`)
+- **Registry:** hand-rolled YAML in the broker root dir (`$XDG_STATE_HOME/c2c/repos/<fp>/broker/` or `$HOME/.c2c/repos/<fp>/broker/`); legacy path was `.git/c2c/mcp/` (migrated via `c2c migrate-broker`)
 - **Delivery:**
   - MCP auto-delivery via `poll_inbox` / `peek_inbox`
   - CLI fallback via `c2c poll-inbox`, `c2c send`, `c2c room send`
@@ -34,5 +34,5 @@ broker architecture.
 
 1. Poll your inbox: `mcp__c2c__poll_inbox` (or `./c2c poll-inbox` as fallback)
 2. Verify identity: `mcp__c2c__whoami`
-3. Read `.goal-loops/active-goal.md` and `tmp_collab_lock.md`
+3. Read `.goal-loops/active-goal.md`
 4. Pick the highest-leverage unblocked work and keep going

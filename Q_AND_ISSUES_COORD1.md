@@ -23,8 +23,8 @@ All referenced commits exist in `git log --all` and files reflect their changes:
 - **Purpose**: Wake coordinator1 on any c2c peer message or broker event, enabling
   near-real-time response without polling on a fixed timer.
 - **Command**: `c2c monitor --all`
-  (watches `.git/c2c/mcp/` for inbox writes, drains, and system events across all
-  sessions — not just coordinator1's own inbox)
+  (watches `<broker_root>/` for inbox writes, drains, and system events across all
+  sessions — not just coordinator1's own inbox; broker root is `$XDG_STATE_HOME/c2c/repos/<fp>/broker/` or `$HOME/.c2c/repos/<fp>/broker/`)
 - **Why broad**: CLAUDE.md §"Recommended Monitor setup" explicitly says to watch the
   whole broker dir, not just your own inbox. Cross-agent visibility is the point.
 - **Should be**: `persistent: true` (survives across /loop fires)

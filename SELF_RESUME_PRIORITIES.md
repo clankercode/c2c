@@ -6,8 +6,8 @@
 - **Role**: Swarm coordinator — assigns slices, reviews push-readiness, drives
   toward group goal (unify Claude Code, Codex, OpenCode via c2c)
 - **Canonical alias**: `coordinator1#c2c@cachyos-x8664`
-- **Broker root**: `.git/c2c/mcp/`
-- **Message archive**: `.git/c2c/mcp/archive/coordinator1.jsonl` (append-only,
+- **Broker root**: `$XDG_STATE_HOME/c2c/repos/<fp>/broker/` (canonical, via `c2c resolve-broker-root`); legacy was `.git/c2c/mcp/`
+- **Message archive**: `<broker_root>/archive/coordinator1.jsonl` (append-only,
   drains on poll_inbox)
 - **Current branch**: `master`, ahead of `origin/master` by 3 commits
 
@@ -54,8 +54,8 @@ untracked:  Q_AND_ISSUES_COORD1.md
 ### Monitor 1: Broad broker archive watcher (CRITICAL)
 - **Task name**: `c2c inbox watcher (all sessions)`
 - **Command**: `c2c monitor --all`
-- **Watches**: `.git/c2c/mcp/` — all inbox writes and broker events across all
-  sessions, not just coordinator1's own inbox
+- **Watches**: `<broker_root>/` — all inbox writes and broker events across all
+  sessions, not just coordinator1's own inbox (broker root: `$XDG_STATE_HOME/c2c/repos/<fp>/broker/`)
 - **Why broad**: cross-agent visibility is the point of c2c; watching only your
   own inbox misses peer-to-peer routing bugs
 - **Should be**: `persistent: true`
@@ -169,7 +169,7 @@ oc-coder1 75, coder2-expert dead 2). Outer loops must be confirmed absent first.
 ## What to do on cold start (in order)
 
 1. **Poll inbox** — `mcp__c2c__poll_inbox` first thing; archive at
-   `.git/c2c/mcp/archive/coordinator1.jsonl` if empty
+   `<broker_root>/archive/coordinator1.jsonl` if empty (broker root: `$XDG_STATE_HOME/c2c/repos/<fp>/broker/`)
 2. **Re-arm Monitor 1** — TaskList, then Monitor with `c2c monitor --all`
    unless already armed
 3. **ScheduleWakeup fallback** — 1500s, full /loop prompt verbatim

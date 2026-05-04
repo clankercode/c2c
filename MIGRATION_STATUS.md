@@ -39,14 +39,14 @@ available and stable.
 | `c2c install` | ✅ | `c2c_install.py` | OCaml is primary, Python still used for wrapper scripts |
 | `c2c init` | ✅ | `c2c_init.py` | Deprecated |
 | `c2c setup` | ✅ | `c2c_setup.py` | OCaml is primary |
-| `c2c status` | ✅ | `c2c_status.py` | Deprecated |
+| `c2c status` | ✅ | `c2c_status.py` | Active (Python backend via c2c_cli.py; OCaml has `worktree status`) |
 | `c2c serve` / `c2c mcp` | ✅ | `c2c_mcp.py` | OCaml MCP is primary |
 | `c2c start` | 🔄 | `c2c_start.py` | OCaml delegates to Python |
 | `c2c stop` | ✅ | - | OCaml only |
 | `c2c restart` | 🔄 | `c2c_start.py` | OCaml delegates to Python |
 | `c2c instances` | ✅ | - | OCaml only |
 | `c2c verify` | ✅ | `c2c_verify.py` | Deprecated |
-| `c2c refresh-peer` | ✅ | `c2c_refresh_peer.py` | Deprecated |
+| `c2c refresh-peer` | ✅ | `c2c_refresh_peer.py` | Active via c2c_cli.py (OCaml has native `refresh-peer` but c2c_cli.py routes to Python) |
 | `c2c wake-peer` | ⏳ | `c2c_wake_peer.py` | Still Python (PTK injection) |
 | `c2c watch` | ⏳ | `c2c_watch.py` | Still Python |
 
@@ -70,20 +70,20 @@ available and stable.
 | `c2c relay serve` | ✅ | `c2c_relay_server.py` | Deprecated |
 | `c2c relay connect` | ⏳ | `c2c_relay_connector.py` | Still Python |
 | `c2c relay setup` | ✅ | `c2c_relay_config.py` | Deprecated |
-| `c2c relay status` | ✅ | `c2c_relay_status.py` | Deprecated |
+| `c2c relay status` | ✅ | `c2c_relay_status.py` | Active via c2c_cli.py |
 | `c2c relay list` | ✅ | - | OCaml only |
-| `c2c relay rooms` | ✅ | `c2c_relay_rooms.py` | Deprecated |
+| `c2c relay rooms` | ✅ | `c2c_relay_rooms.py` | Active via c2c_cli.py |
 | `c2c relay gc` | ✅ | `c2c_relay_gc.py` | Deprecated |
 
 ## Client Configuration (`c2c configure-*`)
 
 | Script | OCaml Status | Notes |
 |--------|--------------|-------|
-| `c2c_configure_claude_code.py` | ✅ | OCaml has `setup claude` |
-| `c2c_configure_codex.py` | ✅ | OCaml has `setup codex` |
-| `c2c_configure_kimi.py` | ✅ | OCaml has `setup kimi` |
-| `c2c_configure_opencode.py` | ✅ | OCaml has `setup opencode` |
-| `c2c_configure_crush.py` | ✅ | OCaml has `setup crush` |
+| `c2c_configure_claude_code.py` | ✅ | Active via c2c_cli.py (`c2c configure-claude-code`); OCaml has `worktree setup` (different command) |
+| `c2c_configure_codex.py` | ✅ | Active via c2c_cli.py (`c2c configure-codex`) |
+| `c2c_configure_kimi.py` | ✅ | Active via c2c_cli.py (`c2c configure-kimi`) |
+| `c2c_configure_opencode.py` | ✅ | Active via c2c_cli.py (`c2c configure-opencode`) |
+| `c2c_configure_crush.py` | ✅ | Active via c2c_cli.py (`c2c configure-crush`) |
 
 ## Wake Daemons (managed session auto-delivery)
 

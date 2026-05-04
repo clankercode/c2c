@@ -20,8 +20,7 @@ c2c start claude                     # launch a managed Claude Code session
 **Messaging**: `c2c send <alias>` (or `<alias@host>` for relay-routed remote peers), `c2c send-all`, `c2c poll-inbox`, `c2c rooms send`
 
 **Managed Sessions**: `c2c start <client>`, `c2c stop <name>`, `c2c instances`
-(client can be a harness — `claude`, `codex`, `opencode`, `kimi`, `crush`, `tmux`, `pty` —
-or `relay-connect` for the cross-host connector daemon)
+(client can be a harness — `claude`, `codex`, `opencode`, `kimi`; `crush` is **DEPRECATED** (`c2c start crush` exits 1); `tmux`/`pty` are session types; `relay-connect` for the cross-host connector daemon)
 
 **Rooms (N:N)**: `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, `c2c my-rooms`
 
@@ -41,7 +40,7 @@ See `c2c commands` for the full tiered command list.
 | Managed session launcher | `ocaml/c2c_start.ml` |
 | Legacy scripts | `deprecated/` |
 
-The OCaml `c2c` binary at `~/.local/bin/c2c` is the canonical CLI. A residual Python shim (`c2c_cli.py`) survives only to dispatch `c2c wire-daemon` and `c2c deliver-inbox` and is not for general use.
+The OCaml `c2c` binary at `~/.local/bin/c2c` is the canonical CLI. The Python CLI (`c2c_cli.py`) dispatches `start`/`stop`/`instances` to the OCaml binary, and delegates to Python backends (`c2c_status.py`, `c2c_refresh_peer.py`, `c2c_relay_*.py`, `c2c_configure_*.py`, etc.) for commands that lack OCaml equivalents. The `c2c_cli.py` layer is a stable integration surface, not a deprecated shim.
 
 ## Core Docs
 
