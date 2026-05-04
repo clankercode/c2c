@@ -35,7 +35,8 @@ nudge toward this even when the immediate AC is narrower.
     the MCP surface stays polling-based via `poll_inbox`.
   - Native scheduling: `c2c schedule set` for managed sessions — per-agent
     TOML schedules hot-reloaded every 10s, idle-gated, wall-clock aligned.
-    Fires as self-DM via broker. Shipped (S1-S5).
+    Fires as self-DM via broker. Partially shipped (S4 + S6a-S6d on master;
+    TOML file format, CLI surface, and role migration still in progress).
   - Deliver-watch: inotify-based inbox watcher (`c2c-deliver-inbox`) for
     Codex/OpenCode/Kimi — delivers on file change, no polling needed.
   - CLI: always-available fallback usable by any agent with or without
