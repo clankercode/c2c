@@ -53,7 +53,10 @@ Neither project-level nor per-instance sidecar `broker_root` fields are consulte
 | #507 change (setup always writes) | commit `509a1ef1` |
 | #504 fix (skip-when-default on config.json) | `c2c_start.ml:2176-2235` |
 
-## Status
+## Status: CLOSED (2026-05-04)
 
-Documented (#526). No code change needed. #527 addresses the plugin-reader gap
-independently.
+Documented (#526). No code change needed — asymmetry is cosmetic since the
+TypeScript plugin never reads `broker_root` from sidecar files. The broader
+broker-root split-brain class is now mitigated by `resolve_broker_root`
+rejecting legacy `.git/c2c/mcp` paths (e7686142). #527 addresses the
+plugin-reader gap independently.

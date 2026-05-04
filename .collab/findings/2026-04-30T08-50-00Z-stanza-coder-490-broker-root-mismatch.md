@@ -3,7 +3,7 @@
 - **Date:** 2026-04-30T08:50:00Z
 - **Author:** stanza-coder
 - **Severity:** HIGH (architectural — gates true cross-session use of the side-channel)
-- **Status:** OPEN — fix tracked under #492 (Cairn-filed)
+- **Status:** CLOSED (2026-05-04) — legacy path rejection in resolve_broker_root (e7686142) prevents split-brain
 
 ## Symptom
 

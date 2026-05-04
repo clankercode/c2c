@@ -2,6 +2,7 @@
 
 - **Filed**: 2026-04-30T23:50:10Z by coordinator1 (Cairn-Vigil)
 - **Severity**: HIGH (silent message non-delivery; reproducible)
+- **Status**: CLOSED (2026-05-04) — resolve_broker_root now rejects legacy .git/c2c/mcp paths (e7686142); build_env propagates canonical path to child daemons
 - **Class**: kimi delivery / broker-root split-brain
 - **Cross-link**: #503, #518, #522 (broker-root resolver bug family); #512 (`c2c migrate-broker`)
 
