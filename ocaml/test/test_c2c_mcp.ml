@@ -12760,6 +12760,107 @@ let test_delete_room_cleans_up_history () =
       in
       check int "history empty after delete" 0 (List.length history_after))
 
+(* --- registry_prune tests --- *)
+
+(* Re-define dead_pid as a function; the original is shadowed by a constant at line ~10353 *)
+let make_dead_pid () =
+  match Unix.fork () with
+  | 0 -> exit 0
+  | child ->
+      let _ = Unix.waitpid [] child in
+      let rec wait n =
+        if n <= 0 then child
+        else if not (Sys.file_exists ("/proc/" ^ string_of_int child)) then child
+        else (
+          ignore (Unix.select [] [] [] 0.005);
+          wait (n - 1))
+      in
+      wait 20
+
+let test_registry_prune_removes_dead_matching_prefix () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead1 = make_dead_pid () in
+      let dead2 = make_dead_pid () in
+      C2c_mcp.Broker.register broker ~session_id:"s-dead-1" ~alias:"test-dead-1"
+        ~pid:(Some dead1) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-dead-2" ~alias:"test-dead-2"
+        ~pid:(Some dead2) ~pid_start_time:None ();
+      let pruned =
+        C2c_mcp.Broker.registry_prune broker ~managed_session_ids:[]
+          ~patterns:["test-"]
+      in
+      check int "pruned 2 dead regs" 2 (List.length pruned);
+      let remaining = C2c_mcp.Broker.list_registrations broker in
+      check int "registry empty after prune" 0 (List.length remaining))
+
+let test_registry_prune_preserves_live_reg () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead = make_dead_pid () in
+      C2c_mcp.Broker.register broker ~session_id:"s-live" ~alias:"test-live"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-dead" ~alias:"test-dead"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      let pruned =
+        C2c_mcp.Broker.registry_prune broker ~managed_session_ids:[]
+          ~patterns:["test-"]
+      in
+      check int "pruned 1 dead reg" 1 (List.length pruned);
+      let remaining = C2c_mcp.Broker.list_registrations broker in
+      check int "1 live reg remains" 1 (List.length remaining);
+      check string "surviving alias" "test-live" (List.hd remaining).alias)
+
+let test_registry_prune_preserves_non_matching_prefix () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead1 = make_dead_pid () in
+      let dead2 = make_dead_pid () in
+      C2c_mcp.Broker.register broker ~session_id:"s-prod" ~alias:"prod-dead"
+        ~pid:(Some dead1) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-test" ~alias:"test-dead"
+        ~pid:(Some dead2) ~pid_start_time:None ();
+      let pruned =
+        C2c_mcp.Broker.registry_prune broker ~managed_session_ids:[]
+          ~patterns:["test-"]
+      in
+      check int "pruned 1 matching-prefix reg" 1 (List.length pruned);
+      let remaining = C2c_mcp.Broker.list_registrations broker in
+      check int "1 non-matching reg remains" 1 (List.length remaining);
+      check string "surviving alias" "prod-dead" (List.hd remaining).alias)
+
+let test_registry_prune_excludes_managed_session () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead1 = make_dead_pid () in
+      let dead2 = make_dead_pid () in
+      C2c_mcp.Broker.register broker ~session_id:"s-managed" ~alias:"test-managed"
+        ~pid:(Some dead1) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"s-dead" ~alias:"test-dead"
+        ~pid:(Some dead2) ~pid_start_time:None ();
+      let pruned =
+        C2c_mcp.Broker.registry_prune broker ~managed_session_ids:["s-managed"]
+          ~patterns:["test-"]
+      in
+      check int "pruned 1 non-managed reg" 1 (List.length pruned);
+      let remaining = C2c_mcp.Broker.list_registrations broker in
+      check int "1 managed reg remains" 1 (List.length remaining);
+      check string "surviving alias" "test-managed" (List.hd remaining).alias)
+
+let test_registry_prune_preview_does_not_mutate () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead = make_dead_pid () in
+      C2c_mcp.Broker.register broker ~session_id:"s-dead" ~alias:"test-dead"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      let preview =
+        C2c_mcp.Broker.registry_prune_preview broker ~managed_session_ids:[]
+          ~patterns:["test-"]
+      in
+      check int "preview shows 1 would-be-pruned" 1 (List.length preview);
+      let remaining = C2c_mcp.Broker.list_registrations broker in
+      check int "registry not mutated" 1 (List.length remaining))
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -13450,4 +13551,15 @@ let () =
                 test_delete_room_non_creator_rejected
             ; test_case "delete_room cleans up room history" `Quick
                 test_delete_room_cleans_up_history
+            (* --- registry_prune --- *)
+            ; test_case "registry_prune removes dead matching-prefix regs" `Quick
+                test_registry_prune_removes_dead_matching_prefix
+            ; test_case "registry_prune preserves live reg" `Quick
+                test_registry_prune_preserves_live_reg
+            ; test_case "registry_prune preserves non-matching prefix" `Quick
+                test_registry_prune_preserves_non_matching_prefix
+            ; test_case "registry_prune excludes managed session" `Quick
+                test_registry_prune_excludes_managed_session
+            ; test_case "registry_prune_preview does not mutate" `Quick
+                test_registry_prune_preview_does_not_mutate
             ] ) ]
