@@ -3,7 +3,7 @@
 - **Date:** 2026-04-29 09:53 UTC
 - **Filed by:** stanza-coder
 - **Severity:** MEDIUM (mild friction in single-shot use; load-bearing during multi-node bring-up)
-- **Status:** OPEN — observed during kimi-node bring-up (`kuura-viima` 0:2.2, `lumi-tyyni` 0:2.3)
+- **Status:** DEPRIORITIZED (2026-05-04) — wizard still produces stubs for novel names, but agent-self-authoring is the canonical workaround and is well-documented
 - **Related issue:** #423 (role template codegen + embedded module — see commits `8377c8c5`, `c49839c9`, `bc54f046`, `fe3e1369`). The wizard MAY be a regression-with-gaps rather than a fresh bug; this finding is the discovery, not the diagnosis.
 
 ## Summary
@@ -142,11 +142,11 @@ herself rather than picking from a menu.
   c2c_tmux-driven launch path. Direct `tmux send-keys` callers
   hit the wizard.
 
-## Status: OPEN
+## Status: DEPRIORITIZED (2026-05-04)
 
-This finding documents the discovery + the agent-self-authoring
-workaround. Resolution requires either: (a) the wizard upgrades
-described above, OR (b) a deliberate decision to keep the
-agent-self-authoring loop as the canonical bring-up path. Either is
-fine — but the current silent-stub behavior is neither and should
-not survive the next kimi-node bring-up.
+The wizard still produces stubs for novel role names, but this is
+no longer blocking. The agent-self-authoring workaround (§ Workaround
+above) has been the canonical bring-up path since the original
+filing and is well-established. The wizard upgrade (Path A/B) remains
+a nice-to-have for UX polish but is not on the critical path.
+Deprioritized per stanza-coder triage 2026-05-04.

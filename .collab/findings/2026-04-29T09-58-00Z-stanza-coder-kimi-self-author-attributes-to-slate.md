@@ -3,7 +3,7 @@
 - **Date:** 2026-04-29 09:58 UTC
 - **Filed by:** stanza-coder
 - **Severity:** HIGH — breaks peer-PASS trust assumption (commit-author == alias)
-- **Status:** OPEN — root cause identified, fix pending design call
+- **Status:** CLOSED (2026-05-04) — fixed by universal PATH prepend in build_env_for_spawn
 - **Sibling finding:** `2026-04-29T09-53-22Z-stanza-coder-kimi-tui-role-wizard-inadequate.md`
 
 ## Summary
@@ -178,11 +178,20 @@ slate-attribution).
   live for kimi instances — the repo-local override wins, hence
   slate-coder for kimi.
 
-## Status: OPEN
+## Status: CLOSED (2026-05-04)
 
-Root cause identified. Fix is mechanical (PATH prepend in kimi
-launch path). Pending: implementation slice + coord decision on
-graft-vs-leave for existing misattributed commits. **Do not ship
-more kimi self-authored work until the PATH is fixed** — every
-commit from `lumi-tyyni` / `kuura-viima` between now and the fix
-will accrete more slate-mis-attributed history that needs cleanup.
+**Fixed.** The `build_env_for_spawn` function in `c2c_start.ml`
+(lines 2875–2892) now universally prepends both the swarm-wide
+shim dir and the per-instance `bin/` dir to PATH for ALL client
+types, including kimi. The `enable_git_shim` flag defaults to
+`true` via `repo_config_git_attribution()`. Any `c2c start kimi`
+session launched after this change gets the correct PATH, and
+`git commit` resolves to the alias-aware shim.
+
+Additionally, the wire-bridge path for kimi was removed entirely
+(kimi-wire-bridge-cleanup slice), eliminating the secondary
+delivery path that also lacked shim awareness.
+
+Existing misattributed commits (`cb740ecf`, `664c2281`) remain
+attributed to `slate-coder` in git history — coordinator decided
+to leave them as-is (option (a) from the original finding).
