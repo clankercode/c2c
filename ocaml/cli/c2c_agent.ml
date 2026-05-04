@@ -250,7 +250,7 @@ let agent_new_term =
   let (description, role, compatible_clients, theme, auto_join_rooms, selected_snippets) =
     if not interactive then
       ( Option.value description ~default:"_(describe this agent's purpose)_",
-        Option.value role_type ~default:"subagent",
+        Option.value role_type ~default:"_(what kind of agent is this?)_",
         ["all"],
         theme,
         "",
@@ -307,7 +307,7 @@ let agent_new_term =
            c2c:\n\
            # Alias on the broker. Must be unique in the swarm.\n\
            # Example: willow-coder\n\
-           # alias: TODO-fill-in\n\
+            # alias: _(your-alias-here)_\n\
            # Rooms to auto-join on start (comma-separated, no spaces).\n\
            # Examples: swarm-lounge, onboarding\n\
            %s\
