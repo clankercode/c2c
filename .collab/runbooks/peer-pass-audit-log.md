@@ -109,7 +109,7 @@ Documented elsewhere; emitted by the broker when a peer-PASS
 artifact fails signature verification at the message-receive
 boundary. Sibling event in the same file. Mentioned here for
 completeness so operators don't confuse it with the rotation
-events above. See `c2c_mcp.ml::log_peer_pass_reject`.
+events above. See `c2c_mcp_helpers_post_broker.ml::log_peer_pass_reject`.
 
 ---
 

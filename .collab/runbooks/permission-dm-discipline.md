@@ -41,7 +41,7 @@ Verdict matching is **case-insensitive substring search** — `allow`, `Allow`,
 `ALLOW` all match. The verdict word must appear **in the same message as the
 token**.
 
-**How `await-reply` detects verdicts** (`c2c.ml:5039`):
+**How `await-reply` detects verdicts** (`cli/c2c.ml:5720`):
 1. Filter messages from the correct sender (`--from` flag, if provided)
 2. Check message contains the token
 3. If message contains `allow` → return `allow`

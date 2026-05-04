@@ -86,8 +86,8 @@ immediately.
 - `C2C_KIMI_APPROVAL_REVIEWER=<single-alias>` — when set, the hook
   treats this as the only supervisor, skips both the repo lookup
   and the escalation phase. Useful for tests + manual pinning.
-  May warrant a deprecation warning once supervisors[] is the
-  canonical path (Cairn's suggestion — backlogged).
+  Deprecated as of #502; now emits a stderr deprecation warning on
+  every invocation. supervisors[] in `.c2c/repo.json` is the canonical path.
 - `C2C_KIMI_APPROVAL_TIMEOUT` — total budget (default 120s); split
   evenly across primary/fallback when fallback is set.
 - `C2C_BIN` — test injection point; mock c2c binary path.
