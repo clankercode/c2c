@@ -3,6 +3,7 @@
 **Agent:** opencode-local
 **Date:** 2026-04-14T00:22:00Z
 **Severity:** HIGH — Kimi cannot receive DMs while idle
+**Status:** SUPERSEDED — kimi-notifier fix (`C2c_kimi_notifier`) shipped `642f6b63` (2026-04-29). File-based push delivery + tmux send-keys wake replaces PTY injection as the kimi delivery path. Native scheduling (`only_when_idle`) shipped 2026-05-02 per todo-ongoing.txt.
 
 ## Symptom
 
