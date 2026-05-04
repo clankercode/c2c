@@ -1133,6 +1133,69 @@ let c2c_start_session_ids () =
       else acc)
       [] (Sys.readdir base)
 
+(* --- subcommand: registry-prune -------------------------------------------- *)
+
+(** Default test-alias prefixes to prune when no explicit patterns given.
+    Covers known test/ephemeral alias generators across the codebase:
+    - "eph-" from c2c_agent.ml ephemeral instance naming
+    - "heal-" from legacy test harness
+    - "mon-" from monitoring/test harnesses
+    - "test-" from ad-hoc test registrations *)
+let default_prune_patterns = ["eph-"; "heal-"; "mon-"; "test-"; "tmp-"; "zombie-"]
+
+let registry_prune_cmd =
+  let+ patterns =
+    Cmdliner.Arg.(value & opt (list string) default_prune_patterns
+      & info ["pattern"; "p"]
+        ~docv:"PREFIX"
+        ~doc:"Alias prefix to consider for pruning. Can be passed multiple times. \
+              Default: eph-, heal-, mon-, test-, tmp-, zombie-. \
+              Only registrations matching one of these prefixes AND \
+              that are dead (no live PID, provisional expired) are pruned.")
+  and+ json = json_flag
+  and+ dry_run =
+    Cmdliner.Arg.(value & flag & info ["dry-run"; "n"]
+      ~doc:"Show what would be pruned without actually removing anything. \
+            This is the default when --force is not passed.")
+  and+ force =
+    Cmdliner.Arg.(value & flag & info ["force"; "f"]
+      ~doc:"Actually remove the matching registrations. Without this flag, \
+            the command runs in dry-run mode and exits 0 if there are matches.")
+  in
+  let patterns = if patterns = [] then default_prune_patterns else patterns in
+  let dry_run = if force then false else dry_run in
+  let managed_sids = c2c_start_session_ids () in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let pruned = C2c_mcp.Broker.registry_prune broker
+    ~managed_session_ids:managed_sids ~patterns
+  in
+  if dry_run || force then
+    let output_mode = if json then Json else Human in
+    match output_mode with
+    | Json ->
+        print_json
+          (`Assoc [ "pruned", `List (List.map (fun (r : C2c_mcp.registration) ->
+              `Assoc [ ("session_id", `String r.session_id); ("alias", `String r.alias) ])
+              pruned) ])
+    | Human ->
+        if pruned = [] then
+          Printf.printf "No stale test registrations to prune.\n"
+        else if dry_run then (
+          Printf.printf "Would prune %d stale registration(s) (dry-run):\n" (List.length pruned);
+          List.iter (fun (r : C2c_mcp.registration) ->
+            Printf.printf "  %s (%s)\n" r.alias r.session_id) pruned;
+          Printf.printf "Run with --force to actually remove them.\n"
+        ) else (
+          Printf.printf "Pruned %d stale registration(s):\n" (List.length pruned);
+          List.iter (fun (r : C2c_mcp.registration) ->
+            Printf.printf "  %s (%s)\n" r.alias r.session_id) pruned;
+          Printf.printf "Note: orphan inboxes still exist. Run 'c2c sweep --force' to clean those up.\n"
+        )
+  else
+    (* dry_run=true by default when neither --dry-run nor --force given *)
+    (Printf.eprintf "Nothing to do: use --dry-run to preview or --force to prune.\n";
+     exit 1)
+
 let force_flag =
   Cmdliner.Arg.(value & flag & info [ "force"; "f" ]
     ~doc:"Skip the alive-registration safety check and run sweep anyway.\
@@ -6369,6 +6432,7 @@ let approval_gc = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-gc" ~doc:"Sweep st
 let resolve_authorizer = Cmdliner.Cmd.v (Cmdliner.Cmd.info "resolve-authorizer" ~doc:"Resolve the first live/DnD-clear/idle-clear authorizer from authorizers[] in ~/.c2c/repo.json (#511). Exits 0 with alias on stdout, exits 1 if none qualify.") resolve_authorizer_cmd
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
 let sweep = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sweep" ~doc:"Remove dead registrations and orphan inboxes.") sweep_cmd
+let registry_prune = Cmdliner.Cmd.v (Cmdliner.Cmd.info "registry-prune" ~doc:"Remove dead test registrations matching prefix patterns (dry-run by default; --force to actually prune).") registry_prune_cmd
 let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived inbox messages.") history_cmd
 let health = Cmdliner.Cmd.v (Cmdliner.Cmd.info "health" ~doc:"Show broker health diagnostics.") health_cmd
 let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
@@ -11620,7 +11684,7 @@ let () =
   let is_agent = is_agent_session () in
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
-    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep
+    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]

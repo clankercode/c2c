@@ -2827,6 +2827,33 @@ open C2c_mcp_helpers
     do_broadcast ();
     result
 
+  (** [registry_prune t ~managed_session_ids ~patterns] — remove dead test registrations.
+      Partitions registrations into kept and pruned: a registration is pruned
+      when BOTH (1) it is dead per [is_sweep_keepable] AND (2) its alias
+      matches one of the [patterns] prefixes. Managed sessions (c2c start,
+      identified by [managed_session_ids]) are always excluded regardless of
+      alias or liveness. Returns the list of pruned registrations.
+      Does NOT touch inboxes — use [sweep] for that. *)
+  let registry_prune t ~managed_session_ids ~patterns =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      let is_test_pattern alias =
+        List.exists (fun prefix ->
+          String.length alias >= String.length prefix
+          && String.sub alias 0 (String.length prefix) = prefix)
+          patterns
+      in
+      let to_keep, to_prune =
+        List.partition (fun reg ->
+          (* Always keep managed sessions *)
+          if List.mem reg.session_id managed_session_ids then true
+          (* Keep if alive or if alias doesn't match any test pattern *)
+          else is_sweep_keepable reg || not (is_test_pattern reg.alias))
+          regs
+      in
+      if to_prune <> [] then save_registrations t to_keep;
+      to_prune)
+
   (* Scan dead-letter.jsonl for records belonging to this session and return
      them for redelivery, removing matched records from the file.
      Called on re-registration so a session that was swept between outer-loop
