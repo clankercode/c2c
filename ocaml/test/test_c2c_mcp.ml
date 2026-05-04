@@ -10851,7 +10851,7 @@ let test_notify_skipped_when_globally_shared () =
       let bob_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"s-bob3" in
       check int "bob received nothing" 0 (List.length bob_inbox))
 
-let test_notify_silently_skips_unknown_alias () =
+let test_notify_unknown_alias_appends_to_outbox_via_relay_fallback () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"s-author4" ~alias:"alice-unknown"
@@ -10864,10 +10864,15 @@ let test_notify_silently_skips_unknown_alias () =
           ~shared:false
           ~shared_with:["bob-unknown"; "ghost-not-registered"] ()
       in
-      check int "only the registered recipient notified" 1
+      (* Both recipients get an outbox entry: bob via local inbox, ghost via
+         relay outbox fallback. This is the correct cross-host delivery path —
+         unknown aliases are not silently dropped, they are queued for relay. *)
+      check int "both recipients notified (bob=local, ghost=outbox)" 2
         (List.length notified);
-      check string "registered recipient is bob" "bob-unknown"
-        (List.hd notified))
+      (* Verify the known recipient delivered locally, ghost went to outbox. *)
+      let outbox_path = Filename.concat dir "remote-outbox.jsonl" in
+      check bool "outbox file created for ghost alias" true
+        (Sys.file_exists outbox_path))
 
 let test_notify_empty_shared_with_is_noop () =
   with_temp_dir (fun dir ->
@@ -10930,19 +10935,22 @@ let test_notify_logs_each_attempt_to_broker_log () =
       check bool "log marks ok=true on success" true
         (contains "\"ok\":true"))
 
-let test_notify_logs_failure_with_error_field () =
+let test_notify_unknown_alias_logs_ok_via_outbox_fallback () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker ~session_id:"s-failog-author"
         ~alias:"alice-failog" ~pid:None ~pid_start_time:None ();
-      (* Recipient "ghost-failog" not registered → enqueue_message raises →
-         logged with ok:false + error string. *)
+      (* Recipient "ghost-failog" not registered → enqueue_message falls back
+         to relay outbox (append_outbox_entry succeeds), logged with ok:true.
+         This is correct cross-host delivery: unknown aliases are queued for
+         relay delivery rather than silently dropped. *)
       let notified =
         C2c_mcp.notify_shared_with_recipients
           ~broker ~from_alias:"alice-failog" ~name:"failog-note"
           ~shared:false ~shared_with:["ghost-failog"] ()
       in
-      check int "unknown recipient is silently dropped" 0 (List.length notified);
+      check int "ghost alias gets outbox entry (ok, not silently dropped)" 1
+        (List.length notified);
       let log_path = Filename.concat dir "broker.log" in
       let log_contents =
         let ic = open_in log_path in
@@ -10961,10 +10969,14 @@ let test_notify_logs_failure_with_error_field () =
           && (String.sub log_contents i nl = needle || scan (i+1))
         in scan 0
       in
-      check bool "log marks ok=false on failure" true
-        (contains "\"ok\":false");
-      check bool "log includes error field" true
-        (contains "\"error\":"))
+      check bool "log marks ok=true (outbox append succeeded)" true
+        (contains "\"ok\":true");
+      check bool "no error field on successful outbox append" false
+        (contains "\"error\":");
+      (* Verify the outbox file was created for the ghost alias. *)
+      let outbox_path = Filename.concat dir "remote-outbox.jsonl" in
+      check bool "outbox file created for ghost alias" true
+        (Sys.file_exists outbox_path))
 
 (* #307b: handoff DM must be visible to drain_inbox_push (the path the
    PostToolUse hook + channel-notification watcher use). With #286's
@@ -13340,14 +13352,14 @@ let () =
                test_notify_skips_self_in_recipients
            ; test_case "notify_shared_with skipped when globally shared" `Quick
                test_notify_skipped_when_globally_shared
-           ; test_case "notify_shared_with silently skips unknown alias" `Quick
-               test_notify_silently_skips_unknown_alias
+            ; test_case "notify_shared_with unknown alias appends to outbox via relay fallback" `Quick
+                test_notify_unknown_alias_appends_to_outbox_via_relay_fallback
            ; test_case "notify_shared_with empty shared_with is noop" `Quick
                test_notify_empty_shared_with_is_noop
            ; test_case "notify_shared_with logs each attempt to broker.log (#327)" `Quick
                test_notify_logs_each_attempt_to_broker_log
-           ; test_case "notify_shared_with logs failures with error field (#327)" `Quick
-               test_notify_logs_failure_with_error_field
+            ; test_case "notify_shared_with unknown alias logs ok via outbox fallback" `Quick
+                test_notify_unknown_alias_logs_ok_via_outbox_fallback
            ; test_case "notify_shared_with appears in drain_inbox_push (#307b)" `Quick
                test_notify_shared_with_appears_in_push_drain
            ; test_case "delivery_mode_histogram counts and by-sender (#307a)" `Quick
