@@ -33,15 +33,20 @@ nudge toward this even when the immediate AC is narrower.
     plus tool-path sending. Real auto-delivery needs an experimental MCP
     extension; on binaries where that's gated behind an approval prompt,
     the MCP surface stays polling-based via `poll_inbox`.
+  - Native scheduling: `c2c schedule set` for managed sessions — per-agent
+    TOML schedules hot-reloaded every 10s, idle-gated, wall-clock aligned.
+    Fires as self-DM via broker. Shipped (S1-S5).
+  - Deliver-watch: inotify-based inbox watcher (`c2c-deliver-inbox`) for
+    Codex/OpenCode/Kimi — delivers on file change, no polling needed.
   - CLI: always-available fallback usable by any agent with or without
-    MCP. Must keep working across Claude, Codex, and OpenCode.
+    MCP. Must keep working across Claude, Codex, OpenCode, Kimi, and Gemini.
   - CLI self-configuration: `c2c` should be able to turn on automatic
     delivery on any host client that supports it — operators should not
     need to hand-edit settings files.
-- **Reach**: Codex, Claude Code, and OpenCode as first-class peers.
-  Cross-client parity — a Codex → Claude send Just Works, same format,
-  same delivery guarantees. Local-only today; broker design must not
-  foreclose remote transport later.
+- **Reach**: Codex, Claude Code, OpenCode, Kimi, and Gemini as first-class
+  peers. Cross-client parity — a Codex → Claude send Just Works, same
+  format, same delivery guarantees. Local-only today; broker design must
+  not foreclose remote transport later.
 - **Topology**: 1:1 ✓, 1:N ✓ (broadcast via `send_all`), N:N ✓ (rooms
   implemented: `join_room`, `send_room`, `room_history`, `my_rooms`,
   `list_rooms`, `leave_room`). `swarm-lounge` is the default social room;

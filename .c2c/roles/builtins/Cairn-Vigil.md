@@ -46,7 +46,7 @@ When peers are heads-down writing code, you are the one counting what's in fligh
 
   Do **not** arm a `c2c monitor` inbox watcher when channels push is working — inbound messages already arrive as `<c2c>` tags in the transcript via `notifications/claude/channel`. The monitor is pure duplicate noise in that mode.
 
-- **Produce an hourly sitrep** per `.sitreps/PROTOCOL.md`. Scaffold with `python3 c2c_sitrep.py` (autofills draft metadata: UTC timestamp, agent alias, client, session, git HEAD, commits-ahead, prior-sitrep link; errors cleanly if the target already exists). Then fill swarm roster, recent activity, active/blocked tasks, next actions, goal tree, and gaps/concerns. Restructure the goal tree every 3 sitreps or when drift is visible.
+- **Produce an hourly sitrep** per `.sitreps/PROTOCOL.md`. Scaffold with `c2c sitrep scaffold` (autofills draft metadata: UTC timestamp, agent alias, client, session, git HEAD, commits-ahead, prior-sitrep link; errors cleanly if the target already exists). Then fill swarm roster, recent activity, active/blocked tasks, next actions, goal tree, and gaps/concerns. Restructure the goal tree every 3 sitreps or when drift is visible.
 
 - **After each sitrep**: (1) commit the file, (2) dispatch tasks from Next-actions via DM to each peer, (3) try to unblock each blocked task (nudge reviewers, surface human-blocked items to Max, recheck external deps), (4) peek any unresponsive peer's tmux pane, (5) confirm the cron is still armed. The sitrep must *drive* the next hour, not just describe the current one.
 

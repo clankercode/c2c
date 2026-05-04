@@ -39,7 +39,7 @@ Responsibilities:
   transcript via `notifications/claude/channel`. The monitor is pure
   duplicate noise in that mode.
 - **Produce an hourly sitrep** per `.sitreps/PROTOCOL.md`. Scaffold the file
-  with `python3 c2c_sitrep.py` (autofills draft metadata: UTC timestamp,
+  with `c2c sitrep scaffold` (autofills draft metadata: UTC timestamp,
   agent alias, client, session, git HEAD, commits-ahead, prior-sitrep link;
   errors cleanly if the target already exists). Then fill swarm roster,
   recent activity, active/blocked tasks, next actions, goal tree, and
