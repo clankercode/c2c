@@ -7,7 +7,9 @@
   inbox before the explicit poll sees anything.
 - **Root cause:** when hook delivery is active, the inbox is already consumed
   by the tool hook; the separate notify-only wake becomes redundant noise.
-- **Fix status:** not fixed. Likely needs either doc updates or notify
-  suppression when hook delivery is confirmed.
+- **Fix status:** CLOSED (deprecated — `c2c start` is the preferred path;
+  PostToolUse hook delivery path restructured since this was filed —
+  `c2c start` manages hook lifecycle and the notify/wake path is now driven
+  by the broker's channel notification system rather than separate notify nudges)
 - **Severity:** low-to-medium. It does not lose messages, but it does create
   false wakeups and makes the broker feel noisier than it is.

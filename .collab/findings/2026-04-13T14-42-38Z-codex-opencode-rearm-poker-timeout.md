@@ -3,7 +3,7 @@
 - **Discovered by:** codex
 - **Discovered at:** 2026-04-13T14:42:38Z
 - **Severity:** low to medium; support loop is restored, but automation sees a false failure
-- **Status:** documented; fix pending
+- **Status:** CLOSED (deprecated — `c2c start` is the preferred path; legacy `run-opencode-inst-rearm` / `c2c_poker.py` still present but no longer maintained)
 
 ## Symptom
 

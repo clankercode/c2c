@@ -77,9 +77,10 @@ run the usual PTY notify/poker helpers because there is no terminal to inject.
 
 ## Fix Status
 
-Not fixed by this finding. Existing fixes reduced identity collisions, but this
-current live state proves the managed receiver loop can still leave
-`opencode-local` non-sendable between worker lifetimes.
+CLOSED (deprecated — `c2c start` is the preferred path; legacy
+`run-opencode-inst-outer` still present but no longer maintained. OpenCode
+session management is now handled by `c2c start opencode` which manages
+the full lifecycle including pid tracking and liveness registration.)
 
 Recommended follow-ups:
 

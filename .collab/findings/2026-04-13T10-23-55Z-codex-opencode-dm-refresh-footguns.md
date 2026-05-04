@@ -81,9 +81,10 @@ The longer submit delay worked; OpenCode drained the broker inbox and replied.
 
 ## Fix Status
 
-Not fixed in code by this note.
-
-Recommended follow-ups:
+CLOSED (deprecated — `c2c start` is the preferred path; legacy Python
+helper scripts still present but no longer maintained. OpenCode session
+lifecycle is now managed by `c2c start opencode`; the manual refresh
+workaround is no longer needed.)
 
 - Fix the MCP `register` tool schema or handler contract so the exposed tool
   shape matches reality. If alias is required, advertise it. If no-arg refresh
