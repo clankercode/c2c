@@ -12,6 +12,7 @@ from .capabilities import (
     CLAUDE_CHANNEL,
     CODEX_HEADLESS_THREAD_ID_FD,
     CODEX_XML_FD,
+    GEMINI_MCP,
     KIMI_WIRE,
     OPENCODE_PLUGIN,
 )
@@ -285,3 +286,36 @@ class KimiAdapter:
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
         return {KIMI_WIRE: shutil.which("kimi") is not None}
+
+
+class GeminiAdapter:
+    client_name = "gemini"
+    default_backend = "tmux"
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+
+    def build_launch(self, scenario: Scenario, config: AgentConfig) -> dict[str, object]:
+        command = ["c2c", "start", self.client_name, "-n", config.name]
+        if config.role:
+            command.extend(["--agent", config.role])
+        if config.model:
+            command.extend(["--model", config.model])
+        if config.auto:
+            command.append("--auto")
+        if config.extra_args:
+            command.extend(["--", *config.extra_args])
+        return {
+            "command": command,
+            "cwd": scenario.workdir,
+            "env": dict(config.env),
+            "title": config.name,
+        }
+
+    def is_ready(self, scenario: Scenario, agent: StartedAgent) -> bool:
+        if not scenario.drivers[agent.backend].is_alive(agent.handle):
+            return False
+        return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
+
+    def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
+        return {GEMINI_MCP: shutil.which("gemini") is not None}
