@@ -58,13 +58,22 @@ let read_file path =
   Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
     really_input_string ic (in_channel_length ic))
 
+(* Built c2c binary path.  When tests run via `dune runtest` the CWD is the
+   repo root, so _build/default/ocaml/cli is the freshly-built binary tree.
+   Using this wrapper (c2c_cmd) instead of bare "c2c ..." in test bodies
+   ensures the test exercises the built binary, not the installed one in
+   ~/.local/bin (which may be stale after OCaml changes). *)
+let built_c2c_dir = "_build/default/ocaml/cli"
+let c2c_cmd partial =
+  Printf.sprintf "PATH=%s:$PATH %s" built_c2c_dir partial
+
 (* ------------------------------------------------------------------------- *)
 (* c2c doctor — verify health check output and exit 0 on clean run          *)
 (* ------------------------------------------------------------------------- *)
 
 let test_doctor_runs_and_exits_zero () =
   (* doctor requires being in the repo, so run from repo root *)
-  let cmd = "c2c doctor > /dev/null 2>&1" in
+  let cmd = c2c_cmd "c2c doctor > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c doctor exits 0" 0 rc
 
@@ -72,7 +81,7 @@ let test_doctor_output_contains_health_checks () =
   let tmpfile = Filename.temp_file "c2c-doctor" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -88,7 +97,7 @@ let test_doctor_output_contains_commits_ahead () =
   let tmpfile = Filename.temp_file "c2c-doctor" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -100,7 +109,7 @@ let test_doctor_output_contains_push_verdict () =
   let tmpfile = Filename.temp_file "c2c-doctor" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -113,7 +122,7 @@ let test_doctor_output_contains_relay_classification () =
   let tmpfile = Filename.temp_file "c2c-doctor" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -144,7 +153,7 @@ let test_config_show_exits_zero () =
   (* Run from repo root so c2c finds .c2c/config.toml *)
   match repo_root_from_git () with
   | Some root ->
-      let cmd = Printf.sprintf "cd %s && c2c config show > /dev/null 2>&1" root in
+      let cmd = Printf.sprintf "cd %s && %s" root (c2c_cmd "c2c config show > /dev/null 2>&1") in
       let rc = Sys.command cmd in
       check int "c2c config show exits 0" 0 rc
   | None -> check int "c2c config show exits 0" 1 (-1)
@@ -157,7 +166,7 @@ let test_config_show_contains_key_value_pairs () =
       let tmpfile = Filename.temp_file "c2c-config-show" ".out" in
       Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
         (fun () ->
-          ignore (Sys.command (Printf.sprintf "cd %s && c2c config show > %s 2>&1" root tmpfile));
+          ignore (Sys.command (Printf.sprintf "cd %s && %s" root (c2c_cmd (Printf.sprintf "c2c config show > %s 2>&1" tmpfile))));
           let ch = open_in tmpfile in
           let content = Fun.protect ~finally:(fun () -> close_in ch)
             (fun () -> really_input_string ch (in_channel_length ch))
@@ -174,7 +183,7 @@ let test_config_show_renders_explicit_values () =
       let tmpfile = Filename.temp_file "c2c-config-show2" ".out" in
       Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
         (fun () ->
-          ignore (Sys.command (Printf.sprintf "cd %s && c2c config show > %s 2>&1" root tmpfile));
+          ignore (Sys.command (Printf.sprintf "cd %s && %s" root (c2c_cmd (Printf.sprintf "c2c config show > %s 2>&1" tmpfile))));
           let ch = open_in tmpfile in
           let lines = Fun.protect ~finally:(fun () -> close_in ch)
             (fun () ->
@@ -193,7 +202,7 @@ let test_config_show_renders_explicit_values () =
 (* ------------------------------------------------------------------------- *)
 
 let test_agent_list_exits_zero () =
-  let cmd = "c2c agent list > /dev/null 2>&1" in
+  let cmd = c2c_cmd "c2c agent list > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c agent list exits 0" 0 rc
 
@@ -201,7 +210,7 @@ let test_agent_list_shows_role_files () =
   let tmpfile = Filename.temp_file "c2c-agent-list" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c agent list > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "c2c agent list > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let lines = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () ->
@@ -227,8 +236,8 @@ let test_agent_new_creates_role_file () =
   (* Run in a temp dir so we get a clean .c2c/roles/ with no fixtures *)
   with_temp_dir (fun tmpdir ->
     let role_name = Printf.sprintf "e2e-test-role-%08x" (Random.bits ()) in
-    let cmd = Printf.sprintf "cd %s && c2c agent new %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) role_name in
+    let cmd = Printf.sprintf "cd %s && %s" (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent new %s > /dev/null 2>&1" role_name)) in
     let rc = Sys.command cmd in
     check int "c2c agent new exits 0" 0 rc;
     (* The file should exist at .c2c/roles/<role_name>.md relative to tmpdir *)
@@ -238,8 +247,8 @@ let test_agent_new_creates_role_file () =
 let test_agent_new_role_file_is_valid_yaml () =
   with_temp_dir (fun tmpdir ->
     let role_name = Printf.sprintf "e2e-parse-test-%08x" (Random.bits ()) in
-    let cmd = Printf.sprintf "cd %s && c2c agent new %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) role_name in
+    let cmd = Printf.sprintf "cd %s && %s" (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent new %s > /dev/null 2>&1" role_name)) in
     ignore (Sys.command cmd);
     let role_path = Filename.concat tmpdir (Printf.sprintf ".c2c/roles/%s.md" role_name) in
     let exists = Sys.file_exists role_path in
@@ -262,13 +271,12 @@ let test_agent_rename_exits_zero () =
     let old_name = Printf.sprintf "e2e-rename-test-%08x" (Random.bits ()) in
     let new_name = Printf.sprintf "e2e-renamed-test-%08x" (Random.bits ()) in
     (* Create the role *)
-    ignore (Sys.command (Printf.sprintf
-      "cd %s && c2c agent new %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) old_name));
+    ignore (Sys.command (Printf.sprintf "cd %s && %s"
+      (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent new %s > /dev/null 2>&1" old_name))));
     (* Rename it *)
-    let cmd = Printf.sprintf
-      "cd %s && c2c agent rename %s %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) old_name new_name in
+    let cmd = Printf.sprintf "cd %s && %s" (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent rename %s %s > /dev/null 2>&1" old_name new_name)) in
     let rc = Sys.command cmd in
     check int "c2c agent rename exits 0" 0 rc)
 
@@ -276,12 +284,11 @@ let test_agent_rename_old_file_gone () =
   with_temp_dir (fun tmpdir ->
     let old_name = Printf.sprintf "e2e-rename-src-%08x" (Random.bits ()) in
     let new_name = Printf.sprintf "e2e-rename-dst-%08x" (Random.bits ()) in
-    ignore (Sys.command (Printf.sprintf
-      "cd %s && c2c agent new %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) old_name));
-    ignore (Sys.command (Printf.sprintf
-      "cd %s && c2c agent rename %s %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) old_name new_name));
+    ignore (Sys.command (Printf.sprintf "cd %s && %s"
+      (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent new %s > /dev/null 2>&1" old_name))));
+    ignore (Sys.command (Printf.sprintf "cd %s && %s" (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent rename %s %s > /dev/null 2>&1" old_name new_name))));
     let old_path = Filename.concat tmpdir (Printf.sprintf ".c2c/roles/%s.md" old_name) in
     check bool "old role file is gone after rename" false (Sys.file_exists old_path))
 
@@ -289,20 +296,19 @@ let test_agent_rename_new_file_exists () =
   with_temp_dir (fun tmpdir ->
     let old_name = Printf.sprintf "e2e-rename-src2-%08x" (Random.bits ()) in
     let new_name = Printf.sprintf "e2e-rename-dst2-%08x" (Random.bits ()) in
-    ignore (Sys.command (Printf.sprintf
-      "cd %s && c2c agent new %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) old_name));
-    ignore (Sys.command (Printf.sprintf
-      "cd %s && c2c agent rename %s %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) old_name new_name));
+    ignore (Sys.command (Printf.sprintf "cd %s && %s"
+      (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent new %s > /dev/null 2>&1" old_name))));
+    ignore (Sys.command (Printf.sprintf "cd %s && %s" (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent rename %s %s > /dev/null 2>&1" old_name new_name))));
     let new_path = Filename.concat tmpdir (Printf.sprintf ".c2c/roles/%s.md" new_name) in
     check bool "new role file exists after rename" true (Sys.file_exists new_path))
 
 let test_agent_rename_missing_old_exits_nonzero () =
   let nonexistent = Printf.sprintf "nonexistent-role-%08x" (Random.bits ()) in
   let new_name = Printf.sprintf "some-new-name-%08x" (Random.bits ()) in
-  let cmd = Printf.sprintf "c2c agent rename %s %s > /dev/null 2>&1"
-    nonexistent new_name in
+  let cmd = c2c_cmd (Printf.sprintf "c2c agent rename %s %s > /dev/null 2>&1"
+    nonexistent new_name) in
   let rc = Sys.command cmd in
   check bool "rename nonexistent role exits non-zero" true (rc <> 0)
 
@@ -311,16 +317,15 @@ let test_agent_rename_existing_new_exits_nonzero () =
     let name_a = Printf.sprintf "e2e-rename-a-%08x" (Random.bits ()) in
     let name_b = Printf.sprintf "e2e-rename-b-%08x" (Random.bits ()) in
     (* Create two roles *)
-    ignore (Sys.command (Printf.sprintf
-      "cd %s && c2c agent new %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) name_a));
-    ignore (Sys.command (Printf.sprintf
-      "cd %s && c2c agent new %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) name_b));
+    ignore (Sys.command (Printf.sprintf "cd %s && %s"
+      (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent new %s > /dev/null 2>&1" name_a))));
+    ignore (Sys.command (Printf.sprintf "cd %s && %s"
+      (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent new %s > /dev/null 2>&1" name_b))));
     (* Try to rename A to B — B already exists, should fail *)
-    let cmd = Printf.sprintf
-      "cd %s && c2c agent rename %s %s > /dev/null 2>&1"
-      (Filename.quote tmpdir) name_a name_b in
+    let cmd = Printf.sprintf "cd %s && %s" (Filename.quote tmpdir)
+      (c2c_cmd (Printf.sprintf "c2c agent rename %s %s > /dev/null 2>&1" name_a name_b)) in
     let rc = Sys.command cmd in
     check bool "rename to existing name exits non-zero" true (rc <> 0))
 
@@ -329,7 +334,7 @@ let test_agent_rename_existing_new_exits_nonzero () =
 (* ------------------------------------------------------------------------- *)
 
 let test_list_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 c2c list > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c list > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c list exits 0" 0 rc
 
@@ -337,7 +342,7 @@ let test_list_output_contains_peer_entries () =
   let tmpfile = Filename.temp_file "c2c-list" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "C2C_CLI_FORCE=1 c2c list > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "C2C_CLI_FORCE=1 c2c list > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let lines = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () ->
@@ -361,7 +366,7 @@ let test_list_output_contains_peer_entries () =
 let test_send_missing_args_exits_nonzero () =
   (* Missing required ALIAS and MSG args => exits non-zero.
      Cmdliner rejects missing positional args before touching the broker. *)
-  let cmd = "C2C_CLI_FORCE=1 c2c send > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c send > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check bool "c2c send with no args exits non-zero" true (rc <> 0)
 
@@ -377,8 +382,10 @@ let test_send_unknown_alias_routes_to_relay_outbox () =
         (fun () ->
           let cmd = Printf.sprintf
             "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=cli-test-send \
-             c2c send nonexistent-test-alias 'hello' > %s 2>&1"
-            (Filename.quote dir) outfile
+             %s > %s 2>&1"
+            (Filename.quote dir)
+            (c2c_cmd "c2c send nonexistent-test-alias 'hello'")
+            outfile
           in
           let rc = Sys.command cmd in
           check int "send to unknown alias exits 0 (relay fallback)" 0 rc;
@@ -392,7 +399,7 @@ let test_send_unknown_alias_routes_to_relay_outbox () =
 
 let test_whoami_exits_zero () =
   (* Use a fake session ID so whoami exits 0 even without a real registration *)
-  let cmd = "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c whoami > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c whoami > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c whoami exits 0" 0 rc
 
@@ -400,9 +407,9 @@ let test_whoami_output_contains_alias_field () =
   let tmpfile = Filename.temp_file "c2c-whoami" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
         "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c whoami > %s 2>&1"
-        tmpfile));
+        tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -418,7 +425,7 @@ let test_whoami_output_contains_alias_field () =
 (* ------------------------------------------------------------------------- *)
 
 let test_history_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c history > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c history > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c history exits 0" 0 rc
 
@@ -427,7 +434,7 @@ let test_history_exits_zero () =
 (* ------------------------------------------------------------------------- *)
 
 let test_schedule_list_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 c2c schedule list > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c schedule list > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c schedule list exits 0" 0 rc
 
@@ -435,8 +442,8 @@ let test_schedule_list_output_contains_header () =
   let tmpfile = Filename.temp_file "c2c-schedule-list" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "C2C_CLI_FORCE=1 c2c schedule list > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c schedule list > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -451,7 +458,7 @@ let test_schedule_list_output_contains_header () =
 (* ------------------------------------------------------------------------- *)
 
 let test_memory_list_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 c2c memory list > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c memory list > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c memory list exits 0" 0 rc
 
@@ -459,8 +466,8 @@ let test_memory_list_output_is_nonempty () =
   let tmpfile = Filename.temp_file "c2c-memory-list" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "C2C_CLI_FORCE=1 c2c memory list > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c memory list > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -477,7 +484,7 @@ let test_roles_validate_runs_and_shows_summary () =
   let tmpfile = Filename.temp_file "c2c-roles-validate" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c roles validate > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "c2c roles validate > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -491,7 +498,7 @@ let test_roles_validate_runs_and_shows_summary () =
 (* ------------------------------------------------------------------------- *)
 
 let test_rooms_list_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 c2c rooms list > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c rooms list > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c rooms list exits 0" 0 rc
 
@@ -499,8 +506,8 @@ let test_rooms_list_output_contains_room_entries () =
   let tmpfile = Filename.temp_file "c2c-rooms-list" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "C2C_CLI_FORCE=1 c2c rooms list > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c rooms list > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -515,13 +522,13 @@ let test_rooms_list_output_contains_room_entries () =
 
 let test_rooms_join_missing_room_exits_nonzero () =
   (* No ROOM argument provided → should exit non-zero *)
-  let cmd = "C2C_CLI_FORCE=1 c2c rooms join > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c rooms join > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check bool "c2c rooms join with no args exits non-zero" true (rc <> 0)
 
 let test_rooms_join_help_exits_zero () =
   (* --help should exit 0 even with missing required arg *)
-  let cmd = "C2C_CLI_FORCE=1 c2c rooms join --help > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c rooms join --help > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c rooms join --help exits 0" 0 rc
 
@@ -533,7 +540,7 @@ let test_doctor_output_contains_relay_info () =
   let tmpfile = Filename.temp_file "c2c-doctor-relay" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -548,7 +555,7 @@ let test_doctor_output_contains_peer_summary () =
   let tmpfile = Filename.temp_file "c2c-doctor-peers" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "c2c doctor > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -565,7 +572,7 @@ let test_doctor_output_contains_peer_summary () =
 (* ------------------------------------------------------------------------- *)
 
 let test_worktree_list_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 c2c worktree list > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c worktree list > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c worktree list exits 0" 0 rc
 
@@ -573,8 +580,8 @@ let test_worktree_list_output_contains_refs_heads () =
   let tmpfile = Filename.temp_file "c2c-worktree-list" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "C2C_CLI_FORCE=1 c2c worktree list > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c worktree list > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -588,7 +595,7 @@ let test_worktree_list_output_contains_refs_heads () =
 (* ------------------------------------------------------------------------- *)
 
 let test_instances_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 c2c instances > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c instances > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c instances exits 0" 0 rc
 
@@ -596,8 +603,8 @@ let test_instances_output_contains_managed_header () =
   let tmpfile = Filename.temp_file "c2c-instances" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "C2C_CLI_FORCE=1 c2c instances > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c instances > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -613,8 +620,8 @@ let test_instances_json_output_is_valid () =
   let tmpfile = Filename.temp_file "c2c-instances-json" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "C2C_CLI_FORCE=1 c2c instances --json > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c instances --json > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -632,7 +639,7 @@ let test_instances_json_output_is_valid () =
 (* ------------------------------------------------------------------------- *)
 
 let test_prune_rooms_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 c2c prune-rooms > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c prune-rooms > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "c2c prune-rooms exits 0" 0 rc
 
@@ -641,7 +648,7 @@ let test_prune_rooms_output_contains_eviction_info () =
   let tmpfile = Filename.temp_file "c2c-prune-rooms" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf "C2C_CLI_FORCE=1 c2c prune-rooms > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf "C2C_CLI_FORCE=1 c2c prune-rooms > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -659,9 +666,9 @@ let test_set_compact_unregistered_session () =
   let tmpfile = Filename.temp_file "c2c-set-compact" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      let rc = Sys.command (Printf.sprintf
+      let rc = Sys.command (c2c_cmd (Printf.sprintf
         "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-compact c2c set-compact --reason test > %s 2>&1"
-        tmpfile) in
+        tmpfile)) in
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -674,9 +681,9 @@ let test_clear_compact_unregistered_session () =
   let tmpfile = Filename.temp_file "c2c-clear-compact" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      let rc = Sys.command (Printf.sprintf
+      let rc = Sys.command (c2c_cmd (Printf.sprintf
         "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-compact c2c clear-compact > %s 2>&1"
-        tmpfile) in
+        tmpfile)) in
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -691,7 +698,7 @@ let test_clear_compact_unregistered_session () =
 (* ------------------------------------------------------------------------- *)
 
 let test_check_pending_reply_missing_args_exits_nonzero () =
-  let cmd = "C2C_CLI_FORCE=1 c2c check-pending-reply > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c check-pending-reply > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check bool "check-pending-reply with no args exits non-zero" true (rc <> 0)
 
@@ -699,9 +706,9 @@ let test_check_pending_reply_invalid_perm_reports_error () =
   let tmpfile = Filename.temp_file "c2c-check-pending" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
         "C2C_CLI_FORCE=1 c2c check-pending-reply nonexistent-perm fake-alias > %s 2>&1"
-        tmpfile));
+        tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -714,7 +721,7 @@ let test_check_pending_reply_invalid_perm_reports_error () =
 (* ------------------------------------------------------------------------- *)
 
 let test_agent_delete_missing_name_exits_nonzero () =
-  let cmd = "c2c agent delete > /dev/null 2>&1" in
+  let cmd = c2c_cmd "c2c agent delete > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check bool "agent delete with no name exits non-zero" true (rc <> 0)
 
@@ -722,8 +729,8 @@ let test_agent_delete_nonexistent_role_reports_error () =
   let tmpfile = Filename.temp_file "c2c-agent-delete" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      let rc = Sys.command (Printf.sprintf
-        "c2c agent delete nonexistent-test-role-xyz > %s 2>&1" tmpfile) in
+      let rc = Sys.command (c2c_cmd (Printf.sprintf
+        "c2c agent delete nonexistent-test-role-xyz > %s 2>&1" tmpfile)) in
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -744,8 +751,8 @@ let test_install_dry_run_kimi () =
   let tmpfile = Filename.temp_file "c2c-install-dry" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      let cmd = Printf.sprintf "c2c install kimi --dry-run --alias %s > %s 2>&1"
-        (Filename.quote alias) tmpfile in
+      let cmd = c2c_cmd (Printf.sprintf "c2c install kimi --dry-run --alias %s > %s 2>&1"
+        (Filename.quote alias) tmpfile) in
       let rc = Sys.command cmd in
       check int "install kimi --dry-run exits 0" 0 rc;
       let ch = open_in tmpfile in
@@ -762,8 +769,8 @@ let test_install_dry_run_opencode () =
   let tmpfile = Filename.temp_file "c2c-install-dry" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      let cmd = Printf.sprintf "c2c install opencode --dry-run --alias %s > %s 2>&1"
-        (Filename.quote alias) tmpfile in
+      let cmd = c2c_cmd (Printf.sprintf "c2c install opencode --dry-run --alias %s > %s 2>&1"
+        (Filename.quote alias) tmpfile) in
       let rc = Sys.command cmd in
       check int "install opencode --dry-run exits 0" 0 rc;
       let ch = open_in tmpfile in
@@ -778,8 +785,8 @@ let test_install_dry_run_codex () =
   let tmpfile = Filename.temp_file "c2c-install-dry" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      let cmd = Printf.sprintf "c2c install codex --dry-run --alias %s > %s 2>&1"
-        (Filename.quote alias) tmpfile in
+      let cmd = c2c_cmd (Printf.sprintf "c2c install codex --dry-run --alias %s > %s 2>&1"
+        (Filename.quote alias) tmpfile) in
       let rc = Sys.command cmd in
       check int "install codex --dry-run exits 0" 0 rc;
       let ch = open_in tmpfile in
@@ -794,7 +801,7 @@ let test_install_dry_run_codex () =
 (* ------------------------------------------------------------------------- *)
 
 let test_config_generation_client_exits_zero () =
-  let cmd = "C2C_CLI_FORCE=1 c2c config generation-client > /dev/null 2>&1" in
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c config generation-client > /dev/null 2>&1" in
   let rc = Sys.command cmd in
   check int "config generation-client exits 0" 0 rc
 
@@ -802,8 +809,8 @@ let test_config_generation_client_shows_client_name () =
   let tmpfile = Filename.temp_file "c2c-config-gen" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "C2C_CLI_FORCE=1 c2c config generation-client > %s 2>&1" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "C2C_CLI_FORCE=1 c2c config generation-client > %s 2>&1" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -890,10 +897,10 @@ let test_worktree_gc_no_worktrees () =
         (fun () ->
           (* gc from repo with a prefix that matches nothing *)
           let rc = Sys.command (
-            Printf.sprintf
-              "cd %s && c2c worktree gc --path-prefix=no-such-wt-gc-test > %s 2>&1"
+            Printf.sprintf "cd %s && %s"
               (Filename.quote repo)
-              (Filename.quote tmpfile)
+              (c2c_cmd (Printf.sprintf "c2c worktree gc --path-prefix=no-such-wt-gc-test > %s 2>&1"
+                (Filename.quote tmpfile)))
           ) in
           check int "gc with no matching worktrees exits 0" 0 rc;
           let ch = open_in tmpfile in
@@ -919,8 +926,9 @@ let test_worktree_gc_clean_removes_merged () =
          --active-window-hours=0 bypasses freshness heuristic for new worktrees.
          --path-prefix=wt matches the test worktree name. *)
       let rc = Sys.command (
-        Printf.sprintf "cd %s && c2c worktree gc --path-prefix=wt --active-window-hours=0 --clean > /dev/null 2>&1"
+        Printf.sprintf "cd %s && %s"
           (Filename.quote repo)
+          (c2c_cmd "c2c worktree gc --path-prefix=wt --active-window-hours=0 --clean > /dev/null 2>&1")
       ) in
       check int "gc --clean exits 0" 0 rc;
       (* Verify worktree is gone *)
@@ -935,10 +943,10 @@ let test_worktree_gc_refuses_dirty () =
         (fun () ->
           (* gc without --clean: dry-run, should refuse dirty worktree *)
           let rc = Sys.command (
-            Printf.sprintf
-              "cd %s && c2c worktree gc --path-prefix=wt > %s 2>&1"
+            Printf.sprintf "cd %s && %s"
               (Filename.quote repo)
-              (Filename.quote tmpfile)
+              (c2c_cmd (Printf.sprintf "c2c worktree gc --path-prefix=wt > %s 2>&1"
+                (Filename.quote tmpfile)))
           ) in
           check int "gc dry-run exits 0" 0 rc;
           let ch = open_in tmpfile in
@@ -965,7 +973,7 @@ let test_schedule_enable_nonexistent_exits_nonzero () =
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
       let rc = Sys.command
-        (Printf.sprintf "c2c schedule enable nonexistent-test-sched-xyz > %s 2>&1" tmpfile) in
+        (c2c_cmd (Printf.sprintf "c2c schedule enable nonexistent-test-sched-xyz > %s 2>&1" tmpfile)) in
       check bool "schedule enable nonexistent exits non-zero" true (rc <> 0);
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
@@ -979,7 +987,7 @@ let test_schedule_disable_nonexistent_exits_nonzero () =
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
       let rc = Sys.command
-        (Printf.sprintf "c2c schedule disable nonexistent-test-sched-xyz > %s 2>&1" tmpfile) in
+        (c2c_cmd (Printf.sprintf "c2c schedule disable nonexistent-test-sched-xyz > %s 2>&1" tmpfile)) in
       check bool "schedule disable nonexistent exits non-zero" true (rc <> 0);
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
@@ -989,11 +997,11 @@ let test_schedule_disable_nonexistent_exits_nonzero () =
         (string_contains content "not found"))
 
 let test_schedule_enable_missing_name_exits_nonzero () =
-  let rc = Sys.command "c2c schedule enable > /dev/null 2>&1" in
+  let rc = Sys.command (c2c_cmd "c2c schedule enable > /dev/null 2>&1") in
   check bool "schedule enable with no args exits non-zero" true (rc <> 0)
 
 let test_schedule_disable_missing_name_exits_nonzero () =
-  let rc = Sys.command "c2c schedule disable > /dev/null 2>&1" in
+  let rc = Sys.command (c2c_cmd "c2c schedule disable > /dev/null 2>&1") in
   check bool "schedule disable with no args exits non-zero" true (rc <> 0)
 
 let test_schedule_enable_disable_roundtrip () =
@@ -1003,20 +1011,20 @@ let test_schedule_enable_disable_roundtrip () =
   let sched_name = Printf.sprintf "test-sched-%08x" (Random.bits ()) in
   (* Create the schedule via CLI *)
   let rc_set = Sys.command
-    (Printf.sprintf "c2c schedule set %s --interval 5m --message test > /dev/null 2>&1"
-      (Filename.quote sched_name)) in
+    (c2c_cmd (Printf.sprintf "c2c schedule set %s --interval 5m --message test > /dev/null 2>&1"
+      (Filename.quote sched_name))) in
   check int "schedule set exits 0" 0 rc_set;
   Fun.protect ~finally:(fun () ->
     ignore (Sys.command
-      (Printf.sprintf "c2c schedule rm %s > /dev/null 2>&1" (Filename.quote sched_name))))
+      (c2c_cmd (Printf.sprintf "c2c schedule rm %s > /dev/null 2>&1" (Filename.quote sched_name)))))
     (fun () ->
       (* Disable the schedule *)
       let tmpfile = Filename.temp_file "c2c-sched-rt" ".out" in
       Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
         (fun () ->
           let rc = Sys.command
-            (Printf.sprintf "c2c schedule disable %s > %s 2>&1"
-              (Filename.quote sched_name) tmpfile) in
+            (c2c_cmd (Printf.sprintf "c2c schedule disable %s > %s 2>&1"
+              (Filename.quote sched_name) tmpfile)) in
           check int "schedule disable exits 0" 0 rc;
           let ch = open_in tmpfile in
           let content = Fun.protect ~finally:(fun () -> close_in ch)
@@ -1029,8 +1037,8 @@ let test_schedule_enable_disable_roundtrip () =
       Fun.protect ~finally:(fun () -> Sys.remove tmpfile2 |> ignore)
         (fun () ->
           let rc = Sys.command
-            (Printf.sprintf "c2c schedule enable %s > %s 2>&1"
-              (Filename.quote sched_name) tmpfile2) in
+            (c2c_cmd (Printf.sprintf "c2c schedule enable %s > %s 2>&1"
+              (Filename.quote sched_name) tmpfile2)) in
           check int "schedule enable exits 0" 0 rc;
           let ch = open_in tmpfile2 in
           let content = Fun.protect ~finally:(fun () -> close_in ch)
@@ -1062,7 +1070,8 @@ let with_fake_git_repo f =
 let test_peer_pass_list_empty () =
   with_fake_git_repo (fun repo ->
       (* peer_passes_dir() resolves to repo/.c2c/peer-passes — no artifacts *)
-      let cmd = Printf.sprintf "cd %s && c2c peer-pass list 2>&1" (Filename.quote repo) in
+      let cmd = Printf.sprintf "cd %s && %s" (Filename.quote repo)
+        (c2c_cmd "c2c peer-pass list 2>&1") in
       let rc = Sys.command cmd in
       check int "peer-pass list (empty) exits 0" 0 rc
     )
@@ -1089,8 +1098,10 @@ let test_peer_pass_list_shows_entries () =
           Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
             (fun () ->
               let rc = Sys.command (
-                Printf.sprintf "cd %s && c2c peer-pass list > %s 2>&1"
-                  (Filename.quote repo) (Filename.quote tmpfile)
+                Printf.sprintf "cd %s && %s"
+                  (Filename.quote repo)
+                  (c2c_cmd (Printf.sprintf "c2c peer-pass list > %s 2>&1"
+                    (Filename.quote tmpfile)))
               ) in
               check int "peer-pass list exits 0" 0 rc;
               let ch = open_in tmpfile in
@@ -1122,8 +1133,10 @@ let test_peer_pass_list_json () =
           Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
             (fun () ->
               let rc = Sys.command (
-                Printf.sprintf "cd %s && c2c peer-pass list --json > %s 2>&1"
-                  (Filename.quote repo) (Filename.quote tmpfile)
+                Printf.sprintf "cd %s && %s"
+                  (Filename.quote repo)
+                  (c2c_cmd (Printf.sprintf "c2c peer-pass list --json > %s 2>&1"
+                    (Filename.quote tmpfile)))
               ) in
               check int "peer-pass list --json exits 0" 0 rc;
               let ch = open_in tmpfile in
@@ -1150,8 +1163,8 @@ let test_peer_pass_verify_valid_artifact () =
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
         let rc = Sys.command (
-          Printf.sprintf "c2c peer-pass verify %s > %s 2>&1"
-            (Filename.quote real_art) (Filename.quote tmpfile)
+          c2c_cmd (Printf.sprintf "c2c peer-pass verify %s > %s 2>&1"
+            (Filename.quote real_art) (Filename.quote tmpfile))
         ) in
         check int "peer-pass verify exits 0" 0 rc;
         let ch = open_in tmpfile in
@@ -1167,8 +1180,8 @@ let test_peer_pass_verify_nonexistent () =
   (* Ensure it definitely does not exist *)
   (try Sys.remove nonexistent with _ -> ());
   let rc = Sys.command (
-    Printf.sprintf "c2c peer-pass verify %s > /dev/null 2>&1"
-      (Filename.quote nonexistent)
+    c2c_cmd (Printf.sprintf "c2c peer-pass verify %s > /dev/null 2>&1"
+      (Filename.quote nonexistent))
   ) in
   check bool "peer-pass verify nonexistent exits non-zero" true (rc <> 0)
 
@@ -1177,7 +1190,7 @@ let test_peer_pass_verify_nonexistent () =
 (* ------------------------------------------------------------------------- *)
 
 let test_install_all_dry_run_exits_zero () =
-  let cmd = "c2c install all --dry-run > /dev/null 2>&1 < /dev/null" in
+  let cmd = c2c_cmd "c2c install all --dry-run > /dev/null 2>&1 < /dev/null" in
   let rc = Sys.command cmd in
   check int "c2c install all --dry-run exits 0" 0 rc
 
@@ -1185,8 +1198,8 @@ let test_install_all_dry_run_shows_dry_run_markers () =
   let tmpfile = Filename.temp_file "c2c-install-all-dry" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "c2c install all --dry-run > %s 2>&1 < /dev/null" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "c2c install all --dry-run > %s 2>&1 < /dev/null" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -1198,8 +1211,8 @@ let test_install_gemini_dry_run_exits_zero () =
   let tmpfile = Filename.temp_file "c2c-install-gemini-dry" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      let rc = Sys.command (Printf.sprintf
-        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile) in
+      let rc = Sys.command (c2c_cmd (Printf.sprintf
+        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile)) in
       check int "c2c install gemini --dry-run exits 0" 0 rc;
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
@@ -1212,8 +1225,8 @@ let test_install_gemini_dry_run_shows_config_preview () =
   let tmpfile = Filename.temp_file "c2c-install-gemini-dry2" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (Printf.sprintf
-        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile));
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile)));
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
@@ -1235,8 +1248,8 @@ let test_agent_new_banner_no_double_utc () =
   let tmpfile = Filename.temp_file "c2c-agent-new-banner" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      let cmd = Printf.sprintf "c2c agent new %s > %s 2>&1"
-        (Filename.quote alias) tmpfile in
+      let cmd = c2c_cmd (Printf.sprintf "c2c agent new %s > %s 2>&1"
+        (Filename.quote alias) tmpfile) in
       ignore (Sys.command cmd);
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
