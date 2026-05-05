@@ -6,6 +6,39 @@ let ( // ) = Filename.concat
 
 let mkdir_p = C2c_mcp.mkdir_p
 
+let resolve_broker_root () = C2c_utils.resolve_broker_root ()
+
+(* ---- Email-to-alias resolution (also in c2c_coord.ml; kept here so
+    c2c_worktree.ml is self-contained for the CLI tier) ---------------- *)
+
+(** Map a git author email to a c2c broker alias.
+    Resolution order:
+      1. Built-in table (current swarm members)
+      2. None → "unknown" (caller handles gracefully) *)
+let email_to_alias_map =
+  [ "stanza-coder@c2c.im",         "stanza-coder"
+  ; "jungle-coder@c2c.im",         "jungle-coder"
+  ; "coordinator1@c2c.im",          "coordinator1"
+  ; "m@xk.io",                     "Max"
+  ; "galaxy-coder@c2c.im",         "galaxy-coder"
+  ; "slate-coder@c2c.im",          "slate-coder"
+  ; "test-agent@c2c.im",           "test-agent"
+  ; "test-agent-oc@c2c.im",        "test-agent-oc"
+  ; "tundra-coder@c2c.im",         "tundra-coder"
+  ; "storm-beacon@c2c.im",         "storm-beacon"
+  ; "storm-ember@c2c.im",          "storm-ember"
+  ; "lyra-quill@c2c.im",           "lyra-quill"
+  ; "cedar-coder@c2c.im",          "cedar-coder"
+  ; "fern-coder@c2c.im",           "fern-coder"
+  ; "birch-coder@c2c.im",          "birch-coder"
+  ; "willow-coder@c2c.im",         "willow-coder"
+  ; "c2c@c2c.im",                  "c2c"
+  ]
+
+let email_to_alias_opt email =
+  let lo = String.lowercase_ascii email in
+  List.assoc_opt lo email_to_alias_map
+
 (** [git_command ?cwd ?(quiet=false) args] runs `git <args>` in [cwd] (default: current dir)
     and returns (exit_code, stdout, stderr).
     Uses `sh -c` to change directory and optionally suppress stderr.
@@ -573,6 +606,17 @@ let format_bytes b =
   else if f >= 1.0e3 then Printf.sprintf "%.1f KB" (f /. 1.0e3)
   else Printf.sprintf "%Ld B" b
 
+(** [git_author_email ~cwd sha] returns the author email of commit [sha]
+    in the repository at [cwd]. None on error. *)
+let git_author_email ~cwd sha =
+  let (code, out, _) =
+    git_command ~cwd ~quiet:true [ "log"; "-1"; "--format=%ae"; sha ]
+  in
+  if code = 0 then
+    let email = String.trim out in
+    if email = "" || String.length email >= 6 && String.sub email 0 6 = "fatal:" then None else Some email
+  else None
+
 (** [head_sha path] returns the resolved HEAD commit SHA for the
     worktree at [path]. Empty string on error. *)
 let head_sha path =
@@ -1065,6 +1109,133 @@ let render_gc_human ~candidates ~clean ~verbose =
                    (POSSIBLY_ACTIVE skipped). Dry-run by default.\n"
   end
 
+(* ---- ask-authors GC phase --------------------------------------------
+    For worktrees classified REFUSE, auto-DM the commit author asking if
+    the worktree is still active. Reclassify based on response:
+    - "superseded" / "done" / "gone" → GcRemovable (author says GC it)
+    - "active" / "keep" / "working" → stays GcRefused (author says keep)
+    - timeout (default 60s) → stays GcRefused (no response = conservatively keep)
+ *)
+
+type ask_author_response =
+  | Response_active
+  | Response_superseded
+  | Response_timeout
+
+(** [ask_worktree_author ~broker ~our_alias ~alias ~path ~branch ~timeout_s]
+    sends a DM to [alias] asking about [path] and collects a response within
+    [timeout_s] seconds. Returns what the author said, or Response_timeout on silence.
+    The coordinator polls its own inbox for the author's reply. *)
+let ask_worktree_author ~broker ~our_alias ~alias ~path ~branch ~timeout_s =
+  let msg_body =
+    Printf.sprintf
+      "Worktree GC inquiry: is this worktree still active or superseded?\n\
+        Path: %s\n\
+        Branch: %s\n\
+       Reply with ONE word: 'active' (keep) or 'superseded' (safe to GC).\n\
+       Timeout: %d seconds."
+      path branch timeout_s
+  in
+  let start_t = Unix.gettimeofday () in
+  (* Send the DM from our coordinator alias *)
+  (try
+     C2c_mcp.Broker.enqueue_message broker ~from_alias:our_alias ~to_alias:alias
+       ~content:msg_body ()
+   with e ->
+     Printf.eprintf "[ask_authors] enqueue_message to %s failed: %s\n%!" alias (Printexc.to_string e));
+  (* Poll our own inbox for the author's reply *)
+  let our_session = match C2c_mcp.session_id_from_env () with Some s -> s | None -> "unknown" in
+  let rec poll () =
+    let elapsed = Unix.gettimeofday () -. start_t in
+    if elapsed >= Float.of_int timeout_s then Response_timeout
+    else begin
+      (* Sleep to avoid busy-looping *)
+      ignore (Unix.select [] [] [] 1.0);
+      let msgs = try C2c_mcp.Broker.read_inbox broker ~session_id:our_session
+        with _ -> [] in
+      let normalized s = String.trim (String.lowercase_ascii s) in
+      let reply = List.fold_left (fun acc (m : C2c_mcp.message) ->
+          if m.from_alias = alias then Some (normalized m.content) :: acc else acc)
+        [] msgs in
+      match reply with
+      | [] -> poll ()
+      | b :: _ ->
+          if b = "active" || b = "keep" || b = "working" then Response_active
+          else if b = "superseded" || b = "done" || b = "gone" || b = "delete" || b = "gc" then Response_superseded
+          else poll ()
+    end
+  in
+  poll ()
+
+(** [resolve_worktree_author_alias ~path] returns the c2c alias for the
+    author of the HEAD commit in [path], or None if unknown/erroneous. *)
+let resolve_worktree_author_alias ~path =
+  let sha = head_sha path in
+  if sha = "" then None
+  else
+    match git_author_email ~cwd:path sha with
+    | None -> None
+    | Some email -> email_to_alias_opt email
+
+(** [ask_authors_and_reclassify ~broker ~timeout_s ~verbose candidates] sends DMs
+    to authors of REFUSE worktrees asking if they're active. Returns [candidates]
+    with GcRefused entries potentially reclassified to GcRemovable based on
+    author responses. *)
+let ask_authors_and_reclassify ~broker ~timeout_s ~verbose candidates =
+  let refused = List.filter (fun c ->
+      match c.gc_status with GcRefused _ -> true | _ -> false)
+    candidates
+  in
+  if refused = [] then begin
+    if verbose then
+      Printf.printf "\n(no REFUSE worktrees to ask about)\n";
+    candidates
+  end else begin
+    if verbose then
+      Printf.printf "\n[--ask-authors] inquiring about %d REFUSE worktree(s)...\n"
+        (List.length refused);
+    let our_alias =
+      match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+      | Some a -> a | None -> "coordinator1"
+    in
+    let results = List.map (fun c ->
+        match resolve_worktree_author_alias ~path:c.gc_path with
+        | None ->
+            if verbose then
+              Printf.printf "  %s: could not resolve author alias (skipping)\n"
+                (Filename.basename c.gc_path);
+            (c, None)
+        | Some alias ->
+            if verbose then
+              Printf.printf "  %s: asking %s...\n"
+                (Filename.basename c.gc_path) alias;
+            let response = ask_worktree_author ~broker ~our_alias ~alias
+                ~path:c.gc_path ~branch:c.gc_branch ~timeout_s in
+            (c, Some response))
+      refused
+    in
+    (* Reclassify based on responses *)
+    List.map (fun (c, resp) ->
+        match resp with
+        | Some Response_superseded ->
+            if verbose then
+              Printf.printf "  %s: author says SUPERSEDED → GcRemovable\n"
+                (Filename.basename c.gc_path);
+            { c with gc_status = GcRemovable { reason = "author confirmed superseded via --ask-authors" } }
+        | Some Response_active ->
+            if verbose then
+              Printf.printf "  %s: author says ACTIVE → stays REFUSE\n"
+                (Filename.basename c.gc_path);
+            c
+        | Some Response_timeout ->
+            if verbose then
+              Printf.printf "  %s: author timed out → stays REFUSE\n"
+                (Filename.basename c.gc_path);
+            c
+        | None -> c)
+      results
+  end
+
 (* Emit byte counts as numeric JSON: `Int when in 63-bit OCaml int
    range (effectively always for filesystem sizes), `Intlit otherwise.
    Strings would force jq consumers to | tonumber. *)
@@ -1161,6 +1332,15 @@ let worktree_gc_term =
                  and annotate REMOVABLE worktrees that are content-equivalent \
                  (cherry-picked) rather than direct ancestors.")
   in
+  let ask_authors_flag =
+    Arg.(value & flag & info ["ask-authors"]
+           ~doc:"For REFUSE-classified worktrees, auto-DM the commit author \
+                 asking if the worktree is still active. \
+                 'superseded'/'done'/'gone' → reclassified GcRemovable. \
+                 'active'/'keep'/'working' or timeout → stays REFUSE. \
+                 Default timeout: 60s. Combined with --clean to also remove \
+                 author-confirmed superseded worktrees.")
+  in
   let interactive_flag =
     Arg.(value & flag & info ["interactive"]
            ~doc:"Interactive triage for REFUSE-classified worktrees. \
@@ -1177,9 +1357,14 @@ let worktree_gc_term =
   and+ active_window_hours = active_window_flag
   and+ age_str = age_flag
   and+ verbose = verbose_flag
-  and+ interactive = interactive_flag in
+  and+ interactive = interactive_flag
+  and+ ask_authors = ask_authors_flag in
   if interactive && json_out then begin
     Printf.eprintf "error: --interactive and --json are mutually exclusive.\n%!";
+    exit 1
+  end;
+  if ask_authors && json_out then begin
+    Printf.eprintf "error: --ask-authors and --json are mutually exclusive.\n%!";
     exit 1
   end;
   (* Parse --age value: "30d", "30", "7d" → float days *)
@@ -1211,6 +1396,14 @@ let worktree_gc_term =
             && String.sub base 0 (String.length pfx) = pfx)
           all_candidates
   in
+  (* Ask authors about REFUSE worktrees and reclassify based on responses *)
+  let candidates =
+    if ask_authors then
+      let broker_root = resolve_broker_root () in
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      ask_authors_and_reclassify ~broker ~timeout_s:60 ~verbose candidates
+    else candidates
+  in
   if interactive then begin
     ignore (interactive_triage ~candidates)
   end else if json_out then begin
@@ -1221,7 +1414,7 @@ let worktree_gc_term =
   if clean && not interactive then begin
     let removable = List.filter (fun c ->
         match c.gc_status with GcRemovable _ -> true | _ -> false)
-        candidates
+      candidates
     in
     let freed = ref 0L in
     let removed = ref 0 in
