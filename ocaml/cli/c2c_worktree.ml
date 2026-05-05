@@ -707,6 +707,23 @@ let commit_touches_noncode_paths ~(cwd : string) (sha : string) : bool =
     let paths = String.split_on_char '\n' (String.trim out) in
     List.for_all is_meta_only_path paths
 
+(** [is_meta_commit subject] returns true if the commit subject indicates
+    a "meta" commit (sitrep, docs, findings, design, chore, todo, etc.)
+    that is safe to lose during worktree GC. These are contextual artifacts
+    committed during active slice work but never cherry-picked to master. *)
+let is_meta_commit subject =
+  let s = String.lowercase_ascii subject in
+  let meta_prefixes =
+    [ "sitrep"; "docs"; "chore"; "research"; "findings"; "todo"
+    ; "collab"; "design"; "log(coord"; "wip(coord"; "wip:"; "wip("
+    ; "add .collab"; "update .collab"; "add docs"; "update docs"
+    ]
+  in
+  List.exists (fun pfx ->
+    String.length s >= String.length pfx &&
+    String.sub s 0 (String.length pfx) = pfx
+  ) meta_prefixes
+
 (** [unmerged_cherry_commits path] returns the list of (sha, subject) pairs
     for commits on this branch that are NOT content-equivalent to anything
     on origin/master (the "+" lines from git cherry). Empty list means
@@ -805,7 +822,66 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
     mk (GcRefused { reason = "dirty working tree"; unmerged_commits = [] })
   else if not (head_ancestor_of_origin_master path || head_ancestor_of_master path || head_equivalent_on_origin_master path) then
     let unmerged = unmerged_cherry_commits path in
-    mk (GcRefused { reason = "HEAD not ancestor of origin/master or master (and not content-equivalent via git-cherry)"; unmerged_commits = unmerged })
+    if unmerged = [] then
+      (* git cherry returned no '+' lines — treat as equivalent *)
+      mk (GcRemovable { reason = "content-equivalent (no unmerged commits), clean" })
+    else if List.for_all (fun (_sha, subj) -> is_meta_commit subj) unmerged then
+      (* All unmerged commits are meta (sitreps, docs, findings) — safe to lose *)
+      mk (GcRemovable { reason = Printf.sprintf "only meta commits unmerged (%d sitreps/docs/findings — safe to lose)" (List.length unmerged) })
+    else
+      (* Second-pass: check from main tree perspective. Worktree-internal
+         git cherry can miss cherry-picks that had conflict resolution
+         (different patch-id). Running from the main tree where the shared
+         object store sees both sides gives accurate results. *)
+      let head_rev =
+        let (c, o, _) = git_command ~cwd:path ~quiet:true ["rev-parse"; "HEAD"] in
+        if c = 0 then String.trim o else ""
+      in
+      let main_tree_says_equivalent =
+        if head_rev = "" then false
+        else
+          (* Run git cherry from main tree against the worktree HEAD SHA.
+             The main tree's shared object store sees both sides of cherry-picks
+             accurately, unlike running from within the worktree where shared
+             history depth confuses patch-id matching. *)
+          let main_cwd = match main_path with Some p -> p | None -> "." in
+          let (code, cherry_out, _) =
+            git_command ~cwd:main_cwd ~quiet:true
+              [ "cherry"; "refs/remotes/origin/master"; head_rev ]
+          in
+          if code <> 0 then false
+          else
+            (* Classify the main-tree's own '+' lines by subject.
+               Don't cross-reference worktree SHAs — the main tree traversal
+               produces different commit objects. Instead: if ALL '+' commits
+               from the main-tree perspective are meta → safe to GC. *)
+            let plus_lines =
+              String.split_on_char '\n' (String.trim cherry_out)
+              |> List.filter (fun line ->
+                let t = String.trim line in
+                String.length t >= 42 && t.[0] = '+')
+            in
+            if plus_lines = [] then true  (* no unmerged from main perspective *)
+            else
+              (* For each '+' SHA, get its subject and check if it's meta *)
+              let all_plus_are_meta =
+                List.for_all (fun line ->
+                  let t = String.trim line in
+                  let sha = String.sub t 2 40 in
+                  let (rc, subj, _) =
+                    git_command ~cwd:main_cwd ~quiet:true
+                      [ "log"; "-1"; "--format=%s"; sha ]
+                  in
+                  if rc <> 0 then false
+                  else is_meta_commit (String.trim subj)
+                ) plus_lines
+              in
+              all_plus_are_meta
+      in
+      if main_tree_says_equivalent then
+        mk (GcRemovable { reason = Printf.sprintf "content-equivalent from main-tree perspective (remaining unmerged are meta — safe to lose)" })
+      else
+        mk (GcRefused { reason = "HEAD not ancestor of origin/master or master (and not content-equivalent via git-cherry)"; unmerged_commits = unmerged })
   else
     let holders = if ignore_active then [] else cwd_holders path in
     match holders with
