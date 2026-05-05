@@ -274,52 +274,6 @@ let run_inotify_loop
   flush stdout
 
 (* ---------------------------------------------------------------------------
- * Daemon: fork + setsid + pgrp + log redirection
- * --------------------------------------------------------------------------- *)
-
-let start_daemon
-    ~(_child_argv : string list)
-    ~(pidfile_path : string)
-    ~(log_path : string)
-    ~(wait_timeout : float)
-    : daemon_start_result =
-  match already_running pidfile_path with
-  | true ->
-    (match read_pidfile pidfile_path with
-     | Some p -> `Already_running p
-     | None -> `Failed "pidfile exists but unreadable")
-  | false ->
-    (try Unix.unlink pidfile_path with Unix.Unix_error _ -> ());
-    (match Unix.fork () with
-     | 0 ->
-       (try ignore (Unix.setsid ()) with Unix.Unix_error _ -> ());
-       let log_dir = Filename.dirname log_path in
-       (try Unix.mkdir log_dir 0o755
-        with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-       let log_fd = Unix.openfile log_path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
-       Unix.dup2 log_fd Unix.stdout;
-       Unix.dup2 log_fd Unix.stderr;
-       Unix.close log_fd;
-       let pid = Unix.getpid () in
-       write_pidfile pidfile_path pid;
-       (assert false : daemon_start_result)
-     | child_pid ->
-       let deadline = Unix.gettimeofday () +. wait_timeout in
-       let rec wait () =
-         if Unix.gettimeofday () >= deadline then
-           `Failed "pidfile not written before timeout"
-         else
-           match read_pidfile pidfile_path with
-           | Some p when pid_is_alive p -> `Started p
-           | _ ->
-             (try ignore (Unix.waitpid [ Unix.WNOHANG ] child_pid)
-              with Unix.Unix_error _ -> ());
-             Unix.sleepf 0.1;
-             wait ()
-       in
-       wait ())
-
-(* ---------------------------------------------------------------------------
  * Inbox polling + delivery via c2c_mcp library
  * --------------------------------------------------------------------------- *)
 
@@ -345,10 +299,63 @@ let poll_once_generic ~(broker : C2c_mcp.Broker.t) ~(session_id : string)
   C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-inbox" broker ~session_id
 
 (* ---------------------------------------------------------------------------
+ * Daemon: fork + setsid + pgrp + log redirection
+ * --------------------------------------------------------------------------- *)
+
+let rec start_daemon
+    ~(_child_argv : string list)
+    ~(args : cli_args)
+    ~(pidfile_path : string)
+    ~(log_path : string)
+    : daemon_start_result =
+  match already_running pidfile_path with
+  | true ->
+    (match read_pidfile pidfile_path with
+     | Some p -> `Already_running p
+     | None -> `Failed "pidfile exists but unreadable")
+  | false ->
+    (try Unix.unlink pidfile_path with Unix.Unix_error _ -> ());
+    (match Unix.fork () with
+     | 0 ->
+       (try ignore (Unix.setsid ()) with Unix.Unix_error _ -> ());
+       let log_dir = Filename.dirname log_path in
+       (try Unix.mkdir log_dir 0o755
+        with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+       let log_fd = Unix.openfile log_path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
+       Unix.dup2 log_fd Unix.stdout;
+       Unix.dup2 log_fd Unix.stderr;
+       Unix.close log_fd;
+        let pid = Unix.getpid () in
+        write_pidfile pidfile_path pid;
+        (* G-2 fix: child falls through to run_loop instead of assert false.
+           After setsid() the child is a session leader detached from the parent's
+           terminal. The pidfile write confirms liveness before the parent returns.
+           When start_daemon is called in the exec'd path (c2c start), exec replaces
+           the child so this code is never reached; when called directly with
+           --daemon flag, we want the child to continue as the daemon. *)
+        run_loop ~args ~watched_pid:args.terminal_pid;
+        exit 0
+     | child_pid ->
+       let deadline = Unix.gettimeofday () +. args.daemon_timeout in
+       let rec wait () =
+         if Unix.gettimeofday () >= deadline then
+           `Failed "pidfile not written before timeout"
+         else
+           match read_pidfile pidfile_path with
+           | Some p when pid_is_alive p -> `Started p
+           | _ ->
+             (try ignore (Unix.waitpid [ Unix.WNOHANG ] child_pid)
+              with Unix.Unix_error _ -> ());
+             Unix.sleepf 0.1;
+             wait ()
+       in
+       wait ())
+
+(* ---------------------------------------------------------------------------
  * run_loop — poll inbox and sleep, until watched_pid exits or max_iterations
  * --------------------------------------------------------------------------- *)
 
-let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
+and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
   let session_id = args.session_id in
   if session_id = None then
     (Printf.eprintf "[c2c-deliver-inbox] --session-id required for loop mode\n%!";
@@ -598,9 +605,9 @@ let () =
   if args.daemon then begin
     match start_daemon
         ~_child_argv:(Sys.argv |> Array.to_list)
+        ~args
         ~pidfile_path
-        ~log_path
-        ~wait_timeout:args.daemon_timeout with
+        ~log_path with
     | `Already_running pid ->
       if args.json then
         Printf.printf "%s\n"

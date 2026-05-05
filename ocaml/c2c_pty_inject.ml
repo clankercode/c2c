@@ -173,27 +173,68 @@ let xml_deliver_loop_daemon
          let messages =
            C2c_mcp.Broker.drain_inbox ~drained_by:"xml" broker ~session_id
          in
-         List.iter
-           (fun (msg : C2c_mcp.message) ->
-              (* Escape all user-supplied values before interpolating into XML *)
-              let from_escaped = xml_escape msg.from_alias in
-              let to_escaped = xml_escape session_id in
-              let content_escaped = xml_escape msg.content in
-              let xml_frame =
-                Printf.sprintf
-                  "<message type=\"user\" queue=\"AfterAnyItem\"><c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c></message>\n"
-                  from_escaped to_escaped content_escaped
-              in
-              (try
-                 output_string oc xml_frame;
-                 flush oc
-               with exn ->
-                 Printf.eprintf "[c2c-deliver-inbox] XML: write failed: %s\n%!"
-                   (Printexc.to_string exn));
-              Printf.printf "[c2c-deliver-inbox] XML: delivered from %s: %s\n%!"
-                msg.from_alias
-                (String.sub msg.content 0
-                   (min (String.length msg.content) 80)))
+          List.iter
+            (fun (msg : C2c_mcp.message) ->
+               (* Escape all user-supplied values before interpolating into XML *)
+               let from_escaped = xml_escape msg.from_alias in
+               let to_escaped = xml_escape session_id in
+               let content_escaped = xml_escape msg.content in
+               let xml_frame =
+                 Printf.sprintf
+                   "<message type=\"user\" queue=\"AfterAnyItem\"><c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c></message>\n"
+                   from_escaped to_escaped content_escaped
+               in
+               (* G-5 fix: 3-retry exponential backoff for EPIPE, dead-letter on
+                  persistent failure. Transient EPIPE (reader closed temporarily) is
+                  retried; permanent failure (reader gone for good) drops to log. *)
+               let max_retries = 3 in
+               let rec retry attempt =
+                 try
+                   output_string oc xml_frame;
+                   flush oc;
+                   Printf.printf "[c2c-deliver-inbox] XML: delivered from %s: %s\n%!"
+                     msg.from_alias
+                     (String.sub msg.content 0
+                        (min (String.length msg.content) 80))
+                 with
+                 | Unix.Unix_error (Unix.EPIPE, _, _) when attempt < max_retries ->
+                   let backoff = 0.1 *. (2.0 ** float_of_int attempt) in
+                   Printf.eprintf "[c2c-deliver-inbox] XML: EPIPE on attempt %d, retrying in %.1fs...\n%!"
+                     attempt backoff;
+                   ignore (Unix.select [] [] [] backoff);
+                   retry (attempt + 1)
+                 | Unix.Unix_error (Unix.EPIPE, _, _) ->
+                   (* Permanent EPIPE after all retries — dead-letter *)
+                   let dl_path = Filename.concat broker_root "xml-dead-letter.jsonl" in
+                   let dl_entry = Yojson.Safe.pretty_to_string (
+                     `Assoc [
+                       "ts", `Float (Unix.gettimeofday ());
+                       "session_id", `String session_id;
+                       "message_id", (match msg.message_id with Some id -> `String id | None -> `Null);
+                       "from_alias", `String msg.from_alias;
+                       "to_alias", `String session_id;
+                       "content", `String msg.content;
+                       "reason", `String "EPIPE after 3 retries"
+                     ])
+                   in
+                   (try
+                      let dl_fd = Unix.openfile dl_path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ] 0o644 in
+                      Fun.protect ~finally:(fun () -> Unix.close dl_fd)
+                        (fun () ->
+                          let oc = Unix.out_channel_of_descr dl_fd in
+                          output_string oc dl_entry;
+                          output_char oc '\n';
+                          flush oc);
+                      Printf.eprintf "[c2c-deliver-inbox] XML: dead-lettered message from %s after EPIPE\n%!"
+                        msg.from_alias
+                    with _ ->
+                      Printf.eprintf "[c2c-deliver-inbox] XML: dead-letter write failed for %s\n%!"
+                        msg.from_alias)
+                 | exn ->
+                   Printf.eprintf "[c2c-deliver-inbox] XML: write failed (non-EPIPE): %s\n%!"
+                     (Printexc.to_string exn)
+               in
+               retry 0)
            messages;
          total_delivered := !total_delivered + List.length messages;
          (if List.length messages > 0 then

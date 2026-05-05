@@ -286,7 +286,7 @@ let test_relay_send_all_broadcasts_to_all_except_sender () =
       if List.length skipped <> 0 then fail_fmt "no skipped"
   | _ -> fail_fmt "expected Ok"
 
-let test_relay_join_room_adds_member () =
+let[@warning "-21"] test_relay_join_room_adds_member () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
