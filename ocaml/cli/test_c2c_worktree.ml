@@ -46,15 +46,20 @@ let make_repo_with_worktree dir wt_state =
   sh "git -C %s commit -q -m a" (Filename.quote repo);
   (* Synthesize origin/master without needing a real remote. *)
   sh "git -C %s update-ref refs/remotes/origin/master HEAD" (Filename.quote repo);
-  (match wt_state with
-   | `Clean ->
-       sh "git -C %s worktree add %s origin/master"
-         (Filename.quote repo) (Filename.quote wt)
-   | `Dirty ->
-       sh "git -C %s worktree add %s origin/master"
-         (Filename.quote repo) (Filename.quote wt);
-       sh "echo modified > %s/dirty.txt" (Filename.quote wt)
-   | `Ahead ->
+   (match wt_state with
+    | `Clean ->
+        sh "git -C %s worktree add %s origin/master"
+          (Filename.quote repo) (Filename.quote wt)
+    | `Dirty ->
+        sh "git -C %s worktree add %s origin/master"
+          (Filename.quote repo) (Filename.quote wt);
+        sh "echo modified > %s/dirty.txt" (Filename.quote wt)
+    | `Meta_dirty ->
+        sh "git -C %s worktree add %s origin/master"
+          (Filename.quote repo) (Filename.quote wt);
+        sh "mkdir -p %s/.sitreps" (Filename.quote wt);
+        sh "echo daily > %s/.sitreps/report.md" (Filename.quote wt)
+    | `Ahead ->
        sh "git -C %s worktree add -b ahead %s origin/master"
          (Filename.quote repo) (Filename.quote wt);
        sh "echo b > %s/g" (Filename.quote wt);
@@ -70,14 +75,15 @@ let make_repo_with_worktree dir wt_state =
    defaults to 0.0 which disables the #314 freshness heuristic — the
    #313-era tests don't depend on it; #314 tests pass an explicit value. *)
 let classify_in_worktree
-    ?(active_window_hours = 0.0) ~main_path ~ignore_active wt =
+    ?(active_window_hours = 0.0) ?(strict_dirt = false)
+    ~main_path ~ignore_active wt =
   let prev = Sys.getcwd () in
   Fun.protect
     ~finally:(fun () -> try Sys.chdir prev with _ -> ())
     (fun () ->
       Sys.chdir wt;
       C2c_worktree.classify_worktree
-        ~main_path ~ignore_active ~active_window_hours
+        ~main_path ~ignore_active ~active_window_hours ~strict_dirt
         (Filename.basename wt, wt, ""))
 
 let with_tmp_dir f =
@@ -110,6 +116,34 @@ let test_classify_dirty_is_refused () =
       | C2c_worktree.GcRefused { reason; _ } | C2c_worktree.GcPossiblyActive { reason } ->
           check bool "refuse mentions dirty" true (contains reason "dirty")
       | _ -> fail "dirty should be refused")
+
+let test_classify_meta_dirty_is_removable () =
+  (* A worktree dirty only due to .sitreps/ files should be treated as
+     clean (meta-ignored) and therefore REMOVABLE when strict_dirt=false. *)
+  with_tmp_dir (fun dir ->
+      let (_repo, wt) = make_repo_with_worktree dir `Meta_dirty in
+      let c =
+        classify_in_worktree ~main_path:None ~ignore_active:true ~strict_dirt:false wt
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcRemovable _ -> ()
+      | C2c_worktree.GcRefused { reason; _ } | C2c_worktree.GcPossiblyActive { reason } ->
+          fail (Printf.sprintf "meta-only dirty should be removable; got: %s" reason))
+
+let test_classify_meta_dirty_strict_is_refused () =
+  (* Same situation but with strict_dirt=true → should be REFUSED. *)
+  with_tmp_dir (fun dir ->
+      let (_repo, wt) = make_repo_with_worktree dir `Meta_dirty in
+      let c =
+        classify_in_worktree ~main_path:None ~ignore_active:true ~strict_dirt:true wt
+      in
+      match c.C2c_worktree.gc_status with
+      | C2c_worktree.GcRefused { reason; _ } ->
+          check bool "refuse mentions dirty" true (contains reason "dirty")
+      | C2c_worktree.GcPossiblyActive { reason } ->
+          fail (Printf.sprintf "strict meta-dirty should be refused; got POSSIBLY_ACTIVE: %s" reason)
+      | C2c_worktree.GcRemovable _ ->
+          fail "strict meta-dirty should be refused, not removable")
 
 let test_classify_ahead_is_refused () =
   with_tmp_dir (fun dir ->
@@ -243,7 +277,7 @@ let test_is_meta_only_path_memory () =
     (C2c_worktree.is_meta_only_path ".c2c/memory/my-note.md")
 
 let test_is_meta_only_path_dotgit () =
-  check bool ".git prefix is meta-only" true
+  check bool ".git/ prefix is meta-only" true
     (C2c_worktree.is_meta_only_path ".git/worktrees/foo")
 
 let test_is_meta_only_path_real_code () =
@@ -255,7 +289,9 @@ let test_is_meta_only_path_real_code_nested () =
     (C2c_worktree.is_meta_only_path "lib/c2c_worktree.ml")
 
 let test_is_meta_only_path_dotgitignore () =
-  (* .gitignore does NOT start with ".git/" so it is NOT meta-only *)
+  (* .gitignore does NOT start with ".git/" so it is NOT meta-only.
+     This is a regression test: the function previously checked ".git" (4
+     chars) which incorrectly flagged .gitignore as meta-only. *)
   check bool ".gitignore is real code (not meta-only)" false
     (C2c_worktree.is_meta_only_path ".gitignore")
 
@@ -466,6 +502,10 @@ let () =
             test_possibly_active_disabled_when_window_zero
         ; test_case "old admin mtime + HEAD==origin → REMOVABLE (#314 lyra regress)" `Quick
             test_old_worktree_at_origin_classifies_removable_not_possibly_active
+        ; test_case "meta-only dirty → REMOVABLE (strict_dirt=false)" `Quick
+            test_classify_meta_dirty_is_removable
+        ; test_case "meta-only dirty → REFUSE (strict_dirt=true)" `Quick
+            test_classify_meta_dirty_strict_is_refused
         ] )
     ; ( "gc_json",
         [ test_case "json_of_int64 small → `Int" `Quick

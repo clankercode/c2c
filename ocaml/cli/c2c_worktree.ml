@@ -405,16 +405,77 @@ let worktree_check_bases_term =
      - the main worktree itself (defense-in-depth: even if list_worktrees
        returns it, it's filtered out)
 
-   The "ancestor of origin/master" boundary is the deliberately stricter
-   choice — local master may have unpushed cherry-picks, but origin is
-   the provably-reproducible baseline. Implication: worktrees won't GC
-   until after a push lands their branch on origin/master. *)
+    The "ancestor of origin/master" boundary is the deliberately stricter
+    choice — local master may have unpushed cherry-picks, but origin is
+    the provably-reproducible baseline. Implication: worktrees won't GC
+    until after a push lands their branch on origin/master. *)
 
-(** [is_dirty path] returns true if the worktree at [path] has any
-    uncommitted changes (per `git status --porcelain`). *)
-let is_dirty path =
+(** [is_meta_only_path path] returns true if [path] (a file or directory
+    within a worktree) is a "meta" path — sitrep, collab doc, personal
+    log, or common build-artifact path — rather than real code. These paths
+    are excluded from the "real code blocking GC" check (both for commit-level
+    meta-filter and for the dirty-tree meta-ignorance feature). *)
+let is_meta_only_path (path : string) : bool =
+  (* Prefix-based patterns (dirs) *)
+  List.exists (fun prefix ->
+    String.length path >= String.length prefix
+    && String.sub path 0 (String.length prefix) = prefix)
+    [ ".sitreps/"
+    ; ".collab/updates/"
+    ; ".collab/design/"
+    ; ".c2c/personal-logs/"
+    ; ".c2c/memory/"
+    ; "volumes/"      (* Docker/compose volumes *)
+    ; "_build/"       (* Dune build output *) ]
+  || (String.length path >= 4 && String.sub path 0 4 = ".git")
+  (* Suffix-based patterns (common artifact file types) *)
+  || (List.exists (fun suffix ->
+         let len = String.length suffix in
+         String.length path >= len
+         && String.sub path (String.length path - len) len = suffix)
+        [ ".log"; ".lock"; ".bak" ])
+
+(** [commit_touches_noncode_paths ~cwd sha] returns true if commit [sha]
+    only touches meta paths (sitreps, collab docs, personal logs, .git).
+    Uses `git diff-tree --no-commit-id --name-only -r` to list paths.
+    Returns false if any path is real code. *)
+let commit_touches_noncode_paths ~(cwd : string) (sha : string) : bool =
+  let (code, out, _) =
+    git_command ~cwd ~quiet:true
+      [ "diff-tree"; "--no-commit-id"; "--name-only"; "-r"; sha ]
+  in
+  if code <> 0 then false
+  else
+    let paths = String.split_on_char '\n' (String.trim out) in
+    List.for_all is_meta_only_path paths
+
+(** [is_dirty ?strict path] returns true if the worktree at [path] has
+    uncommitted changes.
+
+    When [strict] is false (default), meta-only and artifact paths
+    (.sitreps/, .collab/, volumes/, _build/, *.log, *.lock, *.bak, etc.)
+    are filtered from the dirty check — a worktree whose only dirty files
+    are these meta/artifact paths is considered NOT dirty.
+
+    When [strict] is true, any git status output means dirty (the original
+    behaviour, restored via the --strict-dirty flag). *)
+let is_dirty ?(strict : bool = false) path =
   let (_, out, _) = git_command ~cwd:path ~quiet:true [ "status"; "--porcelain" ] in
-  String.trim out <> ""
+  let out = String.trim out in
+  if out = "" then false
+  else if strict then true
+  else
+    (* Parse porcelain output and check if ALL dirty paths are ignorable.
+       Porcelain format: "XY filename" where XY is status, filename starts at pos 3.
+       Lines are '\n'-separated. *)
+    let lines = String.split_on_char '\n' out in
+    let dirty_non_meta = List.filter (fun line ->
+      if String.length line < 4 then false
+      else
+        let filename = String.sub line 3 (String.length line - 3) in
+        not (is_meta_only_path filename)
+    ) lines in
+    dirty_non_meta <> []
 
 (** [head_ancestor_of_origin_master path] returns true if the worktree
     HEAD is an ancestor of origin/master. Works for both attached
@@ -679,10 +740,12 @@ let worktree_age_seconds path =
        with _ -> None)
 
 (** [is_meta_only_path path] returns true if [path] (a file or directory
-    within a worktree) is a "meta" path — sitrep, collab doc, or personal
-    log — rather than real code. These paths are excluded from the "real code
-    blocking GC" check. *)
+    within a worktree) is a "meta" path — sitrep, collab doc, personal
+    log, or common build-artifact path — rather than real code. These paths
+    are excluded from the "real code blocking GC" check (both for commit-level
+    meta-filter and for the dirty-tree meta-ignorance feature). *)
 let is_meta_only_path (path : string) : bool =
+  (* Prefix-based patterns (dirs) *)
   List.exists (fun prefix ->
     String.length path >= String.length prefix
     && String.sub path 0 (String.length prefix) = prefix)
@@ -690,11 +753,19 @@ let is_meta_only_path (path : string) : bool =
     ; ".collab/updates/"
     ; ".collab/design/"
     ; ".c2c/personal-logs/"
-    ; ".c2c/memory/" ]
+    ; ".c2c/memory/"
+    ; "volumes/"      (* Docker/compose volumes *)
+    ; "_build/"       (* Dune build output *) ]
   || (String.length path >= 5 && String.sub path 0 5 = ".git/"
       (* .git/ prefixes .git/worktrees, .git/config, etc. — git internals.
          .gitignore and .gitattributes do NOT start with .git/ — they are
          project files in the working tree, not git-internal metadata. *))
+  (* Suffix-based patterns (common artifact file types) *)
+  || (List.exists (fun suffix ->
+         let len = String.length suffix in
+         String.length path >= len
+         && String.sub path (String.length path - len) len = suffix)
+        [ ".log"; ".lock"; ".bak" ])
 
 (** [commit_touches_noncode_paths ~cwd sha] returns true if commit [sha]
     only touches meta paths (sitreps, collab docs, personal logs, .git).
@@ -726,7 +797,6 @@ let is_meta_commit subject =
     String.length s >= String.length pfx &&
     String.sub s 0 (String.length pfx) = pfx
   ) meta_prefixes
-
 (** [unmerged_cherry_commits path] returns the list of (sha, subject) pairs
     for commits on this branch that are NOT content-equivalent to anything
     on origin/master (the "+" lines from git cherry). Empty list means
@@ -802,7 +872,7 @@ let snapshot_age_seconds path =
        with _ -> None)
 
 let classify_worktree ~main_path ~ignore_active ~active_window_hours
-    (_alias, path, branch) =
+    ~strict_dirt (_alias, path, branch) =
   let size = worktree_size_bytes path in
   let mk st = { gc_path = path; gc_branch = branch; gc_size = size; gc_status = st } in
   (* Snapshot admin-dir mtime BEFORE any git commands run (#314):
@@ -821,7 +891,7 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
           p_norm = m_norm
       | None -> false) then
     mk (GcRefused { reason = "main worktree (never offered)"; unmerged_commits = [] })
-  else if is_dirty path then
+  else if is_dirty ~strict:strict_dirt path then
     mk (GcRefused { reason = "dirty working tree"; unmerged_commits = [] })
   else if not (head_ancestor_of_origin_master path || head_ancestor_of_master path || head_equivalent_on_origin_master path) then
     let unmerged = unmerged_cherry_commits path in
@@ -939,7 +1009,7 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
     via git-cherry" checks, this gives a "old AND definitely abandoned"
     signal for safe GC. *)
 let scan_worktrees_for_gc ~ignore_active ~active_window_hours
-    ~age_threshold_days () =
+    ~strict_dirt ~age_threshold_days () =
   let main_path = main_worktree_path () in
   let main_norm = match main_path with
     | Some mp -> (try Some (Unix.realpath mp) with _ -> Some mp)
@@ -987,7 +1057,7 @@ let scan_worktrees_for_gc ~ignore_active ~active_window_hours
           candidates
   in
   List.map
-    (classify_worktree ~main_path ~ignore_active ~active_window_hours)
+    (classify_worktree ~main_path ~ignore_active ~active_window_hours ~strict_dirt)
     candidates
 
 (** Parallel git-batched worktree GC scan using a bounded thread pool.
@@ -1839,6 +1909,15 @@ let worktree_gc_term =
                  as REMOVABLE. Use this to only trust the git-ancestor and \
                  git-cherry equivalence checks.")
   in
+  let strict_dirty_flag =
+    Arg.(value & flag & info ["strict-dirty"]
+           ~doc:"Disable dirty-path meta-ignorance: a worktree with any \
+                 git-status output (even if only meta/artifact files like \
+                 .sitreps/, volumes/, *.log, *.lock) is considered dirty. \
+                 Default (without this flag): meta-only dirty paths are \
+                 filtered, so a worktree dirty only due to build artifacts \
+                 or sitrep logs is treated as clean.")
+  in
   let parallel_flag =
     Arg.(value & flag & info ["parallel"; "P"]
            ~doc:"Use parallel scan (32 threads) for large worktree sets. \
@@ -1855,6 +1934,7 @@ let worktree_gc_term =
   and+ interactive = interactive_flag
   and+ ask_authors = ask_authors_flag
   and+ no_meta_filter = no_meta_filter_flag
+  and+ strict_dirty = strict_dirty_flag
   and+ shared_orphan_threshold = shared_orphan_threshold_flag
   and+ parallel = parallel_flag in
   let meta_filter = not no_meta_filter in
@@ -1886,7 +1966,7 @@ let worktree_gc_term =
       scan_worktrees_for_gc_parallel ~ignore_active ~active_window_hours ()
     else
       scan_worktrees_for_gc ~ignore_active ~active_window_hours
-        ~age_threshold_days ()
+        ~strict_dirt:strict_dirty ~age_threshold_days ()
   in
   let candidates = match path_prefix with
     | None -> all_candidates
