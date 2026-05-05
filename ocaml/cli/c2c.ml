@@ -7611,11 +7611,7 @@ let dev_status_sub =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "status"
     ~doc:"Show managed instance status.") dev_status_cmd
 
-let dev_group =
-  let info = Cmdliner.Cmd.info "dev"
-    ~doc:"Developer/operator commands for c2c swarm internals."
-  in
-  Cmdliner.Cmd.group info ~default:dev_status_cmd [ dev_status_sub ]
+(* dev_group is defined later, after all subcommands it contains *)
 
 (* --- subcommand: doctor --------------------------------------------------- *)
 
@@ -11737,6 +11733,42 @@ let try_fast_path () =
     | _ -> ()
   end
 
+let dev_group =
+  let info = Cmdliner.Cmd.info "dev"
+    ~doc:"Developer/operator commands for c2c swarm internals."
+  in
+  Cmdliner.Cmd.group info ~default:dev_status_cmd
+    [ dev_status_sub; diag; restart_self; smoke_test; inject ]
+
+(* Deprecated top-level aliases — warn on stderr BEFORE execution.
+   We prepend a side-effecting term via `and+` that fires during argument
+   evaluation (before the command body), using Cmdliner.Term.const with
+   a thunk forced by map. *)
+let deprecation_wrap ~old_name ~new_path (cmd_term : unit Cmdliner.Term.t) : unit Cmdliner.Term.t =
+  let open Cmdliner.Term in
+  let warn_term =
+    const () |> map (fun () ->
+      Printf.eprintf "[DEPRECATED] c2c %s is now c2c %s. Updating in 2 releases.\n%!" old_name new_path)
+  in
+  let+ () = warn_term and+ () = cmd_term in
+  ()
+
+let diag_deprecated =
+  Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"[DEPRECATED: use c2c dev diag]")
+    (deprecation_wrap ~old_name:"diag" ~new_path:"dev diag" diag_cmd)
+
+let restart_self_deprecated =
+  Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart-self" ~doc:"[DEPRECATED: use c2c dev restart-self]")
+    (deprecation_wrap ~old_name:"restart-self" ~new_path:"dev restart-self" restart_self_cmd)
+
+let smoke_test_deprecated =
+  Cmdliner.Cmd.v (Cmdliner.Cmd.info "smoke-test" ~doc:"[DEPRECATED: use c2c dev smoke-test]")
+    (deprecation_wrap ~old_name:"smoke-test" ~new_path:"dev smoke-test" smoke_test_cmd)
+
+let inject_deprecated =
+  Cmdliner.Cmd.v (Cmdliner.Cmd.info "inject" ~doc:"[DEPRECATED: use c2c dev inject]")
+    (deprecation_wrap ~old_name:"inject" ~new_path:"dev inject" inject_cmd)
+
 let () =
   try_fast_path ();
   sanitize_help_env ();
@@ -11748,8 +11780,8 @@ let () =
   let all_cmds =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
-    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
-    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; dev_group; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
+    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; completion_cmd
+    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances; diag_deprecated; dev_group; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit
