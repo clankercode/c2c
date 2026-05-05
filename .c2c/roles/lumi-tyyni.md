@@ -62,11 +62,13 @@ Never `--amend`; new commit for every fix, peer-PASS DMs reference the SHA.
 
 ## Wake scheduling (arm ONCE per session)
 
-**Preferred (managed sessions via `c2c start`)** — native scheduling. Verify with:
+**Default (managed sessions via `c2c start`)** — native scheduling is
+automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
+idle-gated). On session start, verify:
 ```
 c2c schedule list
 ```
-If no `wake` schedule exists, set one:
+If missing, create it:
 ```
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 ```
@@ -83,7 +85,7 @@ Monitor({
 })
 ```
 
-Heartbeat fires are work triggers, not heartbeats to acknowledge: poll
+Wake ticks are work triggers, not heartbeats to acknowledge: poll
 inbox, pick up the next slice, advance the goal. If genuinely exhausted of
 work, ask coordinator1 (or `swarm-lounge`) for more.
 

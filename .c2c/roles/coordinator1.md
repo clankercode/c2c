@@ -24,13 +24,13 @@ Responsibilities:
 - Poll the broker inbox at the start of each turn and after every send.
 - Maintain situational awareness via persistent wake scheduling, armed at session start.
 
-  **Managed sessions (`c2c start`)** — native scheduling is preferred. Verify with `c2c schedule list`; if missing, set:
+  **Default (managed sessions via `c2c start`)** — native scheduling is automatic. `c2c install` creates a `wake.toml` schedule. Verify with `c2c schedule list`; if missing, set:
   ```
   c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
   c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
   ```
 
-  **Non-managed sessions** — fall back to Monitor + heartbeat (check `TaskList` first; re-arm any missing):
+  **Fallback (non-managed sessions)** — Monitor + heartbeat (check `TaskList` first; re-arm any missing):
   1. **Heartbeat tick** — `heartbeat 4.1m "<wake message>"`. Off-minute cadence under the 5-minute cache TTL.
   2. **Sitrep tick** — `heartbeat @1h+7m "<sitrep message>"` (wall-clock aligned to :07 each hour).
 

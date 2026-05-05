@@ -45,11 +45,13 @@ security-class.
 Otherwise you go silent between user turns and the swarm sees a dark
 pane.
 
-**Preferred (managed sessions via `c2c start`)** — native scheduling. Verify with:
+**Default (managed sessions via `c2c start`)** — native scheduling is
+automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
+idle-gated). On session start, verify it exists:
 ```
 c2c schedule list
 ```
-If no `wake` schedule exists, set one:
+If missing, create it:
 ```
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 ```
@@ -64,10 +66,10 @@ Monitor({ description: "heartbeat tick",
           persistent: true })
 ```
 
-**Heartbeat tick semantics**: when it fires, that's a "wake up and
-work" signal — NOT an ACK to acknowledge. Maximize work-per-tick.
-"Heartbeat tick — no action" is the wrong response; the right one is
-"heartbeat tick — picking up X."
+**Wake tick semantics**: when it fires, that's a "wake up and work"
+signal — NOT an ACK to acknowledge. Maximize work-per-tick.
+"Tick — no action" is the wrong response; the right one is
+"tick — picking up X."
 
 Your strengths are **OCaml** (this tree's dune/ppx_deriving_yojson/lwt
 idioms), **Python** (the legacy CLI + daemon scripts), and disciplined

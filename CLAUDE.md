@@ -197,18 +197,25 @@ Full runbook: `.collab/runbooks/agent-wake-setup.md` — native scheduling
 via `c2c schedule set`, `/loop` vs Monitor tradeoffs, cost analysis,
 deduplication (#342), and the canonical recipes. TL;DR:
 
-**Managed sessions (`c2c start`)** — native scheduling is preferred.
-Schedules are hot-reloaded every 10s from `.c2c/schedules/<alias>/`:
+**Default (managed sessions via `c2c start`)** — native scheduling is
+automatic. `c2c install <client>` auto-creates a `wake.toml` schedule
+(interval=4.1m, idle-gated). On session start, verify it exists:
 
+```
+c2c schedule list
+```
+
+If missing or needs customization:
 ```
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 # Coordinator roles also:
 c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
 ```
 
-Verify with `c2c schedule list`. MCP: `schedule_set`, `schedule_list`, `schedule_rm`.
+Inspect a single entry with `c2c schedule show <name>`. MCP tools:
+`schedule_set`, `schedule_list`, `schedule_rm`.
 
-**Non-managed sessions** — fall back to Monitor + heartbeat binary:
+**Fallback (non-managed sessions)** — Monitor + heartbeat binary:
 
 ```
 Monitor({ description: "heartbeat tick",

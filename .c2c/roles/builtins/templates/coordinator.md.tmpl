@@ -28,7 +28,9 @@ Orientation before action. Don't route a slice in your first response.
 
 ## Wake scheduling (arm ONCE per session)
 
-**Preferred (managed sessions via `c2c start`)** — native scheduling. Verify with:
+**Default (managed sessions via `c2c start`)** — native scheduling is
+automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
+idle-gated). On session start, verify:
 ```
 c2c schedule list
 ```
@@ -57,7 +59,7 @@ Monitor({ description: "sitrep tick (hourly @:07)",
           persistent: true })
 ```
 
-**Heartbeat tick semantics**: fires = work trigger, NOT ACK. "Tick — no
+**Wake tick semantics**: fires = work trigger, NOT ACK. "Tick — no
 action" is wrong; "tick — picking up X" is right.
 
 ## Responsibilities

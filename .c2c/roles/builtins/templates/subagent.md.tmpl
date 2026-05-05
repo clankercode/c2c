@@ -24,11 +24,13 @@ Then: take your first slice when greenlit. Bounded, small.
 
 ## Wake scheduling (arm ONCE per session)
 
-**Preferred (managed sessions via `c2c start`)** — native scheduling. Verify with:
+**Default (managed sessions via `c2c start`)** — native scheduling is
+automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
+idle-gated). On session start, verify:
 ```
 c2c schedule list
 ```
-If no `wake` schedule exists, set one:
+If missing, create it:
 ```
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 ```
@@ -44,7 +46,7 @@ Monitor({ description: "heartbeat tick",
           persistent: true })
 ```
 
-**Heartbeat tick semantics**: fires = work trigger, NOT ACK.
+**Wake tick semantics**: fires = work trigger, NOT ACK.
 "tick — no action" is wrong; "tick — picking up X" is right.
 
 ## Build + install
