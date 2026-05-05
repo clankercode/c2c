@@ -1579,72 +1579,58 @@ let deduplicate_shared_orphans ~threshold candidates =
   if threshold <= 0 then candidates
   else begin
     let sha_counts = sha_count_map_of_refused candidates in
-    (* DEBUG: print top 5 SHAs and total map size *)
-    let all_entries = Hashtbl.fold (fun sha cnt acc -> (sha, cnt) :: acc) sha_counts [] in
-    let sorted = List.sort (fun (_, c1) (_, c2) -> Int.compare c2 c1) all_entries in
-    let top5 = List.filteri (fun i _ -> i < 5) sorted in
-    Printf.eprintf "[shared-orphan dedup] sha_counts map size: %d, top 5 SHAs:\n%!" (Hashtbl.length sha_counts);
-    List.iter (fun (sha, cnt) ->
-      let short = if String.length sha >= 8 then String.sub sha 0 8 else sha in
-      Printf.eprintf "  %s (+%d worktrees)\n%!" short cnt
-    ) top5;
-    let result, reclassified, kept =
-      List.fold_left (fun (acc, reclassified, kept) c ->
-        match c.gc_status with
-        | GcRefused { reason; unmerged_commits } ->
-            if unmerged_commits = [] then (c :: acc, reclassified, kept + 1)
-            else begin
-              (* Partition unmerged commits into shared orphans vs unique commits *)
-              let unique_commits, shared_commits =
-                List.fold_left (fun (uniq, shared) (sha, subj) ->
-                  let bare_sha = String.sub sha 0 (min 40 (String.length sha)) in
-                  let cnt = try Hashtbl.find sha_counts bare_sha with Not_found -> 0 in
-                  if is_shared_orphan ~threshold cnt then
-                    (uniq, (bare_sha, cnt, subj) :: shared)
-                  else
-                    ((bare_sha, cnt, subj) :: uniq, shared)
-                ) ([], []) unmerged_commits
-              in
-              (* Layer 1: all shared orphans → REMOVABLE *)
-              if unique_commits = [] then begin
-                let top_shares =
-                  List.sort (fun (_, c1, _) (_, c2, _) -> Int.compare c2 c1)
-                    shared_commits
-                  |> List.filteri (fun i _ -> i < 3)
-                in
-                let reason_strs =
-                  List.map (fun (sha, cnt, _) ->
-                    let short = if String.length sha >= 8 then String.sub sha 0 8 else sha in
-                    Printf.sprintf "%s(+%d)" short cnt
-                  ) top_shares
-                in
-                let reason' = Printf.sprintf "shared-orphan (all %d unmerged SHAs shared across >%d worktrees: %s)"
-                  (List.length unmerged_commits) threshold (String.concat ", " reason_strs)
-                in
-                ({ c with gc_status = GcRemovable { reason = reason' } } :: acc, reclassified + 1, kept)
-              end else begin
-                (* Layer 2: unique commits — check if they are ALL meta-only *)
-                let all_meta_only =
-                  List.fold_left (fun ok (bare_sha, _, _) ->
-                    ok && commit_touches_noncode_paths ~cwd:c.gc_path bare_sha
-                  ) true unique_commits
-                in
-                if all_meta_only then
-                  let n_unique = List.length unique_commits in
-                  let n_shared = List.length shared_commits in
-                  let reason' = Printf.sprintf "meta-only (all %d unique commit(s) touch only sitrep/docs/meta; %d shared orphans filtered)"
-                    n_unique n_shared
-                  in
-                  ({ c with gc_status = GcRemovable { reason = reason' } } :: acc, reclassified + 1, kept)
+    List.map (fun c ->
+      match c.gc_status with
+      | GcRefused { reason; unmerged_commits } ->
+          if unmerged_commits = [] then c
+          else begin
+            (* Partition unmerged commits into shared orphans vs unique commits *)
+            let unique_commits, shared_commits =
+              List.fold_left (fun (uniq, shared) (sha, subj) ->
+                let bare_sha = String.sub sha 0 (min 40 (String.length sha)) in
+                let cnt = try Hashtbl.find sha_counts bare_sha with Not_found -> 0 in
+                if is_shared_orphan ~threshold cnt then
+                  (uniq, (bare_sha, cnt, subj) :: shared)
                 else
-                  (c :: acc, reclassified, kept + 1)
-              end
+                  ((bare_sha, cnt, subj) :: uniq, shared)
+              ) ([], []) unmerged_commits
+            in
+            (* Layer 1: all shared orphans → REMOVABLE *)
+            if unique_commits = [] then begin
+              let top_shares =
+                List.sort (fun (_, c1, _) (_, c2, _) -> Int.compare c2 c1)
+                  shared_commits
+                |> List.filteri (fun i _ -> i < 3)
+              in
+              let reason_strs =
+                List.map (fun (sha, cnt, _) ->
+                  let short = if String.length sha >= 8 then String.sub sha 0 8 else sha in
+                  Printf.sprintf "%s(+%d)" short cnt
+                ) top_shares
+              in
+              let reason' = Printf.sprintf "shared-orphan (all %d unmerged SHAs shared across >%d worktrees: %s)"
+                (List.length unmerged_commits) threshold (String.concat ", " reason_strs)
+              in
+              { c with gc_status = GcRemovable { reason = reason' } }
+            end else begin
+              (* Layer 2: unique commits — check if they are ALL meta-only *)
+              let all_meta_only =
+                List.fold_left (fun ok (bare_sha, _, _) ->
+                  ok && commit_touches_noncode_paths ~cwd:c.gc_path bare_sha
+                ) true unique_commits
+              in
+              if all_meta_only then
+                let n_unique = List.length unique_commits in
+                let n_shared = List.length shared_commits in
+                let reason' = Printf.sprintf "meta-only (all %d unique commit(s) touch only sitrep/docs/meta; %d shared orphans filtered)"
+                  n_unique n_shared
+                in
+                { c with gc_status = GcRemovable { reason = reason' } }
+              else c
             end
-        | _ -> (c :: acc, reclassified, kept))
-        ([], 0, 0) candidates
-    in
-    Printf.eprintf "[shared-orphan dedup] reclassified: %d, kept REFUSE: %d\n%!" reclassified kept;
-    result
+          end
+      | _ -> c)
+      candidates
   end
 
 (* ---- ask-authors GC phase --------------------------------------------
