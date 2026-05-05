@@ -2106,6 +2106,31 @@ let worktree_gc_term =
           | _ -> c)
         candidates
   in
+  (* Fresh-worktree protection: when --clean is passed, worktrees whose HEAD
+     commit is younger than 30 minutes are promoted from GcRemovable to
+     GcPossibly_ACTIVE — this is an absolute time-based guard that bypasses
+     the admin-dir mtime heuristic. Prevents newly-created worktrees from
+     being removed by --clean even if they appear "abandoned" by other signals.
+     Applied after all other classification so GcRemovable is confirmed. *)
+  let candidates =
+    if clean then
+      let fresh_threshold_s = 30.0 *. 60.0 in
+      List.map (fun c ->
+        match c.gc_status with
+        | GcRemovable { reason } ->
+            (match head_age_seconds c.gc_path with
+             | None -> c  (* can't determine age — keep REMOVABLE *)
+             | Some age_s when age_s < fresh_threshold_s ->
+                 { c with gc_status = GcPossiblyActive
+                            { reason = Printf.sprintf
+                                "fresh worktree (HEAD %.0fmin old); --clean skipped \
+                                 (was REMOVABLE: %s)"
+                                (age_s /. 60.0) reason } }
+             | Some _ -> c)  (* old enough — keep REMOVABLE *)
+        | _ -> c)
+      candidates
+    else candidates
+  in
   if interactive then begin
     ignore (interactive_triage ~candidates)
   end else if json_out then begin
