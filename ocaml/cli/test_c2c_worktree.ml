@@ -299,6 +299,38 @@ let test_is_meta_only_path_deep_sitreps () =
   check bool "deep sitrep path is meta-only" true
     (C2c_worktree.is_meta_only_path ".sitreps/subdir/2026-05-05.md")
 
+let test_is_meta_only_path_volumes_dir () =
+  (* volumes/ is a Docker/compose directory, not user code *)
+  check bool "volumes/ prefix is meta-only" true
+    (C2c_worktree.is_meta_only_path "volumes/data/db.sqlite")
+
+let test_is_meta_only_path_build_dir () =
+  (* _build/ is Dune's output directory, not user code *)
+  check bool "_build/ prefix is meta-only" true
+    (C2c_worktree.is_meta_only_path "_build/default/ocaml/cli/c2c.exe")
+
+let test_is_meta_only_path_log_suffix () =
+  check bool ".log suffix is meta-only" true
+    (C2c_worktree.is_meta_only_path "server.log")
+
+let test_is_meta_only_path_lock_suffix () =
+  check bool ".lock suffix is meta-only" true
+    (C2c_worktree.is_meta_only_path "yarn.lock")
+
+let test_is_meta_only_path_bak_suffix () =
+  check bool ".bak suffix is meta-only" true
+    (C2c_worktree.is_meta_only_path "backup.bak")
+
+let test_is_meta_only_path_volumes_false () =
+  (* "volumes" appears mid-path but is NOT the volumes/ prefix *)
+  check bool "src/volumes_helper.ml is NOT meta-only" false
+    (C2c_worktree.is_meta_only_path "src/volumes_helper.ml")
+
+let test_is_meta_only_path_build_false () =
+  (* "build/" is not "_build/" — must be exact prefix match *)
+  check bool "build/output.js is NOT meta-only" false
+    (C2c_worktree.is_meta_only_path "build/output.js")
+
 (* ── sha_count_map_of_refused ─────────────────────────────────────────── *)
 
 let make_gc_candidate path branch size status =
@@ -537,6 +569,20 @@ let () =
             test_is_meta_only_path_dotgitignore
         ; test_case "deep .sitreps/ path → true" `Quick
             test_is_meta_only_path_deep_sitreps
+        ; test_case "volumes/ prefix → true" `Quick
+            test_is_meta_only_path_volumes_dir
+        ; test_case "_build/ prefix → true" `Quick
+            test_is_meta_only_path_build_dir
+        ; test_case ".log suffix → true" `Quick
+            test_is_meta_only_path_log_suffix
+        ; test_case ".lock suffix → true" `Quick
+            test_is_meta_only_path_lock_suffix
+        ; test_case ".bak suffix → true" `Quick
+            test_is_meta_only_path_bak_suffix
+        ; test_case "src/volumes_helper.ml → false (not prefix)" `Quick
+            test_is_meta_only_path_volumes_false
+        ; test_case "build/output.js → false (not _build/)" `Quick
+            test_is_meta_only_path_build_false
         ] )
     ; ( "sha_count_map_of_refused",
         [ test_case "empty candidates → empty map" `Quick
