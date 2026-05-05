@@ -1181,7 +1181,46 @@ let classify_from_git_batch batch (_alias, path, branch) main_path
     mk (GcRefused { reason = "dirty working tree"; unmerged_commits = [] })
   else if not (gb_head_ancestor_of_origin_master || gb_head_ancestor_of_master || gb_head_equivalent) then
     let unmerged = unmerged_cherry_commits path in
-    mk (GcRefused { reason = "HEAD not ancestor of origin/master or master (and not content-equivalent via git-cherry)"; unmerged_commits = unmerged })
+    if unmerged = [] then
+      mk (GcRemovable { reason = "content-equivalent (no unmerged commits), clean" })
+    else if List.for_all (fun (_sha, subj) -> is_meta_commit subj) unmerged then
+      mk (GcRemovable { reason = Printf.sprintf "only meta commits unmerged (%d sitreps/docs/findings — safe to lose)" (List.length unmerged) })
+    else
+      (* Second-pass: main-tree perspective cherry check *)
+      let head_rev = gb_head_sha in
+      let main_tree_says_equivalent =
+        if head_rev = "" then false
+        else
+          let main_cwd = match main_path with Some p -> p | None -> "." in
+          let (code, cherry_out, _) =
+            git_command ~cwd:main_cwd ~quiet:true
+              [ "cherry"; "refs/remotes/origin/master"; head_rev ]
+          in
+          if code <> 0 then false
+          else
+            let plus_lines =
+              String.split_on_char '\n' (String.trim cherry_out)
+              |> List.filter (fun line ->
+                let t = String.trim line in
+                String.length t >= 42 && t.[0] = '+')
+            in
+            if plus_lines = [] then true
+            else
+              List.for_all (fun line ->
+                let t = String.trim line in
+                let sha = String.sub t 2 40 in
+                let (rc, subj, _) =
+                  git_command ~cwd:main_cwd ~quiet:true
+                    [ "log"; "-1"; "--format=%s"; sha ]
+                in
+                if rc <> 0 then false
+                else is_meta_commit (String.trim subj)
+              ) plus_lines
+      in
+      if main_tree_says_equivalent then
+        mk (GcRemovable { reason = "content-equivalent from main-tree perspective (remaining unmerged are meta — safe to lose)" })
+      else
+        mk (GcRefused { reason = "HEAD not ancestor of origin/master or master (and not content-equivalent via git-cherry)"; unmerged_commits = unmerged })
   else
     match gb_cwd_holders with
     | (pid, cmd) :: _ ->
