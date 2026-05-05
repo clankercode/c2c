@@ -745,10 +745,10 @@ safe variant.
 
 **Caveat on `git gc`**: Raw `git gc --prune=now` can aggressively
 prune objects needed by other worktrees (though git's reference
-counting usually prevents actual loss). Always use `c2c worktree gc`
+counting usually prevents actual loss). Always use `c2c dev worktree gc`
 (#313) which respects worktree state, not raw `git gc`. This runbook
 does not make `git gc` its own pattern; the safe interface is
-`c2c worktree gc`.
+`c2c dev worktree gc`.
 
 **Class membership**: Pattern 6 (`git reset --hard`) destroys
 working-tree content. Pattern 14 destroys branch identity. Both are
@@ -1121,7 +1121,7 @@ shortcut — those will create the next agent's footgun finding.
 - `.collab/runbooks/git-workflow.md` — overall slice / commit
   / push discipline (5 rules from #324).
 - `.collab/runbooks/worktree-per-feature.md` — worktree
-  mechanics + `--worktree` flag + `c2c worktree gc` integration.
+  mechanics + `--worktree` flag + `c2c dev worktree gc` integration.
 - `.collab/runbooks/branch-per-slice.md` — slice sizing and
   drive-by discipline.
 

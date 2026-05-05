@@ -42,7 +42,7 @@ cd .worktrees/slice-<desc>
 Or use the helper:
 
 ```bash
-c2c worktree start slice-<desc>     # codifies the directive
+c2c dev worktree start slice-<desc>     # codifies the directive
 ```
 
 Why: the main tree is shared. Branch switching there changes files
@@ -250,7 +250,7 @@ half-applied refactors, or a base predating the latest cherry-picks.
 
 Symptoms of having done this:
 
-- Other agents' `c2c worktree gc --help` (or any new subcommand from
+- Other agents' `c2c dev worktree gc --help` (or any new subcommand from
   a recently-landed slice) returns "unknown command" — your install
   reverted them.
 - Operator notices "lots of debug logs" from the running broker
@@ -505,5 +505,5 @@ a live peer.
 - `worktree-per-feature.md` — worktree mechanics + `c2c start --worktree`
 - `branch-per-slice.md` — slice sizing, naming, drive-by discipline
 - `CLAUDE.md` — top-level project rules (this runbook expands on them)
-- `c2c worktree --help` — CLI reference
+- `c2c dev worktree --help` — CLI reference
 - `c2c peer-pass --help` — signed peer-PASS artifacts and bundled coordinator notifications

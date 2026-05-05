@@ -94,14 +94,14 @@ slice start → c2c start --worktree → worktree created
     ↓
 peer-PASS → coord-PASS → merged to master
     ↓
-c2c worktree prune   ← removes stale worktree entries
+c2c dev worktree prune   ← removes stale worktree entries
 git worktree remove .c2c/worktrees/<alias>   ← if desired
 ```
 
 When the slice is done:
 1. The slice branch is merged to master and deleted.
 2. The worktree is now pointing at a deleted branch — it becomes stale.
-3. Run `c2c worktree prune` (wraps `git worktree prune`) to clean up.
+3. Run `c2c dev worktree prune` (wraps `git worktree prune`) to clean up.
 4. The next slice creates a fresh worktree on the new branch.
 
 ---
@@ -128,7 +128,7 @@ will complain. Branches can only be checked out in one location at a time.
 
 ### "My worktree's branch was merged and deleted — now git is upset"
 
-Run `c2c worktree prune` to clean up stale entries. Then `c2c start --worktree`
+Run `c2c dev worktree prune` to clean up stale entries. Then `c2c start --worktree`
 on your next slice to get a fresh one.
 
 ### "My subagent ran `git stash` and disrupted the main tree" (#373)
@@ -166,14 +166,14 @@ cherry-pick cleanup. Do not silently re-commit.
 ## Worktree CLI
 
 ```bash
-c2c worktree list      # list all registered worktrees + branches
-c2c worktree status    # show current worktree (if in one) or all
-c2c worktree prune     # remove stale/dead worktree admin entries
-c2c worktree gc        # detect+remove worktrees safe to delete (#313)
-c2c worktree setup     # create agent/<alias> permanent home worktree (for long-running agents)
+c2c dev worktree list      # list all registered worktrees + branches
+c2c dev worktree status    # show current worktree (if in one) or all
+c2c dev worktree prune     # remove stale/dead worktree admin entries
+c2c dev worktree gc        # detect+remove worktrees safe to delete (#313)
+c2c dev worktree setup     # create agent/<alias> permanent home worktree (for long-running agents)
 ```
 
-### `c2c worktree gc` (#313)
+### `c2c dev worktree gc` (#313)
 
 `prune` and `gc` are sibling tools with different jobs:
 
@@ -224,13 +224,13 @@ POSSIBLY_ACTIVE list.
 Flags:
 
 ```bash
-c2c worktree gc                          # dry-run, all worktrees
-c2c worktree gc --clean                  # actually remove REMOVABLE set
-c2c worktree gc --json                   # machine-readable output
-c2c worktree gc --ignore-active          # skip cwd-holder check
-c2c worktree gc --path-prefix=PFX        # bound to worktrees whose
+c2c dev worktree gc                          # dry-run, all worktrees
+c2c dev worktree gc --clean                  # actually remove REMOVABLE set
+c2c dev worktree gc --json                   # machine-readable output
+c2c dev worktree gc --ignore-active          # skip cwd-holder check
+c2c dev worktree gc --path-prefix=PFX        # bound to worktrees whose
                                          # basename starts with PFX
-c2c worktree gc --active-window-hours=H  # freshness window for
+c2c dev worktree gc --active-window-hours=H  # freshness window for
                                          # POSSIBLY_ACTIVE (default 2,
                                          # set 0 to disable)
 ```
@@ -238,7 +238,7 @@ c2c worktree gc --active-window-hours=H  # freshness window for
 The "ancestor of `origin/master`" boundary means worktrees won't GC
 until after their branch lands on origin — fits the project's
 batch-and-hold push cadence. After a coord-gated push that
-fast-forwards `origin/master`, `c2c worktree gc` will surface the
+fast-forwards `origin/master`, `c2c dev worktree gc` will surface the
 newly-landed slice worktrees as REMOVABLE.
 
 `setup` is for creating a **permanent agent home** (on `agent/<alias>` branch) — distinct
@@ -259,10 +259,10 @@ c2c start claude --worktree
 c2c start opencode --worktree --branch slice/NNN-description
 
 # Check your worktrees
-c2c worktree list
+c2c dev worktree list
 
 # Clean up after slice merges
-c2c worktree prune
+c2c dev worktree prune
 ```
 
 ---
