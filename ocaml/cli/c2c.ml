@@ -2147,6 +2147,7 @@ let health_cmd =
   ; mi_created_at : float option
   ; mi_tmux_location : string option
   ; mi_expected_cwd : string option
+  ; mi_role : string option
   }
 
 let read_managed_instances () =
@@ -2238,26 +2239,36 @@ let read_managed_instances () =
                 | _ -> None
               with _ -> None)
             else None
-          in
-           let expected_cwd =
-             let ec_path = C2c_start.expected_cwd_path name in
-             if Sys.file_exists ec_path then
-               (try
-                  let ic = open_in ec_path in
-                  Fun.protect ~finally:(fun () -> close_in ic)
-                    (fun () -> try Some (String.trim (input_line ic)) with End_of_file -> None)
-                with _ -> None)
-             else None
            in
-           { mi_name = name
-          ; mi_client = client
-          ; mi_status = status
-          ; mi_delivery_mode = delivery_mode
-          ; mi_pid = pid
-          ; mi_created_at = created_at
-          ; mi_tmux_location = tmux_location
-          ; mi_expected_cwd = expected_cwd
-          })
+            let expected_cwd =
+              let ec_path = C2c_start.expected_cwd_path name in
+              if Sys.file_exists ec_path then
+                (try
+                   let ic = open_in ec_path in
+                   Fun.protect ~finally:(fun () -> close_in ic)
+                     (fun () -> try Some (String.trim (input_line ic)) with End_of_file -> None)
+                 with _ -> None)
+              else None
+            in
+            let mi_role =
+              try
+                let role_path = C2c_role.resolve_agent_path ~name ~client in
+                if Sys.file_exists role_path then
+                  let r = C2c_role.parse_file role_path in
+                  Some r.C2c_role.role
+                else None
+              with _ -> None
+            in
+            { mi_name = name
+           ; mi_client = client
+           ; mi_status = status
+           ; mi_delivery_mode = delivery_mode
+           ; mi_pid = pid
+           ; mi_created_at = created_at
+           ; mi_tmux_location = tmux_location
+           ; mi_expected_cwd = expected_cwd
+           ; mi_role
+           })
 
 let safe_is_directory path =
   try Sys.file_exists path && Sys.is_directory path with Sys_error _ -> false
@@ -7549,12 +7560,18 @@ let diag = Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"Show diagnostic info (
 (* --- dev command group: c2c dev ------------------------------------------ *)
 
 let dev_status_cmd =
+  let alive_only =
+    Cmdliner.Arg.(value & flag & info [ "alive-only" ]
+      ~doc:"Show only running instances.")
+  in
   let json =
     Cmdliner.Arg.(value & flag & info [ "json" ]
       ~doc:"Output machine-readable JSON.")
   in
-  let+ json = json in
+  let+ alive_only = alive_only
+  and+ json = json in
   let instances = read_managed_instances () in
+  let alive_instances = if alive_only then List.filter (fun i -> i.mi_status = "running") instances else instances in
   let now = Unix.gettimeofday () in
   let age_of (ts : float) =
     let delta = now -. ts in
@@ -7582,16 +7599,20 @@ let dev_status_cmd =
       | None -> base
     in
     let base = match inst.mi_created_at with
-      | Some ts -> ("created_at", `String (age_of ts)) :: base
+      | Some ts -> ("created_at", `String (age_of ts)) :: ("created_unix", `Float ts) :: base
+      | None -> base
+    in
+    let base = match inst.mi_role with
+      | Some r -> ("role", `String r) :: base
       | None -> base
     in
     `Assoc base
   in
   match json with
   | true ->
-      print_json (`List (List.map inst_to_json instances))
+      print_json (`List (List.map inst_to_json alive_instances))
   | false ->
-      if instances = [] then
+      if alive_instances = [] then
         Printf.printf "No managed instances.\n"
       else begin
         Printf.printf "Managed instances:\n";
@@ -7602,9 +7623,13 @@ let dev_status_cmd =
             | Some ts -> " created=" ^ age_of ts
             | None -> ""
           in
-          Printf.printf "  %-20s %-10s %-12s%s%s%s\n"
-            inst.mi_name inst.mi_client inst.mi_status pid_str tmux_str created_str
-        ) instances
+          let role_str = match inst.mi_role with
+            | Some r -> " [" ^ r ^ "]"
+            | None -> ""
+          in
+          Printf.printf "  %-20s %-10s %-12s%s%s%s%s\n"
+            inst.mi_name inst.mi_client inst.mi_status pid_str tmux_str created_str role_str
+        ) alive_instances
       end
 
 let dev_status_sub =
