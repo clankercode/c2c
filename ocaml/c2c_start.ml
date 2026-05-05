@@ -985,6 +985,151 @@ let resolve_managed_heartbeats ~(client : string) ~(deliver_started : bool)
   |> List.filter (should_heartbeat_apply_to_client ~client ~deliver_started)
   |> List.filter (should_heartbeat_apply_to_role ~role)
 
+(* S5: role -> schedule persistence.
+   Returns role-derived heartbeats separately so they can be:
+   (a) written to .c2c/schedules/<alias>/ before the watcher starts
+   (b) skipped in the direct start_managed_heartbeat path (watcher picks them up)
+
+   Config/per-agent heartbeats are returned as the second element and are
+   started directly (not persisted — they come from repo config or instance
+   dirs, not role files). *)
+let resolve_managed_heartbeats_and_persist_role
+    ~(client : string) ~(deliver_started : bool)
+    ~(role : C2c_role.t option)
+    ?(per_agent_specs : managed_heartbeat list = [])
+    (config_specs : managed_heartbeat list) :
+    managed_heartbeat list * managed_heartbeat list =
+  let merged_config = merge_heartbeats (builtin_managed_heartbeat :: config_specs) in
+  let merged_role, role_hbs =
+    match role with
+    | None -> merged_config, []
+    | Some r ->
+        let role_default =
+          if r.C2c_role.c2c_heartbeat = [] then []
+          else
+            let base =
+              Option.value
+                (List.find_opt
+                   (fun hb -> hb.heartbeat_name = "default")
+                   merged_config)
+                ~default:builtin_managed_heartbeat
+            in
+            [ heartbeat_from_entries ~name:"default" base
+                (normalized_role_default_entries r) ]
+        in
+        let role_named =
+          role_named_heartbeat_entries r
+          |> List.map (fun (name, entries) ->
+               let base =
+                 Option.value
+                   (List.find_opt
+                      (fun hb -> hb.heartbeat_name = name)
+                      merged_config)
+                   ~default:{ builtin_managed_heartbeat with
+                               heartbeat_name = name }
+               in
+               heartbeat_from_entries ~name base entries)
+        in
+        let role_hbs = role_default @ role_named in
+        (* role_hbs: heartbeat entries DEFINED by the role (not from merged_config).
+           These are what we persist to .toml and let the watcher start.
+           merged_role: full merged set including merged_config — same as the
+           original resolve_managed_heartbeats output. *)
+        merge_heartbeats (merged_config @ role_hbs), role_hbs
+  in
+  let merged = merge_heartbeats (merged_role @ per_agent_specs) in
+  let filtered =
+    merged
+    |> List.filter (should_heartbeat_apply_to_client ~client ~deliver_started)
+    |> List.filter (should_heartbeat_apply_to_role ~role)
+  in
+  (* Split: role_hbs that passed filters are persisted; rest are started directly *)
+  let role_filtered =
+    role_hbs
+    |> List.filter (should_heartbeat_apply_to_client ~client ~deliver_started)
+    |> List.filter (should_heartbeat_apply_to_role ~role)
+  in
+  let non_role = List.filter (fun hb -> not (List.mem hb role_filtered)) filtered in
+  non_role, role_filtered
+
+(* S5: Convert a managed_heartbeat (role-derived) to a schedule_entry for TOML
+   persistence. Inverse of managed_heartbeat_of_schedule_entry.
+
+   Duration -> string conversion: the same durations used in heartbeat.toml
+   (e.g. "4.1m", "1h", "30s"). We serialize as bare seconds when clean,
+   otherwise as float+s suffix. *)
+let format_duration_s (s : float) : string =
+  if s = floor s && s >= 0. && s < 60. then
+    string_of_int (int_of_float s)
+  else
+    Printf.sprintf "%gs" s
+
+let schedule_entry_of_managed_heartbeat (hb : managed_heartbeat) : C2c_mcp.schedule_entry =
+  let align =
+    match hb.schedule with
+    | Interval _ -> ""
+    | Aligned_interval { interval_s; offset_s } ->
+        if offset_s = 0. then
+          Printf.sprintf "@%s" (format_duration_s interval_s)
+        else
+          Printf.sprintf "@%s+%s"
+            (format_duration_s interval_s)
+            (format_duration_s offset_s)
+  in
+  { C2c_mcp.
+    s_name = hb.heartbeat_name
+  ; s_interval_s = hb.interval_s
+  ; s_align = align
+  ; s_message = hb.message
+  ; s_only_when_idle = hb.idle_only
+  ; s_idle_threshold_s = hb.idle_threshold_s
+  ; s_enabled = hb.enabled
+  ; s_created_at = C2c_time.now_iso8601_utc ()
+  ; s_updated_at = C2c_time.now_iso8601_utc ()
+  }
+
+(* S5: TOML escape (same as c2c_schedule_handlers.escape_toml_string). *)
+let escape_toml_string s =
+  let buf = Buffer.create (String.length s) in
+  String.iter (fun c ->
+    match c with
+    | '\\' -> Buffer.add_string buf "\\\\"
+    | '"'  -> Buffer.add_string buf "\\\""
+    | c    -> Buffer.add_char buf c)
+    s;
+  Buffer.contents buf
+
+(* S5: Render a schedule_entry to TOML string (same format as c2c_schedule). *)
+let render_schedule_entry (e : C2c_mcp.schedule_entry) : string =
+  let buf = Buffer.create 256 in
+  Buffer.add_string buf "[schedule]\n";
+  Buffer.add_string buf (Printf.sprintf "name = \"%s\"\n" (escape_toml_string e.C2c_mcp.s_name));
+  Buffer.add_string buf (Printf.sprintf "interval_s = %.6g\n" e.C2c_mcp.s_interval_s);
+  Buffer.add_string buf (Printf.sprintf "align = \"%s\"\n" (escape_toml_string e.C2c_mcp.s_align));
+  Buffer.add_string buf (Printf.sprintf "message = \"%s\"\n" (escape_toml_string e.C2c_mcp.s_message));
+  Buffer.add_string buf (Printf.sprintf "only_when_idle = %b\n" e.C2c_mcp.s_only_when_idle);
+  Buffer.add_string buf (Printf.sprintf "idle_threshold_s = %.6g\n" e.C2c_mcp.s_idle_threshold_s);
+  Buffer.add_string buf (Printf.sprintf "enabled = %b\n" e.C2c_mcp.s_enabled);
+  Buffer.add_string buf (Printf.sprintf "created_at = \"%s\"\n" (escape_toml_string e.C2c_mcp.s_created_at));
+  Buffer.add_string buf (Printf.sprintf "updated_at = \"%s\"\n" (escape_toml_string e.C2c_mcp.s_updated_at));
+  Buffer.contents buf
+
+(* S5: Persist role-derived heartbeats to .c2c/schedules/<alias>/.
+   Writes one .toml per heartbeat entry. Idempotent — each boot overwrites
+   with fresh updated_at timestamps. The watcher thread (started after this)
+   will pick up these files and start their timers. *)
+let persist_role_heartbeats_to_schedule_dir ~(alias : string)
+    (role_hbs : managed_heartbeat list) : unit =
+  if role_hbs = [] then () else
+  let dir = C2c_mcp.schedule_base_dir alias in
+  (try C2c_io.mkdir_p dir with _ -> ());
+  List.iter (fun hb ->
+    let entry = schedule_entry_of_managed_heartbeat hb in
+    let path = C2c_mcp.schedule_entry_path alias entry.C2c_mcp.s_name in
+    let content = render_schedule_entry entry in
+    try C2c_io.write_file path content with _ -> ()
+  ) role_hbs
+
 (* Schedule watcher thread — stat-polls the schedule directory every 10s,
    starting/stopping heartbeat threads as files are added, changed, or
    removed.  Handles the initial load on first iteration, so the startup
@@ -4853,18 +4998,24 @@ let run_outer_loop ~(name : string) ~(client : string)
           (* Start managed heartbeats — broker-mail-based self messages. They
              use the same inbox transport as ordinary c2c messages; per-client
              delivery sidecars/plugins then handle actual presentation. *)
-          let heartbeat_role = load_role_for_heartbeat ~client agent_name in
-          let heartbeat_specs =
-            resolve_managed_heartbeats ~client
-              ~deliver_started:(Option.is_some !deliver_pid)
-              ~role:heartbeat_role
-              ~per_agent_specs:(per_agent_managed_heartbeats ~name)
-              (repo_config_managed_heartbeats ())
-          in
-          List.iter
-            (start_managed_heartbeat ~broker_root ~alias:effective_alias)
-            heartbeat_specs;
-          (* S6c: Mirror C2C_MCP_SCHEDULE_TIMER into the parent env so
+           let heartbeat_role = load_role_for_heartbeat ~client agent_name in
+           (* S5: split role heartbeats (persist to .toml, watcher starts them)
+              from config/per-agent heartbeats (start directly). *)
+           let non_role_specs, role_specs =
+             resolve_managed_heartbeats_and_persist_role ~client
+               ~deliver_started:(Option.is_some !deliver_pid)
+               ~role:heartbeat_role
+               ~per_agent_specs:(per_agent_managed_heartbeats ~name)
+               (repo_config_managed_heartbeats ())
+           in
+           (* S5: persist role heartbeats BEFORE starting watcher — watcher will
+              pick them up on its first scan and start their timer threads. *)
+           persist_role_heartbeats_to_schedule_dir
+             ~alias:effective_alias role_specs;
+           List.iter
+             (start_managed_heartbeat ~broker_root ~alias:effective_alias)
+             non_role_specs;
+           (* S6c: Mirror C2C_MCP_SCHEDULE_TIMER into the parent env so
              mcp_schedule_timer_active() sees it. build_env passes the
              same var to the MCP child. Respect operator overrides: only
              set if not already present in the environment. *)
