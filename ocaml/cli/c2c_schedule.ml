@@ -270,6 +270,43 @@ let schedule_list_cmd =
     ) entries
   end
 
+(* --- schedule show ---------------------------------------------------------- *)
+
+let schedule_show_cmd =
+  let+ json = json_flag
+  and+ name = name_arg in
+  let alias = current_alias_or_die () in
+  let path = schedule_file_path alias name in
+  if not (Sys.file_exists path) then (
+    Printf.eprintf "error: schedule '%s' not found\n%!" name;
+    exit 1);
+  let e = parse_schedule (read_file path) in
+  if json then
+    print_endline (Yojson.Safe.to_string ~std:false (`Assoc [
+      ("name", `String e.s_name)
+    ; ("interval_s", `Float e.s_interval_s)
+    ; ("align", `String e.s_align)
+    ; ("message", `String e.s_message)
+    ; ("only_when_idle", `Bool e.s_only_when_idle)
+    ; ("idle_threshold_s", `Float e.s_idle_threshold_s)
+    ; ("enabled", `Bool e.s_enabled)
+    ; ("created_at", `String e.s_created_at)
+    ; ("updated_at", `String e.s_updated_at)
+    ; ("file", `String (Filename.basename path))
+    ]))
+  else begin
+    Printf.printf "Name:            %s\n" e.s_name;
+    Printf.printf "Interval:        %.6gs\n" e.s_interval_s;
+    (if e.s_align <> "" then Printf.printf "Align:           %s\n" e.s_align);
+    Printf.printf "Message:         %s\n" e.s_message;
+    Printf.printf "Only when idle:  %b\n" e.s_only_when_idle;
+    Printf.printf "Idle threshold:  %.6gs\n" e.s_idle_threshold_s;
+    Printf.printf "Enabled:         %b\n" e.s_enabled;
+    Printf.printf "Created:         %s\n" e.s_created_at;
+    Printf.printf "Updated:         %s\n" e.s_updated_at;
+    Printf.printf "File:            %s\n" (Filename.basename path)
+  end
+
 (* --- schedule rm ----------------------------------------------------------- *)
 
 let schedule_rm_cmd =
@@ -335,6 +372,10 @@ let schedule_group =
         (Cmdliner.Cmd.info "list"
            ~doc:"List schedule entries for the current agent.")
         schedule_list_cmd
+    ; Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "show"
+           ~doc:"Show details of a single schedule entry.")
+        schedule_show_cmd
     ; Cmdliner.Cmd.v
         (Cmdliner.Cmd.info "rm"
            ~doc:"Remove a schedule entry.")
