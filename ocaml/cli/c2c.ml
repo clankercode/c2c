@@ -7607,11 +7607,15 @@ let dev_status_cmd =
         ) instances
       end
 
+let dev_status_sub =
+  Cmdliner.Cmd.v (Cmdliner.Cmd.info "status"
+    ~doc:"Show managed instance status.") dev_status_cmd
+
 let dev_group =
   let info = Cmdliner.Cmd.info "dev"
     ~doc:"Developer/operator commands for c2c swarm internals."
   in
-  Cmdliner.Cmd.group info ~default:dev_status_cmd []
+  Cmdliner.Cmd.group info ~default:dev_status_cmd [ dev_status_sub ]
 
 (* --- subcommand: doctor --------------------------------------------------- *)
 
