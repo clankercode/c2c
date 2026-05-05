@@ -73,7 +73,7 @@ let command_tier_map () : (string * safety) list =
   ; "config-show", Tier2
   ; "init", Tier2
   ; "repo", Tier2
-   ; "restart-self", Tier3
+   ; "restart-self", Tier1
    ; "relay", Tier2
    ; "schedule", Tier2
    (* relay subcommands (serve, gc, setup, connect, register, dm, status, list, rooms, poll-inbox)
@@ -81,10 +81,10 @@ let command_tier_map () : (string * safety) list =
    ; "setcap", Tier3
    ; "install", Tier2
     ; "gui", Tier1
-   ; "diag", Tier3
+   ; "diag", Tier1
    ; "dev", Tier2
-   ; "smoke-test", Tier3
-  ; "inject", Tier4
+   ; "smoke-test", Tier1
+   ; "inject", Tier1
   (* hook, oc-plugin, cc-plugin: internal plumbing invoked by plugin subprocesses
      (OC plugin via spawn, CC via PostToolUse hook). They MUST remain invokable
      even inside agent sessions — the plugin running inside every managed session
