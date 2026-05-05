@@ -11778,10 +11778,20 @@ let dev_group =
   let info = Cmdliner.Cmd.info "dev"
     ~doc:"Developer/operator commands for c2c swarm internals."
   in
-  Cmdliner.Cmd.group info ~default:dev_instances_cmd
-    [ dev_instances_sub; dev_status_sub; diag; restart_self; smoke_test; inject
+  (* Tier-aware subcommand filtering: Tier 2 subcommands (instances, worktree,
+     sitrep, peer-pass, status) are always visible. Tier 3/4 subcommands (diag,
+     restart-self, smoke-test, inject) are hidden in agent sessions. *)
+  let tier2_subs =
+    [ dev_instances_sub; dev_status_sub
     ; C2c_worktree.worktree_group; C2c_sitrep.sitrep_group
     ; C2c_peer_pass.peer_pass_group ]
+  in
+  let tier3_subs = [ diag; restart_self; smoke_test; inject ] in
+  let visible_subs =
+    if is_agent_session () then tier2_subs
+    else tier2_subs @ tier3_subs
+  in
+  Cmdliner.Cmd.group info ~default:dev_instances_cmd visible_subs
 
 (* Deprecated top-level aliases — warn on stderr BEFORE execution.
    We prepend a side-effecting term via `and+` that fires during argument
