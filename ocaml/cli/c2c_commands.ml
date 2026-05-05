@@ -82,6 +82,7 @@ let command_tier_map () : (string * safety) list =
    ; "install", Tier2
     ; "gui", Tier1
    ; "diag", Tier3
+   ; "dev", Tier2
    ; "smoke-test", Tier3
   ; "inject", Tier4
   (* hook, oc-plugin, cc-plugin: internal plumbing invoked by plugin subprocesses

@@ -7546,6 +7546,73 @@ let diag_cmd =
 
 let diag = Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"Show diagnostic info (last death + stderr tail) for a managed instance.") diag_cmd
 
+(* --- dev command group: c2c dev ------------------------------------------ *)
+
+let dev_status_cmd =
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ]
+      ~doc:"Output machine-readable JSON.")
+  in
+  let+ json = json in
+  let instances = read_managed_instances () in
+  let now = Unix.gettimeofday () in
+  let age_of (ts : float) =
+    let delta = now -. ts in
+    if delta < 0.0 then "just now"
+    else if delta < 60.0 then Printf.sprintf "%.0fs ago" delta
+    else if delta < 3600.0 then
+      Printf.sprintf "%.0fm ago" (delta /. 60.0)
+    else if delta < 86400.0 then
+      Printf.sprintf "%.0fh ago" (delta /. 3600.0)
+    else Printf.sprintf "%.0fd ago" (delta /. 86400.0)
+  in
+  let inst_to_json (inst : managed_instance_view) =
+    let base = [
+      ("name", `String inst.mi_name);
+      ("client", `String inst.mi_client);
+      ("status", `String inst.mi_status);
+      ("delivery_mode", `String inst.mi_delivery_mode);
+    ] in
+    let base = match inst.mi_pid with
+      | Some p -> ("pid", `Int p) :: base
+      | None -> base
+    in
+    let base = match inst.mi_tmux_location with
+      | Some s -> ("tmux_location", `String s) :: base
+      | None -> base
+    in
+    let base = match inst.mi_created_at with
+      | Some ts -> ("created_at", `String (age_of ts)) :: base
+      | None -> base
+    in
+    `Assoc base
+  in
+  match json with
+  | true ->
+      print_json (`List (List.map inst_to_json instances))
+  | false ->
+      if instances = [] then
+        Printf.printf "No managed instances.\n"
+      else begin
+        Printf.printf "Managed instances:\n";
+        List.iter (fun (inst : managed_instance_view) ->
+          let pid_str = match inst.mi_pid with Some p -> Printf.sprintf " pid=%d" p | None -> "" in
+          let tmux_str = match inst.mi_tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
+          let created_str = match inst.mi_created_at with
+            | Some ts -> " created=" ^ age_of ts
+            | None -> ""
+          in
+          Printf.printf "  %-20s %-10s %-12s%s%s%s\n"
+            inst.mi_name inst.mi_client inst.mi_status pid_str tmux_str created_str
+        ) instances
+      end
+
+let dev_group =
+  let info = Cmdliner.Cmd.info "dev"
+    ~doc:"Developer/operator commands for c2c swarm internals."
+  in
+  Cmdliner.Cmd.group info ~default:dev_status_cmd []
+
 (* --- subcommand: doctor --------------------------------------------------- *)
 
 let doctor_cmd =
@@ -11678,7 +11745,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test; init; install; completion_cmd
-    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
+    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self; instances; diag; dev_group; doctor; stats; C2c_sitrep.sitrep_group; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_peer_pass.peer_pass_group; C2c_worktree.worktree_group; monitor; hook; inject; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit
