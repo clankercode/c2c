@@ -678,6 +678,35 @@ let worktree_age_seconds path =
          Some (Unix.gettimeofday () -. st.Unix.st_mtime)
        with _ -> None)
 
+(** [is_meta_only_path path] returns true if [path] (a file or directory
+    within a worktree) is a "meta" path — sitrep, collab doc, or personal
+    log — rather than real code. These paths are excluded from the "real code
+    blocking GC" check. *)
+let is_meta_only_path (path : string) : bool =
+  List.exists (fun prefix ->
+    String.length path >= String.length prefix
+    && String.sub path 0 (String.length prefix) = prefix)
+    [ ".sitreps/"
+    ; ".collab/updates/"
+    ; ".collab/design/"
+    ; ".c2c/personal-logs/"
+    ; ".c2c/memory/" ]
+  || (String.length path >= 4 && String.sub path 0 4 = ".git")
+
+(** [commit_touches_noncode_paths ~cwd sha] returns true if commit [sha]
+    only touches meta paths (sitreps, collab docs, personal logs, .git).
+    Uses `git diff-tree --no-commit-id --name-only -r` to list paths.
+    Returns false if any path is real code. *)
+let commit_touches_noncode_paths ~(cwd : string) (sha : string) : bool =
+  let (code, out, _) =
+    git_command ~cwd ~quiet:true
+      [ "diff-tree"; "--no-commit-id"; "--name-only"; "-r"; sha ]
+  in
+  if code <> 0 then false
+  else
+    let paths = String.split_on_char '\n' (String.trim out) in
+    List.for_all is_meta_only_path paths
+
 (** [unmerged_cherry_commits path] returns the list of (sha, subject) pairs
     for commits on this branch that are NOT content-equivalent to anything
     on origin/master (the "+" lines from git cherry). Empty list means
@@ -1356,6 +1385,13 @@ let worktree_gc_term =
                  (e.g. not ancestor of origin/master but content has landed). \
                  Cannot be combined with --json.")
   in
+  let no_meta_filter_flag =
+    Arg.(value & flag & info ["no-meta-filter"]
+           ~doc:"Disable the meta-path filter: REFUSE-classified worktrees with \
+                 only sitrep/collab/personal-log commits are NOT reclassified \
+                 as REMOVABLE. Use this to only trust the git-ancestor and \
+                 git-cherry equivalence checks.")
+  in
   let+ clean = clean_flag
   and+ json_out = json_flag
   and+ ignore_active = ignore_active_flag
@@ -1364,7 +1400,9 @@ let worktree_gc_term =
   and+ age_str = age_flag
   and+ verbose = verbose_flag
   and+ interactive = interactive_flag
-  and+ ask_authors = ask_authors_flag in
+  and+ ask_authors = ask_authors_flag
+  and+ no_meta_filter = no_meta_filter_flag in
+  let meta_filter = not no_meta_filter in
   if interactive && json_out then begin
     Printf.eprintf "error: --interactive and --json are mutually exclusive.\n%!";
     exit 1
@@ -1408,6 +1446,26 @@ let worktree_gc_term =
       let broker_root = resolve_broker_root () in
       let broker = C2c_mcp.Broker.create ~root:broker_root in
       ask_authors_and_reclassify ~broker ~timeout_s:60 ~verbose candidates
+    else candidates
+  in
+  (* Meta-path filter: reclassify GcRefused → GcRemovable when all
+     unmerged commits touch only meta paths (sitreps, collab docs, personal logs).
+     The --no-meta-filter flag disables this pass. *)
+  let candidates =
+    if meta_filter then
+      List.map (fun c ->
+        match c.gc_status with
+        | GcRefused { reason = _; unmerged_commits } when unmerged_commits <> [] ->
+            (* All unmerged commits must be meta-only to reclassify *)
+            let all_meta = List.for_all (fun (sha, _) ->
+              commit_touches_noncode_paths ~cwd:c.gc_path sha
+            ) unmerged_commits in
+            if all_meta then
+              { c with gc_status = GcRemovable
+                         { reason = "all unmerged commits are meta-only (sitreps/docs)" } }
+            else c
+        | _ -> c)
+      candidates
     else candidates
   in
   if interactive then begin
