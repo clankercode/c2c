@@ -177,11 +177,11 @@ c2c dev worktree setup     # create agent/<alias> permanent home worktree (for l
 
 `prune` and `gc` are sibling tools with different jobs:
 
-- `worktree prune` is a wrapper around `git worktree prune`. It cleans
+- `dev worktree prune` is a wrapper around `git worktree prune`. It cleans
   up the **admin metadata** under `.git/worktrees/` when a worktree
   directory was deleted manually but its registry entry lingers. It
   does NOT touch any worktree directory.
-- `worktree gc` is the disk-pressure tool. It scans every worktree
+- `dev worktree gc` is the disk-pressure tool. It scans every worktree
   under `.worktrees/`, classifies each as REMOVABLE, POSSIBLY_ACTIVE,
   or REFUSE, and on `--clean` runs `git worktree remove` against the
   REMOVABLE set only.

@@ -7,7 +7,7 @@
 
 ## Problem
 
-Running `c2c worktree gc --verbose` against 598 worktrees shows:
+Running `c2c dev worktree gc --verbose` against 598 worktrees shows:
 - **0 REMOVABLE** 
 - **595 REFUSE**
 

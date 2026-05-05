@@ -132,7 +132,7 @@ is mechanical / low-stakes (see "Subagent-review as peer-PASS" in
 `git-workflow.md` and the Step 4 note below on `--allow-self`):
 
 ```bash
-c2c peer-pass send coordinator1 <SHA> \
+c2c dev peer-pass send coordinator1 <SHA> \
   --verdict PASS \
   --criteria "<criterion1>, <criterion2>, ..." \
   --skill-version <version> \
@@ -148,7 +148,7 @@ c2c peer-pass send coordinator1 <SHA> \
 If you need an artifact without sending a DM, use:
 
 ```bash
-c2c peer-pass sign <SHA> \
+c2c dev peer-pass sign <SHA> \
   --verdict PASS \
   --criteria "<criterion1>, <criterion2>, ..." \
   --skill-version <version> \
@@ -194,8 +194,8 @@ Optional:
 Verify the artifact stored:
 
 ```bash
-c2c peer-pass verify .c2c/peer-passes/<SHA>-<your-alias>.json
-c2c peer-pass list
+c2c dev peer-pass verify .c2c/peer-passes/<SHA>-<your-alias>.json
+c2c dev peer-pass list
 ```
 
 On FAIL: do NOT emit an artifact — return FAIL verdict directly to the
@@ -203,14 +203,14 @@ slice author so they can fix in a new commit.
 
 **Signing your own SHA after a fresh-slate subagent review.** If you ran
 this skill on your own commit and the Step 1 subagent returned PASS,
-`c2c peer-pass sign` will refuse by default (reviewer alias matches commit
+`c2c dev peer-pass sign` will refuse by default (reviewer alias matches commit
 author). This is sanctioned per `git-workflow.md` "Subagent-review as
 peer-PASS" when no live swarm peer is available or the slice is mechanical
 / low-stakes. Re-run with `--allow-self --via-subagent <id-or-desc>` to
 record the subagent path in the artifact's notes for audit:
 
 ```bash
-c2c peer-pass sign <SHA> --verdict PASS \
+c2c dev peer-pass sign <SHA> --verdict PASS \
   --criteria "build, tests, docs" --skill-version 1.0.0 \
   --allow-self --via-subagent "review-and-fix-task-<n>" \
   --notes "fresh-slate subagent review; no live peer available"
@@ -222,7 +222,7 @@ possible — DM `swarm-lounge` first before falling back to subagent-only.
 
 ### Step 5: DM coordinator1
 
-`c2c peer-pass send coordinator1 ...` handles the coordinator DM and signs the
+`c2c dev peer-pass send coordinator1 ...` handles the coordinator DM and signs the
 artifact. Only send a manual `c2c send coordinator1 "peer-PASS by ..."` if you
 used `peer-pass sign` directly or need custom wording.
 

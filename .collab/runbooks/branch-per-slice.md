@@ -66,7 +66,7 @@ master → [branch] → [commit(s)] → [peer-PASS] → [coord-PASS] → merge �
    the artifact and notify coordinator with `c2c dev peer-pass send coordinator1 ...`.
    You receive `peer-PASS by <alias>, SHA=<sha>`.
 
-6. **Coordinator handoff** — `peer-pass send` has already sent
+6. **Coordinator handoff** — `dev peer-pass send` has already sent
    `peer-PASS by <alias>, SHA=<sha>` to coordinator1. Add a manual DM only if
    you need extra context.
 

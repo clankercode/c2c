@@ -8,7 +8,7 @@
 
 The swarm accumulates worktrees in `.worktrees/` — each slice gets one,
 and they persist after the slice's code lands on master (via coordinator
-cherry-pick). `c2c worktree gc` (#313/#314) already classifies worktrees
+cherry-pick). `c2c dev worktree gc` (#313/#314) already classifies worktrees
 as REMOVABLE / POSSIBLY_ACTIVE / REFUSE based on dirty state, ancestry,
 and live process holders.
 
@@ -43,7 +43,7 @@ never happened.
 
 ## Existing Safeguards (what already works)
 
-The current `c2c worktree gc` is already quite robust:
+The current `c2c dev worktree gc` is already quite robust:
 
 - `is_dirty` — refuses worktrees with uncommitted changes
 - `head_ancestor_of_origin_master` — checks if HEAD is reachable from origin/master
@@ -93,7 +93,7 @@ UNMERGED WORK (action needed):
     + abc1234 feat(#330 S2): relay-to-relay forwarder POST
 
 GC-ELIGIBLE (safe to remove):  91 worktrees, 45.2 GB reclaimable
-  (use `c2c worktree gc --clean` to remove)
+  (use `c2c dev worktree gc --clean` to remove)
 
 POSSIBLY ACTIVE (age < 2h):  2 worktrees
   worktree-gc-safety  (this session)
