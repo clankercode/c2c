@@ -691,7 +691,10 @@ let is_meta_only_path (path : string) : bool =
     ; ".collab/design/"
     ; ".c2c/personal-logs/"
     ; ".c2c/memory/" ]
-  || (String.length path >= 4 && String.sub path 0 4 = ".git")
+  || (String.length path >= 5 && String.sub path 0 5 = ".git/"
+      (* .git/ prefixes .git/worktrees, .git/config, etc. — git internals.
+         .gitignore and .gitattributes do NOT start with .git/ — they are
+         project files in the working tree, not git-internal metadata. *))
 
 (** [commit_touches_noncode_paths ~cwd sha] returns true if commit [sha]
     only touches meta paths (sitreps, collab docs, personal logs, .git).
@@ -1408,7 +1411,9 @@ let render_gc_human ~candidates ~clean ~verbose =
       if verbose && String.length r >= 18 && (try String.sub r 0 18 = "content-equivalent" with _ -> false) then
         Printf.printf "    (all branch commits content-matched on origin/master via git-cherry)\n";
       if verbose && String.length r >= 14 && (try String.sub r 0 14 = "shared-orphan" with _ -> false) then
-        Printf.printf "    (all unmerged commits are shared orphans — burn-distributed, content is safe)\n")
+        Printf.printf "    (all unmerged commits are shared orphans — burn-distributed, content is safe)\n";
+      if verbose && String.length r >= 9 && (try String.sub r 0 9 = "meta-only" with _ -> false) then
+        Printf.printf "    (unique commits touch only sitrep/docs/meta paths — safe to GC, content preserved)\n")
     removable;
   if possibly_active <> [] then begin
     (* `[!]` prefix flags POSSIBLY_ACTIVE as "review me" rather than
@@ -1486,9 +1491,20 @@ let sha_count_map_of_refused candidates =
 let is_shared_orphan ~threshold count = count > threshold
 
 (** [deduplicate_shared_orphans ~threshold candidates] reclassifies each
-    GcRefused worktree as GcRemovable when ALL of its unmerged commits
-    are shared orphans (each appears in >threshold worktrees). The reason
-    text notes the shared-orphan count for auditability. *)
+    GcRefused worktree as GcRemovable using a combined two-layer strategy:
+
+    Layer 1 — shared orphans: if ALL unmerged commits appear in >threshold
+    worktrees, reclassify as REMOVABLE ("shared-orphan" reason).
+
+    Layer 2 — meta-only unique commits: for worktrees that fail Layer 1
+    (have some unique/unshared commits), check whether those unique commits
+    ALL touch only meta paths (sitreps, collab docs, .git internals).
+    If so, reclassify as REMOVABLE ("meta-only" reason) — the unique content
+    is not lost work, just documentation overhead.
+
+    This combines the shared-orphan insight with the meta-path heuristic
+    into a single pass, reclassifying worktrees that have e.g. 789 shared
+    orphans + 2 sitrep-only unique commits. *)
 let deduplicate_shared_orphans ~threshold candidates =
   if threshold <= 0 then candidates
   else begin
@@ -1508,19 +1524,23 @@ let deduplicate_shared_orphans ~threshold candidates =
         | GcRefused { reason; unmerged_commits } ->
             if unmerged_commits = [] then (c :: acc, reclassified, kept + 1)
             else begin
-              let all_orphans, orphan_details =
-                List.fold_left (fun (all_ok, details) (sha, subj) ->
+              (* Partition unmerged commits into shared orphans vs unique commits *)
+              let unique_commits, shared_commits =
+                List.fold_left (fun (uniq, shared) (sha, subj) ->
                   let bare_sha = String.sub sha 0 (min 40 (String.length sha)) in
                   let cnt = try Hashtbl.find sha_counts bare_sha with Not_found -> 0 in
-                  let ok = is_shared_orphan ~threshold cnt in
-                  (all_ok && ok, (bare_sha, cnt, subj) :: details)
-                ) (true, []) unmerged_commits
+                  if is_shared_orphan ~threshold cnt then
+                    (uniq, (bare_sha, cnt, subj) :: shared)
+                  else
+                    ((bare_sha, cnt, subj) :: uniq, shared)
+                ) ([], []) unmerged_commits
               in
-              if all_orphans then
+              (* Layer 1: all shared orphans → REMOVABLE *)
+              if unique_commits = [] then begin
                 let top_shares =
                   List.sort (fun (_, c1, _) (_, c2, _) -> Int.compare c2 c1)
-                    orphan_details
-                  |> List.filteri (fun i (_, cnt, _) -> i < 3)
+                    shared_commits
+                  |> List.filteri (fun i _ -> i < 3)
                 in
                 let reason_strs =
                   List.map (fun (sha, cnt, _) ->
@@ -1532,7 +1552,23 @@ let deduplicate_shared_orphans ~threshold candidates =
                   (List.length unmerged_commits) threshold (String.concat ", " reason_strs)
                 in
                 ({ c with gc_status = GcRemovable { reason = reason' } } :: acc, reclassified + 1, kept)
-              else (c :: acc, reclassified, kept + 1)
+              end else begin
+                (* Layer 2: unique commits — check if they are ALL meta-only *)
+                let all_meta_only =
+                  List.fold_left (fun ok (bare_sha, _, _) ->
+                    ok && commit_touches_noncode_paths ~cwd:c.gc_path bare_sha
+                  ) true unique_commits
+                in
+                if all_meta_only then
+                  let n_unique = List.length unique_commits in
+                  let n_shared = List.length shared_commits in
+                  let reason' = Printf.sprintf "meta-only (all %d unique commit(s) touch only sitrep/docs/meta; %d shared orphans filtered)"
+                    n_unique n_shared
+                  in
+                  ({ c with gc_status = GcRemovable { reason = reason' } } :: acc, reclassified + 1, kept)
+                else
+                  (c :: acc, reclassified, kept + 1)
+              end
             end
         | _ -> (c :: acc, reclassified, kept))
         ([], 0, 0) candidates
