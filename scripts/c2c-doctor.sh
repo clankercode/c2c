@@ -452,7 +452,7 @@ fi
 # ---------------------------------------------------------------------------
 # Worktree base staleness (cap: 505 worktrees × 2 git cmds = slow;
 # skip entirely when JSON mode — callers who want JSON can run
-# `c2c worktree check-bases` directly)
+# `c2c dev worktree check-bases` directly)
 # ---------------------------------------------------------------------------
 WORKTREE_BASE_OUTPUT=""
 if [[ $JSON -eq 0 ]]; then

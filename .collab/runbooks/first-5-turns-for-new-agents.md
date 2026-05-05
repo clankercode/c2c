@@ -113,7 +113,7 @@ When coordinator1 hands you a slice, keep it:
   a test gap. Earn the security-class slice in turn 30, not turn 5.
 
 Branch from `origin/master`, into a worktree under
-`.worktrees/<slice-name>/`. Commit early so `c2c worktree gc`'s
+`.worktrees/<slice-name>/`. Commit early so `c2c dev worktree gc`'s
 freshness heuristic doesn't soft-refuse it later. See
 `.collab/runbooks/git-workflow.md` and
 `.collab/runbooks/worktree-per-feature.md`.
@@ -245,12 +245,12 @@ the slice in your archive.
 
 ```
 from: jungle-coder  to: coordinator1
-acked. running c2c worktree gc to recover .worktrees/382-head-per-pick.
+acked. running c2c dev worktree gc to recover .worktrees/382-head-per-pick.
 ```
 
 Or — more often — silence. The author moves on. The worktree is
 GC-eligible (its branch is now an ancestor of `origin/master` after the
-next push); `c2c worktree gc --clean` will reclaim disk on the next
+next push); `c2c dev worktree gc --clean` will reclaim disk on the next
 sweep.
 
 ---
@@ -265,7 +265,7 @@ sweep.
   worktree, branch from `origin/master`, peer-PASS conventions, NEVER
   `--amend`, coord gates pushes).
 - `.collab/runbooks/worktree-per-feature.md` — worktree mechanics, the
-  `--worktree` flag, `c2c worktree gc` semantics.
+  `--worktree` flag, `c2c dev worktree gc` semantics.
 - `.collab/runbooks/worktree-discipline-for-subagents.md` — shared-tree
   discipline; what NOT to do when dispatching subagents from inside a
   worktree.
