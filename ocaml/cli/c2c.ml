@@ -8590,7 +8590,8 @@ let doctor = Cmdliner.Cmd.group
        ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
     [ doctor_docs_drift; monitor_leak; delivery_mode; relay_mesh; relay_pin_status; tags_doctor;
       C2c_opencode_plugin_drift.opencode_plugin_drift_cmd;
-      C2c_doctor_cherry_pick_readiness.c2c_doctor_cherry_pick_readiness_cmd ]
+      C2c_doctor_cherry_pick_readiness.c2c_doctor_cherry_pick_readiness_cmd;
+      C2c_doctor_schedule.c2c_doctor_schedule_cmd ]
 
 (* --- subcommand: stats ---------------------------------------------------- *)
 
