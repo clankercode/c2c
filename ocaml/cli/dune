@@ -117,7 +117,12 @@
  (modules test_c2c_stickers c2c_stickers c2c_signing_helpers c2c_utils c2c_broker_root_check)
  (libraries c2c_mcp alcotest cmdliner yojson base64 mirage-crypto-rng mirage-crypto-rng.unix unix))
 
-(test
- (name test_c2c_doctor_cherry_pick_readiness)
- (modules test_c2c_doctor_cherry_pick_readiness)
- (libraries alcotest))
+ (test
+  (name test_c2c_doctor_cherry_pick_readiness)
+  (modules test_c2c_doctor_cherry_pick_readiness)
+  (libraries alcotest))
+
+ (test
+  (name test_c2c_sitrep)
+  (modules test_c2c_sitrep c2c_sitrep)
+  (libraries c2c_mcp alcotest str unix))
