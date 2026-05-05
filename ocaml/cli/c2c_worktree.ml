@@ -590,6 +590,20 @@ let origin_master_sha path =
   in
   if code = 0 then String.trim out else ""
 
+(** [head_age_seconds path] returns the age of the HEAD commit in seconds,
+    i.e. time elapsed since the most recent commit in the worktree.
+    Uses `git log -1 --format=%ct` (Unix timestamp of committer date).
+    Returns None on error (e.g. empty repo, no commits yet). *)
+let head_age_seconds path =
+  let (code, out, _) =
+    git_command ~cwd:path ~quiet:true [ "log"; "-1"; "--format=%ct" ]
+  in
+  if code <> 0 then None
+  else
+    match int_of_string_opt (String.trim out) with
+    | None -> None
+    | Some ts -> Some (Unix.gettimeofday () -. float ts)
+
 (** [worktree_admin_dir path] returns the per-worktree admin dir (under
     [<git-common-dir>/worktrees/<name>/]) reported by `git rev-parse
     --git-dir` from inside the worktree. None on error. *)
@@ -726,10 +740,19 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
         else
           mk (GcRemovable { reason = "ancestor of origin/master or master, clean" })
 
-(** [scan_worktrees_for_gc ~ignore_active ()] enumerates worktrees under
-    .worktrees/ and classifies each. The main worktree is filtered out
-    early (defense-in-depth: classify_worktree also refuses it). *)
-let scan_worktrees_for_gc ~ignore_active ~active_window_hours () =
+(** [scan_worktrees_for_gc ~ignore_active ~active_window_hours
+    ~age_threshold_days ()] enumerates worktrees under .worktrees/ and
+    classifies each. The main worktree is filtered out early
+    (defense-in-depth: classify_worktree also refuses it).
+
+    If [age_threshold_days] is set, only worktrees whose HEAD commit is
+    at least that many days old are considered. This lets operators
+    target old, abandoned worktrees without affecting recently-active ones.
+    Combined with the "ancestor of origin/master" and "content-equivalent
+    via git-cherry" checks, this gives a "old AND definitely abandoned"
+    signal for safe GC. *)
+let scan_worktrees_for_gc ~ignore_active ~active_window_hours
+    ~age_threshold_days () =
   let main_path = main_worktree_path () in
   let main_norm = match main_path with
     | Some mp -> (try Some (Unix.realpath mp) with _ -> Some mp)
@@ -756,6 +779,19 @@ let scan_worktrees_for_gc ~ignore_active ~active_window_hours () =
             String.length p_norm > String.length prefix
             && String.sub p_norm 0 (String.length prefix) = prefix))
       entries
+  in
+  (* Apply age filter: skip worktrees whose HEAD commit is younger than
+     [age_threshold_days]. None = no filter (show all). *)
+  let candidates =
+    match age_threshold_days with
+    | None -> candidates
+    | Some days ->
+        let threshold_s = days *. 86400.0 in
+        List.filter (fun (_, path, _) ->
+          match head_age_seconds path with
+          | None -> false  (* can't determine age — skip *)
+          | Some age -> age >= threshold_s)
+          candidates
   in
   List.map
     (classify_worktree ~main_path ~ignore_active ~active_window_hours)
@@ -906,13 +942,38 @@ let worktree_gc_term =
                  is younger than HOURS are soft-refused (--clean skips). \
                  Default: 2.0. Set 0 to disable the heuristic entirely.")
   in
+  let age_flag =
+    let doc = "Only consider worktrees whose last commit is at least AGE days old. \
+               Format: integer with optional 'd' suffix (e.g. 30d or 30). \
+               Combined with --clean, targets \"old AND abandoned\" worktrees. \
+               Without this flag, all worktrees are considered regardless of age." in
+    Arg.(value & opt (some string) None & info ["age"] ~docv:"AGE"
+           ~doc)
+  in
   let+ clean = clean_flag
   and+ json_out = json_flag
   and+ ignore_active = ignore_active_flag
   and+ path_prefix = path_prefix_flag
-  and+ active_window_hours = active_window_flag in
+  and+ active_window_hours = active_window_flag
+  and+ age_str = age_flag in
+  (* Parse --age value: "30d", "30", "7d" → float days *)
+  let age_threshold_days =
+    match age_str with
+    | None -> None
+    | Some s ->
+        let s = String.trim s in
+        let s = if s <> "" && s.[String.length s - 1] = 'd'
+                then String.sub s 0 (String.length s - 1)
+                else s in
+        match float_of_string_opt s with
+        | Some d when d > 0.0 -> Some d
+        | _ ->
+            Printf.eprintf "error: invalid --age value %S (expected e.g. 30d or 30)\n%!" s;
+            None
+  in
   let all_candidates =
-    scan_worktrees_for_gc ~ignore_active ~active_window_hours ()
+    scan_worktrees_for_gc ~ignore_active ~active_window_hours
+      ~age_threshold_days ()
   in
   let candidates = match path_prefix with
     | None -> all_candidates
