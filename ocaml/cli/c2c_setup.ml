@@ -1590,7 +1590,21 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
           ~broker_root_opt ~target_dir_opt:None ~force:false ()
       end
     ) do_clients;
-    Printf.printf "\nDone.\n"
+    Printf.printf "\nDone.\n";
+    (* Polish: hint about faster message delivery if inotifywait is available *)
+    let inotify_available =
+      let path = try Sys.getenv "PATH" with Not_found -> "" in
+      let rec search dirs =
+        match dirs with
+        | [] -> false
+        | dir :: rest ->
+            let full = Filename.concat dir "inotifywait" in
+            if Sys.file_exists full then true else search rest
+      in
+      search (String.split_on_char ':' path)
+    in
+    if not inotify_available then
+      Printf.printf "\n  Hint: install inotify-tools for faster message delivery:\n    sudo apt install inotify-tools   # Debian/Ubuntu\n    sudo dnf install inotify-tools   # Fedora\n    brew install inotify-tools       # macOS\n"
   end
 
 (* --- install: Cmdliner wiring --------------------------------------------- *)
