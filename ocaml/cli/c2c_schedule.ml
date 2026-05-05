@@ -164,6 +164,12 @@ let schedule_set_cmd =
   and+ idle_threshold_raw = idle_threshold_arg
   and+ enabled = enabled_arg in
   let alias = current_alias_or_die () in
+  (* Validate name: reject empty/whitespace-only *)
+  let name_trimmed = String.trim name in
+  if name_trimmed = "" then begin
+    Printf.eprintf "error: schedule name must not be empty or whitespace-only.\n%!";
+    exit 1
+  end;
   (* Parse interval *)
   let interval_s = match C2c_start.parse_heartbeat_duration_s interval_raw with
     | Ok s -> s
@@ -171,6 +177,13 @@ let schedule_set_cmd =
         Printf.eprintf "error: --interval: %s\n%!" e;
         exit 1
   in
+  (* Validate interval bounds *)
+  if interval_s < 10.0 then begin
+    Printf.eprintf "error: --interval: minimum interval is 10s (got %.1fs).\n%!" interval_s;
+    exit 1
+  end;
+  if interval_s < 60.0 then
+    Printf.eprintf "warning: --interval: intervals under 60s may flood the inbox faster than an agent can process.\n%!";
   (* Parse align spec — extract align string (store as raw string for S2 loader) *)
   let align =
     if align_raw = "" then ""
