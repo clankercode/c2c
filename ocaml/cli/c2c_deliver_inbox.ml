@@ -32,12 +32,9 @@ type cli_args = {
   daemon : bool;
   daemon_log : string option;
   daemon_timeout : float;
-  notify_only : bool;
   notify_debounce : float;
   xml_output_fd : int option;
   xml_output_path : string option;
-  event_fifo : string option;
-  response_fifo : string option;
   file_fallback : bool;
   timeout : float;
   dry_run : bool;
@@ -244,10 +241,8 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
              Unix.sleepf safe_interval;
              loop ())
       in
-      loop ();
-          Printf.printf "[c2c-deliver-inbox] loop finished after %d iterations, %d total delivered\n%!"
-            !iterations !total_delivered;
-          flush stdout)
+      loop ()  (* G-1 fix: removed unreachable printf+flush stdout *)
+    )  (* closes outer (match args.xml_output_fd with ... | None -> ... *)
 
 (* ---------------------------------------------------------------------------
  * CLI argument parsing
@@ -266,12 +261,9 @@ let parse_args () : cli_args =
   let daemon = ref false in
   let daemon_log = ref None in
   let daemon_timeout = ref 10.0 in
-  let notify_only = ref false in
   let notify_debounce = ref 30.0 in
   let xml_output_fd = ref None in
   let xml_output_path = ref None in
-  let event_fifo = ref None in
-  let response_fifo = ref None in
   let file_fallback = ref false in
   let timeout = ref 5.0 in
   let dry_run = ref false in
@@ -296,18 +288,12 @@ let parse_args () : cli_args =
      " daemon log path");
     ("--daemon-timeout", Arg.Set_float daemon_timeout,
      " timeout for daemon startup (default 10s)");
-    ("--notify-only", Arg.Set notify_only,
-     " peek only, inject poll_inbox nudge without content");
     ("--notify-debounce", Arg.Set_float notify_debounce,
      " minimum seconds between repeated notify nudges");
     ("--xml-output-fd", Arg.Int (fun i -> xml_output_fd := Some i),
      " write Codex XML frames to this fd");
     ("--xml-output-path", Arg.String (fun s -> xml_output_path := Some s),
      " write Codex XML frames by opening this fifo/path");
-    ("--event-fifo", Arg.String (fun s -> event_fifo := Some s),
-     " read Codex bridge permission events from this FIFO");
-    ("--response-fifo", Arg.String (fun s -> response_fifo := Some s),
-     " write permission approval decisions to this FIFO");
     ("--file-fallback", Arg.Set file_fallback,
      " use file-based broker when Unix socket unavailable");
     ("--timeout", Arg.Set_float timeout,
@@ -344,12 +330,9 @@ let parse_args () : cli_args =
     daemon = !daemon;
     daemon_log = !daemon_log;
     daemon_timeout = !daemon_timeout;
-    notify_only = !notify_only;
     notify_debounce = !notify_debounce;
     xml_output_fd = !xml_output_fd;
     xml_output_path = !xml_output_path;
-    event_fifo = !event_fifo;
-    response_fifo = !response_fifo;
     file_fallback = !file_fallback;
     timeout = !timeout;
     dry_run = !dry_run;

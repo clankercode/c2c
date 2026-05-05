@@ -14,12 +14,9 @@ type cli_args = {
   daemon : bool;
   daemon_log : string option;
   daemon_timeout : float;
-  notify_only : bool;
   notify_debounce : float;
   xml_output_fd : int option;
   xml_output_path : string option;
-  event_fifo : string option;
-  response_fifo : string option;
   file_fallback : bool;
   timeout : float;
   dry_run : bool;

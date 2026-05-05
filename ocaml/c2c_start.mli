@@ -558,8 +558,6 @@ val cleanup_stale_opentui_zig_cache : unit -> int
   ?command_override:(string * string list) ->
   ?xml_output_fd:string ->
   ?xml_output_path:string ->
-  ?event_fifo_path:string ->
-  ?response_fifo_path:string ->
   ?preserve_fds:Unix.file_descr list ->
   ?pty_master_fd:int ->
   unit ->
@@ -567,7 +565,7 @@ val cleanup_stale_opentui_zig_cache : unit -> int
 (** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt
      ?command_override ()] spawns
     c2c_deliver_inbox.py and returns its PID, or [None] if the script is not
-    found. Without XML output settings it uses the notify-only PTY path; with
+    found. Without XML output settings it uses the broker-polling path; with
     [xml_output_fd] or [xml_output_path] it uses the Codex XML sideband path. *)
 
 val start_poker :
