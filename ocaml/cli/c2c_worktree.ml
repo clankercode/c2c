@@ -976,7 +976,7 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
         let young =
           match age_snapshot with
           | Some age -> age < active_window_hours *. 3600.0
-          | None -> false
+          | None -> true  (* conservative: if stat fails, assume fresh — don't GC *)
         in
         if head_eq_origin && young then
           let age = match age_snapshot with Some s -> s | None -> 0.0 in
@@ -1231,7 +1231,7 @@ let classify_from_git_batch batch (_alias, path, branch) main_path
           gb_head_sha <> "" && gb_origin_master_sha <> "" && gb_head_sha = gb_origin_master_sha in
         let young = match gb_age_snapshot with
           | Some age -> age < active_window_hours *. 3600.0
-          | None -> false in
+          | None -> true in  (* conservative: if stat fails, assume fresh — don't GC *)
         if head_eq_origin && young then
           let age = match gb_age_snapshot with Some s -> s | None -> 0.0 in
           let age_h = age /. 3600.0 in
