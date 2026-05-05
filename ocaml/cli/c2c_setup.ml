@@ -1312,7 +1312,7 @@ let ensure_default_wake_schedule ~dry_run ~output_mode ~alias =
     (* Don't clobber an existing wake schedule — user may have customized it *)
     (match output_mode with
      | Human -> Printf.eprintf "[c2c setup] schedule: wake.toml already exists, skipping.\n%!"
-     | Json -> ())
+     | Json -> print_json (`Assoc [ ("schedule", `String "exists"); ("name", `String "wake") ]))
   else begin
     if not dry_run then begin
       C2c_mcp.mkdir_p dir;
@@ -1335,7 +1335,7 @@ let ensure_default_wake_schedule ~dry_run ~output_mode ~alias =
     end;
     (match output_mode with
      | Human -> Printf.eprintf "[c2c setup] schedule: created wake.toml (interval=4.1m, idle-gated).\n%!"
-     | Json -> ())
+     | Json -> print_json (`Assoc [ ("schedule", `String "created"); ("name", `String "wake"); ("interval_s", `Int 246) ]))
   end
 
 let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
