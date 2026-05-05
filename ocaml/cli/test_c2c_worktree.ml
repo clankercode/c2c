@@ -220,6 +220,210 @@ let test_possibly_active_disabled_when_window_zero () =
           fail "active_window_hours=0.0 should disable the heuristic — \
                 expected REMOVABLE")
 
+(* ── is_meta_only_path ────────────────────────────────────────────────── *)
+
+let test_is_meta_only_path_sitreps () =
+  check bool "sitrep path is meta-only" true
+    (C2c_worktree.is_meta_only_path ".sitreps/2026-05-05-sitrep.md")
+
+let test_is_meta_only_path_collab_updates () =
+  check bool "collab/updates path is meta-only" true
+    (C2c_worktree.is_meta_only_path ".collab/updates/2026-04-28-foo.md")
+
+let test_is_meta_only_path_collab_design () =
+  check bool "collab/design path is meta-only" true
+    (C2c_worktree.is_meta_only_path ".collab/design/2026-04-28-arch.md")
+
+let test_is_meta_only_path_personal_logs () =
+  check bool "personal-logs path is meta-only" true
+    (C2c_worktree.is_meta_only_path ".c2c/personal-logs/birch-2026-05.log")
+
+let test_is_meta_only_path_memory () =
+  check bool "memory path is meta-only" true
+    (C2c_worktree.is_meta_only_path ".c2c/memory/my-note.md")
+
+let test_is_meta_only_path_dotgit () =
+  check bool ".git prefix is meta-only" true
+    (C2c_worktree.is_meta_only_path ".git/worktrees/foo")
+
+let test_is_meta_only_path_real_code () =
+  check bool "source file is NOT meta-only" false
+    (C2c_worktree.is_meta_only_path "src/main.ml")
+
+let test_is_meta_only_path_real_code_nested () =
+  check bool "nested source file is NOT meta-only" false
+    (C2c_worktree.is_meta_only_path "lib/c2c_worktree.ml")
+
+let test_is_meta_only_path_dotgitignore () =
+  (* .gitignore does NOT start with ".git/" so it is NOT meta-only *)
+  check bool ".gitignore is real code (not meta-only)" false
+    (C2c_worktree.is_meta_only_path ".gitignore")
+
+let test_is_meta_only_path_deep_sitreps () =
+  check bool "deep sitrep path is meta-only" true
+    (C2c_worktree.is_meta_only_path ".sitreps/subdir/2026-05-05.md")
+
+(* ── sha_count_map_of_refused ─────────────────────────────────────────── *)
+
+let make_gc_candidate path branch size status =
+  { C2c_worktree.gc_path = path
+  ; C2c_worktree.gc_branch = branch
+  ; C2c_worktree.gc_size = size
+  ; C2c_worktree.gc_status = status }
+
+(* 40-char SHA for use in unmerged_commits — deterministic, different per [n] *)
+let sha40 n =
+  let buf = Buffer.create 40 in
+  for i = 0 to 39 do
+    let nibble = (n lsr (i * 4)) land 15 in
+    let c = match nibble with
+      | 0 -> '0' | 1 -> '1' | 2 -> '2' | 3 -> '3'
+      | 4 -> '4' | 5 -> '5' | 6 -> '6' | 7 -> '7'
+      | 8 -> '8' | 9 -> '9' | 10 -> 'a' | 11 -> 'b'
+      | 12 -> 'c' | 13 -> 'd' | 14 -> 'e' | 15 -> 'f'
+    in
+    Buffer.add_char buf c
+  done;
+  Buffer.contents buf
+
+let test_sha_count_map_empty () =
+  let map = C2c_worktree.sha_count_map_of_refused [] in
+  check int "empty candidates → empty map" 0 (Hashtbl.length map)
+
+let test_sha_count_map_single_commit () =
+  let c = make_gc_candidate "/path/wt1" "slice/foo" 1000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "fix: foo"] })
+  in
+  let map = C2c_worktree.sha_count_map_of_refused [c] in
+  check int "1 candidate, 1 commit → count=1" 1 (Hashtbl.find map (sha40 1))
+
+let test_sha_count_map_same_sha_two_worktrees () =
+  (* Same SHA appears in two worktrees → count=2 *)
+  let c1 = make_gc_candidate "/path/wt1" "slice/foo" 1000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "fix: foo"] })
+  in
+  let c2 = make_gc_candidate "/path/wt2" "slice/bar" 2000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "fix: foo"] })
+  in
+  let map = C2c_worktree.sha_count_map_of_refused [c1; c2] in
+  check int "same SHA in 2 worktrees → count=2" 2 (Hashtbl.find map (sha40 1))
+
+let test_sha_count_map_different_shard () =
+  let c1 = make_gc_candidate "/path/wt1" "slice/foo" 1000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "fix: foo"] })
+  in
+  let c2 = make_gc_candidate "/path/wt2" "slice/bar" 2000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 2, "fix: bar"] })
+  in
+  let map = C2c_worktree.sha_count_map_of_refused [c1; c2] in
+  check int "2 different SHAs → map size=2" 2 (Hashtbl.length map);
+  check int "sha1 → count=1" 1 (Hashtbl.find map (sha40 1));
+  check int "sha2 → count=1" 1 (Hashtbl.find map (sha40 2))
+
+let test_sha_count_map_skips_non_refused () =
+  (* GcRemovable and GcPossiblyActive entries are skipped *)
+  let refused = make_gc_candidate "/path/wt1" "slice/foo" 1000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "fix: foo"] })
+  in
+  let removable = make_gc_candidate "/path/wt2" "slice/bar" 2000L
+    (C2c_worktree.GcRemovable { reason = "clean" })
+  in
+  let possibly_active = make_gc_candidate "/path/wt3" "slice/baz" 3000L
+    (C2c_worktree.GcPossiblyActive { reason = "fresh setup" })
+  in
+  let map = C2c_worktree.sha_count_map_of_refused [refused; removable; possibly_active] in
+  check int "only GcRefused contributes entries" 1 (Hashtbl.length map);
+  check int "sha1 count still 1" 1 (Hashtbl.find map (sha40 1))
+
+(* ── deduplicate_shared_orphans ──────────────────────────────────────── *)
+
+let test_dedup_threshold_zero_passes_through () =
+  (* threshold=0 disables the feature — all candidates pass through unchanged *)
+  let c1 = make_gc_candidate "/path/wt1" "slice/foo" 1000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "fix: foo"] })
+  in
+  let result = C2c_worktree.deduplicate_shared_orphans ~threshold:0 [c1] in
+  match result with
+  | [c] ->
+      (match c.C2c_worktree.gc_status with
+       | C2c_worktree.GcRefused _ -> ()
+       | _ -> fail "threshold=0 should leave GcRefused unchanged")
+  | _ -> fail "threshold=0 should return same count"
+
+let test_dedup_threshold_negative_passes_through () =
+  let c = make_gc_candidate "/path/wt1" "slice/foo" 1000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "fix: foo"] })
+  in
+  let result = C2c_worktree.deduplicate_shared_orphans ~threshold:(-1) [c] in
+  match result with
+  | [x] ->
+      (match x.C2c_worktree.gc_status with
+       | C2c_worktree.GcRefused _ -> ()
+       | _ -> fail "negative threshold should leave GcRefused unchanged")
+  | _ -> fail "negative threshold should return same count"
+
+let test_dedup_all_orphans_reclassified () =
+  (* SHA appears in 3 worktrees, threshold=5 → all orphans (3 > 5 is FALSE)
+     Actually: 3 > 5 is false, so NOT reclassified. Let me use threshold=2:
+     3 > 2 is true → reclassified. *)
+  let make_c path =
+    make_gc_candidate path "slice/foo" 1000L
+      (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "sitrep: update"] })
+  in
+  let result = C2c_worktree.deduplicate_shared_orphans ~threshold:2 [make_c "/w1"; make_c "/w2"; make_c "/w3"] in
+  List.iter (fun c ->
+    match c.C2c_worktree.gc_status with
+    | C2c_worktree.GcRemovable { reason } ->
+        check bool "reason mentions shared-orphan" true
+          (contains reason "shared-orphan")
+    | _ -> fail "all commits shared (>threshold) → should be GcRemovable"
+  ) result
+
+let test_dedup_some_not_all_orphans_kept_refused () =
+  (* One worktree has a non-shared SHA → that worktree stays GcRefused *)
+  let c1 = make_gc_candidate "/w1" "slice/foo" 1000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "fix: foo"] })
+  in
+  let c2 = make_gc_candidate "/w2" "slice/bar" 2000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 2, "fix: bar"] })
+  in
+  let c3 = make_gc_candidate "/w3" "slice/baz" 3000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [sha40 1, "fix: foo"] })
+  in
+  (* sha1 appears in 2 worktrees (w1,w3), threshold=2: 2>2 is FALSE
+     → sha1 is NOT a shared orphan → w1 and w3 stay refused *)
+  let result = C2c_worktree.deduplicate_shared_orphans ~threshold:2 [c1; c2; c3] in
+  let refused_count = List.fold_left (fun n c ->
+    match c.C2c_worktree.gc_status with
+    | C2c_worktree.GcRefused _ -> n + 1
+    | _ -> n) 0 result
+  in
+  check int "at least 2 stay refused (sha1 not orphan at threshold=2)" 2 refused_count
+
+let test_dedup_empty_unmerged_commits_unchanged () =
+  let c = make_gc_candidate "/path/wt1" "slice/foo" 1000L
+    (C2c_worktree.GcRefused { reason = "ahead"; unmerged_commits = [] })
+  in
+  let result = C2c_worktree.deduplicate_shared_orphans ~threshold:5 [c] in
+  match result with
+  | [x] ->
+      (match x.C2c_worktree.gc_status with
+       | C2c_worktree.GcRefused _ -> ()
+       | _ -> fail "empty unmerged_commits should stay GcRefused")
+  | _ -> fail "empty unmerged should return same count"
+
+let test_dedup_non_refused_unchanged () =
+  let c = make_gc_candidate "/path/wt1" "slice/foo" 1000L
+    (C2c_worktree.GcRemovable { reason = "clean" })
+  in
+  let result = C2c_worktree.deduplicate_shared_orphans ~threshold:5 [c] in
+  match result with
+  | [x] ->
+      (match x.C2c_worktree.gc_status with
+       | C2c_worktree.GcRemovable _ -> ()
+       | _ -> fail "GcRemovable should stay GcRemovable")
+  | _ -> fail "non-refused should return same count"
+
 let test_json_of_int64_small_is_int () =
   match C2c_worktree.json_of_int64 1234L with
   | `Int 1234 -> ()
@@ -268,5 +472,53 @@ let () =
             test_json_of_int64_small_is_int
         ; test_case "json_of_int64 large → numeric (not `String)" `Quick
             test_json_of_int64_large_is_numeric
+        ] )
+    ; ( "is_meta_only_path",
+        [ test_case ".sitreps/ path → true" `Quick
+            test_is_meta_only_path_sitreps
+        ; test_case ".collab/updates/ path → true" `Quick
+            test_is_meta_only_path_collab_updates
+        ; test_case ".collab/design/ path → true" `Quick
+            test_is_meta_only_path_collab_design
+        ; test_case ".c2c/personal-logs/ path → true" `Quick
+            test_is_meta_only_path_personal_logs
+        ; test_case ".c2c/memory/ path → true" `Quick
+            test_is_meta_only_path_memory
+        ; test_case ".git prefix → true" `Quick
+            test_is_meta_only_path_dotgit
+        ; test_case "src/ file → false" `Quick
+            test_is_meta_only_path_real_code
+        ; test_case "lib/ nested file → false" `Quick
+            test_is_meta_only_path_real_code_nested
+        ; test_case ".gitignore → false (not .git/)" `Quick
+            test_is_meta_only_path_dotgitignore
+        ; test_case "deep .sitreps/ path → true" `Quick
+            test_is_meta_only_path_deep_sitreps
+        ] )
+    ; ( "sha_count_map_of_refused",
+        [ test_case "empty candidates → empty map" `Quick
+            test_sha_count_map_empty
+        ; test_case "single commit → count=1" `Quick
+            test_sha_count_map_single_commit
+        ; test_case "same SHA in 2 worktrees → count=2" `Quick
+            test_sha_count_map_same_sha_two_worktrees
+        ; test_case "different SHAs → map size = n" `Quick
+            test_sha_count_map_different_shard
+        ; test_case "GcRemovable/GcPossiblyActive skipped" `Quick
+            test_sha_count_map_skips_non_refused
+        ] )
+    ; ( "deduplicate_shared_orphans",
+        [ test_case "threshold=0 → pass-through unchanged" `Quick
+            test_dedup_threshold_zero_passes_through
+        ; test_case "negative threshold → pass-through unchanged" `Quick
+            test_dedup_threshold_negative_passes_through
+        ; test_case "all commits shared (>threshold) → reclassified GcRemovable" `Quick
+            test_dedup_all_orphans_reclassified
+        ; test_case "some commits NOT shared → stays GcRefused" `Quick
+            test_dedup_some_not_all_orphans_kept_refused
+        ; test_case "empty unmerged_commits → unchanged" `Quick
+            test_dedup_empty_unmerged_commits_unchanged
+        ; test_case "non-GcRefused → unchanged" `Quick
+            test_dedup_non_refused_unchanged
         ] )
     ]
