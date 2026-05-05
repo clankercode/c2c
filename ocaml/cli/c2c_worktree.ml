@@ -1141,31 +1141,37 @@ let ask_worktree_author ~broker ~our_alias ~alias ~path ~branch ~timeout_s =
   (try
      C2c_mcp.Broker.enqueue_message broker ~from_alias:our_alias ~to_alias:alias
        ~content:msg_body ()
-   with e ->
-     Printf.eprintf "[ask_authors] enqueue_message to %s failed: %s\n%!" alias (Printexc.to_string e));
-  (* Poll our own inbox for the author's reply *)
-  let our_session = match C2c_mcp.session_id_from_env () with Some s -> s | None -> "unknown" in
-  let rec poll () =
-    let elapsed = Unix.gettimeofday () -. start_t in
-    if elapsed >= Float.of_int timeout_s then Response_timeout
-    else begin
-      (* Sleep to avoid busy-looping *)
-      ignore (Unix.select [] [] [] 1.0);
-      let msgs = try C2c_mcp.Broker.read_inbox broker ~session_id:our_session
-        with _ -> [] in
-      let normalized s = String.trim (String.lowercase_ascii s) in
-      let reply = List.fold_left (fun acc (m : C2c_mcp.message) ->
-          if m.from_alias = alias then Some (normalized m.content) :: acc else acc)
-        [] msgs in
-      match reply with
-      | [] -> poll ()
-      | b :: _ ->
-          if b = "active" || b = "keep" || b = "working" then Response_active
-          else if b = "superseded" || b = "done" || b = "gone" || b = "delete" || b = "gc" then Response_superseded
-          else poll ()
-    end
-  in
-  poll ()
+    with e ->
+      Printf.eprintf "[ask_authors] enqueue_message to %s failed: %s\n%!" alias (Printexc.to_string e));
+  (* If we don't know our own session_id, we can't read our inbox to collect
+     the author's reply. Bail early with timeout rather than reading a
+     nonexistent inbox. *)
+  let our_session = C2c_mcp.session_id_from_env () in
+  match our_session with
+  | None -> Response_timeout
+  | Some session ->
+      let rec poll () =
+        let elapsed = Unix.gettimeofday () -. start_t in
+        if elapsed >= Float.of_int timeout_s then Response_timeout
+        else begin
+          (* Sleep to avoid busy-looping *)
+          ignore (Unix.select [] [] [] 1.0);
+          let msgs = try C2c_mcp.Broker.read_inbox broker ~session_id:session
+            with _ -> [] in
+          let normalized s = String.trim (String.lowercase_ascii s) in
+          let reply = List.fold_left (fun acc (m : C2c_mcp.message) ->
+              if m.from_alias = alias then Some (normalized m.content) :: acc else acc)
+            [] msgs in
+          match reply with
+          | [] -> poll ()
+          | Some s :: _ ->
+              if s = "active" || s = "keep" || s = "working" then Response_active
+              else if s = "superseded" || s = "done" || s = "gone" || s = "delete" || s = "gc" then Response_superseded
+              else poll ()
+          | None :: _ -> poll ()
+        end
+      in
+      poll ()
 
 (** [resolve_worktree_author_alias ~path] returns the c2c alias for the
     author of the HEAD commit in [path], or None if unknown/erroneous. *)
