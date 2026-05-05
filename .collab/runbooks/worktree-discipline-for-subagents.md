@@ -368,7 +368,7 @@ conflict of interest, and the slice author may be explicitly waiting
 for a non-co-author (fresh-eye) PASS before declaring the slice ready.
 
 **The rub**: the peer-PASS artifact is **formally valid** regardless
-of whether the reviewer is a co-author. The `c2c peer-pass sign`
+of whether the reviewer is a co-author. The `c2c dev peer-pass sign`
 tool does not block co-author sign-offs. A coord who reads only the
 artifact sees a valid PASS and has no programmatic signal that the
 reviewer was a co-author. But the slice author may have declared

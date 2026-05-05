@@ -63,7 +63,7 @@ master → [branch] → [commit(s)] → [peer-PASS] → [coord-PASS] → merge �
 4. **Self-review** via `review-and-fix` skill. Commit the fixes as new commits.
 
 5. **Peer-PASS** — DM a peer, they run `review-and-fix` on your commit SHA, sign
-   the artifact and notify coordinator with `c2c peer-pass send coordinator1 ...`.
+   the artifact and notify coordinator with `c2c dev peer-pass send coordinator1 ...`.
    You receive `peer-PASS by <alias>, SHA=<sha>`.
 
 6. **Coordinator handoff** — `peer-pass send` has already sent
@@ -228,11 +228,11 @@ create a new commit for fixes, then re-request review of the new SHA.
 
 ---
 
-## Relationship to `c2c peer-pass`
+## Relationship to `c2c dev peer-pass`
 
 Every slice should produce a signed peer-PASS artifact before landing:
 ```bash
-c2c peer-pass send coordinator1 <SHA> \
+c2c dev peer-pass send coordinator1 <SHA> \
   --verdict PASS \
   --criteria "<what was checked>" \
   --commit-range <base>..<tip> \
@@ -244,7 +244,7 @@ The artifact is cryptographically bound to the reviewed SHA. When multiple commi
 are added post-review (e.g., a fix after the review), the NEW tip commit is what
 gets signed, and the `--commit-range` documents the full range.
 
-List pending passes: `c2c peer-pass list`
+List pending passes: `c2c dev peer-pass list`
 
 ---
 
@@ -263,5 +263,5 @@ just install-all
 # (use Skill tool: review-and-fix)
 
 # Sign artifact and DM coordinator
-c2c peer-pass send coordinator1 <SHA> --verdict PASS --criteria "..." --commit-range <base>..<tip> --branch slice/NNN-description --worktree .worktrees/slice-name
+c2c dev peer-pass send coordinator1 <SHA> --verdict PASS --criteria "..." --commit-range <base>..<tip> --branch slice/NNN-description --worktree .worktrees/slice-name
 ```

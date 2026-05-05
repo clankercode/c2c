@@ -385,7 +385,7 @@ transcript showing the rejection message.
 }
 ```
 
-**Fires when**: an operator-attested `c2c peer-pass pin-rotate` call
+**Fires when**: an operator-attested `c2c dev peer-pass pin-rotate` call
 succeeds and the TOFU pin for `alias` is updated.
 
 **File**: `ocaml/c2c_mcp_helpers_post_broker.ml` ~line 83.

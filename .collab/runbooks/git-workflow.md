@@ -170,7 +170,7 @@ git commit -m "fix(foo): address review note (variable shadowing)"
 c2c send lyra-quill "Re-review please. SHA=def456."
 
 # 7. Peer PASSes → sign artifact and DM coord
-c2c peer-pass send coordinator1 def456 --verdict PASS --criteria "build, tests, docs" --branch slice/200-foo-bar --worktree .worktrees/slice-foo-bar
+c2c dev peer-pass send coordinator1 def456 --verdict PASS --criteria "build, tests, docs" --branch slice/200-foo-bar --worktree .worktrees/slice-foo-bar
 
 # 8. Coord cherry-picks to master, build+install, optionally pushes later
 ```
@@ -471,7 +471,7 @@ A live peer is **strongly preferred** for:
    the subagent task ID via `--via-subagent`:
 
    ```bash
-   c2c peer-pass sign <SHA> \
+   c2c dev peer-pass sign <SHA> \
      --verdict PASS \
      --criteria "build, tests, docs" \
      --skill-version 1.0.0 \
@@ -493,7 +493,7 @@ commit-author check. Reusing it (rather than adding a separate
 `--subagent-review` flag) keeps the signing UX simple: one flag
 that says "I'm aware this isn't an independent live peer; here's
 why it's still acceptable." The `--via-subagent` value is recorded
-in the artifact's notes for auditability. `c2c peer-pass list` and
+in the artifact's notes for auditability. `c2c dev peer-pass list` and
 `verify` continue to surface a self-review WARN, which is the
 correct signal — the verdict is valid but lower-independence than
 a live peer.
@@ -506,4 +506,4 @@ a live peer.
 - `branch-per-slice.md` — slice sizing, naming, drive-by discipline
 - `CLAUDE.md` — top-level project rules (this runbook expands on them)
 - `c2c dev worktree --help` — CLI reference
-- `c2c peer-pass --help` — signed peer-PASS artifacts and bundled coordinator notifications
+- `c2c dev peer-pass --help` — signed peer-PASS artifacts and bundled coordinator notifications
