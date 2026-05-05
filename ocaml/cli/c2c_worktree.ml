@@ -797,6 +797,61 @@ let is_meta_commit subject =
     String.length s >= String.length pfx &&
     String.sub s 0 (String.length pfx) = pfx
   ) meta_prefixes
+
+(** [strip_conventional_prefix subject] removes the conventional-commit type
+    prefix from [subject] and returns the remainder.
+
+    Handles:
+      "fix(scope): message"   → "message"
+      "feat(scope): message"  → "message"
+      "refactor(scope): msg" → "message"
+      "chore(scope): msg"    → "message"
+      "test(scope): msg"     → "message"
+      "fix: message"         → "message"       (scope-less)
+      "feat: message"         → "message"
+
+    Returns the input unchanged if no conventional prefix is found. *)
+let strip_conventional_prefix subject =
+  let s = String.trim subject in
+  (* Conventional-commits types that carry semantic meaning for dedup *)
+  let prefixes = [ "fix"; "feat"; "refactor"; "chore"; "test";
+                   "docs"; "style"; "perf"; "ci"; "build"; "merge" ]
+  in
+  let result = ref None in
+  List.iter (fun pfx ->
+    match !result with Some _ -> ()
+    | None ->
+      (* "fix: message" form — strip "fix: " prefix (case-insensitive) *)
+      let pfx_with_colon = pfx ^ ": " in
+      let pfx_len = String.length pfx_with_colon in
+      if String.length s >= pfx_len then
+        let s_lower = String.lowercase_ascii s in
+        if String.sub s_lower 0 pfx_len = pfx_with_colon then
+          result := Some (String.sub s pfx_len (String.length s - pfx_len))
+        else
+          (* "fix(scope): message" form — scan for ") :" after the type prefix *)
+          let pfx_paren = pfx ^ "(" in
+          let pfx_paren_len = String.length pfx_paren in
+          if String.length s >= pfx_paren_len + 3 &&
+             String.sub s_lower 0 pfx_paren_len = pfx_paren
+          then
+            (* Find the closing ')' after the opening '(' at pfx_paren_len.
+               The colon follows the closing paren: "...): message" *)
+            (try
+               let after_open = pfx_paren_len + 1 in
+               let close_paren = String.index_from s after_open ')' in
+               let after_close = close_paren + 1 in
+               let colon_pos = String.index_from s after_close ':' in
+               let rest = String.sub s (colon_pos + 2) (String.length s - colon_pos - 2) in
+               result := Some rest
+             with Not_found -> ()
+            )
+          else ()
+      else ()
+  ) prefixes;
+  match !result with
+  | Some r -> String.trim r
+  | None -> s
 (** [unmerged_cherry_commits path] returns the list of (sha, subject) pairs
     for commits on this branch that are NOT content-equivalent to anything
     on origin/master (the "+" lines from git cherry). Empty list means
@@ -1206,6 +1261,23 @@ let classify_from_git_batch batch (_alias, path, branch) main_path
             in
             if plus_lines = [] then true
             else
+              (* Build a set of stripped master subjects for fuzzy-match fallback.
+                 When a worktree commit's subject is not a meta commit but its
+                 stripped form matches a master commit's stripped subject, the
+                 worktree commit is content-equivalent (same change arrived via
+                 a different conventional-commit prefix, e.g. fix → feat). *)
+              let master_stripped = Hashtbl.create 16 in
+              let (master_code, master_log, _) =
+                git_command ~cwd:main_cwd ~quiet:true
+                  [ "log"; "--format=%s"; "refs/remotes/origin/master" ]
+              in
+              if master_code = 0 then
+                String.split_on_char '\n' (String.trim master_log)
+                |> List.iter (fun line ->
+                  let stripped = strip_conventional_prefix line in
+                  if stripped <> "" then
+                    Hashtbl.replace master_stripped stripped true);
+              (* Check each worktree-unique commit *)
               List.for_all (fun line ->
                 let t = String.trim line in
                 let sha = String.sub t 2 40 in
@@ -1214,11 +1286,18 @@ let classify_from_git_batch batch (_alias, path, branch) main_path
                     [ "log"; "-1"; "--format=%s"; sha ]
                 in
                 if rc <> 0 then false
-                else is_meta_commit (String.trim subj)
+                else
+                  let trimmed_subj = String.trim subj in
+                  if is_meta_commit trimmed_subj then true
+                  else
+                    (* Layer 3b fallback: check stripped-subject match *)
+                    let stripped = strip_conventional_prefix trimmed_subj in
+                    try ignore (Hashtbl.find master_stripped stripped); true
+                    with Not_found -> false
               ) plus_lines
       in
       if main_tree_says_equivalent then
-        mk (GcRemovable { reason = "content-equivalent from main-tree perspective (remaining unmerged are meta — safe to lose)" })
+        mk (GcRemovable { reason = "content-equivalent from main-tree perspective (unmerged commits are meta or fuzzy-match master subjects — safe to lose)" })
       else
         mk (GcRefused { reason = "HEAD not ancestor of origin/master or master (and not content-equivalent via git-cherry)"; unmerged_commits = unmerged })
   else

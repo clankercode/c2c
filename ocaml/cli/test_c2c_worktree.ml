@@ -393,6 +393,39 @@ let test_is_meta_commit_empty () =
   check bool "empty string is NOT meta" false
     (C2c_worktree.is_meta_commit "")
 
+(* ── strip_conventional_prefix ─────────────────────────────────────────── *)
+
+let strip = C2c_worktree.strip_conventional_prefix
+
+let test_strip_conv_prefix_scopeless () =
+  check string "fix: message → message"
+    "message" (strip "fix: message");
+  check string "feat: message → message"
+    "message" (strip "feat: message");
+  check string "refactor: message → message"
+    "message" (strip "refactor: message")
+
+let test_strip_conv_prefix_scoped () =
+  check string "fix(gc): message → message"
+    "message" (strip "fix(gc): message");
+  check string "feat(worktree): add heuristic → add heuristic"
+    "add heuristic" (strip "feat(worktree): add heuristic");
+  check string "chore(docs): update readme → update readme"
+    "update readme" (strip "chore(docs): update readme")
+
+let test_strip_conv_prefix_uppercase () =
+  (* case-insensitive *)
+  check string "FIX(scope): msg → msg"
+    "msg" (strip "FIX(scope): msg");
+  check string "Feat(gc): body → body"
+    "body" (strip "Feat(gc): body")
+
+let test_strip_conv_prefix_no_match () =
+  check string "sitrep: 14 UTC May 5 → unchanged"
+    "sitrep: 14 UTC May 5" (strip "sitrep: 14 UTC May 5");
+  check string "wip: draft → unchanged"
+    "wip: draft" (strip "wip: draft")
+
 (* ── sha_count_map_of_refused ─────────────────────────────────────────── *)
 
 let make_gc_candidate path branch size status =
@@ -703,5 +736,15 @@ let () =
             test_dedup_empty_unmerged_commits_unchanged
         ; test_case "non-GcRefused → unchanged" `Quick
             test_dedup_non_refused_unchanged
+        ] )
+    ; ( "strip_conventional_prefix",
+        [ test_case "fix: message → message" `Quick
+            test_strip_conv_prefix_scopeless
+        ; test_case "fix(gc): message → message" `Quick
+            test_strip_conv_prefix_scoped
+        ; test_case "FIX(scope): msg → msg (case-insensitive)" `Quick
+            test_strip_conv_prefix_uppercase
+        ; test_case "sitrep: 14 UTC May 5 → unchanged (no match)" `Quick
+            test_strip_conv_prefix_no_match
         ] )
     ]
