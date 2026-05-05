@@ -1091,15 +1091,28 @@ type git_batch = {
   gb_cwd_holders : (int * string) list;
 }
 
-(** [run_git_batch ~ignore_active path] runs all git/read commands for one
+(** [run_git_batch ~ignore_active ~strict_dirt path] runs all git/read commands for one
     worktree and returns a [git_batch]. Sequential within each call (git
     object-db locks make per-command threading within a worktree counterproductive). *)
-let run_git_batch ~ignore_active path =
+let run_git_batch ~ignore_active ~strict_dirt path =
   let size = worktree_size_bytes path in
   let age_snapshot = snapshot_age_seconds path in
-  let (dirty_out, dirty_code) =
+  (* [dirty_code]: when [strict_dirt] is true, any git status output means dirty.
+     When false, filter out meta-only/artifact paths (same logic as [is_dirty]). *)
+  let dirty_code =
     let (_, out, _) = git_command ~cwd:path ~quiet:true [ "status"; "--porcelain" ] in
-    (out, String.trim out <> "")
+    let out = String.trim out in
+    if out = "" then false
+    else if strict_dirt then true
+    else
+      let lines = String.split_on_char '\n' out in
+      let dirty_non_meta = List.filter (fun line ->
+        if String.length line < 4 then false
+        else
+          let filename = String.sub line 3 (String.length line - 3) in
+          not (is_meta_only_path filename)
+      ) lines in
+      dirty_non_meta <> []
   in
   let (ancestor_origin_code, _) =
     let (code, _, _) = git_command ~cwd:path ~quiet:true
@@ -1243,11 +1256,11 @@ let classify_from_git_batch batch (_alias, path, branch) main_path
         else
           mk (GcRemovable { reason = "ancestor of origin/master or master, clean" })
 
-(** [scan_worktrees_for_gc_parallel ~ignore_active ~active_window_hours ()]
+(** [scan_worktrees_for_gc_parallel ~ignore_active ~active_window_hours ~strict_dirt ()]
     parallel counterpart of [scan_worktrees_for_gc].  Distributes worktrees
     across [num_parallel_workers] threads; each worker processes its chunk
     sequentially.  Main thread busy-waits for all results. *)
-let scan_worktrees_for_gc_parallel ~ignore_active ~active_window_hours () =
+let scan_worktrees_for_gc_parallel ~ignore_active ~active_window_hours ~strict_dirt () =
   let main_path = main_worktree_path () in
   let main_norm = match main_path with
     | Some mp -> (try Some (Unix.realpath mp) with _ -> Some mp)
@@ -1291,7 +1304,7 @@ let scan_worktrees_for_gc_parallel ~ignore_active ~active_window_hours () =
       | None -> ()
       | Some idx ->
           let (alias, path, branch) = List.nth candidates idx in
-          let batch = run_git_batch ~ignore_active path in
+          let batch = run_git_batch ~ignore_active ~strict_dirt path in
           let gc = classify_from_git_batch batch (alias, path, branch) main_path active_window_hours in
           Mutex.lock results_mutex;
           Array.unsafe_set results idx (Some (alias, path, branch, gc));
@@ -1988,7 +2001,7 @@ let worktree_gc_term =
   in
   let all_candidates =
     if parallel then
-      scan_worktrees_for_gc_parallel ~ignore_active ~active_window_hours ()
+      scan_worktrees_for_gc_parallel ~ignore_active ~active_window_hours ~strict_dirt:strict_dirty ()
     else
       scan_worktrees_for_gc ~ignore_active ~active_window_hours
         ~strict_dirt:strict_dirty ~age_threshold_days ()
