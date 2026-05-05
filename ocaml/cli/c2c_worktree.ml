@@ -873,6 +873,12 @@ let scan_worktrees_for_gc ~ignore_active ~active_window_hours
     | Some mp -> mp
     | None -> cwd
   in
+  (* Prune stale worktree references before scanning.
+     This removes entries for worktrees that were partially deleted,
+     preventing "cd: No such file or directory" errors during classification. *)
+  let (_ : int * string * string) =
+    git_command ~cwd:repo_root ~quiet:true ["worktree"; "prune"]
+  in
   let candidates =
     List.filter
       (fun (_, path, _) ->
@@ -880,7 +886,7 @@ let scan_worktrees_for_gc ~ignore_active ~active_window_hours
         (match main_norm with
          | Some mn -> p_norm <> mn
          | None -> true)
-        && (let prefix = repo_root // ".worktrees" ^ "/" in
+         && (let prefix = repo_root // ".worktrees" ^ "/" in
             (* Anchor on trailing slash so .worktrees-other/foo
                doesn't match the .worktrees prefix. (#313 review by
                lyra-quill.) *)
