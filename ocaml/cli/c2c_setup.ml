@@ -1334,8 +1334,12 @@ let ensure_default_wake_schedule ~dry_run ~output_mode ~alias =
       C2c_io.write_file path content
     end;
     (match output_mode with
-     | Human -> Printf.eprintf "[c2c setup] schedule: created wake.toml (interval=4.1m, idle-gated).\n%!"
-     | Json -> print_json (`Assoc [ ("schedule", `String "created"); ("name", `String "wake"); ("interval_s", `Int 246) ]))
+     | Human ->
+         if dry_run then
+           Printf.eprintf "[c2c setup] schedule: would create wake.toml (interval=4.1m, idle-gated).\n%!"
+         else
+           Printf.eprintf "[c2c setup] schedule: created wake.toml (interval=4.1m, idle-gated).\n%!"
+     | Json -> print_json (`Assoc [ ("schedule", `String (if dry_run then "would_create" else "created")); ("name", `String "wake"); ("interval_s", `Int 246) ]))
   end
 
 let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
