@@ -1040,21 +1040,8 @@ let scan_worktrees_for_gc ~ignore_active ~active_window_hours
                doesn't match the .worktrees prefix. (#313 review by
                lyra-quill.) *)
             String.length p_norm > String.length prefix
-            && String.sub p_norm 0 (String.length prefix) = prefix))
+             && String.sub p_norm 0 (String.length prefix) = prefix))
       entries
-  in
-  (* Apply age filter: skip worktrees whose HEAD commit is younger than
-     [age_threshold_days]. None = no filter (show all). *)
-  let candidates =
-    match age_threshold_days with
-    | None -> candidates
-    | Some days ->
-        let threshold_s = days *. 86400.0 in
-        List.filter (fun (_, path, _) ->
-          match head_age_seconds path with
-          | None -> false  (* can't determine age — skip *)
-          | Some age -> age >= threshold_s)
-          candidates
   in
   List.map
     (classify_worktree ~main_path ~ignore_active ~active_window_hours ~strict_dirt)
@@ -2052,6 +2039,32 @@ let worktree_gc_term =
         | _ -> c)
       candidates
     else candidates
+  in
+  (* Age reclassification: REFUSE worktrees older than --age threshold get
+     promoted to POSSIBLY_ACTIVE with a note about manual review.
+     This makes --age useful for surfacing old abandoned branches
+     without auto-deleting them. Applied after meta-path filter so
+     GcRemovable worktrees (confirmed abandoned via meta commits) are
+     preserved and not re-promoted. *)
+  let candidates =
+    match age_threshold_days with
+    | None -> candidates
+    | Some days ->
+        let threshold_s = days *. 86400.0 in
+        List.map (fun c ->
+          match c.gc_status with
+          | GcRefused { reason; unmerged_commits } ->
+              (match head_age_seconds c.gc_path with
+               | None -> c  (* can't determine age — keep REFUSE *)
+               | Some age_s when age_s >= threshold_s ->
+                   { c with gc_status = GcPossiblyActive
+                              { reason = Printf.sprintf
+                                  "older than %.0fd, consider manual review \
+                                   (was REFUSE: %s)"
+                                  days reason } }
+               | Some _ -> c)  (* younger than threshold — keep REFUSE *)
+          | _ -> c)
+        candidates
   in
   if interactive then begin
     ignore (interactive_triage ~candidates)
