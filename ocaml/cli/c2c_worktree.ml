@@ -1618,9 +1618,31 @@ let deduplicate_shared_orphans ~threshold candidates =
   if threshold <= 0 then candidates
   else begin
     let sha_counts = sha_count_map_of_refused candidates in
+    (* Layer 3 support: build a set of all commit subjects on origin/master.
+       One git invocation, O(1) lookups per unique commit. Used to detect
+       cherry-picked work where patch-ids differ but subjects match. *)
+    let master_subjects =
+      let main_cwd =
+        match main_worktree_path () with
+        | Some p -> p
+        | None -> "."
+      in
+      let (code, out, _) =
+        git_command ~cwd:main_cwd ~quiet:true
+          [ "log"; "--format=%s"; "refs/remotes/origin/master" ]
+      in
+      let tbl = Hashtbl.create 4096 in
+      if code = 0 then begin
+        String.split_on_char '\n' out
+        |> List.iter (fun line ->
+          let s = String.trim line in
+          if s <> "" then Hashtbl.replace tbl s true)
+      end;
+      tbl
+    in
     List.map (fun c ->
       match c.gc_status with
-      | GcRefused { reason; unmerged_commits } ->
+      | GcRefused { reason = _; unmerged_commits } ->
           if unmerged_commits = [] then c
           else begin
             (* Partition unmerged commits into shared orphans vs unique commits *)
@@ -1665,7 +1687,25 @@ let deduplicate_shared_orphans ~threshold candidates =
                   n_unique n_shared
                 in
                 { c with gc_status = GcRemovable { reason = reason' } }
-              else c
+              else
+                (* Layer 3: subject-match heuristic. For unique commits that
+                   aren't meta-only by path, check if their subjects appear on
+                   origin/master. If ALL unique commits have a subject match,
+                   the work was cherry-picked (just with different patch-ids
+                   due to conflict resolution). *)
+                let all_subjects_on_master =
+                  List.for_all (fun (_sha, _cnt, subj) ->
+                    Hashtbl.mem master_subjects subj
+                  ) unique_commits
+                in
+                if all_subjects_on_master then
+                  let n_unique = List.length unique_commits in
+                  let n_shared = List.length shared_commits in
+                  let reason' = Printf.sprintf "subject-superseded (all %d unique commit(s) have matching subjects on master; %d shared orphans filtered)"
+                    n_unique n_shared
+                  in
+                  { c with gc_status = GcRemovable { reason = reason' } }
+                else c
             end
           end
       | _ -> c)
