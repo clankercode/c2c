@@ -70,10 +70,7 @@ let watch_loop
     ignore (Unix.select [] [] [] interval);
     loop ()
   in
-  loop ();
-  Printf.printf "[c2c-deliver-watch] stopped after %d iterations, %d total delivered\n%!"
-    !iterations !total;
-  flush stdout
+  loop ()  (* unreachable: loop recurses forever; next lines are dead code *)
 
 open Cmdliner
 
