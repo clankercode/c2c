@@ -94,7 +94,7 @@ canonical recipes copy-paste-able instead of "go read the runbook":
 3. **Verbatim wake scheduling recipe** as the on-arrival setup.
    Include this exact block:
    ````
-   **Managed sessions (`c2c start`)** — scheduling is automatic. Verify with:
+   **Preferred (managed sessions via `c2c start`)** — native scheduling. Verify with:
    ```
    c2c schedule list
    ```
@@ -107,7 +107,7 @@ canonical recipes copy-paste-able instead of "go read the runbook":
    c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
    ```
 
-   **Non-managed sessions** — fall back to Monitor + heartbeat binary.
+   **Fallback (non-managed sessions)** — Monitor + heartbeat binary.
    On session start (or after compaction), run `TaskList` first; if a
    Monitor with `description: "heartbeat tick"` is already running,
    SKIP arming. Otherwise:

@@ -24,7 +24,7 @@ Then: take your first slice when greenlit. Bounded, small.
 
 ## Wake scheduling (arm ONCE per session)
 
-**Managed sessions (`c2c start`)** — scheduling is automatic. Verify with:
+**Preferred (managed sessions via `c2c start`)** — native scheduling. Verify with:
 ```
 c2c schedule list
 ```
@@ -33,7 +33,7 @@ If no `wake` schedule exists, set one:
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 ```
 
-**Non-managed sessions** — fall back to Monitor + heartbeat binary.
+**Fallback (non-managed sessions)** — Monitor + heartbeat binary.
 On session start (or after compaction), run `TaskList` first; if a
 Monitor with `description: "heartbeat tick"` is already running,
 SKIP arming. Otherwise:
