@@ -434,7 +434,10 @@ let test_dedup_some_not_all_orphans_kept_refused () =
     | C2c_worktree.GcRefused _ -> n + 1
     | _ -> n) 0 result
   in
-  check int "at least 2 stay refused (sha1 not orphan at threshold=2)" 2 refused_count
+  (* All 3 stay refused: sha1 count=2, threshold=2, 2>2 is false → not shared.
+     Layer 2 (meta-only) also fails because /w1 /w2 /w3 don't exist on disk
+     so commit_touches_noncode_paths returns false. *)
+  check int "all 3 stay refused (sha1 not orphan at threshold=2, Layer 2 fails on fake paths)" 3 refused_count
 
 let test_dedup_empty_unmerged_commits_unchanged () =
   let c = make_gc_candidate "/path/wt1" "slice/foo" 1000L
