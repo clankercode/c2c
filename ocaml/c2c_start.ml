@@ -1000,9 +1000,9 @@ let resolve_managed_heartbeats_and_persist_role
     (config_specs : managed_heartbeat list) :
     managed_heartbeat list * managed_heartbeat list =
   let merged_config = merge_heartbeats (builtin_managed_heartbeat :: config_specs) in
-  let merged_role, role_hbs =
+  let role_hbs =
     match role with
-    | None -> merged_config, []
+    | None -> []
     | Some r ->
         let role_default =
           if r.C2c_role.c2c_heartbeat = [] then []
@@ -1030,20 +1030,24 @@ let resolve_managed_heartbeats_and_persist_role
                in
                heartbeat_from_entries ~name base entries)
         in
-        let role_hbs = role_default @ role_named in
-        (* role_hbs: heartbeat entries DEFINED by the role (not from merged_config).
-           These are what we persist to .toml and let the watcher start.
-           merged_role: full merged set including merged_config — same as the
-           original resolve_managed_heartbeats output. *)
-        merge_heartbeats (merged_config @ role_hbs), role_hbs
+        role_default @ role_named
   in
-  let merged = merge_heartbeats (merged_role @ per_agent_specs) in
+  (* merged: full set including config + role entries, then per-agent overrides *)
+  let merged =
+    match role with
+    | None ->
+        merge_heartbeats (merged_config @ per_agent_specs)
+    | Some _ ->
+        merge_heartbeats (merged_config @ role_hbs @ per_agent_specs)
+  in
   let filtered =
     merged
     |> List.filter (should_heartbeat_apply_to_client ~client ~deliver_started)
     |> List.filter (should_heartbeat_apply_to_role ~role)
   in
-  (* Split: role_hbs that passed filters are persisted; rest are started directly *)
+  (* Split: role_hbs that passed filters are persisted (watcher starts them);
+     everything else (config + per-agent, and role entries that failed filters)
+     is started directly. *)
   let role_filtered =
     role_hbs
     |> List.filter (should_heartbeat_apply_to_client ~client ~deliver_started)
