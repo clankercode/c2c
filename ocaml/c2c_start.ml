@@ -243,6 +243,12 @@ let parse_heartbeat_duration_s (raw : string) : (float, string) result =
     with Failure _ ->
       Error ("invalid heartbeat duration: " ^ raw)
 
+(* Offsets can legitimately be 0 (align to interval start). *)
+let parse_heartbeat_offset_s (raw : string) : (float, string) result =
+  if String.trim raw = "0s" || String.trim raw = "0"
+  then Ok 0.0
+  else parse_heartbeat_duration_s raw
+
 let parse_heartbeat_schedule (raw : string) : (heartbeat_schedule, string) result =
   let s = String.trim raw |> strip_quotes in
   if s = "" then Error "heartbeat schedule is empty"
@@ -260,7 +266,7 @@ let parse_heartbeat_schedule (raw : string) : (heartbeat_schedule, string) resul
           , String.sub body (idx + 1) (String.length body - idx - 1) )
     in
     match parse_heartbeat_duration_s interval_part,
-          parse_heartbeat_duration_s offset_part with
+          parse_heartbeat_offset_s offset_part with
     | Ok interval_s, Ok offset_s ->
         Ok (Aligned_interval { interval_s; offset_s })
     | Error e, _ | _, Error e -> Error e
@@ -1074,7 +1080,9 @@ let schedule_entry_of_managed_heartbeat (hb : managed_heartbeat) : C2c_mcp.sched
     | Interval _ -> ""
     | Aligned_interval { interval_s; offset_s } ->
         if offset_s = 0. then
-          Printf.sprintf "@%s" (format_duration_s interval_s)
+          (* Explicit +0s so parse_heartbeat_schedule parses this as
+             Aligned_interval (not Interval) for correct round-trip. *)
+          Printf.sprintf "@%s+0s" (format_duration_s interval_s)
         else
           Printf.sprintf "@%s+%s"
             (format_duration_s interval_s)

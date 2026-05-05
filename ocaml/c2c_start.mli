@@ -199,6 +199,10 @@ val should_fire_heartbeat :
 val parse_heartbeat_duration_s : string -> (float, string) result
 (** Parse heartbeat durations like ["240s"], ["4m"], and ["1h"]. *)
 
+val parse_heartbeat_offset_s : string -> (float, string) result
+(** Parse heartbeat offsets like ["0s"], ["30s"]. Accepts 0 unlike
+    [parse_heartbeat_duration_s]. *)
+
 val parse_heartbeat_schedule : string -> (heartbeat_schedule, string) result
 (** Parse relative schedules like ["4m"] or aligned schedules like ["@1h+7m"]. *)
 
@@ -212,6 +216,35 @@ val repo_config_managed_heartbeats : unit -> managed_heartbeat list
 val per_agent_managed_heartbeats : name:string -> managed_heartbeat list
 (** Read managed heartbeat overrides from the instance-local
     [heartbeat.toml], if present. *)
+
+val builtin_managed_heartbeat : managed_heartbeat
+(** Default heartbeat used as base when building role-heartbeats. *)
+
+(** {1 S5: Role heartbeat persistence} *)
+
+val resolve_managed_heartbeats_and_persist_role :
+  client:string ->
+  deliver_started:bool ->
+  role:C2c_role.t option ->
+  ?per_agent_specs:managed_heartbeat list ->
+  managed_heartbeat list ->
+  managed_heartbeat list * managed_heartbeat list
+(** Split role heartbeats (persisted to .toml, started by watcher) from
+    config/per-agent heartbeats (started directly). *)
+
+val schedule_entry_of_managed_heartbeat :
+  managed_heartbeat -> C2c_mcp.schedule_entry
+(** Convert a role-derived managed_heartbeat to a schedule_entry for TOML
+    persistence. *)
+
+val render_schedule_entry :
+  C2c_mcp.schedule_entry -> string
+(** Render a schedule_entry to TOML string. *)
+
+val persist_role_heartbeats_to_schedule_dir :
+  alias:string -> managed_heartbeat list -> unit
+(** Write role-derived heartbeats to [.c2c/schedules/<alias>/].
+    Idempotent — each boot overwrites with fresh timestamps. *)
 
 val resolve_managed_heartbeats :
   client:string ->
