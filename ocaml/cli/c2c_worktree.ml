@@ -1417,40 +1417,52 @@ let deduplicate_shared_orphans ~threshold candidates =
   if threshold <= 0 then candidates
   else begin
     let sha_counts = sha_count_map_of_refused candidates in
-    List.map (fun c ->
-      match c.gc_status with
-      | GcRefused { reason; unmerged_commits } ->
-          if unmerged_commits = [] then c
-          else begin
-            (* Check: are ALL unmerged SHAs shared orphans? *)
-            let all_orphans, orphan_details =
-              List.fold_left (fun (all_ok, details) (sha, subj) ->
-                let bare_sha = String.sub sha 0 (min 40 (String.length sha)) in
-                let cnt = try Hashtbl.find sha_counts bare_sha with Not_found -> 0 in
-                let ok = is_shared_orphan ~threshold cnt in
-                (all_ok && ok, (bare_sha, cnt, subj) :: details)
-              ) (true, []) unmerged_commits
-            in
-            if all_orphans then
-              let top_shares =
-                List.sort (fun (_, c1, _) (_, c2, _) -> Int.compare c2 c1)
-                  orphan_details
-                |> List.filteri (fun i (_, cnt, _) -> i < 3)
+    (* DEBUG: print top 5 SHAs and total map size *)
+    let all_entries = Hashtbl.fold (fun sha cnt acc -> (sha, cnt) :: acc) sha_counts [] in
+    let sorted = List.sort (fun (_, c1) (_, c2) -> Int.compare c2 c1) all_entries in
+    let top5 = List.filteri (fun i _ -> i < 5) sorted in
+    Printf.eprintf "[shared-orphan dedup] sha_counts map size: %d, top 5 SHAs:\n%!" (Hashtbl.length sha_counts);
+    List.iter (fun (sha, cnt) ->
+      let short = if String.length sha >= 8 then String.sub sha 0 8 else sha in
+      Printf.eprintf "  %s (+%d worktrees)\n%!" short cnt
+    ) top5;
+    let result, reclassified, kept =
+      List.fold_left (fun (acc, reclassified, kept) c ->
+        match c.gc_status with
+        | GcRefused { reason; unmerged_commits } ->
+            if unmerged_commits = [] then (c :: acc, reclassified, kept + 1)
+            else begin
+              let all_orphans, orphan_details =
+                List.fold_left (fun (all_ok, details) (sha, subj) ->
+                  let bare_sha = String.sub sha 0 (min 40 (String.length sha)) in
+                  let cnt = try Hashtbl.find sha_counts bare_sha with Not_found -> 0 in
+                  let ok = is_shared_orphan ~threshold cnt in
+                  (all_ok && ok, (bare_sha, cnt, subj) :: details)
+                ) (true, []) unmerged_commits
               in
-              let reason_strs =
-                List.map (fun (sha, cnt, _) ->
-                  let short = if String.length sha >= 8 then String.sub sha 0 8 else sha in
-                  Printf.sprintf "%s(+%d)" short cnt
-                ) top_shares
-              in
-              let reason' = Printf.sprintf "shared-orphan (all %d unmerged SHAs shared across >%d worktrees: %s)"
-                (List.length unmerged_commits) threshold (String.concat ", " reason_strs)
-              in
-              { c with gc_status = GcRemovable { reason = reason' } }
-            else c
-          end
-      | _ -> c)
-      candidates
+              if all_orphans then
+                let top_shares =
+                  List.sort (fun (_, c1, _) (_, c2, _) -> Int.compare c2 c1)
+                    orphan_details
+                  |> List.filteri (fun i (_, cnt, _) -> i < 3)
+                in
+                let reason_strs =
+                  List.map (fun (sha, cnt, _) ->
+                    let short = if String.length sha >= 8 then String.sub sha 0 8 else sha in
+                    Printf.sprintf "%s(+%d)" short cnt
+                  ) top_shares
+                in
+                let reason' = Printf.sprintf "shared-orphan (all %d unmerged SHAs shared across >%d worktrees: %s)"
+                  (List.length unmerged_commits) threshold (String.concat ", " reason_strs)
+                in
+                ({ c with gc_status = GcRemovable { reason = reason' } } :: acc, reclassified + 1, kept)
+              else (c :: acc, reclassified, kept + 1)
+            end
+        | _ -> (c :: acc, reclassified, kept))
+        ([], 0, 0) candidates
+    in
+    Printf.eprintf "[shared-orphan dedup] reclassified: %d, kept REFUSE: %d\n%!" reclassified kept;
+    result
   end
 
 (* ---- ask-authors GC phase --------------------------------------------
