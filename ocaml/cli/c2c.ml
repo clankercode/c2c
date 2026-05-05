@@ -11938,10 +11938,11 @@ let instances_deprecated_term =
       end
 
 let instances_deprecated =
-  Cmdliner.Cmd.v
+  Cmdliner.Cmd.group
     (Cmdliner.Cmd.info "instances"
        ~doc:"[DEPRECATED: use c2c dev instances]")
-    instances_deprecated_term
+    ~default:instances_deprecated_term
+    [ clean_stale_subcmd ]
 
 let () =
   try_fast_path ();
