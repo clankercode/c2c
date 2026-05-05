@@ -6,7 +6,7 @@ let ( // ) = Filename.concat
 
 let mkdir_p = C2c_mcp.mkdir_p
 
-let resolve_broker_root () = C2c_utils.resolve_broker_root ()
+let resolve_broker_root () = C2c_repo_fp.resolve_broker_root ()
 
 (* ---- Email-to-alias resolution (also in c2c_coord.ml; kept here so
     c2c_worktree.ml is self-contained for the CLI tier) ---------------- *)
@@ -1097,7 +1097,9 @@ let render_gc_human ~candidates ~clean ~verbose =
       in
       Printf.printf "  %-50s %8s  %-30s %s\n" c.gc_path (format_bytes c.gc_size) c.gc_branch r;
       if verbose && String.length r >= 18 && (try String.sub r 0 18 = "content-equivalent" with _ -> false) then
-        Printf.printf "    (all branch commits content-matched on origin/master via git-cherry)\n")
+        Printf.printf "    (all branch commits content-matched on origin/master via git-cherry)\n";
+      if verbose && String.length r >= 14 && (try String.sub r 0 14 = "shared-orphan" with _ -> false) then
+        Printf.printf "    (all unmerged commits are shared orphans — burn-distributed, content is safe)\n")
     removable;
   if possibly_active <> [] then begin
     (* `[!]` prefix flags POSSIBLY_ACTIVE as "review me" rather than
@@ -1136,6 +1138,86 @@ let render_gc_human ~candidates ~clean ~verbose =
       (format_bytes removable_size) (List.length removable);
     Printf.printf "Run with --clean to remove the REMOVABLE set \
                    (POSSIBLY_ACTIVE skipped). Dry-run by default.\n"
+  end
+
+(* ---- shared-orphan deduplication ----------------------------------------
+    Post-classification pass: for each GcRefused worktree, check whether ALL
+    of its unmerged commits (the + lines from git cherry) appear in more than
+    [threshold] worktrees total. If so, the worktree's commits are shared
+    orphans — burn-distributed artifacts that exist identically in many
+    branches. The content has not been lost; it was distributed simultaneously
+    to all agents during the Apr 28-29 surge. Reclassify to GcRemovable.
+
+    [threshold] defaults to 5: a commit appearing in ≥6 worktrees is considered
+    a shared orphan. Set --shared-orphan-threshold=0 to disable.
+ *)
+
+(** [sha_count_map_of_refused candidates] builds a SHA → worktree-count map
+    from all unmerged commits (+ lines from git cherry) across all GcRefused
+    worktrees in [candidates]. Only GcRefused entries contribute entries;
+    other classifications are skipped. *)
+let sha_count_map_of_refused candidates =
+  List.fold_left (fun acc c ->
+    match c.gc_status with
+    | GcRefused { unmerged_commits; _ } ->
+        List.fold_left (fun acc (sha, _subj) ->
+          (* Extract just the first 40 hex chars of the SHA. *)
+          let sha = String.sub sha 0 (min 40 (String.length sha)) in
+          let prev = try Hashtbl.find acc sha with Not_found -> 0 in
+          Hashtbl.replace acc sha (prev + 1);
+          acc
+        ) acc unmerged_commits
+    | _ -> acc)
+    (Hashtbl.create 64)
+    candidates
+
+(** [all_shares_are_orphans ~threshold sha unmerged count] returns true when
+    [count] > [threshold] — i.e., this SHA appears in enough worktrees to be
+    considered a shared orphan. *)
+let is_shared_orphan ~threshold count = count > threshold
+
+(** [deduplicate_shared_orphans ~threshold candidates] reclassifies each
+    GcRefused worktree as GcRemovable when ALL of its unmerged commits
+    are shared orphans (each appears in >threshold worktrees). The reason
+    text notes the shared-orphan count for auditability. *)
+let deduplicate_shared_orphans ~threshold candidates =
+  if threshold <= 0 then candidates
+  else begin
+    let sha_counts = sha_count_map_of_refused candidates in
+    List.map (fun c ->
+      match c.gc_status with
+      | GcRefused { reason; unmerged_commits } ->
+          if unmerged_commits = [] then c
+          else begin
+            (* Check: are ALL unmerged SHAs shared orphans? *)
+            let all_orphans, orphan_details =
+              List.fold_left (fun (all_ok, details) (sha, subj) ->
+                let bare_sha = String.sub sha 0 (min 40 (String.length sha)) in
+                let cnt = try Hashtbl.find sha_counts bare_sha with Not_found -> 0 in
+                let ok = is_shared_orphan ~threshold cnt in
+                (all_ok && ok, (bare_sha, cnt, subj) :: details)
+              ) (true, []) unmerged_commits
+            in
+            if all_orphans then
+              let top_shares =
+                List.sort (fun (_, c1, _) (_, c2, _) -> Int.compare c2 c1)
+                  orphan_details
+                |> List.filteri (fun i (_, cnt, _) -> i < 3)
+              in
+              let reason_strs =
+                List.map (fun (sha, cnt, _) ->
+                  let short = if String.length sha >= 8 then String.sub sha 0 8 else sha in
+                  Printf.sprintf "%s(+%d)" short cnt
+                ) top_shares
+              in
+              let reason' = Printf.sprintf "shared-orphan (all %d unmerged SHAs shared across >%d worktrees: %s)"
+                (List.length unmerged_commits) threshold (String.concat ", " reason_strs)
+              in
+              { c with gc_status = GcRemovable { reason = reason' } }
+            else c
+          end
+      | _ -> c)
+      candidates
   end
 
 (* ---- ask-authors GC phase --------------------------------------------
@@ -1367,6 +1449,14 @@ let worktree_gc_term =
                  and annotate REMOVABLE worktrees that are content-equivalent \
                  (cherry-picked) rather than direct ancestors.")
   in
+  let shared_orphan_threshold_flag =
+    Arg.(value & opt int 5 & info ["shared-orphan-threshold"] ~docv:"N"
+           ~doc:"Reclassify REFUSE worktrees as REMOVABLE when all their \
+                 unmerged commits (git cherry + lines) appear in more than N \
+                 worktrees. Shared orphan commits are burn-distributed commits \
+                 that exist identically across many worktrees (sitrep/docs \
+                 bursts). Set 0 to disable. Default: 5.")
+  in
   let ask_authors_flag =
     Arg.(value & flag & info ["ask-authors"]
            ~doc:"For REFUSE-classified worktrees, auto-DM the commit author \
@@ -1401,7 +1491,8 @@ let worktree_gc_term =
   and+ verbose = verbose_flag
   and+ interactive = interactive_flag
   and+ ask_authors = ask_authors_flag
-  and+ no_meta_filter = no_meta_filter_flag in
+  and+ no_meta_filter = no_meta_filter_flag
+  and+ shared_orphan_threshold = shared_orphan_threshold_flag in
   let meta_filter = not no_meta_filter in
   if interactive && json_out then begin
     Printf.eprintf "error: --interactive and --json are mutually exclusive.\n%!";
@@ -1439,6 +1530,15 @@ let worktree_gc_term =
             String.length base >= String.length pfx
             && String.sub base 0 (String.length pfx) = pfx)
           all_candidates
+  in
+  (* Deduplicate shared orphans: reclassify REFUSE worktrees whose unmerged
+     commits all appear in >threshold other worktrees. These are burn-distributed
+     commits (sitrep/docs bursts from Apr 28-29) that exist identically across
+     many worktrees — safe to GC once we know the content is shared. *)
+  let candidates =
+    if shared_orphan_threshold > 0 then
+      deduplicate_shared_orphans ~threshold:shared_orphan_threshold candidates
+    else candidates
   in
   (* Ask authors about REFUSE worktrees and reclassify based on responses *)
   let candidates =
