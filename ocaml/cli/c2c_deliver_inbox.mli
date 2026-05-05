@@ -22,6 +22,7 @@ type cli_args = {
   dry_run : bool;
   json : bool;
   pty_master_fd : int option;  (* S4: PTY master fd for PTY-based delivery *)
+  use_inotify : bool;          (* H3: inotifywait-based watcher *)
 }
 
 (* PID file helpers — also used by c2c_start.ml for consistency *)

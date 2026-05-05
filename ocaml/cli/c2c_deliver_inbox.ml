@@ -40,6 +40,7 @@ type cli_args = {
   dry_run : bool;
   json : bool;
   pty_master_fd : int option;  (* S4: PTY master fd for PTY-based delivery *)
+  use_inotify : bool;          (* H3: inotifywait-based watcher *)
 }
 
 (* ---------------------------------------------------------------------------
@@ -75,6 +76,202 @@ let already_running pidfile =
   match read_pidfile pidfile with
   | Some p when pid_is_alive p -> true
   | _ -> false
+
+(* ---------------------------------------------------------------------------
+ * H3: Inotify-based inbox watcher
+ * Uses `inotifywait -m` subprocess to watch the broker inbox file for
+ * changes, then reads + delivers new messages. Position-based dedup (tracks
+ * List.length of messages seen) prevents re-delivery after crash/restart
+ * via atomic checkpoint sidecar.
+ * --------------------------------------------------------------------------- *)
+
+(* Atomic checkpoint: write to temp file then rename. *)
+let read_checkpoint (path : string) : int =
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () -> int_of_string (String.trim (input_line ic)))
+  with _ -> 0
+
+let write_checkpoint (path : string) (count : int) =
+  let tmp = path ^ ".tmp" in
+  try
+    let oc = open_out tmp in
+    Fun.protect ~finally:(fun () -> try close_out oc with _ -> ())
+      (fun () -> Printf.fprintf oc "%d\n" count);
+    Unix.rename tmp path
+  with _ -> ()
+
+(* Read the inbox JSON file and return parsed messages.
+   Returns empty list if file missing or unparseable. *)
+let read_inbox_json (path : string) : Yojson.Safe.t list =
+  if not (Sys.file_exists path) then []
+  else
+    try
+      let ic = open_in path in
+      Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          let buf = Buffer.create 512 in
+          (try while true do Buffer.add_channel buf ic 1 done with End_of_file -> ());
+          match Buffer.contents buf |> String.trim with
+          | "" | "null" -> []
+          | s -> (match Yojson.Safe.from_string s with
+                  | `List msgs -> msgs
+                  | _ -> []))
+    with _ -> []
+
+(* Drop first n elements from a list *)
+let rec list_drop (n : int) (lst : 'a list) : 'a list =
+  if n <= 0 then lst else match lst with [] -> [] | _ :: t -> list_drop (n - 1) t
+
+(* Deliver new messages from inbox since last_seen_count.
+   Uses read_inbox (non-destructive) so messages remain for poll_inbox callers.
+   Position-based dedup: tracks List.length. Returns new count after delivery. *)
+let deliver_new_messages
+    ~(broker : C2c_mcp.Broker.t)
+    ~(session_id : string)
+    ~(last_seen_count : int ref)
+    ~(inbox_path : string)
+    ~(checkpoint_path : string)
+    ~(client : string)
+    ~(broker_root : string)
+    : int =
+  let messages = read_inbox_json inbox_path in
+  let new_count = List.length messages in
+  if new_count > !last_seen_count then begin
+    let to_deliver_count = new_count - !last_seen_count in
+    if to_deliver_count > 0 then begin
+      let new_msgs_json = list_drop !last_seen_count messages in
+      List.iter (fun (j : Yojson.Safe.t) ->
+        match j with
+        | `Assoc fields ->
+            (try
+              let from_alias = List.assoc "from_alias" fields |> function
+                | `String s -> s | _ -> raise Exit
+              and content = List.assoc "content" fields |> function
+                | `String s -> s | _ -> raise Exit
+              in
+              Printf.printf "[c2c-deliver-inbox] inotify deliver from=%s: %s\n%!"
+                from_alias
+                (String.sub content 0 (min (String.length content) 80));
+              flush stdout
+            with Exit | Not_found -> ())
+        | _ -> ())
+        new_msgs_json;
+      C2c_deliver_inbox_log.log_drain
+        ~broker_root ~session_id ~client
+        ~count:to_deliver_count
+        ~drained_by_pid:(Unix.getpid ())
+    end;
+    last_seen_count := new_count;
+    write_checkpoint checkpoint_path new_count;
+    new_count
+  end else
+    !last_seen_count
+
+(* Run the inotifywait subprocess. Falls back to polling on failure. *)
+let run_inotify_loop
+    ~(broker_root : string)
+    ~(session_id : string)
+    ~(client : string)
+    ~(watched_pid : int option)
+    ~(poll_interval : float)
+    ~(max_iterations : int option)
+    : unit =
+  let inbox_path = broker_root // ".inbox" // session_id ^ ".inbox.json" in
+  let checkpoint_path = broker_root // ".inbox" // session_id ^ ".deliver-checkpoint" in
+  let last_seen_count = ref (read_checkpoint checkpoint_path) in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let iterations = ref 0 in
+  let total_delivered = ref 0 in
+  if not (Sys.file_exists inbox_path) then
+    Printf.printf "[c2c-deliver-inbox] inotify: inbox not found: %s\n%!" inbox_path
+  else
+    Printf.printf "[c2c-deliver-inbox] inotify: watching %s (checkpoint=%d)\n%!"
+      inbox_path !last_seen_count;
+  flush stdout;
+  let cmd = Printf.sprintf
+    "inotifywait -m -e close_write,modify --format '%%e %%f' %s"
+    (Filename.quote inbox_path)
+  in
+  let rec fallback_poll () =
+    let rec poll_loop () =
+      match max_iterations with
+      | Some m when !iterations >= m ->
+          Printf.printf "[c2c-deliver-inbox] inotify: max iterations reached\n%!";
+          flush stdout
+      | _ ->
+        incr iterations;
+        let prev = !last_seen_count in
+        let _new_count = deliver_new_messages
+          ~broker ~session_id ~last_seen_count
+          ~inbox_path ~checkpoint_path ~client ~broker_root
+        in
+        total_delivered := !total_delivered + (!last_seen_count - prev);
+        (match watched_pid with
+         | Some wp when not (pid_is_alive wp) ->
+           Printf.printf "[c2c-deliver-inbox] inotify: watched pid %d exited\n%!" wp;
+           flush stdout
+         | _ ->
+           Unix.sleepf (max 0.01 poll_interval);
+           poll_loop ())
+    in
+    poll_loop ()
+  and run_inotify () =
+    let (ic, _oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
+    let ready_flag = Atomic.make false in
+    let _err_thread = Thread.create (fun () ->
+      (try
+        while true do ignore (input_line err_ic : string)
+        done
+      with End_of_file | Sys_error _ -> ());
+      Atomic.set ready_flag true
+    ) () in
+    let deadline = Unix.gettimeofday () +. 10.0 in
+    while not (Atomic.get ready_flag) && Unix.gettimeofday () < deadline do
+      Thread.delay 0.05
+    done;
+    Printf.printf "[c2c-deliver-inbox] inotify: watcher ready\n%!";
+    flush stdout;
+    Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
+      let rec loop () =
+        match max_iterations with
+        | Some m when !iterations >= m ->
+            Printf.printf "[c2c-deliver-inbox] inotify: max iterations reached\n%!";
+            flush stdout
+        | _ ->
+          (match watched_pid with
+           | Some wp when not (pid_is_alive wp) ->
+             Printf.printf "[c2c-deliver-inbox] inotify: watched pid %d exited\n%!" wp;
+             flush stdout
+           | _ ->
+             (try
+                let _line = input_line ic in
+                incr iterations;
+                let prev = !last_seen_count in
+                let _new_count = deliver_new_messages
+                  ~broker ~session_id ~last_seen_count
+                  ~inbox_path ~checkpoint_path ~client ~broker_root
+                in
+                total_delivered := !total_delivered + (!last_seen_count - prev);
+                loop ()
+              with
+              | End_of_file ->
+                  Printf.printf "[c2c-deliver-inbox] inotify: subprocess exited, polling\n%!";
+                  flush stdout;
+                  fallback_poll ()
+              | Sys_error msg ->
+                  Printf.printf "[c2c-deliver-inbox] inotify: read error '%s', polling\n%!" msg;
+                  flush stdout;
+                  fallback_poll ()))
+      in
+      loop ()
+    )
+  in
+  run_inotify ();
+  Printf.printf "[c2c-deliver-inbox] inotify loop finished, total delivered=%d\n%!"
+    !total_delivered;
+  flush stdout
 
 (* ---------------------------------------------------------------------------
  * Daemon: fork + setsid + pgrp + log redirection
@@ -170,8 +367,18 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
         ~poll_interval:args.interval
         ~max_iterations:args.max_iterations
   | None ->
-      (* S5: XML sideband delivery via --xml-output-fd for Codex *)
-      (match args.xml_output_fd with
+      (* H3: inotify-based delivery when --inotify is set *)
+      (if args.use_inotify then
+         run_inotify_loop
+           ~broker_root:args.broker_root
+           ~session_id
+           ~client:args.client
+           ~watched_pid
+           ~poll_interval:args.interval
+           ~max_iterations:args.max_iterations
+       else
+         (* S5: XML sideband delivery via --xml-output-fd for Codex *)
+         match args.xml_output_fd with
        | Some fd ->
            let out_fd : Unix.file_descr = Obj.magic fd in
            C2c_pty_inject.xml_deliver_loop_daemon
@@ -181,68 +388,70 @@ let run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
              ~watched_pid
              ~poll_interval:args.interval
              ~max_iterations:args.max_iterations
-       | None ->
-           let iterations = ref 0 in
-      let total_delivered = ref 0 in
-      let max_iterations = args.max_iterations in
-      let is_kimi = args.client = "kimi" in
-      (* For kimi: notifier handles broker lifecycle internally.
-         For others: create broker once and reuse. *)
-      let broker =
-        if is_kimi then None
-        else Some (C2c_mcp.Broker.create ~root:args.broker_root)
-      in
-      let rec loop () =
-        match max_iterations with
-        | Some m when !iterations >= m ->
-          Printf.printf "[c2c-deliver-inbox] max iterations (%d) reached, stopping\n%!" m;
-          flush stdout
-        | _ ->
-          incr iterations;
-          let delivered =
-            if is_kimi then
-              poll_once_kimi ~broker_root:args.broker_root ~session_id
-            else
-              let messages = poll_once_generic
-                ~broker:(Option.get broker)
-                ~session_id
-              in
-              (* #562: log drain event *)
-              C2c_deliver_inbox_log.log_drain
-                ~broker_root:args.broker_root
-                ~session_id
-                ~client:args.client
-                ~count:(List.length messages)
-                ~drained_by_pid:(Unix.getpid ());
-              List.iter
-                (fun (m : C2c_mcp.message) ->
-                   Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
-                     m.from_alias
-                     (String.sub m.content 0 (min (String.length m.content) 80)))
-                messages;
-              List.length messages
-          in
-          total_delivered := !total_delivered + delivered;
-          (if delivered > 0 then
-             Printf.printf "[c2c-deliver-inbox] iteration %d: delivered %d message(s)\n%!"
-               !iterations delivered
-           else
-             Printf.printf "[c2c-deliver-inbox] iteration %d: no messages\n%!" !iterations);
-          flush stdout;
-          (match watched_pid with
-           | Some wp when not (pid_is_alive wp) ->
-             Printf.printf "[c2c-deliver-inbox] watched pid %d exited, stopping\n%!" wp;
-             flush stdout;
-             ()
-           | _ ->
-             (* #612: clamp interval to 0.01s minimum to prevent edge-case
-                zero/negative sleep (interval can be set to 0.1 for testing) *)
-             let safe_interval = max 0.01 args.interval in
-             Unix.sleepf safe_interval;
-             loop ())
-      in
-      loop ()  (* G-1 fix: removed unreachable printf+flush stdout *)
-    )  (* closes outer (match args.xml_output_fd with ... | None -> ... *)
+        | None ->
+            let iterations = ref 0 in
+            let total_delivered = ref 0 in
+            let max_iterations = args.max_iterations in
+            let is_kimi = args.client = "kimi" in
+            (* For kimi: notifier handles broker lifecycle internally.
+               For others: create broker once and reuse. *)
+            let broker =
+              if is_kimi then None
+              else Some (C2c_mcp.Broker.create ~root:args.broker_root)
+            in
+            let rec loop () =
+              match max_iterations with
+              | Some m when !iterations >= m ->
+                  Printf.printf "[c2c-deliver-inbox] max iterations (%d) reached, stopping\n%!" m;
+                  flush stdout
+              | _ ->
+                  incr iterations;
+                  let delivered =
+                    if is_kimi then
+                      poll_once_kimi ~broker_root:args.broker_root ~session_id
+                    else
+                      let messages = poll_once_generic
+                        ~broker:(Option.get broker)
+                        ~session_id
+                      in
+                      (* #562: log drain event *)
+                      C2c_deliver_inbox_log.log_drain
+                        ~broker_root:args.broker_root
+                        ~session_id
+                        ~client:args.client
+                        ~count:(List.length messages)
+                        ~drained_by_pid:(Unix.getpid ());
+                      List.iter
+                        (fun (m : C2c_mcp.message) ->
+                           Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
+                             m.from_alias
+                             (String.sub m.content 0 (min (String.length m.content) 80)))
+                        messages;
+                      List.length messages
+                  in
+                  total_delivered := !total_delivered + delivered;
+                  (if delivered > 0 then
+                     Printf.printf "[c2c-deliver-inbox] iteration %d: delivered %d message(s)\n%!"
+                       !iterations delivered
+                   else
+                     Printf.printf "[c2c-deliver-inbox] iteration %d: no messages\n%!" !iterations);
+                  flush stdout;
+                  (match watched_pid with
+                   | Some wp when not (pid_is_alive wp) ->
+                       Printf.printf "[c2c-deliver-inbox] watched pid %d exited, stopping\n%!" wp;
+                       flush stdout;
+                       ()
+                   | _ ->
+                       (* #612: clamp interval to 0.01s minimum to prevent edge-case
+                          zero/negative sleep (interval can be set to 0.1 for testing) *)
+                       let safe_interval = max 0.01 args.interval in
+                       Unix.sleepf safe_interval;
+                       loop ())
+            in
+            loop ();
+            Printf.printf "[c2c-deliver-inbox] loop finished after %d iterations, %d total delivered\n%!"
+              !iterations !total_delivered;
+            flush stdout)
 
 (* ---------------------------------------------------------------------------
  * CLI argument parsing
@@ -269,6 +478,7 @@ let parse_args () : cli_args =
   let dry_run = ref false in
   let json = ref false in
   let pty_master_fd = ref None in
+  let use_inotify = ref false in
 
   let speclist = [
     ("--session-id", Arg.String (fun s -> session_id := Some s),
@@ -309,6 +519,8 @@ let parse_args () : cli_args =
      " pts device (required with --terminal-pid)");
     ("--pty-master-fd", Arg.Int (fun i -> pty_master_fd := Some i),
      " PTY master fd for PTY-based delivery (S4)");
+    ("--inotify", Arg.Set use_inotify,
+     " use inotifywait-based delivery instead of polling (H3)");
   ] in
   let anon _ = () in
   Arg.parse speclist anon "c2c-deliver-inbox [options]";
@@ -338,6 +550,7 @@ let parse_args () : cli_args =
     dry_run = !dry_run;
     json = !json;
     pty_master_fd = !pty_master_fd;
+    use_inotify = !use_inotify;
   }
 
 (* ---------------------------------------------------------------------------
