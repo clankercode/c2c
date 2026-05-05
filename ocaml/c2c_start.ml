@@ -3352,6 +3352,11 @@ let is_cc_wrapper_str (name : string) : bool =
  * Sidecar script paths
  * --------------------------------------------------------------------------- *)
 
+(* S5: Check if inotifywait is available in PATH.
+   Used to auto-enable --inotify delivery when available. *)
+let inotifywait_available () : bool =
+  Option.is_some (find_binary "inotifywait")
+
 let deliver_command ~(broker_root : string) : (string * string list) option =
   (* OCaml c2c-deliver-inbox is the only supported delivery daemon.
      Python fallback is deprecated and removed. *)
@@ -3991,7 +3996,10 @@ let start_deliver_daemon ~(name : string) ~(client : string)
     ?command_override
     ?(xml_output_fd : string option) ?(xml_output_path : string option)
     ?(preserve_fds : Unix.file_descr list option)
-    ?(pty_master_fd : int option) () : int option =
+    ?(pty_master_fd : int option)
+    ?(use_inotify : bool option) () : int option =
+  (* S5: auto-detect inotifywait availability if not explicitly specified *)
+  let use_inotify = Option.value use_inotify ~default:(inotifywait_available ()) in
   match (match command_override with Some cmd -> Some cmd | None -> deliver_command ~broker_root) with
   | None -> None
   | Some (command, prefix_args) ->
@@ -4001,6 +4009,7 @@ let start_deliver_daemon ~(name : string) ~(client : string)
           "--loop"; "--broker-root"; broker_root ]
         @ (match xml_output_fd with None -> [] | Some fd -> [ "--xml-output-fd"; fd ])
         @ (match xml_output_path with None -> [] | Some path -> [ "--xml-output-path"; path ])
+        @ (if use_inotify then [ "--inotify" ] else [])
         @ (match child_pid_opt with None -> [] | Some p -> [ "--pid"; string_of_int p ])
         @ (match pty_master_fd with None -> [] | Some fd -> [ "--pty-master-fd"; string_of_int fd ])
       in

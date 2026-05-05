@@ -584,17 +584,18 @@ val cleanup_stale_opentui_zig_cache : unit -> int
 (** {1 Sidecar daemons} *)
 
  val start_deliver_daemon :
-  name:string ->
-  client:string ->
-  broker_root:string ->
-  ?child_pid_opt:int ->
-  ?command_override:(string * string list) ->
-  ?xml_output_fd:string ->
-  ?xml_output_path:string ->
-  ?preserve_fds:Unix.file_descr list ->
-  ?pty_master_fd:int ->
-  unit ->
-  int option
+   name:string ->
+   client:string ->
+   broker_root:string ->
+   ?child_pid_opt:int ->
+   ?command_override:(string * string list) ->
+   ?xml_output_fd:string ->
+   ?xml_output_path:string ->
+   ?preserve_fds:Unix.file_descr list ->
+   ?pty_master_fd:int ->
+   ?use_inotify:bool ->
+   unit ->
+   int option
 (** [start_deliver_daemon ~name ~client ~broker_root ?child_pid_opt
      ?command_override ()] spawns
     c2c_deliver_inbox.py and returns its PID, or [None] if the script is not
