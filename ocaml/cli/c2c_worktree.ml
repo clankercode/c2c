@@ -550,7 +550,7 @@ let worktree_size_bytes path =
 
 type gc_status =
   | GcRemovable of { reason : string }
-  | GcRefused of { reason : string }
+  | GcRefused of { reason : string; unmerged_commits : (string * string) list }
   | GcPossiblyActive of { reason : string }
     (* #314: branch tip equals origin/master HEAD AND worktree was set
        up within the active-window. Soft REFUSE — `--clean` skips it,
@@ -634,6 +634,32 @@ let worktree_age_seconds path =
          Some (Unix.gettimeofday () -. st.Unix.st_mtime)
        with _ -> None)
 
+(** [unmerged_cherry_commits path] returns the list of (sha, subject) pairs
+    for commits on this branch that are NOT content-equivalent to anything
+    on origin/master (the "+" lines from git cherry). Empty list means
+    all branch content has landed. *)
+let unmerged_cherry_commits path =
+  let (code, cherry_out, _) =
+    git_command ~cwd:path ~quiet:true
+      [ "cherry"; "-v"; "refs/remotes/origin/master"; "HEAD" ]
+  in
+  if code <> 0 then []
+  else
+    let lines = String.split_on_char '\n' (String.trim cherry_out) in
+    List.filter_map (fun line ->
+      let trimmed = String.trim line in
+      if String.length trimmed > 2 && trimmed.[0] = '+' then
+        let rest = String.sub trimmed 2 (String.length trimmed - 2) in
+        (* rest is "SHA subject..." *)
+        let sha_end = min 40 (String.length rest) in
+        let sha = String.sub rest 0 sha_end in
+        let subject = if String.length rest > 41 then
+          String.sub rest 41 (String.length rest - 41)
+        else "" in
+        Some (sha, String.trim subject)
+      else None
+    ) lines
+
 (** [classify_worktree ~ignore_active ~active_window_hours
     (alias, path, branch)] runs the refuse-checks and returns a
     [gc_candidate]. The freshness heuristic (#314) marks worktrees
@@ -701,11 +727,12 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
           let m_norm = try Unix.realpath mp with _ -> mp in
           p_norm = m_norm
       | None -> false) then
-    mk (GcRefused { reason = "main worktree (never offered)" })
+    mk (GcRefused { reason = "main worktree (never offered)"; unmerged_commits = [] })
   else if is_dirty path then
-    mk (GcRefused { reason = "dirty working tree" })
+    mk (GcRefused { reason = "dirty working tree"; unmerged_commits = [] })
   else if not (head_ancestor_of_origin_master path || head_ancestor_of_master path || head_equivalent_on_origin_master path) then
-    mk (GcRefused { reason = "HEAD not ancestor of origin/master or master (and not content-equivalent via git-cherry)" })
+    let unmerged = unmerged_cherry_commits path in
+    mk (GcRefused { reason = "HEAD not ancestor of origin/master or master (and not content-equivalent via git-cherry)"; unmerged_commits = unmerged })
   else
     let holders = if ignore_active then [] else cwd_holders path in
     match holders with
@@ -713,7 +740,7 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
         let snippet =
           if String.length cmd > 60 then String.sub cmd 0 60 ^ "…" else cmd
         in
-        mk (GcRefused { reason = Printf.sprintf "active cwd: pid=%d (%s)" pid snippet })
+        mk (GcRefused { reason = Printf.sprintf "active cwd: pid=%d (%s)" pid snippet; unmerged_commits = [] })
     | [] ->
         (* Freshness heuristic (#314). HEAD == origin/master + admin dir
            young = "set up but no work yet, owner may be reading
@@ -738,7 +765,15 @@ let classify_worktree ~main_path ~ignore_active ~active_window_hours
                      window); owner may be working in another cwd"
                     age_h active_window_hours })
         else
-          mk (GcRemovable { reason = "ancestor of origin/master or master, clean" })
+          let removable_reason =
+            if head_ancestor_of_origin_master path then
+              "ancestor of origin/master, clean"
+            else if head_ancestor_of_master path then
+              "ancestor of local master, clean"
+            else
+              "content-equivalent (cherry-picked), clean"
+          in
+          mk (GcRemovable { reason = removable_reason })
 
 (** [scan_worktrees_for_gc ~ignore_active ~active_window_hours
     ~age_threshold_days ()] enumerates worktrees under .worktrees/ and
@@ -803,7 +838,7 @@ let gc_remove_path path =
   let (code, _, _) = git_command [ "worktree"; "remove"; path ] in
   code = 0
 
-let render_gc_human ~candidates ~clean =
+let render_gc_human ~candidates ~clean ~verbose =
   let removable = List.filter (fun c ->
       match c.gc_status with GcRemovable _ -> true | _ -> false)
       candidates
@@ -830,7 +865,9 @@ let render_gc_human ~candidates ~clean =
         | GcRemovable { reason } -> reason
         | _ -> ""
       in
-      Printf.printf "  %-50s %8s  %-30s %s\n" c.gc_path (format_bytes c.gc_size) c.gc_branch r)
+      Printf.printf "  %-50s %8s  %-30s %s\n" c.gc_path (format_bytes c.gc_size) c.gc_branch r;
+      if verbose && String.length r >= 18 && (try String.sub r 0 18 = "content-equivalent" with _ -> false) then
+        Printf.printf "    (all branch commits content-matched on origin/master via git-cherry)\n")
     removable;
   if possibly_active <> [] then begin
     (* `[!]` prefix flags POSSIBLY_ACTIVE as "review me" rather than
@@ -850,11 +887,19 @@ let render_gc_human ~candidates ~clean =
   end;
   Printf.printf "\nREFUSE (%d worktrees):\n" (List.length refused);
   List.iter (fun c ->
-      let r = match c.gc_status with
-        | GcRefused { reason } -> reason
-        | _ -> ""
+      let (r, unmerged) = match c.gc_status with
+        | GcRefused { reason; unmerged_commits } -> (reason, unmerged_commits)
+        | _ -> ("", [])
       in
-      Printf.printf "  %-50s %8s  %-30s REFUSE: %s\n" c.gc_path (format_bytes c.gc_size) c.gc_branch r)
+      Printf.printf "  %-50s %8s  %-30s REFUSE: %s\n" c.gc_path (format_bytes c.gc_size) c.gc_branch r;
+      if verbose && unmerged <> [] then begin
+        List.iter (fun (sha, subj) ->
+          let short_sha = if String.length sha > 8 then String.sub sha 0 8 else sha in
+          Printf.printf "    + %s %s\n" short_sha subj
+        ) (List.filteri (fun i _ -> i < 10) unmerged);
+        if List.length unmerged > 10 then
+          Printf.printf "    ... +%d more\n" (List.length unmerged - 10)
+      end)
     refused;
   if not clean then begin
     Printf.printf "\nTotal reclaimable: %s (%d worktrees)\n"
@@ -886,9 +931,12 @@ let render_gc_json ~candidates =
     | GcPossiblyActive { reason } ->
         `Assoc (base @ [ ("status", `String "possibly_active")
                        ; ("reason", `String reason) ])
-    | GcRefused { reason } ->
+    | GcRefused { reason; unmerged_commits } ->
+        let commits_json = `List (List.map (fun (sha, subj) ->
+          `Assoc [("sha", `String sha); ("subject", `String subj)]) unmerged_commits) in
         `Assoc (base @ [ ("status", `String "refused")
-                       ; ("refuse_reason", `String reason) ])
+                       ; ("refuse_reason", `String reason)
+                       ; ("unmerged_commits", commits_json) ])
   in
   let removable = List.filter (fun c ->
       match c.gc_status with GcRemovable _ -> true | _ -> false)
@@ -950,12 +998,19 @@ let worktree_gc_term =
     Arg.(value & opt (some string) None & info ["age"] ~docv:"AGE"
            ~doc)
   in
+  let verbose_flag =
+    Arg.(value & flag & info ["verbose"; "v"]
+           ~doc:"Show per-commit cherry detail for REFUSE'd worktrees \
+                 and annotate REMOVABLE worktrees that are content-equivalent \
+                 (cherry-picked) rather than direct ancestors.")
+  in
   let+ clean = clean_flag
   and+ json_out = json_flag
   and+ ignore_active = ignore_active_flag
   and+ path_prefix = path_prefix_flag
   and+ active_window_hours = active_window_flag
-  and+ age_str = age_flag in
+  and+ age_str = age_flag
+  and+ verbose = verbose_flag in
   (* Parse --age value: "30d", "30", "7d" → float days *)
   let age_threshold_days =
     match age_str with
@@ -988,7 +1043,7 @@ let worktree_gc_term =
   if json_out then begin
     print_endline (Yojson.Safe.to_string (render_gc_json ~candidates))
   end else begin
-    render_gc_human ~candidates ~clean
+    render_gc_human ~candidates ~clean ~verbose
   end;
   if clean then begin
     let removable = List.filter (fun c ->

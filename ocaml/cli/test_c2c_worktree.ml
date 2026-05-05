@@ -97,7 +97,7 @@ let test_classify_clean_merged_is_removable () =
       in
       match c.C2c_worktree.gc_status with
       | C2c_worktree.GcRemovable _ -> ()
-      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
+      | C2c_worktree.GcRefused { reason; _ } | C2c_worktree.GcPossiblyActive { reason } ->
           fail (Printf.sprintf "clean+merged should be removable; got REFUSE: %s" reason))
 
 let test_classify_dirty_is_refused () =
@@ -107,7 +107,7 @@ let test_classify_dirty_is_refused () =
         classify_in_worktree ~main_path:None ~ignore_active:true wt
       in
       match c.C2c_worktree.gc_status with
-      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
+      | C2c_worktree.GcRefused { reason; _ } | C2c_worktree.GcPossiblyActive { reason } ->
           check bool "refuse mentions dirty" true (contains reason "dirty")
       | _ -> fail "dirty should be refused")
 
@@ -118,7 +118,7 @@ let test_classify_ahead_is_refused () =
         classify_in_worktree ~main_path:None ~ignore_active:true wt
       in
       match c.C2c_worktree.gc_status with
-      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
+      | C2c_worktree.GcRefused { reason; _ } | C2c_worktree.GcPossiblyActive { reason } ->
           check bool "refuse mentions ancestor" true
             (contains reason "ancestor of origin/master")
       | _ -> fail "branch-ahead should be refused")
@@ -131,7 +131,7 @@ let test_classify_detached_at_origin_master_is_removable () =
       in
       match c.C2c_worktree.gc_status with
       | C2c_worktree.GcRemovable _ -> ()
-      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
+      | C2c_worktree.GcRefused { reason; _ } | C2c_worktree.GcPossiblyActive { reason } ->
           fail (Printf.sprintf "detached-at-origin/master should be removable; got REFUSE: %s" reason))
 
 let test_classify_main_worktree_is_refused_even_if_offered () =
@@ -143,7 +143,7 @@ let test_classify_main_worktree_is_refused_even_if_offered () =
         classify_in_worktree ~main_path:(Some repo) ~ignore_active:true repo
       in
       match c.C2c_worktree.gc_status with
-      | C2c_worktree.GcRefused { reason } | C2c_worktree.GcPossiblyActive { reason } ->
+      | C2c_worktree.GcRefused { reason; _ } | C2c_worktree.GcPossiblyActive { reason } ->
           check bool "refuse mentions main worktree" true
             (contains reason "main worktree")
       | _ -> fail "main worktree should never be removable")
@@ -202,7 +202,7 @@ let test_old_worktree_at_origin_classifies_removable_not_possibly_active () =
           fail (Printf.sprintf
                   "5-hours-old admin dir + window=2.0 must be REMOVABLE; \
                    got POSSIBLY_ACTIVE: %s" reason)
-      | C2c_worktree.GcRefused { reason } ->
+      | C2c_worktree.GcRefused { reason; _ } ->
           fail (Printf.sprintf "expected REMOVABLE; got REFUSE: %s" reason))
 
 let test_possibly_active_disabled_when_window_zero () =
