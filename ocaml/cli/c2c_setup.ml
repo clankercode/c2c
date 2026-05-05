@@ -1305,6 +1305,39 @@ let start_client_list = String.concat ", " start_clients
 let deliver_watch_clients = [ "codex"; "codex-headless"; "opencode"; "kimi"; "crush"; "gemini" ]
 let is_deliver_watch_client client = List.mem client deliver_watch_clients
 
+let ensure_default_wake_schedule ~dry_run ~output_mode ~alias =
+  let dir = C2c_mcp.schedule_base_dir alias in
+  let path = C2c_mcp.schedule_entry_path alias "wake" in
+  if Sys.file_exists path then
+    (* Don't clobber an existing wake schedule — user may have customized it *)
+    (match output_mode with
+     | Human -> Printf.eprintf "[c2c setup] schedule: wake.toml already exists, skipping.\n%!"
+     | Json -> ())
+  else begin
+    if not dry_run then begin
+      C2c_mcp.mkdir_p dir;
+      let now_ts = C2c_time.now_iso8601_utc () in
+      let interval_s = 246.0 in (* 4.1 minutes *)
+      let content = Printf.sprintf
+        "[schedule]\n\
+         name = \"wake\"\n\
+         interval_s = %d\n\
+         align = \"\"\n\
+         message = \"wake — poll inbox, advance work\"\n\
+         only_when_idle = true\n\
+         idle_threshold_s = %d\n\
+         enabled = true\n\
+         created_at = \"%s\"\n\
+         updated_at = \"%s\"\n"
+        (int_of_float interval_s) (int_of_float interval_s) now_ts now_ts
+      in
+      C2c_io.write_file path content
+    end;
+    (match output_mode with
+     | Human -> Printf.eprintf "[c2c setup] schedule: created wake.toml (interval=4.1m, idle-gated).\n%!"
+     | Json -> ())
+  end
+
 let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   let root =
@@ -1321,7 +1354,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
         a
   in
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
-  match client with
+  (match client with
   | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt
   | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch
   | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~force ()
@@ -1334,7 +1367,10 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
        | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
        | Human ->
            Printf.eprintf "error: %s\n%!" msg;
-           exit 1)
+           exit 1));
+  (* After successful client setup, ensure a default wake schedule exists *)
+  if List.mem client known_clients then
+    ensure_default_wake_schedule ~dry_run ~output_mode ~alias:alias_val
 
 (* --- install: detection + TUI --------------------------------------------- *)
 
