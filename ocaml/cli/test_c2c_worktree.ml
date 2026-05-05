@@ -331,6 +331,68 @@ let test_is_meta_only_path_build_false () =
   check bool "build/output.js is NOT meta-only" false
     (C2c_worktree.is_meta_only_path "build/output.js")
 
+(* ── is_meta_commit ───────────────────────────────────────────────────── *)
+
+let test_is_meta_commit_sitrep () =
+  check bool "sitrep subject is meta" true
+    (C2c_worktree.is_meta_commit "sitrep: 14 UTC May 4 — quiet hour")
+
+let test_is_meta_commit_sitrep_uppercase () =
+  check bool "Sitrep (capital) is meta" true
+    (C2c_worktree.is_meta_commit "Sitrep: morning check")
+
+let test_is_meta_commit_docs () =
+  check bool "docs subject is meta" true
+    (C2c_worktree.is_meta_commit "docs: update runbook for GC")
+
+let test_is_meta_commit_chore () =
+  check bool "chore subject is meta" true
+    (C2c_worktree.is_meta_commit "chore: bump version")
+
+let test_is_meta_commit_findings () =
+  check bool "findings subject is meta" true
+    (C2c_worktree.is_meta_commit "findings: stale binary after install")
+
+let test_is_meta_commit_wip_colon () =
+  check bool "wip: subject is meta" true
+    (C2c_worktree.is_meta_commit "wip: checkpoint before rebase")
+
+let test_is_meta_commit_wip_paren () =
+  check bool "wip(coord subject is meta" true
+    (C2c_worktree.is_meta_commit "wip(coord): partial sitrep")
+
+let test_is_meta_commit_add_collab () =
+  check bool "add .collab/ is meta" true
+    (C2c_worktree.is_meta_commit "add .collab/design/new-doc.md")
+
+let test_is_meta_commit_update_docs () =
+  check bool "update docs is meta" true
+    (C2c_worktree.is_meta_commit "update docs/index.md with new section")
+
+let test_is_meta_commit_design () =
+  check bool "design subject is meta" true
+    (C2c_worktree.is_meta_commit "design: worktree GC commit safety")
+
+let test_is_meta_commit_feat_not_meta () =
+  check bool "feat(...) is NOT meta" false
+    (C2c_worktree.is_meta_commit "feat(gc): add --verbose flag")
+
+let test_is_meta_commit_fix_not_meta () =
+  check bool "fix(...) is NOT meta" false
+    (C2c_worktree.is_meta_commit "fix(start): remove duplicate fd helpers")
+
+let test_is_meta_commit_refactor_not_meta () =
+  check bool "refactor is NOT meta" false
+    (C2c_worktree.is_meta_commit "refactor(broker): simplify enqueue path")
+
+let test_is_meta_commit_test_not_meta () =
+  check bool "test(...) is NOT meta" false
+    (C2c_worktree.is_meta_commit "test(#331): MCP memory integration test")
+
+let test_is_meta_commit_empty () =
+  check bool "empty string is NOT meta" false
+    (C2c_worktree.is_meta_commit "")
+
 (* ── sha_count_map_of_refused ─────────────────────────────────────────── *)
 
 let make_gc_candidate path branch size status =
@@ -583,6 +645,38 @@ let () =
             test_is_meta_only_path_volumes_false
         ; test_case "build/output.js → false (not _build/)" `Quick
             test_is_meta_only_path_build_false
+        ] )
+    ; ( "is_meta_commit",
+        [ test_case "sitrep subject" `Quick
+            test_is_meta_commit_sitrep
+        ; test_case "Sitrep uppercase" `Quick
+            test_is_meta_commit_sitrep_uppercase
+        ; test_case "docs subject" `Quick
+            test_is_meta_commit_docs
+        ; test_case "chore subject" `Quick
+            test_is_meta_commit_chore
+        ; test_case "findings subject" `Quick
+            test_is_meta_commit_findings
+        ; test_case "wip: subject" `Quick
+            test_is_meta_commit_wip_colon
+        ; test_case "wip(coord subject" `Quick
+            test_is_meta_commit_wip_paren
+        ; test_case "add .collab/" `Quick
+            test_is_meta_commit_add_collab
+        ; test_case "update docs" `Quick
+            test_is_meta_commit_update_docs
+        ; test_case "design subject" `Quick
+            test_is_meta_commit_design
+        ; test_case "feat NOT meta" `Quick
+            test_is_meta_commit_feat_not_meta
+        ; test_case "fix NOT meta" `Quick
+            test_is_meta_commit_fix_not_meta
+        ; test_case "refactor NOT meta" `Quick
+            test_is_meta_commit_refactor_not_meta
+        ; test_case "test NOT meta" `Quick
+            test_is_meta_commit_test_not_meta
+        ; test_case "empty string NOT meta" `Quick
+            test_is_meta_commit_empty
         ] )
     ; ( "sha_count_map_of_refused",
         [ test_case "empty candidates → empty map" `Quick
