@@ -7632,9 +7632,25 @@ let dev_status_cmd =
         ) alive_instances
       end
 
+(* dev_instances_cmd: the canonical rich instance-status handler.
+   Reused by both `c2c dev instances` (canonical) and `c2c dev status`
+   (alias) and `c2c instances` (deprecated top-level alias, Tier 1). *)
+let dev_instances_cmd = dev_status_cmd
+
+(* dev_status_cmd: thin alias for backward compat with S1 path *)
+let dev_status_cmd =
+  let+ () = dev_instances_cmd in
+  ()
+
+let dev_instances_sub =
+  Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances"
+    ~doc:"List managed c2c instances (operator view).")
+    dev_instances_cmd
+
 let dev_status_sub =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "status"
-    ~doc:"Show managed instance status.") dev_status_cmd
+    ~doc:"Show managed instance status (alias for `dev instances`).")
+    dev_status_cmd
 
 (* dev_group is defined later, after all subcommands it contains *)
 
@@ -11762,8 +11778,8 @@ let dev_group =
   let info = Cmdliner.Cmd.info "dev"
     ~doc:"Developer/operator commands for c2c swarm internals."
   in
-  Cmdliner.Cmd.group info ~default:dev_status_cmd
-    [ dev_status_sub; diag; restart_self; smoke_test; inject
+  Cmdliner.Cmd.group info ~default:dev_instances_cmd
+    [ dev_instances_sub; dev_status_sub; diag; restart_self; smoke_test; inject
     ; C2c_worktree.worktree_group; C2c_sitrep.sitrep_group
     ; C2c_peer_pass.peer_pass_group ]
 
@@ -11796,6 +11812,126 @@ let inject_deprecated =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "inject" ~doc:"[DEPRECATED: use c2c dev inject]")
     (deprecation_wrap ~old_name:"inject" ~new_path:"dev inject" inject_cmd)
 
+(* Deprecated top-level instances alias — Tier 1 so agents can still use it.
+   Preserves the original {alive,total,filtered,instances} envelope for
+   backward compatibility with scripts expecting the old JSON format. *)
+let instances_deprecated_term =
+  let prune_older_than =
+    Cmdliner.Arg.(
+      value
+      & opt (some int) None
+      & info [ "prune-older-than" ] ~docv:"DAYS"
+          ~doc:"Prune stopped instances older than DAYS before listing." )
+  in
+  let all_flag =
+    Cmdliner.Arg.(
+      value
+      & flag
+      & info [ "all"; "a" ]
+          ~doc:"Show full archive (zombies + recently-stopped). Default: alive-only.")
+  in
+  let alive_flag =
+    Cmdliner.Arg.(
+      value
+      & flag
+      & info [ "alive" ]
+          ~doc:"Explicitly request alive-only view (the default). Useful in scripts that want to assert the filter is on.")
+  in
+  let+ json = json_flag
+  and+ prune_older_than = prune_older_than
+  and+ show_all = all_flag
+  and+ alive_only = alive_flag in
+  (* Emit deprecation warning before doing any work *)
+  Printf.eprintf "[DEPRECATED] c2c instances is now c2c dev instances. Updating in 2 releases.\n%!";
+  let _ = alive_only in
+  let output_mode = if json then Json else Human in
+  let instances_dir = instances_dir () in
+  let all_instances = read_managed_instances () in
+  let all_instances =
+    match prune_older_than with
+    | None -> all_instances
+    | Some days ->
+        if days < 0 then (
+          Printf.eprintf "error: --prune-older-than must be >= 0\n%!";
+          exit 1);
+        let stale = prune_stopped_instances_older_than ~days ~instances_dir all_instances in
+        if stale <> [] && output_mode = Human then
+          Printf.eprintf
+            "pruned %d stopped instance(s) older than %d day(s)\n%!"
+            (List.length stale) days;
+        read_managed_instances ()
+  in
+  let total = List.length all_instances in
+  let alive_instances =
+    List.filter (fun (inst : managed_instance_view) -> inst.mi_status = "running") all_instances
+  in
+  let alive_count = List.length alive_instances in
+  let displayed = if show_all then all_instances else alive_instances in
+  let instance_to_json (inst : managed_instance_view) : Yojson.Safe.t =
+    let fields : (string * Yojson.Safe.t) list =
+      [ ("name", `String inst.mi_name)
+      ; ("client", `String inst.mi_client)
+      ; ("status", `String inst.mi_status)
+      ; ("delivery_mode", `String inst.mi_delivery_mode)
+      ; ("outer_alive", `Bool (inst.mi_status = "running"))
+      ; ("outer_pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
+      ; ("tmux_location", match inst.mi_tmux_location with Some s -> `String s | None -> `Null)
+      ; ("expected_cwd", match inst.mi_expected_cwd with Some s -> `String s | None -> `Null)
+      ]
+    in
+    let fields = match inst.mi_pid with
+      | Some p -> fields @ [ ("pid", `Int p) ]
+      | None -> fields
+    in
+    `Assoc fields
+  in
+  let instances_json = List.map instance_to_json displayed in
+  match output_mode with
+  | Json ->
+      print_json
+        (`Assoc
+           [ ("alive", `Int alive_count)
+           ; ("total", `Int total)
+           ; ("filtered", `Bool (not show_all))
+           ; ("instances", `List instances_json)
+           ])
+  | Human ->
+      if total = 0 then
+        Printf.printf "No managed instances.\n"
+      else begin
+        if show_all then
+          Printf.printf "Managed instances (%d alive / %d total):\n" alive_count total
+        else
+          Printf.printf "Managed instances (%d alive / %d total; --all for archive):\n"
+            alive_count total;
+        if displayed = [] then
+          Printf.printf "  (none alive — try --all to see the archive)\n"
+        else
+          List.iter (fun (inst : managed_instance_view) ->
+            let pid_str = match inst.mi_pid with Some n -> Printf.sprintf " (pid %d)" n | None -> "" in
+            let tmux_str = match inst.mi_tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
+            let cwd_str = match inst.mi_expected_cwd with
+              | Some c ->
+                  let len = String.length c in
+                  let display = if len > 18 then "..." ^ String.sub c (len - 18) 18 else c in
+                  " {" ^ display ^ "}"
+              | None -> ""
+            in
+            let status_extra = match inst.mi_delivery_mode with
+              | "plugin" when inst.mi_status = "running" -> " plugin"
+              | dm -> Printf.sprintf " %s" dm
+            in
+            Printf.printf "  %-20s %-10s %-12s %s%s%s%s\n"
+              inst.mi_name inst.mi_client inst.mi_status status_extra pid_str tmux_str cwd_str
+          ) displayed
+      end
+
+let instances_deprecated =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "instances"
+       ~doc:"[DEPRECATED: use c2c dev instances]")
+    instances_deprecated_term
+
 let () =
   try_fast_path ();
   sanitize_help_env ();
@@ -11808,7 +11944,7 @@ let () =
     [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; completion_cmd
-    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
+    ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances_deprecated; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit
