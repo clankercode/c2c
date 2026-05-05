@@ -838,6 +838,163 @@ let gc_remove_path path =
   let (code, _, _) = git_command [ "worktree"; "remove"; path ] in
   code = 0
 
+(** [gc_remove_path_force path] force-removes a worktree via `git worktree remove --force`.
+    Used by the interactive triage to override REFUSE classifications.
+    Returns true on success. *)
+let gc_remove_path_force path =
+  let (code, _, _) = git_command [ "worktree"; "remove"; "--force"; path ] in
+  code = 0
+
+(** [unmerged_commits path] returns the set of commits unique to this branch
+    (not on origin/master), categorized by whether `git cherry` marks them as
+    equivalent (-) or unique (+).
+    Returns (plus_shas, minus_shas, output_lines). *)
+let unmerged_commits path =
+  (* Collect branch-unique SHAs: commits reachable from HEAD but not from origin/master *)
+  let (code1, branch_shas_out, _) =
+    git_command ~cwd:path ~quiet:true
+      [ "log"; "--format=%H"; "refs/remotes/origin/master..HEAD" ]
+  in
+  let _branch_shas =
+    if code1 <> 0 then []
+    else
+      List.filter (fun s -> String.length s = 40)
+        (String.split_on_char '\n' (String.trim branch_shas_out))
+  in
+  (* Run git cherry to classify each unique commit *)
+  let (code2, cherry_out, _) =
+    git_command ~cwd:path ~quiet:true
+      [ "cherry"; "refs/remotes/origin/master"; "HEAD" ]
+  in
+  let plus_shas, minus_shas, lines =
+    if code2 <> 0 then [], [], []
+    else
+      let cherry_lines = String.split_on_char '\n' (String.trim cherry_out) in
+      let plus, minus, all_lines =
+        List.fold_right
+          (fun line (p_acc, m_acc, l_acc) ->
+            let trimmed = String.trim line in
+            if trimmed = "" then (p_acc, m_acc, l_acc)
+            else if String.length trimmed >= 42 then
+              let marker = trimmed.[0] in
+              let sha = String.sub trimmed 2 40 in
+              if marker = '+' then (sha :: p_acc, m_acc, trimmed :: l_acc)
+              else if marker = '-' then (p_acc, sha :: m_acc, trimmed :: l_acc)
+              else (p_acc, m_acc, trimmed :: l_acc)
+            else (p_acc, m_acc, l_acc))
+          cherry_lines ([], [], [])
+      in
+      (plus, minus, all_lines)
+  in
+  (plus_shas, minus_shas, lines)
+
+(** [print_unmerged_summary path] prints a one-line summary of unmerged commits
+    for the triage header, plus the first few cherry lines for quick context. *)
+let print_unmerged_summary ~indent path =
+  let (plus_shas, minus_shas, lines) = unmerged_commits path in
+  let total = List.length plus_shas + List.length minus_shas in
+  Printf.printf "%s  git cherry: %d commit(s) not on origin/master\n" indent total;
+  (* Show cherry lines truncated to last 8 *)
+  let lines_show = if List.length lines > 8 then List.rev (let rec pick n = function [] -> [] | x :: xs -> if n <= 0 then [] else x :: pick (n-1) xs in pick 8 (List.rev lines)) else lines in
+  List.iter (fun l ->
+      Printf.printf "%s    %s\n" indent l)
+    lines_show
+
+(** [show_inspect_detail path] prints full git log of unmerged commits
+    for deep inspection when the operator chooses [I]nspect. *)
+let show_inspect_detail path =
+  let (plus_shas, _, _) = unmerged_commits path in
+  if plus_shas = [] then
+    Printf.printf "  (all branch commits are content-equivalent to origin/master)\n"
+  else begin
+    (* Show git log of commits unique to this branch (not on origin/master) *)
+    let (_, log_out, _) =
+      git_command ~cwd:path
+        [ "log"; "--format=%h %s (%ad)"; "--date=short";
+          "refs/remotes/origin/master..HEAD" ]
+    in
+    let log_lines = String.split_on_char '\n' (String.trim log_out) in
+    let non_empty = List.filter ((<>) "") log_lines in
+    if non_empty = [] then
+      Printf.printf "  (no commit history found)\n"
+    else begin
+      Printf.printf "\n  Unmerged commits (%d total):\n" (List.length plus_shas);
+      List.iter (fun l -> Printf.printf "    %s\n" l)
+        non_empty
+    end
+  end
+
+(** [interactive_triage candidates] presents each REFUSE-classified worktree
+    to the operator for triage. Prompts [D]elete / [S]kip / [I]nspect.
+    Returns the count of deleted worktrees. *)
+let interactive_triage ~candidates =
+  let refused = List.filter (fun c ->
+      match c.gc_status with GcRefused _ -> true | _ -> false)
+      candidates
+  in
+  if refused = [] then begin
+    Printf.printf "No REFUSE-classified worktrees to triage.\n";
+    0
+  end else begin
+    Printf.printf "\n=== Interactive GC Triage (%d REFUSE worktrees) ===\n"
+      (List.length refused);
+    Printf.printf "Classify each worktree: [D]elete (force-remove) / [S]kip / [I]nspect\n\n";
+    let deleted_count = ref 0 in
+    let rec loop = function
+      | [] ->
+          Printf.printf "\nTriage complete. %d worktree(s) deleted.\n" !deleted_count
+      | c :: rest ->
+          let reason = match c.gc_status with GcRefused { reason } -> reason | _ -> "?" in
+          Printf.printf "--- REFUSE: %s ---\n" (Filename.basename c.gc_path);
+          Printf.printf "  Path:    %s\n" c.gc_path;
+          Printf.printf "  Branch:  %s\n" c.gc_branch;
+          Printf.printf "  Size:    %s\n" (format_bytes c.gc_size);
+          Printf.printf "  Reason:  %s\n" reason;
+          Printf.printf "\n";
+          print_unmerged_summary ~indent:"  " c.gc_path;
+          Printf.printf "\n  [D]elete  [S]kip  [I]nspect: %!";
+          let choice =
+            try
+              let line = read_line () in
+              String.trim line
+            with End_of_file -> "s"
+          in
+          match String.lowercase_ascii choice with
+          | "d" ->
+              Printf.printf "  → Deleting (force)...\n";
+              if gc_remove_path_force c.gc_path then begin
+                incr deleted_count;
+                Printf.printf "  → Removed %s\n" c.gc_path;
+              end else begin
+                Printf.eprintf "  → FAILED to remove %s\n" c.gc_path;
+              end;
+              loop rest
+          | "i" ->
+              Printf.printf "\n";
+              show_inspect_detail c.gc_path;
+              Printf.printf "\n  [D]elete  [S]kip (after inspect): %!";
+              let retry_choice =
+                try read_line () with End_of_file -> "s"
+              in
+              (match String.lowercase_ascii (String.trim retry_choice) with
+               | "d" ->
+                   Printf.printf "  → Deleting (force)...\n";
+                   if gc_remove_path_force c.gc_path then begin
+                     incr deleted_count;
+                     Printf.printf "  → Removed %s\n" c.gc_path;
+                   end else begin
+                     Printf.eprintf "  → FAILED to remove %s\n" c.gc_path;
+                   end;
+               | _ -> Printf.printf "  → Skipped.\n");
+              loop rest
+          | _ ->
+              Printf.printf "  → Skipped.\n";
+              loop rest
+    in
+    loop refused;
+    !deleted_count
+  end
+
 let render_gc_human ~candidates ~clean ~verbose =
   let removable = List.filter (fun c ->
       match c.gc_status with GcRemovable _ -> true | _ -> false)
@@ -1004,13 +1161,27 @@ let worktree_gc_term =
                  and annotate REMOVABLE worktrees that are content-equivalent \
                  (cherry-picked) rather than direct ancestors.")
   in
+  let interactive_flag =
+    Arg.(value & flag & info ["interactive"]
+           ~doc:"Interactive triage for REFUSE-classified worktrees. \
+                 For each refused worktree, shows unmerged commits via git-cherry \
+                 and prompts [D]elete / [S]kip / [I]nspect. \
+                 Allows force-removing worktrees that auto-GC refuses \
+                 (e.g. not ancestor of origin/master but content has landed). \
+                 Cannot be combined with --json.")
+  in
   let+ clean = clean_flag
   and+ json_out = json_flag
   and+ ignore_active = ignore_active_flag
   and+ path_prefix = path_prefix_flag
   and+ active_window_hours = active_window_flag
   and+ age_str = age_flag
-  and+ verbose = verbose_flag in
+  and+ verbose = verbose_flag
+  and+ interactive = interactive_flag in
+  if interactive && json_out then begin
+    Printf.eprintf "error: --interactive and --json are mutually exclusive.\n%!";
+    exit 1
+  end;
   (* Parse --age value: "30d", "30", "7d" → float days *)
   let age_threshold_days =
     match age_str with
@@ -1040,12 +1211,14 @@ let worktree_gc_term =
             && String.sub base 0 (String.length pfx) = pfx)
           all_candidates
   in
-  if json_out then begin
+  if interactive then begin
+    ignore (interactive_triage ~candidates)
+  end else if json_out then begin
     print_endline (Yojson.Safe.to_string (render_gc_json ~candidates))
   end else begin
     render_gc_human ~candidates ~clean ~verbose
   end;
-  if clean then begin
+  if clean && not interactive then begin
     let removable = List.filter (fun c ->
         match c.gc_status with GcRemovable _ -> true | _ -> false)
         candidates
