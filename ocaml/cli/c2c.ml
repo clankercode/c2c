@@ -7560,18 +7560,18 @@ let diag = Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"Show diagnostic info (
 (* --- dev command group: c2c dev ------------------------------------------ *)
 
 let dev_status_cmd =
-  let alive_only =
-    Cmdliner.Arg.(value & flag & info [ "alive-only" ]
-      ~doc:"Show only running instances.")
+  let show_all =
+    Cmdliner.Arg.(value & flag & info [ "all" ]
+      ~doc:"Show all instances, including stopped ones.")
   in
   let json =
     Cmdliner.Arg.(value & flag & info [ "json" ]
       ~doc:"Output machine-readable JSON.")
   in
-  let+ alive_only = alive_only
+  let+ show_all = show_all
   and+ json = json in
   let instances = read_managed_instances () in
-  let alive_instances = if alive_only then List.filter (fun i -> i.mi_status = "running") instances else instances in
+  let alive_instances = if show_all then instances else List.filter (fun i -> i.mi_status = "running") instances in
   let now = Unix.gettimeofday () in
   let age_of (ts : float) =
     let delta = now -. ts in
