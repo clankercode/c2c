@@ -2517,7 +2517,7 @@ let status_cmd =
              inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str)
         managed_instances;
       if managed_instances = [] then Printf.printf "  (none)\n";
-      Printf.printf "  Run 'c2c dev instances' for full detail (includes created_at, tmux location, role).\n";
+      Printf.printf "  Run 'c2c dev instances' for full detail (includes created_at, tmux, cwd, role).\n";
       Printf.printf "\nOverall goal_met: %s\n"
         (if overall_goal_met then "YES" else "NO")
 
@@ -7259,6 +7259,10 @@ let instances_cmd =
       | Some ts -> fields @ [ ("created_at", `String (age_of ~now ts)); ("created_unix", `Float ts) ]
       | None -> fields
     in
+    let fields = match inst.mi_role with
+      | Some r -> fields @ [ ("role", `String r) ]
+      | None -> fields
+    in
     `Assoc fields
   in
   let instances_json = List.map instance_to_json displayed in
@@ -7297,8 +7301,12 @@ let instances_cmd =
               | Some ts -> " created=" ^ age_of ~now ts
               | None -> ""
             in
-            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s\n"
-              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str cwd_str created_str
+            let role_str = match inst.mi_role with
+              | Some r -> " [" ^ r ^ "]"
+              | None -> ""
+            in
+            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s%s\n"
+              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str cwd_str created_str role_str
           ) displayed
       end
 
@@ -7578,82 +7586,6 @@ let diag = Cmdliner.Cmd.v (Cmdliner.Cmd.info "diag" ~doc:"Show diagnostic info (
 
 (* --- dev command group: c2c dev ------------------------------------------ *)
 
-let dev_status_cmd =
-  let show_all =
-    Cmdliner.Arg.(value & flag & info [ "all" ]
-      ~doc:"Show all instances, including stopped ones.")
-  in
-  let json =
-    Cmdliner.Arg.(value & flag & info [ "json" ]
-      ~doc:"Output machine-readable JSON.")
-  in
-  let+ show_all = show_all
-  and+ json = json in
-  let instances = read_managed_instances () in
-  let alive_instances = if show_all then instances else List.filter (fun i -> i.mi_status = "running") instances in
-  let now = Unix.gettimeofday () in
-  let age_of (ts : float) =
-    let delta = now -. ts in
-    if delta < 0.0 then "just now"
-    else if delta < 60.0 then Printf.sprintf "%.0fs ago" delta
-    else if delta < 3600.0 then
-      Printf.sprintf "%.0fm ago" (delta /. 60.0)
-    else if delta < 86400.0 then
-      Printf.sprintf "%.0fh ago" (delta /. 3600.0)
-    else Printf.sprintf "%.0fd ago" (delta /. 86400.0)
-  in
-  let inst_to_json (inst : managed_instance_view) =
-    let base = [
-      ("name", `String inst.mi_name);
-      ("client", `String inst.mi_client);
-      ("status", `String inst.mi_status);
-      ("delivery_mode", `String inst.mi_delivery_mode);
-    ] in
-    let base = match inst.mi_pid with
-      | Some p -> ("pid", `Int p) :: base
-      | None -> base
-    in
-    let base = match inst.mi_tmux_location with
-      | Some s -> ("tmux_location", `String s) :: base
-      | None -> base
-    in
-    let base = match inst.mi_created_at with
-      | Some ts -> ("created_at", `String (age_of ts)) :: ("created_unix", `Float ts) :: base
-      | None -> base
-    in
-    let base = match inst.mi_role with
-      | Some r -> ("role", `String r) :: base
-      | None -> base
-    in
-    `Assoc base
-  in
-  match json with
-  | true ->
-      print_json (`List (List.map inst_to_json alive_instances))
-  | false ->
-      if alive_instances = [] then
-        Printf.printf "No managed instances.\n"
-      else begin
-        Printf.printf "Managed instances:\n";
-        List.iter (fun (inst : managed_instance_view) ->
-          let pid_str = match inst.mi_pid with Some p -> Printf.sprintf " pid=%d" p | None -> "" in
-          let tmux_str = match inst.mi_tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
-          let created_str = match inst.mi_created_at with
-            | Some ts -> " created=" ^ age_of ts
-            | None -> ""
-          in
-          let role_str = match inst.mi_role with
-            | Some r -> " [" ^ r ^ "]"
-            | None -> ""
-          in
-          Printf.printf "  %-20s %-10s %-12s%s%s%s%s\n"
-            inst.mi_name inst.mi_client inst.mi_status pid_str tmux_str created_str role_str
-        ) alive_instances
-      end
-
-(* dev_instances_cmd: the canonical rich instance-status handler.
-   Used by `c2c dev instances` (canonical, Tier 2) and as the
-   default for the deprecated top-level `c2c instances` (Tier 1). *)
 let dev_instances_cmd = instances_cmd
 
 (* dev_status_cmd: REMOVED — consolidated into dev_instances_cmd (2026-05-06) *)
