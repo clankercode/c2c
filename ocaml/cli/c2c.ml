@@ -7414,11 +7414,28 @@ let clean_stale_cmd =
     Cmdliner.Arg.(value & flag & info [ "include-named" ]
       ~doc:"Also consider the named swarm aliases (coordinator1, stanza-coder, …). Off by default.")
   in
+  let instances_dir_override =
+    Cmdliner.Arg.(
+      value
+      & opt (some string) None
+      & info [ "instances-dir" ] ~docv:"PATH"
+        ~doc:"Operate on a specific instances directory (default: ~/.local/share/c2c/instances). Useful for inspecting alternate locations without changing the default."
+    )
+  in
   let+ json = json_flag
   and+ dry_run = dry_run
-  and+ include_named = include_named in
+  and+ include_named = include_named
+  and+ instances_dir_override = instances_dir_override in
   let output_mode = if json then Json else Human in
-  let instances_dir = instances_dir () in
+  (* Override C2C_INSTANCES_DIR for the duration of this command so
+     read_managed_instances uses the correct dir. *)
+  let instances_dir =
+    match instances_dir_override with
+    | Some d ->
+        Unix.putenv "C2C_INSTANCES_DIR" d;
+        d
+    | None -> instances_dir ()
+  in
   let now = Unix.gettimeofday () in
   let all_instances = read_managed_instances () in
   (* Candidate = anything with a non-empty reason list AND status != running.
