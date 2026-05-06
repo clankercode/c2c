@@ -2517,6 +2517,7 @@ let status_cmd =
              inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str)
         managed_instances;
       if managed_instances = [] then Printf.printf "  (none)\n";
+      Printf.printf "  Run 'c2c dev instances' for full detail (includes created_at, tmux location, role).\n";
       Printf.printf "\nOverall goal_met: %s\n"
         (if overall_goal_met then "YES" else "NO")
 
@@ -7165,6 +7166,15 @@ let refresh_peer =
 
 let instances_dir () = C2c_start.instances_dir
 
+(* Relative-time formatter, shared between instances_cmd and dev_status_cmd *)
+let age_of ~now (ts : float) =
+  let delta = now -. ts in
+  if delta < 0.0 then "just now"
+  else if delta < 60.0 then Printf.sprintf "%.0fs ago" delta
+  else if delta < 3600.0 then Printf.sprintf "%.0fm ago" (delta /. 60.0)
+  else if delta < 86400.0 then Printf.sprintf "%.0fh ago" (delta /. 3600.0)
+  else Printf.sprintf "%.0fd ago" (delta /. 86400.0)
+
 let list_instance_dirs () =
   let base = instances_dir () in
   if not (Sys.file_exists base) then []
@@ -7228,6 +7238,7 @@ let instances_cmd =
   in
   let alive_count = List.length alive_instances in
   let displayed = if show_all then all_instances else alive_instances in
+  let now = Unix.gettimeofday () in
   let instance_to_json (inst : managed_instance_view) : Yojson.Safe.t =
     let fields : (string * Yojson.Safe.t) list =
       [ ("name", `String inst.mi_name)
@@ -7242,6 +7253,10 @@ let instances_cmd =
     in
     let fields = match inst.mi_pid with
       | Some p -> fields @ [ ("pid", `Int p) ]
+      | None -> fields
+    in
+    let fields = match inst.mi_created_at with
+      | Some ts -> fields @ [ ("created_at", `String (age_of ~now ts)); ("created_unix", `Float ts) ]
       | None -> fields
     in
     `Assoc fields
@@ -7278,8 +7293,12 @@ let instances_cmd =
                   " {" ^ display ^ "}"
               | None -> ""
             in
-            Printf.printf "  %-20s %-10s %-12s %s%s%s%s\n"
-              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str cwd_str
+            let created_str = match inst.mi_created_at with
+              | Some ts -> " created=" ^ age_of ~now ts
+              | None -> ""
+            in
+            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s\n"
+              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str cwd_str created_str
           ) displayed
       end
 
@@ -7633,24 +7652,15 @@ let dev_status_cmd =
       end
 
 (* dev_instances_cmd: the canonical rich instance-status handler.
-   Reused by both `c2c dev instances` (canonical) and `c2c dev status`
-   (alias) and `c2c instances` (deprecated top-level alias, Tier 1). *)
-let dev_instances_cmd = dev_status_cmd
+   Used by `c2c dev instances` (canonical, Tier 2) and as the
+   default for the deprecated top-level `c2c instances` (Tier 1). *)
+let dev_instances_cmd = instances_cmd
 
-(* dev_status_cmd: thin alias for backward compat with S1 path *)
-let dev_status_cmd =
-  let+ () = dev_instances_cmd in
-  ()
-
+(* dev_status_cmd: REMOVED — consolidated into dev_instances_cmd (2026-05-06) *)
 let dev_instances_sub =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances"
     ~doc:"List managed c2c instances (operator view).")
     dev_instances_cmd
-
-let dev_status_sub =
-  Cmdliner.Cmd.v (Cmdliner.Cmd.info "status"
-    ~doc:"Show managed instance status (alias for `dev instances`).")
-    dev_status_cmd
 
 (* dev_group is defined later, after all subcommands it contains *)
 
@@ -11783,7 +11793,7 @@ let dev_group =
      sitrep, peer-pass, status) are always visible. Tier 3/4 subcommands (diag,
      restart-self, smoke-test, inject) are hidden in agent sessions. *)
   let tier2_subs =
-    [ dev_instances_sub; dev_status_sub
+    [ dev_instances_sub
     ; C2c_worktree.worktree_group; C2c_sitrep.sitrep_group
     ; C2c_peer_pass.peer_pass_group ]
   in
