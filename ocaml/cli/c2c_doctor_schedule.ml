@@ -15,6 +15,7 @@ let ( // ) = Filename.concat
 
 type schedule_status = {
   file_name : string;
+  name : string;  (* schedule name from TOML, may be "" if unparseable *)
   parseable : bool;
   enabled : bool;
   reason : string option;  (* why unparseable, if any *)
@@ -63,13 +64,13 @@ let scan_schedules_dir alias =
         let path = dir // fname in
         let content = C2c_io.read_file_opt path in
         if content = "" then
-          { file_name = fname; parseable = false; enabled = false;
+          { file_name = fname; name = ""; parseable = false; enabled = false;
             reason = Some "could not read file"; interval_s = 0.0; align = "" }
         else
           let parseable = is_parseable content in
           let entry = C2c_mcp.parse_schedule content in
           let reason = if parseable then None else Some "malformed TOML (missing [schedule] or empty name)" in
-          { file_name = fname; parseable; enabled = entry.C2c_mcp.s_enabled;
+          { file_name = fname; name = entry.C2c_mcp.s_name; parseable; enabled = entry.C2c_mcp.s_enabled;
             reason; interval_s = entry.C2c_mcp.s_interval_s;
             align = entry.C2c_mcp.s_align }
       ) files
@@ -118,6 +119,7 @@ let pp_json r =
   let schedule_to_json s =
     let base = [
       ("file", `String s.file_name);
+      ("name", `String s.name);
       ("parseable", `Bool s.parseable);
       ("enabled", `Bool s.enabled);
       ("interval_s", `Float s.interval_s);
