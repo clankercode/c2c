@@ -1196,50 +1196,42 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
             fields
         in
         (* Stop hook registration (P1) *)
-        let stop_hooks_exist = List.assoc_opt "hooks" base_hooks_and_fields
-          |> Option.map (function `Assoc h -> List.mem_assoc "Stop" h | _ -> false)
-          |> Option.value ~default:false
-        in
         let stop_hook_registered = ref false in
         let base_hooks_and_fields =
-          if stop_hooks_exist then base_hooks_and_fields
-          else begin
-            (* Register Stop hook if not already present *)
-            let hooks = List.assoc_opt "hooks" base_hooks_and_fields
-              |> Option.map (function `Assoc h -> h | _ -> [])
-              |> Option.value ~default:[]
-            in
-            let stop_hooks = match List.assoc_opt "Stop" hooks with
-              | Some (`List entries) -> entries
-              | _ -> []
-            in
-            let entry_has_stop_hook entry =
-              match entry with
-              | `Assoc e ->
-                  (match List.assoc_opt "hooks" e with
-                   | Some (`List hs) ->
-                       List.exists (fun h ->
-                         match h with
-                         | `Assoc h_fields ->
-                             (match List.assoc_opt "command" h_fields with
-                              | Some (`String cmd) -> cmd = stop_hook_script
-                              | _ -> false)
-                         | _ -> false) hs
-                   | _ -> false)
-              | _ -> false
-            in
-            let already_stop = List.exists entry_has_stop_hook stop_hooks in
-            stop_hook_registered := already_stop;
-            if not already_stop then begin
-              settings_changed := true;
-              let new_stop_entry = `Assoc [ ("matcher", `String target_matcher); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String stop_hook_script) ] ]) ] in
-              let new_stop = stop_hooks @ [ new_stop_entry ] in
-              let new_hooks = List.filter (fun (k, _) -> k <> "Stop") hooks @ [ ("Stop", `List new_stop) ] in
-              let new_fields = List.filter (fun (k, _) -> k <> "hooks") base_hooks_and_fields in
-              new_fields @ [ ("hooks", `Assoc new_hooks) ]
-            end else
-              base_hooks_and_fields
-          end
+          let hooks = List.assoc_opt "hooks" base_hooks_and_fields
+            |> Option.map (function `Assoc h -> h | _ -> [])
+            |> Option.value ~default:[]
+          in
+          let stop_hooks = match List.assoc_opt "Stop" hooks with
+            | Some (`List entries) -> entries
+            | _ -> []
+          in
+          let entry_has_stop_hook entry =
+            match entry with
+            | `Assoc e ->
+                (match List.assoc_opt "hooks" e with
+                 | Some (`List hs) ->
+                     List.exists (fun h ->
+                       match h with
+                       | `Assoc h_fields ->
+                           (match List.assoc_opt "command" h_fields with
+                            | Some (`String cmd) -> cmd = stop_hook_script
+                            | _ -> false)
+                       | _ -> false) hs
+                 | _ -> false)
+            | _ -> false
+          in
+          let already_stop = List.exists entry_has_stop_hook stop_hooks in
+          stop_hook_registered := already_stop;
+          if not already_stop then begin
+            settings_changed := true;
+            let new_stop_entry = `Assoc [ ("matcher", `String target_matcher); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String stop_hook_script) ] ]) ] in
+            let new_stop = stop_hooks @ [ new_stop_entry ] in
+            let new_hooks = List.filter (fun (k, _) -> k <> "Stop") hooks @ [ ("Stop", `List new_stop) ] in
+            let new_fields = List.filter (fun (k, _) -> k <> "hooks") base_hooks_and_fields in
+            new_fields @ [ ("hooks", `Assoc new_hooks) ]
+          end else
+            base_hooks_and_fields
         in
         `Assoc base_hooks_and_fields
     | _ ->
