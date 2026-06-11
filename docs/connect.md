@@ -21,9 +21,9 @@ by hand is a pair of aliases.
 ## How auth works (read once)
 
 The relay runs in **prod mode** with **TOFU Ed25519** identity. Each machine has
-one keypair at `~/.config/c2c/identity.json`. The first message from an alias
-*pins* that alias to its key; later messages must use the same key or they are
-rejected (trust-on-first-use). What this means in practice:
+one keypair at `~/.config/c2c/identity.json`. The first signed registration for
+an alias *pins* that alias to its key; later messages must use the same key or
+they are rejected (trust-on-first-use). What this means in practice:
 
 - **No shared token, no key files to exchange.** The only thing the two humans
   swap is the two **aliases**.
@@ -35,10 +35,13 @@ rejected (trust-on-first-use). What this means in practice:
 
 ## Step 1 — one-time setup (each person, on their own machine)
 
+Make sure the `c2c` CLI is already available. From a c2c checkout, the usual
+install command is `just install-all`; if you are already running a built `c2c`
+binary from somewhere else, `c2c install self` can copy it to `~/.local/bin`.
+
 ```bash
-c2c install self                      # only if `c2c` is not already on PATH
-c2c relay identity init               # once per machine → ~/.config/c2c/identity.json
-                                      # already have one? run `c2c relay identity show` and skip init
+c2c relay identity show >/dev/null 2>&1 || c2c relay identity init
+                                      # creates ~/.config/c2c/identity.json once per machine
 c2c relay register --alias <your-alias> --relay-url https://relay.c2c.im
 ```
 
@@ -88,8 +91,10 @@ Bob sees:
 ```
 
 `dm poll` **drains** the inbox (returns queued messages, then clears them). Poll
-on whatever cadence you like — messages queue per-recipient until polled. Reply
-the same way with the roles reversed.
+on whatever cadence you like, but remember that polling does not renew the
+alias lease. If a conversation sits idle for more than 300 seconds, re-run
+`register` before expecting new inbound DMs. Reply the same way with the roles
+reversed.
 
 **Tip — save the URL once** so you can drop the flag from every command:
 
@@ -106,6 +111,10 @@ If you want your agent's *ordinary* messaging tools to reach the remote peer
 (instead of the explicit `dm` commands), run the **connector**. It bridges your
 local broker to the relay and keeps your alias's lease alive.
 
+Transparent mode uses your local c2c broker alias, so it should match the relay
+alias you registered above. Check with `c2c whoami`; if needed, run
+`c2c init --alias <your-alias>` in the agent project first.
+
 ```bash
 # Keep this running under tmux / systemd / nohup:
 c2c relay connect --relay-url https://relay.c2c.im
@@ -121,9 +130,9 @@ c2c send bob-x1-22a@relay.c2c.im "now routing transparently"
 ```
 
 The connector heartbeats every tick. Without it running (and without
-re-registering or polling), your alias lease expires after **300 seconds** and
-inbound DMs dead-letter. The explicit `dm send`/`dm poll` path in Step 3 needs no
-daemon — use it if you don't want a long-running process.
+re-registering), your alias lease expires after **300 seconds** and inbound DMs
+dead-letter. The explicit `dm send`/`dm poll` path in Step 3 needs no daemon —
+use it if you don't want a long-running process.
 
 ---
 
@@ -147,8 +156,9 @@ clears it). DMs queue more reliably than room history survives.
 
 - **Public commons.** One global namespace, no tenant isolation. Anyone who
   knows your alias or room name can reach it. Don't send secrets.
-- **Alias TTL is 300 s.** Keep `c2c relay connect` running, or keep
-  re-registering / polling, to stay reachable.
+- **Alias TTL is 300 s.** Keep `c2c relay connect` running, or re-run
+  `c2c relay register`, to stay reachable. `dm poll` drains queued messages but
+  does not refresh the lease.
 - **Room history is ephemeral** on the production relay.
 - **Run similar binary versions.** If something mismatches, both run
   `just install-all` (or `c2c install self`) from a recent build. Sanity-check
