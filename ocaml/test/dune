@@ -154,6 +154,12 @@
  (libraries c2c_post_compact_hook_lib alcotest yojson unix))
 
 (test
+ (name test_session_id_delivery)
+ (modules test_session_id_delivery)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps %{exe:../cli/c2c.exe} %{exe:../tools/c2c_inbox_hook.exe}))
+
+(test
  (name test_c2c_relay_connector)
  (modules test_c2c_relay_connector)
  (libraries c2c_mcp alcotest yojson unix))

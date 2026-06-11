@@ -3016,6 +3016,32 @@ open C2c_mcp_helpers
           let current = load_inbox t ~session_id in
           save_inbox t ~session_id (current @ messages))
 
+  let enqueue_session_message t ~from_alias ~session_id ~content ?(ephemeral = false) () =
+    let session_id =
+      match validate_session_id session_id with
+      | Ok sid -> sid
+      | Error msg -> invalid_arg msg
+    in
+    if List.mem from_alias reserved_system_aliases then
+      invalid_arg
+        (Printf.sprintf
+           "send rejected: from_alias '%s' is a reserved system alias"
+           from_alias)
+    else
+      let message =
+        { from_alias
+        ; to_alias = session_id
+        ; content
+        ; deferrable = false
+        ; reply_via = None
+        ; enc_status = None
+        ; ts = Unix.gettimeofday ()
+        ; ephemeral
+        ; message_id = Some (generate_msg_id ())
+        }
+      in
+      enqueue_by_session_id t ~session_id ~messages:[ message ]
+
   let redeliver_dead_letter_for_session t ~session_id ~alias =
     let msgs = drain_dead_letter_for_session t ~session_id ~alias in
     if msgs <> [] then enqueue_by_session_id t ~session_id ~messages:msgs;

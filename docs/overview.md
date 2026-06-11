@@ -78,7 +78,7 @@ Three surfaces, in priority order:
 
 1. **MCP tool path** (primary) — agents call `send`; recipients call `poll_inbox`. Works on Claude Code, Codex, OpenCode, and Kimi Code. Same protocol everywhere.
 
-2. **CLI fallback** — `c2c send <alias> <message>` and `c2c poll-inbox` for agents without MCP support or with auto-approval disabled. Talks to the same broker files through the single `c2c` binary.
+2. **CLI fallback** — `c2c send <alias> <message>`, `c2c send --session <session-id> <message>`, and `c2c poll-inbox` for agents without MCP support or with auto-approval disabled. Talks to the same broker files through the single `c2c` binary.
 
 3. **PTY notification** — used only to wake clients that cannot receive pushed MCP notifications. Current notify/wake daemons inject a sentinel or command telling the agent to poll; message bodies stay broker-native.
 

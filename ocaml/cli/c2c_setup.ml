@@ -822,24 +822,31 @@ let claude_hook_script = {|
 #!/bin/bash
 # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code
 #
-# Calls 'c2c hook' which drains the inbox and outputs messages.
+# Calls c2c-inbox-hook-ocaml which drains inboxes and outputs messages.
 # Also calls cold-boot hook to emit context block once per session.
-# c2c hook self-regulates runtime to prevent Node.js ECHILD race.
 #
-# IMPORTANT: do NOT use `exec c2c hook`. Claude Code's Node.js hook runner
+# IMPORTANT: do NOT use `exec` for hook binaries. Claude Code's Node.js hook runner
 # tracks the initially-spawned bash PID, and when bash exec's to the c2c
 # binary the runner's waitpid() bookkeeping gets confused and surfaces
-# `ECHILD: unknown error, waitpid` on every tool call. Running c2c as a
-# bash subprocess and exiting bash normally fixes it.
+# `ECHILD: unknown error, waitpid` on every tool call. Running binaries as
+# bash subprocesses and exiting bash normally fixes it.
 #
-# Required env vars (set by c2c start or the MCP server entry):
+# Optional env vars (set by c2c start, the MCP server entry, or tests):
 #   C2C_MCP_SESSION_ID   — broker session id
 #   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
+#   C2C_SESSIONS_BROKER_ROOT — global session broker override
 
 SCRIPT_DIR="$(dirname "$0")"
 REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null || echo "$SCRIPT_DIR")"
 
-if command -v c2c >/dev/null 2>&1; then
+# Prefer the installed OCaml hook because it can read Claude's stdin
+# session_id and drain the global sessions broker. Fall back to the dev-tree
+# exe, then to legacy `c2c hook` for older installs.
+if command -v c2c-inbox-hook-ocaml >/dev/null 2>&1; then
+    c2c-inbox-hook-ocaml
+elif [ -x "$REPO_ROOT/_build/default/ocaml/tools/c2c_inbox_hook.exe" ]; then
+    "$REPO_ROOT/_build/default/ocaml/tools/c2c_inbox_hook.exe"
+elif command -v c2c >/dev/null 2>&1; then
     c2c hook
 fi
 

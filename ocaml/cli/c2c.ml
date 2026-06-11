@@ -239,7 +239,7 @@ let commands_by_safety_cmd =
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");
     ("peek-inbox", "Peek at your inbox without draining");
-    ("send", "Send a message to a registered peer alias");
+    ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");
     ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
     ("my-rooms", "List rooms you are a member of");
@@ -332,11 +332,15 @@ let commands_by_safety =
 (* --- subcommand: send ----------------------------------------------------- *)
 
 let send_cmd =
-  let to_alias =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ALIAS" ~doc:"Recipient alias.")
+  let args =
+    Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"TARGET MSG" ~doc:"Recipient alias followed by message body, or message body when --session is set.")
   in
-  let message =
-    Cmdliner.Arg.(non_empty & pos_right 0 string [] & info [] ~docv:"MSG" ~doc:"Message body (remaining args joined with spaces).")
+  let session_target =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session" ] ~docv:"SESSION_ID" ~doc:"Deliver directly to this session ID via the global sessions broker instead of resolving a recipient alias.")
+  in
+  let bad_usage msg =
+    Printf.eprintf "error: %s\n%!" msg;
+    exit 2
   in
   let from_override =
     Cmdliner.Arg.(value & opt (some string) None & info [ "from"; "F" ] ~docv:"ALIAS" ~doc:"Send messages as this alias. The alias must already be registered with the broker; use $(b,c2c register --alias ALIAS) first. Useful for operators or tests running outside an agent session.")
@@ -365,8 +369,8 @@ let send_cmd =
       ~doc:"Mark as an URGENT message. Prepends '⚠️ URGENT: ' to the body. Use for time-sensitive but not-fully-blocking attention asks. Mutex with --fail and --blocking.")
   in
   let+ json = json_flag
-  and+ to_alias = to_alias
-  and+ message = message
+  and+ args = args
+  and+ session_target = session_target
   and+ from_override = from_override
   and+ no_warn_substitution = no_warn_substitution
   and+ ephemeral = ephemeral_flag
@@ -375,8 +379,40 @@ let send_cmd =
   and+ urgent = urgent_flag in
   mcp_nudge_if_needed ~cmd:"send";
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let from_alias = resolve_alias ~override:from_override broker in
-  let content = String.concat " " message in
+  let target, content =
+    match session_target, args with
+    | Some sid, tokens ->
+        let sid =
+          match C2c_mcp.validate_session_id sid with
+          | Ok sid -> sid
+          | Error msg -> bad_usage msg
+        in
+        if tokens = [] then bad_usage "--session requires a message body";
+        (`Session sid, String.concat " " tokens)
+    | None, to_alias :: msg_tokens ->
+        if msg_tokens = [] then bad_usage "send requires a recipient alias and message body";
+        (`Alias to_alias, String.concat " " msg_tokens)
+    | None, [] ->
+        bad_usage "send requires a recipient alias and message body"
+  in
+  let from_alias =
+    match target with
+    | `Alias _ -> resolve_alias ~override:from_override broker
+    | `Session _ ->
+        (match from_override with
+         | Some a when String.trim a <> "" -> String.trim a
+         | _ ->
+             (match env_session_id () with
+              | Some sid ->
+                  let regs = C2c_mcp.Broker.list_registrations broker in
+                  (match List.find_opt
+                           (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+                           regs
+                   with
+                   | Some r -> r.alias
+                   | None -> Option.value (env_auto_alias ()) ~default:"c2c-cli")
+              | None -> Option.value (env_auto_alias ()) ~default:"c2c-cli"))
+  in
   (* #392: enforce mutual exclusion + apply body prefix. *)
   let tag_count =
     (if fail then 1 else 0) + (if blocking then 1 else 0) + (if urgent then 1 else 0)
@@ -403,31 +439,48 @@ let send_cmd =
        (e.g. $(...) or `...`).\n\
        If this was intended literally, re-send with --no-warn-substitution.\n\
        To avoid this, quote the pattern: '$(date)' or escape the $.\n%!"
-    else ()
+  else ()
   in
   let output_mode = if json then Json else Human in
-  if from_alias = to_alias then (
-    Printf.eprintf "error: cannot send a message to yourself (%s)\n%!" from_alias;
-    exit 1
-  );
   (try
-     if debug_enabled then Printf.eprintf "[DEBUG send_cmd] calling enqueue_message from=%s to=%s\n%!" from_alias to_alias;
-     flush stderr;
-     C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
-     if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
-     flush stderr;
      let ts = Unix.gettimeofday () in
-     let compacting_warning =
-       let regs = C2c_mcp.Broker.list_registrations broker in
-       match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = to_alias) regs with
-       | Some r ->
-           (match C2c_mcp.Broker.is_compacting broker ~session_id:r.session_id with
-            | Some c ->
-                let dur = Unix.gettimeofday () -. c.started_at in
-                let reason_str = match c.reason with Some r -> " (" ^ r ^ ")" | None -> "" in
-                Some (Printf.sprintf "recipient compacting for %.0fs%s" dur reason_str)
-            | None -> None)
-       | None -> None
+     let compacting_warning, json_target_fields, human_target =
+       match target with
+       | `Alias to_alias ->
+           if from_alias = to_alias then (
+             Printf.eprintf "error: cannot send a message to yourself (%s)\n%!" from_alias;
+             exit 1
+           );
+           if debug_enabled then Printf.eprintf "[DEBUG send_cmd] calling enqueue_message from=%s to=%s\n%!" from_alias to_alias;
+           flush stderr;
+           C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
+           if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
+           flush stderr;
+           let compacting_warning =
+             let regs = C2c_mcp.Broker.list_registrations broker in
+             match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = to_alias) regs with
+             | Some r ->
+                 (match C2c_mcp.Broker.is_compacting broker ~session_id:r.session_id with
+                  | Some c ->
+                      let dur = Unix.gettimeofday () -. c.started_at in
+                      let reason_str = match c.reason with Some r -> " (" ^ r ^ ")" | None -> "" in
+                      Some (Printf.sprintf "recipient compacting for %.0fs%s" dur reason_str)
+                  | None -> None)
+             | None -> None
+           in
+           ( compacting_warning
+           , [ ("to_alias", `String to_alias) ]
+           , to_alias )
+       | `Session session_id ->
+           let sessions_broker =
+             C2c_mcp.Broker.create
+               ~root:(Repo_fp.resolve_sessions_broker_root ())
+           in
+           C2c_mcp.Broker.enqueue_session_message sessions_broker
+             ~from_alias ~session_id ~content ~ephemeral ();
+           ( None
+           , [ ("target_session_id", `String session_id) ]
+           , "session " ^ session_id )
      in
      match output_mode with
      | Json ->
@@ -435,24 +488,28 @@ let send_cmd =
            [ ("queued", `Bool true)
            ; ("ts", `Float ts)
            ; ("from_alias", `String from_alias)
-           ; ("to_alias", `String to_alias)
            ]
+           @ json_target_fields
          in
          let fields = match compacting_warning with Some w -> fields @ [("compacting_warning", `String w)] | None -> fields in
          print_json (`Assoc fields)
      | Human ->
-         Printf.printf "ok -> %s (from %s)" to_alias from_alias;
+         Printf.printf "ok -> %s (from %s)" human_target from_alias;
          (match compacting_warning with Some w -> Printf.printf " [%s]" w | None -> ());
          print_newline ()
    with Invalid_argument msg ->
      (* If the target looks like a room name, give a helpful redirect hint. *)
      let is_room =
-       (try
-          let rooms = C2c_mcp.Broker.list_rooms broker in
-          List.exists (fun r -> r.C2c_mcp.Broker.ri_room_id = to_alias) rooms
-        with _ -> false)
+       match target with
+       | `Session _ -> false
+       | `Alias to_alias ->
+           (try
+              let rooms = C2c_mcp.Broker.list_rooms broker in
+              List.exists (fun r -> r.C2c_mcp.Broker.ri_room_id = to_alias) rooms
+            with _ -> false)
      in
      if is_room then begin
+       let to_alias = match target with `Alias a -> a | `Session s -> s in
        Printf.eprintf "error: '%s' is a room, not a peer alias.\n" to_alias;
        Printf.eprintf "hint:  use `c2c room send %s <message>` to send to a room.\n%!" to_alias
      end else
@@ -5682,7 +5739,7 @@ let skills_group =
 
 (* --- main entry point ----------------------------------------------------- *)
 
-let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a registered peer alias.") send_cmd
+let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a registered peer alias or session ID.") send_cmd
 let list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List registered C2C peers.") list_cmd
 let whoami = Cmdliner.Cmd.v (Cmdliner.Cmd.info "whoami" ~doc:"Show current c2c identity.") whoami_cmd
 let set_compact = Cmdliner.Cmd.v (Cmdliner.Cmd.info "set-compact" ~doc:"Mark this session as compacting (context summarization in progress).") set_compact_cmd
@@ -11400,7 +11457,7 @@ let fast_path_commands () =
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");
     ("peek-inbox", "Peek at your inbox without draining");
-    ("send", "Send a message to a registered peer alias");
+    ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");
     ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
     ("my-rooms", "List rooms you are a member of");

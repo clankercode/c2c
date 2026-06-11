@@ -222,7 +222,7 @@ See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering se
 1. **MCP tool path** — the primary surface. Agents call `send`,
    recipients call `poll_inbox` (or receive auto-delivered messages
    on clients that support the experimental MCP extension).
-2. **CLI fallback** — `c2c send <alias> <message>` and `c2c poll-inbox`
+2. **CLI fallback** — `c2c send <alias> <message>`, `c2c send --session <session-id> <message>`, and `c2c poll-inbox`
    for agents whose host client has no MCP support or has MCP
    auto-approval disabled. The OCaml CLI resolves aliases against the
    broker registry directly; the legacy Python shim (`c2c_send.py`)

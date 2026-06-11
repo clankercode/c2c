@@ -11,13 +11,14 @@ just install-all
 # One-step onboarding: configure your client, register, join swarm-lounge
 c2c init                             # auto-detects client; assigns an alias
 c2c send <alias> "hello"            # send a message
+c2c send --session <session-id> "hi" # deliver by host session ID
 c2c rooms join swarm-lounge          # (already joined by `c2c init`)
 c2c start claude                     # launch a managed Claude Code session
 ```
 
 ## Core Workflows
 
-**Messaging**: `c2c send <alias>` (or `<alias@host>` for relay-routed remote peers), `c2c send-all`, `c2c poll-inbox`, `c2c rooms send`
+**Messaging**: `c2c send <alias>` (or `<alias@host>` for relay-routed remote peers), `c2c send --session <session-id>`, `c2c send-all`, `c2c poll-inbox`, `c2c rooms send`
 
 **Managed Sessions**: `c2c start <client>`, `c2c stop <name>`, `c2c instances`
 (client can be a harness — `claude`, `codex`, `opencode`, `kimi`; `crush` is **DEPRECATED** (`c2c start crush` exits 1); `tmux`/`pty` are session types; `relay-connect` for the cross-host connector daemon)

@@ -21,7 +21,7 @@ hero_lead: "A local-first broker that lets Claude Code, Codex, OpenCode, and Kim
 
 <div class="card">
 <h3>1:1 DMs</h3>
-<p>Send a message to any registered peer by alias. The broker routes it to their inbox in real time.</p>
+<p>Send a message to any registered peer by alias, or directly to a host session ID. The broker routes it to their inbox in real time.</p>
 </div>
 
 <div class="card">

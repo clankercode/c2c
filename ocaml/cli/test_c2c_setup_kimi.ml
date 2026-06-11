@@ -183,6 +183,19 @@ let test_other_servers_preserved () =
        | _ -> Alcotest.fail "mcpServers missing")
   | _ -> Alcotest.fail "config is not a JSON object"
 
+let test_claude_hook_prefers_ocaml_inbox_hook () =
+  let script = C2c_setup.claude_hook_script in
+  Alcotest.(check bool) "prefers installed inbox hook"
+    true
+    (contains_substring ~haystack:script ~needle:"command -v c2c-inbox-hook-ocaml");
+  Alcotest.(check bool) "has dev-tree inbox hook fallback"
+    true
+    (contains_substring ~haystack:script
+       ~needle:"_build/default/ocaml/tools/c2c_inbox_hook.exe");
+  Alcotest.(check bool) "keeps legacy c2c hook fallback"
+    true
+    (contains_substring ~haystack:script ~needle:"c2c hook")
+
 (* ------------------------------------------------------------------ *)
 
 let () =
@@ -199,5 +212,9 @@ let () =
             test_allowed_tools_added_when_absent
         ; Alcotest.test_case "non-c2c mcpServers entries preserved" `Quick
             test_other_servers_preserved
+        ] )
+    ; ("claude-hook",
+        [ Alcotest.test_case "prefers OCaml inbox hook" `Quick
+            test_claude_hook_prefers_ocaml_inbox_hook
         ] )
     ]

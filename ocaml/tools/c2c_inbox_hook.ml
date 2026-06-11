@@ -1,12 +1,9 @@
 (* c2c_inbox_hook — PostToolUse hook for c2c auto-delivery in Claude Code
  *
- * Self-regulating runtime: if the hook exits in < MIN_RUNTIME_MS, we sleep
- * the remainder to prevent Node.js ECHILD race condition (kernel reaps
- * zombie before waitpid is called on fast-exiting children).
- *
  * Env vars:
  *   C2C_MCP_SESSION_ID   — broker session id
  *   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
+ *   C2C_SESSIONS_BROKER_ROOT — optional test/global sessions broker override
  *   C2C_INSTANCE_NAME    — instance name (set by c2c start); selects statefile path
  *
  * Statefile:
@@ -19,8 +16,6 @@
  *   0 — success (even if no messages)
  *   1 — error (missing env, file error, etc.)
  *)
-
-let min_runtime_ms = 10.0
 
 let iso8601_now () = C2c_time.iso8601_utc_ms (Unix.gettimeofday ())
 
@@ -192,90 +187,149 @@ and rotate_debug_log_if_needed path =
     end
   with _ -> ()
 
+let read_stdin_payload () =
+  try
+    let raw = In_channel.input_all stdin |> String.trim in
+    if raw = "" then None else Some (Yojson.Safe.from_string raw)
+  with _ -> None
+
+let session_id_of_payload = function
+  | Some (`Assoc fields) ->
+      (match List.assoc_opt "session_id" fields with
+       | Some (`String s) when String.trim s <> "" -> Some (String.trim s)
+       | _ -> None)
+  | _ -> None
+
+let env_nonempty name =
+  match Sys.getenv_opt name with
+  | Some s when String.trim s <> "" -> Some (String.trim s)
+  | _ -> None
+
+let global_inbox_exists ~root ~session_id =
+  Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
+
+let drain_repo_messages ~broker_root ~session_id =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
+    prerr_endline
+      (Printf.sprintf
+         "[hook] skipping drain — session %s is channel-capable; \
+          watcher owns delivery"
+         session_id);
+    (broker, [])
+  end else
+    ( broker
+    , C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+    )
+
+let drain_global_messages ~session_id =
+  let root = C2c_repo_fp.resolve_sessions_broker_root () in
+  if global_inbox_exists ~root ~session_id then
+    let broker = C2c_mcp.Broker.create ~root in
+    C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+  else []
+
+let print_additional_context ~lookup_role messages =
+  match messages with
+  | [] -> ()
+  | _ ->
+      let buf = Buffer.create 256 in
+      List.iter
+        (fun (m : C2c_mcp.message) ->
+          let tag = C2c_mcp.extract_tag_from_content m.content in
+          let role = lookup_role m.from_alias in
+          let envelope =
+            C2c_mcp.format_c2c_envelope
+              ~from_alias:m.from_alias
+              ~to_alias:m.to_alias
+              ?tag
+              ?role
+              ?reply_via:m.reply_via
+              ~ts:m.ts
+              ~content:m.content
+              ()
+          in
+          Buffer.add_string buf envelope;
+          Buffer.add_char buf '\n')
+        messages;
+      let json : Yojson.Safe.t =
+        `Assoc
+          [ ( "hookSpecificOutput"
+            , `Assoc
+                [ ("hookEventName", `String "PostToolUse")
+                ; ("additionalContext", `String (Buffer.contents buf))
+                ] )
+          ]
+      in
+      Printf.printf "%s\n" (Yojson.Safe.to_string json)
+
 let () =
-  let session_id =
-    try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
+  let raw_session_id =
+    match session_id_of_payload (read_stdin_payload ()) with
+    | Some sid -> sid
+    | None -> Option.value (env_nonempty "C2C_MCP_SESSION_ID") ~default:""
   in
   let broker_root =
-    try Sys.getenv "C2C_MCP_BROKER_ROOT" with Not_found -> ""
+    Option.value (env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
   in
-  (* Fast path: if not configured, exit silently *)
-  if session_id = "" || broker_root = "" then exit 0;
+  (* Fast path: if no session can be resolved, exit silently. *)
+  if raw_session_id = "" then exit 0;
+  let session_id =
+    match C2c_mcp.validate_session_id raw_session_id with
+    | Ok sid -> sid
+    | Error msg ->
+        prerr_endline msg;
+        exit 1
+  in
 
-  let start_time = Unix.gettimeofday () in
   let now = iso8601_now () in
   (* PPID is the Claude Code process that spawned this hook *)
   let client_pid = Unix.getppid () in
 
   try
-    let broker = C2c_mcp.Broker.create ~root:broker_root in
-    (* #387 A2: when the session is channel-capable (registry's
-       [automated_delivery=true]), the MCP server's channel watcher owns
-       delivery. The hook MUST NOT drain — otherwise it races the watcher
-       and the message renders as a plain hook-stdout `<c2c event=...>`
-       envelope instead of the styled `<channel>` notification. We still
-       run the statefile write below so PostToolUse remains observable. *)
-    let messages =
-      if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
-        prerr_endline
-          (Printf.sprintf
-             "[hook] skipping drain — session %s is channel-capable; \
-              watcher owns delivery"
-             session_id);
-        []
-      end else
-        (* Push path: drain only non-deferrable messages; deferrable stay
-           in inbox for the agent to read on next explicit poll_inbox or
-           idle flush. *)
-        C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+    let repo_broker, repo_messages =
+      match broker_root with
+      | "" -> (None, [])
+      | root ->
+          let broker, messages = drain_repo_messages ~broker_root:root ~session_id in
+          (Some broker, messages)
     in
+    let global_messages = drain_global_messages ~session_id in
+    let messages = repo_messages @ global_messages in
 
     (* Look up alias from registry for the statefile *)
     let alias =
-      match C2c_mcp.Broker.list_registrations broker
-            |> List.find_opt (fun r -> r.C2c_mcp.session_id = session_id) with
-      | Some reg -> reg.C2c_mcp.alias
+      match repo_broker with
       | None -> ""
+      | Some broker ->
+          (match C2c_mcp.Broker.list_registrations broker
+                 |> List.find_opt (fun r -> r.C2c_mcp.session_id = session_id) with
+           | Some reg -> reg.C2c_mcp.alias
+           | None -> "")
     in
 
     (* Write statefile with current state (non-fatal) *)
-    write_statefile ~session_id ~alias ~client_pid ~now;
+    if broker_root <> "" then write_statefile ~session_id ~alias ~client_pid ~now;
 
     (* Look up sender role: returns None when sender has no role set. *)
     let lookup_role from_alias =
-      match C2c_mcp.Broker.list_registrations broker
-            |> List.find_opt (fun r -> r.C2c_mcp.alias = from_alias) with
-      | Some reg -> reg.C2c_mcp.role
-      | None     -> None
+      match repo_broker with
+      | None -> None
+      | Some broker ->
+          (match C2c_mcp.Broker.list_registrations broker
+                 |> List.find_opt (fun r -> r.C2c_mcp.alias = from_alias) with
+           | Some reg -> reg.C2c_mcp.role
+           | None     -> None)
     in
 
     (* Output messages in c2c event envelope format. Centralized via
        C2c_mcp.format_c2c_envelope (#392b convergence) so #392 tag
        attrs and xml-escaping are consistent across all surfaces
        (cli/c2c.ml monitor path, this hook). *)
-    List.iter
-      (fun (m : C2c_mcp.message) ->
-        let tag = C2c_mcp.extract_tag_from_content m.content in
-        let role = lookup_role m.from_alias in
-        let envelope =
-          C2c_mcp.format_c2c_envelope
-            ~from_alias:m.from_alias
-            ~to_alias:m.to_alias
-            ?tag
-            ?role
-            ?reply_via:m.reply_via
-            ~ts:m.ts
-            ~content:m.content
-            ()
-        in
-        Printf.printf "%s\n" envelope)
-      messages;
+    print_additional_context ~lookup_role messages;
 
-    (* Self-regulating runtime: sleep if we finished too quickly *)
-    let elapsed_ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
-    if elapsed_ms < min_runtime_ms then
-      let remaining_ms = min_runtime_ms -. elapsed_ms in
-      ignore (Lwt_main.run (Lwt_unix.sleep (remaining_ms /. 1000.0)));
+    (* Deliberately no min-runtime sleep: P0 removes the ECHILD-race floor.
+       Restore a small runtime floor here if Claude hook reaping regresses. *)
 
     exit 0
   with e ->

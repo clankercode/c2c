@@ -37,6 +37,10 @@ val extract_tag_from_content : string -> string option
 (** [#392b] Inverse of [tag_to_body_prefix] — recognize a known body
     prefix and return the abstract tag. *)
 
+val validate_session_id : string -> (string, string) result
+(** Validate session IDs that will be used as broker inbox filenames.
+    Returns the trimmed ID on success. *)
+
 val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> ?ts:float -> content:string -> unit -> string
 (** [#392b] Canonical c2c message envelope formatter. Optional [tag]
     surfaces FAIL/BLOCKING/URGENT to programmatic consumers. *)
@@ -354,6 +358,12 @@ module Broker : sig
       /proc scan. *)
 
   val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> ?deferrable:bool -> ?ephemeral:bool -> unit -> unit
+  val enqueue_session_message : t -> from_alias:string -> session_id:string -> content:string -> ?ephemeral:bool -> unit -> unit
+  (** Enqueue a new locally-sent message directly to [session_id], applying
+      sender validation and local message-id stamping. *)
+  val enqueue_by_session_id : t -> session_id:string -> messages:message list -> unit
+  (** Enqueue already-shaped messages directly into a session inbox,
+      bypassing alias resolution. *)
   type send_all_result = { sent_to : string list; skipped : (string * string) list }
   val send_all : t -> from_alias:string -> content:string -> exclude_aliases:string list -> send_all_result
   val read_inbox : t -> session_id:string -> message list

@@ -141,6 +141,11 @@ let rec mkdir_p d =
 let pending_kind_to_string = function Permission -> "permission" | Question -> "question"
 let pending_kind_of_string = function "question" -> Question | _ -> Permission
 
+let validate_session_id session_id =
+  let trimmed = String.trim session_id in
+  if C2c_name.is_valid trimmed then Ok trimmed
+  else Error (C2c_name.error_message "session_id" trimmed)
+
 let float_opt_to_json = function
   | None -> `Null
   | Some f -> `Float f

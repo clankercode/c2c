@@ -19,6 +19,15 @@ The fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of the sam
 
 **Stale entries in `.mcp.json` files** — if `C2C_MCP_BROKER_ROOT` is hard-coded in a project's `.mcp.json` `env` block pointing at the legacy `.git/c2c/mcp` path (or at the current resolver default — same skip-when-default rule as the opencode-plugin slice), the explicit override silently re-creates the split-brain symptom even after migration. Operator-facing fix: `c2c migrate-broker --rewrite-mcp-configs` (compatible with `--dry-run`) scans the project root + `.worktrees/*/.mcp.json` and strips matching entries; operator overrides (any other value) are preserved with a `[KEEP]` log line. See #512.
 
+### `C2C_SESSIONS_BROKER_ROOT`
+
+Global broker root override for session-ID-addressed delivery. Used by
+`c2c send --session <session_id> <message>` and the Claude PostToolUse inbox
+hook. When unset, the global root is `${XDG_STATE_HOME:-$HOME/.c2c}/sessions/broker`.
+This root is intentionally not repo-fingerprinted: it lets the hook deliver to
+Claude sessions that never configured c2c for the current repo. Tests should set
+this to a temp directory.
+
 ### `C2C_MCP_SESSION_ID`
 
 Explicit session ID override. Set this when launching one-shot child CLI probes (kimi) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.

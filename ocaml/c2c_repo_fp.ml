@@ -113,6 +113,26 @@ let resolve_broker_root () =
     ignoring C2C_MCP_BROKER_ROOT. Used to detect stale env-var exports. *)
 let resolve_broker_root_canonical () = resolve_broker_root_fallback ()
 
+(** Global session-addressed broker root.
+
+    This is intentionally not repo-fingerprinted: Claude PostToolUse payloads
+    carry a real session_id even for sessions that never initialized c2c, so
+    the rendezvous point must be fixed across repos. *)
+let resolve_sessions_broker_root () =
+  match Sys.getenv_opt "C2C_SESSIONS_BROKER_ROOT" with
+  | Some dir when String.trim dir <> "" ->
+      let p = String.trim dir in
+      if Filename.is_relative p then Sys.getcwd () // p else p
+  | _ ->
+      (match Sys.getenv_opt "XDG_STATE_HOME" with
+       | Some xdg when String.trim xdg <> "" ->
+           String.trim xdg // "sessions" // "broker"
+       | _ ->
+           (match Sys.getenv_opt "HOME" with
+            | Some h when String.trim h <> "" ->
+                String.trim h // ".c2c" // "sessions" // "broker"
+            | _ -> xdg_state_home () // "sessions" // "broker"))
+
 (** {1 Scan all known broker roots for --global listing}
 
     Returns all broker-root directories discovered under both XDG and HOME
