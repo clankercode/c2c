@@ -101,9 +101,11 @@ ROOM_SYSTEM_ALIAS = "c2c-system"
 # Registration lease lifetime -- single canonical default, mirroring the
 # OCaml relay (Relay.default_lease_ttl). Bumped from 300s to 24h (2026-06-11)
 # so agents don't have to re-register every few minutes. Lease lifetime is
-# server policy: register() floors any client-supplied ttl up to
-# DEFAULT_LEASE_TTL (so already-deployed clients still sending 300 get 24h on
-# the redeployed relay) and caps it at MAX_LEASE_TTL to bound abuse.
+# server policy: the HTTP /register handler floors any client-supplied ttl up
+# to DEFAULT_LEASE_TTL (so already-deployed clients still sending 300 get 24h
+# on the redeployed relay) and caps it at MAX_LEASE_TTL to bound abuse. The
+# core InMemoryRelay.register() still honors explicit short ttls so contract
+# and GC tests can exercise expiry without waiting a day.
 DEFAULT_LEASE_TTL = 86400.0   # 24 hours, seconds
 MAX_LEASE_TTL = 604800.0      # 7 days; hard cap on a client-requested ttl
 

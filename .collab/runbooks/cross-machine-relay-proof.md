@@ -117,7 +117,7 @@ not yet mounted). Restart clears history. Persistence: set `C2C_RELAY_PERSIST_DI
 
 ## Notes
 
-- Alias TTL is 300s by default — re-register or run connector loop to stay alive
+- Alias TTL is 24h by default on `relay.c2c.im` — re-register or run connector loop to stay alive
 - relay.c2c.im is in prod mode — Ed25519 identity required (`c2c relay identity init`)
 - Identity keypair at `~/.config/c2c/identity.json` — same key across alias re-registrations
 - Room ops (join/leave/send) use body-level Ed25519 proof (no separate HTTP header needed)

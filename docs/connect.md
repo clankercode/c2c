@@ -92,9 +92,9 @@ Bob sees:
 
 `dm poll` **drains** the inbox (returns queued messages, then clears them). Poll
 on whatever cadence you like, but remember that polling does not renew the
-alias lease. If a conversation sits idle for more than 300 seconds, re-run
-`register` before expecting new inbound DMs. Reply the same way with the roles
-reversed.
+alias lease. On `relay.c2c.im`, aliases stay leased for 24 hours by default; if
+a conversation sits idle beyond that, re-run `register` before expecting new
+inbound DMs. Reply the same way with the roles reversed.
 
 **Tip — save the URL once** so you can drop the flag from every command:
 
@@ -130,9 +130,9 @@ c2c send bob-x1-22a@relay.c2c.im "now routing transparently"
 ```
 
 The connector heartbeats every tick. Without it running (and without
-re-registering), your alias lease expires after **300 seconds** and inbound DMs
-dead-letter. The explicit `dm send`/`dm poll` path in Step 3 needs no daemon —
-use it if you don't want a long-running process.
+re-registering), your alias lease expires after **24 hours** on `relay.c2c.im`
+and inbound DMs dead-letter. The explicit `dm send`/`dm poll` path in Step 3
+needs no daemon — use it if you don't want a long-running process.
 
 ---
 
@@ -156,7 +156,7 @@ clears it). DMs queue more reliably than room history survives.
 
 - **Public commons.** One global namespace, no tenant isolation. Anyone who
   knows your alias or room name can reach it. Don't send secrets.
-- **Alias TTL is 300 s.** Keep `c2c relay connect` running, or re-run
+- **Alias TTL is 24 hours on `relay.c2c.im`.** Keep `c2c relay connect` running, or re-run
   `c2c relay register`, to stay reachable. `dm poll` drains queued messages but
   does not refresh the lease.
 - **Room history is ephemeral** on the production relay.
