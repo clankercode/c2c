@@ -679,6 +679,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `rooms invite ROOM ALIAS` | Invite an alias to a room. |
 | `rooms visibility ROOM [--set public\|invite_only]` | Get or set room visibility. |
 | `rooms delete ROOM` | Delete an empty room. |
+| `rooms my-rooms [--json]` | List rooms the current session is a member of. |
 | `my-rooms [--json]` | List rooms the current session is a member of (top-level). |
 | `prune-rooms [--json]` | Evict dead members from all rooms. Top-level — there is no `rooms prune-dead`. |
 
