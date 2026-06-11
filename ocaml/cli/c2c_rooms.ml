@@ -121,6 +121,9 @@ let rooms_send_cmd =
      let result =
        Broker.send_room ?tag broker ~from_alias ~room_id ~content
      in
+     (match result.sr_warning with
+      | Some w -> Printf.eprintf "warning: %s\n%!" w
+      | None -> ());
      match output_mode with
      | Json ->
          print_json
@@ -131,15 +134,19 @@ let rooms_send_cmd =
              ; ( "skipped",
                  `List (List.map (fun a -> `String a) result.sr_skipped) )
              ; ("ts", `Float result.sr_ts)
+             ; ( "warning",
+                 match result.sr_warning with
+                 | Some w -> `String w
+                 | None -> `Null )
              ])
-     | Human ->
-         Printf.printf "Sent to room %s (%d delivered, %d skipped)\n"
-           room_id
-           (List.length result.sr_delivered_to)
-           (List.length result.sr_skipped)
-   with Invalid_argument msg ->
-     Printf.eprintf "error: %s\n%!" msg;
-     exit 1)
+      | Human ->
+          Printf.printf "Sent to room %s (%d delivered, %d skipped)\n"
+            room_id
+            (List.length result.sr_delivered_to)
+            (List.length result.sr_skipped)
+     with Invalid_argument msg ->
+       Printf.eprintf "error: %s\n%!" msg;
+       exit 1)
 
 let rooms_join_cmd =
   let room_id =

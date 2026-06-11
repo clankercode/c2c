@@ -494,7 +494,7 @@ module Broker : sig
   val room_history_path : t -> room_id:string -> string
   val append_room_history : t -> room_id:string -> from_alias:string -> content:string -> float
   val read_room_history : t -> room_id:string -> limit:int -> ?since:float -> unit -> room_message list
-  type send_room_result = { sr_delivered_to : string list; sr_skipped : string list; sr_ts : float }
+  type send_room_result = { sr_delivered_to : string list; sr_skipped : string list; sr_ts : float; sr_warning : string option }
   val send_room : ?tag:string -> t -> from_alias:string -> room_id:string -> content:string -> send_room_result
   val fan_out_room_message :
        ?tag:string

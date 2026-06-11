@@ -5779,6 +5779,63 @@ let test_send_room_dedup_on_bare_content_ignores_tag () =
       in
       check int "history has exactly 1 sender entry" 1 (List.length sender_msgs))
 
+(* #silent-send Bug 1: send_room after leave_room should error.
+   When alice leaves room1 and then sends to it, the broker should raise
+   Invalid_argument because alice is no longer a member. *)
+let test_send_room_after_leave_raises () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"room1"
+        ~alias:"alice" ~session_id:"session-a");
+      ignore (C2c_mcp.Broker.drain_inbox broker ~session_id:"session-a");
+      ignore (C2c_mcp.Broker.leave_room broker ~room_id:"room1" ~alias:"alice");
+      let raised_correctly = ref false in
+      (try
+         let _ = C2c_mcp.Broker.send_room broker
+           ~from_alias:"alice" ~room_id:"room1" ~content:"hello after leave"
+         in ()
+       with Invalid_argument msg ->
+         if msg = "send_room rejected: alice is not a member of room room1"
+         then raised_correctly := true);
+      check bool "send_room raised Invalid_argument after leave" true !raised_correctly)
+
+(* #silent-send Bug 2: send_room to ghost room (0 members) should warn.
+   When alice sends to a room that doesn't exist, it auto-creates an empty
+   ghost room and returns sr_warning. *)
+let test_send_room_to_ghost_room_warns () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      let result =
+        C2c_mcp.Broker.send_room broker
+          ~from_alias:"alice" ~room_id:"typo-room" ~content:"hello ghost"
+      in
+      check int "delivered_to is empty" 0 (List.length result.sr_delivered_to);
+      check int "skipped is empty" 0 (List.length result.sr_skipped);
+      check bool "sr_warning present for ghost room" true
+        (result.sr_warning <> None))
+
+(* #silent-send Bug 3: enqueue_message to unregistered alias should error.
+   When sender tries to send to an alias that is not registered locally
+   (and not a remote alias), the broker raises Invalid_argument. *)
+let test_enqueue_to_unregistered_alias_raises () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
+      let raised_correctly = ref false in
+      (try
+         let _ = C2c_mcp.Broker.enqueue_message broker
+           ~from_alias:"sender" ~to_alias:"nobody-is-this" ~content:"hello" ()
+         in ()
+       with Invalid_argument msg ->
+         if msg = "enqueue_message rejected: alias 'nobody-is-this' is not registered; message not queued"
+         then raised_correctly := true);
+      check bool "enqueue raised for unregistered alias" true !raised_correctly)
+
 let test_list_rooms_returns_room_with_members () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -13402,9 +13459,15 @@ let () =
               test_send_room_does_not_dedup_different_content
           ; test_case "S1: send_room tag stores bare content, fans out prefixed (#392)" `Quick
               test_send_room_tag_stores_bare_content_fans_out_prefixed
-          ; test_case "S2: send_room dedup ignores tag — same bare body = dup (#392)" `Quick
-              test_send_room_dedup_on_bare_content_ignores_tag
-          ; test_case "list_rooms returns rooms with members" `Quick
+           ; test_case "S2: send_room dedup ignores tag — same bare body = dup (#392)" `Quick
+               test_send_room_dedup_on_bare_content_ignores_tag
+           ; test_case "#silent-send: send_room after leave raises" `Quick
+               test_send_room_after_leave_raises
+           ; test_case "#silent-send: send_room to ghost room warns" `Quick
+               test_send_room_to_ghost_room_warns
+           ; test_case "#silent-send: enqueue to unregistered alias raises" `Quick
+               test_enqueue_to_unregistered_alias_raises
+           ; test_case "list_rooms returns rooms with members" `Quick
              test_list_rooms_returns_room_with_members
           ; test_case "room_history tag survives round-trip" `Quick
               test_room_history_tag_roundtrip

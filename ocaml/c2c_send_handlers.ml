@@ -312,47 +312,53 @@ let ts = Unix.gettimeofday () in
                     | `Reject msg ->
                         Lwt.return (tool_err msg)
                     | `Warn _ | `Allow ->
-                        Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ~ephemeral ();
-                        (match session_id_override with
-                         | Some sid -> Broker.touch_session broker ~session_id:sid
+                        match
+                           try Some (Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ~ephemeral ())
+                           with Invalid_argument _ -> None
+                         with
                          | None ->
-                           (match current_session_id () with
-                            | Some sid -> Broker.touch_session broker ~session_id:sid
-                            | None -> ()));
-                        let ts = Unix.gettimeofday () in
-                        (* #432: case-insensitive alias match for sidebar
-                           lookups; otherwise dnd / compacting status can be
-                           read from a different row than the one
-                           [enqueue_message] writes to. *)
-                        let to_alias_cf = Broker.alias_casefold to_alias in
-                        let recipient_dnd =
-                          match Broker.list_registrations broker
-                                |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf) with
-                          | Some r -> Broker.is_dnd broker ~session_id:r.session_id
-                          | None -> false
-                        in
-                        let recipient_compacting =
-                          match Broker.list_registrations broker
-                                |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf) with
-                          | Some r ->
-                              (match Broker.is_compacting broker ~session_id:r.session_id with
-                               | Some c ->
-                                   let dur = Unix.gettimeofday () -. c.started_at in
-                                   Some (dur, c.reason)
-                               | None -> None)
-                          | None -> None
-                        in
-                        let receipt =
-                          build_send_receipt
-                            ~pp_extras
-                            ~ts
-                            ~from_alias
-                            ~to_alias
-                            ~recipient_dnd
-                            ~recipient_compacting
-                            ~deferrable
-                        in
-                        Lwt.return (tool_ok receipt)))))
+                             Lwt.return (tool_err (Printf.sprintf "send failed: alias '%s' is not registered; message not queued" to_alias))
+                         | Some () ->
+                             (match session_id_override with
+                              | Some sid -> Broker.touch_session broker ~session_id:sid
+                              | None ->
+                                  (match current_session_id () with
+                                   | Some sid -> Broker.touch_session broker ~session_id:sid
+                                   | None -> ()));
+                             let ts = Unix.gettimeofday () in
+                             (* #432: case-insensitive alias match for sidebar
+                                lookups; otherwise dnd / compacting status can be
+                                read from a different row than the one
+                                [enqueue_message] writes to. *)
+                             let to_alias_cf = Broker.alias_casefold to_alias in
+                             let recipient_dnd =
+                               match Broker.list_registrations broker
+                                     |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf) with
+                               | Some r -> Broker.is_dnd broker ~session_id:r.session_id
+                               | None -> false
+                             in
+                             let recipient_compacting =
+                               match Broker.list_registrations broker
+                                     |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf) with
+                               | Some r ->
+                                   (match Broker.is_compacting broker ~session_id:r.session_id with
+                                    | Some c ->
+                                        let dur = Unix.gettimeofday () -. c.started_at in
+                                        Some (dur, c.reason)
+                                    | None -> None)
+                               | None -> None
+                             in
+                             let receipt =
+                               build_send_receipt
+                                 ~pp_extras
+                                 ~ts
+                                 ~from_alias
+                                 ~to_alias
+                                 ~recipient_dnd
+                                 ~recipient_compacting
+                                 ~deferrable
+                             in
+                             Lwt.return (tool_ok receipt)))))
 
 (** #671 S1: per-recipient encrypted broadcast.  Replaces the old
     plaintext [Broker.send_all] fan-out with a loop that calls

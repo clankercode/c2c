@@ -192,20 +192,31 @@ let send_room ~broker ~session_id_override ~arguments =
                  ~is_error:true)
         | None ->
             with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
-            let { Broker.sr_delivered_to; sr_skipped; sr_ts } =
-              Broker.send_room ?tag:parsed_tag broker ~from_alias ~room_id ~content
+            let result =
+              try
+                Ok (Broker.send_room ?tag:parsed_tag broker ~from_alias ~room_id ~content)
+              with Invalid_argument msg ->
+                Error msg
             in
-            let result_json =
-              `Assoc
-                [ ("delivered_to",
-                   `List (List.map (fun a -> `String a) sr_delivered_to))
-                ; ("skipped",
-                   `List (List.map (fun a -> `String a) sr_skipped))
-                ; ("ts", `Float sr_ts)
-                ]
-              |> Yojson.Safe.to_string
-            in
-            Lwt.return (tool_ok result_json)))))
+            match result with
+            | Error msg ->
+                Lwt.return (tool_err ("send_room failed: " ^ msg))
+            | Ok { Broker.sr_delivered_to; sr_skipped; sr_ts; sr_warning } ->
+                let result_fields =
+                  [ ("delivered_to",
+                     `List (List.map (fun a -> `String a) sr_delivered_to))
+                  ; ("skipped",
+                     `List (List.map (fun a -> `String a) sr_skipped))
+                  ; ("ts", `Float sr_ts)
+                  ]
+                in
+                let result_fields =
+                  match sr_warning with
+                  | Some w -> ("warning", `String w) :: result_fields
+                  | None -> result_fields
+                in
+                let result_json = `Assoc result_fields |> Yojson.Safe.to_string in
+                Lwt.return (tool_ok result_json)))))
 
 let list_rooms ~broker ~session_id_override ~arguments:_ =
   let rooms = Broker.list_rooms broker in

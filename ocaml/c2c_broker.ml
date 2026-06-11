@@ -2103,12 +2103,17 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
         match resolve_live_session_id_by_alias t to_alias with
         | Unknown_alias ->
-            (* Bare alias not found locally — try relay outbox.
-               This handles cross-host delivery where the recipient's broker is
-               registered with the relay but not in the local registry.
-               Ephemeral semantics over relay are not wired in v1 (see remote-alias
-               path comment above), so [ephemeral] is ignored here. *)
-            C2c_relay_connector.append_outbox_entry t.root ~from_alias ~to_alias ~content ()
+            (* #silent-send Bug 3: if the alias is not a remote alias (no @),
+               it should exist locally. Unknown_alias here means it's genuinely
+               unknown — not registered on this broker and not a remote target.
+               Reject with a clear error rather than silently dropping to relay. *)
+            if not (is_remote_alias to_alias) then
+              invalid_arg
+                ("enqueue_message rejected: alias '" ^ to_alias
+                 ^ "' is not registered; message not queued")
+            else
+              (* Remote alias: append to relay outbox for async forwarding. *)
+              C2c_relay_connector.append_outbox_entry t.root ~from_alias ~to_alias ~content ()
         | All_recipients_dead ->
             invalid_arg ("recipient is not alive: " ^ to_alias)
         | Resolved session_id ->
@@ -3816,6 +3821,7 @@ open C2c_mcp_helpers
     { sr_delivered_to : string list
     ; sr_skipped : string list
     ; sr_ts : float
+    ; sr_warning : string option  (* non-fatal warning, e.g. room had 0 members *)
     }
 
   (* Suppress byte-identical repeat messages from the same sender within this window. *)
@@ -3824,6 +3830,23 @@ open C2c_mcp_helpers
   let send_room ?(tag : string option) t ~from_alias ~room_id ~content =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
+    (* #silent-send: check membership and detect ghost room vs left room.
+       - Ghost room: room was auto-created by send_room (created_by="", members=[])
+         → warn but allow (Bug 2)
+       - Left room: room had members, sender was one of them, now not
+         → error (Bug 1)
+       - Never was a member: room has members but sender is not one
+         → error *)
+    let members = load_room_members t ~room_id in
+    let meta = load_room_meta t ~room_id in
+    let sender_is_member = List.exists (fun m -> m.rm_alias = from_alias) members in
+    let is_ghost_room = meta.created_by = "" && members = [] in
+    if is_ghost_room then
+      (* Ghost room: warn but allow the send. Message goes to history only. *)
+      ()
+    else if not sender_is_member then
+      invalid_arg
+        ("send_room rejected: " ^ from_alias ^ " is not a member of room " ^ room_id);
     (* Dedup: skip if the same sender just sent the same content within the window.
        #392 slice 4 note: we dedup on BARE content (pre-prefix) so that
        sender re-tagging an already-sent message ("BLOCKING:" instead of
@@ -3841,9 +3864,9 @@ open C2c_mcp_helpers
         recent
     in
     if is_dup then
-      { sr_delivered_to = []; sr_skipped = []; sr_ts = now }
+      { sr_delivered_to = []; sr_skipped = []; sr_ts = now; sr_warning = None }
     else begin
-    (* Step 1: append to history (under history lock, released before fan-out).
+    (* Step 1: append to history (under history lock, released before fan-out.
        History stores BARE content; the per-recipient prefix lives only in
        inbox rows so it's surfaced in the recipient's transcript without
        double-prefixing on a future history-replay. *)
@@ -3858,9 +3881,19 @@ open C2c_mcp_helpers
     let delivered, skipped =
       fan_out_room_message ?tag t ~room_id ~from_alias ~content
     in
+    (* #silent-send Bug 2: warn when room had 0 members at send time.
+       This catches the "ghost room" case where send_room auto-created the room
+       directory (via ensure_room_dir called by load_room_members above) but
+       nobody was in the room — the message went to history but 0 recipients. *)
+    let warning =
+      if delivered = [] && skipped = [] then
+        Some ("room " ^ room_id ^ " has 0 members; message stored in history but not delivered")
+      else None
+    in
     { sr_delivered_to = delivered
     ; sr_skipped = skipped
     ; sr_ts = ts
+    ; sr_warning = warning
     }
     end
 
