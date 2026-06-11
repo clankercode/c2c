@@ -63,9 +63,18 @@ let read_file path =
    Using this wrapper (c2c_cmd) instead of bare "c2c ..." in test bodies
    ensures the test exercises the built binary, not the installed one in
    ~/.local/bin (which may be stale after OCaml changes). *)
-let built_c2c_dir = "_build/default/ocaml/cli"
+let c2c_binary =
+  let exe = Sys.executable_name in
+  let test_dir = Filename.dirname exe in
+  let ocaml_dir = Filename.dirname test_dir in
+  Filename.concat ocaml_dir (Filename.concat "cli" "c2c.exe")
+
 let c2c_cmd partial =
-  Printf.sprintf "PATH=%s:$PATH %s" built_c2c_dir partial
+  let dir = Filename.dirname c2c_binary in
+  let link = Filename.concat dir "c2c" in
+  if not (Sys.file_exists link) then
+    (try Unix.symlink c2c_binary link with Unix.Unix_error _ -> ());
+  Printf.sprintf "PATH=%s:$PATH %s" (Filename.quote dir) partial
 
 (* ------------------------------------------------------------------------- *)
 (* c2c doctor — verify health check output and exit 0 on clean run          *)
@@ -515,6 +524,74 @@ let test_rooms_list_output_contains_room_entries () =
       (* Output contains room entries: "room-id (N members" *)
       check bool "rooms list contains room entry pattern" true
         (string_contains content "(" && string_contains content "members"))
+
+(* ------------------------------------------------------------------------- *)
+(* c2c rooms my-rooms — verify my-rooms listing                              *)
+(* ------------------------------------------------------------------------- *)
+
+let test_rooms_my_rooms_exits_zero () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"test-myrooms-sid"
+        ~alias:"test-myrooms" ~pid:None ~pid_start_time:None ();
+      let _ = C2c_mcp.Broker.join_room broker ~room_id:"my-room-a"
+        ~alias:"test-myrooms" ~session_id:"test-myrooms-sid" in
+      let _ = C2c_mcp.Broker.join_room broker ~room_id:"my-room-b"
+        ~alias:"test-myrooms" ~session_id:"test-myrooms-sid" in
+      let cmd = c2c_cmd (Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=test-myrooms-sid c2c rooms my-rooms > /dev/null 2>&1"
+        (Filename.quote dir)) in
+      let rc = Sys.command cmd in
+      check int "c2c rooms my-rooms exits 0" 0 rc)
+
+let test_rooms_my_rooms_lists_joined_rooms () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"test-myrooms-sid2"
+        ~alias:"test-myrooms2" ~pid:None ~pid_start_time:None ();
+      let _ = C2c_mcp.Broker.join_room broker ~room_id:"my-room-x"
+        ~alias:"test-myrooms2" ~session_id:"test-myrooms-sid2" in
+      let _ = C2c_mcp.Broker.join_room broker ~room_id:"my-room-y"
+        ~alias:"test-myrooms2" ~session_id:"test-myrooms-sid2" in
+      let tmpfile = Filename.temp_file "c2c-my-rooms" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+        (fun () ->
+          ignore (Sys.command (c2c_cmd (Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=test-myrooms-sid2 c2c rooms my-rooms > %s 2>&1"
+            (Filename.quote dir) tmpfile)));
+          let ch = open_in tmpfile in
+          let content = Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () -> really_input_string ch (in_channel_length ch))
+          in
+          check bool "my-rooms lists joined rooms" true
+            (string_contains content "my-room-x" && string_contains content "my-room-y")))
+
+let test_rooms_my_rooms_json_output () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"test-myrooms-json-sid"
+        ~alias:"test-myrooms-json" ~pid:None ~pid_start_time:None ();
+      let _ = C2c_mcp.Broker.join_room broker ~room_id:"json-room-1"
+        ~alias:"test-myrooms-json" ~session_id:"test-myrooms-json-sid" in
+      let tmpfile = Filename.temp_file "c2c-my-rooms-json" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+        (fun () ->
+          ignore (Sys.command (c2c_cmd (Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=test-myrooms-json-sid c2c rooms my-rooms --json > %s 2>&1"
+            (Filename.quote dir) tmpfile)));
+          let ch = open_in tmpfile in
+          let content = Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () -> really_input_string ch (in_channel_length ch))
+          in
+          let parsed = Yojson.Safe.from_string content in
+          match parsed with
+          | `List items ->
+              let ids = List.map (fun item ->
+                Yojson.Safe.Util.(item |> member "room_id" |> to_string)) items
+              in
+              check bool "json output contains room_id" true
+                (List.mem "json-room-1" ids)
+          | _ -> fail "expected JSON array from my-rooms --json"))
 
 (* ------------------------------------------------------------------------- *)
 (* c2c rooms join — verify room join / missing-arg handling                 *)
@@ -1600,6 +1677,11 @@ let () =
     ; ( "rooms_join",
         [ ( "rooms join missing room exits non-zero", `Quick, test_rooms_join_missing_room_exits_nonzero )
         ; ( "rooms join --help exits 0", `Quick, test_rooms_join_help_exits_zero )
+        ] )
+    ; ( "rooms_my_rooms",
+        [ ( "rooms my-rooms exits 0", `Quick, test_rooms_my_rooms_exits_zero )
+        ; ( "rooms my-rooms lists joined rooms", `Quick, test_rooms_my_rooms_lists_joined_rooms )
+        ; ( "rooms my-rooms --json is valid JSON array", `Quick, test_rooms_my_rooms_json_output )
         ] )
     ; ( "doctor_deep",
         [ ( "doctor output contains relay/broker info", `Quick, test_doctor_output_contains_relay_info )

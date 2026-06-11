@@ -311,6 +311,57 @@ let rooms_list_cmd =
               r.ri_member_count alive vis)
           rooms
 
+let rooms_my_rooms_cmd =
+  let+ json = json_flag in
+  let broker = Broker.create ~root:(resolve_broker_root ()) in
+  let session_id = resolve_session_id_for_inbox broker in
+  let rooms = Broker.my_rooms broker ~session_id in
+  let output_mode = if json then Json else Human in
+  match output_mode with
+  | Json ->
+      print_json
+        (`List
+          (List.map
+             (fun (r : Broker.room_info) ->
+               let alive_members =
+                 List.filter_map
+                   (fun (m : Broker.room_member_info) ->
+                      if m.rmi_alive <> Some false then Some (`String m.rmi_alias)
+                      else None)
+                   r.ri_member_details
+               in
+               `Assoc
+                 [ ("room_id", `String r.ri_room_id)
+                 ; ("member_count", `Int r.ri_member_count)
+                 ; ("alive_count", `Int r.ri_alive_member_count)
+                 ; ("members",
+                     `List (List.map (fun a -> `String a) r.ri_members))
+                 ; ("alive_members", `List alive_members)
+                 ; ( "visibility",
+                     `String
+                       (match r.ri_visibility with
+                       | Public -> "public"
+                       | Invite_only -> "invite_only"))
+                 ])
+             rooms))
+  | Human ->
+      if rooms = [] then
+        Printf.printf "Not in any rooms.\n"
+      else
+        List.iter
+          (fun (r : Broker.room_info) ->
+            let vis =
+              match r.ri_visibility with
+              | Public -> ""
+              | Invite_only -> " [invite-only]"
+            in
+            let alive = if r.ri_alive_member_count > 0 then
+              Printf.sprintf ", %d alive" r.ri_alive_member_count
+            else "" in
+            Printf.printf "%s (%d members%s)%s\n" r.ri_room_id
+              r.ri_member_count alive vis)
+          rooms
+
 let parse_since_str s =
   let s = String.trim s in
   let len = String.length s in
@@ -671,15 +722,16 @@ let rooms_invite = Cmdliner.Cmd.v (Cmdliner.Cmd.info "invite" ~doc:"Invite an al
 let rooms_members = Cmdliner.Cmd.v (Cmdliner.Cmd.info "members" ~doc:"List room members.") rooms_members_cmd
 let rooms_visibility = Cmdliner.Cmd.v (Cmdliner.Cmd.info "visibility" ~doc:"Get or set room visibility (public or invite_only).") rooms_visibility_cmd
 let rooms_create = Cmdliner.Cmd.v (Cmdliner.Cmd.info "create" ~doc:"Create a room with explicit visibility (#394).") rooms_create_cmd
+let rooms_my_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "my-rooms" ~doc:"List rooms you are a member of.") rooms_my_rooms_cmd
 
 let rooms_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "rooms" ~doc:"Manage persistent N:N rooms.")
-    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_delete; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility ]
+    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_delete; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility; rooms_my_rooms ]
 
 let room_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "room" ~doc:"Alias for rooms.")
-    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility ]
+    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility; rooms_my_rooms ]
