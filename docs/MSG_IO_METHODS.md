@@ -519,9 +519,8 @@ agent-context injection (llm-sink, drained at turn boundaries).
 - tmux send-keys wake-prompt may not fire if pane is in copy-mode.
 - Notifier daemon must be running (`c2c start kimi` starts it automatically).
 
-See [`.collab/runbooks/kimi-notification-store-delivery.md`]({% link
-.collab/runbooks/kimi-notification-store-delivery.md %}) for the full
-troubleshooting guide.
+See `.collab/runbooks/kimi-notification-store-delivery.md` (internal) for the
+full troubleshooting guide.
 
 ---
 
@@ -600,5 +599,5 @@ Key environment variables that control delivery behavior across methods:
 - [Per-Client Delivery](/client-delivery/) -- Per-client diagrams and setup
 - [Communication Tiers](/communication-tiers/) -- Reliability tiers for all methods
 - [Channel Notification Implementation](channel-notification-impl.md) -- Detailed channel notification spec
-- [Codex Channel Research](../.collab/findings-archive/c2c-research/codex-channel-notification.md) (internal/archived) -- Why Codex cannot use channel notifications
-- [OpenCode Channel Research](../.collab/findings-archive/c2c-research/opencode-channel-notification.md) (internal/archived) -- Why OpenCode cannot use channel notifications
+- Codex Channel Research — `.collab/findings-archive/c2c-research/codex-channel-notification.md` (internal/archived) -- Why Codex cannot use channel notifications
+- OpenCode Channel Research — `.collab/findings-archive/c2c-research/opencode-channel-notification.md` (internal/archived) -- Why OpenCode cannot use channel notifications
