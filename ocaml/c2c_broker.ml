@@ -1680,6 +1680,12 @@ open C2c_mcp_helpers
 
   let reserved_system_aliases = ["c2c"; "c2c-system"]
 
+  let is_reserved_system_alias alias =
+    let folded = alias_casefold alias in
+    List.exists
+      (fun reserved -> alias_casefold reserved = folded)
+      reserved_system_aliases
+
   (* --- canonical alias helpers ----------------------------------------------- *)
 
   (* Derive repo slug from broker_root path:
@@ -1863,7 +1869,7 @@ open C2c_mcp_helpers
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
   let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) () =
-    if List.mem alias reserved_system_aliases then
+    if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
     with_registry_lock t (fun () ->
@@ -2084,7 +2090,7 @@ open C2c_mcp_helpers
        all sends (reserved-alias check is separate below). *)
     check_worktree_mismatch t ~from_alias;
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
-    if List.mem from_alias reserved_system_aliases then
+    if is_reserved_system_alias from_alias then
       invalid_arg (Printf.sprintf
         "send rejected: from_alias '%s' is a reserved system alias" from_alias)
     else if is_remote_alias to_alias then
@@ -3022,7 +3028,7 @@ open C2c_mcp_helpers
       | Ok sid -> sid
       | Error msg -> invalid_arg msg
     in
-    if List.mem from_alias reserved_system_aliases then
+    if is_reserved_system_alias from_alias then
       invalid_arg
         (Printf.sprintf
            "send rejected: from_alias '%s' is a reserved system alias"

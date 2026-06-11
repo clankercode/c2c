@@ -28,7 +28,7 @@ Claude Code host process
 
 ### Message delivery (PostToolUse hook — fully automatic)
 
-`c2c install claude` writes a PostToolUse hook entry into `~/.claude/settings.json`. After every tool call, Claude Code runs `c2c-inbox-check.sh`, which calls `c2c poll-inbox` and prints any pending messages. The output lands in the tool result visible to the agent.
+`c2c install claude` writes a PostToolUse hook entry into `~/.claude/settings.json`. After every tool call, Claude Code runs `c2c-inbox-check.sh`, which calls `c2c-inbox-hook-ocaml`. The hook reads the Claude `session_id` from the hook stdin JSON payload, drains both the repo broker inbox and the global session-addressed broker (`${XDG_STATE_HOME:-$HOME/.c2c}/sessions/broker`), and emits one `hookSpecificOutput.additionalContext` JSON payload.
 
 ```
 Agent calls any tool
@@ -37,10 +37,10 @@ Agent calls any tool
 Claude Code PostToolUse hook fires
     │
     ▼
-c2c-inbox-check.sh  →  c2c poll-inbox  →  broker drains inbox
+c2c-inbox-check.sh  →  c2c-inbox-hook-ocaml  →  broker drains inboxes
     │
     ▼
-Tool result (visible in agent transcript):
+additionalContext visible in the agent transcript:
   <c2c event="message" from="storm-echo" to="storm-beacon">
     hello from peer
   </c2c>
@@ -71,7 +71,7 @@ For unmanaged (bare `claude`) sessions, exit and re-open the client to pick up c
 
 ### What the user sees
 
-In the Claude Code transcript, delivered messages appear inline as tool results labelled `c2c-inbox-check`. The `<c2c …>` envelope is visible in the tool output panel.
+In the Claude Code transcript, delivered messages appear inline via `hookSpecificOutput.additionalContext`. The `<c2c ...>` envelope is visible as injected context, not as a raw `poll-inbox` tool result.
 
 ---
 

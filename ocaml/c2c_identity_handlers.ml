@@ -42,7 +42,7 @@ let register ~broker ~session_id_override ~arguments =
              | _ -> alias)
       in
       (* Reserved aliases — always blocked. *)
-      if List.mem alias Broker.reserved_system_aliases then
+      if Broker.is_reserved_system_alias alias then
         Lwt.return (tool_err (Printf.sprintf
           "register rejected: '%s' is a reserved system alias and cannot be registered" alias))
       else if not (C2c_name.is_valid alias) then

@@ -822,8 +822,8 @@ let claude_hook_script = {|
 #!/bin/bash
 # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code
 #
-# Calls c2c-inbox-hook-ocaml which drains inboxes and outputs messages.
-# Also calls cold-boot hook to emit context block once per session.
+# Calls c2c-inbox-hook-ocaml which drains inboxes and emits any cold-boot
+# context block in one hookSpecificOutput.additionalContext payload.
 #
 # IMPORTANT: do NOT use `exec` for hook binaries. Claude Code's Node.js hook runner
 # tracks the initially-spawned bash PID, and when bash exec's to the c2c
@@ -840,23 +840,14 @@ SCRIPT_DIR="$(dirname "$0")"
 REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null || echo "$SCRIPT_DIR")"
 
 # Prefer the installed OCaml hook because it can read Claude's stdin
-# session_id and drain the global sessions broker. Fall back to the dev-tree
-# exe, then to legacy `c2c hook` for older installs.
+# session_id, drain the global sessions broker, and merge cold-boot context.
+# Fall back to the dev-tree exe, then to legacy `c2c hook` for older installs.
 if command -v c2c-inbox-hook-ocaml >/dev/null 2>&1; then
-    c2c-inbox-hook-ocaml
+    C2C_REPO_ROOT="$REPO_ROOT" c2c-inbox-hook-ocaml
 elif [ -x "$REPO_ROOT/_build/default/ocaml/tools/c2c_inbox_hook.exe" ]; then
-    "$REPO_ROOT/_build/default/ocaml/tools/c2c_inbox_hook.exe"
+    C2C_REPO_ROOT="$REPO_ROOT" "$REPO_ROOT/_build/default/ocaml/tools/c2c_inbox_hook.exe"
 elif command -v c2c >/dev/null 2>&1; then
     c2c hook
-fi
-
-# Try c2c-cold-boot-hook from PATH first (after `just install-all`),
-# fall back to dev-tree _build path. Pass REPO_ROOT so the hook can
-# find findings/personal-logs in the correct repo (not worktree root).
-if command -v c2c-cold-boot-hook >/dev/null 2>&1; then
-    C2C_REPO_ROOT="$REPO_ROOT" c2c-cold-boot-hook
-elif [ -x "$REPO_ROOT/_build/default/ocaml/tools/c2c_cold_boot_hook.exe" ]; then
-    C2C_REPO_ROOT="$REPO_ROOT" "$REPO_ROOT/_build/default/ocaml/tools/c2c_cold_boot_hook.exe"
 else
     # Neither binary found: sleep to avoid fast-exit ECHILD race, then exit.
     sleep 0.05

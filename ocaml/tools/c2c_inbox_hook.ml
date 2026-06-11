@@ -187,18 +187,95 @@ and rotate_debug_log_if_needed path =
     end
   with _ -> ()
 
-let read_stdin_payload () =
-  try
-    let raw = In_channel.input_all stdin |> String.trim in
-    if raw = "" then None else Some (Yojson.Safe.from_string raw)
-  with _ -> None
+let max_stdin_scan_bytes = 64 * 1024
 
-let session_id_of_payload = function
-  | Some (`Assoc fields) ->
-      (match List.assoc_opt "session_id" fields with
-       | Some (`String s) when String.trim s <> "" -> Some (String.trim s)
-       | _ -> None)
-  | _ -> None
+let extract_json_string_field_prefix ~field raw =
+  let len = String.length raw in
+  let skip_ws i =
+    let rec loop j =
+      if j >= len then j
+      else
+        match raw.[j] with
+        | ' ' | '\n' | '\r' | '\t' -> loop (j + 1)
+        | _ -> j
+    in
+    loop i
+  in
+  let parse_string i =
+    if i >= len || raw.[i] <> '"' then None
+    else
+      let b = Buffer.create 32 in
+      let rec loop j =
+        if j >= len then None
+        else
+          match raw.[j] with
+          | '"' -> Some (Buffer.contents b, j + 1)
+          | '\\' when j + 1 < len ->
+              let c =
+                match raw.[j + 1] with
+                | '"' -> '"'
+                | '\\' -> '\\'
+                | '/' -> '/'
+                | 'b' -> '\b'
+                | 'f' -> '\012'
+                | 'n' -> '\n'
+                | 'r' -> '\r'
+                | 't' -> '\t'
+                | c -> c
+              in
+              Buffer.add_char b c;
+              loop (j + 2)
+          | '\\' -> None
+          | c ->
+              Buffer.add_char b c;
+              loop (j + 1)
+      in
+      loop (i + 1)
+  in
+  let rec scan i depth =
+    if i >= len then None
+    else
+      match raw.[i] with
+      | '"' ->
+          (match parse_string i with
+           | None -> None
+           | Some (key, next_i) ->
+               if depth = 1 && key = field then
+                 let colon_i = skip_ws next_i in
+                 if colon_i < len && raw.[colon_i] = ':' then
+                   let value_i = skip_ws (colon_i + 1) in
+                   match parse_string value_i with
+                   | Some (value, _) when String.trim value <> "" ->
+                       Some (String.trim value)
+                   | _ -> None
+                 else scan next_i depth
+               else scan next_i depth)
+      | '{' | '[' -> scan (i + 1) (depth + 1)
+      | '}' | ']' -> scan (i + 1) (max 0 (depth - 1))
+      | _ -> scan (i + 1) depth
+  in
+  scan 0 0
+
+let read_stdin_session_id () =
+  let chunk_size = 4096 in
+  let chunk = Bytes.create chunk_size in
+  let buf = Buffer.create 4096 in
+  let rec loop remaining =
+    if remaining <= 0 then None
+    else
+      let want = min chunk_size remaining in
+      match input stdin chunk 0 want with
+      | 0 ->
+          extract_json_string_field_prefix ~field:"session_id"
+            (Buffer.contents buf)
+      | n ->
+          Buffer.add_subbytes buf chunk 0 n;
+          let raw = Buffer.contents buf in
+          (match extract_json_string_field_prefix ~field:"session_id" raw with
+           | Some _ as found -> found
+           | None -> loop (remaining - n))
+  in
+  try loop max_stdin_scan_bytes with _ -> None
 
 let env_nonempty name =
   match Sys.getenv_opt name with
@@ -229,9 +306,9 @@ let drain_global_messages ~session_id =
     C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
   else []
 
-let print_additional_context ~lookup_role messages =
-  match messages with
-  | [] -> ()
+let print_additional_context ~lookup_role ~extra_contexts messages =
+  match messages, extra_contexts with
+  | [], [] -> ()
   | _ ->
       let buf = Buffer.create 256 in
       List.iter
@@ -252,6 +329,12 @@ let print_additional_context ~lookup_role messages =
           Buffer.add_string buf envelope;
           Buffer.add_char buf '\n')
         messages;
+      List.iter
+        (fun context ->
+          Buffer.add_string buf context;
+          if context = "" || context.[String.length context - 1] <> '\n' then
+            Buffer.add_char buf '\n')
+        extra_contexts;
       let json : Yojson.Safe.t =
         `Assoc
           [ ( "hookSpecificOutput"
@@ -265,7 +348,7 @@ let print_additional_context ~lookup_role messages =
 
 let () =
   let raw_session_id =
-    match session_id_of_payload (read_stdin_payload ()) with
+    match read_stdin_session_id () with
     | Some sid -> sid
     | None -> Option.value (env_nonempty "C2C_MCP_SESSION_ID") ~default:""
   in
@@ -326,7 +409,17 @@ let () =
        C2c_mcp.format_c2c_envelope (#392b convergence) so #392 tag
        attrs and xml-escaping are consistent across all surfaces
        (cli/c2c.ml monitor path, this hook). *)
-    print_additional_context ~lookup_role messages;
+    let extra_contexts =
+      match broker_root with
+      | "" -> []
+      | root ->
+          (match C2c_cold_boot_context.context_for_session
+                   ~broker_root:root ~session_id
+           with
+           | Some context -> [ context ]
+           | None -> [])
+    in
+    print_additional_context ~lookup_role ~extra_contexts messages;
 
     (* Deliberately no min-runtime sleep: P0 removes the ECHILD-race floor.
        Restore a small runtime floor here if Claude hook reaping regresses. *)

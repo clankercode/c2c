@@ -37,6 +37,30 @@ let count_c2c_entries (json: Yojson.Safe.t) : int =
 let root = "/fake/broker/root"
 let server_path = "/fake/bin/c2c_mcp_server.exe"
 
+let with_temp_dir f =
+  let base = Filename.get_temp_dir_name () in
+  let dir =
+    Filename.concat base
+      (Printf.sprintf "c2c-setup-test-%08x" (Random.bits ()))
+  in
+  (try Unix.mkdir dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) ->
+    ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)));
+    Unix.mkdir dir 0o700);
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () -> f dir)
+
+let write_file path contents =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc contents)
+
+let read_file path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    really_input_string ic (in_channel_length ic))
+
 (* ------------------------------------------------------------------ *)
 (* Test 1: allowedTools present and non-empty in the merged config       *)
 (* ------------------------------------------------------------------ *)
@@ -196,6 +220,60 @@ let test_claude_hook_prefers_ocaml_inbox_hook () =
     true
     (contains_substring ~haystack:script ~needle:"c2c hook")
 
+let additional_context_of_hook_json raw =
+  match Yojson.Safe.from_string raw with
+  | `Assoc fields ->
+      (match List.assoc_opt "hookSpecificOutput" fields with
+       | Some (`Assoc hook_fields) ->
+           (match List.assoc_opt "additionalContext" hook_fields with
+            | Some (`String s) -> s
+            | _ -> Alcotest.fail "additionalContext missing")
+       | _ -> Alcotest.fail "hookSpecificOutput missing")
+  | _ -> Alcotest.fail "hook output is not a JSON object"
+
+let test_claude_hook_merges_multiple_context_outputs () =
+  with_temp_dir (fun dir ->
+    let bin_dir = dir // "bin" in
+    Unix.mkdir bin_dir 0o700;
+    let script_path = dir // "c2c-inbox-check.sh" in
+    write_file script_path C2c_setup.claude_hook_script;
+    Unix.chmod script_path 0o755;
+    let inbox_hook = bin_dir // "c2c-inbox-hook-ocaml" in
+    let cold_hook = bin_dir // "c2c-cold-boot-hook" in
+    write_file inbox_hook
+      "#!/bin/sh\nprintf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"inbox\\\\ncold\\\\n\"}}'\n";
+    write_file cold_hook
+      "#!/bin/sh\nprintf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"should-not-run\\\\n\"}}'\n";
+    Unix.chmod inbox_hook 0o755;
+    Unix.chmod cold_hook 0o755;
+    let out = Filename.temp_file "c2c-claude-hook" ".out" in
+    let err = Filename.temp_file "c2c-claude-hook" ".err" in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Sys.remove out with _ -> ());
+        (try Sys.remove err with _ -> ()))
+      (fun () ->
+        let old_path = Sys.getenv_opt "PATH" |> Option.value ~default:"" in
+        let cmd =
+          Printf.sprintf
+            "env HOME=%s PATH=%s C2C_MCP_SESSION_ID=test-session \
+             C2C_MCP_BROKER_ROOT=%s %s > %s 2> %s"
+            (Filename.quote dir)
+            (Filename.quote (bin_dir ^ ":" ^ old_path))
+            (Filename.quote (dir // "broker"))
+            (Filename.quote script_path) (Filename.quote out)
+            (Filename.quote err)
+        in
+        let rc = Sys.command cmd in
+        Alcotest.(check int) "wrapper exits 0" 0 rc;
+        let context = additional_context_of_hook_json (read_file out) in
+        Alcotest.(check bool) "merged context includes inbox hook" true
+          (contains_substring ~haystack:context ~needle:"inbox");
+        Alcotest.(check bool) "merged context includes cold boot hook" true
+          (contains_substring ~haystack:context ~needle:"cold");
+        Alcotest.(check bool) "wrapper does not emit a second hook JSON" false
+          (contains_substring ~haystack:context ~needle:"should-not-run")))
+
 (* ------------------------------------------------------------------ *)
 
 let () =
@@ -216,5 +294,7 @@ let () =
     ; ("claude-hook",
         [ Alcotest.test_case "prefers OCaml inbox hook" `Quick
             test_claude_hook_prefers_ocaml_inbox_hook
+        ; Alcotest.test_case "merges multiple context outputs" `Quick
+            test_claude_hook_merges_multiple_context_outputs
         ] )
     ]

@@ -43,7 +43,7 @@ Last updated: 2026-05-01 (jungle, #593 — Crush marked DEPRECATED)
 The broker binary (`c2c-mcp-server` or `opam exec -- <server>`) is spawned by Claude Code's MCP runner as a stdio JSON-RPC server.
 
 **Auto-delivery mechanism**: PostToolUse hook script (`~/.claude/hooks/c2c-inbox-check.sh`) calls `c2c-inbox-hook-ocaml` on every non-MCP tool use.
-The hook binary drains the inbox and outputs messages; a bash wrapper prevents ECHILD races.
+The hook binary reads Claude's stdin `session_id`, drains repo/global session inboxes, and emits one `hookSpecificOutput.additionalContext` payload; the bash wrapper avoids `exec` so Claude's hook runner keeps sane `waitpid()` bookkeeping.
 Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires if Claude Code declares `experimental.claude/channel` capability, which standard builds do not.
 
 **restart-self**: `./restart-self` kills the outer loop wrapper. **Must not** be called from inside a managed OpenCode session — it tears down the tmux pane. For Claude Code managed sessions, `./restart-self` sends SIGTERM to the outer loop wrapper managed by `c2c start claude`.

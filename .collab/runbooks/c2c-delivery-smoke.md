@@ -41,13 +41,13 @@ fi
 c2c health                              # Human-readable summary
 c2c health --json | jq '.broker_root, .root_exists, .registry_exists'
 
-# 4. PostToolUse hook is installed and not using the exec-style body.
-#    The canonical wrapper has an `if command -v c2c … fi` block around
-#    a plain `c2c hook` — crucially, NO leading `exec`.
+# 4. PostToolUse hook is installed and not using an exec-style body.
+#    The canonical wrapper prefers `c2c-inbox-hook-ocaml`; the legacy
+#    `c2c hook` fallback is allowed only without a leading `exec`.
 test -x ~/.claude/hooks/c2c-inbox-check.sh && echo "hook present"
-if grep -q 'c2c hook' ~/.claude/hooks/c2c-inbox-check.sh \
-   && ! grep -qE '^[[:space:]]*exec[[:space:]]+.*c2c hook' ~/.claude/hooks/c2c-inbox-check.sh; then
-  echo "hook canonical (no exec c2c hook)"
+if grep -q 'c2c-inbox-hook-ocaml' ~/.claude/hooks/c2c-inbox-check.sh \
+   && ! grep -qE '^[[:space:]]*exec[[:space:]]+.*(c2c-inbox-hook-ocaml|c2c hook)' ~/.claude/hooks/c2c-inbox-check.sh; then
+  echo "hook canonical (dedicated inbox hook, no exec)"
 else
   echo "STALE: rerun 'c2c install claude --force' and re-inspect"
 fi
@@ -57,7 +57,8 @@ pgrep -a -f 'run-(kimi|codex|opencode|crush|claude)-inst-outer' || echo "clear"
 ```
 
 **Pass gate:** all five checks print success. If `c2c health` reports
-issues, the mcp-server is STALE, or the hook body contains `exec c2c hook`,
+issues, the mcp-server is STALE, the hook body does not prefer
+`c2c-inbox-hook-ocaml`, or the hook body contains an exec-style hook launch,
 stop and fix before proceeding — most downstream symptoms will be
 attributable to one of these.
 
@@ -211,7 +212,8 @@ c2c send <target-alias> "hook-probe-$(date +%s)"
 3. Target's inbox file drains to `[]` within one tool call.
 
 **Failure hints:**
-- ECHILD on `PostToolUse:<builtin>` → hook body still has `exec c2c hook`.
+- ECHILD on `PostToolUse:<builtin>` → hook body still has an exec-style hook
+  launch or an old wrapper that does not prefer `c2c-inbox-hook-ocaml`.
   Rerun `c2c install claude --force` and re-grep.
 - ECHILD on `UserPromptSubmit`/`Stop`/`PostToolUse:Read` or similar
   non-MCP builtins → **root cause identified 2026-04-20:** `c2c start`
@@ -226,8 +228,11 @@ c2c send <target-alias> "hook-probe-$(date +%s)"
   ECHILD until restarted. If you see these in a smoke-test run: check
   commit hash (`c2c --version`) is ≥ `d4413bd`, and the session itself
   was spawned AFTER the binary was installed — if not, restart the
-  session. The `min_hook_runtime_ms` bump (`1c82e8c`, 50→100) is a
-  belt-and-braces layer on top of the SIG_DFL fix.
+  session. The legacy full `c2c hook` command still keeps its
+  `min_hook_runtime_ms` belt-and-braces layer, but the dedicated
+  `c2c-inbox-hook-ocaml` path removed the old Lwt sleep floor because measured
+  startup already exceeded the old 10 ms guard and the wrapper no longer uses
+  `exec`.
 
 ---
 
@@ -617,8 +622,9 @@ echo "pre-flight + core OK"
   "when to run which" matrix. Tracks recent ECHILD + setcap-EPERM
   fixes (findings `2026-04-20T12-57-10Z-...` and `2026-04-20T12-54-04Z-...`).
 - 2026-04-20 planner1 — review fixups from coordinator1:
-  §0 grep pattern fixed (was checking `c2c hook; exit 0` literal, now
-  checks for `c2c hook` without a leading `exec`), added
+  §0 grep pattern fixed (was checking `c2c hook; exit 0` literal, then
+  checked for `c2c hook` without a leading `exec`; later P0 session-id delivery
+  updated it to prefer `c2c-inbox-hook-ocaml`), added
   c2c-mcp-server staleness check, hedged the §4b "cosmetic" claim on
   `UserPromptSubmit`/`Stop` ECHILD pending confirmation.
 - 2026-04-21 planner1 — added §8 Internet relay (v1 ship gate):

@@ -223,6 +223,9 @@ module Broker : sig
   val reserved_system_aliases : string list
   (** Aliases that cannot be registered by any peer: ["c2c"; "c2c-system"]. *)
 
+  val is_reserved_system_alias : string -> bool
+  (** Case-insensitive reserved system alias predicate. *)
+
   val alias_casefold : string -> string
   (** Canonical alias case-fold helper (currently [String.lowercase_ascii]).
       All alias comparisons inside the broker invariant must compare

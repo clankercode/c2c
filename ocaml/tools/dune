@@ -1,12 +1,18 @@
 (executable
  (name c2c_inbox_hook)
  (modules c2c_inbox_hook)
- (libraries c2c_mcp unix))
+ (libraries c2c_mcp c2c_cold_boot_context_lib unix))
+
+(library
+ (name c2c_cold_boot_context_lib)
+ (wrapped false)
+ (modules c2c_cold_boot_context)
+ (libraries c2c_mcp unix yojson))
 
 (executable
  (name c2c_cold_boot_hook)
  (modules c2c_cold_boot_hook)
- (libraries c2c_mcp unix))
+ (libraries c2c_cold_boot_context_lib))
 
 ; #349b: post-compact hook split into library + thin executable so the
 ; payload-formatting logic can be unit-tested. The library is wrapped:false

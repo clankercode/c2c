@@ -123,6 +123,27 @@ let test_send_session_rejects_reserved_sender () =
         check bool "reserved sender does not write inbox" false
           (Sys.file_exists inbox_path)))
 
+let test_send_session_rejects_reserved_sender_case_insensitive () =
+  with_temp_dir (fun dir ->
+    let sid = "test-sid-reserved-case-p0" in
+    let out = Filename.temp_file "c2c-send-session-reserved-case" ".out" in
+    Fun.protect
+      ~finally:(fun () -> try Sys.remove out with _ -> ())
+      (fun () ->
+        let cmd =
+          Printf.sprintf
+            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+             C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
+             send --from C2C --session %s 'hello world' > %s 2>&1"
+            (Filename.quote dir) (Filename.quote built_c2c)
+            (Filename.quote sid) (Filename.quote out)
+        in
+        let rc = Sys.command cmd in
+        check bool "case variant reserved sender exits nonzero" true (rc <> 0);
+        let inbox_path = Filename.concat dir (sid ^ ".inbox.json") in
+        check bool "case variant reserved sender does not write inbox" false
+          (Sys.file_exists inbox_path)))
+
 let test_hook_reads_stdin_session_and_drains_global_inbox () =
   with_temp_dir (fun dir ->
     let sid = "test-sid-hook-p0" in
@@ -165,6 +186,98 @@ let test_hook_reads_stdin_session_and_drains_global_inbox () =
           (string_contains context "</c2c>");
         check int "global session inbox drained" 0
           (json_list_length inbox_path)))
+
+let test_hook_extracts_session_from_truncated_large_payload () =
+  with_temp_dir (fun dir ->
+    let sid = "test-sid-hook-large-p0" in
+    let inbox_path = Filename.concat dir (sid ^ ".inbox.json") in
+    write_file inbox_path
+      {|[{"from_alias":"sender-a","to_alias":"test-sid-hook-large-p0","content":"large payload delivery","ts":1.0}]|};
+    let out = Filename.temp_file "c2c-inbox-hook-large" ".out" in
+    let err = Filename.temp_file "c2c-inbox-hook-large" ".err" in
+    let input = Filename.temp_file "c2c-inbox-hook-large" ".json" in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Sys.remove out with _ -> ());
+        (try Sys.remove err with _ -> ());
+        (try Sys.remove input with _ -> ()))
+      (fun () ->
+        let stdin_payload =
+          Printf.sprintf {|{"session_id":%S,"tool_response":%S|}
+            sid (String.make (128 * 1024) 'x')
+        in
+        let truncated =
+          String.sub stdin_payload 0 (String.length stdin_payload - 8)
+        in
+        write_file input truncated;
+        let cmd =
+          Printf.sprintf
+            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+             C2C_SESSIONS_BROKER_ROOT=%s %s < %s > %s 2> %s"
+            (Filename.quote dir) (Filename.quote built_inbox_hook)
+            (Filename.quote input) (Filename.quote out) (Filename.quote err)
+        in
+        let rc = Sys.command cmd in
+        check int "inbox hook exits 0" 0 rc;
+        let stdout = read_file out in
+        let json = Yojson.Safe.from_string stdout in
+        let open Yojson.Safe.Util in
+        let context =
+          json |> member "hookSpecificOutput" |> member "additionalContext"
+          |> to_string
+        in
+        check bool "additionalContext has message content" true
+          (string_contains context "large payload delivery");
+        check int "global session inbox drained" 0
+          (json_list_length inbox_path)))
+
+let test_hook_merges_message_and_cold_boot_context () =
+  with_temp_dir (fun global_dir ->
+    with_temp_dir (fun repo_dir ->
+      let sid = "test-sid-hook-cold-p0" in
+      let alias = "test-agent-p0" in
+      let broker = C2c_mcp.Broker.create ~root:repo_dir in
+      C2c_mcp.Broker.register broker ~session_id:sid ~alias ~pid:None
+        ~pid_start_time:None ();
+      let inbox_path = Filename.concat global_dir (sid ^ ".inbox.json") in
+      write_file inbox_path
+        {|[{"from_alias":"sender-a","to_alias":"test-sid-hook-cold-p0","content":"hello with cold boot","ts":1.0}]|};
+      let out = Filename.temp_file "c2c-inbox-hook-cold" ".out" in
+      let err = Filename.temp_file "c2c-inbox-hook-cold" ".err" in
+      Fun.protect
+        ~finally:(fun () ->
+          (try Sys.remove out with _ -> ());
+          (try Sys.remove err with _ -> ()))
+        (fun () ->
+          let stdin_payload =
+            Printf.sprintf
+              {|{"session_id":%S,"hook_event_name":"PostToolUse"}|}
+              sid
+          in
+          let cmd =
+            Printf.sprintf
+              "printf %%s %s | env C2C_MCP_SESSION_ID=%s \
+               C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
+              (Filename.quote stdin_payload) (Filename.quote sid)
+              (Filename.quote repo_dir) (Filename.quote global_dir)
+              (Filename.quote built_inbox_hook) (Filename.quote out)
+              (Filename.quote err)
+          in
+          let rc = Sys.command cmd in
+          check int "inbox hook exits 0" 0 rc;
+          let stdout = read_file out in
+          let json = Yojson.Safe.from_string stdout in
+          let open Yojson.Safe.Util in
+          let context =
+            json |> member "hookSpecificOutput" |> member "additionalContext"
+            |> to_string
+          in
+          check bool "additionalContext has c2c envelope" true
+            (string_contains context "hello with cold boot");
+          check bool "additionalContext has cold boot context" true
+            (string_contains context "kind=\"cold-boot\"");
+          check int "global session inbox drained" 0
+            (json_list_length inbox_path))))
 
 let test_hook_rejects_invalid_stdin_session_id () =
   with_temp_dir (fun dir ->
@@ -215,10 +328,16 @@ let () =
             test_send_session_rejects_invalid_session_id )
         ; ( "rejects reserved sender", `Quick,
             test_send_session_rejects_reserved_sender )
+        ; ( "rejects reserved sender case-insensitively", `Quick,
+            test_send_session_rejects_reserved_sender_case_insensitive )
         ] )
     ; ( "hook",
         [ ( "reads stdin session_id and drains global inbox", `Quick,
             test_hook_reads_stdin_session_and_drains_global_inbox )
+        ; ( "extracts session_id from truncated large payload", `Quick,
+            test_hook_extracts_session_from_truncated_large_payload )
+        ; ( "merges message and cold boot context", `Quick,
+            test_hook_merges_message_and_cold_boot_context )
         ; ( "rejects invalid stdin session_id", `Quick,
             test_hook_rejects_invalid_stdin_session_id )
         ] )

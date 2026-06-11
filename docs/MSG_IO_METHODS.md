@@ -116,10 +116,12 @@ inbox and surface messages inline.
 2. A `PostToolUse` entry in `~/.claude/settings.json` that runs the script
    after every tool call (matcher: `.*`).
 
-The hook script performs an ultra-fast empty check on the inbox file using bash
-builtins (no subshell). If the inbox is non-empty, it runs `c2c hook`, which
-drains pending messages and prints them in `<c2c event="message" ...>` envelope
-format. The output appears as inline tool-result context visible to the agent.
+The hook script calls `c2c-inbox-hook-ocaml`. The hook reads Claude's
+`session_id` from the PostToolUse stdin JSON payload, drains non-deferrable
+messages from the repo broker inbox plus the global session-addressed broker
+(`${XDG_STATE_HOME:-$HOME/.c2c}/sessions/broker`), and emits one
+`hookSpecificOutput.additionalContext` JSON object. Message envelopes and the
+once-per-session cold-boot context are merged into that single context payload.
 
 ```
 Agent calls any tool
@@ -128,10 +130,10 @@ Agent calls any tool
 Claude Code PostToolUse hook fires
     |
     v
-c2c-inbox-check.sh  -->  c2c hook  -->  broker drains inbox
+c2c-inbox-check.sh  -->  c2c-inbox-hook-ocaml  -->  broker drains inboxes
     |
     v
-Tool result (visible in agent transcript):
+additionalContext visible in the agent transcript:
   <c2c event="message" from="storm-echo" to="storm-beacon">
     hello from peer
   </c2c>
@@ -157,7 +159,8 @@ calling tools will not receive messages via this path -- see
 |------|------|
 | `ocaml/cli/c2c_setup.ml` | Writes MCP server entry to `<project>/.mcp.json` (default; pass `--global` for legacy `~/.claude.json`) and registers PostToolUse hook in `~/.claude/settings.json` (invoked by `c2c install claude`) |
 | `~/.claude/hooks/c2c-inbox-check.sh` | The hook script itself (installed by `c2c install claude`) |
-| `ocaml/cli/c2c.ml` | `hook` subcommand that drains inbox and prints envelopes |
+| `ocaml/tools/c2c_inbox_hook.ml` | Dedicated PostToolUse hook binary that drains repo/global inboxes and emits `additionalContext` |
+| `ocaml/tools/c2c_cold_boot_context.ml` | Once-per-session cold-boot context merged into the inbox hook payload |
 
 #### Limitations
 
@@ -165,8 +168,9 @@ calling tools will not receive messages via this path -- see
   session (waiting for user input, sleeping between loop ticks) will not
   receive messages until it resumes tool use.
 - Claude Code-specific; no other client has an equivalent hook system.
-- The hook runs `timeout 5 c2c hook` to prevent blocking the agent
-  indefinitely, so very large inboxes may be partially drained.
+- The dedicated hook bounds stdin scanning to the prefix needed to find
+  `session_id`; malformed or oversized trailing hook payload data does not force
+  a full JSON parse before delivery.
 
 ---
 
@@ -301,7 +305,7 @@ This is the universal baseline: every client that has MCP support can use
 
 | Client | Supported | Notes |
 |--------|-----------|-------|
-| Claude Code | Yes | Usually invoked automatically by PostToolUse hook, but can be called manually. |
+| Claude Code | Yes | Manual fallback; automatic PostToolUse delivery uses `c2c-inbox-hook-ocaml` directly. |
 | Codex | Yes | Primary delivery: notify daemon triggers the agent to call this. |
 | OpenCode | Yes | Called by native TypeScript plugin or wake daemon. |
 | Kimi | Yes | Called manually or triggered by Wire bridge / wake daemon. |
