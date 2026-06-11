@@ -217,6 +217,21 @@ let warm_actor_past_grace ~base_url ~identity ~alias =
   in
   loop 3
 
+let required_pow_fields result =
+  let required = json_member "required" result.json in
+  ( json_int "difficulty" required,
+    json_int "epoch" required,
+    json_string "server_nonce" required )
+
+let mint_required_pow ~actor_id ~difficulty ~epoch ~server_nonce =
+  let challenge =
+    Pow.challenge_string ~ctx:Pow.ctx ~route:"register" ~actor_id ~epoch
+      ~server_nonce
+  in
+  match Pow.mint ~challenge ~difficulty with
+  | None -> Alcotest.fail "Pow.mint failed at relay-required difficulty"
+  | Some pow_nonce -> pow_nonce
+
 let test_enabled_pow_required_then_minted_nonce_succeeds () =
   with_pow_env "1" (fun () ->
     with_server (fun ~base_url ~relay:_ ->
@@ -345,6 +360,65 @@ let test_verified_pow_is_spent_even_if_register_body_fails () =
           Alcotest.(check string) "reuse error" "pow_required"
             (json_string "error_code" reuse.json)))
 
+let test_forged_pow_challenge_fields_are_rejected () =
+  with_pow_env "1" (fun () ->
+    with_server (fun ~base_url ~relay:_ ->
+      let alias = "pow-forged-fields" in
+      let identity = Relay_identity.generate ~alias_hint:alias () in
+      let actor_id = b64url identity.public_key in
+      warm_actor_past_grace ~base_url ~identity ~alias >>= fun () ->
+      let challenge_request =
+        register_body ~node_id:"node-forged" ~session_id:"session-forged"
+          ~alias ~identity ~relay_url:base_url ()
+      in
+      post_register ~base_url challenge_request >>= fun rejected ->
+      Alcotest.(check int) "pow_required status" 429
+        (Cohttp.Code.code_of_status rejected.status);
+      let difficulty, epoch, server_nonce = required_pow_fields rejected in
+      let pow_nonce =
+        mint_required_pow ~actor_id ~difficulty ~epoch ~server_nonce
+      in
+      let forged_nonce_body =
+        register_body ~pow_nonce ~pow_epoch:epoch
+          ~pow_server_nonce:("forged-" ^ server_nonce)
+          ~node_id:"node-warm" ~session_id:"session-forged-nonce"
+          ~alias ~identity ~relay_url:base_url ()
+      in
+      post_register ~base_url forged_nonce_body >>= fun forged_nonce ->
+      Alcotest.(check int) "forged server nonce rejected" 429
+        (Cohttp.Code.code_of_status forged_nonce.status);
+      Alcotest.(check string) "forged nonce error" "pow_required"
+        (json_string "error_code" forged_nonce.json);
+      let forged_epoch_body =
+        register_body ~pow_nonce ~pow_epoch:(epoch + 1) ~pow_server_nonce:server_nonce
+          ~node_id:"node-warm" ~session_id:"session-forged-epoch"
+          ~alias ~identity ~relay_url:base_url ()
+      in
+      post_register ~base_url forged_epoch_body >|= fun forged_epoch ->
+      Alcotest.(check int) "forged epoch rejected" 429
+        (Cohttp.Code.code_of_status forged_epoch.status);
+      Alcotest.(check string) "forged epoch error" "pow_required"
+        (json_string "error_code" forged_epoch.json)))
+
+let test_malformed_pow_fields_are_rejected_without_exception () =
+  with_pow_env "1" (fun () ->
+    with_server (fun ~base_url ~relay:_ ->
+      let alias = "pow-malformed-fields" in
+      let identity = Relay_identity.generate ~alias_hint:alias () in
+      warm_actor_past_grace ~base_url ~identity ~alias >>= fun () ->
+      let malformed_body =
+        register_body ~node_id:"node-malformed" ~session_id:"session-malformed"
+          ~alias ~identity ~relay_url:base_url ()
+        |> json_assoc_set "pow_nonce" (`Int 123)
+        |> json_assoc_set "pow_epoch" (`String "not-an-int")
+        |> json_assoc_set "pow_server_nonce" (`Bool true)
+      in
+      post_register ~base_url malformed_body >|= fun result ->
+      Alcotest.(check int) "malformed pow fields rejected" 429
+        (Cohttp.Code.code_of_status result.status);
+      Alcotest.(check string) "malformed pow error" "pow_required"
+        (json_string "error_code" result.json)))
+
 let () =
   Alcotest.run "pow_relay" [
     "relay", [
@@ -366,5 +440,9 @@ let () =
         `Quick test_connector_client_register_mints_and_retries;
       Alcotest.test_case "enabled: verified PoW is spent on failed register"
         `Quick test_verified_pow_is_spent_even_if_register_body_fails;
+      Alcotest.test_case "enabled: forged PoW challenge fields are rejected"
+        `Quick test_forged_pow_challenge_fields_are_rejected;
+      Alcotest.test_case "enabled: malformed PoW fields are rejected"
+        `Quick test_malformed_pow_fields_are_rejected_without_exception;
     ];
   ]

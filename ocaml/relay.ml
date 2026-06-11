@@ -2877,11 +2877,14 @@ end = struct
       with Failure msg -> Res.Error (Printf.sprintf "invalid %s: %s" field msg)
 
   let get_string json field =
-    Yojson.Safe.Util.to_string_option (Yojson.Safe.Util.member field json)
-    |> Option.value ~default:""
+    match Yojson.Safe.Util.member field json with
+    | `String s -> s
+    | _ -> ""
 
   let get_opt_string json field =
-    Yojson.Safe.Util.to_string_option (Yojson.Safe.Util.member field json)
+    match Yojson.Safe.Util.member field json with
+    | `String s -> Some s
+    | _ -> None
 
   let get_int json field default =
     (match Yojson.Safe.Util.member field json with

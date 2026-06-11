@@ -1,10 +1,11 @@
-# Relay adaptive proof-of-work difficulty (PARTIAL — register enforcement landed)
+# Relay adaptive proof-of-work difficulty (PARTIAL — register enforcement + retry landed)
 
 **Status**: partial implementation. The hashcash primitive, adaptive policy,
-and flag-gated relay `/register` enforcement are implemented behind
-`C2C_RELAY_POW=1`; client mint/retry support, broader costed route enforcement,
-production tuning, and Sybil hardening remain open. Logged from a request by
-Max (2026-06-11). Companion todo entry in `todo.txt`.
+flag-gated relay `/register` enforcement, and bounded client mint/retry on
+`pow_required` are implemented behind `C2C_RELAY_POW=1`; proactive precompute
+from advertisement headers, broader costed route enforcement, production tuning,
+and Sybil hardening remain open. Logged from a request by Max (2026-06-11).
+Companion todo entry in `todo.txt`.
 **Author**: claude (Max's interactive session).
 **Motivation surfaced alongside**: the lease-TTL bump to 24h (commit on branch
 `relay-lease-ttl-24h`) — longer leases make alias squatting cheaper, which
@@ -26,8 +27,9 @@ we did not. As of the initial implementation slice, relay PoW exists only for
 - **Register-only PoW enforcement when enabled** — `/register` uses
   per-identity adaptive cost accounting and server-issued challenges behind
   `C2C_RELAY_POW=1`. Legacy unsigned registration is rejected while this flag
-  is enabled because there is no canonical Ed25519 actor to charge. Other routes
-  and client transparent retry are still follow-up work.
+  is enabled because there is no canonical Ed25519 actor to charge. Bounded
+  client transparent retry is implemented for `pow_required`; other routes and
+  proactive precompute from the `X-C2C-PoW-Next` header are still follow-up work.
 
 So this feature began as net-new PoW work: the primitive and initial adaptive
 register enforcement have landed, but the design below still tracks the broader
@@ -154,19 +156,19 @@ clients/relays degrade gracefully and we can stage rollout.
    pick straw values, then observe real `relay.c2c.im` traffic before hardening.
 5. **Clock / epoch model.** `server_epoch` rotation cadence vs challenge `ttl`
    vs the existing nonce TTLs — reuse the nonce-window machinery where possible.
-6. **Client UX.** The OCaml `c2c` client must learn to read the advertisement,
-   mint PoW, and retry on `pow_required` transparently — otherwise agents see
-   hard failures. Non-trivial client-side work; phase it.
+6. **Client UX.** The OCaml `c2c` client now mints PoW and retries once on
+   `pow_required` transparently. It still needs proactive precompute from the
+   advertisement header if we want agents to avoid the initial challenge failure.
 
 ## 6. Suggested phasing
 
 - **P0 (primitive)**: shipped — implement + unit-test the hashcash verify/mint
   pair and the challenge-string binding.
-- **P1 (register enforcement)**: relay side shipped behind `C2C_RELAY_POW=1`;
-  client transparent mint+retry remains open.
+- **P1 (register enforcement)**: relay side shipped behind `C2C_RELAY_POW=1`.
 - **P2 (adaptive)**: relay-side per-actor cost accounting + difficulty function
   + `X-C2C-PoW-Next` advertisement + `pow_required` challenge error shipped for
-  `/register`; broader route coverage remains open.
+  `/register`; bounded client mint+retry on `pow_required` shipped. Broader route
+  coverage and proactive header precompute remain open.
 - **P3 (Sybil hardening)**: per-IP dimension and/or PoW-gated identity creation
   (resolve OQ1).
 - **P4 (tune)**: observe prod traffic, set the constants.
