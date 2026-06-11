@@ -3841,10 +3841,11 @@ open C2c_mcp_helpers
     let meta = load_room_meta t ~room_id in
     let sender_is_member = List.exists (fun m -> m.rm_alias = from_alias) members in
     let is_ghost_room = meta.created_by = "" && members = [] in
+    let is_system_alias = List.mem from_alias reserved_system_aliases in
     if is_ghost_room then
       (* Ghost room: warn but allow the send. Message goes to history only. *)
       ()
-    else if not sender_is_member then
+    else if not sender_is_member && not is_system_alias then
       invalid_arg
         ("send_room rejected: " ^ from_alias ^ " is not a member of room " ^ room_id);
     (* Dedup: skip if the same sender just sent the same content within the window.

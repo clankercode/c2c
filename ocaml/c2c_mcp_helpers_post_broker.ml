@@ -296,6 +296,7 @@ let notify_shared_with_recipients
       from_alias name from_alias descr_suffix
     in
     let broker_root = Broker.root broker in
+    let enqueue_rejected_prefix = "enqueue_message rejected:" in
     List.filter_map
       (fun recipient ->
         if recipient = from_alias then None
@@ -311,7 +312,26 @@ let notify_shared_with_recipients
             log_handoff_attempt ~broker_root ~from_alias
               ~to_alias:recipient ~name ~ok:true ~error:None;
             Some recipient
-          with e ->
+          with Invalid_argument err_msg
+                 when String.length err_msg >= String.length enqueue_rejected_prefix
+                   && String.sub err_msg 0 (String.length enqueue_rejected_prefix)
+                        = enqueue_rejected_prefix ->
+            (* #silent-send Bug 3 regression guard: enqueue_message now raises
+               for unknown local aliases. For cross-host memory handoff (#286),
+               unknown aliases must still reach the relay outbox. Fall back
+               explicitly so the handoff path is preserved. *)
+            (try
+               C2c_relay_connector.append_outbox_entry broker_root
+                 ~from_alias ~to_alias:recipient ~content:msg ();
+               log_handoff_attempt ~broker_root ~from_alias
+                 ~to_alias:recipient ~name ~ok:true ~error:None;
+               Some recipient
+             with relay_err ->
+               log_handoff_attempt ~broker_root ~from_alias
+                 ~to_alias:recipient ~name ~ok:false
+                 ~error:(Some (Printexc.to_string relay_err));
+               None)
+          | e ->
             log_handoff_attempt ~broker_root ~from_alias
               ~to_alias:recipient ~name ~ok:false
               ~error:(Some (Printexc.to_string e));
