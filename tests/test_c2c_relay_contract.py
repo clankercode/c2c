@@ -21,6 +21,7 @@ import time
 import unittest
 
 from c2c_relay_contract import (
+    DEFAULT_LEASE_TTL,
     RELAY_ERR_ALIAS_CONFLICT,
     RELAY_ERR_RECIPIENT_DEAD,
     RELAY_ERR_UNKNOWN_ALIAS,
@@ -218,7 +219,7 @@ class HeartbeatTests(unittest.TestCase):
     def test_heartbeat_can_revive_expired_lease(self):
         """Heartbeating an expired (but still registered) session refreshes liveness."""
         self.relay.register("node-a", "sess-1", "alpha")
-        self.relay._tick_lease("alpha", 1000.0)  # well past TTL
+        self.relay._tick_lease("alpha", DEFAULT_LEASE_TTL + 1000.0)  # well past TTL
         self.assertFalse(self.relay.list_peers(include_dead=True)[0]["alive"])
         self.relay.heartbeat("node-a", "sess-1")
         self.assertTrue(self.relay.list_peers()[0]["alive"])
@@ -288,7 +289,7 @@ class SendTests(unittest.TestCase):
         self.assertEqual(dl[0]["reason"], "unknown_alias")
 
     def test_send_to_dead_recipient_raises_and_dead_letters(self):
-        self.relay._tick_lease("bob", 1000.0)  # expire bob
+        self.relay._tick_lease("bob", DEFAULT_LEASE_TTL + 1000.0)  # expire bob
         with self.assertRaises(RelayError) as ctx:
             self.relay.send("alice", "bob", "hey")
         self.assertEqual(ctx.exception.code, RELAY_ERR_RECIPIENT_DEAD)
@@ -497,7 +498,7 @@ class TickLeaseTests(unittest.TestCase):
 
     def test_dead_session_cannot_receive(self):
         self.relay.register("node-b", "sess-2", "beta")
-        self.relay._tick_lease("beta", 1000.0)  # expire beta
+        self.relay._tick_lease("beta", DEFAULT_LEASE_TTL + 1000.0)  # expire beta
         with self.assertRaises(RelayError) as ctx:
             self.relay.send("alpha", "beta", "should fail")
         self.assertEqual(ctx.exception.code, RELAY_ERR_RECIPIENT_DEAD)
@@ -576,7 +577,7 @@ class TwoNodeScenarioTests(unittest.TestCase):
 
     def test_expired_node_a_does_not_block_new_registration(self):
         """After node-a's lease expires, another session can take claude-laptop."""
-        self.relay._tick_lease("claude-laptop", 10000.0)
+        self.relay._tick_lease("claude-laptop", DEFAULT_LEASE_TTL + 10000.0)
         result = self.relay.register("node-new", "sess-new", "claude-laptop")
         self.assertTrue(result["ok"])
 

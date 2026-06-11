@@ -21,7 +21,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from c2c_relay_contract import InMemoryRelay  # noqa: E402
+from c2c_relay_contract import DEFAULT_LEASE_TTL, InMemoryRelay  # noqa: E402
 from c2c_relay_server import start_server_thread  # noqa: E402
 from c2c_relay_connector import RelayClient, RelayConnector  # noqa: E402
 from tests.test_relay_connector import (  # noqa: E402
@@ -153,8 +153,12 @@ class RelayGCTests(unittest.TestCase):
         client = RelayClient(f"http://127.0.0.1:{port}", token="gc")
         try:
             sfx = str(int(time.time() * 1000))
-            client.register("n-gc", f"s-gc-{sfx}", f"gc-peer-{sfx}", ttl=0.01)
-            time.sleep(0.05)
+            # Lease lifetime is server policy: the HTTP /register handler floors
+            # client ttls up to the 24h default, so a sub-floor ttl can no longer
+            # produce a short-lived lease. Register normally, then age the lease
+            # past the default via the in-memory relay to drive the /gc endpoint.
+            client.register("n-gc", f"s-gc-{sfx}", f"gc-peer-{sfx}")
+            server.relay._tick_lease(f"gc-peer-{sfx}", DEFAULT_LEASE_TTL + 1000)
             r = client._request("GET", "/gc")
             self.assertTrue(r["ok"])
             self.assertIn("expired_leases", r)

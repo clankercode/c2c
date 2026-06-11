@@ -522,7 +522,7 @@ module Relay_client = struct
 
   let health t = get t "/health"
 
-  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
+  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = Relay.default_lease_ttl) ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
     let body = `Assoc [
       ("node_id", `String node_id);
       ("session_id", `String session_id);

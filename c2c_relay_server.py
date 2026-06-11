@@ -40,7 +40,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Optional
 
-from c2c_relay_contract import InMemoryRelay, RelayError
+from c2c_relay_contract import InMemoryRelay, RelayError, effective_lease_ttl
 
 try:
     from c2c_relay_sqlite import SQLiteRelay
@@ -185,11 +185,15 @@ class RelayHandler(BaseHTTPRequestHandler):
         kwargs: dict[str, Any] = {}
         if "client_type" in body:
             kwargs["client_type"] = str(body["client_type"])
+        # Lease lifetime is server policy: floor any client-supplied ttl up to
+        # the 24h default and cap it, mirroring the OCaml relay handle_register.
+        client_ttl = 0.0
         if "ttl" in body:
             try:
-                kwargs["ttl"] = float(body["ttl"])
+                client_ttl = float(body["ttl"])
             except (TypeError, ValueError):
-                pass
+                client_ttl = 0.0
+        kwargs["ttl"] = effective_lease_ttl(client_ttl)
         result = self.server.relay.register(node_id, session_id, alias, **kwargs)
         self._ok(result)
 

@@ -459,9 +459,20 @@ let test_cross_host_alias_unknown_host_rejected () =
   | `Duplicate _ts -> fail_fmt "bob@hostZ should be rejected but got Duplicate"
   | `Error (err, msg) -> fail_fmt "bob@hostZ should be rejected with Cross_host_rejected, got Error: %s %s" err msg
 
+let test_effective_lease_ttl () =
+  (* below/at the floor -> floored to the 24h default *)
+  assert (Relay.effective_lease_ttl ~client_ttl:300.0 = Relay.default_lease_ttl);
+  assert (Relay.effective_lease_ttl ~client_ttl:0.0 = Relay.default_lease_ttl);
+  assert (Relay.effective_lease_ttl ~client_ttl:Relay.default_lease_ttl = Relay.default_lease_ttl);
+  (* above the floor, under the cap -> honored verbatim *)
+  assert (Relay.effective_lease_ttl ~client_ttl:(Relay.default_lease_ttl +. 1000.0) = Relay.default_lease_ttl +. 1000.0);
+  (* above the cap -> capped *)
+  assert (Relay.effective_lease_ttl ~client_ttl:1.0e9 = Relay.max_lease_ttl)
+
 (* ---- Run tests ---- *)
 
 let tests = [
+  "relay effective_lease_ttl floors and caps", test_effective_lease_ttl;
   "lease make creates correct fields", test_lease_make_creates_correct_fields;
   "lease is_alive fresh", test_lease_is_alive_fresh_lease;
   "lease is_alive expired", test_lease_is_alive_after_ttl_expires;

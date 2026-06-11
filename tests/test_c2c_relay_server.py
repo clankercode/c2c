@@ -200,7 +200,18 @@ class RegisterTests(_RelayServerTestBase):
         self.assertEqual(status, 200)
         _, list_body = self.get("/list")
         peer = next(p for p in list_body["peers"] if p["alias"] == "ttl-test")
-        self.assertAlmostEqual(peer["ttl"], 600.0, delta=1.0)
+        # lease ttl is now floored to a 24h server policy (was honored verbatim before 2026-06-11).
+        self.assertAlmostEqual(peer["ttl"], 86400.0, delta=1.0)
+
+    def test_register_honors_ttl_above_floor(self):
+        status, body = self.post("/register", {
+            "node_id": "node-ttl-hi", "session_id": "sess-ttl-hi",
+            "alias": "ttl-hi-test", "ttl": 172800.0,
+        })
+        self.assertEqual(status, 200)
+        _, list_body = self.get("/list")
+        peer = next(p for p in list_body["peers"] if p["alias"] == "ttl-hi-test")
+        self.assertAlmostEqual(peer["ttl"], 172800.0, delta=1.0)
 
 
 # ---------------------------------------------------------------------------

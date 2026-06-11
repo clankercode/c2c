@@ -25,6 +25,20 @@ let request_ts_past_window = 30.0
 let request_ts_future_window = 5.0
 let request_nonce_ttl = 120.0
 
+(* Registration lease lifetime -- single canonical default, referenced
+   everywhere a lease ttl default is needed. Bumped from 300s to 24h
+   (2026-06-11) so agents don't have to re-register every few minutes.
+   Lease lifetime is server policy: [handle_register] floors any
+   client-supplied ttl up to [default_lease_ttl] (so already-deployed
+   clients that still send 300 get 24h on the redeployed relay), and caps
+   it at [max_lease_ttl] to bound abuse. *)
+let default_lease_ttl = 86400.0   (* 24 hours, seconds *)
+let max_lease_ttl = 604800.0      (* 7 days; hard cap on a client-requested ttl *)
+let effective_lease_ttl ~client_ttl =
+  if client_ttl <= default_lease_ttl then default_lease_ttl
+  else if client_ttl > max_lease_ttl then max_lease_ttl
+  else client_ttl
+
 (* Layer 4 room ops (spec §4.1/§4.2): use the register ts window + nonce TTL. *)
 let room_join_sign_ctx = "c2c/v1/room-join"
 let room_leave_sign_ctx = "c2c/v1/room-leave"
@@ -157,7 +171,7 @@ end = struct
     sig_b64 : string;
   }
 
-  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
+  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
     { node_id; session_id; alias; client_type; registered_at = Unix.gettimeofday (); last_seen = Unix.gettimeofday (); ttl; identity_pk; enc_pubkey; signed_at; sig_b64 }
 
   let is_alive t =
@@ -652,7 +666,7 @@ module InMemoryRelay : RELAY = struct
   let set_inbox t key msgs =
     Hashtbl.replace t.inboxes key msgs
 
-  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
+  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
     with_lock t (fun () ->
       if not (C2c_name.is_valid alias) then
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
@@ -1373,7 +1387,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
       let client_type = match client_type with Some s -> s | None -> "unknown" in
       let registered_at = match registered_at with Some s -> float_of_string s | None -> 0.0 in
       let last_seen = match last_seen with Some s -> float_of_string s | None -> 0.0 in
-      let ttl = match ttl with Some s -> float_of_string s | None -> 300.0 in
+      let ttl = match ttl with Some s -> float_of_string s | None -> default_lease_ttl in
       let identity_pk = match identity_pk with Some s -> s | None -> "" in
       let enc_pubkey = match enc_pubkey with Some s -> s | None -> "" in
       let signed_at = match signed_at with Some s -> float_of_string s | None -> 0.0 in
@@ -1403,7 +1417,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
 
   let row_to_string_opt = function Some s -> s | None -> ""
 
-  let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(ttl=300.0) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") () =
+  let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(ttl=default_lease_ttl) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") () =
     with_lock t (fun () ->
       let open Sqlite3 in
       let conn = db_open t.db_path in
@@ -3224,7 +3238,7 @@ generateKeys();
       respond_bad_request (json_error_str err_bad_request "node_id, session_id, and alias are required")
     else
       let client_type = get_opt_string body "client_type" |> Option.value ~default:"unknown" in
-      let ttl = float_of_int (get_int body "ttl" 300) in
+      let ttl = effective_lease_ttl ~client_ttl:(float_of_int (get_int body "ttl" 0)) in
       let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
       let enc_pubkey_b64 = get_opt_string body "enc_pubkey" |> Option.value ~default:"" in
       let signed_at = get_float body "signed_at" 0.0 in
@@ -5033,7 +5047,7 @@ end = struct
   let health t = get t "/health"
 
   let register t ~node_id ~session_id ~alias
-      ?(client_type = "unknown") ?(ttl = 300.0) ?(identity_pk = "")
+      ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "")
       ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
     let base = [
       ("node_id", `String node_id);
@@ -5058,7 +5072,7 @@ end = struct
     post t "/register" (`Assoc fields)
 
   let register_signed t ~node_id ~session_id ~alias
-      ?(client_type = "unknown") ?(ttl = 300.0)
+      ?(client_type = "unknown") ?(ttl = default_lease_ttl)
       ~identity_pk_b64 ~sig_b64 ~nonce ~ts () =
     post t "/register" (`Assoc [
       ("node_id", `String node_id);

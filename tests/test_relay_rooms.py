@@ -14,7 +14,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from c2c_relay_contract import InMemoryRelay  # noqa: E402
+from c2c_relay_contract import DEFAULT_LEASE_TTL, InMemoryRelay  # noqa: E402
 from c2c_relay_server import start_server_thread  # noqa: E402
 
 # Re-use the HTTP client from test_relay_server
@@ -175,7 +175,7 @@ class InMemoryRoomTests(unittest.TestCase):
     def test_send_room_dead_member_goes_to_dead_letter(self):
         self.relay.join_room("alice", "dead-room")
         self.relay.join_room("bob", "dead-room")
-        self.relay._tick_lease("bob", 1000)  # expire bob's lease
+        self.relay._tick_lease("bob", DEFAULT_LEASE_TTL + 1000)  # expire bob's lease
         r = self.relay.send_room("alice", "dead-room", "for bob")
         self.assertIn("bob", r["skipped"])
         dl = self.relay.dead_letter()
@@ -203,7 +203,7 @@ class InMemorySendAllTests(unittest.TestCase):
         self.assertTrue(any(m["content"] == "hello all" for m in cc_msgs))
 
     def test_send_all_skips_dead_aliases(self):
-        self.relay._tick_lease("bb", 1000)
+        self.relay._tick_lease("bb", DEFAULT_LEASE_TTL + 1000)
         r = self.relay.send_all("aa", "skip dead")
         self.assertNotIn("bb", r["delivered_to"])
         self.assertIn("bb", r["skipped"])

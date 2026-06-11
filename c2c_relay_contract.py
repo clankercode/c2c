@@ -98,6 +98,23 @@ RELAY_ERR_SESSION_DEAD = "session_dead"
 RELAY_ERR_RECIPIENT_DEAD = "recipient_dead"
 ROOM_SYSTEM_ALIAS = "c2c-system"
 
+# Registration lease lifetime -- single canonical default, mirroring the
+# OCaml relay (Relay.default_lease_ttl). Bumped from 300s to 24h (2026-06-11)
+# so agents don't have to re-register every few minutes. Lease lifetime is
+# server policy: register() floors any client-supplied ttl up to
+# DEFAULT_LEASE_TTL (so already-deployed clients still sending 300 get 24h on
+# the redeployed relay) and caps it at MAX_LEASE_TTL to bound abuse.
+DEFAULT_LEASE_TTL = 86400.0   # 24 hours, seconds
+MAX_LEASE_TTL = 604800.0      # 7 days; hard cap on a client-requested ttl
+
+
+def effective_lease_ttl(client_ttl: float) -> float:
+    if client_ttl <= DEFAULT_LEASE_TTL:
+        return DEFAULT_LEASE_TTL
+    if client_ttl > MAX_LEASE_TTL:
+        return MAX_LEASE_TTL
+    return client_ttl
+
 
 def room_join_content(alias: str, room_id: str) -> str:
     return f"{alias} joined room {room_id}"
@@ -117,7 +134,7 @@ class RegistrationLease:
     client_type: str = "unknown"
     registered_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
-    ttl: float = 300.0  # seconds; dead if last_seen + ttl < now
+    ttl: float = DEFAULT_LEASE_TTL  # seconds; dead if last_seen + ttl < now
 
     def is_alive(self, now: Optional[float] = None) -> bool:
         t = now if now is not None else time.time()
@@ -184,7 +201,7 @@ class InMemoryRelay:
         alias: str,
         *,
         client_type: str = "unknown",
-        ttl: float = 300.0,
+        ttl: float = DEFAULT_LEASE_TTL,
     ) -> dict:
         """Register (or re-register) a session under an alias.
 
