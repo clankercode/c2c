@@ -21,70 +21,41 @@ let string_contains haystack needle =
   in
   needle_len = 0 || loop 0
 
-let capture_stdout f =
-  let tmp = Filename.temp_file "c2c-sessions" ".out" in
-  let old_stdout = Unix.dup Unix.stdout in
-  Fun.protect
-    ~finally:(fun () ->
-      Unix.dup2 old_stdout Unix.stdout;
-      Unix.close old_stdout;
-      (try Sys.remove tmp with _ -> ()))
-    (fun () ->
-      let fd = Unix.openfile tmp [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
-      Unix.dup2 fd Unix.stdout;
-      Unix.close fd;
-      f ();
-      flush stdout;
-      let ic = open_in tmp in
-      Fun.protect ~finally:(fun () -> close_in ic)
-        (fun () -> really_input_string ic (in_channel_length ic)))
-
 let json_of_string s =
   try Some (Yojson.Safe.from_string s)
   with _ -> None
 
-let test_sessions_human_output () =
-  with_temp_dir (fun dir ->
-    let broker = C2c_mcp.Broker.create ~root:dir in
-    C2c_mcp.Broker.register broker
-      ~session_id:"sid-alpha-001"
-      ~alias:"zzz-test-alpha"
-      ~pid:(Some 99999)
-      ~pid_start_time:None
-      ~client_type:(Some "opencode")
-      ~cwd:(Some "/home/user/proj")
-      ();
-    C2c_mcp.Broker.register broker
-      ~session_id:"sid-beta-002"
-      ~alias:"zzz-test-beta"
-      ~pid:None
-      ~pid_start_time:None
-      ();
-    let regs = C2c_mcp.Broker.list_registrations broker in
-    let output = capture_stdout (fun () ->
-      List.iter (fun (r : C2c_mcp.registration) ->
-        let live_str = match C2c_mcp.Broker.registration_liveness_state r with
-          | C2c_mcp.Broker.Alive -> "alive"
-          | C2c_mcp.Broker.Dead -> "dead"
-          | C2c_mcp.Broker.Unknown -> "?"
-        in
-        let ct = Option.value r.client_type ~default:"?" in
-        let cwd = Option.value r.cwd ~default:"-" in
-        Printf.printf "%s\t%s\t%s\t%s\t%s\n"
-          r.session_id r.alias ct cwd live_str
-      ) regs
-    ) in
-    check bool "contains sid-alpha-001" true (string_contains output "sid-alpha-001");
-    check bool "contains zzz-test-alpha" true (string_contains output "zzz-test-alpha");
-    check bool "contains opencode" true (string_contains output "opencode");
-    check bool "contains /home/user/proj" true (string_contains output "/home/user/proj");
-    check bool "contains sid-beta-002" true (string_contains output "sid-beta-002");
-    check bool "contains zzz-test-beta" true (string_contains output "zzz-test-beta"))
+(* --- helpers ------------------------------------------------------------- *)
 
-let test_sessions_json_output () =
+(* Read the session_id field from a Yojson object. *)
+let sid_of json = Yojson.Safe.Util.(json |> member "session_id" |> to_string)
+
+let live_bool_of json =
+  match Yojson.Safe.Util.(json |> member "alive") with
+  | `Bool b -> Some b
+  | `Null -> None
+  | _ -> Alcotest.fail "alive field is not bool/null"
+
+let string_opt_of json field =
+  match Yojson.Safe.Util.(json |> member field) with
+  | `String s -> Some s
+  | `Null -> None
+  | _ -> Alcotest.fail (field ^ " field is not string/null")
+
+let with_registered_session ~dir ~session_id ~alias ~pid ~pid_start_time ?client_type ?cwd ?role f =
+  let broker = C2c_mcp.Broker.create ~root:dir in
+  C2c_mcp.Broker.register broker
+    ~session_id ~alias ~pid ~pid_start_time ?client_type ?cwd ?role ();
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  f regs
+
+(* --- tests --------------------------------------------------------------- *)
+
+(* 1. JSON output: per-session shape, with all optional fields exercised. *)
+let test_sessions_json_full_shape () =
   with_temp_dir (fun dir ->
-    let broker = C2c_mcp.Broker.create ~root:dir in
-    C2c_mcp.Broker.register broker
+    with_registered_session
+      ~dir
       ~session_id:"sid-gamma-003"
       ~alias:"zzz-test-gamma"
       ~pid:(Some 99999)
@@ -92,104 +63,194 @@ let test_sessions_json_output () =
       ~client_type:(Some "claude")
       ~cwd:(Some "/tmp/work")
       ~role:(Some "coordinator")
-      ();
-    C2c_mcp.Broker.register broker
+      (fun regs ->
+        let json = C2c_sessions_format.sessions_to_json regs in
+        let str = Yojson.Safe.to_string json in
+        match json_of_string str with
+        | Some (`List items) ->
+          check int "one item" 1 (List.length items);
+          let gamma = List.hd items in
+          check string "session_id" "sid-gamma-003" (sid_of gamma);
+          (* alias: Broker.register auto-populates canonical_alias, so
+             expect the fully-qualified form, not the bare alias. *)
+          (match string_opt_of gamma "alias" with
+           | Some a when string_contains a "zzz-test-gamma" -> ()
+           | Some a -> Alcotest.fail ("alias should contain 'zzz-test-gamma', got: " ^ a)
+           | None -> Alcotest.fail "alias should be present");
+          check string "client_type" "claude" (Option.get (string_opt_of gamma "client_type"));
+          check string "cwd" "/tmp/work" (Option.get (string_opt_of gamma "cwd"));
+          check string "role" "coordinator" (Option.get (string_opt_of gamma "role"));
+          (* pid=99999 is not a real PID; liveness should be Dead or Unknown *)
+          (match live_bool_of gamma with
+           | Some true -> Alcotest.fail "fake pid should not be alive"
+           | _ -> ())
+        | _ -> Alcotest.fail "failed to parse sessions_to_json output"))
+
+(* 2. JSON output: missing optional fields should be `null`, not omitted. *)
+let test_sessions_json_optional_fields_null () =
+  with_temp_dir (fun dir ->
+    with_registered_session
+      ~dir
       ~session_id:"sid-delta-004"
       ~alias:"zzz-test-delta"
       ~pid:None
       ~pid_start_time:None
-      ();
-    let regs = C2c_mcp.Broker.list_registrations broker in
-    let json_items = List.map (fun (r : C2c_mcp.registration) ->
-      let live_val = match C2c_mcp.Broker.registration_liveness_state r with
-        | C2c_mcp.Broker.Alive -> `Bool true
-        | C2c_mcp.Broker.Dead -> `Bool false
-        | C2c_mcp.Broker.Unknown -> `Null
-      in
-      let fields =
-        [ ("session_id", `String r.session_id)
-        ; ("alias", `String r.alias)
-        ; ("client_type", (match r.client_type with Some ct -> `String ct | None -> `Null))
-        ; ("cwd", (match r.cwd with Some c -> `String c | None -> `Null))
-        ; ("live", live_val)
-        ]
-      in
-      let fields = match r.role with
-        | Some role -> fields @ [("role", `String role)]
-        | None -> fields
-      in
-      `Assoc fields
-    ) regs in
-    let json_str = Yojson.Safe.to_string (`List json_items) in
-    (match json_of_string json_str with
-     | Some (`List items) ->
-        check int "2 items" 2 (List.length items);
-        let gamma = List.find (fun item ->
-          match Yojson.Safe.Util.(item |> member "session_id") with
-          | `String s -> s = "sid-gamma-003"
-          | _ -> false) items in
-        check string "gamma alias" "zzz-test-gamma"
-          Yojson.Safe.Util.(gamma |> member "alias" |> to_string);
-        check string "gamma client_type" "claude"
-          Yojson.Safe.Util.(gamma |> member "client_type" |> to_string);
-        check string "gamma cwd" "/tmp/work"
-          Yojson.Safe.Util.(gamma |> member "cwd" |> to_string);
-        check string "gamma role" "coordinator"
-          Yojson.Safe.Util.(gamma |> member "role" |> to_string);
-        let delta = List.find (fun item ->
-          match Yojson.Safe.Util.(item |> member "session_id") with
-          | `String s -> s = "sid-delta-004"
-          | _ -> false) items in
-        check string "delta alias" "zzz-test-delta"
-          Yojson.Safe.Util.(delta |> member "alias" |> to_string);
-        (match Yojson.Safe.Util.(delta |> member "client_type") with
-         | `Null -> ()
-         | _ -> Alcotest.fail "delta client_type should be null");
-        (match Yojson.Safe.Util.(delta |> member "cwd") with
-         | `Null -> ()
-         | _ -> Alcotest.fail "delta cwd should be null")
-     | _ -> Alcotest.fail "failed to parse JSON output"))
+      ~client_type:None
+      ~cwd:None
+      ~role:None
+      (fun regs ->
+        let json = C2c_sessions_format.sessions_to_json regs in
+        match json with
+        | `List [item] ->
+          check bool "client_type is null" true
+            (match Yojson.Safe.Util.(item |> member "client_type") with `Null -> true | _ -> false);
+          check bool "cwd is null" true
+            (match Yojson.Safe.Util.(item |> member "cwd") with `Null -> true | _ -> false);
+          check bool "role is omitted" true
+            (match Yojson.Safe.Util.(item |> member "role") with `Null -> true | _ -> false);
+          (* no canonical_alias was set; alias should fall back to bare alias *)
+          (match string_opt_of item "alias" with
+           | Some a when string_contains a "zzz-test-delta" -> ()
+           | Some a -> Alcotest.fail ("alias should contain 'zzz-test-delta', got: " ^ a)
+           | None -> Alcotest.fail "alias should be present")
+        | _ -> Alcotest.fail "expected one-item list"))
 
-let test_sessions_liveness_with_own_pid () =
+(* 3. JSON output: alive=true for own-pid registration. *)
+let test_sessions_json_alive_for_own_pid () =
   with_temp_dir (fun dir ->
-    let broker = C2c_mcp.Broker.create ~root:dir in
-    let my_pid = Unix.getpid () in
-    C2c_mcp.Broker.register broker
+    with_registered_session
+      ~dir
       ~session_id:"sid-self-pid"
       ~alias:"zzz-test-self"
-      ~pid:(Some my_pid)
-      ~pid_start_time:(C2c_broker.read_pid_start_time my_pid)
+      ~pid:(Some (Unix.getpid ()))
+      ~pid_start_time:(C2c_broker.read_pid_start_time (Unix.getpid ()))
       ~client_type:(Some "opencode")
-      ();
-    let regs = C2c_mcp.Broker.list_registrations broker in
-    check int "one reg" 1 (List.length regs);
-    let r = List.hd regs in
-    let live = C2c_mcp.Broker.registration_liveness_state r in
-    check bool "own pid is alive" true (live = C2c_mcp.Broker.Alive))
+      ~cwd:None
+      ~role:None
+      (fun regs ->
+        let json = C2c_sessions_format.sessions_to_json regs in
+        match json with
+        | `List [item] ->
+          (match live_bool_of item with
+           | Some true -> ()
+           | _ -> Alcotest.fail "own pid should be alive")
+        | _ -> Alcotest.fail "expected one-item list"))
 
-let test_sessions_empty_registry () =
+(* 4. Human output: header + per-session fields. *)
+let test_sessions_human_full_shape () =
+  with_temp_dir (fun dir ->
+    with_registered_session
+      ~dir
+      ~session_id:"sid-alpha-001"
+      ~alias:"zzz-test-alpha"
+      ~pid:(Some 99999)
+      ~pid_start_time:None
+      ~client_type:(Some "opencode")
+      ~cwd:(Some "/home/user/proj")
+      ~role:None
+      (fun regs ->
+        let out = C2c_sessions_format.format_human regs in
+        (* Column header *)
+        check bool "header has SESSION_ID" true (string_contains out "SESSION_ID");
+        check bool "header has ALIAS" true (string_contains out "ALIAS");
+        check bool "header has STATE" true (string_contains out "STATE");
+        check bool "header has CWD" true (string_contains out "CWD");
+        (* Separator row *)
+        check bool "separator dashes" true (string_contains out "------------------------------------");
+        (* Data row: session_id, alias, client_type, cwd, role absent *)
+        check bool "row has session_id" true (string_contains out "sid-alpha-001");
+        check bool "row has alias" true (string_contains out "zzz-test-alpha");
+        check bool "row has opencode" true (string_contains out "opencode");
+        check bool "row has cwd" true (string_contains out "/home/user/proj");
+        check bool "row has dead liveness" true (string_contains out "dead");
+        (* role is None: last column is empty (just trailing spaces before \n).
+           Compare with role=Some "coordinator" test below to assert the column
+           actually renders when populated. *)
+        let lines = String.split_on_char '\n' out in
+        let data_lines = List.filter (fun l ->
+          String.length l > 0
+          && not (string_contains l "SESSION_ID")
+          && not (string_contains l "----")
+        ) lines in
+        check int "one data row" 1 (List.length data_lines);
+        let row = List.hd data_lines in
+        (* When role=None, the line should not contain "coordinator" *)
+        check bool "row has no role text when role=None"
+          false (string_contains row "coordinator")))
+
+(* 5. Human output: own-pid row is labelled "alive". *)
+let test_sessions_human_alive_for_own_pid () =
+  with_temp_dir (fun dir ->
+    with_registered_session
+      ~dir
+      ~session_id:"sid-self-pid"
+      ~alias:"zzz-test-self"
+      ~pid:(Some (Unix.getpid ()))
+      ~pid_start_time:(C2c_broker.read_pid_start_time (Unix.getpid ()))
+      ~client_type:(Some "opencode")
+      ~cwd:None
+      ~role:None
+      (fun regs ->
+        let out = C2c_sessions_format.format_human regs in
+        check bool "row has alive liveness" true (string_contains out "alive")))
+
+(* 5b. Human output: role=Some renders the role column. *)
+let test_sessions_human_role_rendered () =
+  with_temp_dir (fun dir ->
+    with_registered_session
+      ~dir
+      ~session_id:"sid-role-005"
+      ~alias:"zzz-test-role"
+      ~pid:(Some 99999)
+      ~pid_start_time:None
+      ~client_type:(Some "claude")
+      ~cwd:(Some "/tmp")
+      ~role:(Some "coordinator")
+      (fun regs ->
+        let out = C2c_sessions_format.format_human regs in
+        check bool "row has role text" true (string_contains out "coordinator")))
+
+(* 6. Human output: empty registry prints "No sessions.". *)
+let test_sessions_human_empty () =
   with_temp_dir (fun dir ->
     let broker = C2c_mcp.Broker.create ~root:dir in
     let regs = C2c_mcp.Broker.list_registrations broker in
     check int "empty" 0 (List.length regs);
-    let output = capture_stdout (fun () ->
-      if regs = [] then Printf.printf "No sessions.\n"
-      else List.iter (fun (r : C2c_mcp.registration) ->
-        Printf.printf "%s\n" r.session_id) regs
-    ) in
-    check bool "no sessions msg" true (string_contains output "No sessions"))
+    let out = C2c_sessions_format.format_human regs in
+    check string "no sessions msg" "No sessions.\n" out)
+
+(* 7. JSON output: empty registry is `[]`. *)
+let test_sessions_json_empty () =
+  with_temp_dir (fun dir ->
+    let broker = C2c_mcp.Broker.create ~root:dir in
+    let regs = C2c_mcp.Broker.list_registrations broker in
+    check int "empty" 0 (List.length regs);
+    let json = C2c_sessions_format.sessions_to_json regs in
+    check string "empty json" "[]" (Yojson.Safe.to_string json))
+
+let json_of_string s =
+  try Some (Yojson.Safe.from_string s)
+  with _ -> None
 
 let () =
   Alcotest.run
     "c2c sessions"
     [ ( "sessions"
-      , [ test_case "human output has session_id + alias + client_type + cwd + liveness"
-            `Quick test_sessions_human_output
-        ; test_case "json output has expected fields"
-            `Quick test_sessions_json_output
-        ; test_case "liveness with own pid is alive"
-            `Quick test_sessions_liveness_with_own_pid
-        ; test_case "empty registry"
-            `Quick test_sessions_empty_registry
+      , [ test_case "json: full shape with all fields populated"
+            `Quick test_sessions_json_full_shape
+        ; test_case "json: missing optional fields are null"
+            `Quick test_sessions_json_optional_fields_null
+        ; test_case "json: own-pid registration is alive"
+            `Quick test_sessions_json_alive_for_own_pid
+        ; test_case "json: empty registry is []"
+            `Quick test_sessions_json_empty
+        ; test_case "human: full shape with header + data row"
+            `Quick test_sessions_human_full_shape
+        ; test_case "human: own-pid registration labelled alive"
+            `Quick test_sessions_human_alive_for_own_pid
+        ; test_case "human: role=Some renders the role column"
+            `Quick test_sessions_human_role_rendered
+        ; test_case "human: empty registry prints 'No sessions.'"
+            `Quick test_sessions_human_empty
         ] )
     ]
