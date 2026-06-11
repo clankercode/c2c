@@ -1,5 +1,38 @@
 open Alcotest
 
+(* ------------------------------------------------------------------ *)
+(* Path resolution                                                      *)
+(* ------------------------------------------------------------------ *)
+
+(* dune test may run the test with a relative `argv[0]`, so resolve
+   to absolute via the current working directory before walking up. *)
+let abs_path p =
+  if Filename.is_relative p then Filename.concat (Unix.getcwd ()) p else p
+
+(* `Sys.executable_name` for the test exe is something like
+   `<worktree>/_build/default/ocaml/test/test_session_id_delivery.exe`
+   (or relative under `dune test` — see abs_path above). The built
+   binaries sit one level up under `cli/` and `tools/`.
+
+   Hardcoding `_build/default/ocaml/{cli,tools}/...` works for `dune
+   exec` (cwd == repo root) but fails under `dune test` (cwd == dune
+   sandbox), so the previous literal-path approach surfaced 4 spurious
+   "command not found" failures per test run. Same fix as
+   test_inbox_hook_harness.ml: derive the absolute path from
+   `Sys.executable_name`. *)
+let find_built_bin subpath : string =
+  let exe = abs_path Sys.executable_name in
+  let exe_dir = Filename.dirname exe in
+  let ocaml_dir = Filename.dirname exe_dir in
+  let bin = Filename.concat ocaml_dir subpath in
+  if not (Sys.file_exists bin) then
+    Alcotest.fail
+      (Printf.sprintf "built binary not found at %s (test exe=%s)" bin exe);
+  bin
+
+let built_c2c = find_built_bin "cli/c2c.exe"
+let built_inbox_hook = find_built_bin "tools/c2c_inbox_hook.exe"
+
 let with_temp_dir f =
   let base = Filename.get_temp_dir_name () in
   let dir =
@@ -42,9 +75,6 @@ let string_contains haystack needle =
     && (String.sub haystack i needle_len = needle || loop (i + 1))
   in
   needle_len = 0 || loop 0
-
-let built_c2c = "_build/default/ocaml/cli/c2c.exe"
-let built_inbox_hook = "_build/default/ocaml/tools/c2c_inbox_hook.exe"
 
 let test_send_session_writes_global_inbox () =
   with_temp_dir (fun dir ->
