@@ -62,6 +62,12 @@ let resolve_alias_with_broker ?(override : string option) broker =
                or send as your own alias.\n%!"
               r;
             exit 1
+          end else begin
+            Printf.eprintf
+              "refusing to send as '%s': alias is not registered. \
+               Only your own alias or C2C_COORDINATOR=1 is permitted.\n%!"
+              r;
+            exit 1
           end
         end
       end;

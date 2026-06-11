@@ -136,6 +136,12 @@ let validate_from_override broker ~caller_session_id ~from_alias =
            or send as your own alias.\n%!"
           from_alias;
         exit 1
+      end else begin
+        Printf.eprintf
+          "refusing to send as '%s': alias is not registered. \
+           Only your own alias or C2C_COORDINATOR=1 is permitted.\n%!"
+          from_alias;
+        exit 1
       end
     end
   end

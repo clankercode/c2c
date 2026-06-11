@@ -1671,9 +1671,12 @@ let test_send_from_own_alias_allowed () =
            let rc = Sys.command send_cmd in
            check int "send --from own alias exits 0" 0 rc))
 
-let test_send_from_unregistered_alias_allowed () =
+let test_send_from_unregistered_alias_rejected () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-op" ~alias:"op"
+        ~pid:None ~pid_start_time:None ();
       C2c_mcp.Broker.register broker
         ~session_id:"session-recip" ~alias:"recip"
         ~pid:None ~pid_start_time:None ();
@@ -1688,7 +1691,11 @@ let test_send_from_unregistered_alias_allowed () =
              (Filename.quote dir) c2c_exe outfile errfile
            in
            let rc = Sys.command send_cmd in
-           check int "send --from unregistered alias exits 0" 0 rc))
+           check bool "send --from unregistered alias exits non-zero" true (rc <> 0);
+           let err = read_file errfile in
+           check bool "stderr mentions refusing or not registered" true
+             (string_contains err "refus"
+              || string_contains err "not registered")))
 
 let test_send_from_coordinator_allowed () =
   with_temp_dir (fun dir ->
@@ -1921,7 +1928,7 @@ let () =
     ; ( "send_from_spoofing",
         [ ( "send --from spoofing rejected when alias held by different session", `Quick, test_send_from_spoofing_rejected )
         ; ( "send --from own alias allowed", `Quick, test_send_from_own_alias_allowed )
-        ; ( "send --from unregistered alias allowed", `Quick, test_send_from_unregistered_alias_allowed )
+        ; ( "send --from unregistered alias rejected", `Quick, test_send_from_unregistered_alias_rejected )
         ; ( "send --from spoofing allowed for coordinator", `Quick, test_send_from_coordinator_allowed )
         ; ( "send --from case variation spoofing rejected", `Quick, test_send_from_case_variation_rejected )
         ; ( "send-all --from spoofing rejected", `Quick, test_send_all_from_spoofing_rejected )
