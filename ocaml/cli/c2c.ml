@@ -236,6 +236,7 @@ let commands_by_safety_cmd =
   let+ show_all = show_all in
   let tier1 = [
     ("list", "List registered c2c peers");
+    ("sessions", "List registered sessions (session_id, alias, client_type, liveness)");
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");
     ("peek-inbox", "Peek at your inbox without draining");
@@ -771,7 +772,67 @@ let list_cmd =
                 else
                   let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
                   Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
-              regs
+               regs
+
+(* --- subcommand: sessions ------------------------------------------------- *)
+
+let sessions_cmd =
+  let+ json = json_flag in
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  let output_mode = if json then Json else Human in
+  if regs = [] then
+    match output_mode with
+    | Json -> print_json (`List [])
+    | Human -> Printf.printf "No sessions.\n"
+  else
+    match output_mode with
+    | Json ->
+        let items = List.map (fun (r : C2c_mcp.registration) ->
+          let live_val = match C2c_mcp.Broker.registration_liveness_state r with
+            | C2c_mcp.Broker.Alive -> `Bool true
+            | C2c_mcp.Broker.Dead -> `Bool false
+            | C2c_mcp.Broker.Unknown -> `Null
+          in
+          let fields =
+            [ ("session_id", `String r.session_id)
+            ; ("alias", `String (Option.value r.canonical_alias ~default:r.alias))
+            ; ("client_type", (match r.client_type with Some ct -> `String ct | None -> `Null))
+            ; ("cwd", (match r.cwd with Some c -> `String c | None -> `Null))
+            ; ("live", live_val)
+            ]
+          in
+          let fields = match r.role with
+            | Some role -> fields @ [("role", `String role)]
+            | None -> fields
+          in
+          `Assoc fields
+        ) regs in
+        print_json (`List items)
+    | Human ->
+        Printf.printf "  %-36s %-20s %-10s %-4s %-30s %s\n"
+          "SESSION_ID" "ALIAS" "CLIENT" "LIVE" "CWD" "ROLE";
+        Printf.printf "  %-36s %-20s %-10s %-4s %-30s %s\n"
+          (String.make 36 '-') (String.make 20 '-') (String.make 10 '-')
+          (String.make 4 '-') (String.make 30 '-') (String.make 4 '-');
+        List.iter (fun (r : C2c_mcp.registration) ->
+          let live_str = match C2c_mcp.Broker.registration_liveness_state r with
+            | C2c_mcp.Broker.Alive -> "yes"
+            | C2c_mcp.Broker.Dead -> "no"
+            | C2c_mcp.Broker.Unknown -> "?"
+          in
+          let ct = Option.value r.client_type ~default:"?" in
+          let cwd = Option.value r.cwd ~default:"-" in
+          let role_str = Option.value r.role ~default:"" in
+          let alias_display = Option.value r.canonical_alias ~default:r.alias in
+          let sid_display =
+            let s = r.session_id in
+            if String.length s > 34 then String.sub s 0 34 ^ "…" else s
+          in
+          Printf.printf "  %-36s %-20s %-10s %-4s %-30s %s\n"
+            sid_display (truncate_str alias_display 20) ct live_str (truncate_str cwd 30) role_str
+        ) regs
 
 (* --- subcommand: whoami --------------------------------------------------- *)
 
@@ -5741,6 +5802,7 @@ let skills_group =
 
 let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a registered peer alias or session ID.") send_cmd
 let list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List registered C2C peers.") list_cmd
+let sessions = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sessions" ~doc:"List registered sessions with session_id, alias, client_type, cwd, and liveness.") sessions_cmd
 let whoami = Cmdliner.Cmd.v (Cmdliner.Cmd.info "whoami" ~doc:"Show current c2c identity.") whoami_cmd
 let set_compact = Cmdliner.Cmd.v (Cmdliner.Cmd.info "set-compact" ~doc:"Mark this session as compacting (context summarization in progress).") set_compact_cmd
 let clear_compact = Cmdliner.Cmd.v (Cmdliner.Cmd.info "clear-compact" ~doc:"Clear the compacting flag for this session.") clear_compact_cmd
@@ -11454,6 +11516,7 @@ let fast_path_commands () =
   let is_agent = is_agent_session () in
   let tier1 = [
     ("list", "List registered c2c peers");
+    ("sessions", "List registered sessions (session_id, alias, client_type, liveness)");
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");
     ("peek-inbox", "Peek at your inbox without draining");
@@ -11969,7 +12032,7 @@ let () =
   let is_agent = is_agent_session () in
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
-    [ send; list; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
+    [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
     ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances_deprecated; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]

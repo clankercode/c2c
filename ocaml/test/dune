@@ -220,6 +220,11 @@
  (libraries c2c_mcp alcotest str unix))
 
 (test
- (name test_c2c_time)
- (modules test_c2c_time)
- (libraries c2c_mcp alcotest str unix))
+  (name test_c2c_time)
+  (modules test_c2c_time)
+  (libraries c2c_mcp alcotest str unix))
+
+(test
+  (name test_c2c_sessions)
+  (modules test_c2c_sessions)
+  (libraries c2c_mcp alcotest yojson unix))
