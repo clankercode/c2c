@@ -32,20 +32,53 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import secrets
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Optional
 
-from c2c_relay_contract import InMemoryRelay, RelayError, effective_lease_ttl
+from c2c_relay_contract import (
+    POW_COST_WEIGHTS,
+    POW_CTX,
+    POW_SCHEME,
+    POW_TTL_S,
+    InMemoryRelay,
+    PowSlidingWindowAccumulator,
+    RelayError,
+    effective_lease_ttl,
+    pow_challenge_string,
+    pow_required_difficulty,
+    pow_verify,
+)
 
 try:
     from c2c_relay_sqlite import SQLiteRelay
 except Exception:  # pragma: no cover
     SQLiteRelay = None  # type: ignore[misc,assignment]
+
+
+def relay_pow_enabled_from_env(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Return whether Python relay PoW handling is enabled for this process."""
+    env_map = os.environ if env is None else env
+    value = str(env_map.get("C2C_RELAY_POW", "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+POW_ROUTE_FOR_PATH: dict[str, str] = {
+    "/register": "register",
+    "/heartbeat": "heartbeat",
+    "/send": "send",
+    "/send_all": "send_all",
+    "/poll_inbox": "poll",
+    "/peek_inbox": "peek",
+    "/send_room": "room-send",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +131,9 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        pow_next = getattr(self, "_pow_next_header", "")
+        if pow_next:
+            self.send_header("X-C2C-PoW-Next", pow_next)
         self.end_headers()
         self.wfile.write(body)
 
@@ -122,7 +158,13 @@ class RelayHandler(BaseHTTPRequestHandler):
         if self.path in ("/health", "/list_rooms"):
             # Unauthenticated read-only routes (consistent with OCaml relay auth_decision).
             if self.path == "/health":
-                self._ok({"ok": True})
+                self._ok({
+                    "ok": True,
+                    "pow": {
+                        "enabled": bool(getattr(self.server, "pow_enabled", False)),
+                        "scheme": POW_SCHEME,
+                    },
+                })
             else:
                 self._ok({"ok": True, "rooms": self.server.relay.list_rooms()})
             return
@@ -165,6 +207,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         handler = routes.get(self.path)
         if handler is None:
             self._err(404, "not_found", f"unknown endpoint: {self.path}")
+            return
+        if not self._check_pow(body):
             return
         try:
             handler(body)
@@ -287,6 +331,133 @@ class RelayHandler(BaseHTTPRequestHandler):
         history = self.server.relay.room_history(room_id, limit=limit)
         self._ok({"ok": True, "room_id": room_id, "history": history})
 
+    # --- proof-of-work ---
+
+    def _check_pow(self, body: dict) -> bool:
+        if not bool(getattr(self.server, "pow_enabled", False)):
+            return True
+        route = POW_ROUTE_FOR_PATH.get(self.path)
+        if route is None:
+            return True
+        cost = POW_COST_WEIGHTS.get(route, 0)
+        if cost <= 0:
+            return True
+
+        actor_id = self._pow_actor_id(route, body)
+        accumulated = self.server.pow_accumulator.accumulated(actor_id)
+        difficulty = pow_required_difficulty(accumulated)
+        if difficulty > 0 and not self._pow_body_verifies(body, route, actor_id, difficulty):
+            required = self._issue_pow_challenge(actor_id, route, difficulty)
+            self._set_pow_next_header(required)
+            self._send_json(429, {"ok": False, "error_code": "pow_required",
+                                  "required": required})
+            return False
+
+        next_cost = self.server.pow_accumulator.add(actor_id, cost)
+        next_required = self._issue_pow_challenge(
+            actor_id,
+            route,
+            pow_required_difficulty(next_cost),
+        )
+        self._set_pow_next_header(next_required)
+        return True
+
+    def _pow_body_verifies(
+        self,
+        body: dict,
+        route: str,
+        actor_id: str,
+        difficulty: int,
+    ) -> bool:
+        try:
+            pow_nonce = str(body["pow_nonce"])
+            pow_epoch = int(body["pow_epoch"])
+            pow_server_nonce = str(body["pow_server_nonce"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not self._pow_nonce_was_issued(actor_id, route, pow_epoch, pow_server_nonce):
+            return False
+        challenge = pow_challenge_string(
+            POW_CTX,
+            route,
+            actor_id,
+            pow_epoch,
+            pow_server_nonce,
+        )
+        return pow_verify(challenge, difficulty, pow_nonce)
+
+    def _pow_actor_id(self, route: str, body: dict) -> str:
+        for key in ("identity_pk", "actor_id", "public_key"):
+            value = str(body.get(key, "")).strip()
+            if value:
+                return value
+        envelope = body.get("envelope")
+        if isinstance(envelope, dict):
+            value = str(envelope.get("identity_pk", "")).strip()
+            if value:
+                return value
+        if route == "register":
+            return str(body.get("alias") or body.get("node_id") or "anonymous").strip()
+        if route in {"send", "send_all", "room-send"}:
+            return str(body.get("from_alias") or "anonymous").strip()
+        return str(body.get("node_id") or "anonymous").strip()
+
+    def _issue_pow_challenge(self, actor_id: str, route: str, difficulty: int) -> dict:
+        now = time.time()
+        epoch = int(now // POW_TTL_S)
+        server_nonce = secrets.token_urlsafe(18)
+        self._record_pow_nonce(actor_id, route, epoch, server_nonce, now + POW_TTL_S)
+        return {
+            "difficulty": difficulty,
+            "epoch": epoch,
+            "server_nonce": server_nonce,
+            "ctx": POW_CTX,
+            "ttl_s": POW_TTL_S,
+        }
+
+    def _record_pow_nonce(
+        self,
+        actor_id: str,
+        route: str,
+        epoch: int,
+        server_nonce: str,
+        expires_at: float,
+    ) -> None:
+        key = (actor_id, route, epoch, server_nonce)
+        with self.server.pow_nonce_lock:
+            self._prune_pow_nonces_locked()
+            self.server.pow_nonces[key] = expires_at
+
+    def _pow_nonce_was_issued(
+        self,
+        actor_id: str,
+        route: str,
+        epoch: int,
+        server_nonce: str,
+    ) -> bool:
+        key = (actor_id, route, epoch, server_nonce)
+        with self.server.pow_nonce_lock:
+            self._prune_pow_nonces_locked()
+            return self.server.pow_nonces.get(key, 0.0) >= time.time()
+
+    def _prune_pow_nonces_locked(self) -> None:
+        now = time.time()
+        expired = [
+            key
+            for key, expires_at in self.server.pow_nonces.items()
+            if expires_at < now
+        ]
+        for key in expired:
+            del self.server.pow_nonces[key]
+
+    def _set_pow_next_header(self, required: dict) -> None:
+        self._pow_next_header = (
+            f"difficulty={required['difficulty']}; "
+            f"epoch={required['epoch']}; "
+            f"server_nonce={required['server_nonce']}; "
+            f"ttl={required['ttl_s']}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Server lifecycle helpers
@@ -324,6 +495,10 @@ def make_server(
     server.relay = relay if relay is not None else InMemoryRelay()  # type: ignore[attr-defined]
     server.token = token  # type: ignore[attr-defined]
     server.verbose = verbose  # type: ignore[attr-defined]
+    server.pow_enabled = relay_pow_enabled_from_env()  # type: ignore[attr-defined]
+    server.pow_accumulator = PowSlidingWindowAccumulator()  # type: ignore[attr-defined]
+    server.pow_nonces = {}  # type: ignore[attr-defined]
+    server.pow_nonce_lock = threading.Lock()  # type: ignore[attr-defined]
     if gc_interval > 0:
         _start_gc_thread(server.relay, gc_interval)  # type: ignore[arg-type]
     return server

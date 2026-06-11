@@ -32,6 +32,8 @@ Usage in tests:
 """
 from __future__ import annotations
 
+import hashlib
+import math
 import socket
 import subprocess
 import threading
@@ -109,6 +111,39 @@ ROOM_SYSTEM_ALIAS = "c2c-system"
 DEFAULT_LEASE_TTL = 86400.0   # 24 hours, seconds
 MAX_LEASE_TTL = 604800.0      # 7 days; hard cap on a client-requested ttl
 
+# Canonical c2c proof-of-work wire format. The OCaml relay is production, but
+# these Python helpers mirror the shared v1 hashcash primitive for parity tests.
+POW_SCHEME = "sha256-leading-zeros-v1"
+POW_CTX = "c2c/v1/pow"
+POW_SEP = chr(0x1f)
+POW_MAX_MINT_ITERATIONS = 2_000_000
+
+POW_COST_WEIGHTS: dict[str, int] = {
+    "register": 10,
+    "send": 1,
+    "send_all": 1,
+    "room-send": 1,
+    "send_room": 1,
+    "poll": 0,
+    "poll_inbox": 0,
+    "peek": 0,
+    "peek_inbox": 0,
+    "heartbeat": 0,
+}
+POW_GRACE = 20
+POW_BUCKET = 10
+POW_STEP = 4
+POW_D_MAX = 24
+POW_WINDOW = 600.0
+POW_TTL_S = int(POW_WINDOW)
+
+COST_WEIGHTS = POW_COST_WEIGHTS
+GRACE = POW_GRACE
+BUCKET = POW_BUCKET
+STEP = POW_STEP
+D_MAX = POW_D_MAX
+WINDOW = POW_WINDOW
+
 
 def effective_lease_ttl(client_ttl: float) -> float:
     if client_ttl <= DEFAULT_LEASE_TTL:
@@ -120,6 +155,96 @@ def effective_lease_ttl(client_ttl: float) -> float:
 
 def room_join_content(alias: str, room_id: str) -> str:
     return f"{alias} joined room {room_id}"
+
+
+def pow_leading_zero_bits(digest_bytes: bytes) -> int:
+    """Count leading zero bits in a digest byte string."""
+    count = 0
+    for byte in digest_bytes:
+        if byte == 0:
+            count += 8
+            continue
+        return count + (8 - byte.bit_length())
+    return count
+
+
+def pow_challenge_string(
+    ctx: str,
+    route: str,
+    actor_id: str,
+    epoch: int,
+    server_nonce: str,
+) -> str:
+    """Build the exact v1 challenge string joined with ASCII unit separator."""
+    return POW_SEP.join([ctx, route, actor_id, str(int(epoch)), server_nonce])
+
+
+def pow_verify(challenge: str, difficulty: int, pow_nonce: str) -> bool:
+    """Verify a v1 leading-zero-bits proof-of-work nonce."""
+    if int(difficulty) <= 0:
+        return True
+    payload = f"{challenge}{POW_SEP}{pow_nonce}".encode("utf-8")
+    digest = hashlib.sha256(payload).digest()
+    return pow_leading_zero_bits(digest) >= int(difficulty)
+
+
+def pow_mint(
+    challenge: str,
+    difficulty: int,
+    *,
+    max_iterations: int = POW_MAX_MINT_ITERATIONS,
+) -> str:
+    """Find a decimal counter nonce that satisfies the challenge difficulty."""
+    for counter in range(max(0, int(max_iterations))):
+        nonce = str(counter)
+        if pow_verify(challenge, difficulty, nonce):
+            return nonce
+    raise RuntimeError(
+        f"no PoW nonce found within {max_iterations} iterations "
+        f"for difficulty {difficulty}"
+    )
+
+
+def pow_required_difficulty(accumulated_cost: float) -> int:
+    """Map per-actor accumulated route cost to required leading-zero bits."""
+    if accumulated_cost <= POW_GRACE:
+        return 0
+    over_grace = accumulated_cost - POW_GRACE
+    difficulty = POW_STEP * math.ceil(over_grace / POW_BUCKET)
+    return min(POW_D_MAX, difficulty)
+
+
+class PowSlidingWindowAccumulator:
+    """Per-actor accumulated cost over a sliding time window."""
+
+    def __init__(self, window_s: float = POW_WINDOW) -> None:
+        self.window_s = float(window_s)
+        self._costs: dict[str, list[tuple[float, float]]] = {}
+        self._lock = threading.Lock()
+
+    def accumulated(self, actor_id: str, *, now: Optional[float] = None) -> float:
+        t = time.time() if now is None else float(now)
+        with self._lock:
+            entries = self._prune_locked(actor_id, t)
+            return sum(cost for _, cost in entries)
+
+    def add(self, actor_id: str, cost: float, *, now: Optional[float] = None) -> float:
+        t = time.time() if now is None else float(now)
+        with self._lock:
+            entries = self._prune_locked(actor_id, t)
+            if cost > 0:
+                entries.append((t, float(cost)))
+            return sum(entry_cost for _, entry_cost in entries)
+
+    def _prune_locked(self, actor_id: str, now: float) -> list[tuple[float, float]]:
+        cutoff = now - self.window_s
+        entries = [
+            (ts, cost)
+            for ts, cost in self._costs.get(str(actor_id), [])
+            if ts >= cutoff
+        ]
+        self._costs[str(actor_id)] = entries
+        return entries
 
 
 # ---------------------------------------------------------------------------
