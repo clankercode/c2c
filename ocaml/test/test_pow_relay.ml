@@ -259,6 +259,47 @@ let test_enabled_pow_required_then_minted_nonce_succeeds () =
           Alcotest.(check bool) "next difficulty advertised" true
             (header_difficulty (require_pow_header accepted) >= difficulty)))
 
+let test_relay_client_register_signed_mints_and_retries () =
+  with_pow_env "1" (fun () ->
+    with_server (fun ~base_url ~relay:_ ->
+      let alias = "pow-client-retry" in
+      let identity = Relay_identity.generate ~alias_hint:alias () in
+      warm_actor_past_grace ~base_url ~identity ~alias >>= fun () ->
+      let proof = Relay_signed_ops.sign_register identity ~alias ~relay_url:base_url in
+      let client = Relay.Relay_client.make base_url in
+      Relay.Relay_client.register_signed client
+        ~node_id:"node-warm"
+        ~session_id:"session-client-retry"
+        ~alias
+        ~client_type:"pow-client-test"
+        ~identity_pk_b64:proof.identity_pk_b64
+        ~sig_b64:proof.sig_b64
+        ~nonce:proof.nonce
+        ~ts:proof.ts
+        () >|= fun json ->
+      if json_member "ok" json <> `Bool true then
+        failf "client register expected ok, got %s" (Yojson.Safe.to_string json);
+      Alcotest.(check string) "alias" alias
+        (json_string "alias" (json_member "lease" json))))
+
+let test_connector_client_register_mints_and_retries () =
+  with_pow_env "1" (fun () ->
+    with_server (fun ~base_url ~relay:_ ->
+      let alias = "pow-connector-retry" in
+      let identity = Relay_identity.generate ~alias_hint:alias () in
+      warm_actor_past_grace ~base_url ~identity ~alias >>= fun () ->
+      let client = C2c_relay_connector.Relay_client.make ~identity base_url in
+      C2c_relay_connector.Relay_client.register client
+        ~node_id:"node-warm"
+        ~session_id:"session-connector-retry"
+        ~alias
+        ~client_type:"pow-connector-test"
+        () >|= fun json ->
+      if json_member "ok" json <> `Bool true then
+        failf "connector register expected ok, got %s" (Yojson.Safe.to_string json);
+      Alcotest.(check string) "alias" alias
+        (json_string "alias" (json_member "lease" json))))
+
 let test_verified_pow_is_spent_even_if_register_body_fails () =
   with_pow_env "1" (fun () ->
     with_server (fun ~base_url ~relay:_ ->
@@ -319,6 +360,10 @@ let () =
         `Quick test_enabled_grace_register_succeeds_without_pow;
       Alcotest.test_case "enabled: pow_required then minted nonce succeeds" `Quick
         test_enabled_pow_required_then_minted_nonce_succeeds;
+      Alcotest.test_case "client: register_signed mints and retries on pow_required"
+        `Quick test_relay_client_register_signed_mints_and_retries;
+      Alcotest.test_case "connector: register mints and retries on pow_required"
+        `Quick test_connector_client_register_mints_and_retries;
       Alcotest.test_case "enabled: verified PoW is spent on failed register"
         `Quick test_verified_pow_is_spent_even_if_register_body_fails;
     ];

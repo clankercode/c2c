@@ -5262,6 +5262,10 @@ end = struct
   let post_auth t path body auth = request t ~meth:`POST ~path ~body ~auth_override:auth ()
   let get t path = request t ~meth:`GET ~path ()
 
+  let post_with_pow_retry t path ~route ~actor_id body =
+    let post_body body = post t path body in
+    Pow_client.post_with_retry ~post:post_body ~route ~actor_id body
+
   let health t = get t "/health"
 
   let register t ~node_id ~session_id ~alias
@@ -5287,12 +5291,16 @@ end = struct
         fields @ [("enc_pubkey", `String enc_pubkey); ("signed_at", `Float signed_at); ("sig_b64", `String sig_b64)]
       else fields
     in
-    post t "/register" (`Assoc fields)
+    let actor_id =
+      if identity_pk = "" then "" else b64url_nopad_encode identity_pk
+    in
+    post_with_pow_retry t "/register" ~route:"register" ~actor_id
+      (`Assoc fields)
 
   let register_signed t ~node_id ~session_id ~alias
       ?(client_type = "unknown") ?(ttl = default_lease_ttl)
       ~identity_pk_b64 ~sig_b64 ~nonce ~ts () =
-    post t "/register" (`Assoc [
+    let body = `Assoc [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
       ("alias", `String alias);
@@ -5302,7 +5310,9 @@ end = struct
       ("signature", `String sig_b64);
       ("nonce", `String nonce);
       ("timestamp", `String ts);
-    ])
+    ] in
+    post_with_pow_retry t "/register" ~route:"register"
+      ~actor_id:identity_pk_b64 body
 
   let heartbeat t ~node_id ~session_id =
     post t "/heartbeat" (`Assoc [

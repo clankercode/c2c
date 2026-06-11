@@ -520,6 +520,10 @@ module Relay_client = struct
   let post t path ?alias body = request t ~meth:`POST ~path ?alias ~body ()
   let get t path = request t ~meth:`GET ~path ()
 
+  let post_with_pow_retry t path ?alias ~route ~actor_id body =
+    let post_body body = post t path ?alias body in
+    Pow_client.post_with_retry ~post:post_body ~route ~actor_id body
+
   let health t = get t "/health"
 
   let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = Relay.default_lease_ttl) ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
@@ -530,9 +534,9 @@ module Relay_client = struct
       ("client_type", `String client_type);
       ("ttl", `Int (int_of_float ttl));
     ] in
-    let body =
+    let body, actor_id =
       match t.identity with
-      | None -> body
+      | None -> body, ""
       | Some identity ->
           let proof = Relay_signed_ops.sign_register identity ~alias ~relay_url:t.base_url in
           let open Yojson.Safe.Util in
@@ -545,7 +549,8 @@ module Relay_client = struct
               ("nonce", `String proof.nonce);
               ("timestamp", `String proof.ts);
             ]
-          )
+          ),
+          proof.identity_pk_b64
     in
     let body =
       if enc_pubkey <> "" then
@@ -554,7 +559,7 @@ module Relay_client = struct
         `Assoc (base_list @ [("enc_pubkey", `String enc_pubkey); ("signed_at", `Float signed_at); ("sig_b64", `String sig_b64)])
       else body
     in
-    post t "/register" ~alias body
+    post_with_pow_retry t "/register" ~alias ~route:"register" ~actor_id body
 
   let heartbeat t ~node_id ~session_id ?(alias : string option) () =
     post t "/heartbeat" ?alias (`Assoc [
