@@ -855,16 +855,59 @@ fi
 exit 0
 |}
 
+let claude_stop_hook_script = {|
+#!/bin/bash
+# c2c-stop-deliver.sh — Stop hook for c2c auto-delivery in Claude Code
+#
+# Delivers queued c2c messages on text-only turns (no tool call).
+# When messages exist, blocks the stop so Claude continues and the model
+# sees the messages as the block reason. When no messages, exits silently
+# without blocking.
+#
+# Calls c2c-stop-hook-ocaml which reads session_id from stdin JSON (same
+# parser as the PostToolUse hook), drains the global sessions broker, and
+# emits {"decision":"block","reason":"<messages>"} if messages exist.
+#
+# IMPORTANT: do NOT use `exec` for hook binaries (same ECHILD reason as
+# c2c-inbox-check.sh).
+#
+# Optional env vars (set by c2c start, the MCP server entry, or tests):
+#   C2C_MCP_SESSION_ID   — broker session id
+#   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
+#   C2C_SESSIONS_BROKER_ROOT — global session broker override
+
+SCRIPT_DIR="$(dirname "$0")"
+REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null || echo "$SCRIPT_DIR")"
+
+# Prefer the installed OCaml stop hook. Fall back to dev-tree exe.
+# If neither found, exit silently (no delivery, no blocking).
+if command -v c2c-stop-hook-ocaml >/dev/null 2>&1; then
+    C2C_REPO_ROOT="$REPO_ROOT" c2c-stop-hook-ocaml
+elif [ -x "$REPO_ROOT/_build/default/ocaml/tools/c2c_stop_hook.exe" ]; then
+    C2C_REPO_ROOT="$REPO_ROOT" "$REPO_ROOT/_build/default/ocaml/tools/c2c_stop_hook.exe"
+else
+    # Neither binary found: exit silently (no blocking, no ECHILD risk).
+    exit 0
+fi
+|}
+
 let configure_claude_hook () =
   let home = Sys.getenv "HOME" in
   let hooks_dir = home // ".claude" // "hooks" in
   let script_path = hooks_dir // "c2c-inbox-check.sh" in
+  let stop_script_path = hooks_dir // "c2c-stop-deliver.sh" in
   let settings_path = home // ".claude" // "settings.json" in
   C2c_mcp.mkdir_p hooks_dir;
+  (* Install PostToolUse hook script *)
   let oc = open_out script_path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
     output_string oc claude_hook_script);
   Unix.chmod script_path 0o755;
+  (* Install Stop hook script (P1) *)
+  let oc_stop = open_out stop_script_path in
+  Fun.protect ~finally:(fun () -> close_out oc_stop) (fun () ->
+    output_string oc_stop claude_stop_hook_script);
+  Unix.chmod stop_script_path 0o755;
   let settings =
     if Sys.file_exists settings_path then json_read_file settings_path
     else `Assoc []
@@ -872,12 +915,16 @@ let configure_claude_hook () =
   let hook_entry =
     `Assoc [ ("type", `String "command"); ("command", `String script_path) ]
   in
+  let stop_hook_entry =
+    `Assoc [ ("type", `String "command"); ("command", `String stop_script_path) ]
+  in
   let settings = match settings with
     | `Assoc fields ->
         let hooks = match List.assoc_opt "hooks" fields with
           | Some (`Assoc h) -> h
           | _ -> []
         in
+        (* PostToolUse hook registration (existing) *)
         let post_tool_use = match List.assoc_opt "PostToolUse" hooks with
           | Some (`List g) -> g
           | _ -> []
@@ -912,10 +959,48 @@ let configure_claude_hook () =
         in
         let hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks in
         let hooks = hooks @ [ ("PostToolUse", `List (other_groups @ [ target_group ])) ] in
+        (* Stop hook registration (P1) *)
+        let stop_hooks = match List.assoc_opt "Stop" hooks with
+          | Some (`List g) -> g
+          | _ -> []
+        in
+        let stop_target_group, stop_other_groups =
+          List.partition (fun g -> match g with
+            | `Assoc m -> (match List.assoc_opt "matcher" m with
+              | Some (`String ".*") -> true
+              | Some (`String "^(?!mcp__).*") -> true
+              | _ -> false)
+            | _ -> false) stop_hooks
+        in
+        let stop_target_group = match stop_target_group with
+          | (`Assoc m) :: _ ->
+              let existing_hooks = match List.assoc_opt "hooks" m with
+                | Some (`List h) -> h
+                | _ -> []
+              in
+              let has_hook = List.exists (fun h -> match h with
+                | `Assoc n -> (match List.assoc_opt "command" n with Some (`String p) -> p = stop_script_path | _ -> false)
+                | _ -> false) existing_hooks
+              in
+              let new_hooks = if has_hook then existing_hooks else existing_hooks @ [ stop_hook_entry ] in
+              let m_without_matcher_or_hooks =
+                List.filter (fun (k, _) -> k <> "matcher" && k <> "hooks") m
+              in
+              `Assoc (("matcher", `String "^(?!mcp__).*")
+                      :: m_without_matcher_or_hooks
+                      @ [ ("hooks", `List new_hooks) ])
+          | _ ->
+              `Assoc [ ("matcher", `String "^(?!mcp__).*"); ("hooks", `List [ stop_hook_entry ]) ]
+        in
+        let hooks = List.filter (fun (k, _) -> k <> "Stop") hooks in
+        let hooks = hooks @ [ ("Stop", `List (stop_other_groups @ [ stop_target_group ])) ] in
         let fields = List.filter (fun (k, _) -> k <> "hooks") fields in
         `Assoc (fields @ [ ("hooks", `Assoc hooks) ])
     | _ ->
-        `Assoc [ ("hooks", `Assoc [ ("PostToolUse", `List [ `Assoc [ ("matcher", `String "^(?!mcp__).*"); ("hooks", `List [ hook_entry ]) ] ]) ]) ]
+        `Assoc [ ("hooks", `Assoc
+          [ ("PostToolUse", `List [ `Assoc [ ("matcher", `String "^(?!mcp__).*"); ("hooks", `List [ hook_entry ]) ] ])
+          ; ("Stop", `List [ `Assoc [ ("matcher", `String "^(?!mcp__).*"); ("hooks", `List [ stop_hook_entry ]) ] ])
+          ]) ]
   in
   json_write_file settings_path settings
 
@@ -992,31 +1077,58 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
    with Unix.Unix_error _ -> ());
   json_write_file_or_dryrun dry_run mcp_config_path config;
   let settings_path = Filename.concat claude_dir "settings.json" in
-  let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
-  let script_changed = ref false in
-  (try
-     let dir = Filename.dirname hook_script in
-     if not (Sys.file_exists dir) then mkdir_p dry_run dir;
-     let hook_content = claude_hook_script in
-     let existing =
-       if Sys.file_exists hook_script then
-         try
-           let ic = open_in hook_script in
-           Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-             really_input_string ic (in_channel_length ic))
-         with _ -> ""
-       else ""
-     in
-     if existing <> hook_content then script_changed := true;
-     if dry_run then
-       Printf.printf "[DRY-RUN] would write hook script to %s\n%!" hook_script
-     else begin
-       let oc = open_out hook_script in
-       output_string oc hook_content;
-       close_out oc;
-       Unix.chmod hook_script 0o755
-     end
-   with Unix.Unix_error _ -> ());
+   let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
+   let stop_hook_script = Filename.concat claude_dir "hooks" // "c2c-stop-deliver.sh" in
+   let script_changed = ref false in
+   let stop_script_changed = ref false in
+   (* Install PostToolUse hook script *)
+   (try
+      let dir = Filename.dirname hook_script in
+      if not (Sys.file_exists dir) then mkdir_p dry_run dir;
+      let hook_content = claude_hook_script in
+      let existing =
+        if Sys.file_exists hook_script then
+          try
+            let ic = open_in hook_script in
+            Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+              really_input_string ic (in_channel_length ic))
+          with _ -> ""
+        else ""
+      in
+      if existing <> hook_content then script_changed := true;
+      if dry_run then
+        Printf.printf "[DRY-RUN] would write hook script to %s\n%!" hook_script
+      else begin
+        let oc = open_out hook_script in
+        output_string oc hook_content;
+        close_out oc;
+        Unix.chmod hook_script 0o755
+      end
+    with Unix.Unix_error _ -> ());
+   (* Install Stop hook script (P1) *)
+   (try
+      let dir = Filename.dirname stop_hook_script in
+      if not (Sys.file_exists dir) then mkdir_p dry_run dir;
+      let hook_content = claude_stop_hook_script in
+      let existing =
+        if Sys.file_exists stop_hook_script then
+          try
+            let ic = open_in stop_hook_script in
+            Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+              really_input_string ic (in_channel_length ic))
+          with _ -> ""
+        else ""
+      in
+      if existing <> hook_content then stop_script_changed := true;
+      if dry_run then
+        Printf.printf "[DRY-RUN] would write stop hook script to %s\n%!" stop_hook_script
+      else begin
+        let oc = open_out stop_hook_script in
+        output_string oc hook_content;
+        close_out oc;
+        Unix.chmod stop_hook_script 0o755
+      end
+    with Unix.Unix_error _ -> ());
   let hook_registered = ref false in
   let settings_changed = ref false in
   let target_matcher = "^(?!mcp__).*" in
@@ -1068,20 +1180,75 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
             | _ -> entry
           else entry
         ) post_tool_use in
-        if not already then begin
-          settings_changed := true;
-          let new_entry = `Assoc [ ("matcher", `String target_matcher); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] in
-          let new_post = upgraded_post @ [ new_entry ] in
-          let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List new_post) ] in
-          let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
-          `Assoc new_fields
-        end else if !settings_changed then begin
-          let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List upgraded_post) ] in
-          let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
-          `Assoc new_fields
-        end else
-          `Assoc fields
-    | _ -> `Assoc []
+        let base_hooks_and_fields =
+          if not already then begin
+            settings_changed := true;
+            let new_entry = `Assoc [ ("matcher", `String target_matcher); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] in
+            let new_post = upgraded_post @ [ new_entry ] in
+            let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List new_post) ] in
+            let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
+            new_fields
+          end else if !settings_changed then begin
+            let new_hooks = List.filter (fun (k, _) -> k <> "PostToolUse") hooks @ [ ("PostToolUse", `List upgraded_post) ] in
+            let new_fields = List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ] in
+            new_fields
+          end else
+            fields
+        in
+        (* Stop hook registration (P1) *)
+        let stop_hooks_exist = List.assoc_opt "hooks" base_hooks_and_fields
+          |> Option.map (function `Assoc h -> List.mem_assoc "Stop" h | _ -> false)
+          |> Option.value ~default:false
+        in
+        let stop_hook_registered = ref false in
+        let base_hooks_and_fields =
+          if stop_hooks_exist then base_hooks_and_fields
+          else begin
+            (* Register Stop hook if not already present *)
+            let hooks = List.assoc_opt "hooks" base_hooks_and_fields
+              |> Option.map (function `Assoc h -> h | _ -> [])
+              |> Option.value ~default:[]
+            in
+            let stop_hooks = match List.assoc_opt "Stop" hooks with
+              | Some (`List entries) -> entries
+              | _ -> []
+            in
+            let entry_has_stop_hook entry =
+              match entry with
+              | `Assoc e ->
+                  (match List.assoc_opt "hooks" e with
+                   | Some (`List hs) ->
+                       List.exists (fun h ->
+                         match h with
+                         | `Assoc h_fields ->
+                             (match List.assoc_opt "command" h_fields with
+                              | Some (`String cmd) -> cmd = stop_hook_script
+                              | _ -> false)
+                         | _ -> false) hs
+                   | _ -> false)
+              | _ -> false
+            in
+            let already_stop = List.exists entry_has_stop_hook stop_hooks in
+            stop_hook_registered := already_stop;
+            if not already_stop then begin
+              settings_changed := true;
+              let new_stop_entry = `Assoc [ ("matcher", `String target_matcher); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String stop_hook_script) ] ]) ] in
+              let new_stop = stop_hooks @ [ new_stop_entry ] in
+              let new_hooks = List.filter (fun (k, _) -> k <> "Stop") hooks @ [ ("Stop", `List new_stop) ] in
+              let new_fields = List.filter (fun (k, _) -> k <> "hooks") base_hooks_and_fields in
+              new_fields @ [ ("hooks", `Assoc new_hooks) ]
+            end else
+              base_hooks_and_fields
+          end
+        in
+        `Assoc base_hooks_and_fields
+    | _ ->
+        (* Both hooks missing from settings — register both *)
+        settings_changed := true;
+        `Assoc [ ("hooks", `Assoc
+          [ ("PostToolUse", `List [ `Assoc [ ("matcher", `String target_matcher); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String hook_script) ] ]) ] ])
+          ; ("Stop", `List [ `Assoc [ ("matcher", `String target_matcher); ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String stop_hook_script) ] ]) ] ])
+          ]) ]
   );
   (* #142 slice 4: PreToolUse permission-forwarding hook for Claude Code.
      Symmetric with the kimi PreToolUse hook from slice 2. The approval hook
@@ -1143,6 +1310,11 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     else if !hook_registered then "matcher upgraded"
     else "registered"
   in
+  let stop_hook_status =
+    if !hook_registered && not !settings_changed && not !script_changed && not !stop_script_changed then "already registered"
+    else if !stop_script_changed && not !settings_changed then "script updated"
+    else "registered"
+  in
   (match output_mode with
    | Json ->
        print_json (`Assoc
@@ -1153,17 +1325,20 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
           ; ("config", `String mcp_config_path)
           ; ("scope", `String (if global then "global" else "project"))
           ; ("hook_status", `String hook_status)
+          ; ("stop_hook_status", `String stop_hook_status)
           ; ("preauth_hook_status", `String preauth_status)
           ])
    | Human ->
        let hook_dir = Filename.concat claude_dir "hooks" in
        let hook_script = Filename.concat hook_dir "c2c-inbox-check.sh" in
+       let stop_hook_script_path = Filename.concat hook_dir "c2c-stop-deliver.sh" in
        let mark = "x" in
        let scope_label = if global then "global" else "project" in
        Printf.printf "Configured Claude Code for c2c (%s scope):\n" scope_label;
        Printf.printf "  - [%s] MCP server:     %s\n" mark mcp_config_path;
        Printf.printf "  - [%s] PostToolUse hook: %s/settings.json\n" mark claude_dir;
        Printf.printf "  - [%s] Inbox hook script: %s\n" mark hook_script;
+       Printf.printf "  - [%s] Stop hook script: %s\n" mark stop_hook_script_path;
        Printf.printf "\n  alias:       %s\n" alias_val;
        Printf.printf "  broker root: %s\n" root;
        if !hook_registered && not !settings_changed && not !script_changed then

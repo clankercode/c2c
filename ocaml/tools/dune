@@ -1,7 +1,22 @@
+; c2c_hook_lib: shared stdin-parsing + inbox-drain logic for Claude hooks.
+; Used by both c2c_inbox_hook (PostToolUse) and c2c_stop_hook (Stop).
+(library
+ (name c2c_hook_lib)
+ (wrapped false)
+ (modules c2c_hook_lib)
+ (libraries c2c_mcp unix))
+
 (executable
  (name c2c_inbox_hook)
  (modules c2c_inbox_hook)
- (libraries c2c_mcp c2c_cold_boot_context_lib unix))
+ (libraries c2c_hook_lib c2c_mcp c2c_cold_boot_context_lib unix))
+
+; c2c_stop_hook: Stop hook for text-only turn delivery (P1).
+; Blocks stop to inject queued messages; exits silently when inbox empty.
+(executable
+ (name c2c_stop_hook)
+ (modules c2c_stop_hook)
+ (libraries c2c_hook_lib c2c_mcp unix yojson))
 
 (library
  (name c2c_cold_boot_context_lib)

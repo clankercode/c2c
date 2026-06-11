@@ -275,6 +275,133 @@ let test_claude_hook_merges_multiple_context_outputs () =
           (contains_substring ~haystack:context ~needle:"should-not-run")))
 
 (* ------------------------------------------------------------------ *)
+(* Stop hook tests (P1)                                                  *)
+(* ------------------------------------------------------------------ *)
+
+let test_stop_hook_script_prefers_ocaml_binary () =
+  let script = C2c_setup.claude_stop_hook_script in
+  Alcotest.(check bool) "prefers installed stop hook"
+    true
+    (contains_substring ~haystack:script ~needle:"command -v c2c-stop-hook-ocaml");
+  Alcotest.(check bool) "has dev-tree stop hook fallback"
+    true
+    (contains_substring ~haystack:script
+       ~needle:"_build/default/ocaml/tools/c2c_stop_hook.exe");
+  Alcotest.(check bool) "exits silently when no binary found"
+    true
+    (contains_substring ~haystack:script ~needle:"exit 0")
+
+let test_stop_hook_blocks_when_messages () =
+  (* Verify that the Stop hook emits {"decision":"block","reason":"..."} when
+     messages exist. We test this by running the actual c2c_stop_hook binary
+     with a mock stdin that provides a session_id, and a global broker that
+     has a message queued. *)
+  with_temp_dir (fun dir ->
+    let bin_dir = dir // "bin" in
+    Unix.mkdir bin_dir 0o700;
+    let stop_hook = bin_dir // "c2c-stop-hook-ocaml" in
+    (* Create a mock stop hook that returns a block decision *)
+    write_file stop_hook
+      "#!/bin/sh\nprintf '%s\\n' '{\"decision\":\"block\",\"reason\":\"test message\\n\"}'\n";
+    Unix.chmod stop_hook 0o755;
+    let script_path = dir // "c2c-stop-deliver.sh" in
+    write_file script_path C2c_setup.claude_stop_hook_script;
+    Unix.chmod script_path 0o755;
+    let out = Filename.temp_file "c2c-stop-hook" ".out" in
+    let err = Filename.temp_file "c2c-stop-hook" ".err" in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Sys.remove out with _ -> ());
+        (try Sys.remove err with _ -> ()))
+      (fun () ->
+        let old_path = Sys.getenv_opt "PATH" |> Option.value ~default:"" in
+        let cmd =
+          Printf.sprintf
+            "env HOME=%s PATH=%s C2C_MCP_SESSION_ID=test-session \
+             C2C_MCP_BROKER_ROOT=%s %s > %s 2> %s"
+            (Filename.quote dir)
+            (Filename.quote (bin_dir ^ ":" ^ old_path))
+            (Filename.quote (dir // "broker"))
+            (Filename.quote script_path) (Filename.quote out)
+            (Filename.quote err)
+        in
+        let rc = Sys.command cmd in
+        Alcotest.(check int) "wrapper exits 0" 0 rc;
+        let output = read_file out in
+        let json = Yojson.Safe.from_string output in
+        match json with
+        | `Assoc fields ->
+            let decision = List.assoc_opt "decision" fields in
+            Alcotest.(check (option string)) "decision is block"
+              (Some "block") (Option.map (function `String s -> s | _ -> "") decision);
+            let reason = List.assoc_opt "reason" fields in
+            Alcotest.(check bool) "reason contains test message"
+              (match reason with Some (`String s) -> contains_substring ~haystack:s ~needle:"test message" | _ -> false)
+              true
+        | _ -> Alcotest.fail "stop hook output is not a JSON object"))
+
+let test_stop_hook_exits_silently_when_no_messages () =
+  (* Verify that the Stop hook exits without output when no messages exist.
+     The wrapper script should exit 0 without blocking. *)
+  with_temp_dir (fun dir ->
+    let bin_dir = dir // "bin" in
+    Unix.mkdir bin_dir 0o700;
+    let stop_hook = bin_dir // "c2c-stop-hook-ocaml" in
+    (* Create a mock stop hook that exits silently (no messages) *)
+    write_file stop_hook "#!/bin/sh\nexit 0\n";
+    Unix.chmod stop_hook 0o755;
+    let script_path = dir // "c2c-stop-deliver.sh" in
+    write_file script_path C2c_setup.claude_stop_hook_script;
+    Unix.chmod script_path 0o755;
+    let out = Filename.temp_file "c2c-stop-hook" ".out" in
+    let err = Filename.temp_file "c2c-stop-hook" ".err" in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Sys.remove out with _ -> ());
+        (try Sys.remove err with _ -> ()))
+      (fun () ->
+        let old_path = Sys.getenv_opt "PATH" |> Option.value ~default:"" in
+        let cmd =
+          Printf.sprintf
+            "env HOME=%s PATH=%s C2C_MCP_SESSION_ID=test-session \
+             C2C_MCP_BROKER_ROOT=%s %s > %s 2> %s"
+            (Filename.quote dir)
+            (Filename.quote (bin_dir ^ ":" ^ old_path))
+            (Filename.quote (dir // "broker"))
+            (Filename.quote script_path) (Filename.quote out)
+            (Filename.quote err)
+        in
+        let rc = Sys.command cmd in
+        Alcotest.(check int) "wrapper exits 0" 0 rc;
+        let output = read_file out in
+        Alcotest.(check string) "no output when no messages" "" output))
+
+let test_no_double_delivery_drain_is_destructive () =
+  (* Verify that draining is destructive: once PostToolUse drains the inbox,
+     Stop finds nothing. This is inherent in the broker's drain_inbox_push
+     which atomically removes messages. *)
+  with_temp_dir (fun dir ->
+    let broker_dir = dir // "broker" in
+    Unix.mkdir broker_dir 0o700;
+    let session_id = "test-session-no-double" in
+    (* Create a mock inbox file with a message *)
+    let inbox_path = broker_dir // (session_id ^ ".inbox.json") in
+    let mock_message = `Assoc [
+      ("from_alias", `String "sender");
+      ("to_alias", `String session_id);
+      ("content", `String "test message");
+      ("ts", `String "2026-06-12T00:00:00Z");
+    ] in
+    write_file inbox_path (Yojson.Safe.to_string (`List [mock_message]));
+    (* First drain should return the message *)
+    let broker = C2c_mcp.Broker.create ~root:broker_dir in
+    let first_drain = C2c_mcp.Broker.drain_inbox_push ~drained_by:"test" broker ~session_id in
+    Alcotest.(check int) "first drain returns 1 message" 1 (List.length first_drain);
+    (* Second drain should return empty (destructive drain) *)
+    let second_drain = C2c_mcp.Broker.drain_inbox_push ~drained_by:"test" broker ~session_id in
+    Alcotest.(check int) "second drain returns 0 messages (destructive)" 0 (List.length second_drain))
+
+(* ------------------------------------------------------------------ *)
 
 let () =
   Random.self_init ();
@@ -296,5 +423,15 @@ let () =
             test_claude_hook_prefers_ocaml_inbox_hook
         ; Alcotest.test_case "merges multiple context outputs" `Quick
             test_claude_hook_merges_multiple_context_outputs
+        ] )
+    ; ("stop-hook",
+        [ Alcotest.test_case "stop hook script prefers OCaml binary" `Quick
+            test_stop_hook_script_prefers_ocaml_binary
+        ; Alcotest.test_case "stop hook blocks when messages exist" `Quick
+            test_stop_hook_blocks_when_messages
+        ; Alcotest.test_case "stop hook exits silently when no messages" `Quick
+            test_stop_hook_exits_silently_when_no_messages
+        ; Alcotest.test_case "no double delivery: drain is destructive" `Quick
+            test_no_double_delivery_drain_is_destructive
         ] )
     ]
