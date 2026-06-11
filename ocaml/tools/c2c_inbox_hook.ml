@@ -211,12 +211,15 @@ let print_additional_context ~extra_contexts messages_text =
       Printf.printf "%s\n" (Yojson.Safe.to_string json)
 
 let () =
-  let session_id = C2c_hook_lib.resolve_session_id () in
+  let session_id =
+    match C2c_hook_lib.resolve_session_id () with
+    | Ok "" -> exit 0
+    | Ok sid -> sid
+    | Error msg -> prerr_endline msg; exit 1
+  in
   let broker_root =
     Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
   in
-  (* Fast path: if no session can be resolved, exit silently. *)
-  if session_id = "" then exit 0;
 
   let now = iso8601_now () in
   (* PPID is the Claude Code process that spawned this hook *)

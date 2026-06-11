@@ -19,7 +19,11 @@
  *)
 
 let () =
-  let session_id = C2c_hook_lib.resolve_session_id () in
+  let session_id =
+    match C2c_hook_lib.resolve_session_id () with
+    | Ok sid -> sid
+    | Error _ -> exit 0
+  in
   let broker_root =
     Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
   in

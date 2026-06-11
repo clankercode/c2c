@@ -124,20 +124,21 @@ let drain_global_messages ~session_id =
   else []
 
 (* Resolve session_id from stdin JSON payload, falling back to env var.
-   Returns validated session_id or empty string. *)
+   Returns:
+     Ok ""        — no session_id found (caller should exit silently)
+     Ok sid       — validated session_id
+     Error msg    — session_id present but invalid (caller decides exit code) *)
 let resolve_session_id () =
   let raw_session_id =
     match read_stdin_session_id () with
     | Some sid -> sid
     | None -> Option.value (env_nonempty "C2C_MCP_SESSION_ID") ~default:""
   in
-  if raw_session_id = "" then ""
+  if raw_session_id = "" then Ok ""
   else
     match C2c_mcp.validate_session_id raw_session_id with
-    | Ok sid -> sid
-    | Error msg ->
-        prerr_endline msg;
-        ""
+    | Ok sid -> Ok sid
+    | Error msg -> Error msg
 
 (* Drain all messages (repo + global) for the given session_id.
    Returns (repo_broker_opt, messages, alias). *)
