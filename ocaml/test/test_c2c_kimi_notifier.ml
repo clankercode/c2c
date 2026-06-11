@@ -443,7 +443,143 @@ let test_mixed_messages_approval_verdict_kept () =
        Alcotest.(check int) "all 3 messages remain in inbox" 3 (List.length remaining);
        let contents = List.map snd remaining in
        Alcotest.(check bool) "ka_ verdict still present" true
-         (List.exists (fun c -> contains c "ka_call_99") contents))
+          (List.exists (fun c -> contains c "ka_call_99") contents))
+
+(* ─── P4: global sessions broker drain ──────────────────────────────────────── *)
+
+(* Guard: fixture-gated so tests are hermetic to CI.
+   Set C2C_KIMI_NOTIFIER_FIXTURE=1 to enable. *)
+
+(* Build a minimal global sessions broker root with a pre-seeded inbox.
+   The global broker root is set via C2C_SESSIONS_BROKER_ROOT env var. *)
+let with_global_broker_and_inbox ?(session_id="kimi-global-test-sid") messages f =
+  let tmp = Filename.temp_file "c2c-global-broker-fixture-" "" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o755;
+  Fun.protect
+    ~finally:(fun () ->
+      let rec rmrf p =
+        if Sys.is_directory p then begin
+          Array.iter (fun c -> rmrf (Filename.concat p c)) (Sys.readdir p);
+          try Unix.rmdir p with _ -> ()
+        end else try Sys.remove p with _ -> ()
+      in
+      rmrf tmp)
+    (fun () ->
+       (* Broker needs a registry — create an empty one. *)
+       let reg_path = Filename.concat tmp "registrations.yaml" in
+       let reg = open_out reg_path in
+       output_string reg "registrations: []\n";
+       close_out reg;
+       (* Write the inbox for session_id. *)
+       let inbox_path = Filename.concat tmp (session_id ^ ".inbox.json") in
+       let inbox = open_out inbox_path in
+       let json_list =
+         `List (List.map (fun (from_alias, content) ->
+           `Assoc [
+             ("from_alias", `String from_alias);
+             ("to_alias", `String session_id);
+             ("content", `String content);
+             ("ts", `Float (Unix.gettimeofday ()));
+             ("deferrable", `Bool false);
+             ("ephemeral", `Bool false);
+             ("reply_via", `Null);
+             ("enc_status", `Null);
+             ("message_id", `Null);
+           ])
+           messages)
+         |> Yojson.Safe.to_string
+       in
+       output_string inbox json_list;
+       close_out inbox;
+       (* Also create the kimi instance config so session-dir resolution works. *)
+       let old_home = Sys.getenv_opt "HOME" in
+       (try
+          let local_dir = Filename.concat tmp ".local" in
+          Unix.mkdir local_dir 0o755;
+          let share_dir = Filename.concat local_dir "share" in
+          Unix.mkdir share_dir 0o755;
+          let c2c_dir = Filename.concat share_dir "c2c" in
+          Unix.mkdir c2c_dir 0o755;
+          let inst_dir = Filename.concat c2c_dir "instances" in
+          Unix.mkdir inst_dir 0o755;
+          let alias_dir = Filename.concat inst_dir "kimi-global-test" in
+          Unix.mkdir alias_dir 0o755;
+          let config_path = Filename.concat alias_dir "config.json" in
+          let oc = open_out config_path in
+          Printf.fprintf oc "{\"resume_session_id\":\"%s\"}\n" session_id;
+          close_out oc;
+          Unix.putenv "HOME" tmp;
+          f tmp session_id
+        with exn ->
+          (match old_home with Some v -> Unix.putenv "HOME" v | None -> ());
+          raise exn);
+       (match old_home with Some v -> Unix.putenv "HOME" v | None -> ()))
+
+(* Read messages from a global broker root for a given session_id. *)
+let read_global_inbox_messages global_root session_id =
+  let path = Filename.concat global_root (session_id ^ ".inbox.json") in
+  if not (Sys.file_exists path) then []
+  else
+    try
+      let json = Yojson.Safe.from_file path in
+      match json with
+      | `List items ->
+          List.map (fun item ->
+            let open Yojson.Safe.Util in
+            ( item |> member "from_alias" |> to_string,
+              item |> member "content" |> to_string ))
+            items
+      | _ -> []
+    with _ -> []
+
+(* [#P4] Core invariant: poll_once_global drains messages from the global
+   sessions broker and delivers them via the kimi notification store.
+   After delivery, the global inbox is empty (destructive drain). *)
+let test_poll_once_global_drains_global_broker () =
+  let session_id = "kimi-global-test-sid" in
+  with_global_broker_and_inbox ~session_id
+    [ ("sender-a", "hello from global broker") ]
+    (fun global_root sid ->
+       Alcotest.(check int) "inbox has 1 message before drain" 1
+         (List.length (read_global_inbox_messages global_root sid));
+       (* Set C2C_SESSIONS_BROKER_ROOT so poll_once_global uses our temp broker. *)
+       let old_sessions_root = Sys.getenv_opt "C2C_SESSIONS_BROKER_ROOT" in
+       Unix.putenv "C2C_SESSIONS_BROKER_ROOT" global_root;
+       let n = C2c_kimi_notifier.poll_once_global
+         ~session_id:sid
+         ~alias:"kimi-global-test"
+         ~tmux_pane:None
+       in
+       (match old_sessions_root with
+        | Some v -> Unix.putenv "C2C_SESSIONS_BROKER_ROOT" v
+        | None -> ());
+       Alcotest.(check int) "1 delivery" 1 n;
+       Alcotest.(check int) "global inbox drained after delivery" 0
+         (List.length (read_global_inbox_messages global_root sid)))
+
+(* [#P4] Cross-session isolation: a message for session A must NOT be drained
+   when polling session B. *)
+let test_poll_once_global_no_cross_session_leak () =
+  let session_a = "kimi-session-a" in
+  let session_b = "kimi-session-b" in
+  with_global_broker_and_inbox ~session_id:session_a
+    [ ("sender-x", "this is for session A only") ]
+    (fun global_root_a sid_a ->
+       (* Set C2C_SESSIONS_BROKER_ROOT so poll_once_global uses our temp broker. *)
+       let old_sessions_root = Sys.getenv_opt "C2C_SESSIONS_BROKER_ROOT" in
+       Unix.putenv "C2C_SESSIONS_BROKER_ROOT" global_root_a;
+       let n = C2c_kimi_notifier.poll_once_global
+         ~session_id:session_b
+         ~alias:"kimi-session-b-alias"
+         ~tmux_pane:None
+       in
+       (match old_sessions_root with
+        | Some v -> Unix.putenv "C2C_SESSIONS_BROKER_ROOT" v
+        | None -> ());
+       Alcotest.(check int) "0 deliveries for session B" 0 n;
+       Alcotest.(check int) "session A inbox still has 1 message" 1
+         (List.length (read_global_inbox_messages global_root_a sid_a)))
 
 (* ─── Idle-detection tests (#590) ─────────────────────────────────────────── *)
 
@@ -546,5 +682,9 @@ let () =
       [ Alcotest.test_case "approval verdict kept in inbox" `Quick test_approval_verdict_kept_in_inbox_after_run_once
       ; Alcotest.test_case "system event kept in inbox" `Quick test_system_event_remains_in_inbox_after_run_once
       ; Alcotest.test_case "mixed messages verdict preserved" `Quick test_mixed_messages_approval_verdict_kept
+      ]
+    ; "global_broker_p4",
+      [ Alcotest.test_case "poll_once_global drains global broker" `Quick test_poll_once_global_drains_global_broker
+      ; Alcotest.test_case "poll_once_global no cross-session leak" `Quick test_poll_once_global_no_cross_session_leak
       ]
     ]

@@ -478,7 +478,91 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
        if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
          tmux_wake ~pane
      | _ -> ());
-    n
+     n
+
+(* ─── P4: global sessions broker drain ─────────────────────────────────────── *)
+
+(* Check if a global session inbox exists for the given session_id. *)
+let global_inbox_exists ~root ~session_id =
+  Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
+
+(* [#P4] Drain messages from the global sessions broker (C2C_SESSIONS_BROKER_ROOT)
+   and deliver them via the kimi notification store. This enables cross-client
+   delivery: `c2c send --session <kimi-session-id>` reaches kimi sessions.
+
+   Uses drain_inbox (destructive) since the global broker is separate from the
+   per-repo broker — no risk of double-delivery or await-reply races.
+   System events are logged to chat-log but not delivered to kimi. *)
+
+let poll_once_global ~session_id ~alias ~tmux_pane =
+  let sessions_root = C2c_repo_fp.resolve_sessions_broker_root () in
+  if not (global_inbox_exists ~root:sessions_root ~session_id) then
+    0
+  else
+    let broker = C2c_mcp.Broker.create ~root:sessions_root in
+    let all_messages = C2c_mcp.Broker.drain_inbox ~drained_by:"kimi-notifier-global" broker ~session_id in
+    match all_messages with
+    | [] -> 0
+    | _ ->
+      (* Resolve the kimi session-dir for notification delivery. *)
+      let cwd = Sys.getcwd () in
+      let session_dir_opt =
+        match read_session_id_from_config alias with
+        | Some sid -> Some (session_dir_for ~cwd ~session_id:sid)
+        | None -> None
+      in
+      (* Partition: to_deliver = non-system, to_skip = system events. *)
+      let to_deliver, to_skip =
+        List.partition
+          (fun (msg : C2c_mcp.message) -> not (is_system_event ~from_alias:msg.from_alias))
+          all_messages
+      in
+      (* Log skipped system events to chat-log. *)
+      List.iter
+        (fun (msg : C2c_mcp.message) ->
+          (try
+             match session_dir_opt with
+             | Some sdir -> write_chat_log ~session_dir:sdir ~from_alias:msg.from_alias ~body:msg.content
+             | None -> ()
+           with exn ->
+             Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+               (Printexc.to_string exn)))
+        to_skip;
+      (* Attempt delivery of non-system messages. *)
+      let delivered, undelivered = ref [], ref [] in
+      List.iter
+        (fun (msg : C2c_mcp.message) ->
+          let from_alias = msg.from_alias in
+          let body = msg.content in
+          let ts = msg.ts in
+          let nid = notification_id_for_msg ~from_alias ~ts ~content:body in
+          match session_dir_opt with
+          | Some sdir ->
+            (try write_chat_log ~session_dir:sdir ~from_alias ~body
+             with exn ->
+               Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+                 (Printexc.to_string exn));
+            (try write_notification ~session_dir:sdir ~notification_id:nid ~from_alias ~body;
+             delivered := msg :: !delivered
+             with exn ->
+               Printf.eprintf "[kimi-notifier] global write failed: %s\n%!"
+                 (Printexc.to_string exn);
+               undelivered := msg :: !undelivered)
+          | None ->
+            undelivered := msg :: !undelivered;
+            Printf.eprintf
+              "[kimi-notifier] no kimi session-id resolved for global msg; dropping\n%!")
+        to_deliver;
+      (* Global broker drain is destructive — no write-back since the global broker
+         is separate from the per-repo broker. Undleivered messages are logged but
+         not recoverable without sender re-send. *)
+      let n = List.length !delivered in
+      (match tmux_pane with
+       | Some pane when session_dir_opt <> None && n > 0 ->
+         if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
+           tmux_wake ~pane
+       | _ -> ());
+      n
 
 (* ─── Daemon shell (fork + setsid + loop) ────────────────────────────────── *)
 

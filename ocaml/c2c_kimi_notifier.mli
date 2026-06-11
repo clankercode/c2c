@@ -60,6 +60,21 @@ val run_once :
   tmux_pane:string option ->
   int
 
+(** [poll_once_global ~session_id ~alias ~tmux_pane] drains pending messages
+    from the global sessions broker (C2C_SESSIONS_BROKER_ROOT) for the given
+    session_id and delivers them via the kimi notification store. This enables
+    cross-client delivery: `c2c send --session <kimi-session-id>` reaches
+    managed kimi sessions. Returns the number of messages delivered.
+
+    Uses drain_inbox (destructive) since the global broker is separate from the
+    per-repo broker — no risk of double-delivery or await-reply races.
+    Exposed for unit tests + dogfood smokes. *)
+val poll_once_global :
+  session_id:string ->
+  alias:string ->
+  tmux_pane:string option ->
+  int
+
 (** [read_session_id_from_config alias] reads the pinned session UUID from
     [~/.local/share/c2c/instances/<alias>/config.json] (written before exec
     by [#158]) and returns it, or [None] if not found / unreadable. *)

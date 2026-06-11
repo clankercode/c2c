@@ -278,15 +278,22 @@ let run_inotify_loop
  * --------------------------------------------------------------------------- *)
 
 (* For kimi: use the kimi notifier which handles notification-store writes
-   and tmux wake internally. The session_id IS the kimi alias in managed context. *)
+   and tmux wake internally. The session_id IS the kimi alias in managed context.
+   P4: also polls the global sessions broker for session-id addressed messages. *)
 let poll_once_kimi ~(broker_root : string) ~(session_id : string) : int =
   let tmux_pane = Sys.getenv_opt "TMUX_PANE" in
-  let count = C2c_kimi_notifier.run_once
+  let count_repo = C2c_kimi_notifier.run_once
     ~broker_root
     ~alias:session_id
     ~session_id
     ~tmux_pane
   in
+  let count_global = C2c_kimi_notifier.poll_once_global
+    ~session_id
+    ~alias:session_id
+    ~tmux_pane
+  in
+  let count = count_repo + count_global in
   (* #562: log kimi notification result *)
   C2c_deliver_inbox_log.log_kimi
     ~broker_root ~session_id ~who:session_id ~count ~ok:true;

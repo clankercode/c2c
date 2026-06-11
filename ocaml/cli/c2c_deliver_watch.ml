@@ -1,4 +1,9 @@
-(* c2c_deliver_watch: CLI deliver --watch subcommand (#482 S6). *)
+(* c2c_deliver_watch: CLI deliver --watch subcommand (#482 S6).
+
+   P4: also drains the global sessions broker
+   (C2C_SESSIONS_BROKER_ROOT / resolve_sessions_broker_root) alongside the
+   per-repo broker, so messages sent via `c2c send --session <id>` reach
+   codex/opencode sessions too. *)
 
 open Cmdliner.Term.Syntax
 
@@ -18,6 +23,19 @@ let default_broker_root () : string =
       let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
       home // ".c2c" // "repos" // "default" // "broker"
 
+(* P4: Check if a global session inbox exists for the given session_id. *)
+let global_inbox_exists ~root ~session_id =
+  Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
+
+(* P4: Drain messages from the global sessions broker.
+   Returns [] if no global inbox exists. *)
+let drain_global_messages ~session_id =
+  let root = C2c_repo_fp.resolve_sessions_broker_root () in
+  if global_inbox_exists ~root ~session_id then
+    let broker = C2c_mcp.Broker.create ~root in
+    C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-watch-global" broker ~session_id
+  else []
+
 let watch_loop
     ~(broker_root : string)
     ~(session_id : string)
@@ -28,16 +46,26 @@ let watch_loop
   let total = ref 0 in
   let rec loop () =
     incr iterations;
-    let messages =
+    let repo_messages =
       C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-watch" broker ~session_id
     in
+    let global_messages = drain_global_messages ~session_id in
+    let messages = repo_messages @ global_messages in
     total := !total + List.length messages;
-    C2c_deliver_inbox_log.log_drain
-      ~broker_root
-      ~session_id
-      ~client:"deliver-watch"
-      ~count:(List.length messages)
-      ~drained_by_pid:(Unix.getpid ());
+    (if List.length repo_messages > 0 then
+       C2c_deliver_inbox_log.log_drain
+         ~broker_root
+         ~session_id
+         ~client:"deliver-watch"
+         ~count:(List.length repo_messages)
+         ~drained_by_pid:(Unix.getpid ()));
+    (if List.length global_messages > 0 then
+       C2c_deliver_inbox_log.log_drain
+         ~broker_root:(C2c_repo_fp.resolve_sessions_broker_root ())
+         ~session_id
+         ~client:"deliver-watch-global"
+         ~count:(List.length global_messages)
+         ~drained_by_pid:(Unix.getpid ()));
     List.iter
       (fun (msg : C2c_mcp.message) ->
         match mode with
