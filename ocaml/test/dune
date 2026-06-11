@@ -160,6 +160,12 @@
  (deps %{exe:../cli/c2c.exe} %{exe:../tools/c2c_inbox_hook.exe}))
 
 (test
+ (name test_inbox_hook_harness)
+ (modules test_inbox_hook_harness)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps %{exe:../tools/c2c_inbox_hook.exe}))
+
+(test
  (name test_c2c_relay_connector)
  (modules test_c2c_relay_connector)
  (libraries c2c_mcp alcotest yojson unix))
