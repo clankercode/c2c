@@ -781,58 +781,10 @@ let sessions_cmd =
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
   let regs = C2c_mcp.Broker.list_registrations broker in
-  let output_mode = if json then Json else Human in
-  if regs = [] then
-    match output_mode with
-    | Json -> print_json (`List [])
-    | Human -> Printf.printf "No sessions.\n"
+  if json then
+    print_json (C2c_sessions_format.sessions_to_json regs)
   else
-    match output_mode with
-    | Json ->
-        let items = List.map (fun (r : C2c_mcp.registration) ->
-          let live_val = match C2c_mcp.Broker.registration_liveness_state r with
-            | C2c_mcp.Broker.Alive -> `Bool true
-            | C2c_mcp.Broker.Dead -> `Bool false
-            | C2c_mcp.Broker.Unknown -> `Null
-          in
-          let fields =
-            [ ("session_id", `String r.session_id)
-            ; ("alias", `String (Option.value r.canonical_alias ~default:r.alias))
-            ; ("client_type", (match r.client_type with Some ct -> `String ct | None -> `Null))
-            ; ("cwd", (match r.cwd with Some c -> `String c | None -> `Null))
-            ; ("live", live_val)
-            ]
-          in
-          let fields = match r.role with
-            | Some role -> fields @ [("role", `String role)]
-            | None -> fields
-          in
-          `Assoc fields
-        ) regs in
-        print_json (`List items)
-    | Human ->
-        Printf.printf "  %-36s %-20s %-10s %-4s %-30s %s\n"
-          "SESSION_ID" "ALIAS" "CLIENT" "LIVE" "CWD" "ROLE";
-        Printf.printf "  %-36s %-20s %-10s %-4s %-30s %s\n"
-          (String.make 36 '-') (String.make 20 '-') (String.make 10 '-')
-          (String.make 4 '-') (String.make 30 '-') (String.make 4 '-');
-        List.iter (fun (r : C2c_mcp.registration) ->
-          let live_str = match C2c_mcp.Broker.registration_liveness_state r with
-            | C2c_mcp.Broker.Alive -> "yes"
-            | C2c_mcp.Broker.Dead -> "no"
-            | C2c_mcp.Broker.Unknown -> "?"
-          in
-          let ct = Option.value r.client_type ~default:"?" in
-          let cwd = Option.value r.cwd ~default:"-" in
-          let role_str = Option.value r.role ~default:"" in
-          let alias_display = Option.value r.canonical_alias ~default:r.alias in
-          let sid_display =
-            let s = r.session_id in
-            if String.length s > 34 then String.sub s 0 34 ^ "…" else s
-          in
-          Printf.printf "  %-36s %-20s %-10s %-4s %-30s %s\n"
-            sid_display (truncate_str alias_display 20) ct live_str (truncate_str cwd 30) role_str
-        ) regs
+    print_string (C2c_sessions_format.format_human regs)
 
 (* --- subcommand: whoami --------------------------------------------------- *)
 

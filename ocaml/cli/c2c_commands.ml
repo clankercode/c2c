@@ -52,9 +52,9 @@ let command_tier_map () : (string * safety) list =
   ; "refresh-peer", Tier1
   ; "instances", Tier1
   ; "doctor", Tier1
-  ; "verify", Tier1
-   ; "status", Tier1
-   ; "sessions", Tier1
+   ; "verify", Tier1
+  ; "status", Tier1
+  ; "sessions", Tier1
   ; "commands", Tier1
   ; "monitor", Tier1      (* read-only inbox/archive event stream — required by agent recovery-snippet *)
   ; "skills", Tier1
