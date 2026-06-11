@@ -30,6 +30,8 @@ let global_inbox_exists ~root ~session_id =
 (* P4: Drain messages from the global sessions broker.
    Returns [] if no global inbox exists. *)
 let drain_global_messages ~session_id =
+  if not (C2c_name.is_valid session_id) then []
+  else
   let root = C2c_repo_fp.resolve_sessions_broker_root () in
   if global_inbox_exists ~root ~session_id then
     let broker = C2c_mcp.Broker.create ~root in

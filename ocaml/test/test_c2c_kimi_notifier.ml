@@ -581,6 +581,14 @@ let test_poll_once_global_no_cross_session_leak () =
        Alcotest.(check int) "session A inbox still has 1 message" 1
          (List.length (read_global_inbox_messages global_root_a sid_a)))
 
+let test_poll_once_global_rejects_traversal_session_id () =
+  let n = C2c_kimi_notifier.poll_once_global
+    ~session_id:"../../../etc/passwd"
+    ~alias:"traversal-test"
+    ~tmux_pane:None
+  in
+  Alcotest.(check int) "traversal session_id rejected" 0 n
+
 (* ─── Idle-detection tests (#590) ─────────────────────────────────────────── *)
 
 let with_tmpdir f =
@@ -686,5 +694,6 @@ let () =
     ; "global_broker_p4",
       [ Alcotest.test_case "poll_once_global drains global broker" `Quick test_poll_once_global_drains_global_broker
       ; Alcotest.test_case "poll_once_global no cross-session leak" `Quick test_poll_once_global_no_cross_session_leak
+      ; Alcotest.test_case "poll_once_global rejects traversal session_id" `Quick test_poll_once_global_rejects_traversal_session_id
       ]
     ]

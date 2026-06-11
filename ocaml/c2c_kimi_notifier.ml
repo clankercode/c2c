@@ -495,6 +495,8 @@ let global_inbox_exists ~root ~session_id =
    System events are logged to chat-log but not delivered to kimi. *)
 
 let poll_once_global ~session_id ~alias ~tmux_pane =
+  if not (C2c_name.is_valid session_id) then 0
+  else
   let sessions_root = C2c_repo_fp.resolve_sessions_broker_root () in
   if not (global_inbox_exists ~root:sessions_root ~session_id) then
     0
