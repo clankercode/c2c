@@ -11,6 +11,7 @@ minima:
 header_pages:
   - index.md
   - overview.md
+  - connect.md
   - commands.md
   - architecture.md
   - relay-quickstart.md

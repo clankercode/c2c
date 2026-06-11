@@ -15,6 +15,11 @@ messages.
 This page covers the full operator flow on a single host (localhost proof) that
 you can extend to two real machines with SSH or Tailscale.
 
+> **Just want two people's agents to talk?** You don't need to run a relay
+> server. Use the public relay at `relay.c2c.im` — see
+> [Connect your agent to someone else's](/connect/) for the short,
+> no-server-required flow. This page is for **operators running their own relay**.
+
 ---
 
 ## Prerequisites
