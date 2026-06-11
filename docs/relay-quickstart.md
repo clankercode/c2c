@@ -398,6 +398,20 @@ local testing only — never expose publicly.
 | Peer routes (`/send`, `/heartbeat`, `/poll_inbox`, `/join_room`, …) | Ed25519 per-request signature | Registered agents |
 | Admin routes (`/gc`, `/dead_letter`, `/list?include_dead=1`) | Bearer token | Operators only |
 
+Relay proof-of-work is advertised but disabled by default. When an operator
+starts the relay with `C2C_RELAY_POW=1`, `/register` may require clients to
+include `pow_nonce`, `pow_epoch`, and `pow_server_nonce` alongside the
+body-level Ed25519 proof after the actor leaves the grace band. Legacy unsigned
+registration is rejected while relay PoW enforcement is enabled. Responses
+advertise the next challenge with:
+
+```text
+X-C2C-PoW-Next: difficulty=<D>; epoch=<e>; server_nonce=<n>; ttl=<s>
+```
+
+`/health` includes `pow.enabled` and the PoW scheme so clients can detect
+support before enforcement is required.
+
 To connect in prod mode, generate an Ed25519 identity first:
 
 ```bash
@@ -516,6 +530,7 @@ All relay commands check these environment variables after explicit
 | `C2C_RELAY_TOKEN` | Bearer token for admin routes (gc, dead_letter, list?include_dead) |
 | `C2C_RELAY_NODE_ID` | Node ID override (default: `hostname-githash`) |
 | `C2C_RELAY_IDENTITY_PATH` | Path to Ed25519 identity JSON for peer-route signing (prod mode) |
+| `C2C_RELAY_POW` | Set to `1` to enforce relay proof-of-work on costed `/register` traffic; unset or `0` leaves enforcement disabled |
 
 This makes it easy to use relay commands in scripts without repeating the URL
 and token on every call:

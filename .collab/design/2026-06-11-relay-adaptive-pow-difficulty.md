@@ -1,7 +1,10 @@
-# Relay adaptive proof-of-work difficulty (PLAN — not yet implemented)
+# Relay adaptive proof-of-work difficulty (PARTIAL — register enforcement landed)
 
-**Status**: design / planning. No code yet. Logged from a request by Max
-(2026-06-11). Companion todo entry in `todo.txt`.
+**Status**: partial implementation. The hashcash primitive, adaptive policy,
+and flag-gated relay `/register` enforcement are implemented behind
+`C2C_RELAY_POW=1`; client mint/retry support, broader costed route enforcement,
+production tuning, and Sybil hardening remain open. Logged from a request by
+Max (2026-06-11). Companion todo entry in `todo.txt`.
 **Author**: claude (Max's interactive session).
 **Motivation surfaced alongside**: the lease-TTL bump to 24h (commit on branch
 `relay-lease-ttl-24h`) — longer leases make alias squatting cheaper, which
@@ -11,19 +14,24 @@ sharpens the need for a cost on high-frequency relay requests.
 
 ## 0. Correction to a stated assumption
 
-Max asked "I think we have PoW on requests to the relay right?" — **we do not.**
-As of 2026-06-11 there is **zero** proof-of-work anywhere in the relay
-(`grep -ri 'proof.?of.?work|pow|difficulty|hashcash' ocaml/` → nothing). What
-exists today on `relay.c2c.im` (prod mode):
+Max asked "I think we have PoW on requests to the relay right?" — at the time,
+we did not. As of the initial implementation slice, relay PoW exists only for
+`/register` and is disabled unless `C2C_RELAY_POW=1`. What exists today on
+`relay.c2c.im` (prod mode):
 
 - **Ed25519 identity auth** — `/register` is a signed op (TOFU pin); peer routes
   (`/send`, `/poll_inbox`, room ops) require per-request Ed25519 signatures.
 - **Nonce replay protection** — `register_nonce_ttl = 600s`, `request_nonce_ttl
   = 120s`, signature time windows.
-- **No rate limiting, no request cost, no PoW.**
+- **Register-only PoW enforcement when enabled** — `/register` uses
+  per-identity adaptive cost accounting and server-issued challenges behind
+  `C2C_RELAY_POW=1`. Legacy unsigned registration is rejected while this flag
+  is enabled because there is no canonical Ed25519 actor to charge. Other routes
+  and client transparent retry are still follow-up work.
 
-So this feature is **net-new**: it introduces a PoW primitive *and* the adaptive
-difficulty mechanism on top.
+So this feature began as net-new PoW work: the primitive and initial adaptive
+register enforcement have landed, but the design below still tracks the broader
+rollout.
 
 ## 1. Goal (Max's framing, captured verbatim-ish)
 
@@ -152,12 +160,13 @@ clients/relays degrade gracefully and we can stage rollout.
 
 ## 6. Suggested phasing
 
-- **P0 (primitive)**: implement + unit-test the hashcash verify/mint pair and the
-  challenge-string binding. No enforcement yet. Behind a flag.
-- **P1 (fixed difficulty on register)**: enforce a small fixed `D` on `/register`
-  only; teach the client to mint+retry. Proves the end-to-end loop.
-- **P2 (adaptive)**: add per-actor cost accounting + the difficulty function +
-  the `X-C2C-PoW-Next` advertisement + `pow_required` challenge error.
+- **P0 (primitive)**: shipped — implement + unit-test the hashcash verify/mint
+  pair and the challenge-string binding.
+- **P1 (register enforcement)**: relay side shipped behind `C2C_RELAY_POW=1`;
+  client transparent mint+retry remains open.
+- **P2 (adaptive)**: relay-side per-actor cost accounting + difficulty function
+  + `X-C2C-PoW-Next` advertisement + `pow_required` challenge error shipped for
+  `/register`; broader route coverage remains open.
 - **P3 (Sybil hardening)**: per-IP dimension and/or PoW-gated identity creation
   (resolve OQ1).
 - **P4 (tune)**: observe prod traffic, set the constants.

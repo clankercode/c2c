@@ -2410,6 +2410,109 @@ end
 (* Instantiate rate limiter once at module level — avoids fresh-type-in-functor issue. *)
 module Rate_limiter_inst = Relay_ratelimit.Make()
 
+let pow_challenge_ttl_s = 120
+let pow_header_name = "X-C2C-PoW-Next"
+let relay_pow_policy = Pow_policy.create ()
+
+type pow_challenge = {
+  difficulty : int;
+  epoch : int;
+  server_nonce : string;
+  ttl_s : int;
+}
+
+let relay_pow_enabled () =
+  match Sys.getenv_opt "C2C_RELAY_POW" with
+  | Some "1" -> true
+  | _ -> false
+
+module PowChallenges : sig
+  val issue :
+    route:string -> actor_id:string -> difficulty:int -> now:float ->
+    pow_challenge
+  val consume_if_valid :
+    route:string -> actor_id:string -> epoch:int -> server_nonce:string ->
+    now:float -> bool
+end = struct
+  type key = string * string * int * string
+
+  type t = {
+    issued : (key, float) Hashtbl.t;
+    mutex : Mutex.t;
+  }
+
+  let state = { issued = Hashtbl.create 256; mutex = Mutex.create () }
+
+  let key ~route ~actor_id ~epoch ~server_nonce =
+    (route, actor_id, epoch, server_nonce)
+
+  let cleanup_locked ~now =
+    let expired = ref [] in
+    Hashtbl.iter
+      (fun key expires_at ->
+         if expires_at <= now then expired := key :: !expired)
+      state.issued;
+    List.iter (Hashtbl.remove state.issued) !expired
+
+  let issue ~route ~actor_id ~difficulty ~now =
+    let epoch =
+      int_of_float (floor (now /. float_of_int pow_challenge_ttl_s))
+    in
+    let server_nonce = Relay_signed_ops.random_nonce_b64 () in
+    let expires_at = now +. float_of_int pow_challenge_ttl_s in
+    Mutex.lock state.mutex;
+    begin
+      try
+        cleanup_locked ~now;
+        Hashtbl.replace state.issued
+          (key ~route ~actor_id ~epoch ~server_nonce)
+          expires_at
+      with exn ->
+        Mutex.unlock state.mutex;
+        raise exn
+    end;
+    Mutex.unlock state.mutex;
+    { difficulty; epoch; server_nonce; ttl_s = pow_challenge_ttl_s }
+
+  let consume_if_valid ~route ~actor_id ~epoch ~server_nonce ~now =
+    Mutex.lock state.mutex;
+    let consumed =
+      try
+        cleanup_locked ~now;
+        let k = key ~route ~actor_id ~epoch ~server_nonce in
+        match Hashtbl.find_opt state.issued k with
+        | Some expires_at when expires_at > now ->
+          Hashtbl.remove state.issued k;
+          true
+        | _ -> false
+      with exn ->
+        Mutex.unlock state.mutex;
+        raise exn
+    in
+    Mutex.unlock state.mutex;
+    consumed
+end
+
+let stateless_pow_challenge ~difficulty ~now =
+  let epoch =
+    int_of_float (floor (now /. float_of_int pow_challenge_ttl_s))
+  in
+  let server_nonce = Relay_signed_ops.random_nonce_b64 () in
+  { difficulty; epoch; server_nonce; ttl_s = pow_challenge_ttl_s }
+
+let issue_pow_challenge ~route ~actor_id ~difficulty =
+  let now = Unix.gettimeofday () in
+  if difficulty > 0 then
+    PowChallenges.issue ~route ~actor_id ~difficulty ~now
+  else
+    stateless_pow_challenge ~difficulty ~now
+
+let pow_header_value challenge =
+  Printf.sprintf "difficulty=%d; epoch=%d; server_nonce=%s; ttl=%d"
+    challenge.difficulty challenge.epoch challenge.server_nonce challenge.ttl_s
+
+let pow_header challenge = (pow_header_name, pow_header_value challenge)
+
 module NonceCache : sig
   type t
   val create : unit -> t
@@ -2795,6 +2898,29 @@ end = struct
      | _ -> None)
     |> Option.value ~default
 
+  let pow_required_json challenge =
+    `Assoc [
+      "ok", `Bool false;
+      "error_code", `String "pow_required";
+      "required", `Assoc [
+        "difficulty", `Int challenge.difficulty;
+        "epoch", `Int challenge.epoch;
+        "server_nonce", `String challenge.server_nonce;
+        "ctx", `String Pow.ctx;
+        "ttl_s", `Int challenge.ttl_s;
+      ];
+    ]
+
+  let issue_pow_header ~route ~actor_id ~difficulty =
+    issue_pow_challenge ~route ~actor_id ~difficulty |> pow_header
+
+  let pow_difficulty_for_actor ~enabled ~actor_id =
+    if enabled then
+      Pow_policy.required_difficulty_for_actor relay_pow_policy
+        ~actor_id ~now:(Unix.gettimeofday ())
+    else
+      0
+
   let encode_token_json j =
     Yojson.Safe.to_string j |>
     fun s -> Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
@@ -2820,23 +2946,24 @@ end = struct
 
   (* --- Response helpers --- *)
 
-  let respond_json ~status body =
+  let respond_json ?(headers = []) ~status body =
     let body_str = Yojson.Safe.to_string body in
+    let headers = ("Content-Type", "application/json") :: headers in
     Cohttp_lwt_unix.Server.respond_string
       ~status
-      ~headers:(Cohttp.Header.of_list [("Content-Type", "application/json")])
+      ~headers:(Cohttp.Header.of_list headers)
       ~body:body_str
       ()
 
-  let respond_ok body = respond_json ~status:`OK body
-  let respond_bad_request body = respond_json ~status:`Bad_request body
-  let respond_unauthorized body = respond_json ~status:`Unauthorized body
-  let respond_too_many_requests body = respond_json ~status:`Too_many_requests body
-  let respond_not_found body = respond_json ~status:`Not_found body
-  let respond_conflict body = respond_json ~status:`Conflict body
-  let respond_internal_error body = respond_json ~status:`Internal_server_error body
-  let respond_bad_gateway body = respond_json ~status:`Bad_gateway body
-  let respond_gateway_timeout body = respond_json ~status:`Gateway_timeout body
+  let respond_ok ?(headers = []) body = respond_json ~headers ~status:`OK body
+  let respond_bad_request ?(headers = []) body = respond_json ~headers ~status:`Bad_request body
+  let respond_unauthorized ?(headers = []) body = respond_json ~headers ~status:`Unauthorized body
+  let respond_too_many_requests ?(headers = []) body = respond_json ~headers ~status:`Too_many_requests body
+  let respond_not_found ?(headers = []) body = respond_json ~headers ~status:`Not_found body
+  let respond_conflict ?(headers = []) body = respond_json ~headers ~status:`Conflict body
+  let respond_internal_error ?(headers = []) body = respond_json ~headers ~status:`Internal_server_error body
+  let respond_bad_gateway ?(headers = []) body = respond_json ~headers ~status:`Bad_gateway body
+  let respond_gateway_timeout ?(headers = []) body = respond_json ~headers ~status:`Gateway_timeout body
 
   let respond_html ?(status = `OK) body =
     Cohttp_lwt_unix.Server.respond_string
@@ -2951,7 +3078,9 @@ GET  /list_rooms
 GET  /dead_letter
 GET  /gc            run gc now
 GET  /device-login  phone pairing UI (no auth required)
-POST /register      { node_id, session_id, alias, client_type?, ttl? }
+POST /register      { node_id, session_id, alias, client_type?, ttl?,
+                      identity_pk?, signature?, nonce?, timestamp?,
+                      pow_nonce?, pow_epoch?, pow_server_nonce? }
 POST /heartbeat     { node_id, session_id }
 POST /send          { from_alias, to_alias, content, message_id? }
 POST /send_all      { from_alias, content, message_id? }
@@ -3158,10 +3287,18 @@ generateKeys();
           String.trim line
         with _ -> "unknown")
     in
-    respond_ok (json_ok [
+    let pow_enabled = relay_pow_enabled () in
+    let pow_header =
+      issue_pow_header ~route:"health" ~actor_id:"" ~difficulty:0
+    in
+    respond_ok ~headers:[pow_header] (json_ok [
       ("version", `String Version.version);
       ("git_hash", `String git_hash);
-      ("auth_mode", `String auth_mode)
+      ("auth_mode", `String auth_mode);
+      ("pow", `Assoc [
+        ("enabled", `Bool pow_enabled);
+        ("scheme", `String Pow.scheme_id);
+      ]);
     ])
 
   let handle_list relay ~include_dead =
@@ -3234,12 +3371,81 @@ generateKeys();
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     let alias = get_string body "alias" in
+    let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
+    let actor_id =
+      if identity_pk_b64 = "" then ""
+      else
+        match decode_b64url identity_pk_b64 with
+        | Ok identity_pk when String.length identity_pk = 32 ->
+          b64url_nopad_encode identity_pk
+        | _ -> ""
+    in
+    let pow_enabled = relay_pow_enabled () in
+    let pow_actor_enabled = pow_enabled && actor_id <> "" in
+    let respond_register_json ?difficulty ~status body =
+      let difficulty =
+        match difficulty with
+        | Some d -> d
+        | None -> pow_difficulty_for_actor ~enabled:pow_actor_enabled ~actor_id
+      in
+      respond_json ~status ~headers:[
+        issue_pow_header ~route:"register" ~actor_id ~difficulty
+      ] body
+    in
+    let respond_register_ok ?difficulty body =
+      respond_register_json ?difficulty ~status:`OK body
+    in
+    let respond_register_bad_request body =
+      respond_register_json ~status:`Bad_request body
+    in
+    let respond_register_unauthorized body =
+      respond_register_json ~status:`Unauthorized body
+    in
+    let finish_register_result result =
+      if pow_actor_enabled && fst result = "ok" then begin
+        Pow_policy.record_route relay_pow_policy ~actor_id ~route:"register"
+          ~now:(Unix.gettimeofday ())
+      end else
+        0
+    in
+    let reject_pow_required difficulty =
+      let challenge = issue_pow_challenge ~route:"register" ~actor_id ~difficulty in
+      respond_json ~status:`Too_many_requests
+        ~headers:[pow_header challenge]
+        (pow_required_json challenge)
+    in
+    let verify_register_pow difficulty =
+      if not pow_enabled || difficulty <= 0 then Ok ()
+      else
+        let pow_nonce = get_opt_string body "pow_nonce" in
+        let pow_server_nonce = get_opt_string body "pow_server_nonce" in
+        let pow_epoch =
+          match Yojson.Safe.Util.member "pow_epoch" body with
+          | `Int n -> Some n
+          | `Float f -> Some (int_of_float f)
+          | _ -> None
+        in
+        match pow_nonce, pow_epoch, pow_server_nonce with
+        | Some pow_nonce, Some epoch, Some server_nonce ->
+          let challenge =
+            Pow.challenge_string ~ctx:Pow.ctx ~route:"register" ~actor_id
+              ~epoch ~server_nonce
+          in
+          if Pow.verify ~challenge ~difficulty ~pow_nonce
+             && PowChallenges.consume_if_valid ~route:"register" ~actor_id
+                  ~epoch ~server_nonce ~now:(Unix.gettimeofday ())
+          then
+            Ok ()
+          else
+            Error ()
+        | _ -> Error ()
+    in
     if node_id = "" || session_id = "" || alias = "" then
-      respond_bad_request (json_error_str err_bad_request "node_id, session_id, and alias are required")
+      respond_register_bad_request
+        (json_error_str err_bad_request "node_id, session_id, and alias are required")
     else
       let client_type = get_opt_string body "client_type" |> Option.value ~default:"unknown" in
       let ttl = effective_lease_ttl ~client_ttl:(float_of_int (get_int body "ttl" 0)) in
-      let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
       let enc_pubkey_b64 = get_opt_string body "enc_pubkey" |> Option.value ~default:"" in
       let signed_at = get_float body "signed_at" 0.0 in
       let sig_b64 = get_opt_string body "sig_b64" |> Option.value ~default:"" in
@@ -3255,37 +3461,47 @@ generateKeys();
          || nonce_b64 <> "" || timestamp_str <> "")
         && not has_proof_fields
       in
+      let required_pow =
+        pow_difficulty_for_actor ~enabled:pow_actor_enabled ~actor_id
+      in
+      match verify_register_pow required_pow with
+      | Error () ->
+        reject_pow_required required_pow
+      | Ok () ->
       if partial_proof then
-        respond_bad_request (json_error_str relay_err_missing_proof_field
+        respond_register_bad_request (json_error_str relay_err_missing_proof_field
           "identity_pk, signature, nonce, and timestamp must all be present together")
+      else if pow_enabled && not has_proof_fields then
+        respond_register_bad_request (json_error_str relay_err_missing_proof_field
+          "identity_pk, signature, nonce, and timestamp are required when C2C_RELAY_POW=1")
       else if has_proof_fields then
         (* Signed registration path — verify before binding. *)
         match decode_b64url identity_pk_b64 with
         | Error _ ->
-          respond_bad_request (json_error_str err_bad_request "identity_pk not base64url-nopad")
+          respond_register_bad_request (json_error_str err_bad_request "identity_pk not base64url-nopad")
         | Ok identity_pk when String.length identity_pk <> 32 ->
-          respond_bad_request (json_error_str err_bad_request "identity_pk must be 32 bytes")
+          respond_register_bad_request (json_error_str err_bad_request "identity_pk must be 32 bytes")
         | Ok identity_pk ->
           match decode_b64url signature_b64 with
           | Error _ ->
-            respond_bad_request (json_error_str err_bad_request "signature not base64url-nopad")
+            respond_register_bad_request (json_error_str err_bad_request "signature not base64url-nopad")
           | Ok sig_ when String.length sig_ <> 64 ->
-            respond_bad_request (json_error_str relay_err_signature_invalid "signature must be 64 bytes")
+            respond_register_bad_request (json_error_str relay_err_signature_invalid "signature must be 64 bytes")
           | Ok sig_ ->
             match parse_rfc3339_utc timestamp_str with
             | None ->
-              respond_bad_request (json_error_str err_bad_request "timestamp must be RFC3339 UTC")
+              respond_register_bad_request (json_error_str err_bad_request "timestamp must be RFC3339 UTC")
             | Some ts_client ->
               let now = Unix.gettimeofday () in
               let skew = ts_client -. now in
               if skew > register_ts_future_window || -. skew > register_ts_past_window then
-                respond_bad_request (json_error_str relay_err_timestamp_out_of_window
+                respond_register_bad_request (json_error_str relay_err_timestamp_out_of_window
                   (Printf.sprintf "timestamp skew %.1fs outside [-%.0f, +%.0f]"
                      skew register_ts_past_window register_ts_future_window))
               else
                 match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
                 | Error code ->
-                  respond_bad_request (json_error_str code "nonce already seen within TTL")
+                  respond_register_bad_request (json_error_str code "nonce already seen within TTL")
                 | Ok () ->
                   let signed =
                     Relay_identity.canonical_msg ~ctx:Relay_signed_ops.register_sign_ctx
@@ -3293,7 +3509,7 @@ generateKeys();
                         identity_pk_b64; timestamp_str; nonce_b64 ]
                   in
                   if not (Relay_identity.verify ~pk:identity_pk ~msg:signed ~sig_) then
-                    respond_unauthorized (json_error_str relay_err_signature_invalid
+                    respond_register_unauthorized (json_error_str relay_err_signature_invalid
                       "Ed25519 signature does not verify against identity_pk")
                   else
                     let result =
@@ -3311,13 +3527,15 @@ generateKeys();
                         ~nonce
                         ~ts
                     in
-                    respond_ok (json_of_register_result ~receipt result)
+                    let difficulty = finish_register_result result in
+                    respond_register_ok ~difficulty (json_of_register_result ~receipt result)
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
         let result =
           R.register relay ~node_id ~session_id ~alias ~client_type ~ttl ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64 ()
         in
-        respond_ok (json_of_register_result result)
+        let difficulty = finish_register_result result in
+        respond_register_ok ~difficulty (json_of_register_result result)
 
   (* S-A1: bind verified Ed25519 signer to body claims. When ~verified_alias
      is [Some v], body [from_alias] on send-family routes must match [v];
