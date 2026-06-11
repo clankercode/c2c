@@ -1144,19 +1144,20 @@ let missing_member_alias_result tool_name =
    - If no session_id context is available → None (allow legacy / system calls).
    - Otherwise, returns Some conflict_reg if alive different-session holds alias. *)
 let send_alias_impersonation_check ?session_id_override broker from_alias =
+  let from_cf = Broker.alias_casefold from_alias in
   match (match session_id_override with Some sid -> Some sid | None -> current_session_id ()) with
   | None -> None
   | Some current_sid ->
       List.find_opt
         (fun reg ->
-          reg.alias = from_alias
-          && reg.session_id <> current_sid
-          (* Require a real pid that /proc confirms is running. Pidless
-             registrations are legacy/ambiguous — we do not block on them
-             to avoid false positives in CLI tests and operator tooling
-             that writes registry entries without pids. *)
-          && reg.pid <> None
-          && Broker.registration_is_alive reg)
+           Broker.alias_casefold reg.alias = from_cf
+           && reg.session_id <> current_sid
+           (* Require a real pid that /proc confirms is running. Pidless
+              registrations are legacy/ambiguous — we do not block on them
+              to avoid false positives in CLI tests and operator tooling
+              that writes registry entries without pids. *)
+           && reg.pid <> None
+           && Broker.registration_is_alive reg)
         (Broker.list_registrations broker)
 
 (** Self-PASS detector strictness: "warn" (default) adds warning to receipt,

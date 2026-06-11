@@ -534,6 +534,137 @@ let test_send_all_per_recipient_delivery () =
       check string "peer-c content" "broadcast msg" msg_c.C2c_mcp_helpers.content)
 
 (* ------------------------------------------------------------------------- *)
+(* send: MCP from_alias spoofing — when caller's session is NOT registered,  *)
+(* from_alias from arguments is used. If that alias is held by a different   *)
+(* alive session WITH a real PID, the send must be rejected.                 *)
+(* ------------------------------------------------------------------------- *)
+
+let register_with_fake_pid broker ~session_id ~alias ~pid =
+  Broker.register broker ~session_id ~alias ~pid:(Some pid) ~pid_start_time:None ()
+
+let test_send_spoofed_from_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      (* victim: registered with a real PID, alive (our own PID is always alive) *)
+      let my_pid = Unix.getpid () in
+      register_with_fake_pid broker ~session_id:"session-victim" ~alias:"victim" ~pid:my_pid;
+      (* caller-session is NOT registered — forces from_alias from arguments *)
+      let args = `Assoc [
+        ("to_alias", `String "victim");
+        ("content", `String "forged message");
+        ("from_alias", `String "victim");
+      ] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send ~broker
+           ~session_id_override:(Some "session-attacker") ~arguments:args)
+      in
+      check bool "isError=true on spoofed from_alias" true (get_is_error result);
+      let text = get_text_content result in
+      check bool "mentions rejection" true
+        (contains_substring ~haystack:text ~needle:"reject"))
+
+(* ------------------------------------------------------------------------- *)
+(* send: from_alias == caller's own alias → allowed                          *)
+(* When a caller sends with from_alias matching their own registration,      *)
+(* the send should succeed normally.                                         *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_own_from_allowed () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      register_alive broker ~session_id:"session-sender" ~alias:"sender";
+      register_alive broker ~session_id:"session-recipient" ~alias:"recipient";
+      let args = `Assoc [
+        ("to_alias", `String "recipient");
+        ("content", `String "legit message");
+        ("from_alias", `String "sender");
+      ] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send ~broker
+           ~session_id_override:(Some "session-sender") ~arguments:args)
+      in
+      check bool "isError=false on own from_alias" false (get_is_error result);
+      let body = yojson_of_string (get_text_content result) in
+      let open Yojson.Safe.Util in
+      check bool "queued=true" true (body |> member "queued" |> to_bool);
+      check string "from_alias" "sender" (body |> member "from_alias" |> to_string))
+
+(* ------------------------------------------------------------------------- *)
+(* send: from_alias not registered by any alive session → allowed            *)
+(* An unregistered alias (no alive holder) can be used as from_alias.        *)
+(* This covers operator/test usage and the relay fallback path.              *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_unregistered_from_allowed () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      register_alive broker ~session_id:"session-recipient" ~alias:"recipient";
+      (* "ghost" is not registered at all *)
+      let args = `Assoc [
+        ("to_alias", `String "recipient");
+        ("content", `String "test message from unregistered");
+        ("from_alias", `String "ghost");
+      ] in
+      (* session "session-ghost" is also not registered — no alive session
+         holds "ghost", so the impersonation check should pass *)
+      let result = Lwt_main.run
+        (C2c_send_handlers.send ~broker
+           ~session_id_override:(Some "session-ghost") ~arguments:args)
+      in
+      check bool "isError=false on unregistered from_alias" false (get_is_error result);
+      let drained = Broker.drain_inbox ~drained_by:"test"
+        broker ~session_id:"session-recipient" in
+      check int "one message delivered" 1 (List.length drained);
+      let msg = List.hd drained in
+      check string "from_alias is ghost" "ghost" msg.C2c_mcp_helpers.from_alias)
+
+(* ------------------------------------------------------------------------- *)
+(* send_all: spoofed from_alias held by alive session → rejected             *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_all_spoofed_from_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      let my_pid = Unix.getpid () in
+      register_with_fake_pid broker ~session_id:"session-victim" ~alias:"victim" ~pid:my_pid;
+      let args = `Assoc [
+        ("content", `String "forged broadcast");
+        ("from_alias", `String "victim");
+      ] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send_all ~broker
+           ~session_id_override:(Some "session-attacker") ~arguments:args)
+      in
+      check bool "isError=true on spoofed from_alias in send_all" true (get_is_error result);
+      let text = get_text_content result in
+      check bool "mentions rejection" true
+        (contains_substring ~haystack:text ~needle:"reject"))
+
+(* ------------------------------------------------------------------------- *)
+(* send: case variation spoofing — from_alias with different case must be    *)
+(* caught by alias_casefold comparison. E.g. "Victim" vs "victim".           *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_case_variation_spoofing_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = Broker.create ~root:dir in
+      let my_pid = Unix.getpid () in
+      register_with_fake_pid broker ~session_id:"session-victim" ~alias:"Victim" ~pid:my_pid;
+      let args = `Assoc [
+        ("to_alias", `String "Victim");
+        ("content", `String "case-forged message");
+        ("from_alias", `String "victim");
+      ] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send ~broker
+           ~session_id_override:(Some "session-attacker") ~arguments:args)
+      in
+      check bool "isError=true on case-variation spoofed from_alias" true (get_is_error result);
+      let text = get_text_content result in
+      check bool "mentions rejection" true
+        (contains_substring ~haystack:text ~needle:"reject"))
+
+(* ------------------------------------------------------------------------- *)
 (* Test suite                                                                *)
 (* ------------------------------------------------------------------------- *)
 
@@ -555,6 +686,11 @@ let test_set = [
   "send_all receipt has encrypted/plaintext arrays", `Quick, test_send_all_receipt_has_enc_arrays;
   "send_all empty receipt has empty enc arrays", `Quick, test_send_all_empty_receipt_enc_arrays;
   "send_all per-recipient delivery", `Quick, test_send_all_per_recipient_delivery;
+  "send spoofed from_alias rejected", `Quick, test_send_spoofed_from_rejected;
+  "send own from_alias allowed", `Quick, test_send_own_from_allowed;
+  "send unregistered from_alias allowed", `Quick, test_send_unregistered_from_allowed;
+  "send_all spoofed from_alias rejected", `Quick, test_send_all_spoofed_from_rejected;
+  "send case variation spoofing rejected", `Quick, test_send_case_variation_spoofing_rejected;
 ]
 
 let () =

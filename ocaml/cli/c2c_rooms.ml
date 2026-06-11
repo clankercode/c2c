@@ -18,8 +18,6 @@ let resolve_broker_root () = C2c_utils.resolve_broker_root ()
 let resolve_alias_with_broker ?(override : string option) broker =
   let open C2c_mcp in
   let env_or_error () =
-    (* Final fallback: env alias, then error. Shared between the two
-       branches below so we don't duplicate the error string. *)
     match C2c_utils.alias_from_env_only () with
     | Some a -> a
     | None ->
@@ -28,7 +26,46 @@ let resolve_alias_with_broker ?(override : string option) broker =
         exit 1
   in
   match override with
-  | Some a when String.trim a <> "" -> String.trim a
+  | Some a when String.trim a <> "" ->
+      let r = String.trim a in
+      let caller_session_id = C2c_mcp.session_id_from_env () in
+      let is_coordinator = Sys.getenv_opt "C2C_COORDINATOR" = Some "1" in
+      (* Spoofing guard: keep in sync with C2c_cli_auth.validate_from_override
+         in c2c.ml (same logic, inlined here because c2c_rooms.ml does not
+         depend on c2c.ml). *)
+      if not is_coordinator then begin
+        let regs = Broker.list_registrations broker in
+        let from_cf = Broker.alias_casefold r in
+        let caller_owns_from =
+          match caller_session_id with
+          | Some sid ->
+              List.exists
+                (fun (reg : C2c_mcp.registration) ->
+                   Broker.alias_casefold reg.alias = from_cf && reg.session_id = sid)
+                regs
+          | None -> false
+        in
+        if not caller_owns_from then begin
+          let from_registered_to_other =
+            List.exists
+              (fun (reg : C2c_mcp.registration) ->
+                 Broker.alias_casefold reg.alias = from_cf
+                 && (match caller_session_id with
+                     | Some sid -> reg.session_id <> sid
+                     | None -> true))
+              regs
+          in
+          if from_registered_to_other then begin
+            Printf.eprintf
+              "refusing to send as '%s': that alias is registered to a different session \
+               (not your identity). Set C2C_COORDINATOR=1 to relay on behalf of another agent, \
+               or send as your own alias.\n%!"
+              r;
+            exit 1
+          end
+        end
+      end;
+      r
   | _ ->
       (* Priority: session_id (broker lookup) > env alias.
          Mirrors c2c.ml::resolve_alias. When C2C_MCP_SESSION_ID is unset,

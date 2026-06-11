@@ -102,10 +102,51 @@ let env_client_type () =
   | Some v when String.trim v <> "" -> Some (String.trim v)
   | _ -> None
 
+let is_coordinator () =
+  Sys.getenv_opt "C2C_COORDINATOR" = Some "1"
+
+let validate_from_override broker ~caller_session_id ~from_alias =
+  if is_coordinator () then ()
+  else begin
+    let from_cf = C2c_mcp.Broker.alias_casefold from_alias in
+    let regs = C2c_mcp.Broker.list_registrations broker in
+    let caller_owns_from =
+      match caller_session_id with
+      | Some sid ->
+          List.exists
+            (fun (r : C2c_mcp.registration) ->
+               C2c_mcp.Broker.alias_casefold r.alias = from_cf && r.session_id = sid)
+            regs
+      | None -> false
+    in
+    if not caller_owns_from then begin
+      let from_registered_to_other =
+        List.exists
+          (fun (r : C2c_mcp.registration) ->
+             C2c_mcp.Broker.alias_casefold r.alias = from_cf
+             && (match caller_session_id with
+                 | Some sid -> r.session_id <> sid
+                 | None -> true))
+          regs
+      in
+      if from_registered_to_other then begin
+        Printf.eprintf
+          "refusing to send as '%s': that alias is registered to a different session \
+           (not your identity). Set C2C_COORDINATOR=1 to relay on behalf of another agent, \
+           or send as your own alias.\n%!"
+          from_alias;
+        exit 1
+      end
+    end
+  end
+
 let resolve_alias ?(override : string option = None) broker =
   match override with
   | Some a when String.trim a <> "" ->
       let r = String.trim a in
+      validate_from_override broker
+        ~caller_session_id:(env_session_id ())
+        ~from_alias:r;
       if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] override=%s\n%!" r;
       r
   | _ ->
@@ -401,7 +442,12 @@ let send_cmd =
     | `Alias _ -> resolve_alias ~override:from_override broker
     | `Session _ ->
         (match from_override with
-         | Some a when String.trim a <> "" -> String.trim a
+         | Some a when String.trim a <> "" ->
+             let r = String.trim a in
+             validate_from_override broker
+               ~caller_session_id:(env_session_id ())
+               ~from_alias:r;
+             r
          | _ ->
              (match env_session_id () with
               | Some sid ->

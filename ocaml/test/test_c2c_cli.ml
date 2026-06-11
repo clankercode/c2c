@@ -1619,6 +1619,150 @@ let test_relay_dead_letter_no_relay_url_exits_nonzero () =
         (string_contains err "--relay-url"))
 
 (* ------------------------------------------------------------------------- *)
+(* c2c send --from spoofing protection tests                                 *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_from_spoofing_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-victim" ~alias:"victim"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-recip" ~alias:"recip"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-spoof" ".out" in
+      let errfile = Filename.temp_file "c2c-spoof" ".err" in
+      Fun.protect ~finally:(fun () ->
+          (try Sys.remove outfile with _ -> ());
+          (try Sys.remove errfile with _ -> ()))
+        (fun () ->
+           let send_cmd = Printf.sprintf
+             "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-attacker %s send --from victim recip 'forged' > %s 2>%s"
+             (Filename.quote dir) c2c_exe outfile errfile
+           in
+           let rc = Sys.command send_cmd in
+           check bool "send --from spoofing exits non-zero" true (rc <> 0);
+           let err = read_file errfile in
+           check bool "stderr mentions refusing/refused/reject" true
+             (string_contains err "refus"
+              || string_contains err "reject"
+              || string_contains err "spoof")))
+
+let test_send_from_own_alias_allowed () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-sender" ~alias:"sender"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-recip" ~alias:"recip"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-spoof-own" ".out" in
+      let errfile = Filename.temp_file "c2c-spoof-own" ".err" in
+      Fun.protect ~finally:(fun () ->
+          (try Sys.remove outfile with _ -> ());
+          (try Sys.remove errfile with _ -> ()))
+        (fun () ->
+           let send_cmd = Printf.sprintf
+             "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-sender %s send --from sender recip 'legit' > %s 2>%s"
+             (Filename.quote dir) c2c_exe outfile errfile
+           in
+           let rc = Sys.command send_cmd in
+           check int "send --from own alias exits 0" 0 rc))
+
+let test_send_from_unregistered_alias_allowed () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-recip" ~alias:"recip"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-spoof-unreg" ".out" in
+      let errfile = Filename.temp_file "c2c-spoof-unreg" ".err" in
+      Fun.protect ~finally:(fun () ->
+          (try Sys.remove outfile with _ -> ());
+          (try Sys.remove errfile with _ -> ()))
+        (fun () ->
+           let send_cmd = Printf.sprintf
+             "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-op %s send --from ghost-operator recip 'test' > %s 2>%s"
+             (Filename.quote dir) c2c_exe outfile errfile
+           in
+           let rc = Sys.command send_cmd in
+           check int "send --from unregistered alias exits 0" 0 rc))
+
+let test_send_from_coordinator_allowed () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-victim" ~alias:"victim"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-recip" ~alias:"recip"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-spoof-coord" ".out" in
+      let errfile = Filename.temp_file "c2c-spoof-coord" ".err" in
+      Fun.protect ~finally:(fun () ->
+          (try Sys.remove outfile with _ -> ());
+          (try Sys.remove errfile with _ -> ()))
+        (fun () ->
+           let send_cmd = Printf.sprintf
+             "C2C_CLI_FORCE=1 C2C_COORDINATOR=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-coord %s send --from victim recip 'coord relay' > %s 2>%s"
+             (Filename.quote dir) c2c_exe outfile errfile
+           in
+           let rc = Sys.command send_cmd in
+           check int "send --from as coordinator exits 0" 0 rc))
+
+let test_send_from_case_variation_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-victim" ~alias:"Victim"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-recip" ~alias:"recip"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-spoof-case" ".out" in
+      let errfile = Filename.temp_file "c2c-spoof-case" ".err" in
+      Fun.protect ~finally:(fun () ->
+          (try Sys.remove outfile with _ -> ());
+          (try Sys.remove errfile with _ -> ()))
+        (fun () ->
+           let send_cmd = Printf.sprintf
+             "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-attacker %s send --from victim recip 'case forged' > %s 2>%s"
+             (Filename.quote dir) c2c_exe outfile errfile
+           in
+           let rc = Sys.command send_cmd in
+           check bool "send --from case variation spoofing exits non-zero" true (rc <> 0);
+           let err = read_file errfile in
+           check bool "stderr mentions refusing" true
+             (string_contains err "refus")))
+
+let test_send_all_from_spoofing_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-victim" ~alias:"victim"
+        ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-bystander" ~alias:"bystander"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-spoof-all" ".out" in
+      let errfile = Filename.temp_file "c2c-spoof-all" ".err" in
+      Fun.protect ~finally:(fun () ->
+          (try Sys.remove outfile with _ -> ());
+          (try Sys.remove errfile with _ -> ()))
+        (fun () ->
+           let send_cmd = Printf.sprintf
+             "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-attacker %s send-all --from victim 'forged broadcast' > %s 2>%s"
+             (Filename.quote dir) c2c_exe outfile errfile
+           in
+           let rc = Sys.command send_cmd in
+           check bool "send-all --from spoofing exits non-zero" true (rc <> 0);
+           let err = read_file errfile in
+           check bool "stderr mentions refusing" true
+             (string_contains err "refus")))
+
+(* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
@@ -1773,5 +1917,13 @@ let () =
     ; ( "relay_dead_letter",
         [ ( "relay dead-letter --help exits 0", `Quick, test_relay_dead_letter_help_exits_zero )
         ; ( "relay dead-letter without relay-url exits non-zero", `Quick, test_relay_dead_letter_no_relay_url_exits_nonzero )
+        ] )
+    ; ( "send_from_spoofing",
+        [ ( "send --from spoofing rejected when alias held by different session", `Quick, test_send_from_spoofing_rejected )
+        ; ( "send --from own alias allowed", `Quick, test_send_from_own_alias_allowed )
+        ; ( "send --from unregistered alias allowed", `Quick, test_send_from_unregistered_alias_allowed )
+        ; ( "send --from spoofing allowed for coordinator", `Quick, test_send_from_coordinator_allowed )
+        ; ( "send --from case variation spoofing rejected", `Quick, test_send_from_case_variation_rejected )
+        ; ( "send-all --from spoofing rejected", `Quick, test_send_all_from_spoofing_rejected )
         ] )
     ]
