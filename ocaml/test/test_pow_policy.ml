@@ -1,0 +1,68 @@
+module PP = Pow_policy
+
+let test_cost_of_route () =
+  Alcotest.(check int) "register cost" 10 (PP.cost_of_route "register");
+  Alcotest.(check int) "send cost" 1 (PP.cost_of_route "send");
+  Alcotest.(check int) "send_all cost" 1 (PP.cost_of_route "send_all");
+  Alcotest.(check int) "send_room cost" 1 (PP.cost_of_route "send_room");
+  Alcotest.(check int) "room-send cost" 1 (PP.cost_of_route "room-send");
+  Alcotest.(check int) "poll cost" 0 (PP.cost_of_route "poll");
+  Alcotest.(check int) "peek cost" 0 (PP.cost_of_route "peek");
+  Alcotest.(check int) "heartbeat cost" 0 (PP.cost_of_route "heartbeat");
+  Alcotest.(check int) "unknown cost" 0 (PP.cost_of_route "unknown")
+
+let test_required_difficulty_grace_and_steps () =
+  Alcotest.(check int) "under grace" 0
+    (PP.required_difficulty ~accumulated_cost:19.0);
+  Alcotest.(check int) "at grace" 0
+    (PP.required_difficulty ~accumulated_cost:20.0);
+  Alcotest.(check int) "first bucket starts above grace" 4
+    (PP.required_difficulty ~accumulated_cost:20.1);
+  Alcotest.(check int) "end of first bucket" 4
+    (PP.required_difficulty ~accumulated_cost:30.0);
+  Alcotest.(check int) "second bucket" 8
+    (PP.required_difficulty ~accumulated_cost:30.1)
+
+let test_required_difficulty_cap () =
+  Alcotest.(check int) "difficulty capped at d_max" PP.d_max
+    (PP.required_difficulty ~accumulated_cost:1000.0)
+
+let test_accumulator_records_decays_and_reads_difficulty () =
+  let acc = PP.create () in
+  Alcotest.(check int) "fresh actor needs no PoW" 0
+    (PP.required_difficulty_for_actor acc ~actor_id:"actor" ~now:0.0);
+  ignore (PP.record_route acc ~actor_id:"actor" ~route:"register" ~now:0.0);
+  ignore (PP.record_route acc ~actor_id:"actor" ~route:"register" ~now:0.0);
+  Alcotest.(check int) "grace after two registers" 0
+    (PP.required_difficulty_for_actor acc ~actor_id:"actor" ~now:0.0);
+  ignore (PP.record_route acc ~actor_id:"actor" ~route:"send" ~now:0.0);
+  Alcotest.(check int) "one point over grace enters first bucket" 4
+    (PP.required_difficulty_for_actor acc ~actor_id:"actor" ~now:0.0);
+  Alcotest.(check int) "full window decay clears actor" 0
+    (PP.required_difficulty_for_actor acc ~actor_id:"actor" ~now:PP.window_s)
+
+let test_reads_do_not_extend_decay_window () =
+  let acc = PP.create () in
+  ignore (PP.record_cost acc ~actor_id:"actor" ~cost:100 ~now:0.0);
+  Alcotest.(check int) "half-window read observes decayed difficulty" 12
+    (PP.required_difficulty_for_actor acc ~actor_id:"actor"
+       ~now:(PP.window_s /. 2.0));
+  Alcotest.(check int) "full-window read still clears from original write" 0
+    (PP.required_difficulty_for_actor acc ~actor_id:"actor" ~now:PP.window_s)
+
+let () =
+  Alcotest.run "pow_policy"
+    [
+      ( "policy",
+        [
+          Alcotest.test_case "cost_of_route" `Quick test_cost_of_route;
+          Alcotest.test_case "required difficulty grace and steps" `Quick
+            test_required_difficulty_grace_and_steps;
+          Alcotest.test_case "required difficulty cap" `Quick
+            test_required_difficulty_cap;
+          Alcotest.test_case "accumulator records and decays" `Quick
+            test_accumulator_records_decays_and_reads_difficulty;
+          Alcotest.test_case "reads do not extend decay window" `Quick
+            test_reads_do_not_extend_decay_window;
+        ] );
+    ]

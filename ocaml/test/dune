@@ -65,6 +65,16 @@
  (libraries c2c_mcp alcotest unix))
 
 (test
+ (name test_pow)
+ (modules test_pow)
+ (libraries c2c_mcp alcotest))
+
+(test
+ (name test_pow_policy)
+ (modules test_pow_policy)
+ (libraries c2c_mcp alcotest unix))
+
+(test
  (name test_relay_pubkey)
  (modules test_relay_pubkey)
  (libraries c2c_mcp alcotest unix))
