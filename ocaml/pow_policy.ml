@@ -1,7 +1,10 @@
 let grace = 20.0
 let bucket = 10.0
 let step = 4
-let d_max = 24
+(* d_max is bounded by Pow.max_mint_iterations: a client must be able to mint
+   at this difficulty. 2^20 avg work is a real deterrent (~0.5-2s/register)
+   while staying well under the mint-iteration cap. *)
+let d_max = 20
 let window_s = 600.0
 
 let cost_of_route = function

@@ -65,11 +65,22 @@ let test_leading_zero_bits_counts_digest_prefix () =
   Alcotest.(check int) "stops at first one bit" 3
     (P.leading_zero_bits "\x10\x00")
 
+(* Regression: dogfooding showed registration hard-failed with pow_mint_failed
+   because the policy's d_max exceeded the client's mint-iteration budget. The
+   mint cap MUST cover the maximum difficulty the policy can ever demand, or a
+   legitimate throttled actor cannot mint and registration fails outright. *)
+let test_mint_budget_covers_d_max () =
+  Alcotest.(check bool)
+    "max_mint_iterations >= 2^d_max" true
+    (P.max_mint_iterations >= (1 lsl Pow_policy.d_max))
+
 let () =
   Alcotest.run "pow"
     [
       ( "primitive",
         [
+          Alcotest.test_case "mint budget covers d_max" `Quick
+            test_mint_budget_covers_d_max;
           Alcotest.test_case "D=0 always verifies" `Quick
             test_difficulty_zero_always_verifies;
           Alcotest.test_case "minted nonce verifies; wrong nonce fails" `Quick

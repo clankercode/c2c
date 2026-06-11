@@ -1,7 +1,10 @@
 let scheme_id = "sha256-leading-zeros-v1"
 let ctx = "c2c/v1/pow"
 let sep = "\x1f"
-let max_mint_iterations = 2_000_000
+(* Must comfortably exceed 2^Pow_policy.d_max so a legitimate (throttled)
+   actor can always mint at the maximum required difficulty rather than
+   hard-failing with pow_mint_failed. ~16x margin over 2^20 (d_max=20). *)
+let max_mint_iterations = 16_777_216
 
 let challenge_string ~ctx ~route ~actor_id ~epoch ~server_nonce =
   (* Canonical v1 wire format: raw 0x1f separators, no escaping. *)
