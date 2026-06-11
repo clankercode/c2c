@@ -12,7 +12,9 @@ by deleting — git history keeps them if anyone needs to look back.
 
 ---
 
-- [x] **#154**: `launch_args 81` extra_args reversed + at beginning not end. Root cause: `last_n` test helper had `(n<=0) -> List.rev acc` double-reversal; also `fast_path_get_tmux_location` broad `_` catch-all on orphaned TMUX_PANE. Fixed in `373f6a43` (cherry-picked `3ff1d866`) + `5ec45127` (cherry-picked `e1da2fad`). Severity LOW. Filed 2026-04-29 by jungle-coder.
+- [ ] **FEATURE (from Max 2026-06-11): relay adaptive proof-of-work difficulty.** The more requests an actor makes to the relay, the higher the PoW required for its *next* request. Each request type carries a cost weight (`register` is the priority; reads/heartbeats free), a grace band keeps normal use at zero, then difficulty rises in discrete steps; required difficulty advertised in a response header (`X-C2C-PoW-Next`) and returned in a `pow_required` challenge error when a request arrives too low. NOTE: there is **no PoW on the relay today** — this is net-new (we have Ed25519 sig auth + nonce replay protection only). Planned, not implemented; key open decision is actor identity (per-identity vs per-IP — Sybil crux). Design: `.collab/design/2026-06-11-relay-adaptive-pow-difficulty.md`. Logged by claude (Max's session).
+
+ `launch_args 81` extra_args reversed + at beginning not end. Root cause: `last_n` test helper had `(n<=0) -> List.rev acc` double-reversal; also `fast_path_get_tmux_location` broad `_` catch-all on orphaned TMUX_PANE. Fixed in `373f6a43` (cherry-picked `3ff1d866`) + `5ec45127` (cherry-picked `e1da2fad`). Severity LOW. Filed 2026-04-29 by jungle-coder.
   Finding: `.collab/findings/2026-04-29T13-30-00Z-jungle-coder-pre-existing-test-failures.md`
 
 - [x] **#155**: `lookup 0` coder lookup returns wrong expected value. Root cause: `test_lookup_known` expected `role_template_src|---` but codegen correctly outputs YAML frontmatter `---`. Fixed test expectation in `5ec45127` (cherry-picked `e1da2fad`). Severity MEDIUM. Filed 2026-04-29 by jungle-coder.
