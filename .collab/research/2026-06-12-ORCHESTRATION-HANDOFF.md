@@ -92,3 +92,26 @@ Codex plan review: `.collab/research/2026-06-12-three-plans-REVIEW-codex.md`.
 3. Mark S4 done (#34). Then #35: integrate S1-S4 + the index.md link follow-up → one push (Max
    gates; he granted push latitude this session).
 4. Then features A/B/C implementation (#28-30), B last/most-careful.
+
+## FLAGSHIP SHIPPED — 2026-06-13 (origin/master @ 16064f0f)
+All 7 branches merged to master + pushed (Max-authorized). Pipeline:
+- Merged: connect-docs S1 `30af741e` / S3 `9e405168` / S2 `1cf6b480` / S4 `af953b3e`
+  (commands.md conflict resolved: gemini/crush-removed list + connect --verify guidance),
+  then features A `4718ff29`, B `55bf76e8`, C `79ee8198`.
+- A×B conflicts (register sig/record, identity handler, c2c.ml, c2c_setup.ml, test_c2c_cli):
+  combined `?metadata_opt_out` + `?from_auto_gen`; gemini dispatch stayed removed (S2) + got
+  `~alias_from_auto_gen`. B×C conflicts (c2c_start.ml 3×): combined `alias_from_auto_gen` +
+  `opencode_plugin_embedded`. client-delivery.md: kept S3 concise structure + grafted C's
+  embedded-blob OpenCode sentence.
+- INTEGRATION GAP FIXED: `test_c2c_gemini_deprecation` dune target (added by S2) listed
+  `c2c_setup` but not `c2c_opencode_plugin_embedded` (C's module) → added it. Build then clean.
+- index.md link-404 follow-up: `./commands.md`→`/commands/`, `./known-issues.md`→`/known-issues/` `16064f0f`.
+- Validation: full build rc=0; every feature suite green IN ISOLATION (mcp 372, identity 17,
+  name 2, onboarding 13, setup_kimi 17, embedded 4, drift 6, gemini-deprecation 6). Full
+  parallel `@runtest` shows 25 failures = 14 documented pre-existing env-sensitive (test_c2c_cli:
+  schedule/peer_pass/send/worktree/memory/instances) + get_tmux_location (TMUX unset) +
+  parallelism flakiness (send_from_spoofing/connect_dashboard PASS in isolation). NO regressions.
+- `just bi` rc=0 (installed). Smoke: gemini-refuse✓, --no-metadata✓, --no-nonce✓, connect✓.
+- Pushed. Railway (relay.ml UNCHANGED → behavior identical) + Pages rebuilding.
+- POST-DEPLOY TODO: after Railway ~10-15min, `./scripts/relay-smoke-test.sh`; verify c2c.im docs render.
+- Safety tag `pre-flagship-integration` @ b8d9ee93 (pre-merge master).
