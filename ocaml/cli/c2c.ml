@@ -2055,6 +2055,44 @@ let check_plugin_installs () =
    else
      add (`Yellow, "gui: webkit2gtk-4.1 missing — install: sudo pacman -S webkit2gtk-4.1"));
 
+  (* Codex: check ~/.codex/config.toml for c2c MCP server entry *)
+  let codex_config = home // ".codex" // "config.toml" in
+  (if Sys.file_exists codex_config then
+     try
+       let ic = open_in codex_config in
+       let data = Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+         let n = in_channel_length ic in really_input_string ic n) in
+       let needle = "mcp_servers.c2c" in
+       let nl = String.length needle and ll = String.length data in
+       let found = ref false in
+       for i = 0 to ll - nl do
+         if String.sub data i nl = needle then found := true
+       done;
+       if !found then
+         add (`Green, "codex: MCP server configured")
+       else
+         add (`Yellow, "codex: config exists but no c2c MCP entry (run: c2c install codex)")
+     with _ -> add (`Gray, "codex: could not read config.toml")
+   else add (`Gray, "codex: config.toml not found (not installed or not configured)"));
+
+  (* Kimi: check ~/.kimi/mcp.json for c2c entry *)
+  let kimi_config = home // ".kimi" // "mcp.json" in
+  (if Sys.file_exists kimi_config then
+     try
+       let ic = open_in kimi_config in
+       let data = Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+         let n = in_channel_length ic in really_input_string ic n) in
+       let j = Yojson.Safe.from_string data in
+       let has_c2c = match Yojson.Safe.Util.(j |> member "mcpServers" |> member "c2c") with
+         | `Null -> false | _ -> true
+       in
+       if has_c2c then
+         add (`Green, "kimi: MCP server configured")
+       else
+         add (`Yellow, "kimi: mcp.json exists but no c2c entry (run: c2c install kimi)")
+     with _ -> add (`Gray, "kimi: could not read mcp.json")
+   else add (`Gray, "kimi: mcp.json not found (not installed or not configured)"));
+
   List.rev !results
 
 (* Scan for running deprecated PTY-based wake daemons.
@@ -2258,7 +2296,198 @@ let health_cmd =
           stale_daemons
       end
 
-(* --- subcommand: status --------------------------------------------------- *)
+(* --- subcommand: connect -------------------------------------------------- *)
+
+let supported_clients = [ "claude"; "codex"; "opencode"; "kimi" ]
+
+let connect_dashboard ~root ~broker ~output_mode =
+  let broker_root = root in
+  let root_exists = Sys.is_directory root in
+  let registry_exists = Sys.file_exists (root // "registry.json") in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  let liveness_counts = List.map C2c_mcp.Broker.registration_liveness_state regs in
+  let alive_count = List.filter (( = ) C2c_mcp.Broker.Alive) liveness_counts |> List.length in
+  let rooms = C2c_mcp.Broker.list_rooms broker in
+  let plugin_checks = check_plugin_installs () in
+  let relay_check = check_relay_http () in
+  let whoami_result =
+    match C2c_mcp.session_id_from_env () with
+    | None -> None
+    | Some sid ->
+        let r = C2c_mcp.Broker.create ~root in
+        let found = List.filter (fun (reg : C2c_mcp.registration) -> reg.session_id = sid) (C2c_mcp.Broker.list_registrations r) in
+        match found with [ reg ] -> Some (sid, reg.alias) | _ -> None
+  in
+  let has_substring haystack needle =
+    let hay_len = String.length haystack in
+    let needle_len = String.length needle in
+    let rec loop i =
+      i + needle_len <= hay_len
+      && (String.sub haystack i needle_len = needle || loop (i + 1))
+    in
+    needle_len = 0 || loop 0
+  in
+  let client_status client =
+    let has_green = List.exists (fun (c, msg) ->
+      c = `Green && has_substring msg client
+    ) plugin_checks in
+    let has_yellow = List.exists (fun (c, msg) ->
+      c = `Yellow && has_substring msg client
+    ) plugin_checks in
+    if has_green then `Installed
+    else if has_yellow then `Needs_install
+    else `Not_found
+  in
+  let all_installed = List.for_all (fun c -> client_status c = `Installed) supported_clients in
+  let any_installed = List.exists (fun c -> client_status c = `Installed) supported_clients in
+  let next_action =
+    if not root_exists then
+      "broker root not found — run 'c2c init' to get started"
+    else if not any_installed then
+      "no clients configured — run 'c2c install <client>' (or 'c2c install all')"
+    else if not all_installed then
+      let missing = List.filter (fun c -> client_status c <> `Installed) supported_clients in
+      Printf.sprintf "partially configured — run 'c2c install %s' for missing clients"
+        (String.concat " / " missing)
+    else if alive_count = 0 then
+      "clients installed but no live session — restart your client or run 'c2c connect --verify'"
+    else
+      "you're connected! run 'c2c connect --verify' to confirm end-to-end delivery."
+  in
+  match output_mode with
+  | Json ->
+      let color_str = function `Green -> "green" | `Yellow -> "yellow" | `Red -> "red" | `Gray -> "gray" in
+      let client_status_json c = match client_status c with
+        | `Installed -> `String "installed"
+        | `Needs_install -> `String "needs_install"
+        | `Not_found -> `String "not_found"
+      in
+      print_json (`Assoc
+        [ ("broker_root", `String broker_root)
+        ; ("root_exists", `Bool root_exists)
+        ; ("registry_exists", `Bool registry_exists)
+        ; ("alive_registrations", `Int alive_count)
+        ; ("rooms", `Int (List.length rooms))
+        ; ("whoami", match whoami_result with
+          | Some (sid, alias) -> `Assoc [("session_id", `String sid); ("alias", `String alias)]
+          | None -> `Null)
+        ; ("relay", `Assoc [("status", `String (color_str (fst relay_check))); ("message", `String (snd relay_check))])
+        ; ("clients", `Assoc (List.map (fun c -> (c, client_status_json c)) supported_clients))
+        ; ("next_action", `String next_action)
+        ; ("plugins", `List (List.map (fun (c, msg) -> `Assoc [("status", `String (color_str c)); ("message", `String msg)]) plugin_checks))
+        ])
+  | Human ->
+      let icon = function `Green -> "✓" | `Yellow -> "⚠" | `Red -> "✗" | `Gray -> "–" in
+      Printf.printf "c2c connect — connection status\n";
+      Printf.printf "────────────────────────────────\n";
+      Printf.printf "broker root:  %s\n" broker_root;
+      Printf.printf "broker:       %s\n" (if root_exists then "present" else "MISSING");
+      Printf.printf "registry:     %s\n" (if registry_exists then "present" else "MISSING");
+      Printf.printf "sessions:     %d alive\n" alive_count;
+      Printf.printf "rooms:        %d\n" (List.length rooms);
+      (match whoami_result with
+       | Some (_, alias) -> Printf.printf "your alias:   %s\n" alias
+       | None -> Printf.printf "your alias:   (not registered in this session)\n");
+      let (rel_col, rel_msg) = relay_check in
+      Printf.printf "%s %s\n" (icon rel_col) rel_msg;
+      Printf.printf "\nclient status:\n";
+      List.iter (fun (c, msg) -> Printf.printf "  %s %s\n" (icon c) msg) plugin_checks;
+      Printf.printf "\n  → %s\n" next_action
+
+let connect_verify ~root ~broker ~timeout_secs ~output_mode =
+  let root_exists = Sys.is_directory root in
+  if not root_exists then begin
+    (match output_mode with
+     | Json -> print_json (`Assoc [("status", `String "FAIL"); ("reason", `String "broker root not found")])
+     | Human -> Printf.eprintf "FAIL: broker root not found — run 'c2c init' first.\n%!");
+    exit 1
+  end;
+  let session_id = match C2c_mcp.session_id_from_env () with
+    | Some sid -> sid
+    | None ->
+        let fake = Printf.sprintf "connect-verify-%d" (Unix.getpid ()) in
+        fake
+  in
+  let marker = Printf.sprintf "c2c-connect-verify-%d-%d"
+    (Unix.gettimeofday () |> int_of_float)
+    (Random.int 1000000)
+  in
+  let alias = "__connect_verify__" in
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None ();
+  C2c_mcp.Broker.enqueue_message broker
+    ~from_alias:alias ~to_alias:alias ~content:marker
+    ~deferrable:false ~ephemeral:false ();
+  let inbox_before = C2c_mcp.Broker.read_inbox broker ~session_id in
+  let real_messages = List.filter (fun (m : C2c_mcp.message) ->
+    m.content <> marker
+  ) inbox_before in
+  let real_count = List.length real_messages in
+  let deadline = Unix.gettimeofday () +. float_of_int timeout_secs in
+  let found_drained_by = ref None in
+  let rec poll () =
+    if Unix.gettimeofday () >= deadline then ()
+    else begin
+      Unix.select [] [] [] 0.5 |> ignore;
+      let archive_entries = C2c_mcp.Broker.read_archive broker ~session_id ~limit:10 in
+      let match_entry = List.filter_map (fun (e : C2c_mcp.Broker.archive_entry) ->
+        if e.ae_content = marker then Some e.ae_drained_by else None
+      ) archive_entries in
+      (match match_entry with
+       | drained_by :: _ -> found_drained_by := Some drained_by
+       | [] -> poll ())
+    end
+  in
+  poll ();
+  let inbox_after = C2c_mcp.Broker.read_inbox broker ~session_id in
+  let real_after = List.filter (fun (m : C2c_mcp.message) ->
+    m.content <> marker
+  ) inbox_after in
+  let real_survived = List.length real_after = real_count in
+  let status, detail = match !found_drained_by with
+    | Some drained_by ->
+        let pass = "PASS: consumed by auto-delivery path " ^ drained_by in
+        (0, pass)
+    | None ->
+        let inbox_has_marker = List.exists (fun (m : C2c_mcp.message) ->
+          m.content = marker
+        ) inbox_after in
+        if inbox_has_marker then
+          (0, "INCONCLUSIVE: marker still queued — restart your client / it may use poll delivery")
+        else
+          (1, "FAIL: marker gone from inbox but not in archive — broker/registration/config path broken")
+  in
+  let footnote = "\n  NOTE: transcript visibility is client-specific, not CLI-observable.\n  This probe confirms broker delivery plumbing, not that the agent sees the message." in
+  match output_mode with
+  | Json ->
+      let extra = if real_survived then [] else
+        [("real_inbox_preserved", `Bool false); ("warning", `String "pre-existing inbox messages may have been disturbed")] in
+      print_json (`Assoc ([
+        ("status", `String (if status = 0 then (match !found_drained_by with Some _ -> "PASS" | None -> "INCONCLUSIVE") else "FAIL"));
+        ("marker", `String marker);
+        ("drained_by", match !found_drained_by with Some d -> `String d | None -> `Null);
+        ("real_inbox_preserved", `Bool real_survived);
+        ("timeout_secs", `Int timeout_secs);
+      ] @ extra));
+      if status <> 0 then exit status
+  | Human ->
+      Printf.printf "\n%s\n%s\n" detail footnote;
+      if not real_survived then
+        Printf.printf "  WARNING: pre-existing inbox messages were disturbed during probe.\n";
+      if status <> 0 then exit status
+
+let connect_cmd =
+  let verify = Cmdliner.Arg.(value & flag & info ["verify"; "V"] ~doc:"Run a loopback delivery probe: enqueue a self-marker and check it reaches the archive.") in
+  let timeout = Cmdliner.Arg.(value & opt int 5 & info ["timeout"; "t"] ~docv:"SECS" ~doc:"Seconds to wait for --verify delivery (default: 5).") in
+  let+ json = json_flag
+  and+ verify = verify
+  and+ timeout = timeout in
+  let output_mode = if json then Json else Human in
+  let root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root in
+  if verify then
+    connect_verify ~root ~broker ~timeout_secs:timeout ~output_mode
+  else
+    connect_dashboard ~root ~broker ~output_mode
 
  type managed_instance_view =
   { mi_name : string
@@ -6575,6 +6804,7 @@ let sweep = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sweep" ~doc:"Remove dead registra
 let registry_prune = Cmdliner.Cmd.v (Cmdliner.Cmd.info "registry-prune" ~doc:"Remove dead test registrations matching prefix patterns (dry-run by default; --force to actually prune).") registry_prune_cmd
 let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived inbox messages.") history_cmd
 let health = Cmdliner.Cmd.v (Cmdliner.Cmd.info "health" ~doc:"Show broker health diagnostics.") health_cmd
+let connect = Cmdliner.Cmd.v (Cmdliner.Cmd.info "connect" ~doc:"Connection status dashboard and delivery verification.") connect_cmd
 let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
 let tail_log = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail-log" ~doc:"Show recent broker RPC log entries.") tail_log_cmd
 let server_info = Cmdliner.Cmd.v (Cmdliner.Cmd.info "server-info" ~doc:"Show c2c client version and feature flags.") server_info_cmd
@@ -12041,7 +12271,7 @@ let () =
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
-    ; sweep_dryrun; migrate_broker; history; health; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
+    ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances_deprecated; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
   in
