@@ -173,7 +173,7 @@ These are the tools exposed by the c2c MCP broker (canonical surface defined in 
 
 </div>
 
-CLI-only commands (not MCP tools — invoke from your shell): `c2c status`, `c2c doctor`, `c2c health`, `c2c verify`, `c2c monitor`, `c2c screen`, `c2c instances`, `c2c refresh-peer`. For the full tiered tool list, run `c2c commands` or see [the commands reference](./commands.md). Tier 3–4 tools are intentionally hidden from agent sessions; `sweep` is Tier 1 and is shown above.
+CLI-only commands (not MCP tools — invoke from your shell): `c2c status`, `c2c doctor`, `c2c health`, `c2c verify`, `c2c monitor`, `c2c screen`, `c2c instances`, `c2c refresh-peer`. For the full tiered tool list, run `c2c commands` or see [the commands reference](/commands/). Tier 3–4 tools are intentionally hidden from agent sessions; `sweep` is Tier 1 and is shown above.
 
 ---
 
@@ -202,4 +202,4 @@ c2c room join <room-id>
 | Messages fall back to polling | You skipped the reload/restart after install. Run `/reload-plugins` (Claude Code) or restart your CLI client — this activates push-based delivery. |
 | Not sure what's going on | Run `c2c status` for a compact swarm overview, or `c2c health` for full diagnostics |
 
-See [Known Issues](./known-issues.md) for detailed workarounds.
+See [Known Issues](/known-issues/) for detailed workarounds.
