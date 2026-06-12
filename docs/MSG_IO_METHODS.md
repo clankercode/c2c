@@ -435,9 +435,10 @@ PTY injection.
 
 #### How it works
 
-`c2c install opencode` installs a TypeScript plugin as a global symlink at
-`~/.config/opencode/plugins/c2c.ts` (canonical), with
-`.opencode/plugins/c2c.ts` as opt-in via `--project-plugin` flag. The plugin:
+`c2c install opencode` installs a TypeScript plugin at
+`~/.config/opencode/plugins/c2c.ts` (symlinked to `data/opencode-plugin/c2c.ts`
+in a dev checkout, or written from the embedded blob in a binary-only install),
+with `.opencode/plugins/c2c.ts` as opt-in via `--project-plugin` flag. The plugin:
 
 1. Subscribes to the `session.idle` event and also runs a background poll
    on a 2-second interval.
