@@ -193,3 +193,32 @@ SHARED-file-safety PASS: codex/kimi/opencode user keys survive, only c2c strippe
 **FINAL STATE: feature DONE + different-model peer-PASS. Branch feat/uninstall-manifest @ `59811b6c`.
 HOLD FOR MAX REVIEW — NOT PUSHED, NOT MERGED.** To land after Max OK: merge feat/uninstall-manifest
 → master, then (only if Max wants it live) coordinator-gated push. `just install-all` to dogfood locally.
+
+### SHIPPED + NEW BUG FIXED (2026-06-13 ~04:40)
+**Uninstall feature SHIPPED**: merged `feat/uninstall-manifest` → master, pushed to
+origin/master @ `e5a975b0` (Railway + Pages building). `just install-all` done — binaries
+live at e5a975b0, `c2c uninstall` on PATH, live install→uninstall dogfood round-trip passes
+(user keys survive, idempotent). Codex peer-PASS fixed 8 defects (59811b6c).
+
+**Claude hook-error bug (Max-reported) FIXED (ops):** session w/ CLAUDE_CONFIG_DIR=~/.claude-w
+threw `~/.claude-{w,p}/hooks/c2c-inbox-check.sh: No such file or directory` on every Bash call.
+ROOT CAUSE: 2026-05-31 profile-share migration symlinked `hooks/` across .claude{,-p,-w} →
+`~/.claude-shared/hooks` but never copied c2c-inbox-check.sh into the shared dir → empty → all
+refs dangled. NOT a c2c bug (live do_install_client path is CLAUDE_CONFIG_DIR-aware + symlink-
+transparent; the hardcoded ~/.claude/hooks at c2c_setup.ml configure_claude_hook ~L1006 is DEAD
+code). FIX APPLIED: regenerated canonical-current c2c-inbox-check.sh + c2c-stop-deliver.sh into
+`~/.claude-shared/hooks/` (fixes all 3 profiles via existing symlinks); de-duped the stale
+cross-profile entry in ~/.claude-w/settings.json (backup: settings.json.bak-20260613-c2c-hookdedup);
+swept all configs → zero dangling refs. Finding (local, gitignored):
+`.collab/findings/2026-06-13-orchestrator-claude-shared-hooks-dangling-after-profile-share-migration.md`.
+
+**IN PROGRESS — preventive `c2c doctor hooks` check:** ccc @kimi background task `b990n7233`
+in worktree `.worktrees/wt-doctor-hooks` (branch feat/doctor-dangling-hooks, base e5a975b0).
+Prompt: `/tmp/c2c-prompts/doctor-hooks.txt`. New module ocaml/cli/c2c_doctor_hooks.ml + test +
+wire into `c2c doctor` (one-line rollup) + `c2c doctor hooks` subcommand; scans resolved Claude
+settings for c2c hook commands pointing at missing scripts. Follows c2c_doctor_schedule.ml pattern.
+RESUME ON CAP: `kimi -r <session-id> -y --print -p` from the worktree (id in task tail). On
+completion: in-worktree build+test verify → DIFFERENT-model (codex) peer-PASS → report to Max
+for push decision (low-risk read-only diagnostic; NOT yet pushed). Task IDs: #38 (doctor check, in_progress).
+
+c2c poll session_id for THIS orchestrator: 574c00d6-a4fc-43c8-9656-0a235a3000b6
