@@ -10,6 +10,7 @@ minima:
 
 header_pages:
   - index.md
+  - get-started.md
   - overview.md
   - connect.md
   - commands.md
@@ -18,7 +19,7 @@ header_pages:
   - client-delivery.md
   - clients/feature-matrix.md
   - known-issues.md
-  - get-started.md
+  - changelog.md
 
 markdown: kramdown
 highlighter: rouge
