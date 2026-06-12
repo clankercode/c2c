@@ -3,19 +3,26 @@
 Resume state for claude orchestrator (interactive session for Max). Companion:
 `.collab/research/2026-06-12-agent-scorecard.md` (per-agent grades + catches).
 
-## Active background jobs (CHECK ON RESUME)
-**3 kimi feature-impl agents running in parallel** (started 2026-06-13 ~00:37; output in the
-harness task `.output` files, NOT redirected — per Max's new rule):
-- **Feature A** (connect-metadata) — bg id `bd3owdldw`, worktree wt-feat-connect-metadata
-- **Feature B** (name-nonce, RISKIEST) — bg id `bwne5co07`, worktree wt-feat-name-nonce
-- **Feature C** (embed-plugins) — bg id `b66tt4l85`, worktree wt-feat-embed-plugins
-Prompts: `/tmp/c2c-prompts/impl-feat{A,B,C}.txt`. Each reads its committed plan, implements all
-slices via review-and-fix, **tests MANDATORY** (Max: good coverage required). On completion of
-EACH: read task output, validate build+tests IN-WORKTREE, then run a DIFFERENT-model peer-review
-(`ccc-review-cx` / `@kimi`/`@mm3`/`@glm51`) that **MUST verify test coverage** (Max's explicit
-ask), scrub any `.opencode/package.json` churn (kimi doesn't churn, but opencode reviewers do),
-update scorecard. B is riskiest — confirm its 2 codex blocker tests pass (origin env-marker;
-`--require-easy` termination).
+## Active background jobs (CHECK ON RESUME) — updated 2026-06-13 ~01:00
+
+**STEP-CAP PATTERN (important):** all 3 features exceed the ccc 100-step cap. The original
+`ccc @kimi` runs each hit "Max number of steps reached: 100" and exited rc=1 (NOT a real failure).
+Resume preserves context via: `kimi -r <session-id> -y --print -p "<continuation>"` (run from the
+worktree cwd; a resumed run gets a fresh 100-step budget). Session IDs are printed in each capped
+run's tail ("To resume this session: kimi -r <id>").
+
+| Feat | Worktree | Status | Current job id |
+|---|---|---|---|
+| **A** connect-metadata | wt-feat-connect-metadata | ✅ IMPL DONE + orchestrator-committed **e1c70f7c**; build rc=0; 8 new tests pass incl guard-invariant. Peer review RUNNING. | review `blhvlybed` (glm51) |
+| **B** name-nonce (RISKIEST) | wt-feat-name-nonce | ⏳ resumed — was mid-build-error, NO impl commits yet (blocklist.ml+nonce.ml created, 9 files modified). Must reach build rc=0 + tests + per-slice commits. | resume `bqqscise8` (kimi sess 8a7dc590) |
+| **C** embed-plugins | wt-feat-embed-plugins | ⏳ resumed — C1 `71c35350` + C2 `64c21b03` committed; finishing C3 (byte-eq sync-gate, MUST verify fails-when-stale) + C4 docs. | resume `b6zy68lhn` (kimi sess 0bb2db81) |
+
+On EACH completion: read task output, validate build+tests IN-WORKTREE (`opam exec -- dune build
+--root <wt> -j2`; opam env NOT in orchestrator shell — wrap in `bash -lc 'eval "$(opam env)"; …'`
+or `opam exec --`), then run a DIFFERENT-model peer-review that **MUST verify test coverage**
+(Max's explicit ask), scrub any `.opencode/package.json` churn, update scorecard. B is riskiest —
+confirm its 2 codex blocker tests pass (origin env-marker; `--require-easy` termination).
+Prompts: `/tmp/c2c-prompts/impl-feat{A,B,C}.txt`, `/tmp/c2c-prompts/review-featA.txt`.
 
 **ccc conventions (Max, 2026-06-13 — also in memory `ccc-usage-prefs`):** use `ccc @kimi`
 (configured alias); do NOT hide output via `>log 2>&1` (run_in_background WITHOUT redirect; read

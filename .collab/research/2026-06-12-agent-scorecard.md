@@ -81,6 +81,19 @@ All 3 non-codex plan reviews caught REAL defects that would have reached impleme
 Net: the non-codex-first review pass was high-value; none were rubber-stamps. Plans A/B/C
 are materially stronger. Codex `cx-reviewer` second pass still to run over the hardened plans.
 
+## Feature implementations (A/B/C — post-connect-docs)
+
+| Agent | Feature | Build/Test | Quality | Issues / catches | Committed |
+|---|---|---|---|---|---|
+| ccc/kimi | **A** connect-metadata (A1-A4) | build rc=0 in-worktree; **8 new tests pass** (onboarding 12/12, mcp 363/363); 14 combined-run failures all pre-existing env-sensitive CLI (worktree_gc/schedule/memory_list/instances/send-relay/peer_pass/get_tmux_location), none metadata | ✅ (pending glm51 peer-PASS) | Clean impl of all 4 slices incl the critical GUARD-INVARIANT (--no-metadata still captures cwd — mimo25p's plan catch) with a dedicated test; forward-compat + JSON-omit-when-false + MCP include_metadata all covered. **Hit ccc 100-step cap AFTER implementation, BEFORE commit** — orchestrator validated + committed on its behalf. No `.opencode` churn. | **e1c70f7c** (orchestrator-committed) |
+| ccc/kimi | **B** name-nonce (B1-B4) | INCOMPLETE — hit step cap mid-build-error, no impl commits | ⏳ | blocklist.ml + nonce.ml created, env-marker plumbing + cmd_start `~alias_from_auto_gen` threading + mli sigs in progress; was debugging a build error when capped. Resumed `bqqscise8`. | pending |
+| ccc/kimi | **C** embed-plugins (C1-C4) | C1+C2 build-green + committed; C3/C4 in progress | ✅ (partial) | Resolved a REAL plan flaw the codex review missed: c2c_start.ml is in the `c2c_mcp` *library* but plan put the embedded module in `ocaml/cli` (*executable*) — library can't ref executable module. Converged on parameter-injection (pass embedded content as optional `cmd_start` arg). Hit step cap finishing C3/C4. Resumed `b6zy68lhn`. | C1 `71c35350`, C2 `64c21b03` |
+
+**Process finding (#step-cap):** all 3 features exceed the ccc 100-step budget; resume via
+`kimi -r <id> -y --print -p` preserves context with a fresh budget (cheaper than fresh re-dispatch
+which re-explores). Capped runs exit rc=1 but that is NOT a real failure — check the tail for
+"Max number of steps reached: 100" + the implementation state before treating as failed.
+
 ## Notes
 - `.opencode/package.json` env churn appears in wt-connect-s1-docs — must be scrubbed before
   S1 commit/merge (machine-specific plugin bump, not part of the slice).
