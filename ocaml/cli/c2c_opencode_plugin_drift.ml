@@ -29,9 +29,19 @@ let ( // ) = Filename.concat
 
 let canonical = "data" // "opencode-plugin" // "c2c.ts"
 
+let project_deployed_path cwd =
+  cwd // ".opencode" // "plugins" // "c2c.ts"
+
+let global_deployed_path home =
+  home // ".config" // "opencode" // "plugins" // "c2c.ts"
+
+let deployed_path_for ~cwd ~home () =
+  let project = project_deployed_path cwd in
+  if Sys.file_exists project then project else global_deployed_path home
+
 let deployed_path () =
   let home = try Sys.getenv "HOME" with Not_found -> "" in
-  home // ".config" // "opencode" // "plugins" // "c2c.ts"
+  deployed_path_for ~cwd:(Sys.getcwd ()) ~home ()
 
 let file_info path =
   try
@@ -41,6 +51,15 @@ let file_info path =
 
 let read_link path =
   try Some (Unix.readlink path) with Unix.Unix_error _ -> None
+
+let read_file path =
+  try
+    let ic = open_in_bin path in
+    let finally () = try close_in ic with _ -> () in
+    Some (Fun.protect ~finally (fun () ->
+      let n = in_channel_length ic in
+      really_input_string ic n))
+  with Sys_error _ -> None
 
 (* --- #386: debug-log double-boot scan ---------------------------------
 
@@ -135,66 +154,77 @@ let run_debug_log_scan_and_print () : bool =
       print_endline msg;
       true
 
-let check_drift () : unit =
-  let deployed = deployed_path () in
-  let canonical_exists, canonical_info =
-    match file_info canonical with
-    | Some info -> true, info
-    | None -> false, (0, 0.0)
+let check_plugin_drift ?(cwd = Sys.getcwd ()) ?home () : int * string =
+  let home =
+    match home with
+    | Some home -> home
+    | None -> (try Sys.getenv "HOME" with Not_found -> "")
   in
+  let deployed = deployed_path_for ~cwd ~home () in
+  let canonical_abs = cwd // canonical in
+  let canonical_content = read_file canonical_abs in
   let deployed_info = file_info deployed in
   let deployed_is_symlink = match read_link deployed with Some _ -> true | None -> false in
 
-  let primary_code =
-    if not (Sys.file_exists deployed) then begin
-      Printf.printf "MISSING: deployed plugin not found at %s\n" deployed;
-      Printf.printf "  Run: c2c install opencode (or upgrade your c2c binary)\n";
-      1
-    end else if deployed_is_symlink then begin
+  if not (Sys.file_exists deployed) then
+    ( 1,
+      Printf.sprintf
+        "MISSING: deployed plugin not found at %s\n  Run: c2c install opencode (or upgrade your c2c binary)\n"
+        deployed )
+  else if deployed_is_symlink then begin
       let target = match read_link deployed with Some t -> t | None -> "" in
       let resolved_target =
         if Filename.is_relative target then
           Filename.concat (Filename.dirname deployed) target
         else target
       in
-      let canonical_abs = Filename.concat (Sys.getcwd ()) canonical in
-      if resolved_target = canonical_abs || resolved_target = canonical then begin
-        Printf.printf "OK: deployed plugin is a symlink correctly pointing to canonical source\n";
-        Printf.printf "  deployed: %s -> %s\n" deployed target;
-        0
-      end else begin
-        Printf.printf "STALE: deployed plugin is a symlink but points to wrong target\n";
-        Printf.printf "  deployed: %s -> %s\n" deployed target;
-        Printf.printf "  expected: %s\n" canonical;
-        1
-      end
-    end else begin
+      if resolved_target = canonical_abs || resolved_target = canonical then
+        ( 0,
+          Printf.sprintf
+            "OK: deployed plugin is a symlink correctly pointing to canonical source\n  deployed: %s -> %s\n"
+            deployed target )
+      else
+        ( 1,
+          Printf.sprintf
+            "STALE: deployed plugin is a symlink but points to wrong target\n  deployed: %s -> %s\n  expected: %s\n"
+            deployed target canonical_abs )
+  end else begin
       match deployed_info with
       | None ->
-          Printf.printf "ERROR: could not stat deployed plugin at %s\n" deployed;
-          1
+          (1, Printf.sprintf "ERROR: could not stat deployed plugin at %s\n" deployed)
       | Some (d_size, d_mtime) ->
-          if not canonical_exists then begin
-            Printf.printf "UNKNOWN: canonical source not found at %s\n" canonical;
-            Printf.printf "  deployed: size=%d mtime=%.0f\n" d_size d_mtime;
-            1
-          end else begin
-            let (c_size, c_mtime) = canonical_info in
-            if d_size = c_size && abs_float (d_mtime -. c_mtime) < 1.0 then begin
-              Printf.printf "OK: deployed plugin is in sync with canonical source\n";
-              Printf.printf "  deployed:  %s (size=%d mtime=%.0f)\n" deployed d_size d_mtime;
-              Printf.printf "  canonical: %s (size=%d mtime=%.0f)\n" canonical c_size c_mtime;
-              0
-            end else begin
-              Printf.printf "DRIFT: deployed plugin has diverged from canonical source\n";
-              Printf.printf "  deployed:  %s (size=%d mtime=%.0f)\n" deployed d_size d_mtime;
-              Printf.printf "  canonical: %s (size=%d mtime=%.0f)\n" canonical c_size c_mtime;
-              Printf.printf "  Run: c2c install opencode (or upgrade your c2c binary)\n";
-              1
-            end
-          end
-    end
-  in
+          let deployed_content = read_file deployed in
+          match deployed_content, canonical_content with
+          | Some deployed_content, Some canonical_content
+            when String.equal deployed_content canonical_content ->
+              ( 0,
+                Printf.sprintf
+                  "OK: deployed plugin content matches canonical source\n  deployed:  %s (size=%d mtime=%.0f)\n  canonical: %s\n"
+                  deployed d_size d_mtime canonical_abs )
+          | Some deployed_content, None
+            when String.equal deployed_content C2c_opencode_plugin_embedded.content ->
+              ( 0,
+                Printf.sprintf
+                  "OK: deployed plugin content matches embedded blob\n  deployed: %s (size=%d mtime=%.0f)\n"
+                  deployed d_size d_mtime )
+          | Some _, Some canonical_content ->
+              ( 1,
+                Printf.sprintf
+                  "DRIFT: deployed plugin has diverged from canonical source\n  deployed:  %s (size=%d mtime=%.0f)\n  canonical: %s (size=%d)\n  Run: c2c install opencode (or upgrade your c2c binary)\n"
+                  deployed d_size d_mtime canonical_abs
+                  (String.length canonical_content) )
+          | Some _, None ->
+              ( 1,
+                Printf.sprintf
+                  "DRIFT: deployed plugin does not match embedded blob and canonical source is missing\n  deployed:  %s (size=%d mtime=%.0f)\n  canonical: %s (missing)\n  Run: c2c install opencode (or upgrade your c2c binary)\n"
+                  deployed d_size d_mtime canonical_abs )
+          | None, _ ->
+              (1, Printf.sprintf "ERROR: could not read deployed plugin at %s\n" deployed)
+  end
+
+let check_drift () : unit =
+  let primary_code, primary_msg = check_plugin_drift () in
+  print_string primary_msg;
   (* #386 follow-up to #337: scan c2c-debug.log for >1 plugin boot per pid.
      Symlink + globalThis guard prevent double-load at install/load time;
      this catches future bun-cache duplicates the symlink check might miss. *)

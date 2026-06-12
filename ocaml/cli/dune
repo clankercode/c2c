@@ -73,7 +73,7 @@
 
 (test
  (name test_c2c_opencode_plugin_drift)
- (modules test_c2c_opencode_plugin_drift c2c_opencode_plugin_drift)
+ (modules test_c2c_opencode_plugin_drift c2c_opencode_plugin_drift c2c_opencode_plugin_embedded)
  (libraries c2c_mcp alcotest cmdliner str unix))
 
 ; Feature C sync gate: embedded plugin blob stays in sync with the canonical
