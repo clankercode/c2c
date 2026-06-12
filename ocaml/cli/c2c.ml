@@ -2402,17 +2402,20 @@ let connect_verify ~root ~broker ~timeout_secs ~output_mode =
      | Human -> Printf.eprintf "FAIL: broker root not found — run 'c2c init' first.\n%!");
     exit 1
   end;
-  let session_id = match C2c_mcp.session_id_from_env () with
-    | Some sid -> sid
-    | None ->
-        let fake = Printf.sprintf "connect-verify-%d" (Unix.getpid ()) in
-        fake
+  let probe_sid = Printf.sprintf "connect-verify-%d" (Unix.getpid ()) in
+  let session_id, alias =
+    match C2c_mcp.session_id_from_env () with
+    | Some sid ->
+        let regs = C2c_mcp.Broker.list_registrations broker in
+        (match List.find_opt (fun (reg : C2c_mcp.registration) -> reg.session_id = sid) regs with
+         | Some reg -> (sid, reg.alias)
+         | None -> (probe_sid, "__connect_verify__"))
+    | None -> (probe_sid, "__connect_verify__")
   in
   let marker = Printf.sprintf "c2c-connect-verify-%d-%d"
     (Unix.gettimeofday () |> int_of_float)
     (Random.int 1000000)
   in
-  let alias = "__connect_verify__" in
   C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None ();
   C2c_mcp.Broker.enqueue_message broker
     ~from_alias:alias ~to_alias:alias ~content:marker
@@ -2456,7 +2459,7 @@ let connect_verify ~root ~broker ~timeout_secs ~output_mode =
         else
           (1, "FAIL: marker gone from inbox but not in archive — broker/registration/config path broken")
   in
-  let footnote = "\n  NOTE: transcript visibility is client-specific, not CLI-observable.\n  This probe confirms broker delivery plumbing, not that the agent sees the message." in
+  let footnote = "\n  NOT PROVEN: your client's transcript visibility is client-specific and not CLI-observable.\n  This probe confirms broker delivery plumbing, not that the agent sees the message." in
   match output_mode with
   | Json ->
       let extra = if real_survived then [] else

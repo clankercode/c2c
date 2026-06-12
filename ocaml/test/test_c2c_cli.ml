@@ -1284,6 +1284,21 @@ let test_install_all_dry_run_shows_dry_run_markers () =
       check bool "output contains [DRY-RUN] marker" true
         (string_contains content "[DRY-RUN]"))
 
+let test_install_all_dry_run_epilog () =
+  let tmpfile = Filename.temp_file "c2c-install-all-epilog" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      ignore (Sys.command (c2c_cmd (Printf.sprintf
+        "c2c install all --dry-run > %s 2>&1 < /dev/null" tmpfile)));
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      check bool "install all output contains canonical verify line" true
+        (string_contains content "Run 'c2c connect --verify'");
+      check bool "install all output contains restart footer" true
+        (string_contains content "restart your CLI client"))
+
 let test_install_gemini_dry_run_refuses () =
   let tmpfile = Filename.temp_file "c2c-install-gemini-dry" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
@@ -2182,6 +2197,7 @@ let () =
     ; ( "install_dry_run",
         [ ( "install all --dry-run exits 0", `Quick, test_install_all_dry_run_exits_zero )
         ; ( "install all --dry-run shows [DRY-RUN] markers", `Quick, test_install_all_dry_run_shows_dry_run_markers )
+        ; ( "install all --dry-run shows canonical epilog", `Quick, test_install_all_dry_run_epilog )
         ; ( "install gemini --dry-run refuses (deprecated)", `Quick, test_install_gemini_dry_run_refuses )
         ; ( "install gemini --dry-run shows deprecation", `Quick, test_install_gemini_dry_run_shows_deprecation )
         ; ( "install kimi --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_kimi )

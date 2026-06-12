@@ -1891,7 +1891,11 @@ let install_all_subcmd =
           ~target_dir_opt:None ~force:false ~deliver_watch:(is_deliver_watch_client c) ()
       end
     ) clients;
-    if output_mode = Human then Printf.printf "\nDone.\n"
+    if output_mode = Human then begin
+      Printf.printf "\nDone.\n";
+      Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
+      Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n"
+    end
   in
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "all"

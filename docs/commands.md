@@ -645,7 +645,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 |------------|-------------|
 | `install` (no subcommand) | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
 | `install self [--dest DIR] [--mcp-server]` | Install the running c2c binary to `~/.local/bin`. |
-| `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. |
+| `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. Prints restart guidance and `Run 'c2c connect --verify' to confirm delivery is live`. |
 | `install claude\|codex\|codex-headless\|opencode\|kimi\|gemini [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. `crush` is **DEPRECATED** — use `claude`, `codex`, `opencode`, `kimi`, or `gemini`. On success, prints `Run 'c2c connect --verify' to confirm delivery is live`. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
 | `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. On success, prints `Run 'c2c connect --verify' to confirm delivery is live`. |
