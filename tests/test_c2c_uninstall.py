@@ -14,13 +14,13 @@ if str(REPO) not in sys.path:
 CLI_TIMEOUT_SECONDS = 10
 
 
-def run_cli(*args, env=None):
+def run_cli(*args, env=None, cwd=REPO):
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
     return subprocess.run(
         [str(REPO / "c2c"), *args],
-        cwd=REPO,
+        cwd=cwd,
         env=merged_env,
         capture_output=True,
         text=True,
@@ -109,6 +109,9 @@ class C2CUninstallTests(unittest.TestCase):
 
         install = run_cli("install", "codex", "--alias", self.alias, env=self.env)
         self.assertEqual(install.returncode, 0, install.stderr)
+        record = next(r for r in self.manifest()["installs"] if r["component"] == "codex")
+        schedule_path = Path(next(a["path"] for a in record["artifacts"] if a["kind"] == "schedule"))
+        self.assertTrue(schedule_path.exists())
 
         first = run_cli("uninstall", "codex", env=self.env)
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -118,10 +121,48 @@ class C2CUninstallTests(unittest.TestCase):
         self.assertIn('[user]', content)
         self.assertIn('key = "keep-me"', content)
         self.assertNotIn("[mcp_servers.c2c", content)
+        self.assertFalse(schedule_path.exists())
 
         second = run_cli("uninstall", "codex", env=self.env)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertIn("nothing to remove for codex", second.stdout)
+
+    def test_uninstall_codex_recomputes_when_manifest_record_is_incomplete(self):
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            '[user]\nkey = "keep-me"\n\n'
+            '[mcp_servers.c2c]\ncommand = "c2c"\n\n'
+            '[mcp_servers.other]\ncommand = "echo"\n',
+            encoding="utf-8",
+        )
+        manifest_path = self.xdg_state / "c2c" / "install-manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "installs": [
+                        {
+                            "component": "codex",
+                            "alias": self.alias,
+                            "target_dir": str(self.home),
+                            "c2c_version": "test",
+                            "ts": 0,
+                            "artifacts": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_cli("uninstall", "codex", env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = config.read_text(encoding="utf-8")
+        self.assertIn("[mcp_servers.other]", content)
+        self.assertNotIn("[mcp_servers.c2c", content)
+        self.assertEqual(self.manifest()["installs"], [])
 
     def test_uninstall_kimi_preserves_user_json_keys(self):
         config = self.home / ".kimi" / "mcp.json"
@@ -152,6 +193,28 @@ class C2CUninstallTests(unittest.TestCase):
         second = run_cli("uninstall", "kimi", env=self.env)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertIn("nothing to remove for kimi", second.stdout)
+
+    def test_uninstall_kimi_removes_legacy_toml_block_and_preserves_user_toml(self):
+        config = self.home / ".kimi" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            'model = "keep-before"\n'
+            '# c2c-managed PreToolUse hook (#142). Slice 2 - install side.\n'
+            '# legacy block content\n'
+            '# [[hooks]]\n'
+            '# command = "/tmp/c2c-kimi-approval-hook.sh"\n'
+            '\n'
+            'after = "keep-after"\n',
+            encoding="utf-8",
+        )
+
+        result = run_cli("uninstall", "kimi", env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = config.read_text(encoding="utf-8")
+        self.assertIn('model = "keep-before"', content)
+        self.assertIn('after = "keep-after"', content)
+        self.assertNotIn("c2c-managed PreToolUse hook", content)
+        self.assertNotIn("legacy block content", content)
 
     def test_uninstall_opencode_preserves_user_json_keys(self):
         target = self.temp_dir / "project"
@@ -186,6 +249,71 @@ class C2CUninstallTests(unittest.TestCase):
         result = run_cli("uninstall", "self", "--dry-run", env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Would remove the running c2c binary", result.stdout)
+
+    def test_install_self_dry_run_changes_nothing(self):
+        dest = self.temp_dir / "bin"
+        result = run_cli(
+            "install", "self", "--dry-run", "--dest", str(dest), env=self.env
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Would install c2c for self", result.stdout)
+        self.assertFalse((dest / "c2c").exists())
+        self.assertIsNone(self.manifest())
+
+    def test_install_git_hook_dry_run_json_has_single_summary(self):
+        result = run_cli("install", "git-hook", "--dry-run", "--json", env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["component"], "git-hook")
+        self.assertIn("installed", payload)
+        self.assertTrue(any(a["kind"] == "owned-file" for a in payload["installed"]))
+
+    def test_uninstall_git_shim_uses_recompute_fallback(self):
+        shim_dir = self.temp_dir / "shim-bin"
+        shim_dir.mkdir()
+        for name in ("git", "git-pre-reset"):
+            path = shim_dir / name
+            path.write_text("#!/bin/sh\n", encoding="utf-8")
+            path.chmod(0o755)
+        env = {**self.env, "C2C_GIT_SHIM_DIR": str(shim_dir)}
+
+        result = run_cli("uninstall", "git-shim", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((shim_dir / "git").exists())
+        self.assertFalse((shim_dir / "git-pre-reset").exists())
+
+    def test_uninstall_git_hook_leaves_non_c2c_pre_commit(self):
+        project = self.temp_dir / "repo"
+        project.mkdir()
+        subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+        source = project / ".c2c" / "hooks" / "pre-commit.sh"
+        source.parent.mkdir(parents=True)
+        source.write_text("#!/bin/sh\necho c2c\n", encoding="utf-8")
+        hook = project / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\necho user-owned\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+        result = run_cli("uninstall", "git-hook", env=self.env, cwd=project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(hook.exists())
+        self.assertIn("user-owned", hook.read_text(encoding="utf-8"))
+
+    def test_uninstall_all_json_is_machine_readable(self):
+        project = self.temp_dir / "all-project"
+        project.mkdir()
+        bin_dir = self.home / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        c2c_bin = bin_dir / "c2c"
+        c2c_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+        c2c_bin.chmod(0o755)
+
+        result = run_cli("uninstall", "all", "--json", env=self.env, cwd=project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["component"], "all")
+        self.assertFalse(c2c_bin.exists())
 
     def test_uninstall_json_output(self):
         config = self.home / ".codex" / "config.toml"

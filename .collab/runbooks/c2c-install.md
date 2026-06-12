@@ -17,7 +17,7 @@ c2c install claude --alias my-alias
 c2c install kimi --alias my-alias
 c2c install opencode --alias my-alias --target-dir ./my-project --force
 
-# Git hooks (pre-commit / pre-push) in the current repo
+# Git hook (pre-commit) in the current repo
 c2c install git-hook
 ```
 

@@ -250,6 +250,20 @@ let do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server =
     | Human ->
         Printf.eprintf "error: cannot find executable at %s\n%!" exe_path;
         exit 1)
+  else if dry_run then
+    let dest_path = dest_dir // "c2c" in
+    let mcp_artifacts =
+      if with_mcp_server then [ C2c_install_manifest.binary (dest_dir // "c2c-mcp-server") ]
+      else []
+    in
+    let self_artifacts = C2c_install_manifest.binary dest_path :: mcp_artifacts in
+    let extra_json =
+      [ ("c2c", `String dest_path) ]
+      @ if with_mcp_server then
+          [ ("mcp_server", `List [ `String (dest_dir // "c2c-mcp-server") ]) ]
+        else []
+    in
+    { artifacts = self_artifacts; extra_json }
   else
     let result =
       try
@@ -1912,13 +1926,16 @@ let install_self_subcmd =
   let mcp_server =
     Cmdliner.Arg.(value & flag & info [ "mcp-server" ] ~doc:"Also install the c2c MCP server binary as ~/.local/bin/c2c-mcp-server. The MCP server is the JSON-RPC bridge that enables c2c messaging between coding CLIs.")
   in
+  let dry_run =
+    Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ] ~doc:"Show what would be installed without writing anything.")
+  in
   let term =
     let+ json = json_flag
     and+ dest_opt = dest
-    and+ with_mcp_server = mcp_server in
+    and+ with_mcp_server = mcp_server
+    and+ dry_run = dry_run in
     let output_mode = if json then Json else Human in
-    let dry_run = false in
-    let result = do_install_self ~dry_run:false ~output_mode ~dest_opt ~with_mcp_server in
+    let result = do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server in
     print_install_summary ~output_mode ~dry_run ~component:"self" result
   in
   Cmdliner.Cmd.v
@@ -1969,7 +1986,7 @@ let install_all_subcmd =
     let (self, clients) = detect_installation () in
     if not self then begin
       if output_mode = Human then Printf.printf "→ Installing c2c binary...\n";
-      let result = do_install_self ~dry_run:false ~output_mode ~dest_opt:None ~with_mcp_server:false in
+      let result = do_install_self ~dry_run ~output_mode ~dest_opt:None ~with_mcp_server:false in
       print_install_summary ~output_mode ~dry_run ~component:"self" result
     end;
     List.iter (fun (c, on_path, configured) ->
@@ -2023,17 +2040,11 @@ let do_install_git_hook ~output_mode ~dry_run =
      | Human -> Printf.eprintf "error: hook source not found: %s\n%!" hook_src);
     exit 1
   end;
-  let file_size path = try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0 in
-  let hook_src_size = file_size hook_src in
   let artifacts = [ C2c_install_manifest.owned_file hook_dst ] in
   let extra_json =
     [ ("src", `String hook_src); ("dst", `String hook_dst) ]
   in
-  if dry_run then (
-    match output_mode with
-    | Json -> print_json (`Assoc ([ ("ok", `Bool true); ("dry_run", `Bool true) ] @ extra_json))
-    | Human -> Printf.printf "[DRY-RUN] would copy %d bytes from %s to %s and chmod 755\n%!" hook_src_size hook_src hook_dst
-  ) else (
+  if not dry_run then (
     try
       let ic = open_in_bin hook_src in
       let oc = open_out_bin (hook_dst ^ ".tmp") in

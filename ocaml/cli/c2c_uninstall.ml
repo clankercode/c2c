@@ -93,14 +93,32 @@ let remove_shared_toml_section ~dry_run ~section_prefix path =
       end
 
 let strip_block ~begin_marker ~end_marker ?legacy_marker content =
+  let starts_with s prefix =
+    String.length s >= String.length prefix
+    && String.sub s 0 (String.length prefix) = prefix
+  in
+  let legacy_matches trimmed =
+    match legacy_marker with
+    | Some marker -> trimmed = marker || starts_with trimmed marker
+    | None -> false
+  in
   let lines = String.split_on_char '\n' content in
   let in_block = ref false in
+  let in_legacy_block = ref false in
   let stripped_any = ref false in
   let kept =
     List.filter_map
       (fun line ->
          let trimmed = String.trim line in
-         if trimmed = begin_marker then begin
+         if !in_legacy_block then begin
+           if trimmed = "" || starts_with trimmed "#" then begin
+             stripped_any := true;
+             None
+           end else begin
+             in_legacy_block := false;
+             Some line
+           end
+         end else if trimmed = begin_marker then begin
            in_block := true;
            stripped_any := true;
            None
@@ -108,7 +126,8 @@ let strip_block ~begin_marker ~end_marker ?legacy_marker content =
            in_block := false;
            stripped_any := true;
            None
-         end else if legacy_marker <> None && trimmed = Option.get legacy_marker then begin
+         end else if legacy_matches trimmed then begin
+           in_legacy_block := true;
            stripped_any := true;
            None
          end else if !in_block then begin
@@ -292,13 +311,43 @@ let remove_git_hook_file ~dry_run path hook_src =
 
 let find_manifest_record component target_dir =
   let m = C2c_install_manifest.read_manifest () in
-  List.find_opt
+  let exact =
+    List.find_opt
     (fun r -> r.C2c_install_manifest.component = component && r.target_dir = target_dir)
     m.installs
+  in
+  match exact with
+  | Some _ -> exact
+  | None ->
+      if List.mem component [ "codex"; "kimi"; "git-shim" ] then
+        List.find_opt
+          (fun r -> r.C2c_install_manifest.component = component)
+          m.installs
+      else None
 
 let remove_manifest_record component target_dir =
   try C2c_install_manifest.remove_record ~component ~target_dir
   with _ -> ()
+
+let artifact_key a =
+  ( a.C2c_install_manifest.kind
+  , a.path
+  , a.key
+  , a.begin_marker
+  , a.end_marker
+  , a.section_prefix )
+
+let dedupe_artifacts artifacts =
+  let seen = Hashtbl.create 16 in
+  List.filter
+    (fun a ->
+       let key = artifact_key a in
+       if Hashtbl.mem seen key then false
+       else begin
+         Hashtbl.add seen key ();
+         true
+       end)
+    artifacts
 
 (* -------------------------------------------------------------------------- *)
 (* Recompute fallback artifacts *)
@@ -422,6 +471,18 @@ let recompute_git_hook_artifacts ~target_dir =
   ; C2c_install_manifest.owned_file (git_common // "hooks" // "pre-push")
   ]
 
+let recompute_artifacts_for_component ~component ~target_dir =
+  match component with
+  | "claude" -> recompute_claude_artifacts ~target_dir
+  | "codex" -> recompute_codex_artifacts ()
+  | "kimi" -> recompute_kimi_artifacts ()
+  | "opencode" -> recompute_opencode_artifacts ~target_dir
+  | "crush" -> recompute_crush_artifacts ()
+  | "gemini" -> recompute_gemini_artifacts ()
+  | "git-hook" -> ([], recompute_git_hook_artifacts ~target_dir, None)
+  | "git-shim" -> ([], recompute_git_shim_artifacts (), None)
+  | _ -> ([], [], None)
+
 (* -------------------------------------------------------------------------- *)
 (* Artifact removal dispatcher *)
 (* -------------------------------------------------------------------------- *)
@@ -451,7 +512,15 @@ let remove_artifact ~dry_run a =
 
 let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
   let record = find_manifest_record component target_dir in
-  let artifacts, settings_path, schedule_artifact =
+  let manifest_target_dir =
+    match record with
+    | Some r -> r.C2c_install_manifest.target_dir
+    | None -> target_dir
+  in
+  let recomputed_shared, recomputed_owned, recomputed_settings =
+    recompute_artifacts_for_component ~component ~target_dir
+  in
+  let artifacts, settings_path =
     match record with
     | Some r ->
         let sched =
@@ -462,24 +531,16 @@ let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
                 (fun a -> if a.C2c_install_manifest.kind = "schedule" then Some a else None)
                 r.artifacts
         in
-        (r.C2c_install_manifest.artifacts, None, sched)
+        ( dedupe_artifacts
+            (r.C2c_install_manifest.artifacts @ recomputed_shared @ recomputed_owned @ sched)
+        , recomputed_settings )
     | None ->
-        let shared, owned, settings =
-          match component with
-          | "claude" -> recompute_claude_artifacts ~target_dir
-          | "codex" -> recompute_codex_artifacts ()
-          | "kimi" -> recompute_kimi_artifacts ()
-          | "opencode" -> recompute_opencode_artifacts ~target_dir
-          | "crush" -> recompute_crush_artifacts ()
-          | "gemini" -> recompute_gemini_artifacts ()
-          | _ -> ([], [], None)
-        in
         let sched =
           match alias with
           | Some a -> [ C2c_install_manifest.schedule (C2c_mcp.schedule_entry_path a "wake") ]
           | None -> []
         in
-        (shared @ owned @ sched, settings, [])
+        (dedupe_artifacts (recomputed_shared @ recomputed_owned @ sched), recomputed_settings)
   in
   (* For claude, always clean settings.json via recompute even if manifest missed it. *)
   let settings_removed =
@@ -511,7 +572,8 @@ let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
     | None -> removed_paths
   in
   let any_removed = all_removed <> [] in
-  if not dry_run && any_removed then remove_manifest_record component target_dir;
+  if not dry_run && (any_removed || Option.is_some record) then
+    remove_manifest_record component manifest_target_dir;
   (any_removed, all_removed)
 
 let uninstall_self ~output_mode ~dry_run =
@@ -573,14 +635,14 @@ let run_uninstall ~output_mode ~dry_run ~component ~target_dir_opt ~alias_opt =
     let all_removed = ref [] in
     List.iter
       (fun c ->
-         let _, removed = uninstall_component ~output_mode:Human ~dry_run ~component:c ~target_dir ~alias:alias_opt in
+         let _, removed = uninstall_component ~output_mode ~dry_run ~component:c ~target_dir ~alias:alias_opt in
          all_removed := !all_removed @ removed)
       components;
-    let self_any, self_removed = uninstall_self ~output_mode:Human ~dry_run in
+    let _, self_removed = uninstall_self ~output_mode ~dry_run in
     all_removed := !all_removed @ self_removed;
     report_removed ~output_mode ~dry_run ~component:"all" !all_removed
   end else if component = "self" then begin
-    let any, removed = uninstall_self ~output_mode ~dry_run in
+    let _, removed = uninstall_self ~output_mode ~dry_run in
     report_removed ~output_mode ~dry_run ~component:"self" removed
   end else begin
     let target_dir =
@@ -593,7 +655,7 @@ let run_uninstall ~output_mode ~dry_run ~component ~target_dir_opt ~alias_opt =
              t // ".git")
       else resolve_target_dir None
     in
-    let any, removed = uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias:alias_opt in
+    let _, removed = uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias:alias_opt in
     report_removed ~output_mode ~dry_run ~component removed
   end
 
