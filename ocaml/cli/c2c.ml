@@ -2039,7 +2039,7 @@ let check_plugin_installs () =
    else if Sys.file_exists global_plugin && global_size >= 1024 then
      add (`Green, "opencode: plugin installed (global)")
    else if Sys.file_exists global_plugin then
-     add (`Yellow, Printf.sprintf "opencode: global plugin is a stub (%d bytes) — run: c2c install opencode from c2c repo" global_size)
+     add (`Yellow, Printf.sprintf "opencode: global plugin is a stub (%d bytes) — run: c2c install opencode" global_size)
    else
      add (`Yellow, "opencode: plugin not installed (run: c2c install opencode)"));
 

@@ -8,6 +8,11 @@
    - STALE: deployed is a symlink but target is not canonical source
    - MISSING: no deployed plugin found
 
+   With Feature C embedding, the compiled c2c binary carries the canonical plugin.
+   In a dev checkout the repo file (data/opencode-plugin/c2c.ts) is preferred so
+   symlink-tracks-edits works; in a binary-only install the embedded blob is used.
+   Repair via `c2c install opencode` or by upgrading the c2c binary.
+
    Also scans <cwd>/.opencode/c2c-debug.log for `=== c2c plugin boot ===` entries
    grouped by pid; if any pid has >1 boot entry with distinct paths, the plugin
    was double-loaded from different bun-cache locations (a #337 follow-up:
@@ -143,7 +148,7 @@ let check_drift () : unit =
   let primary_code =
     if not (Sys.file_exists deployed) then begin
       Printf.printf "MISSING: deployed plugin not found at %s\n" deployed;
-      Printf.printf "  Run: cd /path/to/c2c && just install-all\n";
+      Printf.printf "  Run: c2c install opencode (or upgrade your c2c binary)\n";
       1
     end else if deployed_is_symlink then begin
       let target = match read_link deployed with Some t -> t | None -> "" in
@@ -184,7 +189,7 @@ let check_drift () : unit =
               Printf.printf "DRIFT: deployed plugin has diverged from canonical source\n";
               Printf.printf "  deployed:  %s (size=%d mtime=%.0f)\n" deployed d_size d_mtime;
               Printf.printf "  canonical: %s (size=%d mtime=%.0f)\n" canonical c_size c_mtime;
-              Printf.printf "  Run: cd /path/to/c2c && just install-all\n";
+              Printf.printf "  Run: c2c install opencode (or upgrade your c2c binary)\n";
               1
             end
           end

@@ -76,6 +76,14 @@
  (modules test_c2c_opencode_plugin_drift c2c_opencode_plugin_drift)
  (libraries c2c_mcp alcotest cmdliner str unix))
 
+; Feature C sync gate: embedded plugin blob stays in sync with the canonical
+; TS source, and binary-only install writes the embedded blob.
+(test
+ (name test_c2c_opencode_plugin_embedded)
+ (modules test_c2c_opencode_plugin_embedded c2c_opencode_plugin_embedded)
+ (libraries alcotest unix)
+ (deps %{exe:c2c.exe} (file ../../data/opencode-plugin/c2c.ts)))
+
 (test
  (name test_c2c_peer_pass)
  (modules test_c2c_peer_pass c2c_peer_pass c2c_signing_helpers c2c_utils c2c_broker_root_check)
@@ -104,7 +112,7 @@
 ; #478 slice 2: setup_kimi JSON merge idempotency + allowedTools presence.
 (test
  (name test_c2c_setup_kimi)
- (modules test_c2c_setup_kimi c2c_setup c2c_kimi_hook c2c_types c2c_utils c2c_broker_root_check)
+ (modules test_c2c_setup_kimi c2c_setup c2c_kimi_hook c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded)
  (libraries c2c_mcp alcotest yojson unix))
 
 (test
