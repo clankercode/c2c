@@ -93,6 +93,36 @@ let test_symlinked_hooks_dir_resolves () =
     check int "referenced count" 1 r.C2c_doctor_hooks.total_referenced;
     check int "dangling count" 0 r.C2c_doctor_hooks.total_dangling)
 
+let test_settings_local_json_dangling_reported () =
+  with_tmp_dir (fun dir ->
+    let missing = dir // "c2c-stop-deliver.sh" in
+    write_file (dir // "settings.local.json") (settings_json "Stop" missing);
+    let r = run_check [ dir ] in
+    check int "referenced count" 1 r.C2c_doctor_hooks.total_referenced;
+    check int "dangling count" 1 r.C2c_doctor_hooks.total_dangling;
+    match r.C2c_doctor_hooks.dirs with
+    | [ d ] ->
+        check int "dir dangling list length" 1 (List.length d.C2c_doctor_hooks.dangling);
+        let x = List.hd d.C2c_doctor_hooks.dangling in
+        check string "config file" (dir // "settings.local.json") x.C2c_doctor_hooks.config_file;
+        check string "event" "Stop" x.C2c_doctor_hooks.event;
+        check string "command path" missing x.C2c_doctor_hooks.command_path
+    | _ -> fail "expected exactly one dir result")
+
+let test_leading_whitespace_absolute_path_reported () =
+  with_tmp_dir (fun dir ->
+    let missing = dir // "c2c-inbox-check.sh" in
+    write_file (dir // "settings.json")
+      (settings_json "PostToolUse" ("\t  " ^ missing ^ " --from-hook"));
+    let r = run_check [ dir ] in
+    check int "referenced count" 1 r.C2c_doctor_hooks.total_referenced;
+    check int "dangling count" 1 r.C2c_doctor_hooks.total_dangling;
+    match r.C2c_doctor_hooks.dirs with
+    | [ d ] ->
+        let x = List.hd d.C2c_doctor_hooks.dangling in
+        check string "command path trims leading whitespace" missing x.C2c_doctor_hooks.command_path
+    | _ -> fail "expected exactly one dir result")
+
 let test_malformed_settings_skipped () =
   with_tmp_dir (fun dir ->
     write_file (dir // "settings.json") "{ this is not valid json";
@@ -105,6 +135,26 @@ let test_non_c2c_hook_not_flagged () =
   with_tmp_dir (fun dir ->
     let missing = "/usr/bin/nonexistent-mytool-doctor-hooks-test" in
     write_file (dir // "settings.json") (settings_json "PostToolUse" missing);
+    let r = run_check [ dir ] in
+    check int "referenced count" 0 r.C2c_doctor_hooks.total_referenced;
+    check int "dangling count" 0 r.C2c_doctor_hooks.total_dangling)
+
+let test_relative_and_path_c2c_commands_ignored () =
+  with_tmp_dir (fun dir ->
+    let payload = {|{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          { "type": "command", "command": "c2c-inbox-hook-ocaml --from-path" },
+          { "type": "command", "command": "./c2c-inbox-check.sh" }
+        ]
+      }
+    ]
+  }
+}|} in
+    write_file (dir // "settings.json") payload;
     let r = run_check [ dir ] in
     check int "referenced count" 0 r.C2c_doctor_hooks.total_referenced;
     check int "dangling count" 0 r.C2c_doctor_hooks.total_dangling)
@@ -128,8 +178,11 @@ let () =
       , [ test_case "missing c2c hook is reported"     `Quick test_missing_c2c_hook_reported
         ; test_case "present c2c hook is ok"          `Quick test_present_c2c_hook_ok
         ; test_case "symlinked hooks dir resolves"    `Quick test_symlinked_hooks_dir_resolves
+        ; test_case "settings.local dangling reported" `Quick test_settings_local_json_dangling_reported
+        ; test_case "leading whitespace path reported" `Quick test_leading_whitespace_absolute_path_reported
         ; test_case "malformed settings is skipped"   `Quick test_malformed_settings_skipped
         ; test_case "non-c2c missing hook ignored"    `Quick test_non_c2c_hook_not_flagged
+        ; test_case "relative and PATH c2c ignored"   `Quick test_relative_and_path_c2c_commands_ignored
         ; test_case "multiple dirs aggregate"         `Quick test_multiple_dirs_aggregate
         ] )
     ]
