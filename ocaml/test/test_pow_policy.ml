@@ -27,6 +27,15 @@ let test_required_difficulty_cap () =
   Alcotest.(check int) "difficulty capped at d_max" PP.d_max
     (PP.required_difficulty ~accumulated_cost:1000.0)
 
+(* Pin d_max: it is the worst-case mint CPU a routine request ever pays.
+   Bumping it is a CPU regression and must be a deliberate edit, not a drift.
+   2^12 = ~4096 hashes keeps routine requests at low-ms while still deterring
+   floods in aggregate. Must stay well under Pow.max_mint_iterations (2^24). *)
+let test_d_max_bounds_mint_cpu () =
+  Alcotest.(check int) "d_max pinned at 12 (low-ms worst-case mint)" 12 PP.d_max;
+  Alcotest.(check bool) "d_max leaves ample mint headroom under 2^24 cap" true
+    (PP.d_max <= 16)
+
 let test_accumulator_records_decays_and_reads_difficulty () =
   let acc = PP.create () in
   Alcotest.(check int) "fresh actor needs no PoW" 0
@@ -60,6 +69,8 @@ let () =
             test_required_difficulty_grace_and_steps;
           Alcotest.test_case "required difficulty cap" `Quick
             test_required_difficulty_cap;
+          Alcotest.test_case "d_max bounds mint cpu" `Quick
+            test_d_max_bounds_mint_cpu;
           Alcotest.test_case "accumulator records and decays" `Quick
             test_accumulator_records_decays_and_reads_difficulty;
           Alcotest.test_case "reads do not extend decay window" `Quick
