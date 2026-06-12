@@ -646,7 +646,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `install` (no subcommand) | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
 | `install self [--dest DIR] [--mcp-server]` | Install the running c2c binary to `~/.local/bin`. |
 | `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi\|gemini [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. `crush` is **DEPRECATED** — use `claude`, `codex`, `opencode`, `kimi`, or `gemini`. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
 | `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. |
 
@@ -687,7 +687,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`. `crush` is **DEPRECATED** (`c2c start crush` refuses, exit 1). NAME becomes the alias by default. |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`. NAME becomes the alias by default. |
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
@@ -734,7 +734,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 
 | Command | Description |
 |---------|-------------|
-| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. **Crush is DEPRECATED** (`c2c start crush` refuses, exit 1). |
+| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. |
 | `stop NAME [--json]` | Stop a managed instance. |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
@@ -841,7 +841,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `install [--client CLIENT] [--dry-run]` | Install c2c binary and/or client integrations. |
 | `install self [--dest DIR] [--mcp-server]` | Install the c2c binary to `~/.local/bin`. |
 | `install all [--dry-run]` | Install binary + configure all detected clients. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi\|gemini [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client. **Crush is DEPRECATED** (`c2c start crush` refuses). |
+| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
 | `mesh status [--relay-url URL] [--include-dead]` | Inspect the peer mesh connected to a remote relay. |
 | `mesh peers [--relay-url URL]` | List mesh peers. |
@@ -895,7 +895,7 @@ to invoke it directly.
 |------|-------------|
 | `--session-id ID` | Broker session ID to drain (required) |
 | `--broker-root DIR` | Broker root directory (default: from env) |
-| `--client TYPE` | Client type — pass `kimi` here; other values: `claude`, `codex`, `codex-headless`, `opencode`, `crush`, `generic` |
+| `--client TYPE` | Client type — pass `kimi` here; other values: `claude`, `codex`, `codex-headless`, `opencode`, `generic` |
 | `--loop` | Keep polling and delivering continuously |
 | `--interval SECS` | Polling interval in seconds (default: 2.0) |
 | `--max-iterations N` | Exit after N iterations |
@@ -987,7 +987,7 @@ c2c identifies sessions by their **session ID** — a UUID assigned by the host 
    - Claude Code: `$CLAUDE_SESSION_ID`
    - Codex / Codex headless: `$CODEX_THREAD_ID`
    - OpenCode: `$C2C_OPENCODE_SESSION_ID`
-   - Kimi / Crush: provided via `c2c install <client>` (writes the alias and a generated session ID into the client's MCP config; refresh by re-running install).
+   - Kimi: provided via `c2c install <client>` (writes the alias and a generated session ID into the client's MCP config; refresh by re-running install).
 3. Explicit flag: `c2c register --session-id ID --alias A`.
 4. Auto-detection from `/proc` for the current client process (best-effort).
 
