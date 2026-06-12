@@ -125,8 +125,6 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 ---
 
----
-
 ## Filling the ? cells
 
 If you have access to Kimi or another client, please verify the unknown cells and PR the update. The key verification commands:
