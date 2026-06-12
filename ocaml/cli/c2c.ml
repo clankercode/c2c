@@ -6780,8 +6780,9 @@ let init_cmd =
         a
   in
   (* Ensure Ed25519 identity exists — idempotent, safe to run always. *)
-  let _identity_init_rc = Sys.command "c2c relay identity init 2>/dev/null" in
-  ignore _identity_init_rc;
+  let identity_init_rc = Sys.command "c2c relay identity init 2>/dev/null" in
+  if identity_init_rc <> 0 then
+    Printf.eprintf "  warning: relay identity init failed (rc=%d). Relay features may not work.\n  hint: run 'c2c relay identity init' manually to diagnose.\n%!" identity_init_rc;
 
   C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None ~client_type:(env_client_type ()) ();
 
@@ -6956,12 +6957,13 @@ let init_cmd =
           | `Skipped -> ()
           | `Error e -> Printf.printf "  relay:     error — %s\n" e);
 
-         Printf.printf "\nYou're ready! Try:\n";
+          Printf.printf "\nYou're ready! Try:\n";
         Printf.printf "  c2c list              — see peers\n";
         Printf.printf "  c2c send ALIAS MSG    — send a message\n";
         Printf.printf "  c2c poll-inbox        — check your inbox\n";
         Printf.printf "  c2c send-room %s MSG  — chat in the room\n" room;
-        Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session. This activates push-based\n  delivery — far more reliable than manual polling.\n")
+        Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
+        Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n")
 
 let completion_cmd =
   let shell_arg =
