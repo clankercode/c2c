@@ -30,6 +30,7 @@ Maintained by the orchestrator (claude). Updated as each agent lands.
 | Agent | Slice | Build/Test | Quality | Issues | Committed |
 |---|---|---|---|---|---|
 | ccc/mimo25p | S1 connect-docs truth pass | PASS; agent jekyll rc=0; 12 files | ✅ | Clean removal (front-door Gemini/Crush gone, `layout: docs` fixed, 3 historical files correctly preserved). Orchestrator independently re-verified content + scrubbed `.opencode/package.json` env churn. CAVEAT: agent's "peer-PASS" was a self-sub-review (NOT a real different-model peer-PASS); jekyll build not reproduced locally (jekyll gem not in orchestrator env). | 4 commits, head **91ea99b3** |
+| ccc/mimo25p | S2 CLI gemini-refuse + init hint | PASS; build rc=0 (orchestrator-verified in-worktree); binary refuses `install gemini` exit 1 w/ clean JSON | ✅ | Feature CORRECT (verified worktree binary refuses; dormant `setup_gemini`/`GeminiAdapter` preserved). Slightly over-scoped into role-template gemini cleanup (in-bounds). **Found defect:** new `test_c2c_gemini_deprecation.ml` `find_c2c_binary` falls back to PATH `c2c` → NON-HERMETIC (false-red on my run, false-green risk vs stale installed binary) — harden in peer-review. Agent's "20 pre-existing failures unrelated" = TRUE (e.g. `test_c2c_peer_pass` git-trailer; untouched by S2). Env churn scrubbed. Still needs a REAL different-model peer-PASS. | 3 commits, head **181d4209** + scrub |
 
 ## Codex second-opinion pass (final gate over hardened plans)
 
