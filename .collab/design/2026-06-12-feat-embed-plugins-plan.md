@@ -57,6 +57,16 @@
   `data/opencode-plugin/c2c.ts` byte-for-byte (extend `test_c2c_opencode_plugin_drift.ml` or
   add `test_c2c_opencode_plugin_embedded.ml`). This is the sync gate — editing the TS
   without re-running the codegen recipe fails the build.
+  **Test path + Dune wiring (glm51 + codex — anti-false-green specificity):**
+  - The test MUST resolve `data/opencode-plugin/c2c.ts` from the **worktree/repo root**, NOT
+    Dune's sandbox test CWD (which is `_build/...`). Either reuse the canonical-path
+    resolution model already in `test_c2c_opencode_plugin_drift.ml`, or declare the data file
+    as a Dune `(deps ...)` and resolve via `%{dep:...}` / a known relative anchor — do not
+    `open_in "data/..."` blindly (would read from `_build` and false-green or fail to find).
+  - If ADDING `test_c2c_opencode_plugin_embedded.ml`, add the Dune test stanza in
+    `ocaml/cli/dune` and include `c2c_opencode_plugin_embedded` in that test's `(modules ...)`.
+  - Verify the gate actually FAILS: hand-edit the embedded `.ml` (or the data file) without
+    regenerating and confirm the test goes red.
 - Update `c2c_opencode_plugin_drift.ml` (`:146,187`): with embedding, the binary is
   canonical; reword "cd /path/to/c2c && just install-all" guidance to "upgrade your c2c
   binary / re-run `c2c install opencode`".
