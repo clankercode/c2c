@@ -15,7 +15,7 @@ run's tail ("To resume this session: kimi -r <id>").
 |---|---|---|---|
 | **A** connect-metadata | wt-feat-connect-metadata | ✅✅ **DONE + glm51 peer-PASS @ 872f257e** (build rc=0; onboarding 13/13, mcp 364/364; +2 coverage tests omit-when-false & re-register-discard; guard-invariant verified). Ready to merge (held for full feature push). | — done |
 | **B** name-nonce (RISKIEST) | wt-feat-name-nonce | ⏳ resumed — was mid-build-error, NO impl commits yet (blocklist.ml+nonce.ml created, 9 files modified). Must reach build rc=0 + tests + per-slice commits. | resume `bqqscise8` (kimi sess 8a7dc590) |
-| **C** embed-plugins | wt-feat-embed-plugins | ⏳ resumed — C1 `71c35350` + C2 `64c21b03` committed; finishing C3 (byte-eq sync-gate, MUST verify fails-when-stale) + C4 docs. | resume `b6zy68lhn` (kimi sess 0bb2db81) |
+| **C** embed-plugins | wt-feat-embed-plugins | 🔧 all 4 slices committed @ **78ffc86b** (build rc=0, codegen idempotent, sync-gate genuine). Orchestrator found a NON-HERMETIC binary-only test (CWD-relative dev-detection `c2c_setup.ml:727`) — codex review-and-fix dispatched to make it hermetic + (rec.) resolve canonical from repo root. Finding committed-to-disk (gitignored). | codex review-and-fix `bvcko985s` |
 
 On EACH completion: read task output, validate build+tests IN-WORKTREE (`opam exec -- dune build
 --root <wt> -j2`; opam env NOT in orchestrator shell — wrap in `bash -lc 'eval "$(opam env)"; …'`
