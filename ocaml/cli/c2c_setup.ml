@@ -443,7 +443,8 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
       Printf.printf "  config:      %s\n" config_path;
       Printf.printf "  server:      %s\n" server_path;
       Printf.printf "  note:        shared MCP config only; managed sessions set identity at launch\n";
-      Printf.printf "\nRestart Codex to pick up the new MCP server.\n"
+      Printf.printf "\nRestart Codex to pick up the new MCP server.\n";
+      Printf.printf "\n  Before sending messages, restart your CLI client and resume this session.\n  This activates push-based delivery — far more reliable than manual polling.\n"
 
 (* --- setup: Kimi (JSON) --- *)
 
@@ -529,6 +530,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
       Printf.printf "  hook script: %s\n" hook_path;
       Printf.printf "  hooks toml:  %s (%s)\n" toml_config_path hook_block_status_str;
       Printf.printf "\nRestart Kimi to pick up the new MCP server.\n";
+      Printf.printf "\n  Before sending messages, restart your CLI client and resume this session.\n  This activates push-based delivery — far more reliable than manual polling.\n";
       Printf.printf "PreToolUse permission forwarding ships fully-commented in %s —\n"
         toml_config_path;
       Printf.printf "uncomment ONE [[hooks]] example in that file to opt in.\n";
@@ -614,6 +616,7 @@ let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_comman
       Printf.printf "  trust:       true (skips per-tool confirmation prompts)\n";
       Printf.printf "\nRun 'gemini mcp list' to verify.\n";
       Printf.printf "If you haven't authenticated yet, run 'gemini' once interactively to seed ~/.gemini/oauth_creds.json before launching managed sessions.\n";
+      Printf.printf "\n  Before sending messages, restart your CLI client and resume this session.\n  This activates push-based delivery — far more reliable than manual polling.\n";
       (* Write deliver-watch supervisor scripts for non-MCP clients. *)
       let home = Sys.getenv "HOME" in
       let client_dir = home // ".c2c" // "clients" // "gemini" in
@@ -803,6 +806,7 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
       Printf.printf "  config:      %s\n" config_path;
       Printf.printf "  plugin:      %s\n" plugin_note;
       Printf.printf "\nRun 'opencode mcp list' from %s to verify.\n" target_dir;
+      Printf.printf "\n  Before sending messages, restart your CLI client and resume this session.\n  This activates push-based delivery — far more reliable than manual polling.\n";
       (* Write deliver-watch supervisor scripts for non-MCP clients. *)
       let home = Sys.getenv "HOME" in
       let client_dir = home // ".c2c" // "clients" // "opencode" in
@@ -1341,6 +1345,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
          Printf.printf "\n  (hook already registered; upgraded matcher to %s)\n" target_matcher
        else
          Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n";
+       Printf.printf "\n  Before sending messages, run /reload-plugins in Claude Code (or restart\n  the CLI client) and resume this session. This activates push-based hook\n  delivery — far more reliable than manual polling.\n";
        if not global then
          Printf.printf "\n  (project scope: MCP entry written to %s/.mcp.json. Pass --global to write to ~/.claude.json instead.)\n" project_dir;
        let alias_str = match alias_opt with Some a -> " -a " ^ a | None -> "" in
@@ -1756,6 +1761,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
       end
     ) do_clients;
     Printf.printf "\nDone.\n";
+    Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session. This activates push-based\n  delivery — far more reliable than manual polling.\n";
     (* Polish: hint about faster message delivery if inotifywait is available *)
     let inotify_available =
       let path = try Sys.getenv "PATH" with Not_found -> "" in

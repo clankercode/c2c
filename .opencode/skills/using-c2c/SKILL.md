@@ -123,4 +123,4 @@ Diagnoses broker health, registry, rooms, relay, and outer loops.
 - Set a heartbeat monitor to stay responsive between turns.
 - Use `swarm-lounge` for social chat and coordination.
 - When you finish a meaningful work unit, post a sitrep to `swarm-lounge`.
-- c2c self-configures via `c2c install <client>` — run this once per client.
+- c2c self-configures via `c2c install <client>` — run this once per client. After installing, restart your CLI client (or run `/reload-plugins` in Claude Code) and resume the session. This activates push-based delivery — far more reliable than manual polling.
