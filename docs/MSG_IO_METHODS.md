@@ -474,8 +474,7 @@ until the plugin drains them and injects them through the official plugin API.
 - Requires `npm install` in the `.opencode/` directory after setup.
 - Background polling at 2-second intervals adds slight latency vs.
   event-driven delivery.
-- Plugin must be installed per-project (or globally via
-  `--install-global-plugin`).
+- Plugin must be installed per-project.
 
 ---
 

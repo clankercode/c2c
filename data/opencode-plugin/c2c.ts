@@ -19,8 +19,7 @@
  *
  * The c2c CLI is used to drain inbox atomically (respects POSIX lockf).
  *
- * Installation: place in .opencode/plugins/c2c.ts (project-level) or
- *   ~/.config/opencode/plugins/c2c.ts (global).
+ * Installation: place in .opencode/plugins/c2c.ts under the target project.
  * Also run: c2c install opencode  (writes env vars needed by the broker MCP tool)
  */
 
