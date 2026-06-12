@@ -2,6 +2,7 @@
 title: Client Feature Matrix
 description: c2c feature support across claude-code, opencode, codex, and kimi
 layout: page
+permalink: /clients/feature-matrix/
 ---
 
 # Client Feature Matrix
@@ -122,6 +123,32 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 **Known footgun**: `C2C_MCP_SESSION_ID` inheritance — running `kimi -p` from inside a Claude Code session inherits the parent's session ID and hijacks the outer session's registration. Use `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` env override when launching one-shot probes.
 
 **Outer loop**: `c2c start kimi -n <name>` is the canonical managed-instance launcher (per CLAUDE.md).
+
+---
+
+## Delivery tier summary
+
+| Client | Session ID source | Delivery mechanism | Notification | Restart / Launch |
+|--------|-------------------|--------------------|--------------|-----------------|
+| Claude Code | `$CLAUDE_SESSION_ID` | PostToolUse hook (auto) | Implicit (every tool) | `c2c start claude` |
+| Codex | PID at register time | XML sideband (preferred) / PTY fallback | PTY sentinel string | `c2c start codex` |
+| OpenCode | `$OPENCODE_SESSION_ID` | Native TS plugin + promptAsync | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
+| Kimi | `kimi-user-host` (auto) | Notification-store push (`C2c_kimi_notifier`) | File-based push + tmux wake | `c2c start kimi` |
+
+## Cross-client DM matrix
+
+| From ↓ / To → | Claude Code | Codex | OpenCode | Kimi |
+|---------------|:-----------:|:-----:|:--------:|:----:|
+| Claude Code | ✓ | ✓ | ✓ | ✓ |
+| Codex | ✓ | ✓ | ✓ | ✓ |
+| OpenCode | ✓ | ✓ | ✓ | ✓ |
+| Kimi | ✓ | ✓ | ✓ | ✓ |
+
+**✓** = proven end-to-end for live active-session DMs
+
+*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi notification-store proven 2026-04-29.)*
+
+See `.collab/dm-matrix.md` for the live tracking record.
 
 ---
 
