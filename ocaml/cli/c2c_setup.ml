@@ -235,7 +235,7 @@ let print_install_summary ~output_mode ~dry_run ~component result =
 
 (* --- install: self (copy binary to ~/.local/bin) ------------------------- *)
 
-let do_install_self ?(dry_run = false) ~output_mode ~dest_opt ~with_mcp_server =
+let do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server =
   let dest_dir =
     match dest_opt with
     | Some d -> d
@@ -777,27 +777,28 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
        | _ -> true
      with _ -> true)
   in
-  if not should_write_config then () else
-  let config =
-    `Assoc
-      [ ("$schema", `String "https://opencode.ai/config.json")
-      ; ("mcp", `Assoc
-          [ ("c2c", `Assoc
-              [ ("type", `String "local")
-              ; ("command", `List [ `String "opam"; `String "exec"; `String "--"; `String server_path ])
-              ; ("environment", `Assoc
-                  ([ ("C2C_MCP_BROKER_ROOT", `String root)
-                   ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-                   ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
-                   ; ("C2C_CLI_COMMAND", `String (current_c2c_command ()))
-                   ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
-                   ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
-              ; ("enabled", `Bool true)
-              ])
-          ])
-      ]
-  in
-  json_write_file_or_dryrun dry_run config_path config;
+  if should_write_config then begin
+    let config =
+      `Assoc
+        [ ("$schema", `String "https://opencode.ai/config.json")
+        ; ("mcp", `Assoc
+            [ ("c2c", `Assoc
+                [ ("type", `String "local")
+                ; ("command", `List [ `String "opam"; `String "exec"; `String "--"; `String server_path ])
+                ; ("environment", `Assoc
+                    ([ ("C2C_MCP_BROKER_ROOT", `String root)
+                     ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
+                     ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+                     ; ("C2C_CLI_COMMAND", `String (current_c2c_command ()))
+                     ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
+                     ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
+                ; ("enabled", `Bool true)
+                ])
+            ])
+        ]
+    in
+    json_write_file_or_dryrun dry_run config_path config
+  end;
   let sidecar = config_dir // "c2c-plugin.json" in
   (* Drift-prevention follow-up to #504 / kimi-mcp-canonical-server:
      omit broker_root from the sidecar when value == resolver default.
@@ -1533,7 +1534,7 @@ let start_client_list = String.concat ", " start_clients
 let deliver_watch_clients = [ "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
 let is_deliver_watch_client client = List.mem client deliver_watch_clients
 
-let ensure_default_wake_schedule ?(quiet = false) ~dry_run ~output_mode ~alias =
+let ensure_default_wake_schedule ~quiet ~dry_run ~output_mode ~alias =
   let dir = C2c_mcp.schedule_base_dir alias in
   let path = C2c_mcp.schedule_entry_path alias "wake" in
   if Sys.file_exists path then
@@ -1846,7 +1847,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
     Printf.printf "\n";
     if do_self then begin
       Printf.printf "→ Installing c2c binary...\n";
-      let result = do_install_self ~output_mode:Human ~dest_opt:None ~with_mcp_server:false in
+      let result = do_install_self ~dry_run:false ~output_mode:Human ~dest_opt:None ~with_mcp_server:false in
       print_install_summary ~output_mode:Human ~dry_run:false ~component:"self" result
     end;
     List.iter (fun (c, do_it) ->
@@ -1917,7 +1918,7 @@ let install_self_subcmd =
     and+ with_mcp_server = mcp_server in
     let output_mode = if json then Json else Human in
     let dry_run = false in
-    let result = do_install_self ~output_mode ~dest_opt ~with_mcp_server in
+    let result = do_install_self ~dry_run:false ~output_mode ~dest_opt ~with_mcp_server in
     print_install_summary ~output_mode ~dry_run ~component:"self" result
   in
   Cmdliner.Cmd.v
@@ -1968,7 +1969,7 @@ let install_all_subcmd =
     let (self, clients) = detect_installation () in
     if not self then begin
       if output_mode = Human then Printf.printf "→ Installing c2c binary...\n";
-      let result = do_install_self ~output_mode ~dest_opt:None ~with_mcp_server:false in
+      let result = do_install_self ~dry_run:false ~output_mode ~dest_opt:None ~with_mcp_server:false in
       print_install_summary ~output_mode ~dry_run ~component:"self" result
     end;
     List.iter (fun (c, on_path, configured) ->
