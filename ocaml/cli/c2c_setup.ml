@@ -1514,21 +1514,7 @@ let ensure_default_wake_schedule ~dry_run ~output_mode ~alias =
 
 let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
-  let root =
-    match broker_root_opt with
-    | Some r -> r
-    | None -> resolve_broker_root ()
-  in
-  let alias_val =
-    match alias_opt with
-    | Some a -> a
-    | None ->
-        let a = default_alias_for_client client in
-        Printf.eprintf "[c2c setup] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
-        a
-  in
-  let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
-  (* Gemini is deprecated — refuse install before dispatching to setup_gemini. *)
+  (* Gemini is deprecated — refuse immediately before any setup work. *)
   if client = "gemini" then begin
     (match output_mode with
      | Json ->
@@ -1546,6 +1532,20 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
          Printf.eprintf "  `c2c install gemini` refuses (exit 1). For new agents use: claude | codex | opencode | kimi\n%!");
     exit 1
   end;
+  let root =
+    match broker_root_opt with
+    | Some r -> r
+    | None -> resolve_broker_root ()
+  in
+  let alias_val =
+    match alias_opt with
+    | Some a -> a
+    | None ->
+        let a = default_alias_for_client client in
+        Printf.eprintf "[c2c setup] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
+        a
+  in
+  let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
   (match client with
   | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt
   | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch
