@@ -315,6 +315,42 @@ let test_connector_client_register_mints_and_retries () =
       Alcotest.(check string) "alias" alias
         (json_string "alias" (json_member "lease" json))))
 
+(* A re-register of a session that already holds a lease for the same alias is
+   a routine refresh, not a new registration: it must succeed PoW-free and
+   advertise D=0 even when the actor is warmed past grace (otherwise a `--once`
+   connector re-registering its sessions every sync burns CPU minting needless
+   proofs). Without the refresh discount this would 429 with pow_required. *)
+let test_lease_refresh_is_pow_free () =
+  with_pow_env "1" (fun () ->
+    with_server (fun ~base_url ~relay:_ ->
+      let alias = "pow-refresh" in
+      let identity = Relay_identity.generate ~alias_hint:alias () in
+      (* 1. First registration of the session — in grace, free. *)
+      let first_body =
+        register_body ~node_id:"node-refresh" ~session_id:"session-refresh"
+          ~alias ~identity ~relay_url:base_url ()
+      in
+      post_register ~base_url first_body >>= fun first ->
+      Alcotest.(check int) "first register ok" 200
+        (Cohttp.Code.code_of_status first.status);
+      (* 2. Warm the SAME actor past grace with other sessions: a *new*
+         register would now demand PoW. *)
+      warm_actor_past_grace ~base_url ~identity ~alias >>= fun () ->
+      (* 3. Re-register the SAME (node, session, alias) = a lease refresh.
+         Must succeed without a PoW challenge despite the warm actor, and
+         advertise D=0 (refresh neither charges cost nor escalates). *)
+      let refresh_body =
+        register_body ~node_id:"node-refresh" ~session_id:"session-refresh"
+          ~alias ~identity ~relay_url:base_url ()
+      in
+      post_register ~base_url refresh_body >|= fun refresh ->
+      Alcotest.(check int) "refresh succeeds without pow" 200
+        (Cohttp.Code.code_of_status refresh.status);
+      Alcotest.(check bool) "refresh ok" true
+        (json_member "ok" refresh.json = `Bool true);
+      Alcotest.(check int) "refresh advertises D=0" 0
+        (header_difficulty (require_pow_header refresh))))
+
 let test_verified_pow_is_spent_even_if_register_body_fails () =
   with_pow_env "1" (fun () ->
     with_server (fun ~base_url ~relay:_ ->
@@ -438,6 +474,8 @@ let () =
         `Quick test_relay_client_register_signed_mints_and_retries;
       Alcotest.test_case "connector: register mints and retries on pow_required"
         `Quick test_connector_client_register_mints_and_retries;
+      Alcotest.test_case "enabled: lease refresh is pow-free even when warm"
+        `Quick test_lease_refresh_is_pow_free;
       Alcotest.test_case "enabled: verified PoW is spent on failed register"
         `Quick test_verified_pow_is_spent_even_if_register_body_fails;
       Alcotest.test_case "enabled: forged PoW challenge fields are rejected"

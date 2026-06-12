@@ -3385,6 +3385,24 @@ generateKeys();
     in
     let pow_enabled = relay_pow_enabled () in
     let pow_actor_enabled = pow_enabled && actor_id <> "" in
+    (* A re-register of a session that already holds a lease bound to the same
+       alias is a routine lease *refresh*, not a new registration. The relay
+       connector keeps no persistent registered-set in `--once` mode, so it
+       re-registers every local session on every sync; without this, each
+       refresh re-charges register cost (10) and escalates the per-actor PoW
+       difficulty to d_max — burning CPU minting a needless proof every sync.
+       A refresh is PoW-free and cost-free: the actor already proved ownership
+       of this alias when the lease was first bound (the signed path verifies
+       the Ed25519 signature for `alias`), so a free refresh is NOT a
+       new-registration flood vector. Alias compare is case-insensitive to
+       match registry semantics. *)
+    let is_lease_refresh =
+      alias <> ""
+      && (match R.alias_of_session relay ~node_id ~session_id with
+          | Some bound ->
+            String.lowercase_ascii bound = String.lowercase_ascii alias
+          | None -> false)
+    in
     let respond_register_json ?difficulty ~status body =
       let difficulty =
         match difficulty with
@@ -3405,7 +3423,7 @@ generateKeys();
       respond_register_json ~status:`Unauthorized body
     in
     let finish_register_result result =
-      if pow_actor_enabled && fst result = "ok" then begin
+      if pow_actor_enabled && not is_lease_refresh && fst result = "ok" then begin
         Pow_policy.record_route relay_pow_policy ~actor_id ~route:"register"
           ~now:(Unix.gettimeofday ())
       end else
@@ -3465,7 +3483,8 @@ generateKeys();
         && not has_proof_fields
       in
       let required_pow =
-        pow_difficulty_for_actor ~enabled:pow_actor_enabled ~actor_id
+        if is_lease_refresh then 0
+        else pow_difficulty_for_actor ~enabled:pow_actor_enabled ~actor_id
       in
       match verify_register_pow required_pow with
       | Error () ->
