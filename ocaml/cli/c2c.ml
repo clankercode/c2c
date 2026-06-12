@@ -6670,7 +6670,7 @@ let detect_client () =
             List.exists (fun d -> Sys.file_exists (d // name))
               (String.split_on_char ':' path)
           in
-          List.find_opt has_bin [ "opencode"; "claude"; "codex"; "kimi"; "gemini" ])
+          List.find_opt has_bin [ "opencode"; "claude"; "codex"; "kimi" ])
 
 let init_cmd =
   let open Cmdliner in
@@ -6737,10 +6737,10 @@ let init_cmd =
           (match output_mode with
            | Human ->
                Printf.printf "No client detected. Specify one with --client:\n";
-               Printf.printf "  c2c init --client opencode\n";
                Printf.printf "  c2c init --client claude\n";
                Printf.printf "  c2c init --client codex\n";
-               Printf.printf "  c2c init --client codex-headless\n"
+               Printf.printf "  c2c init --client opencode\n";
+               Printf.printf "  c2c init --client kimi\n"
            | Json -> ());
           `No_client
       | Some client ->
