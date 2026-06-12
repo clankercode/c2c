@@ -31,6 +31,7 @@ Register an alias for the current session. Must be called before sending or rece
 | `alias` | string | no | Desired alias. Falls back to `C2C_MCP_AUTO_REGISTER_ALIAS` env var if omitted. Must be unique. |
 | `session_id` | string | no | Optional session ID override; defaults to the current MCP session. |
 | `role` | string | no | Optional sender role for envelope attribution (`coordinator`, `reviewer`, `agent`, `user`). |
+| `include_metadata` | bool | no | When `false`, opts the session out of metadata exposure/federation. Defaults to `true`. `cwd` is still captured for the worktree-mismatch guard. |
 
 **Returns** `{alias, session_id, status}` — `status` is `"registered"` or `"already_registered"`. Calling with no arguments is a safe self-refresh (e.g. after a PID change).
 
@@ -740,7 +741,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `await-reply [--timeout SECS] [--json]` | Block until a verdict arrives in the inbox. |
-| `register [--alias A] [--session-id ID]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. |
+| `register [--alias A] [--session-id ID] [--no-metadata]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. `--no-metadata` opts out of metadata exposure while still capturing `cwd` for the worktree guard. |
 
 ### Scheduling
 

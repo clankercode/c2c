@@ -44,6 +44,45 @@ let test_register_and_list () =
       check string "alias" "storm-ember" reg.alias;
       check string "session" "session-a" reg.session_id)
 
+let test_register_metadata_opt_out_default_false () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
+      let reg = List.hd (C2c_mcp.Broker.list_registrations broker) in
+      check bool "metadata_opt_out defaults to false" false reg.metadata_opt_out)
+
+let test_register_metadata_opt_out_honored () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ~metadata_opt_out:true ();
+      let reg = List.hd (C2c_mcp.Broker.list_registrations broker) in
+      check bool "metadata_opt_out=true is honored" true reg.metadata_opt_out)
+
+let test_register_metadata_opt_out_json_round_trip () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ~metadata_opt_out:true ();
+      (* Force save + reload via a fresh broker on the same root. *)
+      let broker2 = C2c_mcp.Broker.create ~root:dir in
+      let reg = List.hd (C2c_mcp.Broker.list_registrations broker2) in
+      check bool "metadata_opt_out survives save/reload" true reg.metadata_opt_out)
+
+let test_register_metadata_opt_out_forward_compat () =
+  with_temp_dir (fun dir ->
+      (* Legacy record without metadata_opt_out field — must read as false. *)
+      let legacy = `Assoc
+        [ ("session_id", `String "session-a")
+        ; ("alias", `String "storm-ember")
+        ; ("pid", `Int 1234)
+        ] in
+      let registry_path = Filename.concat dir "registry.json" in
+      let oc = open_out registry_path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+        Yojson.Safe.to_channel oc (`List [legacy]));
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let reg = List.hd (C2c_mcp.Broker.list_registrations broker) in
+      check bool "missing metadata_opt_out reads as false" false reg.metadata_opt_out)
+
 let test_send_enqueues_message_for_target_alias () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -1568,6 +1607,37 @@ let test_tools_call_register_uses_current_session_id_when_omitted () =
            let reg = List.hd regs in
            check string "registered session" "session-live" reg.session_id;
            check string "registered alias" "storm-live" reg.alias))
+
+let test_tools_call_register_include_metadata_false_opt_out () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-meta";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let request =
+            `Assoc
+              [ ("jsonrpc", `String "2.0")
+              ; ("id", `Int 5)
+              ; ("method", `String "tools/call")
+              ; ( "params",
+                  `Assoc
+                    [ ("name", `String "register")
+                    ; ( "arguments",
+                        `Assoc
+                          [ ("alias", `String "storm-meta")
+                          ; ("include_metadata", `Bool false)
+                          ] )
+                    ] )
+              ]
+          in
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) in
+          (match response with None -> fail "expected tools/call response" | Some _ -> ());
+          let regs = C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:dir) in
+          check int "one registration" 1 (List.length regs);
+          let reg = List.hd regs in
+          check string "registered alias" "storm-meta" reg.alias;
+          check bool "include_metadata:false sets metadata_opt_out" true reg.metadata_opt_out;
+          check bool "cwd still captured for guard" true (Option.is_some reg.cwd)))
 
 (* #dual-alias-fix: handler-level test — when session already has a
    registration and the MCP register call uses auto_register_alias (no
@@ -3257,6 +3327,7 @@ let test_start_time_mismatch_is_not_alive () =
     ; automated_delivery = None
     ; tmux_location = None
     ; cwd = None
+    ; metadata_opt_out = false
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -3288,6 +3359,7 @@ let test_start_time_match_is_alive () =
     ; automated_delivery = None
     ; tmux_location = None
     ; cwd = None
+    ; metadata_opt_out = false
     }
   in
   check bool "matching start_time → alive" true
@@ -3319,6 +3391,7 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; automated_delivery = None
     ; tmux_location = None
     ; cwd = None
+    ; metadata_opt_out = false
     }
   in
   check bool "pid exists + no stored start_time → alive" true
@@ -13087,6 +13160,14 @@ let () =
   run "c2c_mcp"
     [ ( "broker",
         [ test_case "register and list" `Quick test_register_and_list
+        ; test_case "register metadata_opt_out defaults false" `Quick
+            test_register_metadata_opt_out_default_false
+        ; test_case "register metadata_opt_out honored" `Quick
+            test_register_metadata_opt_out_honored
+        ; test_case "register metadata_opt_out JSON round-trip" `Quick
+            test_register_metadata_opt_out_json_round_trip
+        ; test_case "register metadata_opt_out forward compat" `Quick
+            test_register_metadata_opt_out_forward_compat
         ; test_case "register same session different alias dedup" `Quick
             test_register_same_session_different_alias_dedup
         ; test_case "register same session same alias idempotent" `Quick
@@ -13179,6 +13260,8 @@ let () =
              test_mcp_ping_returns_empty_result
          ; test_case "tools/call register uses current session id when omitted" `Quick
               test_tools_call_register_uses_current_session_id_when_omitted
+         ; test_case "tools/call register include_metadata:false opts out" `Quick
+              test_tools_call_register_include_metadata_false_opt_out
          ; test_case "handler register reuses existing alias for same session" `Quick
               test_handler_register_reuses_existing_alias_for_same_session
          ; test_case "session_id_from_env falls back to CODEX_THREAD_ID" `Quick

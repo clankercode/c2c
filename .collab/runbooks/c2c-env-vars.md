@@ -64,6 +64,10 @@ Float seconds the background channel-notification watcher sleeps after detecting
 
 Set to `1` to suppress the MCP nudge on Tier1 CLI commands (`send`, `list`, `whoami`, `poll-inbox`, `peek-inbox`). When both `C2C_MCP_SESSION_ID` and `C2C_MCP_AUTO_REGISTER_ALIAS` are set, these commands print a hint suggesting the equivalent `mcp__c2c__*` tool instead. Set `C2C_CLI_FORCE=1` to silence the hint when you genuinely need the CLI (e.g. operator scripts, non-MCP sessions).
 
+### Metadata opt-out flags (not env vars)
+
+`c2c register --no-metadata` and the MCP `register` tool's `include_metadata:false` set the per-registration `metadata_opt_out` consent flag. This suppresses future metadata exposure/federation (e.g. cwd, canonical alias) while still capturing `cwd` for the Hardening-B worktree-mismatch guard. Defaults to metadata-on.
+
 ---
 
 ## Nudge Scheduler

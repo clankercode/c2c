@@ -2859,9 +2859,13 @@ let register_cmd =
   let session_id_opt =
     Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID" ~doc:"Session ID (default: resolved from C2C_MCP_SESSION_ID or the current client session).")
   in
+  let no_metadata =
+    Cmdliner.Arg.(value & flag & info [ "no-metadata" ] ~doc:"Opt out of metadata exposure/federation (cwd, canonical alias). Does NOT affect cwd capture, which is required for the worktree-mismatch guard.")
+  in
   let+ json = json_flag
   and+ alias_opt = alias
-  and+ session_id_opt = session_id_opt in
+  and+ session_id_opt = session_id_opt
+  and+ no_metadata = no_metadata in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
   let alias =
     match alias_opt with
@@ -2898,7 +2902,7 @@ let register_cmd =
     | None -> Some (Unix.getppid ())
   in
   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
-  C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type:(env_client_type ()) ();
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type:(env_client_type ()) ~cwd:(Some (Sys.getcwd ())) ~metadata_opt_out:no_metadata ();
   (match C2c_mcp.Broker.write_allowed_signers_entry broker ~alias with
    | Ok () -> ()
    | Error e -> Printf.eprintf "[allowed_signers] warning: %s\n%!" e);

@@ -170,6 +170,12 @@ let register ~broker ~session_id_override ~arguments =
               let plugin_version = optional_string_member "plugin_version" arguments in
               let role = optional_string_member "role" arguments in
               let tmux_location_arg = optional_string_member "tmux_location" arguments in
+              let include_metadata =
+                match Json_util.bool_member "include_metadata" arguments with
+                | Some b -> b
+                | None -> true
+              in
+              let metadata_opt_out = not include_metadata in
               let tmux_location =
                 match tmux_location_arg with
                 | Some _ -> tmux_location_arg
@@ -283,7 +289,8 @@ let register ~broker ~session_id_override ~arguments =
                   Broker.register broker ~session_id ~alias ~pid ~pid_start_time
                     ~client_type ~plugin_version ~enc_pubkey ~ed25519_pubkey
                     ~pubkey_signed_at ~pubkey_sig ~role ~tmux_location
-                    ~cwd:(try Some (Sys.getcwd ()) with Sys_error _ -> None) ();
+                    ~cwd:(try Some (Sys.getcwd ()) with Sys_error _ -> None)
+                    ~metadata_opt_out ();
                   Broker.touch_session broker ~session_id;
               List.iter
                 (fun room_id ->
