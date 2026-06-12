@@ -116,6 +116,11 @@
  (libraries c2c_mcp alcotest yojson unix))
 
 (test
+ (name test_c2c_install_manifest)
+ (modules test_c2c_install_manifest)
+ (libraries c2c_mcp alcotest unix))
+
+(test
  (name test_role_templates)
  (modules test_role_templates role_templates)
  (libraries c2c_mcp alcotest str unix))
