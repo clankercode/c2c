@@ -7,6 +7,7 @@ let ( // ) = Filename.concat
 open Cmdliner.Term.Syntax
 open C2c_mcp
 open C2c_types
+open C2c_install_manifest
 
 let json_flag =
   Cmdliner.Arg.(value & flag & info [ "json"; "j" ] ~doc:"Output machine-readable JSON.")
@@ -79,99 +80,6 @@ let json_read_file path =
     Yojson.Safe.from_string s)
 
 
-(* --- install: self (copy binary to ~/.local/bin) ------------------------- *)
-
-let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
-  let dest_dir =
-    match dest_opt with
-    | Some d -> d
-    | None ->
-        let home = Sys.getenv "HOME" in
-        home // ".local" // "bin"
-  in
-  let exe_path = Sys.executable_name in
-  if not (Sys.file_exists exe_path) then (
-    match output_mode with
-    | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "cannot determine executable path") ])
-    | Human ->
-        Printf.eprintf "error: cannot find executable at %s\n%!" exe_path;
-        exit 1)
-  else
-    let result =
-      try
-        if not (Sys.file_exists dest_dir && Sys.is_directory dest_dir) then
-          C2c_mcp.mkdir_p dest_dir;
-        let dest_path = dest_dir // "c2c" in
-        let ic = open_in_bin exe_path in
-        let oc = open_out_bin (dest_path ^ ".tmp") in
-        Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
-          let buf = Bytes.create 65536 in
-          let rec copy () =
-            let n = input ic buf 0 (Bytes.length buf) in
-            if n > 0 then (output oc buf 0 n; copy ())
-          in
-          copy ());
-        Unix.chmod (dest_path ^ ".tmp") 0o755;
-        Unix.rename (dest_path ^ ".tmp") dest_path;
-        let extras =
-          if with_mcp_server then
-            match find_ocaml_server_path () with
-            | None -> [ Error "could not find c2c_mcp_server.exe to install" ]
-            | Some server_src ->
-                let mcp_dest = dest_dir // "c2c-mcp-server" in
-                try
-                  let ic = open_in_bin server_src in
-                  let oc = open_out_bin (mcp_dest ^ ".tmp") in
-                  Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
-                    let buf = Bytes.create 65536 in
-                    let rec copy () =
-                      let n = input ic buf 0 (Bytes.length buf) in
-                      if n > 0 then (output oc buf 0 n; copy ())
-                    in
-                    copy ());
-                  Unix.chmod (mcp_dest ^ ".tmp") 0o755;
-                  Unix.rename (mcp_dest ^ ".tmp") mcp_dest;
-                  [ Ok mcp_dest ]
-                with Sys_error msg -> [ Error msg ]
-           else []
-         in
-         (* Install the swarm-wide git shim (pre-reset guard + attribution shim).
-            This also installs git-pre-reset (the guard) alongside the git shim.
-            Failures here are non-fatal (the shim is best-effort). *)
-         let shim_dir =
-           try Some (C2c_start.ensure_swarm_git_shim_installed ()) with
-           | e -> Printf.eprintf "warning: could not install git shim: %s\n%!" (Printexc.to_string e); None
-         in
-         Ok (dest_path, extras, shim_dir)
-      with
-      | Unix.Unix_error (code, func, _arg) ->
-          Error (Printf.sprintf "%s: %s" func (Unix.error_message code))
-      | Sys_error msg -> Error msg
-    in
-    (match result with
-     | Ok (dest_path, extras, shim_dir) ->
-         (match output_mode with
-          | Json ->
-              let items = [ ("ok", `Bool true); ("c2c", `String dest_path) ] in
-              let items =
-                let extra_json = List.map (fun x -> match x with Ok p -> `String p | Error m -> `String ("error: " ^ m)) extras in
-                let items = if extra_json = [] then items else items @ [ ("mcp_server", `List extra_json) ] in
-                let items = match shim_dir with Some d -> items @ [ ("git_shim_dir", `String d) ] | None -> items in
-                items
-              in
-              print_json (`Assoc items)
-          | Human ->
-              Printf.printf "installed c2c to %s\n" dest_path;
-              List.iter (function Ok p -> Printf.printf "installed c2c-mcp-server to %s\n" p | Error m -> Printf.eprintf "error: %s\n%!" m) extras;
-              (match shim_dir with
-               | Some d -> Printf.printf "installed git-pre-reset guard to %s\n" d
-               | None -> ()))
-     | Error msg ->
-         (match output_mode with
-          | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
-          | Human ->
-              Printf.eprintf "error: %s\n%!" msg;
-              exit 1))
 
 (* --- subcommand: init — defined after do_install_client below ----------- *)
 
@@ -240,6 +148,209 @@ let mkdir_or_dryrun dry_run dir =
     (try Unix.mkdir dir 0o755 with Unix.Unix_error _ -> ())
 
 let mkdir_p = C2c_io.mkdir_p_dryrun
+
+type install_result = {
+  artifacts : C2c_install_manifest.artifact list;
+  extra_json : (string * Yojson.Safe.t) list;
+}
+
+let schedule_artifact alias =
+  C2c_install_manifest.schedule (C2c_mcp.schedule_entry_path alias "wake")
+
+let manifest_record ~component ~alias ~target_dir artifacts =
+  { C2c_install_manifest.component
+  ; alias
+  ; target_dir
+  ; c2c_version = Version.version
+  ; ts = Unix.gettimeofday ()
+  ; artifacts
+  }
+
+let write_manifest_best_effort ~component ~alias ~target_dir artifacts =
+  try
+    let record = manifest_record ~component ~alias ~target_dir artifacts in
+    C2c_install_manifest.upsert_record ~record
+  with e ->
+    Printf.eprintf "warning: could not update install manifest: %s\n%!"
+      (Printexc.to_string e)
+
+let print_install_summary ~output_mode ~dry_run ~component result =
+  match output_mode with
+  | Json ->
+      let installed =
+        `List (List.map C2c_install_manifest.artifact_to_json result.artifacts)
+      in
+      let base =
+        [ ("ok", `Bool true)
+        ; ("component", `String component)
+        ; ("installed", installed)
+        ]
+      in
+      print_json (`Assoc (base @ result.extra_json))
+  | Human ->
+      let prefix = if dry_run then "Would install" else "Installed" in
+      Printf.printf "%s c2c for %s:\n" prefix component;
+      let owned, shared =
+        List.partition
+          (fun a ->
+             match a.kind with
+             | "owned-file" | "symlink" | "binary" | "schedule" -> true
+             | _ -> false)
+          result.artifacts
+      in
+      if owned <> [] then begin
+        Printf.printf "  owned:\n";
+        List.iter
+          (fun a ->
+             let kind_label =
+               match a.kind with
+               | "schedule" -> "schedule"
+               | "symlink" -> "symlink"
+               | "binary" -> "binary"
+               | _ -> "file"
+             in
+             Printf.printf "    + %-50s (%s)\n" a.path kind_label)
+          owned
+      end;
+      if shared <> [] then begin
+        Printf.printf "  shared (c2c stanza added to your files):\n";
+        List.iter
+          (fun a ->
+             let detail =
+               match a.kind with
+               | "shared-key" ->
+                   Printf.sprintf "(%s)"
+                     (Option.value ~default:"?" a.key)
+               | "shared-block" -> "(managed block)"
+               | "shared-toml-section" ->
+                   Printf.sprintf "(%s*)"
+                     (Option.value ~default:"?" a.section_prefix)
+               | _ -> ""
+             in
+             Printf.printf "    ~ %-50s %s\n" a.path detail)
+          shared
+      end;
+      Printf.printf "To remove: c2c uninstall %s   (preview: c2c uninstall %s --dry-run)\n"
+        component component
+
+(* --- install: self (copy binary to ~/.local/bin) ------------------------- *)
+
+let do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server =
+  let dest_dir =
+    match dest_opt with
+    | Some d -> d
+    | None ->
+        let home = Sys.getenv "HOME" in
+        home // ".local" // "bin"
+  in
+  let exe_path = Sys.executable_name in
+  if not (Sys.file_exists exe_path) then (
+    match output_mode with
+    | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "cannot determine executable path") ]); exit 1
+    | Human ->
+        Printf.eprintf "error: cannot find executable at %s\n%!" exe_path;
+        exit 1)
+  else if dry_run then
+    let dest_path = dest_dir // "c2c" in
+    let mcp_artifacts =
+      if with_mcp_server then [ C2c_install_manifest.binary (dest_dir // "c2c-mcp-server") ]
+      else []
+    in
+    let self_artifacts = C2c_install_manifest.binary dest_path :: mcp_artifacts in
+    let extra_json =
+      [ ("c2c", `String dest_path) ]
+      @ if with_mcp_server then
+          [ ("mcp_server", `List [ `String (dest_dir // "c2c-mcp-server") ]) ]
+        else []
+    in
+    { artifacts = self_artifacts; extra_json }
+  else
+    let result =
+      try
+        if not (Sys.file_exists dest_dir && Sys.is_directory dest_dir) then
+          C2c_mcp.mkdir_p dest_dir;
+        let dest_path = dest_dir // "c2c" in
+        let ic = open_in_bin exe_path in
+        let oc = open_out_bin (dest_path ^ ".tmp") in
+        Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+          let buf = Bytes.create 65536 in
+          let rec copy () =
+            let n = input ic buf 0 (Bytes.length buf) in
+            if n > 0 then (output oc buf 0 n; copy ())
+          in
+          copy ());
+        Unix.chmod (dest_path ^ ".tmp") 0o755;
+        Unix.rename (dest_path ^ ".tmp") dest_path;
+        let extras =
+          if with_mcp_server then
+            match find_ocaml_server_path () with
+            | None -> [ Error "could not find c2c_mcp_server.exe to install" ]
+            | Some server_src ->
+                let mcp_dest = dest_dir // "c2c-mcp-server" in
+                try
+                  let ic = open_in_bin server_src in
+                  let oc = open_out_bin (mcp_dest ^ ".tmp") in
+                  Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+                    let buf = Bytes.create 65536 in
+                    let rec copy () =
+                      let n = input ic buf 0 (Bytes.length buf) in
+                      if n > 0 then (output oc buf 0 n; copy ())
+                    in
+                    copy ());
+                  Unix.chmod (mcp_dest ^ ".tmp") 0o755;
+                  Unix.rename (mcp_dest ^ ".tmp") mcp_dest;
+                  [ Ok mcp_dest ]
+                with Sys_error msg -> [ Error msg ]
+           else []
+         in
+         (* Install the swarm-wide git shim (pre-reset guard + attribution shim).
+            This also installs git-pre-reset (the guard) alongside the git shim.
+            Failures here are non-fatal (the shim is best-effort). *)
+         let shim_dir =
+           try Some (C2c_start.ensure_swarm_git_shim_installed ()) with
+           | e -> Printf.eprintf "warning: could not install git shim: %s\n%!" (Printexc.to_string e); None
+         in
+         Ok (dest_path, extras, shim_dir)
+      with
+      | Unix.Unix_error (code, func, _arg) ->
+          Error (Printf.sprintf "%s: %s" func (Unix.error_message code))
+      | Sys_error msg -> Error msg
+    in
+    match result with
+    | Ok (dest_path, extras, shim_dir) ->
+        let mcp_artifacts =
+          List.filter_map
+            (function Ok p -> Some (C2c_install_manifest.binary p) | Error _ -> None)
+            extras
+        in
+        let self_artifacts =
+          C2c_install_manifest.binary dest_path :: mcp_artifacts
+        in
+        (match shim_dir with
+         | Some dir ->
+             if not dry_run then
+               write_manifest_best_effort ~component:"git-shim" ~alias:None ~target_dir:dir
+                 [ C2c_install_manifest.binary (dir // "git")
+                 ; C2c_install_manifest.binary (dir // "git-pre-reset")
+                 ]
+         | None -> ());
+        if not dry_run then
+          write_manifest_best_effort ~component:"self" ~alias:None ~target_dir:dest_dir self_artifacts;
+        let extra_json =
+          [ ("c2c", `String dest_path) ]
+          @ (let extra_json =
+               List.map (fun x -> match x with Ok p -> `String p | Error m -> `String ("error: " ^ m)) extras
+             in
+             if extra_json = [] then [] else [ ("mcp_server", `List extra_json) ])
+          @ (match shim_dir with Some d -> [ ("git_shim_dir", `String d) ] | None -> [])
+        in
+        { artifacts = self_artifacts; extra_json }
+    | Error msg ->
+        (match output_mode with
+         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ]); exit 1
+         | Human ->
+             Printf.eprintf "error: %s\n%!" msg;
+             exit 1)
 
 let default_alias_for_client ?(no_nonce = false) client =
   let client = match String.lowercase_ascii client with
@@ -417,34 +528,33 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   let home = Sys.getenv "HOME" in
   let client_dir = home // ".c2c" // "clients" // client in
   mkdir_or_dryrun dry_run client_dir;
-  if deliver_watch then
-    write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:client
-  else if not dry_run then begin
-    (* --no-deliver-watch: remove any existing scripts so they don't
-       accumulate across re-installs. *)
+  let deliver_watch_artifacts =
     let supervisor = client_dir // "deliver-watch.sh" in
     let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
-    (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
-    (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ())
-  end;
-  match output_mode with
-  | Json ->
-      print_json (`Assoc
-        [ ("ok", `Bool true)
-        ; ("client", `String client)
-        ; ("alias", `String alias_val)
-        ; ("broker_root", `String root)
-        ; ("config", `String config_path)
-        ])
-  | Human ->
-      Printf.printf "Configured Codex for c2c.\n";
-      Printf.printf "  alias:       %s\n" alias_val;
-      Printf.printf "  broker root: %s\n" root;
-      Printf.printf "  config:      %s\n" config_path;
-      Printf.printf "  server:      %s\n" server_path;
-      Printf.printf "  note:        shared MCP config only; managed sessions set identity at launch\n";
-      Printf.printf "\nRestart Codex to pick up the new MCP server.\n";
-      Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n"
+    if deliver_watch then begin
+      write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:client;
+      [ C2c_install_manifest.owned_file supervisor
+      ; C2c_install_manifest.owned_file pre_deliver ]
+    end else if not dry_run then begin
+      (* --no-deliver-watch: remove any existing scripts so they don't
+         accumulate across re-installs. *)
+      (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
+      (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ());
+      []
+    end else []
+  in
+  { artifacts =
+      [ C2c_install_manifest.shared_toml_section ~path:config_path ~section_prefix:"mcp_servers.c2c" ]
+      @ deliver_watch_artifacts
+  ; extra_json =
+      [ ("client", `String client)
+      ; ("alias", `String alias_val)
+      ; ("broker_root", `String root)
+      ; ("config", `String config_path)
+      ; ("server", `String server_path)
+      ; ("deliver_watch", `Bool deliver_watch)
+      ]
+  }
 
 (* --- setup: Kimi (JSON) --- *)
 
@@ -509,43 +619,47 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
     | `Appended -> "appended"
     | `Created -> "created"
   in
-  match output_mode with
-  | Json ->
-      print_json (`Assoc
-        [ ("ok", `Bool true)
-        ; ("client", `String "kimi")
-        ; ("alias", `String alias_val)
-        ; ("broker_root", `String root)
-        ; ("config", `String config_path)
-        ; ("hook_script", `String hook_path)
-        ; ("hooks_toml_path", `String toml_config_path)
-        ; ("hooks_toml_block", `String hook_block_status_str)
-        ])
-  | Human ->
-      Printf.printf "Configured Kimi for c2c.\n";
-      Printf.printf "  alias:       %s\n" alias_val;
-      Printf.printf "  broker root: %s\n" root;
-      Printf.printf "  config:      %s\n" config_path;
-      Printf.printf "  server:      %s\n" server_path;
-      Printf.printf "  hook script: %s\n" hook_path;
-      Printf.printf "  hooks toml:  %s (%s)\n" toml_config_path hook_block_status_str;
-      Printf.printf "\nRestart Kimi to pick up the new MCP server.\n";
-      Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n";
-      Printf.printf "PreToolUse permission forwarding ships fully-commented in %s —\n"
-        toml_config_path;
-      Printf.printf "uncomment ONE [[hooks]] example in that file to opt in.\n";
-      (* Write deliver-watch supervisor scripts for non-MCP clients. *)
-      let home = Sys.getenv "HOME" in
-      let client_dir = home // ".c2c" // "clients" // "kimi" in
-      mkdir_p dry_run client_dir;
-      if deliver_watch then
-        write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"kimi"
-      else if not dry_run then begin
-        let supervisor = client_dir // "deliver-watch.sh" in
-        let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
-        (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
-        (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ())
-      end
+  let begin_marker =
+    C2c_kimi_hook.toml_block_begin_marker
+      ~block_id:C2c_kimi_hook.approval_hook_block_id
+  in
+  let end_marker =
+    C2c_kimi_hook.toml_block_end_marker
+      ~block_id:C2c_kimi_hook.approval_hook_block_id
+  in
+  let client_dir = home // ".c2c" // "clients" // "kimi" in
+  mkdir_or_dryrun dry_run client_dir;
+  let deliver_watch_artifacts =
+    let supervisor = client_dir // "deliver-watch.sh" in
+    let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
+    if deliver_watch then begin
+      write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"kimi";
+      [ C2c_install_manifest.owned_file supervisor
+      ; C2c_install_manifest.owned_file pre_deliver ]
+    end else if not dry_run then begin
+      (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
+      (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ());
+      []
+    end else []
+  in
+  { artifacts =
+      [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcpServers.c2c" ~format:"json"
+      ; C2c_install_manifest.shared_block ~path:toml_config_path
+          ~begin_marker ~end_marker
+          ~legacy_marker:C2c_kimi_hook.toml_block_legacy_marker ()
+      ; C2c_install_manifest.owned_file hook_path
+      ]
+      @ deliver_watch_artifacts
+  ; extra_json =
+      [ ("client", `String "kimi")
+      ; ("alias", `String alias_val)
+      ; ("broker_root", `String root)
+      ; ("config", `String config_path)
+      ; ("hook_script", `String hook_path)
+      ; ("hooks_toml_path", `String toml_config_path)
+      ; ("hooks_toml_block", `String hook_block_status_str)
+      ]
+  }
 
 (* --- setup: Gemini CLI (JSON, user-scope) --- *)
 
@@ -598,36 +712,33 @@ let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_comman
   in
   mkdir_or_dryrun dry_run (Filename.dirname config_path);
   json_write_file_or_dryrun dry_run config_path config;
-  match output_mode with
-  | Json ->
-      print_json (`Assoc
-        [ ("ok", `Bool true)
-        ; ("client", `String "gemini")
-        ; ("alias", `String alias_val)
-        ; ("broker_root", `String root)
-        ; ("config", `String config_path)
-        ; ("trust", `Bool true)
-        ])
-  | Human ->
-      Printf.printf "Configured Gemini CLI for c2c.\n";
-      Printf.printf "  alias:       %s\n" alias_val;
-      Printf.printf "  broker root: %s\n" root;
-      Printf.printf "  config:      %s\n" config_path;
-      Printf.printf "  trust:       true (skips per-tool confirmation prompts)\n";
-      Printf.printf "If you haven't authenticated yet, run 'gemini' once interactively to seed ~/.gemini/oauth_creds.json before launching managed sessions.\n";
-      Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n";
-      (* Write deliver-watch supervisor scripts for non-MCP clients. *)
-      let home = Sys.getenv "HOME" in
-      let client_dir = home // ".c2c" // "clients" // "gemini" in
-      mkdir_or_dryrun dry_run client_dir;
-      if deliver_watch then
-        write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"gemini"
-      else if not dry_run then begin
-        let supervisor = client_dir // "deliver-watch.sh" in
-        let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
-        (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
-        (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ())
-      end
+  let home = Sys.getenv "HOME" in
+  let client_dir = home // ".c2c" // "clients" // "gemini" in
+  mkdir_or_dryrun dry_run client_dir;
+  let deliver_watch_artifacts =
+    let supervisor = client_dir // "deliver-watch.sh" in
+    let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
+    if deliver_watch then begin
+      write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"gemini";
+      [ C2c_install_manifest.owned_file supervisor
+      ; C2c_install_manifest.owned_file pre_deliver ]
+    end else if not dry_run then begin
+      (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
+      (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ());
+      []
+    end else []
+  in
+  { artifacts =
+      [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcpServers.c2c" ~format:"json" ]
+      @ deliver_watch_artifacts
+  ; extra_json =
+      [ ("client", `String "gemini")
+      ; ("alias", `String alias_val)
+      ; ("broker_root", `String root)
+      ; ("config", `String config_path)
+      ; ("trust", `Bool true)
+      ]
+  }
 
 (* --- setup: OpenCode (JSON + plugin) --- *)
 
@@ -680,27 +791,28 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
        | _ -> true
      with _ -> true)
   in
-  if not should_write_config then () else
-  let config =
-    `Assoc
-      [ ("$schema", `String "https://opencode.ai/config.json")
-      ; ("mcp", `Assoc
-          [ ("c2c", `Assoc
-              [ ("type", `String "local")
-              ; ("command", `List [ `String "opam"; `String "exec"; `String "--"; `String server_path ])
-              ; ("environment", `Assoc
-                  ([ ("C2C_MCP_BROKER_ROOT", `String root)
-                   ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-                   ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
-                   ; ("C2C_CLI_COMMAND", `String (current_c2c_command ()))
-                   ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
-                   ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
-              ; ("enabled", `Bool true)
-              ])
-          ])
-      ]
-  in
-  json_write_file_or_dryrun dry_run config_path config;
+  if should_write_config then begin
+    let config =
+      `Assoc
+        [ ("$schema", `String "https://opencode.ai/config.json")
+        ; ("mcp", `Assoc
+            [ ("c2c", `Assoc
+                [ ("type", `String "local")
+                ; ("command", `List [ `String "opam"; `String "exec"; `String "--"; `String server_path ])
+                ; ("environment", `Assoc
+                    ([ ("C2C_MCP_BROKER_ROOT", `String root)
+                     ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
+                     ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+                     ; ("C2C_CLI_COMMAND", `String (current_c2c_command ()))
+                     ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
+                     ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
+                ; ("enabled", `Bool true)
+                ])
+            ])
+        ]
+    in
+    json_write_file_or_dryrun dry_run config_path config
+  end;
   let sidecar = config_dir // "c2c-plugin.json" in
   (* Drift-prevention follow-up to #504 / kimi-mcp-canonical-server:
      omit broker_root from the sidecar when value == resolver default.
@@ -767,7 +879,7 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
   let canonical_plugin = find_canonical_plugin_from_target () in
   let plugins_dir = config_dir // "plugins" in
   let dest = plugins_dir // "c2c.ts" in
-  let plugin_note =
+  let plugin_artifact, plugin_note =
     mkdir_or_dryrun dry_run plugins_dir;
     (try
        match canonical_plugin with
@@ -775,44 +887,46 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
           (* Dev checkout: symlink to the repo source so the installed plugin
              tracks data/opencode-plugin/c2c.ts edits automatically. *)
           make_symlink ~src:canonical_plugin ~dst:dest;
-          Printf.sprintf "plugin symlinked to %s" dest
+          (C2c_install_manifest.symlink dest,
+           Printf.sprintf "plugin symlinked to %s" dest)
        | None ->
          (* Binary-only install: write the embedded blob. *)
          write_string ~dst:dest C2c_opencode_plugin_embedded.content;
-         Printf.sprintf "plugin installed to %s (embedded)" dest
-     with _ -> "plugin install failed")
+         (C2c_install_manifest.owned_file dest,
+          Printf.sprintf "plugin installed to %s (embedded)" dest)
+     with _ -> (C2c_install_manifest.owned_file dest, "plugin install failed"))
   in
-  match output_mode with
-  | Json ->
-      print_json (`Assoc
-        [ ("ok", `Bool true)
-        ; ("client", `String "opencode")
-        ; ("session_id", `String session_id)
-        ; ("alias", `String alias_val)
-        ; ("broker_root", `String root)
-        ; ("config", `String config_path)
-        ; ("plugin", `String plugin_note)
-        ])
-  | Human ->
-      Printf.printf "Configured OpenCode for c2c.\n";
-      Printf.printf "  session id:  %s\n" session_id;
-      Printf.printf "  alias:       %s\n" alias_val;
-      Printf.printf "  broker root: %s\n" root;
-      Printf.printf "  config:      %s\n" config_path;
-      Printf.printf "  plugin:      %s\n" plugin_note;
-      Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n";
-      (* Write deliver-watch supervisor scripts for non-MCP clients. *)
-      let home = Sys.getenv "HOME" in
-      let client_dir = home // ".c2c" // "clients" // "opencode" in
-      mkdir_or_dryrun dry_run client_dir;
-      if deliver_watch then
-        write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"opencode"
-      else if not dry_run then begin
-        let supervisor = client_dir // "deliver-watch.sh" in
-        let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
-        (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
-        (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ())
-      end
+  let home = Sys.getenv "HOME" in
+  let client_dir = home // ".c2c" // "clients" // "opencode" in
+  mkdir_or_dryrun dry_run client_dir;
+  let deliver_watch_artifacts =
+    let supervisor = client_dir // "deliver-watch.sh" in
+    let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
+    if deliver_watch then begin
+      write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"opencode";
+      [ C2c_install_manifest.owned_file supervisor
+      ; C2c_install_manifest.owned_file pre_deliver ]
+    end else if not dry_run then begin
+      (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
+      (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ());
+      []
+    end else []
+  in
+  { artifacts =
+      [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcp.c2c" ~format:"json"
+      ; C2c_install_manifest.owned_file sidecar
+      ; plugin_artifact
+      ]
+      @ deliver_watch_artifacts
+  ; extra_json =
+      [ ("client", `String "opencode")
+      ; ("session_id", `String session_id)
+      ; ("alias", `String alias_val)
+      ; ("broker_root", `String root)
+      ; ("config", `String config_path)
+      ; ("plugin", `String plugin_note)
+      ]
+  }
 
 (* --- setup: Claude PostToolUse hook -------------------------------------- *)
 
@@ -1306,61 +1420,22 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     else if !stop_script_changed && not !settings_changed then "script updated"
     else "registered"
   in
-  (match output_mode with
-   | Json ->
-       print_json (`Assoc
-          [ ("ok", `Bool true)
-          ; ("client", `String "claude")
-          ; ("alias", `String alias_val)
-          ; ("broker_root", `String root)
-          ; ("config", `String mcp_config_path)
-          ; ("scope", `String (if global then "global" else "project"))
-          ; ("hook_status", `String hook_status)
-          ; ("stop_hook_status", `String stop_hook_status)
-          ; ("preauth_hook_status", `String preauth_status)
-          ])
-   | Human ->
-       let hook_dir = Filename.concat claude_dir "hooks" in
-       let hook_script = Filename.concat hook_dir "c2c-inbox-check.sh" in
-       let stop_hook_script_path = Filename.concat hook_dir "c2c-stop-deliver.sh" in
-       let mark = "x" in
-       let scope_label = if global then "global" else "project" in
-       Printf.printf "Configured Claude Code for c2c (%s scope):\n" scope_label;
-       Printf.printf "  - [%s] MCP server:     %s\n" mark mcp_config_path;
-       Printf.printf "  - [%s] PostToolUse hook: %s/settings.json\n" mark claude_dir;
-       Printf.printf "  - [%s] Inbox hook script: %s\n" mark hook_script;
-       Printf.printf "  - [%s] Stop hook script: %s\n" mark stop_hook_script_path;
-       Printf.printf "\n  alias:       %s\n" alias_val;
-       Printf.printf "  broker root: %s\n" root;
-       if !hook_registered && not !settings_changed && not !script_changed then
-         Printf.printf "\n  (hook was already registered — no changes made)\n"
-       else if !hook_registered && !script_changed && not !settings_changed then
-         Printf.printf "\n  (hook already registered; script body updated at %s)\n" hook_script
-       else if !hook_registered then
-         Printf.printf "\n  (hook already registered; upgraded matcher to %s)\n" target_matcher
-       else
-         Printf.printf "\nRestart Claude Code to pick up the new MCP server.\n";
-        Printf.printf "\n  Before sending messages, run /reload-plugins in Claude Code (or restart\n  the CLI client) and resume this session. This activates push-based hook\n  delivery — far more reliable than manual polling.\n";
-        Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n";
-       if not global then
-         Printf.printf "\n  (project scope: MCP entry written to %s/.mcp.json. Pass --global to write to ~/.claude.json instead.)\n" project_dir;
-       let alias_str = match alias_opt with Some a -> " -a " ^ a | None -> "" in
-        let force_str = if force then " --force" else "" in
-        Printf.printf "\nTo use a custom profile directory:\n";
-        Printf.printf "  CLAUDE_CONFIG_DIR=/path/to/profile c2c install claude%s%s\n" alias_str force_str;
-        (* #142 slice 4: PreToolUse hook status + opt-in hint *)
-        if Sys.file_exists preauth_hook_script then begin
-          Printf.printf "\n  PreToolUse permission hook: %s\n" preauth_status;
-          if not !preauth_hook_registered then begin
-            Printf.printf "    (edit %s/settings.json to opt in: change\n" claude_dir;
-            Printf.printf "     \"matcher\": \"__C2C_PREAUTH_DISABLED__\" to\n";
-            Printf.printf "     \"matcher\": \"<tool-name>\" where tool-name is the exact\n";
-            Printf.printf "     tool to gate — e.g. \"Bash\", \"Read\".\n";
-            Printf.printf "     NOTE: Claude Code matcher is exact tool name, not regex.)\n"
-          end
-        end else
-          Printf.printf "\n  PreToolUse permission hook: %s\n" preauth_status
-  )
+  { artifacts =
+      [ C2c_install_manifest.shared_key ~path:mcp_config_path ~key:"mcpServers.c2c" ~format:"json"
+      ; C2c_install_manifest.owned_file hook_script
+      ; C2c_install_manifest.owned_file stop_hook_script
+      ]
+  ; extra_json =
+      [ ("client", `String "claude")
+      ; ("alias", `String alias_val)
+      ; ("broker_root", `String root)
+      ; ("config", `String mcp_config_path)
+      ; ("scope", `String (if global then "global" else "project"))
+      ; ("hook_status", `String hook_status)
+      ; ("stop_hook_status", `String stop_hook_status)
+      ; ("preauth_hook_status", `String preauth_status)
+      ]
+  }
 
 (* --- install: crush (JSON) --- *)
 
@@ -1397,39 +1472,41 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_wat
   (try mkdir_p dry_run (Filename.dirname config_path)
    with Unix.Unix_error _ -> ());
   json_write_file_or_dryrun dry_run config_path config;
-  match output_mode with
-  | Json ->
-      print_json (`Assoc
-        [ ("ok", `Bool true)
-        ; ("client", `String "crush")
-        ; ("alias", `String alias_val)
-        ; ("broker_root", `String root)
-        ; ("config", `String config_path)
-        ; ("deprecated", `Bool true)
-        ])
-  | Human ->
-      let use_color = Unix.isatty Unix.stderr in
-      let yellow = if use_color then "\027[1;33m" else "" in
-      let reset = if use_color then "\027[0m" else "" in
-      Printf.eprintf "%s[DEPRECATED]%s Crush is no longer a first-class c2c client.\n%!" yellow reset;
-      Printf.eprintf "  `c2c start crush` refuses (exit 1). For new agents use: claude | codex | opencode | kimi\n%!";
-      Printf.printf "Configured Crush for c2c (still writes config as requested).\n";
-      Printf.printf "  alias:       %s\n" alias_val;
-      Printf.printf "  broker root: %s\n" root;
-      Printf.printf "  config:      %s\n" config_path;
-      Printf.printf "  server:      %s\n" server_path;
-      (* Write deliver-watch supervisor scripts for non-MCP clients. *)
-      let home = Sys.getenv "HOME" in
-      let client_dir = home // ".c2c" // "clients" // "crush" in
-      mkdir_or_dryrun dry_run client_dir;
-      if deliver_watch then
-        write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"crush"
-      else if not dry_run then begin
-        let supervisor = client_dir // "deliver-watch.sh" in
-        let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
-        (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
-        (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ())
-      end
+  (match output_mode with
+   | Human ->
+       let use_color = Unix.isatty Unix.stderr in
+       let yellow = if use_color then "\027[1;33m" else "" in
+       let reset = if use_color then "\027[0m" else "" in
+       Printf.eprintf "%s[DEPRECATED]%s Crush is no longer a first-class c2c client.\n%!" yellow reset;
+       Printf.eprintf "  `c2c start crush` refuses (exit 1). For new agents use: claude | codex | opencode | kimi\n%!"
+   | Json -> ());
+  let home = Sys.getenv "HOME" in
+  let client_dir = home // ".c2c" // "clients" // "crush" in
+  mkdir_or_dryrun dry_run client_dir;
+  let deliver_watch_artifacts =
+    let supervisor = client_dir // "deliver-watch.sh" in
+    let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
+    if deliver_watch then begin
+      write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"crush";
+      [ C2c_install_manifest.owned_file supervisor
+      ; C2c_install_manifest.owned_file pre_deliver ]
+    end else if not dry_run then begin
+      (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
+      (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ());
+      []
+    end else []
+  in
+  { artifacts =
+      [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcpServers.c2c" ~format:"json" ]
+      @ deliver_watch_artifacts
+  ; extra_json =
+      [ ("client", `String "crush")
+      ; ("alias", `String alias_val)
+      ; ("broker_root", `String root)
+      ; ("config", `String config_path)
+      ; ("deprecated", `Bool true)
+      ]
+  }
 
 (* --- install: shared dispatcher (used by `c2c install <client>` and TUI) --- *)
 
@@ -1471,14 +1548,15 @@ let start_client_list = String.concat ", " start_clients
 let deliver_watch_clients = [ "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
 let is_deliver_watch_client client = List.mem client deliver_watch_clients
 
-let ensure_default_wake_schedule ~dry_run ~output_mode ~alias =
+let ensure_default_wake_schedule ~quiet ~dry_run ~output_mode ~alias =
   let dir = C2c_mcp.schedule_base_dir alias in
   let path = C2c_mcp.schedule_entry_path alias "wake" in
   if Sys.file_exists path then
     (* Don't clobber an existing wake schedule — user may have customized it *)
-    (match output_mode with
-     | Human -> Printf.eprintf "[c2c setup] schedule: wake.toml already exists, skipping.\n%!"
-     | Json -> print_json (`Assoc [ ("schedule", `String "exists"); ("name", `String "wake") ]))
+    (if not quiet then
+       match output_mode with
+       | Human -> Printf.eprintf "[c2c setup] schedule: wake.toml already exists, skipping.\n%!"
+       | Json -> print_json (`Assoc [ ("schedule", `String "exists"); ("name", `String "wake") ]))
   else begin
     if not dry_run then begin
       C2c_mcp.mkdir_p dir;
@@ -1499,13 +1577,14 @@ let ensure_default_wake_schedule ~dry_run ~output_mode ~alias =
       in
       C2c_io.write_file path content
     end;
-    (match output_mode with
-     | Human ->
-         if dry_run then
-           Printf.eprintf "[c2c setup] schedule: would create wake.toml (interval=4.1m, idle-gated).\n%!"
-         else
-           Printf.eprintf "[c2c setup] schedule: created wake.toml (interval=4.1m, idle-gated).\n%!"
-     | Json -> print_json (`Assoc [ ("schedule", `String (if dry_run then "would_create" else "created")); ("name", `String "wake"); ("interval_s", `Int 246) ]))
+    if not quiet then
+      match output_mode with
+      | Human ->
+          if dry_run then
+            Printf.eprintf "[c2c setup] schedule: would create wake.toml (interval=4.1m, idle-gated).\n%!"
+          else
+            Printf.eprintf "[c2c setup] schedule: created wake.toml (interval=4.1m, idle-gated).\n%!"
+      | Json -> print_json (`Assoc [ ("schedule", `String (if dry_run then "would_create" else "created")); ("name", `String "wake"); ("interval_s", `Int 246) ])
   end
 
 let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
@@ -1543,22 +1622,42 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
         a
   in
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
-  (match client with
-  | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt ~alias_from_auto_gen
-  | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch ~alias_from_auto_gen
-  | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen ~force ()
-  | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ~force ~deliver_watch ()
-  | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen
-  | _ ->
-      let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
-      (match output_mode with
-       | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
-       | Human ->
-           Printf.eprintf "error: %s\n%!" msg;
-           exit 1));
+  let result =
+    match client with
+    | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt ~alias_from_auto_gen
+    | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch ~alias_from_auto_gen
+    | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen ~force ()
+    | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ~force ~deliver_watch ()
+    | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen
+    | _ ->
+        let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
+        (match output_mode with
+         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
+         | Human ->
+             Printf.eprintf "error: %s\n%!" msg;
+             exit 1);
+        { artifacts = []; extra_json = [] }
+  in
   (* After successful client setup, ensure a default wake schedule exists *)
   if List.mem client known_clients then
-    ensure_default_wake_schedule ~dry_run ~output_mode ~alias:alias_val
+    ensure_default_wake_schedule ~quiet:(output_mode = Json) ~dry_run ~output_mode ~alias:alias_val;
+  let target_dir =
+    match client with
+    | "opencode" ->
+        (match target_dir_opt with
+         | Some d -> if Filename.is_relative d then Sys.getcwd () // d else d
+         | None -> Sys.getcwd ())
+    | "claude" ->
+        if global then resolve_claude_dir ()
+        else (match target_dir_opt with
+              | Some d -> if Filename.is_relative d then Sys.getcwd () // d else d
+              | None -> Sys.getcwd ())
+    | _ -> Sys.getenv "HOME"
+  in
+  let artifacts = result.artifacts @ [ schedule_artifact alias_val ] in
+  if not dry_run then
+    write_manifest_best_effort ~component:client ~alias:(Some alias_val) ~target_dir artifacts;
+  print_install_summary ~output_mode ~dry_run ~component:client { result with artifacts }
 
 (* --- install: detection + TUI --------------------------------------------- *)
 
@@ -1762,7 +1861,8 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
     Printf.printf "\n";
     if do_self then begin
       Printf.printf "→ Installing c2c binary...\n";
-      do_install_self ~output_mode:Human ~dest_opt:None ~with_mcp_server:false
+      let result = do_install_self ~dry_run:false ~output_mode:Human ~dest_opt:None ~with_mcp_server:false in
+      print_install_summary ~output_mode:Human ~dry_run:false ~component:"self" result
     end;
     List.iter (fun (c, do_it) ->
       if do_it then begin
@@ -1826,12 +1926,17 @@ let install_self_subcmd =
   let mcp_server =
     Cmdliner.Arg.(value & flag & info [ "mcp-server" ] ~doc:"Also install the c2c MCP server binary as ~/.local/bin/c2c-mcp-server. The MCP server is the JSON-RPC bridge that enables c2c messaging between coding CLIs.")
   in
+  let dry_run =
+    Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ] ~doc:"Show what would be installed without writing anything.")
+  in
   let term =
     let+ json = json_flag
     and+ dest_opt = dest
-    and+ with_mcp_server = mcp_server in
+    and+ with_mcp_server = mcp_server
+    and+ dry_run = dry_run in
     let output_mode = if json then Json else Human in
-    do_install_self ~output_mode ~dest_opt ~with_mcp_server
+    let result = do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server in
+    print_install_summary ~output_mode ~dry_run ~component:"self" result
   in
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "self"
@@ -1881,7 +1986,8 @@ let install_all_subcmd =
     let (self, clients) = detect_installation () in
     if not self then begin
       if output_mode = Human then Printf.printf "→ Installing c2c binary...\n";
-      do_install_self ~output_mode ~dest_opt:None ~with_mcp_server:false
+      let result = do_install_self ~dry_run ~output_mode ~dest_opt:None ~with_mcp_server:false in
+      print_install_summary ~output_mode ~dry_run ~component:"self" result
     end;
     List.iter (fun (c, on_path, configured) ->
       if not on_path then begin
@@ -1934,33 +2040,31 @@ let do_install_git_hook ~output_mode ~dry_run =
      | Human -> Printf.eprintf "error: hook source not found: %s\n%!" hook_src);
     exit 1
   end;
-  let file_size path = try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0 in
-  let hook_src_size = file_size hook_src in
-  if dry_run then
-    (match output_mode with
-     | Json -> print_json (`Assoc [ ("ok", `Bool true); ("dry_run", `Bool true); ("src", `String hook_src); ("dst", `String hook_dst) ])
-     | Human -> Printf.printf "[DRY-RUN] would copy %d bytes from %s to %s and chmod 755\n%!" hook_src_size hook_src hook_dst)
-  else
-    (try
-       let ic = open_in_bin hook_src in
-       let oc = open_out_bin (hook_dst ^ ".tmp") in
-       Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
-         let buf = Bytes.create 65536 in
-         let rec loop () =
-           let n = input ic buf 0 (Bytes.length buf) in
-           if n > 0 then (output oc buf 0 n; loop ())
-         in
-         loop ());
-        Unix.rename (hook_dst ^ ".tmp") hook_dst;
-        Unix.chmod hook_dst 0o755;
-        (match output_mode with
-         | Json -> print_json (`Assoc [ ("ok", `Bool true); ("src", `String hook_src); ("dst", `String hook_dst) ])
-         | Human -> Printf.printf "→ Installed pre-commit hook: %s\n%!" hook_dst)
-      with Unix.Unix_error (e, _, _) ->
-        (match output_mode with
-         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Unix.error_message e)) ])
-         | Human -> Printf.eprintf "error: %s\n%!" (Unix.error_message e));
-        exit 1)
+  let artifacts = [ C2c_install_manifest.owned_file hook_dst ] in
+  let extra_json =
+    [ ("src", `String hook_src); ("dst", `String hook_dst) ]
+  in
+  if not dry_run then (
+    try
+      let ic = open_in_bin hook_src in
+      let oc = open_out_bin (hook_dst ^ ".tmp") in
+      Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
+        let buf = Bytes.create 65536 in
+        let rec loop () =
+          let n = input ic buf 0 (Bytes.length buf) in
+          if n > 0 then (output oc buf 0 n; loop ())
+        in
+        loop ());
+      Unix.rename (hook_dst ^ ".tmp") hook_dst;
+      Unix.chmod hook_dst 0o755;
+      write_manifest_best_effort ~component:"git-hook" ~alias:None ~target_dir:git_common artifacts
+    with Unix.Unix_error (e, _, _) ->
+      (match output_mode with
+       | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Unix.error_message e)) ])
+       | Human -> Printf.eprintf "error: %s\n%!" (Unix.error_message e));
+      exit 1
+  );
+  { artifacts; extra_json }
 
 let install_git_hook_subcmd =
   let term =
@@ -1969,7 +2073,8 @@ let install_git_hook_subcmd =
       Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ] ~doc:"Show what would be done without doing it.")
     in
     let output_mode = if json then Json else Human in
-    do_install_git_hook ~output_mode ~dry_run
+    let result = do_install_git_hook ~output_mode ~dry_run in
+    print_install_summary ~output_mode ~dry_run ~component:"git-hook" result
   in
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "git-hook"

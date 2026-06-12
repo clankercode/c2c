@@ -345,6 +345,7 @@ let commands_by_safety_cmd =
     ("diag", "Show diagnostic info for a managed instance");
     ("gui", "Launch the c2c TUI");
     ("install", "Install c2c + client integrations");
+    ("uninstall", "Remove c2c + client integrations");
     ("init", "Generate a new Ed25519 identity keypair");
     ("hook", "PostToolUse hook: drain inbox and emit messages");
 
@@ -12315,7 +12316,7 @@ let () =
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
     ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
-    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; completion_cmd
+    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; C2c_uninstall.uninstall_subcmd; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances_deprecated; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in

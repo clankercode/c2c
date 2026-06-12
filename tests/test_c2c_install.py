@@ -227,7 +227,7 @@ class C2CInstallDryRunTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("[DRY-RUN]", result.stdout)
-        self.assertIn("would copy", result.stdout)
+        self.assertIn("would symlink", result.stdout)
 
     def test_install_dry_run_crushing_produces_dry_run_lines(self):
         result = self.invoke_cli("install", "crush", "--dry-run", "--alias", "test-dry-run")
