@@ -324,6 +324,21 @@ class HTTPRoomTests(unittest.TestCase):
         history = self.client.room_history("never-existed-room-xyz")
         self.assertEqual(history, [])
 
+    def test_room_history_requires_room_id_field(self):
+        """The /room_history endpoint requires 'room_id', not 'room'.
+
+        This pins the wire field name so the CLI client can't regress to
+        sending the wrong key (the --room flag stays user-facing, but the
+        JSON body must use room_id).
+        """
+        # Sending {"room": "x"} must fail — server expects "room_id"
+        r = self.client.post("/room_history", {"room": "test-room", "limit": 10})
+        self.assertFalse(r.get("ok", True), "sending 'room' instead of 'room_id' should fail")
+        self.assertEqual(r.get("error_code"), "bad_request")
+        # Sending {"room_id": "x"} must succeed
+        r = self.client.post("/room_history", {"room_id": "test-room", "limit": 10})
+        self.assertTrue(r.get("ok", False), "sending 'room_id' should succeed")
+
 
 if __name__ == "__main__":
     unittest.main()
