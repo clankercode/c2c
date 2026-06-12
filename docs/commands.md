@@ -647,9 +647,19 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `install` (no subcommand) | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
 | `install self [--dest DIR] [--mcp-server]` | Install the running c2c binary to `~/.local/bin`. |
 | `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. Prints restart guidance and `Run 'c2c connect --verify' to confirm delivery is live`. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. On success, prints `Run 'c2c connect --verify' to confirm delivery is live`. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
+| `uninstall claude [--target-dir DIR]` | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` and `~/.claude/settings.json` hook entries). |
+| `uninstall codex` | Remove the c2c stanza from `~/.codex/config.toml` and owned `~/.c2c/clients/codex/` files. |
+| `uninstall kimi [--alias A]` | Remove `mcpServers.c2c` from `~/.kimi/mcp.json`, the approval-hook block from `~/.kimi/config.toml`, and owned files. |
+| `uninstall opencode [--target-dir DIR]` | Remove `mcp.c2c` from `<target>/.opencode/opencode.json` and owned plugin files. |
+| `uninstall self` | Remove the c2c binaries from `~/.local/bin` (warns that this removes the running binary). |
+| `uninstall git-hook` | Remove the c2c pre-commit/pre-push hooks from `.git/hooks` only if they match the c2c source. |
+| `uninstall git-shim` | Remove the swarm git shim binaries from `$XDG_STATE_HOME/c2c/bin/` and per-instance copies. |
+| `uninstall all` | Uninstall every component above (clients first, then git pieces, then `self` last). |
 | `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. On success, prints `Run 'c2c connect --verify' to confirm delivery is live`. |
+
+All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (machine-readable output). `uninstall` also accepts `--target-dir DIR` for project-scoped clients and `--alias A` to locate the wake schedule when the install manifest is missing.
 
 ### Messaging
 
@@ -844,8 +854,9 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `install [--client CLIENT] [--dry-run]` | Install c2c binary and/or client integrations. |
 | `install self [--dest DIR] [--mcp-server]` | Install the c2c binary to `~/.local/bin`. |
 | `install all [--dry-run]` | Install binary + configure all detected clients. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client. Prints an install summary and `c2c uninstall <component>` hint. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
+| `uninstall claude\|codex\|kimi\|opencode\|self\|git-hook\|git-shim\|all [--dry-run] [--json] [--target-dir DIR] [--alias A]` | Remove c2c artifacts for a component. Manifest-driven with recompute fallback; shared files are surgically stripped. |
 | `mesh status [--relay-url URL] [--include-dead]` | Inspect the peer mesh connected to a remote relay. |
 | `mesh peers [--relay-url URL]` | List mesh peers. |
 | `relay-pins list\|show\|pin\|unpin [--json]` | Inspect and manage broker TOFU pins (`relay_pins.json`). |

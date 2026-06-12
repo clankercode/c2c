@@ -345,6 +345,7 @@ let commands_by_safety_cmd =
     ("diag", "Show diagnostic info for a managed instance");
     ("gui", "Launch the c2c TUI");
     ("install", "Install c2c + client integrations");
+    ("uninstall", "Remove c2c + client integrations");
     ("init", "Generate a new Ed25519 identity keypair");
     ("hook", "PostToolUse hook: drain inbox and emit messages");
 
