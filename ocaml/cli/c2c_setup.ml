@@ -614,7 +614,6 @@ let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_comman
       Printf.printf "  broker root: %s\n" root;
       Printf.printf "  config:      %s\n" config_path;
       Printf.printf "  trust:       true (skips per-tool confirmation prompts)\n";
-      Printf.printf "\nRun 'gemini mcp list' to verify.\n";
       Printf.printf "If you haven't authenticated yet, run 'gemini' once interactively to seed ~/.gemini/oauth_creds.json before launching managed sessions.\n";
       Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n";
       (* Write deliver-watch supervisor scripts for non-MCP clients. *)
@@ -805,7 +804,6 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
       Printf.printf "  broker root: %s\n" root;
       Printf.printf "  config:      %s\n" config_path;
       Printf.printf "  plugin:      %s\n" plugin_note;
-      Printf.printf "\nRun 'opencode mcp list' from %s to verify.\n" target_dir;
       Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n";
       (* Write deliver-watch supervisor scripts for non-MCP clients. *)
       let home = Sys.getenv "HOME" in

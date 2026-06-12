@@ -1956,6 +1956,103 @@ let test_connect_detects_kimi () =
         check bool "detects kimi MCP server configured" true
           (string_contains content "kimi: MCP server configured")))
 
+let test_connect_verify_fail_on_broken_broker () =
+  (* Simulate FAIL: marker gone from inbox but NOT in archive.
+     This happens when something drains the inbox without going through
+     the broker's drain_inbox path (which always archives). We simulate
+     by directly clearing the inbox file after enqueue. *)
+  with_temp_broker (fun ~dir ~broker_root ->
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    let session_a = "connect-fail-a" in
+    let session_b = "connect-fail-b" in
+    let alias_a = "cfail-a" in
+    let alias_b = "cfail-b" in
+    let pid = Some (Unix.getpid ()) in
+    let pid_start = C2c_mcp.Broker.capture_pid_start_time pid in
+    C2c_mcp.Broker.register broker ~session_id:session_a ~alias:alias_a ~pid ~pid_start_time:pid_start ();
+    C2c_mcp.Broker.register broker ~session_id:session_b ~alias:alias_b ~pid ~pid_start_time:pid_start ();
+    let marker = "connect-fail-marker-xyz" in
+    C2c_mcp.Broker.enqueue_message broker ~from_alias:alias_a ~to_alias:alias_b ~content:marker ();
+    (* Verify marker is in inbox before sabotage *)
+    let inbox_before = C2c_mcp.Broker.read_inbox broker ~session_id:session_b in
+    check bool "marker in inbox before sabotage" true
+      (List.exists (fun (m : C2c_mcp.message) -> m.content = marker) inbox_before);
+    (* Sabotage: directly overwrite inbox with empty, bypassing archive *)
+    let inbox_path = Filename.concat broker_root (session_b ^ ".inbox.json") in
+    write_file inbox_path "[]";
+    (* Verify marker is gone from inbox *)
+    let inbox_after = C2c_mcp.Broker.read_inbox broker ~session_id:session_b in
+    check bool "marker gone from inbox after sabotage" false
+      (List.exists (fun (m : C2c_mcp.message) -> m.content = marker) inbox_after);
+    (* Verify marker is NOT in archive *)
+    let archive_entries = C2c_mcp.Broker.read_archive broker ~session_id:session_b ~limit:10 in
+    let has_marker_in_archive = List.exists (fun (e : C2c_mcp.Broker.archive_entry) ->
+      e.ae_content = marker
+    ) archive_entries in
+    check bool "marker NOT in archive (FAIL condition)" false has_marker_in_archive)
+
+let test_connect_dashboard_next_action_partially_configured () =
+  (* Set up codex config only → any_installed=true, all_installed=false
+     → next action should mention "partially configured" *)
+  with_temp_dir (fun dir ->
+    let home = Filename.concat dir "fakehome" in
+    Unix.mkdir home 0o755;
+    let codex_dir = Filename.concat home ".codex" in
+    Unix.mkdir codex_dir 0o755;
+    let config_path = Filename.concat codex_dir "config.toml" in
+    write_file config_path "[mcp_servers.c2c]\ncommand = \"c2c-mcp-server\"\n";
+    let broker_root = Filename.concat dir "broker" in
+    Unix.mkdir broker_root 0o755;
+    let env = Printf.sprintf "HOME=%s C2C_MCP_BROKER_ROOT=%s" home broker_root in
+    let tmpfile = Filename.temp_file "c2c-connect-partial" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect > %s 2>&1" env tmpfile)));
+        let content = read_file tmpfile in
+        check bool "next action mentions partially configured" true
+          (string_contains content "partially configured")))
+
+let test_connect_dashboard_next_action_all_installed_no_session () =
+  (* Set up all 4 client configs → all_installed=true, alive_count=0
+     → next action should mention "no live session" *)
+  with_temp_dir (fun dir ->
+    let home = Filename.concat dir "fakehome" in
+    Unix.mkdir home 0o755;
+    (* Claude: ~/.claude/settings.json with c2c hook *)
+    let claude_dir = Filename.concat home ".claude" in
+    Unix.mkdir claude_dir 0o755;
+    write_file (Filename.concat claude_dir "settings.json")
+      {|{"hooks":{"PostToolUse":[{"command":"c2c-hook","type":"command"}]}}|};
+    (* Codex: ~/.codex/config.toml with mcp_servers.c2c *)
+    let codex_dir = Filename.concat home ".codex" in
+    Unix.mkdir codex_dir 0o755;
+    write_file (Filename.concat codex_dir "config.toml")
+      "[mcp_servers.c2c]\ncommand = \"c2c-mcp-server\"\n";
+    (* OpenCode: ~/.config/opencode/plugins/c2c.ts (>= 1024 bytes) *)
+    let config_dir = Filename.concat home ".config" in
+    (try Unix.mkdir config_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+    let oc_dir = Filename.concat config_dir "opencode" in
+    let oc_plugins = Filename.concat oc_dir "plugins" in
+    Unix.mkdir oc_dir 0o755;
+    Unix.mkdir oc_plugins 0o755;
+    let plugin_content = String.make 1100 ' ' in
+    write_file (Filename.concat oc_plugins "c2c.ts") plugin_content;
+    (* Kimi: ~/.kimi/mcp.json with mcpServers.c2c *)
+    let kimi_dir = Filename.concat home ".kimi" in
+    Unix.mkdir kimi_dir 0o755;
+    write_file (Filename.concat kimi_dir "mcp.json")
+      {|{"mcpServers":{"c2c":{"type":"stdio"}}}|};
+    let broker_root = Filename.concat dir "broker" in
+    Unix.mkdir broker_root 0o755;
+    let env = Printf.sprintf "HOME=%s C2C_MCP_BROKER_ROOT=%s" home broker_root in
+    let tmpfile = Filename.temp_file "c2c-connect-nosession" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect > %s 2>&1" env tmpfile)));
+        let content = read_file tmpfile in
+        check bool "next action mentions no live session" true
+          (string_contains content "no live session")))
+
 (* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
@@ -2128,11 +2225,14 @@ let () =
         ; ( "connect shows broker root", `Quick, test_connect_dashboard_shows_broker_root )
         ; ( "connect --json is valid JSON", `Quick, test_connect_dashboard_json_valid )
         ; ( "connect next action mentions install", `Quick, test_connect_dashboard_next_action_not_installed )
+        ; ( "connect next action mentions partially configured", `Quick, test_connect_dashboard_next_action_partially_configured )
+        ; ( "connect next action mentions no live session", `Quick, test_connect_dashboard_next_action_all_installed_no_session )
         ] )
     ; ( "connect_verify",
         [ ( "connect --verify reports INCONCLUSIVE", `Quick, test_connect_verify_inconclusive )
         ; ( "connect verify archive path works", `Quick, test_connect_verify_pass_via_drain )
         ; ( "connect --verify does not drain real inbox", `Quick, test_connect_verify_does_not_drain_real_inbox )
+        ; ( "connect verify detects FAIL on broken broker", `Quick, test_connect_verify_fail_on_broken_broker )
         ] )
     ; ( "connect_client_detection",
         [ ( "connect detects codex config", `Quick, test_connect_detects_codex )
