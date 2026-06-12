@@ -75,22 +75,17 @@ let test_install_error_list_has_gemini_for_routing () =
 (* ------------------------------------------------------------------ *)
 
 let find_c2c_binary () =
-  (* Walk up from cwd looking for _build/default/ocaml/cli/c2c.exe *)
-  let rec try_dir d =
-    let candidate = d // "_build" // "default" // "ocaml" // "cli" // "c2c.exe" in
-    if Sys.file_exists candidate then Some candidate
-    else
-      let parent = Filename.dirname d in
-      if parent = d then None  (* reached root *)
-      else try_dir parent
-  in
-  match try_dir (Sys.getcwd ()) with
-  | Some p -> p
-  | None ->
-    (* Fallback: use installed c2c from PATH *)
-    let rc = Sys.command "which c2c > /dev/null 2>&1" in
-    if rc = 0 then "c2c"
-    else Alcotest.fail "cannot find c2c binary for subprocess test"
+  let exe = Sys.executable_name in
+  let test_dir = Filename.dirname exe in
+  let candidate = test_dir // "c2c.exe" in
+  if Sys.file_exists candidate then candidate
+  else
+    Alcotest.fail
+      (Printf.sprintf
+         "HERMETIC FAIL: cannot find in-worktree c2c.exe at %s \
+          (test exe = %s). The dune (deps c2c.exe) stanza must \
+          guarantee this file exists."
+         candidate exe)
 
 let test_install_gemini_refuses () =
   let c2c_bin = find_c2c_binary () in
