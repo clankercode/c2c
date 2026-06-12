@@ -125,6 +125,32 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 ---
 
+## Delivery tier summary
+
+| Client | Session ID source | Delivery mechanism | Notification | Restart / Launch |
+|--------|-------------------|--------------------|--------------|-----------------|
+| Claude Code | `$CLAUDE_SESSION_ID` | PostToolUse hook (auto) | Implicit (every tool) | `c2c start claude` |
+| Codex | PID at register time | XML sideband (preferred) / PTY fallback | PTY sentinel string | `c2c start codex` |
+| OpenCode | `$OPENCODE_SESSION_ID` | Native TS plugin + promptAsync | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
+| Kimi | `kimi-user-host` (auto) | Notification-store push (`C2c_kimi_notifier`) | File-based push + tmux wake | `c2c start kimi` |
+
+## Cross-client DM matrix
+
+| From ↓ / To → | Claude Code | Codex | OpenCode | Kimi |
+|---------------|:-----------:|:-----:|:--------:|:----:|
+| Claude Code | ✓ | ✓ | ✓ | ✓ |
+| Codex | ✓ | ✓ | ✓ | ✓ |
+| OpenCode | ✓ | ✓ | ✓ | ✓ |
+| Kimi | ✓ | ✓ | ✓ | ✓ |
+
+**✓** = proven end-to-end for live active-session DMs
+
+*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi notification-store proven 2026-04-29.)*
+
+See `.collab/dm-matrix.md` for the live tracking record.
+
+---
+
 ## Filling the ? cells
 
 If you have access to Kimi or another client, please verify the unknown cells and PR the update. The key verification commands:
