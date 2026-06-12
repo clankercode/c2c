@@ -222,3 +222,33 @@ completion: in-worktree build+test verify → DIFFERENT-model (codex) peer-PASS 
 for push decision (low-risk read-only diagnostic; NOT yet pushed). Task IDs: #38 (doctor check, in_progress).
 
 c2c poll session_id for THIS orchestrator: 574c00d6-a4fc-43c8-9656-0a235a3000b6
+
+---
+
+## DOCTOR-HOOKS SLICE COMPLETE (2026-06-13 ~05:15 UTC) — #38 ✅
+
+`c2c doctor hooks` shipped to LOCAL master (`e490d8af`), installed via `just install-all`,
+dogfood-verified on the real `.claude-w` profile. **NOT pushed to origin** (low-risk read-only
+diagnostic, not relay-critical — awaiting Max's push decision).
+
+- **Branch:** `feat/doctor-dangling-hooks` → merged `--no-ff` to local master @ `e490d8af`.
+- **Commits:** `7e5de19f` (feat module) + `cee17ca0` (6 unit tests) + `d6ceb574` (codex peer-PASS
+  edge-case tests: settings.local dangling, leading-whitespace abs path, relative/PATH c2c ignored).
+- **Build:** kimi (`b990n7233`) implemented through to commit; died on kimi-quota 429 AFTER work was
+  committed (not the step cap). No resume needed.
+- **Validation:** independent in-worktree `build-clean-IN-slice-worktree-rc=0` + 9/9 alcotest pass;
+  CLI smoke confirms rc=1 + correct human/compact/json output on a synthetic dangling hook.
+- **Peer-PASS:** codex (`bv1rthe0i`) review-and-fix loop → **PASS** @ `d6ceb574`. Found NO production
+  defects; only hardened test coverage. Criteria: JSON walk, dangling predicate, never-raises/skipped,
+  exit semantics + `|| true` guard, edge cases, style consistency.
+- **Dogfood:** `C2C_DOCTOR_CLAUDE_DIRS=...claude:...-p:...-w c2c doctor hooks` → `.claude-w` shows
+  "1 referenced, all resolve" (rc=0) — confirms the earlier shared-hooks fix held. The diagnostic now
+  guards against the dangling-hook bug class going forward.
+- **Behavior note (by design, not a defect):** default scan honors `CLAUDE_CONFIG_DIR` (scans just the
+  active profile); multi-profile sweep needs `C2C_DOCTOR_CLAUDE_DIRS`. In the affected `.claude-w`
+  session, default scan WOULD cover `.claude-w`.
+- **c2c-doctor.sh:** adds a "local agent checks" section calling `c2c doctor hooks --compact`
+  (+ `schedule --compact` when alias env present), `|| true`-guarded against set -euo pipefail.
+
+ALL SESSION TASKS COMPLETE (#36–#39). Pending = Max's push decision for the doctor-hooks slice.
+GC note: `.worktrees/wt-doctor-hooks` NOT yet GC-eligible (branch on local master, not origin).
