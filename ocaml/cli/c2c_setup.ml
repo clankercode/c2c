@@ -337,7 +337,7 @@ let write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root ~client_name =
   let pre_deliver_path = client_dir // "start-hooks" // "pre-deliver.sh" in
   let session_id_path = client_dir // "session-id" in
   let hook_dir = client_dir // "start-hooks" in
-  mkdir_or_dryrun dry_run hook_dir;
+  mkdir_p dry_run hook_dir;
   let supervisor_script = codex_deliver_watch_supervisor_script client_dir session_id_path broker_root in
   let pre_deliver_script = codex_pre_deliver_hook client_dir in
   let write_script path content =
