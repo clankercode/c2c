@@ -10,9 +10,12 @@
   avoids breaking `--from <alias>` sends, supervisor matches, and scheduled self-DMs. This
   collapses the high-blast-radius risk.
 - **`--no-nonce`** disables the nonce even for auto-generated names.
-- **Blocklist match = word-or-first-hyphen-segment** (casefolded): reject if the alias
-  equals a banned word OR its first `-`-segment is a banned word. Blocks `claude`,
-  `claude-code`, `gpt`, `gemini`, `codex`, etc.; allows `lyra-quill`, `claude-quill`.
+- **Blocklist match = word-or-first-hyphen-segment** (casefolded), USER-SUPPLIED names only:
+  reject if the alias equals a banned word OR its first `-`-segment is a banned word. Blocks
+  `claude`, `claude-code`, `gpt`, `gemini`, `codex`, `codex-code`; allows `lyra-quill`,
+  `stardust-vale`. (codex final-pass: NOT `claude-quill` — its first segment `claude` is
+  banned, so a user-supplied `claude-quill` is correctly REJECTED. Auto-gen client-prefixed
+  names like `codex-ember-frost` pass via the `from_auto_gen` origin path — see B1.)
 - **Nonce charset = lowercase-only `0-9a-z`** (aliases are casefold-compared, so mixed-case
   would create surprising case-collisions). Length 4 ⇒ 36^4 ≈ 1.68M.
 - **Nonce STACKS with `-<prime>`** collision disambiguation (does not replace it).
@@ -43,9 +46,35 @@
   MCP friendly error below.
 - Auto-gen call sites pass `~from_auto_gen:true` when they register a generated name; explicit/
   role/env paths pass nothing (default false → blocklist enforced).
+- **Signature scope (codex):** adding `?from_auto_gen` to `Broker.register` requires updating
+  the EXPOSED signature in `ocaml/c2c_mcp.mli:294`, not only `c2c_broker.ml:1871`.
 - Mirror a pre-check + friendly `tool_err` in the MCP handler
   (`c2c_identity_handlers.ml:45-50`) so a user-supplied banned alias returns an error result,
   not an exception.
+
+> **BLOCKER B-origin (codex final-pass) — `from_auto_gen` is LOST across the env boundary.**
+> The common install/start path does NOT register in-process: `c2c install/setup` auto-picks
+> the alias (`c2c_setup.ml:1522-1528`) and writes it to MCP config as
+> `C2C_MCP_AUTO_REGISTER_ALIAS` (`c2c_setup.ml:467,581,1051,1384`); `c2c start` writes the
+> effective alias to the child env (`c2c_start.ml:2942-2949`, kimi `:3101-3122`). The
+> server-side auto-register (`c2c_mcp_helpers_post_broker.ml:816-819`) + the MCP handler
+> (`c2c_identity_handlers.ml:14-23`) read ONLY that string and call `Broker.register` with NO
+> origin flag (`post_broker:979`, `handlers:283-286`). So a generated `codex-ember-frost-a7c2`
+> arrives looking exactly like a user-supplied alias → the default `from_auto_gen=false` path
+> BLOCKS it on first segment `codex`. **This re-introduces the original critical bug across the
+> config/env boundary.** REQUIRED design — propagate origin via a sibling env marker:
+> - When `do_install_client` / `c2c start` AUTO-PICK the alias (not `--alias`/`--name`/role/
+>   user-env), write `C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN=1` alongside
+>   `C2C_MCP_AUTO_REGISTER_ALIAS`. Do NOT write it when the alias was explicitly supplied.
+> - Teach `auto_register_startup` (`c2c_mcp_helpers_post_broker.ml:816-819,979`) and the MCP
+>   register handler (`c2c_identity_handlers.ml:14-23,283-286`) to pass `~from_auto_gen:true`
+>   ONLY when that marker is present (and unset/false otherwise).
+> - Tests (both sides): generated config/start aliases register fine; user-provided
+>   env/explicit `codex` / `codex-code` still rejected.
+> Note: the env marker ALSO governs whether the nonce was already applied — the alias written
+> to `C2C_MCP_AUTO_REGISTER_ALIAS` by install/start is the FINAL name (nonce already appended
+> at generation time), so the register path must NOT re-nonce; it only needs the origin flag
+> to skip the blocklist.
 
 ### Slice B2 — Nonce generator + auto-gen-only application
 - New `ocaml/c2c_nonce.ml`: `gen_nonce () = String.init 4 (fun _ -> charset.[Random.int 36])`
@@ -61,6 +90,19 @@
   - `ocaml/cli/c2c_agent.ml:458, 733` (ephemeral instance-name generation)
   - `ocaml/cli/c2c.ml:6763-6766` (init's three-way auto-pick reject-loop)
   Do NOT touch the user-supplied/role/env resolution paths — those stay bare.
+
+> **BLOCKER B-require-easy (codex final-pass) — nonce breaks `c2c init --require-easy`.**
+> The `--require-easy` validator at `c2c.ml:6768-6776` splits the generated alias on `-` and
+> accepts ONLY exactly two segments:
+> ```ocaml
+> let w1, w2 = match String.split_on_char '-' a with [w1; w2] -> (w1,w2) | _ -> ("","") in
+> ```
+> If `generate_alias_easy` returns `word-word-nn4x` (3 segments), the match falls to `("","")`,
+> fails the easy-pool check, and **recurses forever**. REQUIRED fix (pick one, implement +
+> test): (a) validate the BARE two-word easy name against the pool FIRST, then append the nonce
+> AFTER it passes; OR (b) make the parser accept `[w1; w2; _nonce]` and validate only `w1`/`w2`.
+> **(a) is cleaner** (keeps nonce orthogonal to validation). Add a regression test:
+> `c2c init --require-easy` with nonce enabled terminates and yields `word-word-<nonce>`.
 - `--no-nonce` plumbing (CLI ONLY): add the flag to the auto-gen-bearing commands
   (`c2c.ml:6682` init, `:8977` start, `c2c_setup.ml:1785` setup/install) and thread it into
   the generate calls. **DO NOT add a `no_nonce` MCP arg** (mm3: the MCP `register` handler
@@ -93,6 +135,11 @@
   user-facing paragraph). Update `CLAUDE.md:268` (architecture note) AND `docs/commands.md:994`
   (user-facing format) with appropriate (different) content describing blocklist + nonce;
   register/init examples; role-template notes.
+- Blocker regression tests (codex final-pass): **(i)** an alias arriving via
+  `C2C_MCP_AUTO_REGISTER_ALIAS` WITH `C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN=1` registers
+  even with a client-prefixed first segment (`codex-…`), while the SAME alias WITHOUT the
+  marker is rejected; **(j)** `c2c init --require-easy` with nonce enabled TERMINATES and
+  yields `word-word-<4 lowercase>`.
 
 ## Acceptance criteria
 - `dune build` clean IN WORKTREE (rc=0); full suite green `-j2`.
