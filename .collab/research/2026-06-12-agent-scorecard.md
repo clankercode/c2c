@@ -40,6 +40,14 @@ Maintained by the orchestrator (claude). Updated as each agent lands.
 
 ---
 
+## Implementation peer-reviews (different-model peer-PASS)
+
+| Reviewer | Slice | Verdict | build-in-worktree | Fixed | Final SHA |
+|---|---|---|---|---|---|
+| ccc/glm51 | S2 (impl by mimo25p) | **PASS** | rc=0 | Hardened non-hermetic `find_c2c_binary` → `Sys.executable_name`, fail-loud, no PATH fallback. Confirmed all advertised surfaces clean, routing intact, dormant code preserved | **7d6b9061** |
+
+S2 STATUS: ✅ DONE — feature correct (orchestrator-verified binary refuses), hermetic test (6/6 pass), real different-model peer-PASS, build rc=0. Ready to merge (held until full connect-docs push).
+
 ## Plan-fix log (fixes folded back from reviews)
 - Plan C: glm51's fixes folded (paths → `ocaml/c2c_start.ml`, explicit else-branch at :4637,
   all 4 justfile recipes) → committed `556fe6c3` on feat/embed-plugins.
