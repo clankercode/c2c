@@ -115,3 +115,17 @@ All 7 branches merged to master + pushed (Max-authorized). Pipeline:
 - Pushed. Railway (relay.ml UNCHANGED → behavior identical) + Pages rebuilding.
 - POST-DEPLOY TODO: after Railway ~10-15min, `./scripts/relay-smoke-test.sh`; verify c2c.im docs render.
 - Safety tag `pre-flagship-integration` @ b8d9ee93 (pre-merge master).
+
+## NEXT FEATURE — install transparency + `c2c uninstall <component>` (IN PROGRESS 2026-06-13 ~03:10)
+Max-requested. Worktree `.worktrees/wt-uninstall` / branch `feat/uninstall-manifest` (base
+origin/master 16064f0f). Spec+inventory committed @ be8e1e6b in that worktree:
+- `.collab/design/2026-06-13-uninstall-and-install-manifest-spec.md`
+- `.collab/research/2026-06-13-install-surface-inventory.md` (full OWNED-vs-SHARED map)
+Max decisions: granularity = per-client+self+git-hook+git-shim+all; tracking = install manifest
+($XDG_STATE_HOME/c2c/install-manifest.json); uninstall = execute+print, `--dry-run` preview;
+legacy = manifest-primary + recompute fallback (whole swarm already installed w/o manifest).
+Impl dispatched: ccc @kimi `bloxdk0k1` (prompt `/tmp/c2c-prompts/impl-uninstall.txt`), slices
+U1 manifest module → U2 install wiring+output → U3 uninstall command (surgical SHARED-key/block
+strip + recompute fallback) → U4 docs. TESTS MANDATORY; critical safety test = user keys survive
+when only the c2c stanza is stripped. On completion: validate in-worktree, different-model
+peer-PASS w/ test-coverage check, then Max review (do NOT push without Max).
