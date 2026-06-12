@@ -641,6 +641,13 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
     Printf.eprintf "error: target directory does not exist: %s\n%!" target_dir;
     exit 1
   end;
+  let target_dir =
+    let abs =
+      if Filename.is_relative target_dir then Filename.concat (Sys.getcwd ()) target_dir
+      else target_dir
+    in
+    try Unix.realpath abs with Unix.Unix_error _ -> abs
+  in
   let config_dir = target_dir // ".opencode" in
   let config_path = config_dir // "opencode.json" in
   (* Guard: if config already exists and has a c2c mcp entry, warn and skip unless --force. *)
@@ -724,9 +731,18 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
      are picked up automatically. In a binary-only install (no repo data/), fall
      back to the embedded blob, which is always available in the compiled c2c
      binary. *)
-  let canonical_plugin = "data" // "opencode-plugin" // "c2c.ts" in
   let file_size path =
     try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0
+  in
+  let find_canonical_plugin_from_target () =
+    let rec climb dir =
+      let candidate = dir // "data" // "opencode-plugin" // "c2c.ts" in
+      if Sys.file_exists candidate && file_size candidate >= 1024 then Some candidate
+      else
+        let parent = Filename.dirname dir in
+        if parent = dir then None else climb parent
+    in
+    climb target_dir
   in
   let write_string ~dst s =
     if dry_run then
@@ -748,22 +764,22 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
       Unix.symlink src_abs dst
     end
   in
-  let canonical_exists = Sys.file_exists canonical_plugin && file_size canonical_plugin >= 1024 in
+  let canonical_plugin = find_canonical_plugin_from_target () in
   let plugins_dir = config_dir // "plugins" in
   let dest = plugins_dir // "c2c.ts" in
   let plugin_note =
     mkdir_or_dryrun dry_run plugins_dir;
     (try
-       if canonical_exists then begin
+       match canonical_plugin with
+       | Some canonical_plugin ->
           (* Dev checkout: symlink to the repo source so the installed plugin
              tracks data/opencode-plugin/c2c.ts edits automatically. *)
           make_symlink ~src:canonical_plugin ~dst:dest;
           Printf.sprintf "plugin symlinked to %s" dest
-        end else begin
+       | None ->
          (* Binary-only install: write the embedded blob. *)
          write_string ~dst:dest C2c_opencode_plugin_embedded.content;
          Printf.sprintf "plugin installed to %s (embedded)" dest
-       end
      with _ -> "plugin install failed")
   in
   match output_mode with

@@ -177,11 +177,11 @@ For managed sessions, `c2c reset-thread <name> <thread>` persists an exact Codex
 
 ### Session discovery
 
-OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` writes the MCP stanza into `.opencode/opencode.json`, the plugin sidecar into `.opencode/c2c-plugin.json`, and the TypeScript plugin to `~/.config/opencode/plugins/c2c.ts`. In a dev checkout the plugin is symlinked to `data/opencode-plugin/c2c.ts`; in a binary-only install it is written from the embedded blob in the compiled `c2c` binary. The project-local copy at `.opencode/plugins/c2c.ts` remains opt-in via `--project-plugin` for vendoring/testing-forks. At startup the agent calls `mcp__c2c__register`.
+OpenCode sets `$OPENCODE_SESSION_ID` in child processes. `c2c install opencode` writes the MCP stanza into `.opencode/opencode.json`, the plugin sidecar into `.opencode/c2c-plugin.json`, and the TypeScript plugin to `.opencode/plugins/c2c.ts` under the target project. In a dev checkout the plugin is symlinked to `data/opencode-plugin/c2c.ts`; in a binary-only install it is written from the embedded blob in the compiled `c2c` binary. At startup the agent calls `mcp__c2c__register`.
 
 ### Message delivery — native plugin (preferred)
 
-`c2c install opencode` installs the TypeScript plugin at `~/.config/opencode/plugins/c2c.ts` (repo symlink in dev, embedded blob in binary-only installs; project-local copy at `.opencode/plugins/c2c.ts` is opt-in via `--project-plugin` for vendoring/testing-forks), which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
+`c2c install opencode` installs the TypeScript plugin at `.opencode/plugins/c2c.ts` under the target project (repo symlink in dev, embedded blob in binary-only installs), which delivers inbound broker messages as proper user turns via `client.session.promptAsync`. This is the cleanest approach: no PTY, no slash-command injection, messages appear as first-class user turns.
 
 ```
 Peer sends message  →  broker writes to OpenCode's .inbox.json  (atomic rename)
