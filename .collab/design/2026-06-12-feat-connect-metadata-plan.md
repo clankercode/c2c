@@ -37,15 +37,22 @@ Instead:
 
 ## Slices
 ### Slice A1 — CLI cwd parity (the bug fix) + opt-out flag
+> **CORRECTED per mimo25p review (was self-contradictory):** `--no-metadata` must NOT skip
+> `~cwd`. `cwd` is ALWAYS captured (the worktree guard at `c2c_broker.ml:1149-1153` reads it
+> from the record); `--no-metadata` only sets the `metadata_opt_out` consent flag. The MCP
+> handler already gets this right — the CLI must match it exactly.
 - `ocaml/cli/c2c.ml:2855` (`register_cmd` term): add a `--no-metadata` boolean Cmdliner flag
   (default false ⇒ metadata on).
-- `ocaml/cli/c2c.ml:2901` (the `Broker.register` call): pass `~cwd:(Sys.getcwd ())` unless
-  `--no-metadata`; pass `~metadata_opt_out:no_metadata`.
+- `ocaml/cli/c2c.ml:2901` (the `Broker.register` call): ALWAYS pass `~cwd:(Sys.getcwd ())`
+  (regardless of `--no-metadata`); pass `~metadata_opt_out:no_metadata`. The flag controls
+  ONLY future exposure, never `cwd` capture (guard invariant).
 - Confirm the human/JSON register epilog (`c2c.ml:2910-2914`) is unaffected.
 
 ### Slice A2 — registration record + persistence
 - `ocaml/c2c_broker.ml`: add `metadata_opt_out : bool` to the registration record (default
-  false). Thread through `register` (`:1871`), state carry-over (`:1904-1927`).
+  false). Thread through `register` (`:1871`). **State carry-over (`:1904-1927`): DISCARD the
+  old value — the new register call re-asserts it (same treatment as `_old_cwd`, NOT preserved
+  like `tmux_location`).** Per mimo25p review.
 - `registration_to_json` (`c2c_broker.ml:122`) + `registration_of_json` (`:248`): serialize
   the new bool (omit when false to keep JSON lean; default false on read). VERIFY round-trip
   + forward-compat (old records without the field read as `false`).
@@ -53,16 +60,20 @@ Instead:
 ### Slice A3 — MCP register surface
 - `ocaml/c2c_mcp.ml:30-38` (`register` tool schema): add `bool_prop "include_metadata"`
   (default true semantics enforced in handler).
-- `ocaml/c2c_identity_handlers.ml:170-177,285-287` (register handler): read
-  `include_metadata` (default true); when false, set `metadata_opt_out=true` and skip cwd
-  capture path's *exposure* (but keep cwd for guard — see approach). Return value unchanged.
+- `ocaml/c2c_identity_handlers.ml:170-177,~283-286` (register handler): read
+  `include_metadata` (default true); when false, set `metadata_opt_out=true`. **`cwd` is
+  captured UNCONDITIONALLY (it already is — there is no separate "exposure path" to skip; the
+  handler just sets the flag).** Return value unchanged. (mimo25p: anchors `:285-287` are
+  ~`:283-286`.)
 
 ### Slice A4 — tests + docs
 - Extend a registration test (`ocaml/cli/test_c2c_onboarding.ml` or
   `ocaml/test/test_c2c_mcp.ml`): assert (a) CLI register now stores cwd; (b) `--no-metadata`
   sets `metadata_opt_out` and is honored; (c) JSON round-trip of the new field; (d)
-  forward-compat (record without field). Gate any external effect behind existing fixture
-  env vars.
+  forward-compat (record without field reads as `false`, via the existing `bool_member_default`
+  used for `dnd` at `c2c_broker.ml:272`); (e) **GUARD INVARIANT — `c2c register --no-metadata`
+  STILL stores `cwd = Some _`** (mimo25p-required regression test). Gate any external effect
+  behind existing fixture env vars.
 - Docs: `.collab/runbooks/c2c-env-vars.md` (note the flag), MCP `register` tool description,
   one line in CLAUDE.md "Key Architecture Notes" about the consent flag.
 
