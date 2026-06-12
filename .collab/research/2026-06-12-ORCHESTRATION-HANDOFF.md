@@ -14,7 +14,7 @@ run's tail ("To resume this session: kimi -r <id>").
 | Feat | Worktree | Status | Current job id |
 |---|---|---|---|
 | **A** connect-metadata | wt-feat-connect-metadata | ✅✅ **DONE + glm51 peer-PASS @ 872f257e** (build rc=0; onboarding 13/13, mcp 364/364; +2 coverage tests omit-when-false & re-register-discard; guard-invariant verified). Ready to merge (held for full feature push). | — done |
-| **B** name-nonce (RISKIEST) | wt-feat-name-nonce | ⏳ resumed — was mid-build-error, NO impl commits yet (blocklist.ml+nonce.ml created, 9 files modified). Must reach build rc=0 + tests + per-slice commits. | resume `bqqscise8` (kimi sess 8a7dc590) |
+| **B** name-nonce (RISKIEST) | wt-feat-name-nonce | 🔧 hit step cap TWICE; orchestrator WIP-checkpointed @ **030eed30** (build rc=0; blocklist+nonce B1/B2 tests pass). **5 REGRESSIONS** in test_c2c_mcp broker auto_register (#96/97/98/101/162) from B's auto_register_startup/Broker.register changes (was 363/363 green on same base in sibling worktree). Resumed to root-cause+fix regressions, finish B4 (incl both codex-blocker tests), commit per slice. | resume `bt7vtloyh` (kimi sess 8a7dc590) |
 | **C** embed-plugins | wt-feat-embed-plugins | 🔧 all 4 slices committed @ **78ffc86b** (build rc=0, codegen idempotent, sync-gate genuine). Orchestrator found a NON-HERMETIC binary-only test (CWD-relative dev-detection `c2c_setup.ml:727`) — codex review-and-fix dispatched to make it hermetic + (rec.) resolve canonical from repo root. Finding committed-to-disk (gitignored). | codex review-and-fix `bvcko985s` |
 
 On EACH completion: read task output, validate build+tests IN-WORKTREE (`opam exec -- dune build
