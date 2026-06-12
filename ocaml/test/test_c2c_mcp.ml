@@ -2082,7 +2082,7 @@ let test_tools_call_register_prefers_explicit_client_pid_env () =
 let test_tools_call_register_no_alias_falls_back_to_env () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-noarg";
-      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-xertrov-x";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "xertrov-test";
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
@@ -2105,7 +2105,7 @@ let test_tools_call_register_no_alias_falls_back_to_env () =
           let regs = C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:dir) in
           check int "one registration" 1 (List.length regs);
           let reg = List.hd regs in
-          check string "alias from env" "kimi-xertrov-x" reg.alias;
+          check string "alias from env" "xertrov-test" reg.alias;
           check string "session from env" "session-noarg" reg.session_id))
 
 (* register should reject an alias that is currently held by an alive
@@ -2523,11 +2523,13 @@ let test_server_startup_auto_registers_alias_from_env () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-auto";
       Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "opencode-local";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "1";
       Unix.putenv "C2C_MCP_CLIENT_PID" (string_of_int (Unix.getpid ()));
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "";
           Unix.putenv "C2C_MCP_CLIENT_PID" "")
         (fun () ->
           C2c_mcp.auto_register_startup ~broker_root:dir;
@@ -2543,11 +2545,13 @@ let test_server_startup_auto_register_ignores_dead_client_pid_env () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-auto";
       Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-nova";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "1";
       Unix.putenv "C2C_MCP_CLIENT_PID" "999999999";
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "";
           Unix.putenv "C2C_MCP_CLIENT_PID" "")
         (fun () ->
           C2c_mcp.auto_register_startup ~broker_root:dir;
@@ -2624,12 +2628,12 @@ let test_auto_register_startup_skips_when_alive_same_session_different_pid () =
       let real_start = C2c_mcp.Broker.read_pid_start_time real_pid in
       (* Pre-register an alive session with pid=real_pid *)
       C2c_mcp.Broker.register broker
-        ~session_id:"kimi-nova" ~alias:"kimi-nova-2"
+        ~session_id:"live-session" ~alias:"live-alias"
         ~pid:(Some real_pid) ~pid_start_time:real_start ();
       (* Simulate child process with inherited wrong C2C_MCP_CLIENT_PID *)
       let fake_pid = 111111 in
-      Unix.putenv "C2C_MCP_SESSION_ID" "kimi-nova";
-      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-nova-2";
+      Unix.putenv "C2C_MCP_SESSION_ID" "live-session";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "live-alias";
       Unix.putenv "C2C_MCP_CLIENT_PID" (string_of_int fake_pid);
       Fun.protect
         ~finally:(fun () ->
@@ -13083,6 +13087,100 @@ let test_registry_prune_preview_does_not_mutate () =
       let remaining = C2c_mcp.Broker.list_registrations broker in
       check int "registry not mutated" 1 (List.length remaining))
 
+let alias_segment_count a = List.length (String.split_on_char '-' a)
+
+let nonce_is_lowercase_alnum s =
+  String.length s = 4
+  && String.for_all
+       (fun c -> (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+       s
+
+let test_blocklist_rejects_banned_aliases () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let banned = [ "claude"; "claude-code"; "gpt" ] in
+      List.iter
+        (fun alias ->
+           let raised =
+             try
+               C2c_mcp.Broker.register broker ~session_id:("ses-" ^ alias)
+                 ~alias ~pid:None ~pid_start_time:None ();
+               false
+             with
+             | Invalid_argument msg -> string_contains msg "blocked"
+             | _ -> false
+           in
+           check bool (Printf.sprintf "broker rejects banned alias %s" alias) true raised)
+        banned)
+
+let test_blocklist_accepts_lyra_quill () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"ses-lyra" ~alias:"lyra-quill"
+        ~pid:None ~pid_start_time:None ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "lyra-quill registered" 1 (List.length regs);
+      check string "alias preserved" "lyra-quill" (List.hd regs).alias)
+
+let test_auto_gen_client_prefixed_not_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"ses-codex"
+        ~alias:"codex-ember-frost" ~pid:None ~pid_start_time:None
+        ~from_auto_gen:true ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check int "auto-gen codex- prefix accepted" 1 (List.length regs))
+
+let test_user_supplied_codex_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let aliases = [ "codex"; "codex-code" ] in
+      List.iter
+        (fun alias ->
+           let raised =
+             try
+               C2c_mcp.Broker.register broker ~session_id:("ses-" ^ alias)
+                 ~alias ~pid:None ~pid_start_time:None ();
+               false
+             with
+             | Invalid_argument msg -> string_contains msg "blocked"
+             | _ -> false
+           in
+           check bool (Printf.sprintf "broker rejects user-supplied %s" alias) true raised)
+        aliases)
+
+let test_generate_alias_shape () =
+  let a = C2c_start.generate_alias () in
+  check int "auto-gen alias has 3 segments" 3 (alias_segment_count a);
+  match String.split_on_char '-' a with
+  | [ w1; w2; nonce ] ->
+      check bool "word1 non-empty" true (String.length w1 > 0);
+      check bool "word2 non-empty" true (String.length w2 > 0);
+      check bool "nonce is 4 lowercase alnum" true (nonce_is_lowercase_alnum nonce)
+  | _ -> fail "unexpected alias shape"
+
+let test_generate_alias_no_nonce_bare () =
+  let a = C2c_start.generate_alias ~no_nonce:true () in
+  check int "no-nonce alias has 2 segments" 2 (alias_segment_count a);
+  match String.split_on_char '-' a with
+  | [ w1; w2 ] ->
+      check bool "word1 non-empty" true (String.length w1 > 0);
+      check bool "word2 non-empty" true (String.length w2 > 0)
+  | _ -> fail "unexpected no-nonce alias shape"
+
+let test_generate_alias_charset_lowercase () =
+  for _ = 1 to 50 do
+    let a = C2c_start.generate_alias () in
+    match String.split_on_char '-' a with
+    | [ _; _; nonce ] ->
+        check bool "nonce is lowercase alnum" true (nonce_is_lowercase_alnum nonce)
+    | _ -> fail "unexpected alias shape"
+  done
+
+let test_default_name_no_nonce_bare () =
+  let a = C2c_start.default_name ~no_nonce:true "codex" in
+  check int "default_name no-nonce has 2 segments" 2 (alias_segment_count a)
+
 let () =
   run "c2c_mcp"
     [ ( "broker",
@@ -13794,4 +13892,20 @@ let () =
                 test_registry_prune_excludes_managed_session
             ; test_case "registry_prune_preview does not mutate" `Quick
                 test_registry_prune_preview_does_not_mutate
+            ; test_case "B1 blocklist rejects banned aliases" `Quick
+                test_blocklist_rejects_banned_aliases
+            ; test_case "B1 blocklist accepts lyra-quill" `Quick
+                test_blocklist_accepts_lyra_quill
+            ; test_case "B1 auto-gen client-prefixed alias accepted" `Quick
+                test_auto_gen_client_prefixed_not_rejected
+            ; test_case "B1 user-supplied codex rejected" `Quick
+                test_user_supplied_codex_rejected
+            ; test_case "B2 auto-gen alias shape word-word-nonce" `Quick
+                test_generate_alias_shape
+            ; test_case "B2 --no-nonce yields bare alias" `Quick
+                test_generate_alias_no_nonce_bare
+            ; test_case "B2 nonce charset is lowercase alnum" `Quick
+                test_generate_alias_charset_lowercase
+            ; test_case "B2 default_name --no-nonce bare" `Quick
+                test_default_name_no_nonce_bare
             ] ) ]

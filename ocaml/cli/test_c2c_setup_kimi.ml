@@ -67,7 +67,7 @@ let read_file path =
 
 let test_allowed_tools_present () =
   let existing = `Assoc [] in
-  let result = C2c_setup.build_kimi_mcp_config ~root ~alias_val:"test-alias" ~server_path existing in
+  let result = C2c_setup.build_kimi_mcp_config ~alias_from_auto_gen:false ~root ~alias_val:"test-alias" ~server_path existing in
   let count = count_c2c_entries result in
   Alcotest.(check int) "exactly one c2c entry" 1 count;
   (* Verify allowedTools is present and non-empty in the c2c entry *)
@@ -92,8 +92,8 @@ let test_allowed_tools_present () =
 
 let test_idempotent_output () =
   let existing = `Assoc [] in
-  let result1 = C2c_setup.build_kimi_mcp_config ~root ~alias_val:"test-alias" ~server_path existing in
-  let result2 = C2c_setup.build_kimi_mcp_config ~root ~alias_val:"test-alias" ~server_path existing in
+  let result1 = C2c_setup.build_kimi_mcp_config ~alias_from_auto_gen:false ~root ~alias_val:"test-alias" ~server_path existing in
+  let result2 = C2c_setup.build_kimi_mcp_config ~alias_from_auto_gen:false ~root ~alias_val:"test-alias" ~server_path existing in
   let s1 = Yojson.Safe.to_string result1 in
   let s2 = Yojson.Safe.to_string result2 in
   Alcotest.(check string) "second call produces identical output (idempotent)"
@@ -122,7 +122,7 @@ let test_replacement_not_duplication () =
       ])
     ]
   in
-  let result = C2c_setup.build_kimi_mcp_config ~root ~alias_val:"new-alias" ~server_path existing in
+  let result = C2c_setup.build_kimi_mcp_config ~alias_from_auto_gen:false ~root ~alias_val:"new-alias" ~server_path existing in
   let count = count_c2c_entries result in
   Alcotest.(check int) "exactly one c2c entry after merge" 1 count;
   (* Verify new alias is present, old alias is gone *)
@@ -152,7 +152,7 @@ let test_allowed_tools_added_when_absent () =
       ])
     ]
   in
-  let result = C2c_setup.build_kimi_mcp_config ~root ~alias_val:"upgraded-alias" ~server_path existing in
+  let result = C2c_setup.build_kimi_mcp_config ~alias_from_auto_gen:false ~root ~alias_val:"upgraded-alias" ~server_path existing in
   match result with
   | `Assoc fields ->
       (match List.assoc_opt "mcpServers" fields with
@@ -186,7 +186,7 @@ let test_other_servers_preserved () =
       ("some-top-level-field", `String "preserved")
     ]
   in
-  let result = C2c_setup.build_kimi_mcp_config ~root ~alias_val:"alias" ~server_path existing in
+  let result = C2c_setup.build_kimi_mcp_config ~alias_from_auto_gen:false ~root ~alias_val:"alias" ~server_path existing in
   let s = Yojson.Safe.to_string result in
   let contains_my_server = contains_substring ~haystack:s ~needle:"my-server" in
   Alcotest.(check bool) "my-server entry preserved after merge" true contains_my_server;

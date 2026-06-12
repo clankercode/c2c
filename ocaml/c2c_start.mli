@@ -124,8 +124,10 @@ val deliver_pid_path : string -> string
 val poker_pid_path : string -> string
 (** [poker_pid_path name] returns the poker.pid path for an instance. *)
 
-val generate_alias : unit -> string
-(** [generate_alias ()] returns a random two-word alias like "ember-frost". *)
+val generate_alias : ?no_nonce:bool -> unit -> string
+(** [generate_alias ?no_nonce ()] returns a random two-word alias like
+    "ember-frost". When [~no_nonce:false] (the default), a 4-character
+    lowercase alphanumeric nonce is appended: "ember-frost-a7c2". *)
 
 val fds_to_close : preserve:Unix.file_descr list -> Unix.file_descr list
 (** [fds_to_close ~preserve] is a pure function that returns the list of
@@ -133,10 +135,11 @@ val fds_to_close : preserve:Unix.file_descr list -> Unix.file_descr list
     /proc/self/fd except those in [preserve] and stdin/stdout/stderr.
     This is testable without closing anything. *)
 
-val default_name : string -> string
-(** [default_name _client] returns "<word1>-<word2>" using random words.
-    The client argument is retained for call-site compatibility but is
-    no longer used in the returned name (#277). *)
+val default_name : ?no_nonce:bool -> string -> string
+(** [default_name ?no_nonce _client] returns "<word1>-<word2>" using random
+    words. The client argument is retained for call-site compatibility but is
+    no longer used in the returned name (#277). When [~no_nonce:false]
+    (the default), a 4-character lowercase alphanumeric nonce is appended. *)
 
 val likes_shell_substitution : string -> bool
 (** [likes_shell_substitution s] returns true when [s] looks like an unexpanded
@@ -419,11 +422,13 @@ val broker_root : unit -> string
 
 (** {1 Environment building} *)
 
-val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> ?role_class_opt:string option -> ?client:string option -> ?reply_to_override:string option -> ?tmux_location:string option -> string -> string option -> string array
-(** [build_env ?broker_root_override ?auto_join_rooms_override ?role_class_opt ?client name alias_override] builds the environment array for a managed
+val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> ?role_class_opt:string option -> ?client:string option -> ?reply_to_override:string option -> ?tmux_location:string option -> ?alias_from_auto_gen:bool -> string -> string option -> string array
+(** [build_env ?broker_root_override ?auto_join_rooms_override ?role_class_opt ?client ?alias_from_auto_gen name alias_override] builds the environment array for a managed
     client subprocess. Sets C2C_MCP_SESSION_ID, C2C_MCP_AUTO_REGISTER_ALIAS,
     C2C_MCP_BROKER_ROOT, C2C_MCP_AUTO_JOIN_ROOMS (defaults to "swarm-lounge"),
     C2C_MCP_AUTO_DRAIN_CHANNEL=0, and client-native session env when requested.
+    When [~alias_from_auto_gen:true], also sets
+    C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN=1.
     When C2C_AUTO_JOIN_ROLE_ROOM=1 is set and role_class_opt is provided,
     appends the derived role room (e.g. "reviewers" from "reviewer") to C2C_MCP_AUTO_JOIN_ROOMS. *)
 
@@ -445,6 +450,7 @@ val prepare_launch_args :
   ?server_request_responses_fd:string ->
   ?agent_name:string ->
   ?kickoff_prompt:string ->
+  ?alias_from_auto_gen:bool ->
   unit ->
   string list
 (** [prepare_launch_args] returns client args, adding managed per-instance
@@ -456,12 +462,14 @@ val prepare_launch_args :
     --mcp-config-file for kimi. *)
 
 val build_kimi_mcp_config :
-  string -> string -> string option -> Yojson.Safe.t
-(** [build_kimi_mcp_config name broker_root alias_override] returns the
+  ?alias_from_auto_gen:bool -> string -> string -> string option -> Yojson.Safe.t
+(** [build_kimi_mcp_config ?alias_from_auto_gen name broker_root alias_override] returns the
     JSON object written to a kimi instance's [kimi-mcp.json] file.
     [command] is the canonical [c2c-mcp-server] OCaml binary; [args] is
     empty. The env block omits [C2C_MCP_BROKER_ROOT] when [broker_root]
-    equals the resolver default ([""] also treated as default). Exposed
+    equals the resolver default ([""] also treated as default). When
+    [~alias_from_auto_gen:true], also includes
+    C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN=1. Exposed
     for tests; use via [cmd_start] / [cmd_restart] in production. *)
 
 val codex_supports_server_request_fds : string -> bool
@@ -642,6 +650,7 @@ val run_outer_loop :
   ?auto_join_rooms:string ->
   ?agent_name:string ->
   ?reply_to:string ->
+  ?alias_from_auto_gen:bool ->
   ?no_prompt:bool ->
   unit ->
   int
@@ -688,6 +697,7 @@ val cmd_start :
   ?reply_to:string ->
   ?tmux_location:string ->
   ?tmux_command:string list ->
+  ?alias_from_auto_gen:bool ->
   ?no_prompt:bool ->
   unit ->
   int

@@ -2863,12 +2863,18 @@ let register_cmd =
   and+ alias_opt = alias
   and+ session_id_opt = session_id_opt in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let alias =
+  let alias, alias_from_auto_gen =
     match alias_opt with
-    | Some a -> a
+    | Some a -> (a, false)
     | None -> (
         match env_auto_alias () with
-        | Some a -> a
+        | Some a ->
+            let from_auto_gen =
+              match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" with
+              | Some v -> String.trim v = "1"
+              | None -> false
+            in
+            (a, from_auto_gen)
         | None ->
             Printf.eprintf
               "error: no alias specified and C2C_MCP_AUTO_REGISTER_ALIAS not set.\n\
@@ -2898,7 +2904,15 @@ let register_cmd =
     | None -> Some (Unix.getppid ())
   in
   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
-  C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type:(env_client_type ()) ();
+  (try
+     C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time
+       ~client_type:(env_client_type ()) ~from_auto_gen:alias_from_auto_gen ()
+   with Invalid_argument msg ->
+     (if json then
+        print_json (`Assoc [("ok", `Bool false); ("error", `String msg)])
+      else
+        Printf.eprintf "error: %s\n%!" msg);
+     exit 1);
   (match C2c_mcp.Broker.write_allowed_signers_entry broker ~alias with
    | Ok () -> ()
    | Error e -> Printf.eprintf "[allowed_signers] warning: %s\n%!" e);
@@ -6682,6 +6696,9 @@ let init_cmd =
     Arg.(value & opt (some string) None & info ["alias"; "a"] ~docv:"ALIAS"
            ~doc:"Alias to register under. Auto-generated when omitted.")
   in
+  let no_nonce_flag =
+    Arg.(value & flag & info ["no-nonce"] ~doc:"Disable the 4-character nonce suffix on the auto-generated alias.")
+  in
   let room_arg =
     Arg.(value & opt string "swarm-lounge" & info ["room"; "r"] ~docv:"ROOM"
            ~doc:"Room to join on init (default: swarm-lounge). Pass empty string to skip.")
@@ -6719,7 +6736,8 @@ let init_cmd =
   and+ supervisor_strategy_opt = supervisor_strategy_arg
   and+ relay_url = relay_url_arg
   and+ easy_pool = easy_pool_flag
-  and+ require_easy = require_easy_flag in
+  and+ require_easy = require_easy_flag
+  and+ no_nonce = no_nonce_flag in
   let output_mode = if json then Json else Human in
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
@@ -6745,7 +6763,7 @@ let init_cmd =
           `No_client
       | Some client ->
           (try
-             C2c_setup.do_install_client ~output_mode ~dry_run:false ~client ~alias_opt ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ();
+             C2c_setup.do_install_client ~output_mode ~dry_run:false ~client ~alias_opt ~no_nonce ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ();
              `Ok (C2c_setup.canonical_install_client client)
            with e -> `Error (Printexc.to_string e))
   in
@@ -6760,20 +6778,23 @@ let init_cmd =
     | Some a -> a
     | None ->
         let use_easy = easy_pool || require_easy in
-        let base_gen_fn = if use_easy then C2c_setup.generate_alias_easy else begin
+        (* Generate a BARE candidate first; the nonce is appended AFTER
+           the require-easy pool check to avoid an infinite loop
+           (#B-require-easy blocker). *)
+        let base_gen_fn = if use_easy then C2c_setup.generate_alias_easy ~no_nonce:true else begin
           match client_resolved with
-          | Some c -> fun () -> C2c_setup.default_alias_for_client c
-          | None -> fun () -> C2c_setup.generate_alias ()
+          | Some c -> fun () -> C2c_setup.default_alias_for_client ~no_nonce:true c
+          | None -> fun () -> C2c_setup.generate_alias ~no_nonce:true ()
         end in
         let rec loop () =
-          let a = base_gen_fn () in
+          let bare = base_gen_fn () in
           if require_easy then
-            (* Verify the generated alias's both words are in the easy pool. *)
-            let w1, w2 = match String.split_on_char '-' a with [w1; w2] -> (w1, w2) | _ -> ("", "") in
+            let w1, w2 = match String.split_on_char '-' bare with [w1; w2] -> (w1, w2) | _ -> ("", "") in
             let easy = C2c_alias_words.easy_pool in
             let is_easy w = Array.exists (fun e -> e = w) easy in
-            if is_easy w1 && is_easy w2 then a else loop ()
-          else a
+            if is_easy w1 && is_easy w2 then C2c_nonce.append_nonce ~no_nonce bare else loop ()
+          else
+            C2c_nonce.append_nonce ~no_nonce bare
         in
         let a = loop () in
         Printf.eprintf "[c2c register] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
@@ -6783,7 +6804,16 @@ let init_cmd =
   let _identity_init_rc = Sys.command "c2c relay identity init 2>/dev/null" in
   ignore _identity_init_rc;
 
-  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None ~client_type:(env_client_type ()) ();
+  let alias_from_auto_gen = (alias_opt = None) in
+  (try
+     C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None
+       ~client_type:(env_client_type ()) ~from_auto_gen:alias_from_auto_gen ()
+   with Invalid_argument msg ->
+     (if json then
+        print_json (`Assoc [("ok", `Bool false); ("error", `String msg)])
+      else
+        Printf.eprintf "error: %s\n%!" msg);
+     exit 1);
 
   let room_result =
     if String.trim room = "" then `Skipped
@@ -8977,6 +9007,9 @@ let start_cmd =
   let alias =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Custom alias (defaults to instance name).")
   in
+  let no_nonce =
+    Cmdliner.Arg.(value & flag & info [ "no-nonce" ] ~doc:"Disable the 4-character nonce suffix on the auto-generated instance name.")
+  in
   let bin =
     Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH" ~doc:"Custom binary path or name to launch.")
   in
@@ -9052,6 +9085,7 @@ let start_cmd =
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
+  and+ no_nonce = no_nonce
   and+ bin_opt = bin
   and+ session_id_opt = session_id
   and+ one_hr_cache = one_hr_cache
@@ -9145,12 +9179,12 @@ let start_cmd =
      into the target pane (handled separately via tmux_command). For all
      other clients, the tail flows through extra_argv → prepare_launch_args,
      which appends it verbatim to the client's argv. No reject here. *)
-  let name = match name_opt with
-    | Some n -> n
+  let name, name_from_auto_gen = match name_opt with
+    | Some n -> (n, false)
     | None ->
-        let n = C2c_start.default_name client in
+        let n = C2c_start.default_name ~no_nonce client in
         Printf.eprintf "[c2c start] no -n given; auto-picked name=%s. Pass -n NAME to override.\n%!" n;
-        n
+        (n, true)
   in
   let binary_path =
     match bin_opt with
@@ -9172,6 +9206,7 @@ let start_cmd =
              exit 1)
   in
   let effective_alias = Option.value alias_opt ~default:name in
+  let alias_from_auto_gen = name_from_auto_gen && (alias_opt = None) in
   (* Resolve agent file path: canonical .c2c/roles/<agent>.md first,
      falling back to client-native agent path if canonical doesn't exist. *)
   let agent_role_path agent_name =
@@ -9423,6 +9458,7 @@ let start_cmd =
       ?reply_to
       ?tmux_location:tmux_loc
       ~tmux_command:tmux_tail
+      ~alias_from_auto_gen
       ~no_prompt
       ())
 

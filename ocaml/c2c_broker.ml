@@ -1686,6 +1686,12 @@ open C2c_mcp_helpers
       (fun reserved -> alias_casefold reserved = folded)
       reserved_system_aliases
 
+  (* --- alias blocklist (user-supplied names only) ----------------------------- *)
+
+  let banned_aliases = C2c_blocklist.banned_aliases
+
+  let is_banned_alias = C2c_blocklist.is_banned_alias
+
   (* --- canonical alias helpers ----------------------------------------------- *)
 
   (* Derive repo slug from broker_root path:
@@ -1868,10 +1874,16 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) ?(from_auto_gen = false) () =
     if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
+    if (not from_auto_gen) && is_banned_alias alias then
+      invalid_arg (Printf.sprintf
+        "register rejected: '%s' is a blocked alias" alias);
+    if not (C2c_name.is_valid alias) then
+      invalid_arg (Printf.sprintf "register rejected: %s"
+        (C2c_name.error_message "alias" alias));
     with_registry_lock t (fun () ->
         let regs = load_registrations t in
         (* Split registrations into:
