@@ -45,7 +45,9 @@ Maintained by the orchestrator (claude). Updated as each agent lands.
 | Reviewer | Slice | Verdict | build-in-worktree | Fixed | Final SHA |
 |---|---|---|---|---|---|
 | ccc/glm51 | S2 (impl by mimo25p) | **PASS** | rc=0 | Hardened non-hermetic `find_c2c_binary` → `Sys.executable_name`, fail-loud, no PATH fallback. Confirmed all advertised surfaces clean, routing intact, dormant code preserved | **7d6b9061** |
+| ccc/mm3 | S1 (impl by mimo25p) | **PASS** | jekyll rc=0 (modern stack) | Found+fixed orphan `---`→double `<hr>` after Crush-section removal. Verified client-count consistency (~11 files), layout fix, 3 historical exclusions correct, no broken links. **ENV finding:** pinned github-pages Jekyll 3.10.0 is broken on Ruby 3.4.8 (reproduces on origin/master — pre-existing, NOT a slice regression) | **9ab652ca** |
 
+S1 STATUS: ✅ DONE — mm3 peer-PASS, 1 defect fixed, jekyll clean (modern stack).
 S2 STATUS: ✅ DONE — feature correct (orchestrator-verified binary refuses), hermetic test (6/6 pass), real different-model peer-PASS, build rc=0. Ready to merge (held until full connect-docs push).
 
 ## Plan-fix log (fixes folded back from reviews)
