@@ -142,3 +142,33 @@ peer-PASS w/ test-coverage check, then Max review (do NOT push without Max).
   after only the `c2c` stanza is stripped.
 - On full completion: validate build+tests in-worktree → DIFFERENT-model ccc peer-PASS that
   verifies test coverage → HOLD for Max review (do NOT push without Max).
+
+### UNINSTALL FEATURE — IMPL COMPLETE + LOCAL-VALIDATED, PEER-PASS IN FLIGHT (2026-06-13 ~03:56)
+All 4 slices done in wt-uninstall (branch feat/uninstall-manifest). Kimi session
+`deb20082-51d9-4b46-b1ec-a296b0d6343e` hit the 100-step cap TWICE; resumed each time
+(`kimi -r <id> -y --print -p`). Commits on branch:
+- `8c267363` U1 manifest module + unit tests
+- `043b2e4d` wip(U2) step-cap checkpoint (mid-refactor; superseded by next two)
+- `a9ebbec6` U2+U3 manifest wiring, consolidated output, `c2c uninstall` cmd + tests
+- `71c20455` U2+U3 wire manifest into setup, register uninstall, update install test
+- `d4292846` U4 docs (commands.md + CLAUDE.md + .collab/runbooks/c2c-install.md) — **HEAD**
+
+INDEPENDENT VERIFICATION (orchestrator, not on agent's word):
+- Fresh `dune build --root . -j2 ./ocaml/cli/c2c.exe` → **rc=0**.
+- `python -m pytest tests/test_c2c_uninstall.py` → **8/8 pass** against the FRESH worktree
+  c2c.exe (repo-root `./c2c` shim prefers `_build/default/ocaml/cli/c2c.exe`; install+uninstall
+  both fall through to native). SHARED-file-safety covered: `test_uninstall_codex_preserves_user_toml_and_is_idempotent`,
+  `test_uninstall_kimi_preserves_user_json_keys`, `test_uninstall_opencode_preserves_user_json_keys`
+  — user keys survive, only c2c stripped; idempotent 2nd-run "nothing to remove".
+- `@runtest` rc=1 BUT the 15 failures are the KNOWN env-sensitive set (send relay-fallback,
+  schedule_*, memory_list, worktree_*, instances --json, peer_pass_list, connect_dashboard) —
+  branch does NOT touch test_c2c_cli.ml / c2c_relay.ml / c2c_send.ml (git diff origin/master empty).
+  ZERO manifest/uninstall/setup failures. Pre-existing, not feature-caused.
+
+PEER-PASS (different model = codex, ≠ kimi impl): dispatched `ccc --yolo @cx-reviewer`,
+background task `b2ummejkc`, prompt `/tmp/c2c-prompts/review-uninstall.txt`. Review-and-fix loop;
+fixes land as NEW commits on the branch. Awaiting explicit PASS/FAIL verdict +
+`build-clean-IN-slice-worktree-rc=0` token.
+
+GATE: **HOLD for Max review — do NOT push.** Uninstall mutates user configs; Max gates this one
+even though flagship push authority was granted earlier (that was scoped to the flagship merge).
