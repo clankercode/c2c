@@ -2564,19 +2564,19 @@ let test_server_startup_auto_register_ignores_dead_client_pid_env () =
           check bool "dead env pid ignored" true (reg.pid = Some (Unix.getppid ()))))
 
 let test_auto_register_startup_skips_when_alive_session_has_different_alias () =
-  (* Regression: kimi -p inherits CLAUDE_SESSION_ID and should NOT evict the
-     running Claude Code session's alias. *)
+  (* Regression: a child process inherits the parent's session_id and should
+     NOT evict the running parent's alias. *)
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       let me = Unix.getpid () in
       let my_start = C2c_mcp.Broker.read_pid_start_time me in
-      (* Pre-register an alive session with alias "claude-code-session" *)
+      (* Pre-register an alive session with alias "parent-alias" *)
       C2c_mcp.Broker.register broker
-        ~session_id:"shared-session" ~alias:"claude-code-session"
+        ~session_id:"shared-session" ~alias:"parent-alias"
         ~pid:(Some me) ~pid_start_time:my_start ();
-      (* Now simulate kimi starting with the same session_id but a different alias *)
+      (* Now simulate a child starting with the same session_id but a different alias *)
       Unix.putenv "C2C_MCP_SESSION_ID" "shared-session";
-      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-child-alias";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "child-alias";
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
@@ -2584,27 +2584,25 @@ let test_auto_register_startup_skips_when_alive_session_has_different_alias () =
         (fun () ->
           C2c_mcp.auto_register_startup ~broker_root:dir;
           let regs = C2c_mcp.Broker.list_registrations broker in
-          (* Should still have only the original registration — kimi was blocked *)
+          (* Should still have only the original registration — child was blocked *)
           check int "one registration (hijack blocked)" 1 (List.length regs);
           let reg = List.hd regs in
-          check string "alias preserved" "claude-code-session" reg.alias))
+          check string "alias preserved" "parent-alias" reg.alias))
 
 let test_auto_register_startup_skips_when_alive_session_owns_alias () =
   (* Regression: a one-shot probe with a different session_id but the same
-     alias must NOT evict the live session that already owns the alias.
-     Real scenario: opencode-c2c-msg accidentally gets alias=kimi-nova and
-     evicts the live kimi session. *)
+     alias must NOT evict the live session that already owns the alias. *)
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       let me = Unix.getpid () in
       let my_start = C2c_mcp.Broker.read_pid_start_time me in
-      (* Pre-register an alive kimi session owning alias "kimi-nova" *)
+      (* Pre-register an alive session owning alias "live-alias" *)
       C2c_mcp.Broker.register broker
-        ~session_id:"kimi-real-session" ~alias:"kimi-nova"
+        ~session_id:"owner-session" ~alias:"live-alias"
         ~pid:(Some me) ~pid_start_time:my_start ();
       (* Simulate one-shot probe: different session_id, same alias *)
       Unix.putenv "C2C_MCP_SESSION_ID" "one-shot-probe-session";
-      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-nova";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "live-alias";
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
@@ -2612,11 +2610,11 @@ let test_auto_register_startup_skips_when_alive_session_owns_alias () =
         (fun () ->
           C2c_mcp.auto_register_startup ~broker_root:dir;
           let regs = C2c_mcp.Broker.list_registrations broker in
-          (* Probe was blocked; original kimi registration preserved *)
+          (* Probe was blocked; original registration preserved *)
           check int "one registration (alias hijack blocked)" 1 (List.length regs);
           let reg = List.hd regs in
-          check string "session_id preserved" "kimi-real-session" reg.session_id;
-          check string "alias preserved" "kimi-nova" reg.alias))
+          check string "session_id preserved" "owner-session" reg.session_id;
+          check string "alias preserved" "live-alias" reg.alias))
 
 let test_auto_register_startup_skips_when_alive_same_session_different_pid () =
   (* Regression: child process launched from another agent inherits a wrong
@@ -2674,18 +2672,18 @@ let test_guard1_pidless_zombie_does_not_fire_hijack () =
 
 let test_guard2_pidless_zombie_does_not_block_post_oom_resume () =
   (* #345 (highest-impact site): post-OOM swarm-dance — the prior session
-     left a pidless zombie row owning alias "kimi-nova". The legitimate
+     left a pidless zombie row owning alias "shared-alias". The legitimate
      fresh session has the same env-configured alias but a new session_id
      + pid. Guard 2 must skip pid=None rows so the resume registers. *)
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      (* Pre-register a pidless zombie owning alias "kimi-nova" under a stale session_id *)
+      (* Pre-register a pidless zombie owning alias "shared-alias" under a stale session_id *)
       C2c_mcp.Broker.register broker
-        ~session_id:"crashed-session" ~alias:"kimi-nova"
+        ~session_id:"crashed-session" ~alias:"shared-alias"
         ~pid:None ~pid_start_time:None ();
       (* Legitimate fresh-session resume with same alias *)
       Unix.putenv "C2C_MCP_SESSION_ID" "fresh-session-after-oom";
-      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-nova";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "shared-alias";
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
@@ -2699,7 +2697,7 @@ let test_guard2_pidless_zombie_does_not_block_post_oom_resume () =
             List.find_opt
               (fun r ->
                  r.session_id = "fresh-session-after-oom"
-                 && r.alias = "kimi-nova")
+                 && r.alias = "shared-alias")
               regs
           in
           check bool "fresh post-OOM registration succeeded"
@@ -3585,7 +3583,7 @@ let test_auto_register_startup_redelivers_dead_letter_messages () =
       let dead = dead_pid () in
       C2c_mcp.Broker.register broker
         ~session_id:"managed-session" ~alias:"opencode-local"
-        ~pid:(Some dead) ~pid_start_time:None ();
+        ~pid:(Some dead) ~pid_start_time:None ~from_auto_gen:true ();
       write_file (Filename.concat dir "managed-session.inbox.json")
         {|[{"from_alias":"storm-ember","to_alias":"opencode-local","content":"queued while down"},{"from_alias":"storm-beacon","to_alias":"opencode-local","content":"second queued while down"}]|};
       let result = C2c_mcp.Broker.sweep broker in
@@ -3595,11 +3593,13 @@ let test_auto_register_startup_redelivers_dead_letter_messages () =
         (Sys.file_exists (Filename.concat dir "managed-session.inbox.json"));
       Unix.putenv "C2C_MCP_SESSION_ID" "managed-session";
       Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "opencode-local";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "1";
       Unix.putenv "C2C_MCP_CLIENT_PID" (string_of_int (Unix.getpid ()));
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "";
           Unix.putenv "C2C_MCP_CLIENT_PID" "")
         (fun () ->
           C2c_mcp.auto_register_startup ~broker_root:dir;
@@ -5109,29 +5109,29 @@ let test_prune_rooms_empty_room_after_all_members_leave () =
       check int "room still listed after prune" 1 (List.length empty_rooms_after))
 
 let test_register_redelivers_dead_letter_on_same_session_id () =
-  (* Scenario: a managed session (e.g. kimi-local) is swept while the outer
+  (* Scenario: a managed session (e.g. local-agent) is swept while the outer
      loop is between iterations — PID dead, no live process. Messages queued to
      it go to dead-letter with from_session_id = the swept session_id.  When the
      outer loop restarts and calls register with the SAME session_id (stable
-     alias-based ID via C2C_MCP_SESSION_ID=kimi-local), the broker should drain
+     alias-based ID via C2C_MCP_SESSION_ID=local-agent), the broker should drain
      those dead-letter records and re-queue them into the inbox. *)
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      (* Write dead-letter records for kimi-local's session_id, simulating what
+      (* Write dead-letter records for local-agent's session_id, simulating what
          sweep would produce after sweeping its inbox. *)
       let dead_letter = C2c_mcp.Broker.dead_letter_path broker in
       let dl_record content =
         Printf.sprintf
-          {|{"from_session_id":"kimi-local","deleted_at":1712345678.0,"message":{"from_alias":"storm-beacon","to_alias":"kimi-local","content":"%s"}}|}
+          {|{"from_session_id":"local-agent","deleted_at":1712345678.0,"message":{"from_alias":"storm-beacon","to_alias":"local-agent","content":"%s"}}|}
           content
       in
       write_file dead_letter
         (dl_record "msg-one" ^ "\n" ^ dl_record "msg-two" ^ "\n");
       (* Pre-create an empty inbox (sweep leaves behind an empty file) *)
-      let inbox_path = Filename.concat dir "kimi-local.inbox.json" in
+      let inbox_path = Filename.concat dir "local-agent.inbox.json" in
       write_file inbox_path "[]";
       (* Re-register with the same session_id — this is the managed restart *)
-      Unix.putenv "C2C_MCP_SESSION_ID" "kimi-local";
+      Unix.putenv "C2C_MCP_SESSION_ID" "local-agent";
       Fun.protect
         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
         (fun () ->
@@ -5144,7 +5144,7 @@ let test_register_redelivers_dead_letter_on_same_session_id () =
                   `Assoc
                     [ ("name", `String "register")
                     ; ("arguments",
-                       `Assoc [ ("alias", `String "kimi-local") ])
+                       `Assoc [ ("alias", `String "local-agent") ])
                     ] )
               ]
           in
@@ -5157,7 +5157,7 @@ let test_register_redelivers_dead_letter_on_same_session_id () =
           (* Poll inbox — must contain the two recovered messages *)
           let broker2 = C2c_mcp.Broker.create ~root:dir in
           let drained =
-            C2c_mcp.Broker.drain_inbox broker2 ~session_id:"kimi-local"
+            C2c_mcp.Broker.drain_inbox broker2 ~session_id:"local-agent"
           in
           check int "two messages recovered from dead-letter" 2
             (List.length drained);
