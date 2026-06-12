@@ -267,6 +267,17 @@ PYEOF
     echo "  Run 'just install-all' to rebuild and install the current version."
     echo ""
   fi
+
+  # ---------------------------------------------------------------------------
+  # Local agent checks (schedule + hooks)
+  # ---------------------------------------------------------------------------
+  bold "=== local agent checks ==="
+  echo ""
+  if [[ -n "${C2C_MCP_AUTO_REGISTER_ALIAS:-}" ]]; then
+    c2c doctor schedule --compact 2>&1 || true
+  fi
+  c2c doctor hooks --compact 2>&1 || true
+  echo ""
 fi
 
 # ---------------------------------------------------------------------------
