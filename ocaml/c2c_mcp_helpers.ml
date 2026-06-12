@@ -73,6 +73,11 @@ type registration =
         (shell-launch-location guard) to detect when a session's shell cwd
         differs from its registered worktree — a signal of main-tree
         branch contamination (Pattern 6/13/14). *)
+    ; metadata_opt_out : bool
+    (** When true, the session has explicitly opted out of metadata
+        exposure/federation (cwd, canonical alias, etc.) beyond the
+        broker's internal guard use. Captured at registration time;
+        honored at every read/exposure site. Default false = metadata on. *)
     }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool; message_id : string option }
 (** [message_id] is set when the message arrived via the relay (which assigns

@@ -38,12 +38,24 @@ let read_file path =
   Fun.protect ~finally:(fun () -> close_in ic) @@ fun () ->
   really_input_string ic (in_channel_length ic)
 
+(** Path to the freshly-built c2c binary under dune's _build tree.
+    test_c2c_onboarding.exe lives in the same directory as c2c.exe
+    (_build/default/ocaml/cli), so we resolve it relative to the test
+    executable. This avoids exercising a stale ~/.local/bin/c2c. *)
+let c2c_binary =
+  let exe = Sys.executable_name in
+  let dir = Filename.dirname exe in
+  Filename.concat dir "c2c.exe"
+
 (** Run c2c with a given HOME + broker root, capture exit code + combined output. *)
 let run_c2c ?(env=[]) ~home ~broker args =
   let home_dir = home in
   let broker_dir = Filename.concat broker "broker" in
   mkdir_p home_dir;
   mkdir_p broker_dir;
+  let binary =
+    if Sys.file_exists c2c_binary then c2c_binary else "c2c"
+  in
   let env_list =
     [ "HOME=" ^ home_dir
     ; "C2C_MCP_BROKER_ROOT=" ^ broker_dir
@@ -57,11 +69,11 @@ let run_c2c ?(env=[]) ~home ~broker args =
   in
   let env_str = String.concat " " env_list in
   let args_str = String.concat " " (List.map Filename.quote args) in
-  let cmd = Printf.sprintf "env %s c2c %s >/tmp/onboard-out 2>&1; echo exit:$?" 
-    env_str args_str in
+  let cmd = Printf.sprintf "env %s %s %s >/tmp/onboard-out 2>&1; echo exit:$?"
+    env_str (Filename.quote binary) args_str in
   let rc = Sys.command cmd in
   let output = try read_file "/tmp/onboard-out" with _ -> "" in
-  (rc, output, "") 
+  (rc, output, "")
 
 let string_contains haystack needle =
   let hay_len = String.length haystack in
@@ -74,6 +86,25 @@ let string_contains haystack needle =
 
 let file_exists path =
   try ignore (Unix.stat path); true with Unix.Unix_error _ -> false
+
+let read_json_file path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic) @@ fun () ->
+  Yojson.Safe.from_channel ic
+
+let json_str_member name = function
+  | `Assoc fields ->
+      (match List.assoc_opt name fields with
+       | Some (`String s) -> Some s
+       | _ -> None)
+  | _ -> None
+
+let json_bool_member name = function
+  | `Assoc fields ->
+      (match List.assoc_opt name fields with
+       | Some (`Bool b) -> Some b
+       | _ -> None)
+  | _ -> None
 
 (** Wrap a test that sets up temp env and runs a c2c command sequence. *)
 let with_temp_env f =
@@ -206,6 +237,80 @@ let test_full_pipeline_local () =
   check int "whoami exits 0" 0 rc;
   check bool "whoami mentions alias" true (string_contains out alias)
 
+let test_register_captures_cwd () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-cwd-%d" (Unix.getpid ()) in
+  let session_id = Printf.sprintf "test-cwd-session-%d-%06x" (Unix.getpid ()) (Random.bits ()) in
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["init"; "--no-setup"; "--alias"; alias; "--room"; ""] in
+  check int "init exits 0" 0 rc;
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["register"; "--alias"; alias; "--session-id"; session_id] in
+  check int "register exits 0" 0 rc;
+  let registry_json = read_json_file (tmp // "broker" // "registry.json") in
+  let items =
+    match registry_json with
+    | `List items -> items
+    | _ -> []
+  in
+  check int "one registration" 1 (List.length items);
+  let cwd = json_str_member "cwd" (List.hd items) in
+  check bool "cwd is Some" true (Option.is_some cwd);
+  check bool "cwd is non-empty" true (Option.get cwd <> "")
+
+let test_register_no_metadata_sets_opt_out () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-meta-%d" (Unix.getpid ()) in
+  let session_id = Printf.sprintf "test-meta-session-%d-%06x" (Unix.getpid ()) (Random.bits ()) in
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["init"; "--no-setup"; "--alias"; alias; "--room"; ""] in
+  check int "init exits 0" 0 rc;
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["register"; "--alias"; alias; "--session-id"; session_id; "--no-metadata"] in
+  check int "register --no-metadata exits 0" 0 rc;
+  let registry_json = read_json_file (tmp // "broker" // "registry.json") in
+  let items =
+    match registry_json with
+    | `List items -> items
+    | _ -> []
+  in
+  check int "one registration" 1 (List.length items);
+  let metadata_opt_out = json_bool_member "metadata_opt_out" (List.hd items) in
+  check bool "metadata_opt_out is true" true (metadata_opt_out = Some true)
+
+let test_register_no_metadata_still_captures_cwd () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-guard-%d" (Unix.getpid ()) in
+  let session_id = Printf.sprintf "test-guard-session-%d-%06x" (Unix.getpid ()) (Random.bits ()) in
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["init"; "--no-setup"; "--alias"; alias; "--room"; ""] in
+  check int "init exits 0" 0 rc;
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["register"; "--alias"; alias; "--session-id"; session_id; "--no-metadata"] in
+  check int "register --no-metadata exits 0" 0 rc;
+  let registry_json = read_json_file (tmp // "broker" // "registry.json") in
+  let items =
+    match registry_json with
+    | `List items -> items
+    | _ -> []
+  in
+  check int "one registration" 1 (List.length items);
+  let cwd = json_str_member "cwd" (List.hd items) in
+  check bool "cwd still captured with --no-metadata" true (Option.is_some cwd);
+  check bool "cwd is non-empty" true (Option.get cwd <> "")
+
+let test_register_default_omits_metadata_opt_out_json () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-omit-%d" (Unix.getpid ()) in
+  let session_id = Printf.sprintf "test-omit-session-%d-%06x" (Unix.getpid ()) (Random.bits ()) in
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["init"; "--no-setup"; "--alias"; alias; "--room"; ""] in
+  check int "init exits 0" 0 rc;
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["register"; "--alias"; alias; "--session-id"; session_id] in
+  check int "register exits 0" 0 rc;
+  let registry_json = read_json_file (tmp // "broker" // "registry.json") in
+  let items =
+    match registry_json with
+    | `List items -> items
+    | _ -> []
+  in
+  check int "one registration" 1 (List.length items);
+  let metadata_opt_out = json_bool_member "metadata_opt_out" (List.hd items) in
+  check bool "metadata_opt_out key absent from JSON when false" true (metadata_opt_out = None)
+
 (* ---------------------------------------------------------------- *)
 (* Alcotest registration *)
 
@@ -229,5 +334,11 @@ let () =
         ] )
     ; ( "full_pipeline",
         [ test_case "local pipeline: init→identity→relay setup→list→whoami" `Quick test_full_pipeline_local
+        ] )
+    ; ( "register_metadata",
+        [ test_case "CLI register captures cwd" `Quick test_register_captures_cwd
+        ; test_case "CLI register --no-metadata sets opt-out" `Quick test_register_no_metadata_sets_opt_out
+        ; test_case "CLI register --no-metadata still captures cwd" `Quick test_register_no_metadata_still_captures_cwd
+        ; test_case "CLI register default omits metadata_opt_out from JSON" `Quick test_register_default_omits_metadata_opt_out_json
         ] )
     ]

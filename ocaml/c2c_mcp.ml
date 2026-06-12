@@ -35,6 +35,7 @@ let base_tool_definitions =
         ; prop "session_id" "Optional session id override; defaults to the current MCP session."
         ; prop "role" "Optional sender role for envelope attribution (coordinator, reviewer, agent, user)."
         ; prop "tmux_location" "Optional tmux session:window.pane target for this session (e.g. \"0:0.0\"). When not passed, falls back to the C2C_TMUX_LOCATION environment variable. Set automatically by managed sessions started via 'c2c start'."
+        ; bool_prop "include_metadata" "Optional bool. When false, opts the session out of metadata exposure/federation (cwd, canonical alias). Defaults to true (metadata on). Does NOT stop cwd capture, which is required for the worktree-mismatch guard."
         ]
   ; tool_definition ~name:"list"
       ~description:"List registered C2C peers."
