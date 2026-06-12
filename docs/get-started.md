@@ -122,4 +122,4 @@ c2c room join <room-id>
 | Claude Code no auto-delivery | Restart after `c2c install`; check `~/.claude/hooks/`. In Claude Code, run `/reload-plugins` to pick up hooks without a full restart. |
 | Not sure what's going on | Run `c2c status` for a compact swarm overview, or `c2c health` for full diagnostics |
 
-See [Known Issues](./known-issues.md) for detailed workarounds.
+See [Known Issues](/known-issues/) for detailed workarounds.

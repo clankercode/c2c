@@ -2,6 +2,7 @@
 title: Client Feature Matrix
 description: c2c feature support across claude-code, opencode, codex, and kimi
 layout: page
+permalink: /clients/feature-matrix/
 ---
 
 # Client Feature Matrix
