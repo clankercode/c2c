@@ -172,3 +172,24 @@ fixes land as NEW commits on the branch. Awaiting explicit PASS/FAIL verdict +
 
 GATE: **HOLD for Max review — do NOT push.** Uninstall mutates user configs; Max gates this one
 even though flagship push authority was granted earlier (that was scoped to the flagship merge).
+
+### UNINSTALL FEATURE — PEER-PASS ✅ COMPLETE, HOLD FOR MAX (2026-06-13 ~04:18)
+Codex (`@cx-reviewer`, ≠ kimi impl) returned **PASS** with `build-clean-IN-slice-worktree-rc=0`.
+It found+fixed 8 real defects in NEW commit `59811b6c` "fix: harden uninstall manifest review gaps":
+- `install self --dry-run` / `install all --dry-run` were WRITING REAL FILES (contract violation)
+- schedules computed but not removed; stale manifest records surviving a no-op uninstall
+- git-shim/git-hook missing recompute fallback; incomplete records bypassed recompute
+- kimi legacy TOML block removal only stripped the marker line (left the block body)
+- `install git-hook --dry-run --json` emitted duplicate JSON; runbook overstated git-hook scope
+Tests grew 8→15 pytest (added git-hook-leaves-non-c2c, uninstall-all --json, dry-run coverage).
+
+INDEPENDENT RE-VERIFY on HEAD `59811b6c` (orchestrator shell, clean tree):
+- `dune build --root . -j2` → **rc=0**
+- `pytest tests/test_c2c_uninstall.py` → **15/15**
+- `test_c2c_install_manifest.exe` → **5/5**
+- `install self --dry-run` → rc=0, prints "would" (no real writes) ✓
+SHARED-file-safety PASS: codex/kimi/opencode user keys survive, only c2c stripped; idempotent.
+
+**FINAL STATE: feature DONE + different-model peer-PASS. Branch feat/uninstall-manifest @ `59811b6c`.
+HOLD FOR MAX REVIEW — NOT PUSHED, NOT MERGED.** To land after Max OK: merge feat/uninstall-manifest
+→ master, then (only if Max wants it live) coordinator-gated push. `just install-all` to dogfood locally.
