@@ -3,12 +3,26 @@
 Resume state for claude orchestrator (interactive session for Max). Companion:
 `.collab/research/2026-06-12-agent-scorecard.md` (per-agent grades + catches).
 
-## Active background job (CHECK ON RESUME)
-- **kimi S4 peer-review-and-fix** — bash bg id `b8zt9vv99`, log `/tmp/c2c-prompts/review-S4.log`.
-  Triaging S4's ~14 suite failures (epilog-text regression is the prime suspect) + reviewing
-  the `c2c connect` feature + fixing real defects in NEW commits. kimi buffers output (log
-  stays quiet until done). On completion: read log, validate fixes + triage, scrub
-  `.opencode/package.json` churn, update scorecard.
+## Active background jobs (CHECK ON RESUME)
+**3 kimi feature-impl agents running in parallel** (started 2026-06-13 ~00:37; output in the
+harness task `.output` files, NOT redirected — per Max's new rule):
+- **Feature A** (connect-metadata) — bg id `bd3owdldw`, worktree wt-feat-connect-metadata
+- **Feature B** (name-nonce, RISKIEST) — bg id `bwne5co07`, worktree wt-feat-name-nonce
+- **Feature C** (embed-plugins) — bg id `b66tt4l85`, worktree wt-feat-embed-plugins
+Prompts: `/tmp/c2c-prompts/impl-feat{A,B,C}.txt`. Each reads its committed plan, implements all
+slices via review-and-fix, **tests MANDATORY** (Max: good coverage required). On completion of
+EACH: read task output, validate build+tests IN-WORKTREE, then run a DIFFERENT-model peer-review
+(`ccc-review-cx` / `@kimi`/`@mm3`/`@glm51`) that **MUST verify test coverage** (Max's explicit
+ask), scrub any `.opencode/package.json` churn (kimi doesn't churn, but opencode reviewers do),
+update scorecard. B is riskiest — confirm its 2 codex blocker tests pass (origin env-marker;
+`--require-easy` termination).
+
+**ccc conventions (Max, 2026-06-13 — also in memory `ccc-usage-prefs`):** use `ccc @kimi`
+(configured alias); do NOT hide output via `>log 2>&1` (run_in_background WITHOUT redirect; read
+the task `.output`); prefer parallel agents.
+
+DONE: S4 (c2c connect) — kimi peer-PASS `b7653357`, orchestrator-validated (build rc=0,
+install-all epilog + alias-preservation confirmed). kimi found 2 bugs glm51 missed.
 
 ## CONNECT-DOCS FLAGSHIP PUSH (Max-approved spec: .collab/design/2026-06-12-connect-experience-improvements.md)
 One push, 4 slices, each its own worktree. Each: ccc impl → review-and-fix → DIFFERENT-model
@@ -19,7 +33,7 @@ peer-PASS → orchestrator validates (build/test/content) + scrubs env churn →
 | S1 docs truth + Gemini/Crush removal | wt-connect-s1-docs / feat/connect-s1-docs-truth | **9ab652ca** | ✅ DONE + mm3 peer-PASS |
 | S2 CLI gemini-refuse + init hint | wt-connect-s2-cli-removal / feat/connect-s2-cli-removal | **7d6b9061** | ✅ DONE + glm51 peer-PASS |
 | S3 journey restructure | wt-connect-s3-journey / feat/connect-s3-journey (chained on S1) | **acbadeb8** | ✅ DONE + mm3 peer-PASS (content-loss audit clean) |
-| S4 `c2c connect` cmd | wt-connect-s4-connect-cmd / feat/connect-s4-connect-cmd (chained on S2) | **c628433f** | impl done (glm51); **kimi peer-review-and-fix RUNNING (b8zt9vv99)** |
+| S4 `c2c connect` cmd | wt-connect-s4-connect-cmd / feat/connect-s4-connect-cmd (chained on S2) | **b7653357** | ✅ DONE + kimi peer-PASS (found install-all epilog gap + --verify alias-clobber) |
 
 **S4 verified working live by orchestrator:** `c2c connect` dashboard renders (broker/registry/
 sessions/rooms/per-client incl codex+kimi detection/next-step); `c2c connect --verify` flags

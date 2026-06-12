@@ -44,6 +44,7 @@ Maintained by the orchestrator (claude). Updated as each agent lands.
 
 | Reviewer | Slice | Verdict | build-in-worktree | Fixed | Final SHA |
 |---|---|---|---|---|---|
+| ccc/kimi | S4 (impl by glm51) | **PASS** (pending orchestrator build-recheck + tmux dogfood) | rc=0 (agent) | ⭐ Found 2 REAL bugs glm51 missed: (1) `install all` STILL printed only `Done.` — the required epilog never reached that path; (2) `c2c connect --verify` CLOBBERED the user's session alias (re-registered as `__connect_verify__`) — now preserves it. Also fixed NOT-PROVEN wording + added regression test. Verified all 14 suite failures pre-existing (per-test evidence). Ran clean — no git stash, no `.opencode` churn. | **b7653357** |
 | ccc/glm51 | S2 (impl by mimo25p) | **PASS** | rc=0 | Hardened non-hermetic `find_c2c_binary` → `Sys.executable_name`, fail-loud, no PATH fallback. Confirmed all advertised surfaces clean, routing intact, dormant code preserved | **7d6b9061** |
 | ccc/mm3 | S1 (impl by mimo25p) | **PASS** | jekyll rc=0 (modern stack) | Found+fixed orphan `---`→double `<hr>` after Crush-section removal. Verified client-count consistency (~11 files), layout fix, 3 historical exclusions correct, no broken links. **ENV finding:** pinned github-pages Jekyll 3.10.0 is broken on Ruby 3.4.8 (reproduces on origin/master — pre-existing, NOT a slice regression) | **9ab652ca** |
 
@@ -52,6 +53,8 @@ Maintained by the orchestrator (claude). Updated as each agent lands.
 S1 STATUS: ✅ DONE — mm3 peer-PASS, 1 defect fixed, jekyll clean (modern stack).
 S2 STATUS: ✅ DONE
 S3 STATUS: ✅ DONE — mm3 peer-PASS, content-loss audit clean, 2 link fixes.
+S4 STATUS: ✅ DONE — kimi peer-PASS @ b7653357; orchestrator re-validated build rc=0 +
+install-all epilog + alias-preservation. Full multi-client tmux dogfood folded into integration.
 FOLLOW-UP (small, non-blocking): `docs/index.md:176,205` use `./known-issues.md` / `./commands.md`
 relative links that 404 on the live site (kramdown keeps `.md`). Pre-existing; fix during the
 connect-docs integration/push or a tiny drive-by. Same class mm3 fixed in get-started.md. — feature correct (orchestrator-verified binary refuses), hermetic test (6/6 pass), real different-model peer-PASS, build rc=0. Ready to merge (held until full connect-docs push).
