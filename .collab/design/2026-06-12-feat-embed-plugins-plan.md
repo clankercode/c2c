@@ -33,8 +33,9 @@
   collision-check pattern — reuse it), emit
   `ocaml/cli/c2c_opencode_plugin_embedded.ml` = `let content = {c2c_ts_src|...|c2c_ts_src}`.
 - Add `c2c_opencode_plugin_embedded` to `ocaml/cli/dune:3` `(modules ...)`.
-- Wire `codegen-opencode-plugin` into the `just build` / `just install*` dep chain
-  (`justfile:140` and siblings) so it regenerates before compile.
+- Wire `codegen-opencode-plugin` as a dep into ALL FOUR relevant recipes (glm51 review):
+  `build:`, `build-cli:`, `build-server:`, `install-all:` so it regenerates before compile
+  on any path.
 - Run the recipe; COMMIT the generated `.ml` (it's a committed artifact like the precedents).
 
 ### Slice C2 — Refactor install + start to prefer embedded
@@ -44,9 +45,12 @@
   file present) — preserves the dev "symlink tracks edits" workflow. Remove the hard
   "plugin not found — run from c2c repo" failure (`:767-771`) since embedded content is
   always available.
-- `c2c start opencode` copy site (`c2c_start.ml:4634-4652`): same — write embedded content
-  if the repo file is absent, so `c2c start opencode` self-heals the plugin on a binary-only
-  install (currently silently no-ops).
+- `c2c start opencode` copy site (`ocaml/c2c_start.ml:4629-4652` — NOTE correct path is
+  `ocaml/c2c_start.ml`, NOT `ocaml/cli/`; glm51 review): same — write embedded content
+  if the repo file is absent. The current code SILENTLY NO-OPS when the repo file is absent
+  (the `if` at `ocaml/c2c_start.ml:4637` has no `else`); the fix MUST add an explicit `else`
+  branch that writes `C2c_opencode_plugin_embedded.content` so `c2c start opencode` self-heals
+  the plugin on a binary-only install.
 
 ### Slice C3 — Drift test + checker update + detection no-op verify
 - Add a build/CI test asserting `C2c_opencode_plugin_embedded.content` equals
