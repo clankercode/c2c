@@ -21,6 +21,16 @@ let with_temp_dir f =
 
 let yojson_of_string s = Yojson.Safe.from_string s
 
+let string_contains haystack needle =
+  let hlen = String.length haystack in
+  let nlen = String.length needle in
+  let rec loop i =
+    if i + nlen > hlen then false
+    else if String.sub haystack i nlen = needle then true
+    else loop (i + 1)
+  in
+  nlen = 0 || loop 0
+
 (* tool_result shape: { content: [{type: "text", text: <msg>}], isError: bool } *)
 let get_is_error json =
   let open Yojson.Safe.Util in
@@ -241,6 +251,104 @@ let test_debug_disabled_returns_unknown_tool () =
         check string "error is 'unknown tool'" "unknown tool" text)
 
 (* ------------------------------------------------------------------------- *)
+(* B1: blocklist — user-supplied names only                                  *)
+(* ------------------------------------------------------------------------- *)
+
+let test_register_rejects_banned_alias_claude () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_broker.create ~root:dir in
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-banned-claude";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let args = `Assoc [("alias", `String "claude")] in
+           let result = Lwt_main.run
+             (C2c_identity_handlers.register ~broker ~session_id_override:None ~arguments:args)
+           in
+           check bool "isError=true for claude" true (get_is_error result);
+           check bool "error mentions blocked" true
+             (string_contains (get_text_content result) "blocked")))
+
+let test_register_rejects_banned_alias_claude_code () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_broker.create ~root:dir in
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-banned-claude-code";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let args = `Assoc [("alias", `String "claude-code")] in
+           let result = Lwt_main.run
+             (C2c_identity_handlers.register ~broker ~session_id_override:None ~arguments:args)
+           in
+           check bool "isError=true for claude-code" true (get_is_error result);
+           check bool "error mentions blocked" true
+             (string_contains (get_text_content result) "blocked")))
+
+let test_register_rejects_banned_alias_gpt () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_broker.create ~root:dir in
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-banned-gpt";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let args = `Assoc [("alias", `String "gpt")] in
+           let result = Lwt_main.run
+             (C2c_identity_handlers.register ~broker ~session_id_override:None ~arguments:args)
+           in
+           check bool "isError=true for gpt" true (get_is_error result);
+           check bool "error mentions blocked" true
+             (string_contains (get_text_content result) "blocked")))
+
+let test_register_accepts_lyra_quill () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_broker.create ~root:dir in
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-lyra";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let args = `Assoc [("alias", `String "lyra-quill")] in
+           let result = Lwt_main.run
+             (C2c_identity_handlers.register ~broker ~session_id_override:None ~arguments:args)
+           in
+           check bool "isError=false for lyra-quill" false (get_is_error result)))
+
+(* ------------------------------------------------------------------------- *)
+(* B1 blocker: env-boundary origin marker                                    *)
+(* ------------------------------------------------------------------------- *)
+
+let test_register_env_origin_accepts_auto_gen_prefix () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_broker.create ~root:dir in
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-origin-ok";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "codex-ember-frost";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "1";
+      Fun.protect
+        ~finally:(fun () ->
+           Unix.putenv "C2C_MCP_SESSION_ID" "";
+           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "")
+        (fun () ->
+           let result = Lwt_main.run
+             (C2c_identity_handlers.register ~broker ~session_id_override:None ~arguments:`Null)
+           in
+           check bool "isError=false with origin marker" false (get_is_error result)))
+
+let test_register_env_origin_without_marker_rejects_auto_gen_prefix () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_broker.create ~root:dir in
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-origin-bad";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "codex-ember-frost";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "";
+      Fun.protect
+        ~finally:(fun () ->
+           Unix.putenv "C2C_MCP_SESSION_ID" "";
+           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "")
+        (fun () ->
+           let result = Lwt_main.run
+             (C2c_identity_handlers.register ~broker ~session_id_override:None ~arguments:`Null)
+           in
+           check bool "isError=true without origin marker" true (get_is_error result);
+           check bool "error mentions blocked" true
+             (string_contains (get_text_content result) "blocked")))
+
+(* ------------------------------------------------------------------------- *)
 (* Test suite                                                               *)
 (* ------------------------------------------------------------------------- *)
 
@@ -253,6 +361,12 @@ let test_set = [
   "register rejects leading dot alias", `Quick, test_register_invalid_alias_leading_dot;
   "register rejects space alias", `Quick, test_register_invalid_alias_space;
   "register success", `Quick, test_register_success;
+  "register rejects banned alias claude", `Quick, test_register_rejects_banned_alias_claude;
+  "register rejects banned alias claude-code", `Quick, test_register_rejects_banned_alias_claude_code;
+  "register rejects banned alias gpt", `Quick, test_register_rejects_banned_alias_gpt;
+  "register accepts lyra-quill", `Quick, test_register_accepts_lyra_quill;
+  "register env origin accepts auto-gen prefix", `Quick, test_register_env_origin_accepts_auto_gen_prefix;
+  "register env origin without marker rejects auto-gen prefix", `Quick, test_register_env_origin_without_marker_rejects_auto_gen_prefix;
   "debug unknown action", `Quick, test_debug_unknown_action;
   "debug get_env", `Quick, test_debug_get_env;
   "debug disabled returns unknown tool", `Quick, test_debug_disabled_returns_unknown_tool;

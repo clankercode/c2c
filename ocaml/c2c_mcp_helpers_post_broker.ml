@@ -818,6 +818,11 @@ let auto_register_alias () =
   | Some value when String.trim value <> "" -> Some (String.trim value)
   | _ -> None
 
+let auto_register_alias_from_auto_gen () =
+  match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" with
+  | Some value when String.trim value = "1" -> true
+  | _ -> false
+
   let current_client_pid () =
     match Sys.getenv_opt "C2C_MCP_CLIENT_PID" with
     | Some value ->
@@ -976,7 +981,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
               Printf.eprintf "[auto_register_startup] warning: could not load X25519 key: %s\n%!" e;
               None
         in
-        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type ~plugin_version ~enc_pubkey ();
+        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type ~plugin_version ~enc_pubkey ~from_auto_gen:(auto_register_alias_from_auto_gen ()) ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end else begin
         (* Log which guard triggered and by which registration, for debugging.

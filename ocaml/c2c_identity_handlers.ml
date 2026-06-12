@@ -22,15 +22,26 @@ let register ~broker ~session_id_override ~arguments =
              | Some a -> a
              | None -> invalid_arg "alias is required (pass {\"alias\":\"your-name\"} or set C2C_MCP_AUTO_REGISTER_ALIAS)")
       in
+      (* Origin marker: written by c2c install/start ONLY when the alias was
+         auto-picked (not --alias/--name/role/env). It crosses the env boundary
+         so the server-side register handler knows this name originated from
+         auto-generation and should skip the user-supplied-only blocklist. *)
+      let env_from_auto_gen () =
+        match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" with
+        | Some v -> String.trim v = "1"
+        | None -> false
+      in
       (* #dual-alias-fix: if this session already has a registration with a
          different alias and the caller did NOT explicitly request an alias
          (i.e. relying on C2C_MCP_AUTO_REGISTER_ALIAS or default), reuse the
          existing alias to prevent the same session accumulating multiple
          registrations under different aliases. Explicit alias= argument
-         is treated as an intentional rename and proceeds normally. *)
-      let alias =
+         is treated as an intentional rename and proceeds normally.
+         When reusing an existing alias we skip the blocklist, because the
+         alias was already validated at first registration. *)
+      let alias, alias_from_auto_gen =
         match explicit_alias with
-        | Some _ -> alias  (* explicit request — allow rename *)
+        | Some a -> (a, false)  (* explicit request — allow rename, enforce blocklist *)
         | None ->
             let existing =
               List.find_opt
@@ -38,13 +49,16 @@ let register ~broker ~session_id_override ~arguments =
                 (Broker.list_registrations broker)
             in
             (match existing with
-             | Some reg when reg.alias <> alias -> reg.alias
-             | _ -> alias)
+             | Some reg when reg.alias <> alias -> (reg.alias, true)  (* reuse existing, skip blocklist *)
+             | _ -> (alias, env_from_auto_gen ()))
       in
       (* Reserved aliases — always blocked. *)
       if Broker.is_reserved_system_alias alias then
         Lwt.return (tool_err (Printf.sprintf
           "register rejected: '%s' is a reserved system alias and cannot be registered" alias))
+      else if (not alias_from_auto_gen) && C2c_blocklist.is_banned_alias alias then
+        Lwt.return (tool_err (Printf.sprintf
+          "register rejected: '%s' is a blocked alias" alias))
       else if not (C2c_name.is_valid alias) then
         Lwt.return (tool_err (Printf.sprintf "register rejected: %s"
           (C2c_name.error_message "alias" alias)))
@@ -290,7 +304,7 @@ let register ~broker ~session_id_override ~arguments =
                     ~client_type ~plugin_version ~enc_pubkey ~ed25519_pubkey
                     ~pubkey_signed_at ~pubkey_sig ~role ~tmux_location
                     ~cwd:(try Some (Sys.getcwd ()) with Sys_error _ -> None)
-                    ~metadata_opt_out ();
+                    ~metadata_opt_out ~from_auto_gen:alias_from_auto_gen ();
                   Broker.touch_session broker ~session_id;
               List.iter
                 (fun room_id ->

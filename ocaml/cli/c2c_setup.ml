@@ -179,30 +179,28 @@ let do_install_self ~output_mode ~dest_opt ~with_mcp_server =
 
 (* alias word pool lives in [C2c_alias_words] (#388 — converged from
    the duplicated 128-entry literal previously inlined here and in
-   c2c_start.ml). Note: this local [generate_alias] does NOT call
-   [Random.self_init ()] — the caller is expected to seed Random
-   (see [setup_register]). *)
+   c2c_start.ml). *)
 
-let generate_alias () =
+let generate_alias ?(no_nonce = false) () =
   let words = C2c_alias_words.words in
   let n = Array.length words in
   let rec loop () =
     let w1 = words.(Random.int n) in
     let w2 = words.(Random.int n) in
-    if w1 = w2 then loop () else Printf.sprintf "%s-%s" w1 w2
+    if w1 = w2 then loop () else C2c_nonce.append_nonce ~no_nonce (Printf.sprintf "%s-%s" w1 w2)
   in
   loop ()
 
 (* easy-pool alias generation — uses C2c_alias_words.easy_pool (~42 nature-themed
    words). Generates an alias from the restricted pool. Raises if the pool is
    too small to form a non-identical pair (structurally impossible with 50+ words). *)
-let generate_alias_easy () =
+let generate_alias_easy ?(no_nonce = false) () =
   let words = C2c_alias_words.easy_pool in
   let n = Array.length words in
   let rec loop () =
     let w1 = words.(Random.int n) in
     let w2 = words.(Random.int n) in
-    if w1 = w2 then loop () else Printf.sprintf "%s-%s" w1 w2
+    if w1 = w2 then loop () else C2c_nonce.append_nonce ~no_nonce (Printf.sprintf "%s-%s" w1 w2)
   in
   loop ()
 
@@ -243,12 +241,12 @@ let mkdir_or_dryrun dry_run dir =
 
 let mkdir_p = C2c_io.mkdir_p_dryrun
 
-let default_alias_for_client client =
+let default_alias_for_client ?(no_nonce = false) client =
   let client = match String.lowercase_ascii client with
     | "codex-headless" -> "codex"
     | other -> other
   in
-  let suffix = C2c_start.generate_alias () in
+  let suffix = C2c_start.generate_alias ~no_nonce () in
   Printf.sprintf "%s-%s" client suffix
 
 (* --- setup: Codex (TOML) --- *)
@@ -353,7 +351,7 @@ let write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root ~client_name =
   write_script supervisor_path supervisor_script;
   write_script pre_deliver_path pre_deliver_script
 
-let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch =
+let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch ~alias_from_auto_gen =
   let config_path = Filename.concat (Sys.getenv "HOME") (".codex" // "config.toml") in
   let existing =
     if Sys.file_exists config_path then
@@ -398,6 +396,8 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   Buffer.add_string buf "C2C_MCP_AUTO_DRAIN_CHANNEL = \"0\"\n";
   Buffer.add_string buf "C2C_MCP_AUTO_JOIN_ROOMS = \"swarm-lounge\"\n";
   Buffer.add_string buf "C2C_AUTO_JOIN_ROLE_ROOM = \"1\"\n";
+  if alias_from_auto_gen then
+    Buffer.add_string buf "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN = \"1\"\n";
   List.iter (fun tool ->
     Buffer.add_string buf (Printf.sprintf "\n[mcp_servers.c2c.tools.%s]\n" tool);
     Buffer.add_string buf "approval_mode = \"auto\"\n"
@@ -455,7 +455,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
    Running this twice on the same input yields identical output (idempotent
    replacement — the old c2c entry is removed before the new one is added,
    never appended). *)
-let build_kimi_mcp_config ~root ~alias_val ~server_path existing : Yojson.Safe.t =
+let build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen existing : Yojson.Safe.t =
   let c2c_allowed_tools_json = `List (List.map (fun t -> `String t) c2c_tools_list) in
   let c2c_entry =
     `Assoc
@@ -463,12 +463,12 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path existing : Yojson.Safe.t
       ; ("command", `String "opam")
       ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
       ; ("env", `Assoc
-          [ ("C2C_MCP_BROKER_ROOT", `String root)
-          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
-          ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
-          ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
-          ])
+          ([ ("C2C_MCP_BROKER_ROOT", `String root)
+           ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+           ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
+           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+           ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
+           ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
       ; ("allowedTools", c2c_allowed_tools_json)
       ]
   in
@@ -482,7 +482,7 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path existing : Yojson.Safe.t
               @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
   | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
 
-let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ?(force=false) () =
+let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen ?(force=false) () =
   let home = Sys.getenv "HOME" in
   let config_path = Filename.concat home (".kimi" // "mcp.json") in
   let toml_config_path = Filename.concat home (".kimi" // "config.toml") in
@@ -491,7 +491,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
     if Sys.file_exists config_path then json_read_file config_path
     else `Assoc []
   in
-  let config = build_kimi_mcp_config ~root ~alias_val ~server_path existing in
+  let config = build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen existing in
   mkdir_p dry_run (Filename.dirname config_path);
   json_write_file_or_dryrun dry_run config_path config;
   (* Slice 2 of #142: install the PreToolUse approval hook script and
@@ -556,7 +556,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
    We write user-scope (not project-scope) so the c2c MCP server is
    available across every gemini session — matches kimi's precedent, and
    the swarm-wide alias model. Use `gemini mcp remove c2c` to undo. *)
-let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~deliver_watch =
+let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~deliver_watch ~alias_from_auto_gen =
   let config_path =
     Filename.concat (Sys.getenv "HOME") (".gemini" // "settings.json")
   in
@@ -577,12 +577,12 @@ let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_comman
       [ ("command", `String mcp_command)
       ; ("args", `List args_list)
       ; ("env", `Assoc
-          [ ("C2C_MCP_BROKER_ROOT", `String root)
-          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
-          ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
-          ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
-          ])
+          ([ ("C2C_MCP_BROKER_ROOT", `String root)
+           ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+           ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
+           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+           ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
+           ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
       ; ("trust", `Bool true)
       ]
   in
@@ -631,7 +631,7 @@ let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_comman
 
 (* --- setup: OpenCode (JSON + plugin) --- *)
 
-let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ?(force=false) ?(deliver_watch=true) () =
+let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ?(force=false) ?(deliver_watch=true) () =
   let target_dir = match target_dir_opt with
     | Some d -> d
     | None -> Sys.getcwd ()
@@ -682,12 +682,12 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
               [ ("type", `String "local")
               ; ("command", `List [ `String "opam"; `String "exec"; `String "--"; `String server_path ])
               ; ("environment", `Assoc
-                  [ ("C2C_MCP_BROKER_ROOT", `String root)
-                  ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-                  ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
-                  ; ("C2C_CLI_COMMAND", `String (current_c2c_command ()))
-                  ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
-                  ])
+                  ([ ("C2C_MCP_BROKER_ROOT", `String root)
+                   ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
+                   ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+                   ; ("C2C_CLI_COMMAND", `String (current_c2c_command ()))
+                   ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
+                   ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
               ; ("enabled", `Bool true)
               ])
           ])
@@ -715,6 +715,7 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
       ("alias", `String alias_val) ::
       ("broker_root", `String root) ::
       ("broker_root_fingerprint", `String fp) ::
+      (if alias_from_auto_gen then [("alias_from_auto_gen", `Bool true)] else []) @
       (if root = "" || root = resolver_default then [] else [])
     )
   in
@@ -1031,7 +1032,7 @@ let which_binary name =
 
    The PostToolUse hook script + settings.json registration always go to
    `~/.claude/` — those are user-global Claude features, not project-scoped. *)
-let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir =
+let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir ~alias_from_auto_gen =
   let claude_dir = resolve_claude_dir () in
   let project_dir =
     match project_dir with Some d -> d | None -> Sys.getcwd ()
@@ -1051,6 +1052,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
     ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
     ] @ (if channel_delivery then [ ("C2C_MCP_CHANNEL_DELIVERY", `String "1") ] else [])
+      @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])
   in
   (* Project `.mcp.json` entries conventionally include `"type": "stdio"`;
      `~/.claude.json` mcpServers entries omit it (legacy shape). Match the
@@ -1367,7 +1369,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
 
 (* --- install: crush (JSON) --- *)
 
-let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch =
+let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen =
   let config_path = Filename.concat (Sys.getenv "HOME") (".config" // "crush" // "crush.json") in
   let existing =
     if Sys.file_exists config_path then json_read_file config_path
@@ -1379,12 +1381,12 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_wat
       ; ("command", `String "opam")
       ; ("args", `List [ `String "exec"; `String "--"; `String server_path ])
       ; ("env", `Assoc
-          [ ("C2C_MCP_BROKER_ROOT", `String root)
-          ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
-          ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-          ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
-          ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
-          ])
+          ([ ("C2C_MCP_BROKER_ROOT", `String root)
+           ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+           ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
+           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+           ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
+           ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
       ]
   in
   let config = match existing with
@@ -1511,7 +1513,7 @@ let ensure_default_wake_schedule ~dry_run ~output_mode ~alias =
      | Json -> print_json (`Assoc [ ("schedule", `String (if dry_run then "would_create" else "created")); ("name", `String "wake"); ("interval_s", `Int 246) ]))
   end
 
-let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force () =
+let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   (* Gemini is deprecated — refuse immediately before any setup work. *)
   if client = "gemini" then begin
@@ -1536,21 +1538,22 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
     | Some r -> r
     | None -> resolve_broker_root ()
   in
+  let alias_from_auto_gen = (alias_opt = None) in
   let alias_val =
     match alias_opt with
     | Some a -> a
     | None ->
-        let a = default_alias_for_client client in
+        let a = default_alias_for_client ~no_nonce client in
         Printf.eprintf "[c2c setup] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
         a
   in
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
   (match client with
-  | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt
-  | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch
-  | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~force ()
-  | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~force ~deliver_watch ()
-  | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch
+  | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt ~alias_from_auto_gen
+  | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch ~alias_from_auto_gen
+  | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen ~force ()
+  | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ~force ~deliver_watch ()
+  | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen
   | _ ->
       let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
       (match output_mode with
@@ -1772,7 +1775,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
         let channel_delivery =
           if c = "claude" then prompt_channel_delivery () else false
         in
-        do_install_client ~channel_delivery ~output_mode:Human ~dry_run ~client:c ~alias_opt
+        do_install_client ~channel_delivery ~output_mode:Human ~dry_run ~client:c ~alias_opt ~no_nonce:false
           ~broker_root_opt ~target_dir_opt:None ~force:false ()
       end
     ) do_clients;
@@ -1801,6 +1804,9 @@ let install_common_args () =
   let alias =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to use (default: auto-generated per client).")
   in
+  let no_nonce =
+    Cmdliner.Arg.(value & flag & info [ "no-nonce" ] ~doc:"Disable the 4-character nonce suffix on auto-generated aliases.")
+  in
   let broker_root =
     Cmdliner.Arg.(value & opt (some string) None & info [ "broker-root"; "b" ] ~docv:"DIR" ~doc:"Broker root directory (default: auto-detected).")
   in
@@ -1816,7 +1822,7 @@ let install_common_args () =
   let global =
     Cmdliner.Arg.(value & flag & info [ "global" ] ~doc:"(claude only) Write the MCP server entry to user-global ~/.claude.json instead of project-scoped <cwd>/.mcp.json. Defaults to project scope so a fresh clone wires c2c on first install.")
   in
-  (alias, broker_root, target_dir, force, dry_run, global)
+  (alias, no_nonce, broker_root, target_dir, force, dry_run, global)
 
 let install_self_subcmd =
   let dest =
@@ -1838,7 +1844,7 @@ let install_self_subcmd =
     term
 
 let install_client_subcmd client =
-  let (alias, broker_root, target_dir, force, dry_run, global) = install_common_args () in
+  let (alias, no_nonce, broker_root, target_dir, force, dry_run, global) = install_common_args () in
   let no_deliver_watch =
     let doc =
       if is_deliver_watch_client client then
@@ -1851,6 +1857,7 @@ let install_client_subcmd client =
   let term =
     let+ json = json_flag
     and+ alias_opt = alias
+    and+ no_nonce = no_nonce
     and+ broker_root_opt = broker_root
     and+ target_dir_opt = target_dir
     and+ force = force
@@ -1861,16 +1868,17 @@ let install_client_subcmd client =
     let channel_delivery =
       if client = "claude" && output_mode = Human then prompt_channel_delivery () else false
     in
-    do_install_client ~channel_delivery ~global ~deliver_watch:(not no_deliver_watch) ~output_mode ~dry_run ~client ~alias_opt ~broker_root_opt ~target_dir_opt ~force ()
+    do_install_client ~channel_delivery ~global ~deliver_watch:(not no_deliver_watch) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force ()
   in
   let doc = Printf.sprintf "Configure %s for c2c messaging." client in
   Cmdliner.Cmd.v (Cmdliner.Cmd.info client ~doc) term
 
 let install_all_subcmd =
-  let (alias, broker_root, _, _, dry_run, global) = install_common_args () in
+  let (alias, no_nonce, broker_root, _, _, dry_run, global) = install_common_args () in
   let term =
     let+ json = json_flag
     and+ alias_opt = alias
+    and+ no_nonce = no_nonce
     and+ broker_root_opt = broker_root
     and+ dry_run = dry_run
     and+ global = global in
@@ -1887,7 +1895,7 @@ let install_all_subcmd =
         if output_mode = Human then Printf.printf "  %s: [configured — up-to-date]\n" c
       end else begin
         if output_mode = Human then Printf.printf "\n→ Configuring %s...\n" c;
-        do_install_client ~global ~output_mode ~dry_run ~client:c ~alias_opt ~broker_root_opt
+        do_install_client ~global ~output_mode ~dry_run ~client:c ~alias_opt ~no_nonce ~broker_root_opt
           ~target_dir_opt:None ~force:false ~deliver_watch:(is_deliver_watch_client c) ()
       end
     ) clients;
@@ -1974,7 +1982,7 @@ let install_git_hook_subcmd =
     term
 
 let install_default_term =
-  let (alias, broker_root, _, _, dry_run, _) = install_common_args () in
+  let (alias, _no_nonce, broker_root, _target_dir, _force, dry_run, _global) = install_common_args () in
   let+ alias_opt = alias
   and+ broker_root_opt = broker_root
   and+ dry_run = dry_run in

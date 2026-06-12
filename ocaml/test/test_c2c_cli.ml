@@ -2072,6 +2072,77 @@ let test_connect_dashboard_next_action_all_installed_no_session () =
 (* Alcotest registry                                                         *)
 (* ------------------------------------------------------------------------- *)
 
+(* ------------------------------------------------------------------------- *)
+(* c2c init — nonce + blocklist integration                                 *)
+(* ------------------------------------------------------------------------- *)
+
+let run_c2c_init ~broker_root ~args =
+  let tmpfile = Filename.temp_file "c2c-init" ".out" in
+  let cmd =
+    Printf.sprintf "C2C_MCP_BROKER_ROOT=%s %s > %s 2>&1"
+      (Filename.quote broker_root)
+      (c2c_cmd (Printf.sprintf "c2c init --no-setup %s" args))
+      (Filename.quote tmpfile)
+  in
+  let rc = Sys.command cmd in
+  let content = read_file tmpfile in
+  Sys.remove tmpfile;
+  (rc, content)
+
+let extract_alias_line content =
+  let lines = String.split_on_char '\n' content in
+  let alias_line =
+    List.find_opt
+      (fun line -> String.length line >= 8 && String.sub line 0 8 = "  alias:")
+      lines
+  in
+  match alias_line with
+  | Some line -> (
+      match String.split_on_char ':' line with
+      | _ :: rest -> Some (String.trim (String.concat ":" rest))
+      | _ -> None)
+  | None -> None
+
+let test_init_require_easy_terminates_with_nonce () =
+  with_temp_dir (fun dir ->
+      let rc, content = run_c2c_init ~broker_root:dir ~args:"--client codex --require-easy" in
+      check int "init --require-easy exits 0" 0 rc;
+      match extract_alias_line content with
+      | Some alias -> (
+          match String.split_on_char '-' alias with
+          | [ w1; w2; nonce ] ->
+              check bool "word1 non-empty" true (String.length w1 > 0);
+              check bool "word2 non-empty" true (String.length w2 > 0);
+              check int "nonce length 4" 4 (String.length nonce)
+          | _ -> fail "alias not word-word-nonce")
+      | None -> fail "no alias line in init output")
+
+let test_init_no_nonce_yields_bare () =
+  with_temp_dir (fun dir ->
+      let rc, content = run_c2c_init ~broker_root:dir ~args:"--client codex --no-nonce" in
+      check int "init --no-nonce exits 0" 0 rc;
+      match extract_alias_line content with
+      | Some alias ->
+          (* codex-<word>-<word>: 3 segments, no nonce suffix. *)
+          check int "alias has 3 segments" 3
+            (List.length (String.split_on_char '-' alias))
+      | None -> fail "no alias line in init output")
+
+let test_init_explicit_alias_not_nonced () =
+  with_temp_dir (fun dir ->
+      let rc, content = run_c2c_init ~broker_root:dir ~args:"--alias foo" in
+      check int "init --alias foo exits 0" 0 rc;
+      match extract_alias_line content with
+      | Some alias -> check string "alias is foo" "foo" alias
+      | None -> fail "no alias line in init output")
+
+let test_init_rejects_banned_alias () =
+  with_temp_dir (fun dir ->
+      let rc, content = run_c2c_init ~broker_root:dir ~args:"--alias codex" in
+      check int "init --alias codex exits non-zero" 1 rc;
+      check bool "error mentions blocked" true
+        (string_contains content "blocked"))
+
 let () =
   Alcotest.run "c2c_cli"
     [ ( "doctor",
@@ -2253,5 +2324,11 @@ let () =
     ; ( "connect_client_detection",
         [ ( "connect detects codex config", `Quick, test_connect_detects_codex )
         ; ( "connect detects kimi config", `Quick, test_connect_detects_kimi )
+        ] )
+    ; ( "init_name_hardening",
+        [ ( "init --require-easy terminates with nonce", `Quick, test_init_require_easy_terminates_with_nonce )
+        ; ( "init --no-nonce yields bare alias", `Quick, test_init_no_nonce_yields_bare )
+        ; ( "init --alias foo is not nonce'd", `Quick, test_init_explicit_alias_not_nonced )
+        ; ( "init --alias codex is rejected", `Quick, test_init_rejects_banned_alias )
         ] )
     ]
