@@ -101,7 +101,7 @@ let test_double_boot_detection_dup_pid_returns_warning () =
         (* pid 202 had only one boot — should NOT be flagged. *)
         check bool "does not flag pid 202" false (contains msg "pid=202"))
 
-let test_deployed_path_prefers_project_local () =
+let test_deployed_path_is_project_local_even_when_global_exists () =
   with_tmp_dir (fun dir ->
     let home = Filename.concat dir "home" in
     let project_plugin = dir // ".opencode" // "plugins" // "c2c.ts" in
@@ -114,14 +114,28 @@ let test_deployed_path_prefers_project_local () =
     write_file global_plugin "global";
     check string "project-local plugin path wins"
       project_plugin
-      (C2c_opencode_plugin_drift.deployed_path_for ~cwd:dir ~home ()))
+      (C2c_opencode_plugin_drift.deployed_path_for ~cwd:dir ()))
+
+let test_missing_project_local_ignores_global_plugin () =
+  with_tmp_dir (fun dir ->
+    let home = Filename.concat dir "home" in
+    let project_plugin = dir // ".opencode" // "plugins" // "c2c.ts" in
+    let global_plugin =
+      home // ".config" // "opencode" // "plugins" // "c2c.ts"
+    in
+    mkdir_p (Filename.dirname global_plugin);
+    write_file global_plugin C2c_opencode_plugin_embedded.content;
+    let code, msg = C2c_opencode_plugin_drift.check_plugin_drift ~cwd:dir () in
+    check int "missing project-local plugin reports missing" 1 code;
+    check bool "reports project-local path" true (contains msg project_plugin);
+    check bool "does not report global path" false (contains msg global_plugin))
 
 let test_embedded_regular_file_ok_without_canonical () =
   with_tmp_dir (fun dir ->
     let plugin = dir // ".opencode" // "plugins" // "c2c.ts" in
     mkdir_p (Filename.dirname plugin);
     write_file plugin C2c_opencode_plugin_embedded.content;
-    let code, msg = C2c_opencode_plugin_drift.check_plugin_drift ~cwd:dir ~home:dir () in
+    let code, msg = C2c_opencode_plugin_drift.check_plugin_drift ~cwd:dir () in
     check int "embedded regular-file copy is OK without data/" 0 code;
     check bool "mentions embedded blob" true (contains msg "embedded blob"))
 
@@ -133,8 +147,10 @@ let () =
         ; test_case "dup_pid_returns_warning" `Quick test_double_boot_detection_dup_pid_returns_warning
         ] )
     ; ( "project_local_drift",
-        [ test_case "deployed_path_prefers_project_local" `Quick
-            test_deployed_path_prefers_project_local
+        [ test_case "deployed_path_is_project_local_even_when_global_exists" `Quick
+            test_deployed_path_is_project_local_even_when_global_exists
+        ; test_case "missing_project_local_ignores_global_plugin" `Quick
+            test_missing_project_local_ignores_global_plugin
         ; test_case "embedded_regular_file_ok_without_canonical" `Quick
             test_embedded_regular_file_ok_without_canonical
         ] )

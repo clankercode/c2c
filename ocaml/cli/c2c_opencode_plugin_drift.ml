@@ -32,16 +32,11 @@ let canonical = "data" // "opencode-plugin" // "c2c.ts"
 let project_deployed_path cwd =
   cwd // ".opencode" // "plugins" // "c2c.ts"
 
-let global_deployed_path home =
-  home // ".config" // "opencode" // "plugins" // "c2c.ts"
-
-let deployed_path_for ~cwd ~home () =
-  let project = project_deployed_path cwd in
-  if Sys.file_exists project then project else global_deployed_path home
+let deployed_path_for ~cwd () =
+  project_deployed_path cwd
 
 let deployed_path () =
-  let home = try Sys.getenv "HOME" with Not_found -> "" in
-  deployed_path_for ~cwd:(Sys.getcwd ()) ~home ()
+  deployed_path_for ~cwd:(Sys.getcwd ()) ()
 
 let file_info path =
   try
@@ -154,13 +149,8 @@ let run_debug_log_scan_and_print () : bool =
       print_endline msg;
       true
 
-let check_plugin_drift ?(cwd = Sys.getcwd ()) ?home () : int * string =
-  let home =
-    match home with
-    | Some home -> home
-    | None -> (try Sys.getenv "HOME" with Not_found -> "")
-  in
-  let deployed = deployed_path_for ~cwd ~home () in
+let check_plugin_drift ?(cwd = Sys.getcwd ()) () : int * string =
+  let deployed = deployed_path_for ~cwd () in
   let canonical_abs = cwd // canonical in
   let canonical_content = read_file canonical_abs in
   let deployed_info = file_info deployed in
