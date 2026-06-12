@@ -20,37 +20,53 @@
   paths get it too.
 
 ## Slices
-### Slice B1 — Blocklist at the chokepoint
+### Slice B1 — Blocklist at the chokepoint (USER-SUPPLIED names only)
+> **REWORKED per mm3 review (was NEEDS-REWORK):**
+> - **CRITICAL conflict resolved:** the blocklist must apply ONLY to user-supplied names.
+>   Auto-generated names are client-PREFIXED (`default_alias_for_client` → `codex-ember-frost`),
+>   so a first-hyphen-segment match on `codex` (a supported client) would reject EVERY default
+>   `c2c setup`. Fix: thread `?from_auto_gen:bool` (default `false`) through `Broker.register`;
+>   when `true`, SKIP the blocklist (auto-gen names are trusted — we generated them). This also
+>   dovetails with nonce-auto-gen-only.
+> - **No module cycle** (mm3 disproved): `c2c_broker` referencing `C2c_start.supported_clients`
+>   is a one-way dep; both live in the same `c2c_mcp` library (`wrapped: false`, single
+>   compilation unit). No hoist needed. (If you want policy decoupling, a NEW `c2c_blocklist.ml`
+>   is the right home — NOT `c2c_name.ml`, which is a format validator, not a policy table.)
 - `ocaml/c2c_broker.ml:1681-1687`: add `banned_aliases` (static set: `gpt`, `assistant`,
-  `gemini`, `crush`, plus reuse `C2c_start.supported_clients` from `c2c_start.ml:1578` —
-  claude, codex, opencode, kimi) + a predicate `is_banned_alias` that casefolds and checks
-  full-equality OR first-hyphen-segment equality.
-- Wire into `Broker.register` (`c2c_broker.ml:1872`) right after `is_reserved_system_alias`.
-  ALSO fold `C2c_name.is_valid` (`c2c_name.ml:8`) here so all paths validate format.
-  Rejection raises `invalid_arg` (existing pattern) — but see B2 for the MCP friendly error.
+  plus `C2c_start.supported_clients` — claude, codex, opencode, kimi — plus `gemini`, `crush`)
+  + predicate `is_banned_alias` that casefolds and checks full-equality OR first-hyphen-segment
+  equality.
+- `Broker.register` (`c2c_broker.ml:1872`): add `?(from_auto_gen=false)`; enforce
+  `is_banned_alias` ONLY when `not from_auto_gen`, right after `is_reserved_system_alias`. ALSO
+  fold `C2c_name.is_valid` (`c2c_name.ml:8`) here so all paths validate FORMAT (format check
+  applies to everyone, including auto-gen). Rejection raises `invalid_arg` (existing pattern) —
+  MCP friendly error below.
+- Auto-gen call sites pass `~from_auto_gen:true` when they register a generated name; explicit/
+  role/env paths pass nothing (default false → blocklist enforced).
 - Mirror a pre-check + friendly `tool_err` in the MCP handler
-  (`c2c_identity_handlers.ml:45-50`) so MCP returns an error result, not an exception.
-- ⚠️ Dependency note: `c2c_broker.ml` referencing `C2c_start` may create a module cycle.
-  VERIFY build order; if cyclic, hoist the supported-clients list into a low-level module
-  (e.g. `c2c_name.ml` or a new `c2c_blocklist.ml`) that both depend on. Resolve cleanly —
-  do not introduce a cycle.
+  (`c2c_identity_handlers.ml:45-50`) so a user-supplied banned alias returns an error result,
+  not an exception.
 
 ### Slice B2 — Nonce generator + auto-gen-only application
-- New `ocaml/c2c_nonce.ml` (or a fn near `c2c_name.ml`): `gen_nonce () = String.init 4
-  (fun _ -> charset.[Random.int 36])` with `charset = "0123456789abcdefghijklmnopqrstuvwxyz"`.
-  Ensure `Random` is seeded on the relevant path (auto-gen sites already seed:
-  `c2c_start.ml:2467` `Random.self_init`; verify the install path `c2c_setup.ml:186` seeds).
+- New `ocaml/c2c_nonce.ml`: `gen_nonce () = String.init 4 (fun _ -> charset.[Random.int 36])`
+  with `charset = "0123456789abcdefghijklmnopqrstuvwxyz"`. **Defensively `Random.self_init ()`
+  inside the module init** (mm3: `c2c_setup.ml:186 generate_alias` does NOT seed — the comment
+  at `:182-184` referencing a `setup_register` caller is STALE; no such function exists, so an
+  unseeded path would yield a deterministic/predictable nonce). Mirror `c2c_start.ml:2467`.
 - Apply the nonce ONLY inside the auto-generate functions, AFTER a bare name is produced,
-  BEFORE it's used/registered:
+  BEFORE it's used/registered. **Complete call-site list (mm3 added the last two groups):**
   - `ocaml/c2c_start.ml:2466` `generate_alias` / `:2477` `default_name`
   - `ocaml/cli/c2c_setup.ml:186` `generate_alias` / `:199` `generate_alias_easy` /
     `:246` `default_alias_for_client`
+  - `ocaml/cli/c2c_agent.ml:458, 733` (ephemeral instance-name generation)
+  - `ocaml/cli/c2c.ml:6763-6766` (init's three-way auto-pick reject-loop)
   Do NOT touch the user-supplied/role/env resolution paths — those stay bare.
-- `--no-nonce` plumbing: add the flag to the auto-gen-bearing commands
+- `--no-nonce` plumbing (CLI ONLY): add the flag to the auto-gen-bearing commands
   (`c2c.ml:6682` init, `:8977` start, `c2c_setup.ml:1785` setup/install) and thread it into
-  the generate calls. (register `c2c.ml:2857` takes an explicit alias normally; include the
-  flag only where auto-gen can occur.) Add a `no_nonce` bool to the MCP `register` schema
-  (`c2c_mcp.ml:30-38`) for parity, honored only when the handler auto-generates.
+  the generate calls. **DO NOT add a `no_nonce` MCP arg** (mm3: the MCP `register` handler
+  `c2c_identity_handlers.ml:14-23` never pool-generates — it reads an explicit alias or the
+  `C2C_MCP_AUTO_REGISTER_ALIAS` env var, both of which are bare per the env-supplied=bare
+  decision; an MCP `no_nonce` arg would be dead code).
 
 ### Slice B3 — Output shows full nonce'd name + collision reconciliation
 - Verify every auto-pick notice + epilog prints the POST-nonce value:
@@ -65,19 +81,28 @@
   register with EXPLICIT aliases are unaffected. Audit `test_c2c_mcp.ml`,
   `test_c2c_identity_handlers.ml` for tests relying on AUTO-generated names; gate nonce off
   via env in fixtures if needed, or assert the prefix + nonce shape.
-- Add tests: (a) blocklist rejects `claude`/`claude-code`/`gpt`, accepts `lyra-quill`;
-  (b) MCP register returns friendly error (not exception) for banned name; (c) auto-gen
-  produces `<word>-<word>-<4 lowercase alnum>`; (d) `--no-nonce` yields bare auto name;
-  (e) explicit `--alias foo` is NOT nonce'd; (f) nonce charset is lowercase-only.
-- Docs: pool/format invariant (`CLAUDE.md:268` == `AGENTS.md:268` == `docs/commands.md:994`)
-  — update to describe blocklist + nonce; register/init examples; role-template notes.
+- Add tests: (a) blocklist rejects user-supplied `claude`/`claude-code`/`gpt`, accepts
+  `lyra-quill`; (b) MCP register returns friendly error (not exception) for a user-supplied
+  banned name; (c) auto-gen produces `<word>-<word>-<4 lowercase alnum>`; (d) `--no-nonce`
+  yields bare auto name; (e) explicit `--alias foo` is NOT nonce'd; (f) nonce charset is
+  lowercase-only; **(g) auto-gen client-PREFIXED name (e.g. `codex-ember-frost`) is NOT
+  rejected by the blocklist** (the critical regression — `from_auto_gen=true` path); **(h)
+  user-supplied `codex` / `codex-code` IS rejected**.
+- Docs: pool/format invariant lives in **TWO distinct places** (mm3: `AGENTS.md` is a SYMLINK
+  to `CLAUDE.md`, so they're one file at `:268`; `docs/commands.md:994` is a SEPARATE
+  user-facing paragraph). Update `CLAUDE.md:268` (architecture note) AND `docs/commands.md:994`
+  (user-facing format) with appropriate (different) content describing blocklist + nonce;
+  register/init examples; role-template notes.
 
 ## Acceptance criteria
 - `dune build` clean IN WORKTREE (rc=0); full suite green `-j2`.
-- No module cycle introduced (B1 note).
-- Banned names rejected on BOTH MCP + CLI with a friendly MCP error.
+- **`c2c setup <client>` / `c2c install` default (auto-gen) flows STILL SUCCEED** — auto-gen
+  client-prefixed names (`codex-…`, `kimi-…`) are NOT rejected by the blocklist (the mm3
+  critical regression). Verified by test (g).
+- User-supplied banned names rejected on BOTH MCP + CLI with a friendly MCP error (not an
+  exception).
 - Auto-gen names carry a lowercase 4-char nonce; explicit/role/env names do NOT.
-- `--no-nonce` works; MCP `no_nonce` arg works.
+- `--no-nonce` (CLI) works. NO MCP `no_nonce` arg (would be dead code).
 - Output everywhere shows the full registered name incl nonce.
 - Docs updated (docs-up-to-date gate); pool/format invariant consistent across all 3 copies.
 
