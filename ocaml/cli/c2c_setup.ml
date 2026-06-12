@@ -1462,17 +1462,17 @@ let canonical_install_client client =
   | "codex-headless" -> "codex"
   | other -> other
 
-let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush"; "gemini" ]
+let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
 let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush"; "gemini" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
-let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi"; "gemini" ]
+let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
-let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "gemini"; "crush" ]
-let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "gemini"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
+let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "crush" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
-let deliver_watch_clients = [ "codex"; "codex-headless"; "opencode"; "kimi"; "crush"; "gemini" ]
+let deliver_watch_clients = [ "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
 let is_deliver_watch_client client = List.mem client deliver_watch_clients
 
 let ensure_default_wake_schedule ~dry_run ~output_mode ~alias =
@@ -1528,11 +1528,28 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
         a
   in
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
+  (* Gemini is deprecated — refuse install before dispatching to setup_gemini. *)
+  if client = "gemini" then begin
+    (match output_mode with
+     | Json ->
+         print_json (`Assoc
+           [ ("ok", `Bool false)
+           ; ("error", `String "gemini is no longer a supported c2c client")
+           ; ("deprecated", `Bool true)
+           ; ("hint", `String "Use: claude | codex | opencode | kimi")
+           ])
+     | Human ->
+         let use_color = Unix.isatty Unix.stderr in
+         let yellow = if use_color then "\027[1;33m" else "" in
+         let reset = if use_color then "\027[0m" else "" in
+         Printf.eprintf "%s[DEPRECATED]%s Gemini is no longer a supported c2c client.\n%!" yellow reset;
+         Printf.eprintf "  `c2c install gemini` refuses (exit 1). For new agents use: claude | codex | opencode | kimi\n%!");
+    exit 1
+  end;
   (match client with
   | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt
   | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch
   | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~force ()
-  | "gemini" -> setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~deliver_watch
   | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~force ~deliver_watch ()
   | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch
   | _ ->
@@ -1825,7 +1842,7 @@ let install_client_subcmd client =
   let no_deliver_watch =
     let doc =
       if is_deliver_watch_client client then
-        "Disable auto-deliver-watch for this client (enabled by default for non-MCP clients: codex, opencode, kimi, gemini, crush)."
+        "Disable auto-deliver-watch for this client (enabled by default for non-MCP clients: codex, opencode, kimi, crush)."
       else
         "Has no effect for this client."
     in

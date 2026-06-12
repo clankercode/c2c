@@ -126,3 +126,10 @@
   (name test_c2c_sitrep)
   (modules test_c2c_sitrep c2c_sitrep)
   (libraries c2c_mcp alcotest str unix))
+
+; Slice S2: gemini CLI deprecation — install refuses + lists cleaned.
+(test
+ (name test_c2c_gemini_deprecation)
+ (modules test_c2c_gemini_deprecation c2c_setup c2c_kimi_hook c2c_types c2c_utils c2c_broker_root_check)
+ (libraries c2c_mcp alcotest cmdliner yojson unix)
+ (deps c2c.exe))

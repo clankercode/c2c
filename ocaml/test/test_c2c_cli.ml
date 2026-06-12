@@ -1284,34 +1284,35 @@ let test_install_all_dry_run_shows_dry_run_markers () =
       check bool "output contains [DRY-RUN] marker" true
         (string_contains content "[DRY-RUN]"))
 
-let test_install_gemini_dry_run_exits_zero () =
+let test_install_gemini_dry_run_refuses () =
   let tmpfile = Filename.temp_file "c2c-install-gemini-dry" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
       let rc = Sys.command (c2c_cmd (Printf.sprintf
         "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile)) in
-      check int "c2c install gemini --dry-run exits 0" 0 rc;
+      check bool "c2c install gemini --dry-run exits non-zero" true (rc <> 0);
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
-      check bool "output contains broker root" true
-        (string_contains content "broker root"))
+      check bool "output mentions DEPRECATED or Gemini" true
+        (string_contains content "DEPRECATED" || string_contains content "Gemini"
+         || string_contains content "gemini"))
 
-let test_install_gemini_dry_run_shows_config_preview () =
+let test_install_gemini_dry_run_shows_deprecation () =
   let tmpfile = Filename.temp_file "c2c-install-gemini-dry2" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
     (fun () ->
-      ignore (Sys.command (c2c_cmd (Printf.sprintf
-        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile)));
+      let rc = Sys.command (c2c_cmd (Printf.sprintf
+        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile)) in
+      check bool "c2c install gemini --dry-run exits non-zero" true (rc <> 0);
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
-      check bool "output contains [DRY-RUN] would write" true
-        (string_contains content "[DRY-RUN] would write");
-      check bool "output contains Configured Gemini" true
-        (string_contains content "Configured Gemini"))
+      check bool "output mentions not supported or DEPRECATED" true
+        (string_contains content "DEPRECATED" || string_contains content "not supported"
+         || string_contains content "Gemini"))
 
 (* c2c install opencode — real install (not dry-run) with temp HOME.
    Regression test: write_deliver_watch_scripts used non-recursive mkdir,
@@ -1935,8 +1936,8 @@ let () =
     ; ( "install_dry_run",
         [ ( "install all --dry-run exits 0", `Quick, test_install_all_dry_run_exits_zero )
         ; ( "install all --dry-run shows [DRY-RUN] markers", `Quick, test_install_all_dry_run_shows_dry_run_markers )
-        ; ( "install gemini --dry-run exits 0 and mentions broker root", `Quick, test_install_gemini_dry_run_exits_zero )
-        ; ( "install gemini --dry-run shows config preview", `Quick, test_install_gemini_dry_run_shows_config_preview )
+        ; ( "install gemini --dry-run refuses (deprecated)", `Quick, test_install_gemini_dry_run_refuses )
+        ; ( "install gemini --dry-run shows deprecation", `Quick, test_install_gemini_dry_run_shows_deprecation )
         ; ( "install kimi --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_kimi )
         ; ( "install opencode --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_opencode )
         ; ( "install codex --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_codex )

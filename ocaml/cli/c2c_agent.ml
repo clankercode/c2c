@@ -296,7 +296,7 @@ let agent_new_term =
            # Example: subagent\n\
            role: %s\n\n\
            # Which clients can run this role. \"all\" = any client.\n\
-           # Other examples: claude, opencode, codex, kimi, gemini\n\
+            # Other examples: claude, opencode, codex, kimi\n\
            # (comma-separated, no spaces).\n\
            compatible_clients: [%s]\n\
            %s\
