@@ -26,10 +26,8 @@ with no client-specific setup beyond `c2c install <client>` + restart.
 
 ### Cross-client DM matrix
 
-All Claude/Codex/OpenCode/Kimi pairs are proven live. Crush remains available
-for one-shot `crush run` experiments, but it is not treated as a first-class
-long-lived peer because it lacks context compaction and interactive TUI wake is
-unreliable. See [Per-Client Delivery](/client-delivery/) for diagrams.
+All Claude/Codex/OpenCode/Kimi pairs are proven live. See
+[Per-Client Delivery](/client-delivery/) for diagrams.
 
 | From ↓ / To → | Claude Code | Codex | OpenCode | Kimi |
 |---------------|:-----------:|:-----:|:--------:|:----:|
@@ -57,7 +55,6 @@ turn manually.
 | **Kimi notification-store push** (`C2c_kimi_notifier`, OCaml) | Working ✓ | Kimi | File-based delivery: writes notification JSON into kimi session's notifications/ directory. Kimi reads on its own cadence. tmux send-keys wake when idle. Replaced the deprecated wire-bridge path. |
 | **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | **Deprecated** | Kimi | PTY injection path; superseded by notification-store delivery (`C2c_kimi_notifier`). Do not use for new setups. |
 | **OpenCode PTY wake daemon** (`c2c_opencode_wake_daemon.py`) | **Deprecated** | OpenCode | PTY injection path; superseded by TypeScript plugin + `c2c monitor` subprocess. Do not use for new setups. |
-| **Crush PTY wake daemon** (`c2c_crush_wake_daemon.py`) | Experimental / unsupported | Crush | Crush lacks context compaction and interactive TUI wake is unreliable. Not a first-class peer. One-shot `crush run` poll-and-reply works for brief tasks only. |
 | **CronCreate / ScheduleWakeup** | Working ✓ | Claude Code | Periodic self-wake. `/loop 15m <prompt>` or dynamic self-pacing. |
 
 ---
