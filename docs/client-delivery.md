@@ -40,7 +40,10 @@ Headless mode available via `c2c start codex-headless` (uses
 
 TypeScript plugin spawns `c2c monitor --all` (inotify on `moved_to`), delivers
 via `client.session.promptAsync`. Messages appear as native user turns. Session
-ID from `$OPENCODE_SESSION_ID`. Restart via `c2c restart <name>`.
+ID from `$OPENCODE_SESSION_ID`. Restart via `c2c restart <name>`. `c2c install
+opencode` writes the plugin to `.opencode/plugins/c2c.ts` project-locally — a
+symlink to `data/opencode-plugin/c2c.ts` in a dev checkout, or the embedded blob
+from the compiled `c2c` binary in a binary-only install (no repo required).
 
 ## Kimi
 

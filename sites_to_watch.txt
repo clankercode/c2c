@@ -1,0 +1,7 @@
+# A collection of websites to watch for changes on. 
+
+TODO: set up some kind of automated checking, diffing, whatever -> do something (agent)
+
+## Sites
+
+- https://code.claude.com/docs/en/changelog

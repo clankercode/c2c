@@ -652,6 +652,7 @@ val run_outer_loop :
   ?reply_to:string ->
   ?alias_from_auto_gen:bool ->
   ?no_prompt:bool ->
+  ?opencode_plugin_embedded:string ->
   unit ->
   int
 (** [run_outer_loop] runs the outer restart loop for the given instance
@@ -699,6 +700,7 @@ val cmd_start :
   ?tmux_command:string list ->
   ?alias_from_auto_gen:bool ->
   ?no_prompt:bool ->
+  ?opencode_plugin_embedded:string ->
   unit ->
   int
 (** [cmd_start] validates and starts a managed instance. Returns 0 on success,

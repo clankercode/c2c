@@ -4217,7 +4217,9 @@ let run_outer_loop ~(name : string) ~(client : string)
     ?(auto_join_rooms : string option)
     ?(agent_name : string option) ?(reply_to : string option)
     ?(alias_from_auto_gen : bool = false)
-    ?no_prompt () : int =
+    ?no_prompt
+    ?(opencode_plugin_embedded : string = "")
+    () : int =
   let no_prompt =
     (Option.value no_prompt ~default:false) || (Sys.getenv_opt "C2C_NO_PROMPT" = Some "1")
   in
@@ -4635,30 +4637,43 @@ let run_outer_loop ~(name : string) ~(client : string)
                  session may not auto-register without opencode.json\n%!"
           end);
           refresh_opencode_identity ~name ~alias ~broker_root ~project_dir ~instances_dir ~agent_name;
-          (* Write the canonical plugin from data/opencode-plugin/c2c.ts to
-             .opencode/plugins/c2c.ts so that branch switches in the shared
-             working tree cannot clobber the live plugin file.  Always-overwrite:
-             data/opencode-plugin/ is the source of truth; the written artifact
-             is intentionally .gitignore-d. *)
+          (* Write the OpenCode plugin to .opencode/plugins/c2c.ts. In a dev
+             checkout, copy from data/opencode-plugin/c2c.ts so branch switches
+             cannot clobber the live plugin file. In a binary-only install, write
+             the embedded blob supplied by the caller. *)
           let plugin_src = project_dir // "data" // "opencode-plugin" // "c2c.ts" in
           let plugin_dir = project_dir // ".opencode" // "plugins" in
           let plugin_dst = plugin_dir // "c2c.ts" in
-          (if Sys.file_exists plugin_src then begin
+          let write_plugin_from_string s =
             C2c_io.mkdir_p plugin_dir;
+            let oc = open_out_bin plugin_dst in
+            Fun.protect ~finally:(fun () -> close_out oc)
+              (fun () -> output_string oc s)
+          in
+          if Sys.file_exists plugin_src then begin
             (try
               let ic = open_in plugin_src in
               let n = in_channel_length ic in
               let content = Bytes.create n in
               Fun.protect ~finally:(fun () -> close_in ic)
                 (fun () -> really_input ic content 0 n);
-              let oc = open_out plugin_dst in
+              let oc = open_out_bin plugin_dst in
               Fun.protect ~finally:(fun () -> close_out oc)
                 (fun () -> output_bytes oc content)
             with e ->
               Printf.eprintf
                 "  [c2c start] warning: failed to write opencode plugin: %s\n%!"
                 (Printexc.to_string e))
-          end)
+          end else begin
+            if opencode_plugin_embedded <> "" then begin
+              let content = opencode_plugin_embedded in
+                (try write_plugin_from_string content
+                 with e ->
+                   Printf.eprintf
+                     "  [c2c start] warning: failed to write opencode plugin: %s\n%!"
+                     (Printexc.to_string e))
+            end
+          end
         end
       end);
 
@@ -5234,7 +5249,9 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(agent_name : string option) ?(reply_to : string option)
     ?(tmux_location : string option) ?(tmux_command : string list option)
     ?(alias_from_auto_gen : bool = false)
-    ?no_prompt () : int =
+    ?no_prompt
+    ?(opencode_plugin_embedded : string = "")
+    () : int =
   (* Deprecation guard: reject crush early with banner, before unknown-client path *)
   (if client = "crush" then
      let use_color = Unix.isatty Unix.stderr in
@@ -5589,7 +5606,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?codex_resume_target:cfg.codex_resume_target
     ?model_override:cfg.model_override
     ~one_hr_cache ?kickoff_prompt ?auto_join_rooms
-    ?agent_name ?reply_to ~alias_from_auto_gen ?no_prompt ()
+    ?agent_name ?reply_to ~alias_from_auto_gen ?no_prompt
+    ~opencode_plugin_embedded ()
 
 (* Signal the managed inner client so the outer loop relaunches it. Designed
    to be callable by an agent running *inside* that client, so the outer

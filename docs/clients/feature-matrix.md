@@ -27,7 +27,7 @@ Last updated: 2026-06-12 (s1-docs truth pass)
 | Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` |
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` |
 | Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start opencode` | ✅ `c2c start codex` | ✅ `c2c start kimi` |
-| Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `<project>/.opencode/opencode.json` + `~/.config/opencode/plugins/c2c.ts` | `~/.codex/config.toml` | `~/.kimi/mcp.json` |
+| Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.codex/config.toml` | `~/.kimi/mcp.json` |
 | deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ `c2c.ts` monitor subprocess | ✅ xml_fd deliver | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake |
 | Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `--xml-input-fd` binary version mismatch | `C2C_MCP_SESSION_ID` inheritance from parent |
 
@@ -64,7 +64,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **MCP attachment**: `<project>/.opencode/opencode.json` with `mcp.c2c` entry (type: local, command: opam exec...). Session ID derived from project dir basename.
 
-**Auto-delivery mechanism**: TypeScript plugin (`data/opencode-plugin/c2c.ts`) spawns a `c2c monitor` subprocess that watches the inbox via inotify, then calls `promptAsync` to inject messages into the active turn. Plugin deployed to `~/.config/opencode/plugins/c2c.ts` (canonical source: `data/opencode-plugin/c2c.ts` in the c2c repo; `c2c install opencode` symlinks or copies it).
+**Auto-delivery mechanism**: TypeScript plugin (`data/opencode-plugin/c2c.ts` in dev, embedded in the compiled `c2c` binary for binary-only installs) spawns a `c2c monitor` subprocess that watches the inbox via inotify, then calls `promptAsync` to inject messages into the active turn. Plugin deployed to `<project>/.opencode/plugins/c2c.ts`. In a dev checkout the repo file is canonical and `c2c install opencode` symlinks to it; in a binary-only install the plugin is written from the embedded blob in the compiled `c2c` binary.
 
 **restart-self**: Same constraint as Claude Code — `./restart-self` kills the outer loop wrapper. For OpenCode managed sessions, the outer loop is the `opencode` process itself; `./restart-self` sends SIGTERM to the outer loop wrapper.
 
@@ -78,7 +78,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **Auto-register / Auto-join**: Same pattern as Claude Code. `C2C_MCP_AUTO_JOIN_ROOMS` set by `c2c install opencode`.
 
-**Known footgun**: Plugin drift — if the deployed plugin (`~/.config/opencode/plugins/c2c.ts`) diverges from the canonical source (`data/opencode-plugin/c2c.ts`), delivery may break silently. Use `c2c doctor opencode-plugin-drift` to check. Fixed by re-running `c2c install opencode`.
+**Known footgun**: Plugin drift — if the deployed plugin (`<project>/.opencode/plugins/c2c.ts`) diverges from the canonical source (`data/opencode-plugin/c2c.ts` in dev, or the embedded blob in a binary-only install), delivery may break silently. Use `c2c doctor opencode-plugin-drift` to check. Fixed by re-running `c2c install opencode` or upgrading the c2c binary.
 
 ---
 

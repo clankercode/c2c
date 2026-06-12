@@ -2030,16 +2030,14 @@ let check_plugin_installs () =
      with _ -> add (`Gray, "claude-code: could not read settings.json")
    else add (`Gray, "claude-code: settings.json not found"));
 
-  (* OpenCode: project-level or global plugin *)
+  (* OpenCode: project-level plugin. Legacy global copies are ignored so a
+     missing project-local install is not hidden by stale user-global state. *)
   let project_plugin = (Sys.getcwd ()) // ".opencode" // "plugins" // "c2c.ts" in
   let global_plugin = home // ".config" // "opencode" // "plugins" // "c2c.ts" in
-  let global_size = try (Unix.stat global_plugin).Unix.st_size with Unix.Unix_error _ -> 0 in
   (if Sys.file_exists project_plugin then
      add (`Green, "opencode: plugin installed (project-level)")
-   else if Sys.file_exists global_plugin && global_size >= 1024 then
-     add (`Green, "opencode: plugin installed (global)")
    else if Sys.file_exists global_plugin then
-     add (`Yellow, Printf.sprintf "opencode: global plugin is a stub (%d bytes) — run: c2c install opencode from c2c repo" global_size)
+     add (`Yellow, "opencode: project plugin not installed; ignoring legacy global plugin (run: c2c install opencode)")
    else
      add (`Yellow, "opencode: plugin not installed (run: c2c install opencode)"));
 
@@ -9700,6 +9698,7 @@ let start_cmd =
       ~tmux_command:tmux_tail
       ~alias_from_auto_gen
       ~no_prompt
+      ~opencode_plugin_embedded:C2c_opencode_plugin_embedded.content
       ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd
