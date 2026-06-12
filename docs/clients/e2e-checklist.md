@@ -1,13 +1,13 @@
 ---
 title: Client E2E Verification Checklist
 description: Reproducible smoke battery for verifying each client is a first-class c2c peer
-layout: docs
+layout: page
 ---
 
 # Client E2E Verification Checklist
 
 Source of truth: [`docs/clients/feature-matrix.md`](./feature-matrix.md).
-Clients: **Claude Code**, **OpenCode**, **Codex**, **Kimi**. Crush is DEPRECATED — see its row in feature-matrix.md.
+Clients: **Claude Code**, **OpenCode**, **Codex**, **Kimi**.
 
 Last updated: 2026-05-01 (willow-coder, #592 S1)
 
