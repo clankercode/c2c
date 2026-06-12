@@ -645,10 +645,10 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 |------------|-------------|
 | `install` (no subcommand) | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
 | `install self [--dest DIR] [--mcp-server]` | Install the running c2c binary to `~/.local/bin`. |
-| `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. |
+| `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. Prints restart guidance and `Run 'c2c connect --verify' to confirm delivery is live`. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. On success, prints `Run 'c2c connect --verify' to confirm delivery is live`. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
-| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. |
+| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. On success, prints `Run 'c2c connect --verify' to confirm delivery is live`. |
 
 ### Messaging
 
@@ -699,7 +699,9 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | Subcommand | Description |
 |------------|-------------|
 | `status [--min-messages N] [--json]` | Compact swarm overview: alive peers, sent/received counts, room memberships. |
-| `health [--json]` | Broker health snapshot: registry liveness, inbox freshness, rooms, relay reachability. |
+| `health [--json]` | Broker health snapshot: registry liveness, inbox freshness, rooms, relay reachability, client plugin status. |
+| `connect [--json]` | Connection status dashboard: shows broker state, per-client install status (claude, codex, opencode, kimi), relay reachability, rooms, whoami alias, and the ONE next action to get connected. Works outside git repos. |
+| `connect --verify [-t SECS] [--json]` | Loopback delivery probe: enqueues a unique non-ephemeral self-marker through the broker and watches the archive for `drained_by`. Reports PASS (consumed by auto-delivery path), INCONCLUSIVE (still queued — client may use poll delivery), or FAIL (exit non-zero). Never claims "delivered to transcript" — transcript visibility is client-specific, not CLI-observable. |
 | `doctor [--check-rebase-base] [--summary] [--json]` | Health snapshot + push-pending classification (relay-critical vs local-only). Run before deciding to push. |
 | `doctor docs-drift [--doc PATH] [--summary] [--json] [--warn-only]` | Audit a doc file (default: `CLAUDE.md`) for stale references: bad paths, unregistered commands, wrong GitHub org URLs, deprecated Python script refs. Exempt lines carrying a DEPRECATED/LEGACY/ARCHIVED note. Use `--warn-only` to exit 0 even with findings (useful in CI rollups). Run during peer-review to satisfy the docs-up-to-date criterion. |
 | `doctor monitor-leak [--json] [--threshold N]` | Check for duplicate c2c monitor processes per alias. Exits 1 if any alias has more than `--threshold` monitor processes (default: 1). Run to detect leaked monitors after session churn. |
