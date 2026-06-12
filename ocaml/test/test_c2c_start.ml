@@ -464,6 +464,39 @@ let test_build_env_claude_keeps_force_capabilities_under_ambient () =
   in
   check int "exactly one C2C_MCP_FORCE_CAPABILITIES entry" 1 count
 
+(* Feature B env-boundary: c2c start managed sessions must export
+   BOTH C2C_MCP_AUTO_REGISTER_ALIAS (the alias) and the
+   C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN origin marker (set to "1"
+   when the alias is auto-picked via build_env ~alias_from_auto_gen:true).
+   This is the path that an auto-picked `c2c start codex` etc. takes —
+   the MCP server reads both env vars on startup and registers with
+   ~from_auto_gen:true, bypassing the user-supplied blocklist for
+   client-prefixed auto-gen names. *)
+let test_build_env_writes_alias_and_origin_marker_when_auto_gen () =
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "codex") ~alias_from_auto_gen:true
+      "codex-ember-frost-n2b8" (Some "codex-ember-frost-n2b8")
+  in
+  check bool "C2C_MCP_AUTO_REGISTER_ALIAS exported with auto-picked name" true
+    (env_contains env "C2C_MCP_AUTO_REGISTER_ALIAS=codex-ember-frost-n2b8");
+  check bool "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN exported as \"1\"" true
+    (env_contains env "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN=1")
+
+let test_build_env_writes_origin_marker_zero_when_explicit () =
+  (* When the caller passes alias_override and ~alias_from_auto_gen:false,
+     the env marker must be "0" so the server-side register handler still
+     applies the user-supplied blocklist. *)
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "claude") ~alias_from_auto_gen:false
+      "claude-instance" (Some "my-explicit-alias")
+  in
+  check bool "explicit alias wins over instance name in C2C_MCP_AUTO_REGISTER_ALIAS" true
+    (env_contains env "C2C_MCP_AUTO_REGISTER_ALIAS=my-explicit-alias");
+  check bool "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN explicitly \"0\"" true
+    (env_contains env "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN=0")
+
 let test_codex_heartbeat_interval_is_four_minutes () =
   check (float 0.001) "interval seconds" 240.0
     C2c_start.codex_heartbeat_interval_s
@@ -3467,6 +3500,10 @@ let () =
             `Quick, test_build_env_strips_ambient_force_capabilities_for_opencode )
         ; ( "build_env_claude_keeps_force_capabilities_under_ambient",
             `Quick, test_build_env_claude_keeps_force_capabilities_under_ambient )
+        ; ( "build_env writes alias + FROM_AUTO_GEN=1 when auto-picked",
+            `Quick, test_build_env_writes_alias_and_origin_marker_when_auto_gen )
+        ; ( "build_env writes FROM_AUTO_GEN=0 when alias explicit",
+            `Quick, test_build_env_writes_origin_marker_zero_when_explicit )
         ; ( "codex_heartbeat_interval_is_four_minutes",
             `Quick, test_codex_heartbeat_interval_is_four_minutes )
         ; ( "codex_heartbeat_enabled_for_codex_family_only",
