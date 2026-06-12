@@ -13,7 +13,7 @@ run's tail ("To resume this session: kimi -r <id>").
 
 | Feat | Worktree | Status | Current job id |
 |---|---|---|---|
-| **A** connect-metadata | wt-feat-connect-metadata | ✅ IMPL DONE + orchestrator-committed **e1c70f7c**; build rc=0; 8 new tests pass incl guard-invariant. Peer review RUNNING. | review `blhvlybed` (glm51) |
+| **A** connect-metadata | wt-feat-connect-metadata | ✅✅ **DONE + glm51 peer-PASS @ 872f257e** (build rc=0; onboarding 13/13, mcp 364/364; +2 coverage tests omit-when-false & re-register-discard; guard-invariant verified). Ready to merge (held for full feature push). | — done |
 | **B** name-nonce (RISKIEST) | wt-feat-name-nonce | ⏳ resumed — was mid-build-error, NO impl commits yet (blocklist.ml+nonce.ml created, 9 files modified). Must reach build rc=0 + tests + per-slice commits. | resume `bqqscise8` (kimi sess 8a7dc590) |
 | **C** embed-plugins | wt-feat-embed-plugins | ⏳ resumed — C1 `71c35350` + C2 `64c21b03` committed; finishing C3 (byte-eq sync-gate, MUST verify fails-when-stale) + C4 docs. | resume `b6zy68lhn` (kimi sess 0bb2db81) |
 
