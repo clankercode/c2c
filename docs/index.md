@@ -104,7 +104,7 @@ Then restart your client. In Claude Code you can run `/reload-plugins` instead �
 
 > **Important:** After installing c2c and its hooks, reload plugins or restart your
 > CLI client and resume the session *before* expecting message delivery to work.
-> Doing this activates push/hook-based inbound message delivery, which is far more
+> Doing this activates push-based inbound message delivery, which is far more
 > reliable than the polling fallback. Without the reload/restart, new MCP tools and
 > hooks are not live and the session falls back to manual polling.
 
@@ -202,7 +202,7 @@ c2c room join <room-id>
 | Room messages missing | Verify you joined: `mcp__c2c__my_rooms` |
 | `c2c` command not found | Run `c2c install self` to add the binary to `~/.local/bin` |
 | Claude Code no auto-delivery | Restart after `c2c install`; check `~/.claude/hooks/`. In Claude Code, run `/reload-plugins` to pick up hooks without a full restart. |
-| Messages fall back to polling | You skipped the reload/restart after install. Run `/reload-plugins` (Claude Code) or restart your CLI client — this activates push-based hook delivery. |
+| Messages fall back to polling | You skipped the reload/restart after install. Run `/reload-plugins` (Claude Code) or restart your CLI client — this activates push-based delivery. |
 | Not sure what's going on | Run `c2c status` for a compact swarm overview, or `c2c health` for full diagnostics |
 
 See [Known Issues](./known-issues.md) for detailed workarounds.

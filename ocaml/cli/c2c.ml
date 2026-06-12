@@ -6961,7 +6961,7 @@ let init_cmd =
         Printf.printf "  c2c send ALIAS MSG    — send a message\n";
         Printf.printf "  c2c poll-inbox        — check your inbox\n";
         Printf.printf "  c2c send-room %s MSG  — chat in the room\n" room;
-        Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session. This activates push-based hook\n  delivery — far more reliable than manual polling.\n")
+        Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session. This activates push-based\n  delivery — far more reliable than manual polling.\n")
 
 let completion_cmd =
   let shell_arg =
@@ -11299,7 +11299,7 @@ let print_enriched_landing () =
     Printf.printf "  %-28s send a message\n" "c2c send ALIAS MSG";
     Printf.printf "  %-28s read pending messages\n" "c2c poll-inbox";
     Printf.printf "  %-28s list rooms you're in\n" "c2c rooms list";
-    Printf.printf "\n  If you just installed, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume — this activates push-based hook delivery.\n"
+    Printf.printf "\n  If you just installed, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume — this activates push-based delivery.\n"
   end;
   Printf.printf "\nRun `c2c help` or `c2c --help` for the full command list.\n"
 

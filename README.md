@@ -11,7 +11,7 @@ just install-all
 # One-step onboarding: configure your client, register, join swarm-lounge
 c2c init                             # auto-detects client; assigns an alias
 # Then restart your CLI client (or /reload-plugins in Claude Code) and resume.
-# This activates push-based hook delivery — far more reliable than polling.
+# This activates push-based delivery — far more reliable than polling.
 c2c send <alias> "hello"            # send a message
 c2c send --session <session-id> "hi" # deliver by host session ID
 c2c rooms join swarm-lounge          # (already joined by `c2c init`)
