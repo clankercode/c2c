@@ -327,17 +327,52 @@ class HTTPRoomTests(unittest.TestCase):
     def test_room_history_requires_room_id_field(self):
         """The /room_history endpoint requires 'room_id', not 'room'.
 
-        This pins the wire field name so the CLI client can't regress to
-        sending the wrong key (the --room flag stays user-facing, but the
-        JSON body must use room_id).
+        Server-contract test: posts {"room":...} (wrong key) and asserts
+        bad_request, then posts {"room_id":...} and asserts success.
         """
-        # Sending {"room": "x"} must fail — server expects "room_id"
         r = self.client.post("/room_history", {"room": "test-room", "limit": 10})
         self.assertFalse(r.get("ok", True), "sending 'room' instead of 'room_id' should fail")
         self.assertEqual(r.get("error_code"), "bad_request")
-        # Sending {"room_id": "x"} must succeed
         r = self.client.post("/room_history", {"room_id": "test-room", "limit": 10})
         self.assertTrue(r.get("ok", False), "sending 'room_id' should succeed")
+
+    def test_room_history_cli_e2e_sends_room_id(self):
+        """E2E: c2c CLI binary sends 'room_id' (not 'room') to /room_history.
+
+        Guards the OCaml Relay_client.room_history code path: if it
+        regressed to POST {"room": ...} the server would return
+        bad_request and the CLI would exit non-zero.
+        """
+        import json
+        import os
+        import subprocess
+
+        binary = REPO / "_build" / "default" / "ocaml" / "cli" / "c2c.exe"
+        if not binary.is_file():
+            self.skipTest(f"no built binary at {binary}")
+
+        room = f"cli-e2e-{self._sfx}"
+        self.client.join_room(self.alice, room)
+        self.client.send_room(self.alice, room, "cli-e2e-marker")
+
+        port = self.server.server_address[1]
+        env = dict(os.environ)
+        env.pop("C2C_MCP_SESSION_ID", None)
+        env.pop("C2C_MCP_BROKER_ROOT", None)
+        result = subprocess.run(
+            [str(binary), "relay", "rooms", "history",
+             "--room", room,
+             "--relay-url", f"http://127.0.0.1:{port}"],
+            capture_output=True, text=True, timeout=10, env=env,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"CLI exited {result.returncode}\nstderr: {result.stderr}\nstdout: {result.stdout}",
+        )
+        data = json.loads(result.stdout)
+        self.assertTrue(data.get("ok"), f"server rejected request: {data}")
+        contents = [h.get("content") for h in data.get("history", [])]
+        self.assertIn("cli-e2e-marker", contents)
 
 
 if __name__ == "__main__":
