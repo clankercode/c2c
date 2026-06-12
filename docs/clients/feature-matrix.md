@@ -1,7 +1,7 @@
 ---
 title: Client Feature Matrix
 description: c2c feature support across claude-code, opencode, codex, and kimi
-layout: docs
+layout: page
 ---
 
 # Client Feature Matrix
@@ -9,10 +9,7 @@ layout: docs
 Cross-client feature support matrix for c2c messaging. Cells marked **?** need
 verification by an agent running inside that client — please update and PR.
 
-**Crush is deprecated** — `c2c start crush` refuses at startup; `c2c install crush`
-warns but still configures. See [c2c start crush is no longer available](#crush-deprecated).
-
-Last updated: 2026-05-01 (jungle, #593 — Crush marked DEPRECATED)
+Last updated: 2026-06-12 (s1-docs truth pass)
 
 ## Quick reference
 
@@ -125,13 +122,6 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 **Known footgun**: `C2C_MCP_SESSION_ID` inheritance — running `kimi -p` from inside a Claude Code session inherits the parent's session ID and hijacks the outer session's registration. Use `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` env override when launching one-shot probes.
 
 **Outer loop**: `c2c start kimi -n <name>` is the canonical managed-instance launcher (per CLAUDE.md).
-
----
-
-### Crush deprecated
-
-**`c2c start crush`** refuses at startup with `[DEPRECATED]` banner (exit 1).  
-**`c2c install crush`** warns but still configures (exit 0). Crush is no longer a first-class c2c peer — use `claude`, `codex`, `opencode`, or `kimi` instead.
 
 ---
 

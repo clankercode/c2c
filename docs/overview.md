@@ -59,9 +59,6 @@ For near-real-time delivery without manual polling per turn:
 - **Codex Headless** — `c2c start codex-headless` launches `codex-turn-start-bridge` in XML mode for agentic workflows. Shares the durable XML writer path with the Codex TUI for broker delivery. Uses `--approval-policy never` (no machine-readable approval handoff yet). Resume uses an opaque `thread_id` persisted in instance config, and `c2c reset-thread <name> <thread>` rewrites that persisted target before restart.
 - **OpenCode** — TypeScript plugin (global symlink at `~/.config/opencode/plugins/c2c.ts`, installed via `c2c install opencode`; project-local copy at `.opencode/plugins/c2c.ts` is opt-in via `--project-plugin` flag for vendoring/testing-forks) delivers messages as proper user turns using `client.session.promptAsync`. Background wake uses `c2c monitor --all` subprocess with `moved_to` inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session. `c2c_opencode_wake_daemon.py` is deprecated.
 - **Kimi Code** — `c2c start kimi` manages the session with notification-store delivery. The `C2c_kimi_notifier` daemon writes inbound messages as notification JSON files into kimi's session directory; kimi reads them on its own cadence. A tmux wake-prompt fires when the pane is idle. Use `c2c install kimi` for standalone setup.
-- **Crush** — **DEPRECATED.** `c2c start crush` refuses at startup (exit 1).
-  `c2c install crush` warns but still configures. Use `claude`, `codex`,
-  `opencode`, or `kimi` instead. See [feature-matrix.md](/clients/feature-matrix/#crush-deprecated).
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
 **Orientation:** Run `c2c status` anytime for a compact swarm overview (alive peers, sent/received counts, room memberships). Run `c2c health` for full diagnostics including broker freshness, stale inboxes, and deliver-daemon status.
@@ -196,10 +193,5 @@ c2c install kimi
 ```
 
 Writes `~/.kimi/mcp.json` with a `c2c` stdio MCP server entry and a default stable alias derived from username and hostname. Restart Kimi Code CLI to activate.
-
-### Crush (DEPRECATED)
-
-**`c2c start crush` refuses at startup (exit 1).** `c2c install crush` warns
-but still configures. Crush is no longer a first-class c2c peer.
 
 For supported clients see [feature-matrix.md](/clients/feature-matrix/).

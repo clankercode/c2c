@@ -331,113 +331,6 @@ PTY injection required.
 
 ---
 
-## Gemini CLI
-
-> **Tier 1 support** (#406): MCP-server-based delivery via first-class
-> `gemini mcp` config. No interactive consent prompt — Gemini's
-> `trust: true` flag in the MCP server entry pre-approves tool-call
-> confirmations, so automated `c2c restart gemini` doesn't hang.
-
-### Session discovery
-
-Gemini CLI does not expose a session-ID env var. `c2c install gemini`
-writes `~/.gemini/settings.json` with `mcpServers.c2c.env.C2C_MCP_AUTO_REGISTER_ALIAS`,
-so the broker auto-registers a stable alias on each startup. Pass
-`--alias <name>` to override.
-
-OAuth seeding caveat: `~/.gemini/oauth_creds.json` must exist before
-the first managed launch. Run `gemini` once interactively to seed
-Google credentials; `c2c install gemini` surfaces this as a one-line
-reminder.
-
-### Message delivery — MCP server (only path)
-
-`c2c install gemini` registers the c2c MCP server in
-`~/.gemini/settings.json` with `trust: true`. Inbound delivery is via
-`mcp__c2c__poll_inbox` (the agent calls it explicitly each turn) plus
-in-process MCP tool surfaces. There is no separate deliver daemon, no
-wire bridge, no poker, and no PTY-injection auto-answer (parallel to
-Claude's #399b dance — Gemini's permission gate is settings-based,
-not interactive).
-
-```
-Peer sends message  →  broker writes to Gemini agent's .inbox.json
-    │
-    (no daemon fires)
-    │
-    ▼
-Agent calls mcp__c2c__poll_inbox at next opportunity
-    │
-    ▼
-Broker returns pending messages
-```
-
-### Managed harness
-
-Use `c2c start gemini` (#406b adapter):
-
-```bash
-c2c install gemini --alias my-gemini   # one-time MCP config write
-c2c start gemini -n my-gemini          # launch managed session
-c2c instances                           # list running instances
-c2c stop my-gemini                      # stop
-c2c restart my-gemini                   # restart (no consent prompt → safe to automate)
-```
-
-The managed harness is the simplest of any client: needs_deliver
-and needs_poker are both `false` because Gemini's MCP delivery is
-in-process via the configured MCP server.
-
-### Resume semantics
-
-Gemini uses a numeric session index (`gemini --resume <N>`) plus a
-`latest` keyword and `--list-sessions`. c2c maps its instance
-session-id string as follows:
-
-- Numeric session_id (`"3"`) → `gemini --resume 3`
-- Non-numeric session_id → `gemini --resume latest`
-- Empty session_id → fresh session (no `--resume`)
-
-Operators wanting a specific session can pass `c2c start gemini -- --resume N`
-(extra args forwarded by `prepare_launch_args`).
-
-### Self-restart
-
-Standalone: `/exit` and re-launch `gemini`. Settings.json changes are
-picked up on next launch.
-
-Managed (`c2c start gemini`): `c2c restart <name>`. **No interactive
-consent prompt to auto-answer** — the `trust: true` settings field
-handles it. Contrast with Claude (#399b) which needs a tmux-side
-TTY auto-answer for the dev-channel consent prompt.
-
-### What the user sees
-
-The `mcp__c2c__poll_inbox` tool result appears inline in the Gemini
-conversation. Outbound `mcp__c2c__send` calls flow through the same
-MCP server with no separate transport.
-
-### Research note
-
-`--experimental-acp` (Agent Communication Protocol) is mentioned in
-`gemini --help` but not yet investigated for c2c integration — could
-parallel/replace channels-push semantics if it lands as stable.
-Tracked as a future research follow-up.
-
----
-
-## Crush (experimental / unsupported)
-
-> **Not recommended as a first-class peer.** Crush lacks context compaction,
-> so long-lived sessions eventually hit token limits and become unresponsive.
-> Interactive TUI wake is also unreliable. One-shot `crush run` poll-and-reply
-> works for brief smoke tests, but the managed harness should be considered
-> unsupported.
-
-`c2c_configure_crush.py` still writes `~/.config/crush/crush.json` if you want to
-experiment. The `mcp__c2c_*` tools work inside `crush run`, but do not rely on
-Crush for persistent swarm membership.
-
 ---
 
 ## Delivery tier summary
@@ -448,22 +341,20 @@ Crush for persistent swarm membership.
 | Codex       | PID at register time    | XML sideband (preferred) / PTY fallback | PTY sentinel string   | `c2c start codex` |
 | OpenCode    | `$OPENCODE_SESSION_ID`  | Native TS plugin + promptAsync ✓ | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
 | Kimi        | `kimi-user-host` (auto) | Notification-store push (`C2c_kimi_notifier`) | File-based push + tmux wake | `c2c start kimi` |
-| Gemini      | `C2C_MCP_AUTO_REGISTER_ALIAS` (auto) | MCP `c2c` server (settings.json `trust: true`) | `poll_inbox` (no daemon) | `c2c start gemini` |
 
 ---
 
 ## Cross-client DM matrix
 
-| From ↓ / To → | Claude Code | Codex | OpenCode | Kimi | Gemini |
-|---------------|:-----------:|:-----:|:--------:|:----:|:------:|
-| Claude Code   | ✓           | ✓     | ✓        | ✓    | ?      |
-| Codex         | ✓           | ✓     | ✓        | ✓    | ?      |
-| OpenCode      | ✓           | ✓     | ✓        | ✓    | ?      |
-| Kimi          | ✓           | ✓     | ✓        | ✓    | ?      |
-| Gemini        | ?           | ?     | ?        | ?    | ?      |
+| From ↓ / To → | Claude Code | Codex | OpenCode | Kimi |
+|---------------|:-----------:|:-----:|:--------:|:----:|
+| Claude Code   | ✓           | ✓     | ✓        | ✓    |
+| Codex         | ✓           | ✓     | ✓        | ✓    |
+| OpenCode      | ✓           | ✓     | ✓        | ✓    |
+| Kimi          | ✓           | ✓     | ✓        | ✓    |
 
 **✓** = proven end-to-end for live active-session DMs
 
-*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi Wire bridge proven 2026-04-14.)*
+*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi notification-store proven 2026-04-29.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.
