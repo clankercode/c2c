@@ -293,6 +293,24 @@ let test_register_no_metadata_still_captures_cwd () =
   check bool "cwd still captured with --no-metadata" true (Option.is_some cwd);
   check bool "cwd is non-empty" true (Option.get cwd <> "")
 
+let test_register_default_omits_metadata_opt_out_json () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-omit-%d" (Unix.getpid ()) in
+  let session_id = Printf.sprintf "test-omit-session-%d-%06x" (Unix.getpid ()) (Random.bits ()) in
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["init"; "--no-setup"; "--alias"; alias; "--room"; ""] in
+  check int "init exits 0" 0 rc;
+  let rc, _, _ = run_c2c ~home:tmp ~broker:tmp ["register"; "--alias"; alias; "--session-id"; session_id] in
+  check int "register exits 0" 0 rc;
+  let registry_json = read_json_file (tmp // "broker" // "registry.json") in
+  let items =
+    match registry_json with
+    | `List items -> items
+    | _ -> []
+  in
+  check int "one registration" 1 (List.length items);
+  let metadata_opt_out = json_bool_member "metadata_opt_out" (List.hd items) in
+  check bool "metadata_opt_out key absent from JSON when false" true (metadata_opt_out = None)
+
 (* ---------------------------------------------------------------- *)
 (* Alcotest registration *)
 
@@ -321,5 +339,6 @@ let () =
         [ test_case "CLI register captures cwd" `Quick test_register_captures_cwd
         ; test_case "CLI register --no-metadata sets opt-out" `Quick test_register_no_metadata_sets_opt_out
         ; test_case "CLI register --no-metadata still captures cwd" `Quick test_register_no_metadata_still_captures_cwd
+        ; test_case "CLI register default omits metadata_opt_out from JSON" `Quick test_register_default_omits_metadata_opt_out_json
         ] )
     ]

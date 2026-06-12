@@ -83,6 +83,17 @@ let test_register_metadata_opt_out_forward_compat () =
       let reg = List.hd (C2c_mcp.Broker.list_registrations broker) in
       check bool "missing metadata_opt_out reads as false" false reg.metadata_opt_out)
 
+let test_register_metadata_opt_out_reregister_discards () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ~metadata_opt_out:true ();
+      let reg1 = List.hd (C2c_mcp.Broker.list_registrations broker) in
+      check bool "initial metadata_opt_out=true" true reg1.metadata_opt_out;
+      C2c_mcp.Broker.register broker ~session_id:"session-a" ~alias:"storm-ember" ~pid:None ~pid_start_time:None ();
+      let broker2 = C2c_mcp.Broker.create ~root:dir in
+      let reg2 = List.hd (C2c_mcp.Broker.list_registrations broker2) in
+      check bool "re-register without opt-out resets to false" false reg2.metadata_opt_out)
+
 let test_send_enqueues_message_for_target_alias () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -13168,6 +13179,8 @@ let () =
             test_register_metadata_opt_out_json_round_trip
         ; test_case "register metadata_opt_out forward compat" `Quick
             test_register_metadata_opt_out_forward_compat
+        ; test_case "register metadata_opt_out re-register discards" `Quick
+            test_register_metadata_opt_out_reregister_discards
         ; test_case "register same session different alias dedup" `Quick
             test_register_same_session_different_alias_dedup
         ; test_case "register same session same alias idempotent" `Quick
