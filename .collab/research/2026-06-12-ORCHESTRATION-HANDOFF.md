@@ -129,3 +129,16 @@ U1 manifest module → U2 install wiring+output → U3 uninstall command (surgic
 strip + recompute fallback) → U4 docs. TESTS MANDATORY; critical safety test = user keys survive
 when only the c2c stanza is stripped. On completion: validate in-worktree, different-model
 peer-PASS w/ test-coverage check, then Max review (do NOT push without Max).
+
+### UNINSTALL FEATURE PROGRESS (2026-06-13 ~03:25, pre-compact)
+- U1 COMMITTED @ `8c267363` in wt-uninstall (manifest module `ocaml/c2c_install_manifest.ml`+`.mli`
+  in c2c_mcp library + unit tests). Agent `bloxdk0k1` ALIVE, on U2 (wiring manifest writes into
+  c2c_setup.ml). Spec @ `be8e1e6b`.
+- RESUME ON CAP: if ccc hits the 100-step cap (rc=1 "Max number of steps reached"), resume with
+  `kimi -r <session-id> -y --print -p "<continuation>"` from `.worktrees/wt-uninstall` (session id
+  in task tail "To resume this session: kimi -r <id>"). Build in-worktree:
+  `bash -lc 'eval "$(opam env)"; dune build --root .worktrees/wt-uninstall -j2'` (opam NOT in
+  orchestrator shell). Critical uninstall test: a SHARED user config keeps the user's OWN keys
+  after only the `c2c` stanza is stripped.
+- On full completion: validate build+tests in-worktree → DIFFERENT-model ccc peer-PASS that
+  verifies test coverage → HOLD for Max review (do NOT push without Max).
