@@ -47,8 +47,14 @@ Maintained by the orchestrator (claude). Updated as each agent lands.
 | ccc/glm51 | S2 (impl by mimo25p) | **PASS** | rc=0 | Hardened non-hermetic `find_c2c_binary` → `Sys.executable_name`, fail-loud, no PATH fallback. Confirmed all advertised surfaces clean, routing intact, dormant code preserved | **7d6b9061** |
 | ccc/mm3 | S1 (impl by mimo25p) | **PASS** | jekyll rc=0 (modern stack) | Found+fixed orphan `---`→double `<hr>` after Crush-section removal. Verified client-count consistency (~11 files), layout fix, 3 historical exclusions correct, no broken links. **ENV finding:** pinned github-pages Jekyll 3.10.0 is broken on Ruby 3.4.8 (reproduces on origin/master — pre-existing, NOT a slice regression) | **9ab652ca** |
 
+| ccc/mm3 | S3 (impl by mimo25p) | **PASS** | jekyll rc=0 (modern stack) | **Content-loss audit CLEAN** — enumerated all ~16 delivery cells + extras, every unique fact survives in summary/feature-matrix/runbooks, zero restorations. Fixed 2 link-404s (feature-matrix permalink, `./known-issues.md`→`/known-issues/`). Flagged pre-existing `index.md` relative-link 404 footgun (out of scope) | **acbadeb8** |
+
 S1 STATUS: ✅ DONE — mm3 peer-PASS, 1 defect fixed, jekyll clean (modern stack).
-S2 STATUS: ✅ DONE — feature correct (orchestrator-verified binary refuses), hermetic test (6/6 pass), real different-model peer-PASS, build rc=0. Ready to merge (held until full connect-docs push).
+S2 STATUS: ✅ DONE
+S3 STATUS: ✅ DONE — mm3 peer-PASS, content-loss audit clean, 2 link fixes.
+FOLLOW-UP (small, non-blocking): `docs/index.md:176,205` use `./known-issues.md` / `./commands.md`
+relative links that 404 on the live site (kramdown keeps `.md`). Pre-existing; fix during the
+connect-docs integration/push or a tiny drive-by. Same class mm3 fixed in get-started.md. — feature correct (orchestrator-verified binary refuses), hermetic test (6/6 pass), real different-model peer-PASS, build rc=0. Ready to merge (held until full connect-docs push).
 
 ## Plan-fix log (fixes folded back from reviews)
 - Plan C: glm51's fixes folded (paths → `ocaml/c2c_start.ml`, explicit else-branch at :4637,
