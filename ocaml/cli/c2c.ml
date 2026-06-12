@@ -9424,6 +9424,7 @@ let start_cmd =
       ?tmux_location:tmux_loc
       ~tmux_command:tmux_tail
       ~no_prompt
+      ~opencode_plugin_embedded:C2c_opencode_plugin_embedded.content
       ())
 
 let start = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd

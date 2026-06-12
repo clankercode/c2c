@@ -720,29 +720,20 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
     )
   in
   json_write_file_or_dryrun dry_run sidecar sidecar_json;
-  (* Find canonical plugin source. When running from the c2c repo, the canonical
-     source is data/opencode-plugin/c2c.ts. Use a symlink so the installed
-     plugin auto-picks up future c2c repo updates without re-install. *)
-  let home = try Sys.getenv "HOME" with Not_found -> "" in
-  let global_plugin_path = home // ".config" // "opencode" // "plugins" // "c2c.ts" in
+  (* Plugin install: in a dev checkout, symlink to the live repo source so edits
+     are picked up automatically. In a binary-only install (no repo data/), fall
+     back to the embedded blob, which is always available in the compiled c2c
+     binary. *)
   let canonical_plugin = "data" // "opencode-plugin" // "c2c.ts" in
   let file_size path =
     try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0
   in
-  let copy_file ~src ~dst =
-    let src_size = file_size src in
+  let write_string ~dst s =
     if dry_run then
-      Printf.printf "[DRY-RUN] would copy %d bytes from %s to %s\n%!" src_size src dst
+      Printf.printf "[DRY-RUN] would write %d bytes to %s\n%!" (String.length s) dst
     else begin
-      let ic = open_in_bin src in
       let oc = open_out_bin (dst ^ ".tmp") in
-      Fun.protect ~finally:(fun () -> close_in ic; close_out oc) (fun () ->
-        let buf = Bytes.create 65536 in
-        let rec loop () =
-          let n = input ic buf 0 (Bytes.length buf) in
-          if n > 0 then (output oc buf 0 n; loop ())
-        in
-        loop ());
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc s);
       Unix.rename (dst ^ ".tmp") dst
     end
   in
@@ -758,34 +749,22 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
     end
   in
   let canonical_exists = Sys.file_exists canonical_plugin && file_size canonical_plugin >= 1024 in
-  let plugin_src =
-    if canonical_exists then Some canonical_plugin
-    else if Sys.file_exists global_plugin_path && file_size global_plugin_path >= 1024 then
-      Some global_plugin_path
-    else None
-  in
+  let plugins_dir = config_dir // "plugins" in
+  let dest = plugins_dir // "c2c.ts" in
   let plugin_note =
-    match plugin_src with
-    | None ->
-        Printf.sprintf "plugin not found — run: c2c install opencode (from c2c repo, or copy .opencode/plugins/c2c.ts to %s)" global_plugin_path
-    | Some src ->
-        let plugins_dir = config_dir // "plugins" in
-        mkdir_or_dryrun dry_run plugins_dir;
-        let dest = plugins_dir // "c2c.ts" in
-        (try
-           if canonical_exists then begin
-              (* Canonical source available: use symlinks so installed plugin
-                 tracks repo changes automatically. Only write the local plugin
-                 path — writing both local and global causes doubled helper
-                 spawns (#340a). *)
-              make_symlink ~src:canonical_plugin ~dst:dest;
-              Printf.sprintf "plugin symlinked to %s" dest
-            end else begin
-             (* No canonical source: copy from existing global plugin. *)
-             copy_file ~src ~dst:dest;
-             Printf.sprintf "plugin installed to %s (copied)" dest
-           end
-         with _ -> "plugin install failed")
+    mkdir_or_dryrun dry_run plugins_dir;
+    (try
+       if canonical_exists then begin
+          (* Dev checkout: symlink to the repo source so the installed plugin
+             tracks data/opencode-plugin/c2c.ts edits automatically. *)
+          make_symlink ~src:canonical_plugin ~dst:dest;
+          Printf.sprintf "plugin symlinked to %s" dest
+        end else begin
+         (* Binary-only install: write the embedded blob. *)
+         write_string ~dst:dest C2c_opencode_plugin_embedded.content;
+         Printf.sprintf "plugin installed to %s (embedded)" dest
+       end
+     with _ -> "plugin install failed")
   in
   match output_mode with
   | Json ->
