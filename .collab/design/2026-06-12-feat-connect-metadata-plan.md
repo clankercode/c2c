@@ -49,9 +49,15 @@ Instead:
 - Confirm the human/JSON register epilog (`c2c.ml:2910-2914`) is unaffected.
 
 ### Slice A2 — registration record + persistence
-- `ocaml/c2c_broker.ml`: add `metadata_opt_out : bool` to the registration record (default
-  false). Thread through `register` (`:1871`). **State carry-over (`:1904-1927`): DISCARD the
-  old value — the new register call re-asserts it (same treatment as `_old_cwd`, NOT preserved
+- **Record/signature file scope (codex final-pass — build would FAIL if only `c2c_broker.ml`
+  is edited):** the `type registration` record lives in `ocaml/c2c_mcp_helpers.ml:1-76` and is
+  re-exposed in `ocaml/c2c_mcp.mli:48-112`; the `Broker.register` signature is in
+  `ocaml/c2c_mcp.mli:294`. Add `metadata_opt_out : bool` to ALL THREE: the record in
+  `c2c_mcp_helpers.ml`, the exposed record in `c2c_mcp.mli`, and `?metadata_opt_out:bool` to
+  `Broker.register` in `c2c_mcp.mli`.
+- `ocaml/c2c_broker.ml`: add `metadata_opt_out : bool` to the record literal + thread through
+  `register` (`:1871`). **State carry-over (`:1904-1927`): DISCARD the old value — the new
+  register call re-asserts it (same treatment as `_old_cwd` discard at `:1927`, NOT preserved
   like `tmux_location`).** Per mimo25p review.
 - `registration_to_json` (`c2c_broker.ml:122`) + `registration_of_json` (`:248`): serialize
   the new bool (omit when false to keep JSON lean; default false on read). VERIFY round-trip
