@@ -1313,6 +1313,43 @@ let test_install_gemini_dry_run_shows_config_preview () =
       check bool "output contains Configured Gemini" true
         (string_contains content "Configured Gemini"))
 
+(* c2c install opencode — real install (not dry-run) with temp HOME.
+   Regression test: write_deliver_watch_scripts used non-recursive mkdir,
+   crashing with Sys_error when ~/.c2c/clients/opencode/ didn't exist. *)
+let test_install_opencode_creates_deliver_watch_scripts () =
+  with_temp_dir (fun tmp_home ->
+    with_temp_dir (fun target_dir ->
+      let env_prefix = Printf.sprintf "HOME=%s" (Filename.quote tmp_home) in
+      let alias = Printf.sprintf "test-oc-fix-%d" (Unix.getpid ()) in
+      let tmpfile = Filename.temp_file "c2c-install-oc" ".out" in
+      Fun.protect ~finally:(fun () -> (try Sys.remove tmpfile with _ -> ()))
+        (fun () ->
+          let cmd = c2c_cmd (Printf.sprintf
+            "%s c2c install opencode --force --alias %s --target-dir %s > %s 2>&1"
+            env_prefix (Filename.quote alias) (Filename.quote target_dir) tmpfile) in
+          let rc = Sys.command cmd in
+          (* Must not crash — exit 0 *)
+          check int "install opencode --force exits 0" 0 rc;
+          (* client dir must exist *)
+          let client_dir = Filename.concat tmp_home (Filename.concat ".c2c" (Filename.concat "clients" "opencode")) in
+          check bool "client_dir exists" true (Sys.file_exists client_dir);
+          check bool "client_dir is directory" true
+            (try Sys.is_directory client_dir with _ -> false);
+          (* deliver-watch.sh must exist and be executable *)
+          let supervisor = Filename.concat client_dir "deliver-watch.sh" in
+          check bool "deliver-watch.sh exists" true (Sys.file_exists supervisor);
+          let supervisor_stat = Unix.stat supervisor in
+          check bool "deliver-watch.sh is executable" true
+            (supervisor_stat.Unix.st_perm land 0o111 <> 0);
+          (* start-hooks/pre-deliver.sh must exist and be executable *)
+          let hook_dir = Filename.concat client_dir "start-hooks" in
+          check bool "start-hooks dir exists" true (Sys.file_exists hook_dir);
+          let pre_deliver = Filename.concat hook_dir "pre-deliver.sh" in
+          check bool "pre-deliver.sh exists" true (Sys.file_exists pre_deliver);
+          let pre_deliver_stat = Unix.stat pre_deliver in
+          check bool "pre-deliver.sh is executable" true
+            (pre_deliver_stat.Unix.st_perm land 0o111 <> 0))))
+
 (* ------------------------------------------------------------------------- *)
 (* c2c agent new banner — verify timestamp has no double "UTC UTC"           *)
 (* ------------------------------------------------------------------------- *)
@@ -1903,6 +1940,9 @@ let () =
         ; ( "install kimi --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_kimi )
         ; ( "install opencode --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_opencode )
         ; ( "install codex --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_codex )
+        ] )
+    ; ( "install_opencode_real",
+        [ ( "install opencode --force creates deliver-watch scripts", `Quick, test_install_opencode_creates_deliver_watch_scripts )
         ] )
     ; ( "agent_new_banner",
         [ ( "agent new banner has no double UTC", `Quick, test_agent_new_banner_no_double_utc )
