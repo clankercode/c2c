@@ -1,10 +1,17 @@
 let grace = 20.0
 let bucket = 10.0
 let step = 4
-(* d_max is bounded by Pow.max_mint_iterations: a client must be able to mint
-   at this difficulty. 2^20 avg work is a real deterrent (~0.5-2s/register)
-   while staying well under the mint-iteration cap. *)
-let d_max = 20
+(* d_max is the global difficulty ceiling across every route, so it sets the
+   worst-case mint CPU a client ever pays for a routine request. 2^20 (~0.5-2s
+   /register) was real "crazy CPU" for legitimate routine traffic: a relay
+   connector registers all its local sessions under ONE shared identity, so
+   accumulated per-actor cost escalates to the cap on the prod relay (where
+   C2C_RELAY_POW=1) within a handful of sessions, and the connector then burns
+   ~1M hashes minting each one. 2^12 (~4096 hashes, low single-digit ms) keeps
+   a meaningful per-message deterrent against floods in aggregate while making
+   routine requests imperceptible. Must stay well under Pow.max_mint_iterations
+   (2^24) so a client can always mint at the maximum required difficulty. *)
+let d_max = 12
 let window_s = 600.0
 
 let cost_of_route = function
