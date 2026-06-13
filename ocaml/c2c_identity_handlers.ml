@@ -346,7 +346,9 @@ let register ~broker ~session_id_override ~arguments =
                         |> List.filter (fun s -> s <> "" && Broker.valid_room_id s)
                     | None -> []
                   in
-                  List.sort_uniq String.compare ("swarm-lounge" :: auto_rooms)
+                  let social_room = C2c_swarm_config.swarm_config_social_room () in
+                  if social_room = "" then auto_rooms
+                  else List.sort_uniq String.compare (social_room :: auto_rooms)
                 in
                 let content =
                   Printf.sprintf
