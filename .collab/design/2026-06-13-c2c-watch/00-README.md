@@ -109,10 +109,13 @@ applies.
 
 ## 4. Remaining open questions (surfaced to Max for sign-off)
 
-- **opam pin freshness.** Local opam repo is ~3 months stale (2026-03-05). Run
-  `opam update` before locking the final `lambda-term`/`zed` version pin — a
-  newer release may exist (it will NOT unblock notty). Does the swarm accept
-  pinning exact versions vs a constraint range?
+- **opam pin freshness — ✅ VALIDATED 2026-06-13 (orchestrator).** Ran
+  `opam update`; on the *fresh* index `lambda-term 3.4.0` is still the latest
+  (zed 3.2.3) and resolves clean (11 pkgs), and `notty` is still solver-blocked
+  (`notty → ocaml < 5.4` vs `ocaml = 5.4.1`) — the block is real, not a
+  stale-index artifact. So the pin `lambda-term = 3.4.0` / `zed < 4.0` is
+  current. **Remaining call for Max:** exact-version pin vs a constraint range
+  (recommend exact, given the "not stable" `LTerm_widget` API).
 - **Snapshot/golden harness shape.** The Python/Textual prior art had a mature
   `render_snapshot → export_text → normalize` path + checked-in goldens. An
   OCaml TUI needs its own pure-render-to-string path designed from scratch. What
