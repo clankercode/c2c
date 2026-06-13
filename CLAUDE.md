@@ -71,15 +71,16 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
   produces undefined results. Please run instances in tmux if you need to test
   them. Also check if you are running in tmux already. 
 - **Testing against live agents: use tmux + `scripts/*`, not ad-hoc spawns.**
-  Convenience c2c tmux script ./scripts/c2c_tmux.py
-    usage: c2c_tmux [-h] {list,peek,capture,send,enter,keys,exec,layout,whoami} ..
+  Convenience c2c tmux script ./scripts/c2c_tmux.py — the canonical tmux
+  swiss-army CLI for live-peer testing (subsumes the legacy `c2c-swarm.sh`):
+    usage: c2c_tmux [-h] {list,peek,peek-all,capture,send,send-raw,enter,keys,exec,follow,unfollow,grep,grep-echild,restart,layout,whoami,launch,wait-alive,stop} ..
   Live-peer tests (cross-client sends, wake paths, permission flows) must
-  drive real sessions in tmux panes — `scripts/c2c-swarm.sh`,
-  `scripts/c2c-tmux-enter.sh`, `scripts/c2c-tmux-exec.sh`,
-  `scripts/tmux-layout.sh`, `scripts/tui-snapshot.sh`. Spawning peers outside
-  tmux hides TTY/pgroup bugs and makes failures unreproducible. Check
-  `ls scripts/` before writing a new harness; extend an existing script
-  rather than forking one-off launchers.
+  drive real sessions in tmux panes — `scripts/c2c_tmux.py` (it delegates to
+  `scripts/c2c-tmux-enter.sh`, `scripts/c2c-tmux-exec.sh`, and
+  `scripts/tmux-layout.sh`; `scripts/tui-snapshot.sh` for TUI snapshots).
+  Spawning peers outside tmux hides TTY/pgroup bugs and makes failures
+  unreproducible. Check `ls scripts/` before writing a new harness; extend an
+  existing script rather than forking one-off launchers.
 
 **If it's not tested in the wild, it's not done! Extreme dogfooding mindset!**
 

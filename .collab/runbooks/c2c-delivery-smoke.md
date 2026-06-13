@@ -69,7 +69,7 @@ by the post-`d4413bd` binary** — existing sessions launched from an
 earlier binary will continue to spew ECHILD on `UserPromptSubmit` /
 `Stop` / non-MCP `PostToolUse:*` until restarted. After any
 `c2c start` / binary rebuild, plan a staggered restart of live
-sessions (see `scripts/c2c-swarm.sh restart <alias>`).
+sessions (see `scripts/c2c_tmux.py restart <alias>`).
 
 ---
 
@@ -222,7 +222,7 @@ c2c send <target-alias> "hook-probe-$(date +%s)"
   internal `waitpid()` bookkeeping returned `ECHILD`. Fixed in commit
   `d4413bd` (`fix(start): reset SIGCHLD to SIG_DFL in managed-client
   child before exec`). NOT cosmetic — evidence gathered with
-  `scripts/c2c-swarm.sh grep-echild` showed 100–200 hits per live
+  `scripts/c2c_tmux.py grep-echild` showed 100–200 hits per live
   pane. The fix only applies to sessions launched with the post-`d4413bd`
   binary, so any session started before that commit will keep spewing
   ECHILD until restarted. If you see these in a smoke-test run: check
