@@ -83,8 +83,11 @@ let swarm_config_social_room () : string =
   | Some entries ->
       (match List.assoc_opt "social_room" entries with
        | None -> builtin_swarm_social_room
-       | Some "" -> builtin_swarm_social_room
-       | Some v -> String.trim v)
+       | Some v ->
+           (* trim BEFORE the empty check so a whitespace-only value ("   ")
+              falls back to the builtin, not "" — otherwise the broker prepend
+              sites would drop the default room. *)
+           (match String.trim v with "" -> builtin_swarm_social_room | t -> t))
 
 (* Read [swarm] coordinator_alias from .c2c/config.toml. Returns the
    configured alias or [builtin_swarm_coordinator_alias] when absent/empty. *)
@@ -95,5 +98,6 @@ let swarm_config_coordinator_alias () : string =
   | Some entries ->
       (match List.assoc_opt "coordinator_alias" entries with
        | None -> builtin_swarm_coordinator_alias
-       | Some "" -> builtin_swarm_coordinator_alias
-       | Some v -> String.trim v)
+       | Some v ->
+           (* trim BEFORE the empty check (see swarm_config_social_room). *)
+           (match String.trim v with "" -> builtin_swarm_coordinator_alias | t -> t))

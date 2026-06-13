@@ -2567,6 +2567,35 @@ let test_coordinator_alias_override () =
     "lead-coder"
     (C2c_start.swarm_config_coordinator_alias ())
 
+(* #318 regression (Codex peer-review): a whitespace-only configured value must
+   fall back to the built-in default, not "" — otherwise the broker prepend
+   sites drop the default social room. Trim happens before the empty check. *)
+let test_social_room_whitespace_falls_back () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "[swarm]\nsocial_room = \"   \"\n");
+  with_cwd dir @@ fun () ->
+  check string "whitespace social room falls back to builtin"
+    "swarm-lounge"
+    (C2c_start.swarm_config_social_room ())
+
+let test_coordinator_alias_whitespace_falls_back () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "[swarm]\ncoordinator_alias = \"   \"\n");
+  with_cwd dir @@ fun () ->
+  check string "whitespace coordinator alias falls back to builtin"
+    "coordinator1"
+    (C2c_start.swarm_config_coordinator_alias ())
+
 (* slice/coord-backup-fallthrough: with no config or no [swarm] section,
    coord_chain reads as the empty list (feature-off). *)
 let test_coord_chain_default_empty () =
@@ -3763,6 +3792,10 @@ let () =
            test_coordinator_alias_builtin_default)
         ; ("coordinator_alias_override", `Quick,
            test_coordinator_alias_override)
+        ; ("social_room_whitespace_falls_back", `Quick,
+           test_social_room_whitespace_falls_back)
+        ; ("coordinator_alias_whitespace_falls_back", `Quick,
+           test_coordinator_alias_whitespace_falls_back)
         ; ("coord_chain_default_empty", `Quick,
            test_coord_chain_default_empty)
         ; ("coord_chain_reads_inline_array", `Quick,
