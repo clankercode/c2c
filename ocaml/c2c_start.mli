@@ -364,7 +364,10 @@ val default_coord_fallthrough_idle_seconds : float
 
 val default_coord_fallthrough_broadcast_room : string
 (** Default room ID for the final "all coords missing" broadcast tier
-    of the fallthrough scheduler. ["swarm-lounge"]. *)
+    of the fallthrough scheduler. Derived from
+    [C2c_swarm_config.swarm_config_social_room ()] so it follows the
+    [swarm] [social_room] config; unconfigured repos resolve to
+    ["swarm-lounge"]. *)
 
 val swarm_config_coord_chain : unit -> string list
 (** [swarm_config_coord_chain ()] reads the [swarm] [coord_chain] inline
