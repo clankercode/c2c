@@ -547,7 +547,7 @@ let test_enqueue_codex_heartbeat_uses_broker_inbox_transport () =
   | [ msg ] ->
       check string "from alias" "codex-heartbeat-alias" msg.from_alias;
       check string "to alias" "codex-heartbeat-alias" msg.to_alias;
-      check string "content" C2c_start.codex_heartbeat_content msg.content;
+      check string "content" (C2c_start.codex_heartbeat_content ()) msg.content;
       check bool "not deferrable" false msg.deferrable
   | msgs ->
       fail
@@ -672,10 +672,10 @@ let test_heartbeat_body_swap_for_push_capable () =
     ~session_id:"swap-test-session" ~automated_delivery:true;
   let body =
     C2c_start.heartbeat_body_for_alias ~broker_root:dir ~alias:"swap-alice"
-      ~message:C2c_start.default_managed_heartbeat_content
+      ~message:(C2c_start.default_managed_heartbeat_content ())
   in
   check string "push-capable + default → push-aware variant"
-    C2c_start.push_aware_heartbeat_content body
+    (C2c_start.push_aware_heartbeat_content ()) body
 
 let test_heartbeat_body_no_swap_for_non_push () =
   with_temp_dir @@ fun dir ->
@@ -687,19 +687,19 @@ let test_heartbeat_body_no_swap_for_non_push () =
     ~session_id:"nopush-session" ~automated_delivery:false;
   let body =
     C2c_start.heartbeat_body_for_alias ~broker_root:dir ~alias:"nopush-bob"
-      ~message:C2c_start.default_managed_heartbeat_content
+      ~message:(C2c_start.default_managed_heartbeat_content ())
   in
   check string "non-push + default → legacy body"
-    C2c_start.default_managed_heartbeat_content body
+    (C2c_start.default_managed_heartbeat_content ()) body
 
 let test_heartbeat_body_no_swap_when_unknown () =
   with_temp_dir @@ fun dir ->
   let body =
     C2c_start.heartbeat_body_for_alias ~broker_root:dir ~alias:"never-registered"
-      ~message:C2c_start.default_managed_heartbeat_content
+      ~message:(C2c_start.default_managed_heartbeat_content ())
   in
   check string "unknown alias → conservative legacy body"
-    C2c_start.default_managed_heartbeat_content body
+    (C2c_start.default_managed_heartbeat_content ()) body
 
 let test_heartbeat_body_passes_custom_message_through () =
   with_temp_dir @@ fun dir ->
@@ -2521,6 +2521,52 @@ let test_restart_intro_override () =
     false
     (string_contains intro "You have been started as a c2c swarm agent.")
 
+(* #318 keystone: unconfigured repos resolve to the built-in social room
+   default (today's hardcoded literal). *)
+let test_social_room_builtin_default () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  check string "default social room"
+    "swarm-lounge"
+    (C2c_start.swarm_config_social_room ())
+
+(* #318 keystone: [swarm] social_room override replaces the default. *)
+let test_social_room_override () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "[swarm]\nsocial_room = \"mesh-lounge\"\n");
+  with_cwd dir @@ fun () ->
+  check string "override social room"
+    "mesh-lounge"
+    (C2c_start.swarm_config_social_room ())
+
+(* #318 keystone: unconfigured repos resolve to the built-in coordinator
+   alias default (today's hardcoded literal). *)
+let test_coordinator_alias_builtin_default () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  check string "default coordinator alias"
+    "coordinator1"
+    (C2c_start.swarm_config_coordinator_alias ())
+
+(* #318 keystone: [swarm] coordinator_alias override replaces the default. *)
+let test_coordinator_alias_override () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "[swarm]\ncoordinator_alias = \"lead-coder\"\n");
+  with_cwd dir @@ fun () ->
+  check string "override coordinator alias"
+    "lead-coder"
+    (C2c_start.swarm_config_coordinator_alias ())
+
 (* slice/coord-backup-fallthrough: with no config or no [swarm] section,
    coord_chain reads as the empty list (feature-off). *)
 let test_coord_chain_default_empty () =
@@ -3709,6 +3755,14 @@ let () =
            test_restart_intro_builtin_default)
         ; ("restart_intro_override", `Quick,
            test_restart_intro_override)
+        ; ("social_room_builtin_default", `Quick,
+           test_social_room_builtin_default)
+        ; ("social_room_override", `Quick,
+           test_social_room_override)
+        ; ("coordinator_alias_builtin_default", `Quick,
+           test_coordinator_alias_builtin_default)
+        ; ("coordinator_alias_override", `Quick,
+           test_coordinator_alias_override)
         ; ("coord_chain_default_empty", `Quick,
            test_coord_chain_default_empty)
         ; ("coord_chain_reads_inline_array", `Quick,
