@@ -1,0 +1,1233 @@
+[
+  {
+    "dimension": "Coordinator identity + runtime gating (how \"coordinator\" is identified and what it actually gates in code)",
+    "summary": "\"Coordinator\" in c2c is NOT a first-class identity in the messaging core \u2014 it is three loosely-coupled things that mostly DON'T agree at runtime. (1) An env flag `C2C_COORDINATOR=1` is the ONLY thing that gates code, and it gates exactly four narrow surfaces: a privilege bypass on `from`-alias spoofing in `c2c send` / `c2c rooms send`, a hard requirement for the `coord cherry-pick` utility, an exemption from the soft worktree-mismatch broker warning, and the destructive-git-op shell shims (commit/reset/switch/checkout/rebase bypass). (2) A role-file `coordinator: true` field whose ONLY runtime effect is to propagate `C2C_COORDINATOR=1` into a managed session's env at launch (c2c_start.ml:4400) \u2014 it is a convenience funnel into mechanism (1). (3) The alias string `\"coordinator1\"` which is purely a hardcoded DEFAULT/FALLBACK for permission-supervisor and DM-routing, never a privilege check. The actual messaging core (broker enqueue/drain, register, list, rooms join/send/history, send_all, schedules, memory) has ZERO coordinator concept \u2014 room deletion ACL is creator-based (`created_by`), permission approval is a caller-supplied `supervisors[]` list, and the registration `role` string is cosmetic envelope metadata that gates nothing. The planned `swarm_config_coordinator_alias` helper does NOT exist (only a stale comment references it); `coordinator1` is hardcoded in ~8 distinct default sites.",
+    "coupling_points": [
+      {
+        "title": "C2C_COORDINATOR=1 bypasses from-alias spoofing guard in `c2c send`",
+        "what_it_does": "validate_from_override returns immediately (no ownership check) when is_coordinator() is true, letting the caller send a DM stamped as ANY other registered alias. Without it, sending as an alias registered to a different session is refused (exit 1).",
+        "evidence": "ocaml/cli/c2c.ml:105-147 (is_coordinator at :106 reads `Sys.getenv_opt \"C2C_COORDINATOR\" = Some \"1\"`; bypass at :109)",
+        "mechanism": "env-var",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "This is a relay-on-behalf capability, not an identity. For a solo/flat mesh it is simply never set, so the guard is always active and you can only send as yourself \u2014 which is the correct default. Keep the bypass as an opt-in operator escape hatch (rename to e.g. C2C_RELAY_ANY_ALIAS=1 to drop the 'coordinator' framing); the core send path needs no coordinator concept.",
+        "removal_candidate": false
+      },
+      {
+        "title": "C2C_COORDINATOR=1 bypasses from-alias spoofing guard in `c2c rooms send` (duplicated logic)",
+        "what_it_does": "Identical spoofing-guard bypass for room sends; the check is inlined (copy of c2c.ml logic) because c2c_rooms.ml does not depend on c2c.ml.",
+        "evidence": "ocaml/cli/c2c_rooms.ml:32 (`is_coordinator = Sys.getenv_opt \"C2C_COORDINATOR\" = Some \"1\"`), bypass at :36",
+        "mechanism": "env-var",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Same as the send guard \u2014 never set in solo/flat mode, so the guard always holds. The duplicated block should be factored into one shared helper (C2c_cli_auth.validate_from_override is referenced in a comment as the canonical one) regardless of the role question.",
+        "removal_candidate": false
+      },
+      {
+        "title": "C2C_COORDINATOR=1 is a HARD precondition for `c2c coord cherry-pick`",
+        "what_it_does": "run_coord_cherry_pick exits 1 immediately unless C2C_COORDINATOR is exactly \"1\". This is the only place the env var is a hard gate (code refuses to run without it).",
+        "evidence": "ocaml/cli/c2c_coord.ml:202-209 (matches getenv; eprintf + exit 1 on None/\"\"/other)",
+        "mechanism": "env-var",
+        "role_dependency": "hard",
+        "can_decouple": true,
+        "decouple_approach": "This is a structured-team deploy utility (cherry-pick peer SHAs to master + install + DM authors), wholly outside the messaging core. A solo user never invokes it. It can stay as an opt-in team feature; the gate is a self-imposed safety lock, not a messaging dependency. The messaging core does not link against it.",
+        "removal_candidate": false
+      },
+      {
+        "title": "C2C_COORDINATOR=1 exempts sender from broker worktree-mismatch warning",
+        "what_it_does": "check_worktree_mismatch returns early (no WORKTREE_MISMATCH log) when C2C_COORDINATOR=1, on the theory the coordinator legitimately runs from the main tree. This is a SOFT warn-only path \u2014 it only writes a broker.log event, never blocks a message.",
+        "evidence": "ocaml/c2c_broker.ml:1129-1134 (`if Sys.getenv_opt \"C2C_COORDINATOR\" = Some \"1\" then ()`)",
+        "mechanism": "env-var",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "This is the ONLY coordinator env check inside the broker, and it only suppresses a log line. The whole Hardening-B mismatch guard is a swarm-discipline feature (detecting main-tree contamination) irrelevant to solo/flat use. In a flat mesh the expected-cwd file simply does not exist (guard no-ops at :1136). Removing the env check entirely would only mean coordinators get a harmless extra log line.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Role-file `coordinator: true` -> propagates C2C_COORDINATOR=1 at launch",
+        "what_it_does": "When a managed session's role file has `coordinator: true`, c2c start appends `C2C_COORDINATOR=1` to the child env. This is the ONLY runtime consumer of the role.coordinator field.",
+        "evidence": "ocaml/c2c_start.ml:4396-4402 (`Some r when r.C2c_role.coordinator = Some true -> Array.append env [| \"C2C_COORDINATOR=1\" |]`); field defined ocaml/c2c_role.ml:18, parsed :267",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "This is pure sugar: it converts a role-file boolean into the env flag, funneling into the four env-var couplings above. A solo user launching with no role file (agent_role = None) never triggers it. Decouple by treating it as just one more way to set an operator opt-in capability; the field can be dropped entirely and operators set C2C_COORDINATOR in extra_env if they want the team behaviors.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Role-file `role_class: coordinator` drives pmodel + heartbeat + auto-join, NOT privileges",
+        "what_it_does": "role_class is a free-form string bucket used for (a) pmodel resolution, (b) gating which managed heartbeats apply (should_heartbeat_apply_to_role), (c) auto-join role-room mapping. 'coordinator' is just one possible value with no special code path \u2014 'coder'/'reviewer' are treated identically.",
+        "evidence": "ocaml/c2c_role.ml:16 (role_class field); ocaml/c2c_start.ml:939-949 (heartbeat role_classes filter), :2914-2923 (auto-join role-room via role_class_to_room); role_class_to_room at c2c_role.ml:564",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Fully role-agnostic by construction \u2014 it is a generic class label, not a coordinator gate. No change needed for solo/flat: unset role_class falls back to 'default'. The string 'coordinator' here is incidental.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Registration `role` string is cosmetic envelope metadata, gates nothing",
+        "what_it_does": "The `register` tool accepts an optional `role` (\"coordinator/reviewer/agent/user\"). It is stored on the registration and used only for envelope attribution display. The broker never branches on it.",
+        "evidence": "ocaml/c2c_mcp_helpers.ml:52-54 (field doc 'gates nothing'); ocaml/c2c_mcp.ml:36 (tool prop); ocaml/c2c_broker.ml:1970-1972 (effective_role just preserved on re-register). Grep for reg.role consumption in broker found only storage, no gating.",
+        "mechanism": "role-file-field",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already role-agnostic \u2014 it is free-text decoration. Solo users omit it. No coupling to remove.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Hardcoded `coordinator1` as permission-supervisor default (multiple clients)",
+        "what_it_does": "When no supervisors[]/authorizers[] are configured in .c2c/repo.json and no sidecar override, the permission-approval flow defaults the supervisor/reviewer alias to the literal 'coordinator1'. Applies to: opencode plugin resolveSupervisors fallback, kimi approval hook fallback, kimi-hook `--reviewer` CLI default, and the doctor display default.",
+        "evidence": "ocaml/cli/c2c_opencode_plugin_embedded.ml:105 (`return [\"coordinator1\"]`); ocaml/cli/c2c_kimi_hook.ml:230 (`AUTHORIZERS+=(\"coordinator1\")`); ocaml/cli/c2c.ml:6509 (`opt string \"coordinator1\"`), :1952 / :1959 (doctor default text)",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "The approval mechanism itself is role-AGNOSTIC: it resolves whatever alias list (supervisors[]/authorizers[]) the requester or repo.json supplies, checks liveness/DnD/idle (Broker.resolve_authorizers, c2c_broker.ml:4151), and validates replies against the caller-supplied supervisors list (c2c_pending_reply_handlers.ml:156). 'coordinator1' is purely the last-resort default when nothing is configured. For solo/flat: permission approval is itself an opt-in structured-team feature (no approval gate exists unless a client wires the PreToolUse hook). Replace the hardcoded default with 'none configured -> no forwarding' or a config-driven helper; the irreducible core (resolve-from-a-list) needs no coordinator.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Hardcoded `coordinator1` as DM-routing fallback (cherry-pick, agent refine, worktree gc)",
+        "what_it_does": "Several utilities self-DM or fall back to 'coordinator1' when they cannot resolve a target: coord cherry-pick self-DMs coordinator1 for unknown commit authors; `c2c agent refine --agent-mode` DMs coordinator1 when C2C_MCP_REPLY_TO is unset; worktree gc --ask-authors uses coordinator1 as the our_alias fallback. Email->alias table also hardcodes coordinator1@c2c.im.",
+        "evidence": "ocaml/cli/c2c_coord.ml:127 (`c2c send coordinator1`), :67 (email map); ocaml/cli/c2c_agent.ml:721-722 (reply-to fallback); ocaml/cli/c2c_worktree.ml:1887 (gc fallback)",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "All are fallbacks in team-tooling, not the messaging core. Each should read a configurable coordinator/owner alias (the planned-but-absent swarm_config_coordinator_alias) or degrade gracefully (skip the DM / use the current alias). Solo users never hit these paths. No hard dependency.",
+        "removal_candidate": true
+      },
+      {
+        "title": "coord_fallthrough scheduler \u2014 broker-side per-DM escalation chain",
+        "what_it_does": "A broker-internal scheduler (started in c2c_mcp_server_inner.ml:548) escalates unanswered permission DMs through a config-driven `coord_chain` of aliases, then broadcasts to a room. Despite the name, it uses VERBATIM aliases from config (no role indirection) and is a no-op when coord_chain is empty (the default).",
+        "evidence": "ocaml/coord_fallthrough.ml:20 ('verbatim aliases in coord_chain (no role indirection)'), :95 (`chain = [] then No_action`); config thunk swarm_config_coord_chain defaults to [] at c2c_start.ml:745-753; started at ocaml/server/c2c_mcp_server_inner.ml:548",
+        "mechanism": "schedule",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Already role-agnostic and OFF by default (empty chain). It is an opt-in redundancy feature layered on the permission flow. Solo/flat users leave coord_chain unset and the scheduler does nothing each tick. The 'coord' naming is cosmetic; the mechanism is a generic alias-escalation list.",
+        "removal_candidate": false
+      },
+      {
+        "title": "git-shim / pre-commit hook destructive-op guards bypass via C2C_COORDINATOR=1",
+        "what_it_does": "Shell shims refuse `git commit` on main/master, `git reset --hard` (commit-loss), branch switch/checkout/rebase in the MAIN tree for non-coordinators; C2C_COORDINATOR=1 bypasses all of them. These are git-workflow discipline guards, entirely outside the c2c messaging binary.",
+        "evidence": "git-shim.sh:52 (`COORDINATOR=\"${C2C_COORDINATOR:-0}\"`), :146/:167/:319 (guards); .c2c/hooks/pre-commit.sh:8 (branch guard), scripts/setup-pre-push-hook.sh:6 (push guard)",
+        "mechanism": "git-guard",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "These are opt-in installed guards (c2c install self/git-shim/git-hook) for shared-tree swarm discipline. A solo user simply does not install them, or sets C2C_COORDINATOR=1. They have zero coupling to message delivery. Keep as a structured-team add-on.",
+        "removal_candidate": false
+      },
+      {
+        "title": "swarm_config_coordinator_alias / swarm_config_social_room helpers DO NOT EXIST",
+        "what_it_does": "CLAUDE.md and a c2c_start.ml comment reference these helpers as the canonical way to look up the coordinator alias / social room. In current code they are unimplemented \u2014 only the comment exists. 'swarm-lounge' and 'coordinator1' are therefore hardcoded at every use site rather than resolved through a config helper.",
+        "evidence": "Grep across ocaml/**/*.ml: the only hit for swarm_config_coordinator_alias is the comment at c2c_start.ml:661; no `let swarm_config_coordinator_alias`. social_room default 'swarm-lounge' hardcoded e.g. c2c_start.ml:739, c2c_broker.ml:4064.",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "The absence is the opportunity: implement swarm_config_coordinator_alias / swarm_config_social_room as config thunks (mirroring swarm_config_restart_intro at c2c_start.ml:710) returning Option/empty when unconfigured, and route the ~8 hardcoded 'coordinator1' default sites through it. Then a solo user with no config gets 'no coordinator', and the team-feature defaults become opt-in config rather than baked-in literals.",
+        "removal_candidate": false
+      }
+    ],
+    "irreducible_core": [
+      "Broker enqueue_message / drain_inbox: pure alias->alias delivery, no role/coordinator concept (c2c_broker.ml). Message envelope is from/to/content only.",
+      "register / list / whoami: identity is (session_id, alias); no role required to register or be listed. role string is optional cosmetic metadata that gates nothing (c2c_mcp_helpers.ml:52-54).",
+      "Rooms (join_room/send_room/room_history/my_rooms/list_rooms/leave_room): membership and creator-based ACL only. delete_room authorizes on created_by, not on any coordinator status (c2c_broker.ml:3521-3545).",
+      "send_all (1:N broadcast) and rooms (N:N): topology primitives with no privilege gate.",
+      "Native scheduling (schedule_set/list/rm) and per-agent memory: per-alias, role-agnostic.",
+      "from-alias spoofing guard DEFAULT (the part WITHOUT the bypass): 'you may only send as your own registered alias' is the correct, role-free invariant for a flat mesh (c2c.ml:108-147, the else branch).",
+      "Permission-approval mechanism MINUS the hardcoded default: resolve-first-available-from-a-supplied-alias-list + reply-validated-against-that-list (Broker.resolve_authorizers c2c_broker.ml:4151; c2c_pending_reply_handlers.ml:156) is inherently role-agnostic; only the fallback alias is coordinator-flavored."
+    ],
+    "simplification_opportunities": [
+      "C2C_COORDINATOR is overloaded across three unrelated concerns: (a) relay-as-another-alias capability, (b) cherry-pick utility lock, (c) git-discipline-guard bypass. Split into named capability flags (e.g. C2C_RELAY_ANY_ALIAS, leave git-shim with its own bypass) so the messaging binary stops conflating 'I am the coordinator' with 'I may send as someone else'. The send/rooms-send bypass is the only one that touches the messaging core.",
+      "Implement the absent swarm_config_coordinator_alias / swarm_config_social_room config thunks (mirror swarm_config_restart_intro, c2c_start.ml:710) and route the ~8 hardcoded 'coordinator1' / 'swarm-lounge' default sites through them, returning empty/None when unconfigured. Result: zero coordinator literals fire for a solo/flat user.",
+      "The from-alias spoofing-guard logic is duplicated verbatim between c2c.ml:108-147 and c2c_rooms.ml:32-73. Factor into one shared C2c_cli_auth helper; the bypass-condition then lives in exactly one place and is trivial to make config-driven.",
+      "The role-file `coordinator: true` -> C2C_COORDINATOR=1 funnel (c2c_start.ml:4400) can be dropped: operators who want the env flag in a managed session can set it via extra_env, removing a redundant identity surface. role_class already carries the non-privilege team-bucket semantics.",
+      "The broker worktree-mismatch C2C_COORDINATOR exemption (c2c_broker.ml:1134) only suppresses a log line; it could be removed outright, eliminating the broker's single env-coordinator check and making the broker fully role-agnostic.",
+      "Make the permission/approval surface explicitly opt-in: when no supervisors[]/authorizers[] is configured, forward to nobody (or no-op the gate) instead of defaulting to 'coordinator1'. This makes the feature invisible to solo users and structured-only by configuration."
+    ],
+    "open_questions": [
+      "Should the relay-as-another-alias capability (the only coordinator coupling in the messaging core) be retained at all in a flat-mesh design, or is 'always send as yourself' acceptable, dropping the bypass entirely? It is currently the load-bearing reason C2C_COORDINATOR exists in c2c.ml/c2c_rooms.ml.",
+      "The permission-approval flow (kimi PreToolUse hook, opencode permission.ask) is a genuine structured-team feature with real broker state (pending_permissions, coord_fallthrough scheduler). Is it in-scope to keep as opt-in, or should it move out of the core binary entirely? It pulls in the largest coordinator-flavored surface (supervisors[], authorizers[], coord_chain, fallthrough scheduler).",
+      "If swarm_config_coordinator_alias is implemented, what should it return for a solo user with no config \u2014 None (and each call-site degrades) or the current-session alias? The DM-routing fallbacks (cherry-pick self-DM, agent refine reply-to) need a defined no-coordinator behavior.",
+      "Role-file `coordinator: true` and registration `role` string both exist but neither is the privilege source (the env flag is). Is the intent to eventually make role authoritative, or keep env as the single gate? Right now they can disagree (a session can have role=coordinator metadata without C2C_COORDINATOR=1, or vice versa).",
+      "The git-shim/hooks bypass shares the C2C_COORDINATOR name but is a separate enforcement domain (shell, not the binary). Should it keep the shared name (so one flag flips both) or get its own, to avoid a messaging-relay grant accidentally also unlocking destructive git ops?"
+    ]
+  },
+  {
+    "dimension": "Git integration (destructive-op guard shim, pre-commit/pre-push hooks, attribution shim, coord cherry-pick, kimi approval hook) and its coupling to the coordinator/role concept",
+    "summary": "The git guard surface is almost entirely keyed on STRUCTURE + a single ENV VAR, not on role. The pre-reset shim (`git-shim.sh`, installed as `git-pre-reset`) decides \"guard or not\" purely on `[ -d .git ]` (main tree) vs `[ -f .git ]` (worktree) \u2014 see git-shim.sh:62-74 \u2014 and bypasses on `C2C_COORDINATOR=1` (git-shim.sh:52,146,167,189,237,286). It never reads a role file. The pre-commit (`.c2c/hooks/pre-commit.sh`) and pre-push (`scripts/git-hooks/pre-push`) hooks branch-gate on `master`/`main` with the same `C2C_COORDINATOR=1` env bypass \u2014 again no role. The ONLY place \"role\" enters git is c2c_start.ml:4396-4402, which auto-exports `C2C_COORDINATOR=1` when the role file has a `coordinator: true` boolean field. CRITICAL FINDING: no role file in the repo sets that field \u2014 `Cairn-Vigil.md` (coordinator1) has `role_class: coordinator` but NOT `coordinator:`, and `parse_bool(find \"coordinator\")` (c2c_role.ml:267) therefore returns `None`. So the role\u2192env link is effectively dead in practice; coordinator privilege is set manually via the env var. That means the guards are ALREADY ~role-agnostic in code. The kimi PreToolUse approval hook is the one genuinely role-flavored piece (forwards to `supervisors[]`/`coordinator1`), but it is a separate opt-in kimi-only surface, not part of the destructive-op guard. The whole shim system is itself opt-in via `git_attribution` in `.c2c/config.toml` (defaults true; c2c_start.ml:520-548) and only active for managed `c2c start` sessions whose PATH is prepended with the shim dir.",
+    "coupling_points": [
+      {
+        "title": "Pre-reset/branch-guard shim keys on worktree-vs-maintree + C2C_COORDINATOR env, NOT role",
+        "evidence": "git-shim.sh:62-74 (is_main_tree=[-d .git], is_worktree_branch=[-f .git]); git-shim.sh:52 (COORDINATOR=${C2C_COORDINATOR:-0}); refusals all gated `is_main_tree && [ \"$COORDINATOR\" != \"1\" ]` at git-shim.sh:146,167,189,237,286",
+        "what_it_does": "Refuses reset --hard (behind-HEAD), commit on main/master, switch/checkout <branch>, rebase <upstream> in the MAIN tree only; worktrees (.git is a file) are never guarded; C2C_COORDINATOR=1 bypasses everything.",
+        "mechanism": "env-var",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already structural. The word 'coordinator' in the env-var name and messages is the only role flavor \u2014 purely cosmetic. Rename C2C_COORDINATOR to C2C_GIT_GUARD_BYPASS (or honor a generic --force/profile) and the guard is fully role-agnostic with zero behavior change. A solo user in the main tree on master would hit the commit refusal, so for solo/flat-mesh the guard must default OFF when no team profile is configured.",
+        "removal_candidate": false
+      },
+      {
+        "title": "git_attribution config gate makes the WHOLE shim system opt-in (and is role-agnostic)",
+        "evidence": "c2c_start.ml:520-548 (repo_config_git_attribution reads `git_attribution` from .c2c/config.toml, DEFAULTS TRUE when absent); c2c_start.ml:2935 (enable_git_shim = repo_config_git_attribution ()); c2c_start.ml:3003-3007,3038-3050 (only when enabled is the shim dir prepended to PATH)",
+        "what_it_does": "If git_attribution is false (or attribution disabled), neither the attribution shim nor the pre-reset guard is on PATH for managed sessions \u2014 so NONE of the destructive-op guards fire. This is the master opt-out switch and it is keyed on a repo config bool, not a role.",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "This IS the opt-in safety-profile hook the north-star wants. Split it: keep `git_attribution` (commit author identity) separate from a new `git_guards` (destructive-op refusals) so a solo user can keep attribution but disable guards. Default guards OFF for unconfigured repos; teams turn them on.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Role\u2192C2C_COORDINATOR auto-injection is the ONLY role link \u2014 and it is currently a no-op",
+        "evidence": "c2c_start.ml:4396-4402 (`Some r when r.C2c_role.coordinator = Some true -> append C2C_COORDINATOR=1`); c2c_role.ml:267 (coordinator = parse_bool (find \"coordinator\")); .c2c/roles/builtins/Cairn-Vigil.md:1-13 has role_class: coordinator + alias: coordinator1 but NO `coordinator:` field; repo-wide grep for `coordinator:` boolean across .c2c/roles/ returns empty",
+        "what_it_does": "Intended to derive coordinator privilege from the role file so coordinator1's managed session bypasses guards automatically. In practice no role sets the `coordinator:` boolean, so the branch never fires and C2C_COORDINATOR must be set manually.",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "This is the single hard coupling between roles and git guards, and it is already dormant. To go fully role-agnostic: delete the c2c_start.ml:4396-4402 block and the `coordinator` field from c2c_role.ml/.mli; let C2C_COORDINATOR (or its renamed successor) be set only by explicit env / a per-session safety-profile flag. No code path other than this one reads a role to influence git behavior.",
+        "removal_candidate": true
+      },
+      {
+        "title": "pre-commit coordinator gate (.c2c/hooks/pre-commit.sh) \u2014 branch-keyed + env bypass, no role",
+        "evidence": ".c2c/hooks/pre-commit.sh:5-13 (BRANCH=symbolic-ref; PROTECTED=^(master|main)$; blocks unless C2C_COORDINATOR=1); installed by c2c install git-hook (c2c_setup.ml:2033-2060) copying .c2c/hooks/pre-commit.sh -> .git/hooks/pre-commit",
+        "what_it_does": "Refuses any commit on master/main unless C2C_COORDINATOR=1. Pure branch check + env bypass.",
+        "mechanism": "git-guard",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Identical pattern to the shim: structural branch check + cosmetic env name. For solo/flat-mesh, don't install this hook by default, or make the protected-branch set + bypass token configurable. The `--no-verify` git escape already exists as a per-commit override.",
+        "removal_candidate": false
+      },
+      {
+        "title": "pre-push coordinator gate (scripts/git-hooks/pre-push) \u2014 repo-URL match + branch + env bypass",
+        "evidence": "scripts/git-hooks/pre-push:38-54 (is_c2c_repo by URL match clankercode/c2c, :src/c2c, /c2c); :51-54 (C2C_COORDINATOR=1 bypass); :57-77 (reject if local_ref==refs/heads/master); installed by just install-git-hooks (justfile:288-297) symlink + recompute_git_hook_artifacts (c2c_uninstall.ml:470-471)",
+        "what_it_does": "Rejects push to origin/master for the c2c repo specifically unless C2C_COORDINATOR=1. The 'coordinator gate' is just: this-repo + master-branch + no-bypass-env. No role read.",
+        "mechanism": "git-guard",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "The repo-URL hardcoding (clankercode/c2c) is project-specific, not role-specific. For a generic c2c, key the gate on a configurable protected-remote/branch list in repo config, default OFF. A solo user pushing their own repo should never see this; today they would IF they happen to install the hook and their remote URL ends in /c2c.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Two different pre-commit hooks compete for .git/hooks/pre-commit (install-path divergence)",
+        "evidence": "c2c install git-hook writes .c2c/hooks/pre-commit.sh (coordinator gate) -> .git/hooks/pre-commit (c2c_setup.ml:2033-2059); just install-git-hooks symlinks scripts/git-hooks/pre-commit (bun plugin syntax check, scripts/git-hooks/pre-commit:1-40) -> same .git/hooks/pre-commit (justfile:293-296). uninstall is_c2c_hook matches BOTH (c2c_uninstall.ml:285-298)",
+        "what_it_does": "`c2c install git-hook` and `just install-git-hooks` install DIFFERENT scripts to the same path. The coordinator-gate pre-commit and the plugin-syntax pre-commit are mutually exclusive depending on which installer ran last. Only one role-relevant (the coordinator gate).",
+        "mechanism": "git-guard",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Not a role coupling per se, but a footgun that obscures the coupling. Consolidate: one pre-commit that does syntax-check always + optional protected-branch gate behind config. Removes the coordinator-gate variant from the default path entirely for solo users.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Broker worktree-mismatch guard exempts C2C_COORDINATOR (soft-warn only, not a git op)",
+        "evidence": "c2c_broker.ml:1129-1134 (check_worktree_mismatch skips when C2C_COORDINATOR=1; logs WORKTREE_MISMATCH otherwise, soft warn); comment 'coordinator may run from main tree'",
+        "what_it_does": "On message send, logs (does not block) if sender's registration cwd != expected-cwd; coordinator env exempts. Advisory telemetry, not enforcement.",
+        "mechanism": "broker-logic",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Drop the coordinator exemption or gate it on the same generic bypass token. Since it is warn-only it is harmless for solo users (no expected-cwd file -> early return at c2c_broker.ml:1136). Fully role-agnostic if the env name is generalized.",
+        "removal_candidate": false
+      },
+      {
+        "title": "coord-cherry-pick requires C2C_COORDINATOR=1 (hard env gate, not role)",
+        "evidence": "c2c_coord.ml:202-210 (run_coord_cherry_pick errors out unless C2C_COORDINATOR=1); tests/test_coord_cherry_pick.sh:50-56 (gate test); c2c_coord.ml:11 comment 'coordinator-only (check C2C_COORDINATOR env)'",
+        "what_it_does": "The coordinator cherry-pick/land helper hard-refuses unless C2C_COORDINATOR=1. This is a deliberately coordinator-scoped convenience tool, gated on env not role file.",
+        "mechanism": "env-var",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "This is a structured-team feature by design; for a solo/flat mesh it simply isn't used. Keep as opt-in tooling behind the env/profile; no role read to remove. A solo user never invokes `c2c coord cherry-pick`.",
+        "removal_candidate": false
+      },
+      {
+        "title": "kimi PreToolUse approval hook forwards to supervisors[]/coordinator1 (the one genuinely role-shaped git-adjacent gate)",
+        "evidence": "scripts/c2c-kimi-approval-hook.sh:45 (REVIEWER=${C2C_KIMI_APPROVAL_REVIEWER:-coordinator1}); :74-88 (git push/commit/reset/etc require approval, read-only git allowed); embedded copy resolves supervisors[] from .c2c/repo.json (c2c-kimi-approval-hook.sh:112-118 comment); repo.json supervisors=[coordinator1]",
+        "what_it_does": "Kimi-only: dangerous bash/git commands are DM'd to a reviewer (default coordinator1 / repo.json supervisors[]) for allow/deny. This embeds a coordinator/supervisor role concept, but is a separate opt-in approval surface, not part of the destructive-op shim.",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Default reviewer to self-approve / no-op when no supervisors[] configured, so a solo kimi user is never gated. The hardcoded `coordinator1` default (line 45) is the only role assumption; make it require an explicit supervisor list with empty-list => allow.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Attribution shim ('git' wrapper) sets author identity \u2014 fully role-agnostic",
+        "evidence": "c2c_start.ml:1781-1824 (write_git_shim_atomic writes 'git' that exports C2C_GIT_SHIM_ACTIVE then execs git-pre-reset); c2c_start.ml:2961-2974 (GIT_AUTHOR_NAME/EMAIL=<alias>@c2c.im set per managed session)",
+        "what_it_does": "Stamps commits with the session alias as author/committer. Keyed on alias, not role. The 'git' shim simply delegates to git-pre-reset (the guard).",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already alias-keyed, role-agnostic. Works identically for any peer in a flat mesh. No change needed beyond decoupling it from the guard delegation if guards are made separately opt-out.",
+        "removal_candidate": false
+      }
+    ],
+    "irreducible_core": [
+      "worktree-vs-maintree structural detection ([-d .git] vs [-f .git], git-shim.sh:62-74) \u2014 a clean, role-free signal that worktrees are safe and the shared main tree is the thing worth protecting",
+      "per-alias commit attribution via GIT_AUTHOR_*/the 'git' shim (c2c_start.ml:1781-1824, 2961-2974) \u2014 identity, not authority; works for any peer",
+      "the reset --hard behind-HEAD commit-loss detection (target_behind_head, git-shim.sh:80-94) \u2014 a genuinely useful guard for ANY user, solo or team, with no role semantics",
+      "the runaway-spawn / recursion circuit breaker (git-shim.sh:43-50) \u2014 pure safety, role-irrelevant",
+      "a single generic bypass token (currently C2C_COORDINATOR) \u2014 useful as an escape hatch for any user, just mis-named after a role",
+      "git_attribution config gate as the master opt-in switch (c2c_start.ml:520-548) \u2014 the right shape for an opt-in safety profile, just currently conflating attribution and guards"
+    ],
+    "simplification_opportunities": [
+      "Remove the dormant role->env link: delete c2c_start.ml:4396-4402 and the `coordinator` field from c2c_role.ml:267/.mli:8 \u2014 no role file uses it, so this is dead code that falsely implies roles drive git guards.",
+      "Rename C2C_COORDINATOR to a role-neutral C2C_GIT_GUARD_BYPASS (alias the old name for compat) across git-shim.sh, .c2c/hooks/pre-commit.sh, scripts/git-hooks/pre-push, c2c_broker.ml:1134 \u2014 the guards become self-evidently role-agnostic.",
+      "Split the single `git_attribution` config into `git_attribution` (identity) + `git_guards` (destructive-op refusals), defaulting guards OFF for unconfigured/solo repos so a solo user committing on master in the main tree is never refused.",
+      "Make the protected-branch set and protected-remote URL configurable instead of hardcoding master/main and clankercode/c2c (scripts/git-hooks/pre-push:40) \u2014 removes the project-specific assumption that breaks generic/solo use.",
+      "Reconcile the two competing pre-commit installers (c2c install git-hook vs just install-git-hooks) into one hook: always-on plugin syntax check + optional protected-branch gate behind config; drops the coordinator-gate variant from the default solo path.",
+      "Default the kimi approval reviewer to no-op when supervisors[] is empty (scripts/c2c-kimi-approval-hook.sh:45) so a solo kimi user is never blocked waiting on a non-existent coordinator.",
+      "Delete the stale C2C_GIT_SHIM_MAIN_TREE env var from test_git_shim.sh (it is set by the test but ignored by the current shim, which is purely structural) to avoid implying an env-driven main-tree override exists."
+    ],
+    "open_questions": [
+      "Was the `coordinator: true` role field ever wired, or is it aspirational? coordinator1's Cairn-Vigil.md uses role_class:coordinator but not the boolean \u2014 is c2c_start.ml:4400 a planned-but-never-completed feature, and does any out-of-repo/personal role file set it?",
+      "For a solo user, should the main-tree commit refusal default ON (forcing worktree discipline) or OFF (frictionless)? The north-star says zero coordinator concept, which argues OFF-by-default with opt-in for teams.",
+      "Should the generic bypass be an env var, a `--force` flag per-op, or a persisted per-session safety-profile (e.g. .c2c/config.toml git_guards = off)? A profile is more discoverable than an env var for solo users.",
+      "The pre-push hook's c2c-repo detection hardcodes clankercode/c2c and any URL ending /c2c \u2014 does this accidentally gate unrelated solo repos whose path ends in /c2c? (scripts/git-hooks/pre-push:40 matches *\"/c2c\")",
+      "Are the kimi approval supervisors[] the same concept as the (dead) coordinator role field, and should they be unified into one 'who can authorize' config that defaults to self/empty for solo?"
+    ]
+  },
+  {
+    "dimension": "Roles, role files, and role/coordinator coupling in c2c",
+    "summary": "A \"role\" in c2c is a markdown file with YAML frontmatter living at `.c2c/roles/<name>.md` (canonical) or a client-native agents dir, parsed by `C2c_role.parse_string`/`parse_file` (ocaml/c2c_role.ml:249-298) into a record of ~22 fields. Roles are entirely OPT-IN already: `c2c start <client>` only applies a role when `--agent <name>` is passed or a role file matching the instance name happens to exist; with neither, it launches a flat full-capability peer with `agent_name=None`, `role_pmodel_override=None` (ocaml/cli/c2c.ml:9633-9655). Almost every role field is advisory rendering input (description, role, pronouns, model, opencode/claude/codex/kimi tool sub-tables, compatible_clients, required_capabilities). Only `coordinator: true` gates real capability: it propagates `C2C_COORDINATOR=1` into the launch env (ocaml/c2c_start.ml:4396-4402), which is the single bypass key for the destructive-git-op guard (git-shim.sh:52, 146, 167, 189, 237), the coord-cherry-pick subcommand (ocaml/cli/c2c_coord.ml:202-209), send-as-another-alias relay (ocaml/cli/c2c.ml:105-147), and the worktree-mismatch warn (ocaml/c2c_broker.ml:1133). Crucially the tier-command-hiding and the broker itself are role-AGNOSTIC: tier filtering keys on `C2C_MCP_SESSION_ID` presence (ocaml/cli/c2c_commands.ml:113-120), and broker registration treats `role` as optional display-only metadata (ocaml/c2c_mcp.ml:208-214). The coordinator-as-a-named-peer (`coordinator1`) and the social room (`swarm-lounge`) are hardcoded strings in install/hook/template paths but are pure conventions/defaults, overridable via config. Making roles fully opt-in is essentially already done at the broker/mesh layer; the residual coupling is the `coordinator: true`\u2192`C2C_COORDINATOR` capability bypass (which is independently env-settable, so role is not load-bearing for it) and a scatter of hardcoded `coordinator1`/`swarm-lounge` default strings.",
+    "coupling_points": [
+      {
+        "title": "Role file format + on-disk location",
+        "what_it_does": "A role is a YAML-frontmatter + markdown-body file. Canonical path `.c2c/roles/<name>.md`; falls back to client-native dirs (.claude/agents, .opencode/agents, .codex/agents, .kimi/agents/<name>/). Parsed into a 22-field record; rendered per-client (claude/codex/opencode/kimi) by dedicated renderers.",
+        "evidence": "ocaml/c2c_role.ml:3-31 (type t), :539-562 (canonical_roles_dir, client_agent_dir, resolve_agent_path), :249-298 (parse), :397-533 (renderers)",
+        "mechanism": "role-file-field",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already decoupled \u2014 a role file is consumed only when explicitly requested; no broker/mesh subsystem reads role files.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Role is opt-in at launch: no-role path launches a flat full-capability peer",
+        "what_it_does": "cmd_start applies a role only when `--agent <name>` is given OR a role file named after the instance exists. With neither, the `else` branch returns (kickoff, alias_opt, None, None, None) \u2014 agent_name=None, role_pmodel=None \u2014 and the session launches as an unstructured peer.",
+        "evidence": "ocaml/cli/c2c.ml:9456-9655 (the big match; no-role else at :9633-9655 returns Nones)",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "This IS the opt-in behavior. A solo/flat user simply runs `c2c start <client>` with no role file. Works today.",
+        "removal_candidate": false
+      },
+      {
+        "title": "`coordinator: true` role field \u2192 C2C_COORDINATOR=1 env (THE capability gate)",
+        "what_it_does": "At launch, if the loaded role has `coordinator = Some true`, c2c appends `C2C_COORDINATOR=1` to the managed client's env. This is the only role field that grants elevated privilege rather than just affecting rendering.",
+        "evidence": "ocaml/c2c_start.ml:4232-4240 (load role early), :4396-4402 (propagate C2C_COORDINATOR=1); field defined ocaml/c2c_role.ml:18, parsed :267",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "C2C_COORDINATOR is already independently settable as an env var (operator export, `C2C_COORDINATOR=1 git push`). The role field is just a convenience to auto-set it. Removing the field changes a default (coordinator must set env manually) but breaks no code. For a flat mesh, simply never set the field; no agent gets the bypass and everyone uses worktrees.",
+        "removal_candidate": true
+      },
+      {
+        "title": "C2C_COORDINATOR bypasses the destructive-git-op guard (pre-reset shim)",
+        "what_it_does": "git-shim.sh (installed as `git-pre-reset`) refuses `reset --hard <behind-HEAD>`, `commit` on main/master, `switch <branch>`, `checkout <branch>`, `rebase <upstream>` in the MAIN TREE for non-coordinators. `C2C_COORDINATOR=1` bypasses all guards. The main-tree check is `.git` is a directory vs a worktree's `.git` file \u2014 NOT role-based.",
+        "evidence": "git-shim.sh:1-14 (header), :52 (COORDINATOR var), :62-73 (is_main_tree/is_worktree via .git dir-vs-file), :146/:167/:189/:237 (per-op bypass)",
+        "mechanism": "git-guard",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "The guard discriminates main-tree-vs-worktree and a single env bypass; it has no notion of 'role'. For a solo/flat user the guard can be (a) not installed (it is only installed when `repo_config_git_attribution()` is true / via `c2c install self`), or (b) bypassed globally by exporting C2C_COORDINATOR=1. Either way the role concept is not required.",
+        "removal_candidate": false
+      },
+      {
+        "title": "C2C_COORDINATOR gates coord-cherry-pick / coord subcommands",
+        "what_it_does": "`c2c coord-cherry-pick` (the auto-DM-gated cherry-pick) hard-refuses unless C2C_COORDINATOR=1.",
+        "evidence": "ocaml/cli/c2c_coord.ml:202-209 (exit 1 if env != \"1\"); c2c_coord.ml:11 design note",
+        "mechanism": "env-var",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "This is a structured-team workflow command; a solo/flat user never invokes it (uses plain `git cherry-pick`/merge). It is opt-in by virtue of being a separate subcommand gated on an env var, not on role metadata.",
+        "removal_candidate": false
+      },
+      {
+        "title": "C2C_COORDINATOR allows send-as-another-alias (relay-on-behalf)",
+        "what_it_does": "`validate_from_override` lets a caller send a DM/room message stamped with a `--from <other-alias>` they don't own ONLY if C2C_COORDINATOR=1; otherwise refuses. Same check duplicated for rooms.",
+        "evidence": "ocaml/cli/c2c.ml:105-147 (is_coordinator + validate_from_override), ocaml/cli/c2c_rooms.ml:32,61,68",
+        "mechanism": "env-var",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "In a flat mesh each agent only ever sends as itself, so this path is never hit. The guard's default (refuse cross-identity send) is the correct flat-mesh behavior; the coordinator bypass is purely additive and env-driven, not role-driven.",
+        "removal_candidate": false
+      },
+      {
+        "title": "C2C_COORDINATOR exempts worktree-mismatch broker warning",
+        "what_it_does": "Broker logs WORKTREE_MISMATCH (soft warn) when a sender's registered cwd differs from its expected-cwd file; coordinators (and remote aliases) are exempt.",
+        "evidence": "ocaml/c2c_broker.ml:1129-1134",
+        "mechanism": "broker-logic",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Soft warn only, never blocks. For a solo user there is no expected-cwd file written unless `c2c start` wrote one; exemption is env-driven not role-driven.",
+        "removal_candidate": false
+      },
+      {
+        "title": "`role:` string field (subagent/primary/all) \u2014 rendering only",
+        "what_it_does": "The `role` scalar (default \"subagent\") is emitted into rendered frontmatter for opencode/codex and prepended to the Claude system prompt body. It does NOT gate any capability; it is a label.",
+        "evidence": "ocaml/c2c_role.ml:262 (default), Claude_renderer :461 prepends r.role to body, Codex/OpenCode emit `role:` line :401,:467; no branch on its value anywhere in c2c.ml/c2c_start.ml",
+        "mechanism": "role-file-field",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Purely cosmetic/prompt-shaping. Can be dropped or ignored with zero behavioral impact.",
+        "removal_candidate": true
+      },
+      {
+        "title": "pmodel / role_class \u2014 advisory model hint with 3-way priority",
+        "what_it_does": "Role frontmatter `pmodel:` (or class-level lookup via `role_class` against the .c2c/config.toml [pmodel] table) supplies a default provider:model. Resolution priority on launch/resume: explicit --model flag > role pmodel > saved instance config. Role pmodel is advisory: it beats a saved config but never an explicit --model, and is never persisted.",
+        "evidence": "ocaml/c2c_role.ml:300-322 (resolve_pmodel chain), ocaml/c2c_start.ml:5229-5241 (resolve_model_override priority), ocaml/cli/c2c.ml:9157-9187 (render_role_for_client/resolve_role_pmodel_for_launch)",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Pure model-selection convenience. Without a role, model comes from --model or saved config. No mesh feature depends on it.",
+        "removal_candidate": false
+      },
+      {
+        "title": "required_capabilities \u2014 pre-launch compatibility gate",
+        "what_it_does": "If a role declares `required_capabilities` and the chosen client/binary lacks them (probed), `c2c start` exits 1 before launching. Also `compatible_clients` refuses an incompatible client.",
+        "evidence": "ocaml/c2c_start.ml:3985-3988 (missing_role_capabilities), ocaml/cli/c2c.ml:9462-9481 and :9544-9563 (exit 1 on missing/incompatible)",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Only fires when a role file sets these fields. No role \u2192 no gate. Flat-mesh safe by omission.",
+        "removal_candidate": false
+      },
+      {
+        "title": "role_class \u2192 auto-join role room (coders\u2192coders room etc.)",
+        "what_it_does": "When C2C_AUTO_JOIN_ROLE_ROOM=1 and a role_class is set, build_env appends a `<role_class>s` room to the auto-join list (e.g. coder\u2192coders). Install writes C2C_AUTO_JOIN_ROLE_ROOM=1.",
+        "evidence": "ocaml/c2c_start.ml:2905-2924 (build_env role_class_opt branch), ocaml/c2c_role.ml:564-567 (role_class_to_room), ocaml/cli/c2c_setup.ml:509 (writes the env flag); NOTE role_class_opt defaults None and cmd_start does not pass it",
+        "mechanism": "tier-filter",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Structured-team nicety. Note the wiring appears partially dormant (build_env's role_class_opt arg is not threaded from cmd_start, defaulting None). Flat mesh just uses swarm-lounge. Removable.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Tier command-hiding is role-AGNOSTIC (keys on session-id env, not role)",
+        "what_it_does": "Tier 3/4 commands are hidden when `is_agent_session()` is true; that predicate is solely `C2C_MCP_SESSION_ID` present. No role/coordinator concept involved.",
+        "evidence": "ocaml/cli/c2c_commands.ml:112-135 (is_agent_session = session_id_from_env present; tier_visible/filter_commands), ocaml/cli/c2c.ml:371,12144-12155 (dev-group tier filter)",
+        "mechanism": "tier-filter",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already role-agnostic \u2014 it separates 'managed agent' from 'human operator' by env, which is orthogonal to role/coordinator. Keep as-is.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Broker registration `role` field \u2014 optional display metadata",
+        "what_it_does": "Registration carries an optional `role : string option`, surfaced in `c2c list`. It is never required and gates nothing; `register` works with role=None.",
+        "evidence": "ocaml/c2c_mcp.ml:208-214 (role emitted only when Some), :1883/:1970-1972 (role optional, preserved-or-None on re-register), :289 (str_opt)",
+        "mechanism": "role-file-field",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already optional. Solo user registers with no role and everything works.",
+        "removal_candidate": false
+      },
+      {
+        "title": "`coordinator1` hardcoded as default permission supervisor / authorizer fallback",
+        "what_it_does": "The kimi PreToolUse approval hook and the opencode plugin both default the permission-approval recipient to alias `coordinator1` when no authorizers/supervisors are configured. `c2c doctor` shows 'coordinator1 (default)'.",
+        "evidence": "ocaml/cli/c2c_kimi_hook.ml:230 (AUTHORIZERS+=(\"coordinator1\")), data/opencode-plugin/c2c.ts:102 (return [\"coordinator1\"]) + embedded ocaml/cli/c2c_opencode_plugin_embedded.ml:16, ocaml/cli/c2c.ml:1952/1959/10840 (doctor text)",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Override via authorizers[]/supervisors[] in .c2c/repo.json or C2C_PERMISSION_SUPERVISOR/C2C_SUPERVISORS env. For a solo user with no second agent, permission-forwarding is moot (the feature only matters for client-gated approval flows). The hardcoded default could be made 'no supervisor \u2192 approve locally / no-op' so a flat solo mesh needs zero coordinator concept. Authorizers module itself does NOT hardcode coordinator1 (c2c_authorizers.ml reads repo.json only) \u2014 the hardcode lives in the two hook/plugin shells.",
+        "removal_candidate": true
+      },
+      {
+        "title": "`swarm-lounge` hardcoded as default auto-join room",
+        "what_it_does": "`c2c install` and start defaults write C2C_MCP_AUTO_JOIN_ROOMS=\"swarm-lounge\"; many code paths default the room to swarm-lounge.",
+        "evidence": "ocaml/cli/c2c_setup.ml:508,579,697,805,1161,1457; ocaml/c2c_start.ml:2826,5573; ocaml/cli/c2c.ml:6940 (init --room default)",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "`c2c init --room <name>` or `--room ''` (empty to skip) already overrides. A solo user can skip rooms entirely; the broker has no required-room concept. Removable default.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Reserved/protected alias list includes coordinator1 + named coders",
+        "what_it_does": "`instances clean-stale` protects a hardcoded list of swarm aliases (coordinator1, stanza-coder, \u2026) from being swept. Also a `--with-named-aliases` flag references them.",
+        "evidence": "ocaml/cli/c2c.ml:7708-7719 (clean_stale_protected_aliases), :7808 (flag doc)",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Tier-3 maintenance command, off by default for these aliases; purely a safety list of well-known names. Irrelevant to a solo user; can be emptied or made config-driven.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Built-in role templates (coder/coordinator/subagent) + role-designer",
+        "what_it_does": "`c2c agent new` and prompt_for_role expand a matching role_class into a full template body (coder/coordinator/subagent) baked into the binary; role-designer is an embedded role for authoring new roles.",
+        "evidence": "ocaml/cli/role_templates.ml:8-403 (3 templates + render), ocaml/cli/c2c_agent.ml:283-285 (render on agent new), ocaml/cli/c2c.ml:9082 (prompt_for_role), ocaml/cli/role_designer_embedded.ml:1-50",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "These are authoring conveniences invoked only when a user explicitly creates a structured role. They are inert for a flat/solo mesh. The 'coordinator' template embeds swarm/peer-PASS norms but produces only text + the coordinator:true field.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Role-derived heartbeat/schedule persistence",
+        "what_it_does": "A role's c2c.heartbeat/c2c.heartbeats frontmatter is converted to managed_heartbeat specs and persisted to .c2c/schedules/<alias>/ at start; the schedule watcher picks them up. Role can also filter heartbeats by role_class.",
+        "evidence": "ocaml/c2c_start.ml:891-1063 (role heartbeat merge), :1133-1143 (persist), :939-949 (should_heartbeat_apply_to_role)",
+        "mechanism": "schedule",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Without a role the builtin default heartbeat still applies (builtin_managed_heartbeat, c2c_start.ml:180-192); role only customizes it. role_classes filter defaults to [] = apply-to-all. Flat-mesh safe.",
+        "removal_candidate": false
+      }
+    ],
+    "irreducible_core": [
+      "The broker/mesh layer is already fully role-agnostic: register/send/list/rooms/poll_inbox require no role; registration `role` is optional display metadata (ocaml/c2c_mcp.ml:208-214). This is the universal flat-peer core and should stay.",
+      "Tier command-hiding keyed on C2C_MCP_SESSION_ID presence (ocaml/cli/c2c_commands.ml:113-120) \u2014 a managed-vs-human distinction orthogonal to roles. Keep.",
+      "`c2c start <client>` with no `--agent` and no name-matching role file already launches a flat full-capability peer (ocaml/cli/c2c.ml:9633-9655). The opt-in mechanism exists.",
+      "The destructive-git-op guard discriminates main-tree (`.git` dir) vs worktree (`.git` file) and a single env bypass (git-shim.sh:62-73) \u2014 no role concept. The safe default (refuse main-tree mutation) is correct for any single-tree user; bypass is env-driven.",
+      "The default heartbeat (builtin_managed_heartbeat) applies with no role; role only customizes cadence/message (ocaml/c2c_start.ml:180-192)."
+    ],
+    "simplification_opportunities": [
+      "Decouple the capability bypass from the word 'coordinator': C2C_COORDINATOR=1 is already the real gate and is independently env-settable, so the `coordinator: true` role field (c2c_start.ml:4396-4402) is the only role\u2192capability link. Rename/reframe it as an explicit per-session privilege flag (e.g. `C2C_ALLOW_MAINTREE_OPS`) decoupled from team structure, making the role field a pure convenience that never needs to exist for a solo user.",
+      "Make the hardcoded `coordinator1` permission-supervisor default (c2c_kimi_hook.ml:230, c2c.ts:102) resolve to a no-op / approve-locally when no authorizers and no second peer exist, so a solo/flat mesh needs zero coordinator alias. The authorizers OCaml module (c2c_authorizers.ml) is already clean \u2014 only the two shell/TS hooks hardcode the name.",
+      "Make `swarm-lounge` auto-join an explicit opt-in (or default-empty) in `c2c install`/`c2c init` (c2c_setup.ml:508 et al.) so a solo user is not auto-joined to a social room they don't need; `--room ''` already supports skipping.",
+      "Drop or stop emitting the cosmetic `role:` scalar (subagent/primary/all) \u2014 it gates nothing (only Claude/Codex/OpenCode renderer prefixing), reducing the surface that looks like a capability when it isn't.",
+      "Treat 'structured team' as a layered profile: a single `c2c init --team` (or repo.json flag) that turns on authorizers/coordinator-bypass/role-rooms/named-aliases as a bundle, leaving the default install as flat-mesh-only. Today these are scattered defaults (swarm-lounge, coordinator1, C2C_AUTO_JOIN_ROLE_ROOM=1) that an operator must individually unset to get a clean flat mesh.",
+      "The build_env `role_class_opt` parameter (c2c_start.ml:2905) appears dormant \u2014 not threaded from cmd_start \u2014 so role-room auto-join may already be partly inert; verify and either wire or remove to cut dead role-coupling."
+    ],
+    "open_questions": [
+      "Is build_env's `role_class_opt` (c2c_start.ml:2905-2924) ever passed a Some value? cmd_start's build_env call (c2c_start.ml:4381-4384) does not appear to thread it, so the role_class\u2192role-room auto-join may be effectively dead code despite C2C_AUTO_JOIN_ROLE_ROOM=1 being written by install. Worth confirming who, if anyone, sets it.",
+      "Beyond the kimi hook and opencode plugin, does the claude permission flow have a hardcoded coordinator1 default? The opencode/kimi paths were confirmed; the claude-side approval-forwarding default was not located in this pass.",
+      "What is the desired solo-user behavior for client permission-gating with no supervisor configured \u2014 approve locally (no-op) or fail-closed? Currently kimi falls closed / DMs coordinator1 (c2c_kimi_hook.ml:230-237) which would dead-letter in a solo mesh with no coordinator1 alive.",
+      "Does any relay/federation path stamp or require a role/coordinator identity remotely? The broker design is local-only today; confirm no relay-side role assumption before declaring the mesh fully flat-capable for the remote-transport future."
+    ]
+  },
+  {
+    "dimension": "Tier system / agent-session command visibility filtering",
+    "summary": "The tier system is a single-axis UX declutter, NOT a security boundary, and NOT role-derived. The only runtime input is whether `C2C_MCP_SESSION_ID` is present in the environment (`is_agent_session()` at c2c_commands.ml:113-114). There is no role-file read, no coordinator-flag read, no managed-ness check, and no config lookup anywhere in the tier logic \u2014 all 5 call sites (c2c.ml:371, 11799, 12154, 12315, 12323; c2c_commands.ml:117-135) consult only that one env var. When present, Tier3/Tier4 commands are dropped from the cmdliner command group, so they become \"unknown command\" (verified: `setcap` rejected under `C2C_MCP_SESSION_ID=fake`). But the gate is trivially bypassed by `env -u C2C_MCP_SESSION_ID c2c setcap ...` (verified \u2014 setcap man page renders), so it cannot stop an adversarial agent; it only prevents accidental invocation and shrinks the help surface. `C2C_COORDINATOR=1` does NOT affect tiers at all (verified: setcap still hidden with it set) \u2014 it is an orthogonal mechanism used by `c2c coord` and the git shim. The real destructive-op safety boundary is `c2c_git_shim.ml` + the `C2C_COORDINATOR` env check inside command bodies (e.g. c2c_coord.ml:202-209), entirely separate from tiers. The whole ladder collapses cleanly to a single \"show advanced\" preference / flag.",
+    "coupling_points": [
+      {
+        "title": "Tier gate keyed solely on C2C_MCP_SESSION_ID presence (is_agent_session)",
+        "evidence": "ocaml/cli/c2c_commands.ml:113-114 (let is_agent_session () = match C2c_mcp.session_id_from_env () with Some _ -> true | None -> false); session_id_from_env at ocaml/c2c_mcp_helpers_post_broker.ml:705-721 reads C2C_MCP_SESSION_ID",
+        "mechanism": "env-var",
+        "what_it_does": "Single boolean 'am I inside an agent session' derived only from whether the broker session-id env var is set. Drives every tier-visibility decision. No role, no coordinator flag, no config, no managed-ness consulted.",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Rename the predicate to a preference, e.g. read C2C_HIDE_ADVANCED (default on when a session-id is present, overridable). Keeps the accidental-footgun protection without any role/coordinator concept. Solo user with no managed session sees everything by default.",
+        "removal_candidate": false
+      },
+      {
+        "title": "tier_visible / filter_commands: Tier3+Tier4 hidden in agent sessions",
+        "evidence": "ocaml/cli/c2c_commands.ml:117-135 (tier_visible: Tier1|Tier2->true, Tier3|Tier4->not(is_agent_session())); applied at c2c.ml:12323 (visible_cmds = filter_commands ~cmds:all_cmds) feeding Cmdliner.Cmd.group at c2c.ml:12326",
+        "mechanism": "tier-filter",
+        "what_it_does": "Removes Tier3/Tier4 commands from the cmdliner group when in an agent session. Because they are absent from the group, they are non-dispatchable ('unknown command'), not merely hidden from help. Verified: setcap rejected under C2C_MCP_SESSION_ID=fake; reappears under env -u.",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "This is the whole ladder. Collapse Tier1/Tier2 into 'always shown' and Tier3/Tier4 into 'advanced, shown when C2C_HIDE_ADVANCED unset or --all passed'. A two-state visible/advanced split fully replaces the four-tier type with zero behavior loss.",
+        "removal_candidate": false
+      },
+      {
+        "title": "command_tier_map: static name->tier table (the enforcement source of truth)",
+        "evidence": "ocaml/cli/c2c_commands.ml:20-110. Tier3: setcap (c2c_commands.ml:83). Tier4: serve, mcp, state-read, state-write, supervisor, supervisor-*, room-invite (c2c_commands.ml:96-109). Everything else Tier1/Tier2; unknown names default Tier2 (c2c_commands.ml:129).",
+        "mechanism": "hardcoded-alias",
+        "what_it_does": "Maps each top-level command name to a tier. The ACTUAL set blocked from agents at top level is small: setcap (Tier3) + serve, mcp, supervisor (Tier4). Verified via unknown-command listing diff: only setcap/mcp/serve/supervisor differ between agent and non-agent dispatch.",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Replace the 4-value tier column with a boolean 'advanced'. Only ~4 top-level entries actually need 'advanced=true' (setcap, serve, mcp, supervisor); the rest become the default-visible core. Newly-added commands already default to visible (Tier2), so a boolean default-false 'advanced' preserves the anti-regression property.",
+        "removal_candidate": false
+      },
+      {
+        "title": "dev group internal tier filtering (separate from filter_commands)",
+        "evidence": "ocaml/cli/c2c.ml:12147-12157: tier2_subs = [instances, worktree, sitrep, peer-pass] always; tier3_subs = [diag, restart_self, smoke_test, inject] only when not is_agent_session(). Verified: agent 'c2c dev' shows only peer-pass/sitrep/worktree(+instances); non-agent adds diag/restart-self/smoke-test/inject.",
+        "mechanism": "tier-filter",
+        "what_it_does": "A second, hand-rolled copy of the agent-session check inside the dev subgroup, hiding diag/restart-self/smoke-test/inject from agents. Not driven by command_tier_map \u2014 it's an inline if on is_agent_session().",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Fold into the same 'advanced' predicate. restart-self has a genuine footgun rationale (kills supervisor inside managed session, per c2c.ml:11706-11708) but that is still session-shaped, not role-shaped; an 'advanced'/confirmation gate covers it.",
+        "removal_candidate": false
+      },
+      {
+        "title": "commands_by_safety audit display DIVERGES from enforcement map",
+        "evidence": "Audit display tier3 list at c2c.ml:332-352 classifies install/relay/setcap/inject/smoke-test/diag/gui/init/hook as Tier3 ('UNSAFE FOR AGENTS'). But command_tier_map enforces install=Tier2 (c2c_commands.ml:84), gui=Tier1 (:85), diag=Tier1 (:86), inject=Tier1 (:89), smoke-test=Tier1 (:88), relay=Tier2 (:79), hook=Tier1 (:95). Verified: install/relay/gui ARE visible to agents despite the audit calling them Tier3.",
+        "mechanism": "convention-doc-only",
+        "what_it_does": "The human-facing `c2c commands` audit and the `commands_man` help prose label commands with tiers that do not match what filter_commands actually enforces. The audit is a hand-maintained second list that has drifted.",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Delete the duplicate hand-maintained tier lists in commands_by_safety_cmd (c2c.ml:279-372), fast_path_commands (c2c.ml:11791+), and commands_man (c2c.ml:11668-11718); generate all display from the single command_tier_map. Collapsing to a boolean 'advanced' removes the drift surface entirely.",
+        "removal_candidate": true
+      },
+      {
+        "title": "C2C_COORDINATOR=1 is ORTHOGONAL to tiers (not a tier input)",
+        "evidence": "is_coordinator at c2c.ml:105-106 (C2C_COORDINATOR=Some\"1\"); used by validate_from_override (c2c.ml:108-147) and run_coord_cherry_pick (c2c_coord.ml:202-209). NOT referenced anywhere in c2c_commands.ml tier logic. Verified: C2C_COORDINATOR=1 + agent session still hides setcap (count 0).",
+        "mechanism": "env-var",
+        "what_it_does": "Coordinator privilege (send-as-other-alias, coord cherry-pick, git-shim bypass) is a wholly separate env-gated mechanism. Tier visibility never consults it. The coord command group is itself NOT in the tier map, so it defaults Tier2 (visible to agents in help) but its bodies hard-fail without C2C_COORDINATOR=1.",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "For the flat-mesh goal, coordinator-gated commands (coord cherry-pick, send-as-other) can become opt-in team features behind the same C2C_COORDINATOR flag, untouched by tier collapse. No role file is involved \u2014 it is a single env flag, already role-agnostic in mechanism.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Real destructive-op safety boundary is the git shim, not tiers",
+        "evidence": "ocaml/cli/c2c_git_shim.ml exists as a separate guard; CLAUDE.md documents it refuses reset/commit/switch/checkout/rebase in the main tree for non-coordinator agents with C2C_COORDINATOR=1 bypass. Tier logic (c2c_commands.ml) never touches git ops.",
+        "mechanism": "git-guard",
+        "what_it_does": "The actual protection against agents doing destructive git ops is the installed git wrapper shim + C2C_COORDINATOR bypass, completely independent of the command-tier filter. This confirms tiers are UX, not the security layer.",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Irrelevant to tier collapse \u2014 leave the git shim as the (separately opt-in) team-safety feature. Documenting that tiers are NOT a security boundary prevents future code from mistakenly relying on them for safety.",
+        "removal_candidate": false
+      }
+    ],
+    "irreducible_core": [
+      "The messaging/query/lifecycle commands (Tier1+Tier2: send, list, whoami, poll-inbox, peek-inbox, send-all, rooms, history, status, register, start, stop, restart, init, install, config, schedule, etc.) are already fully role-agnostic and unconditionally visible \u2014 this IS the universal core a solo/flat-mesh user needs.",
+      "The mechanism is role-free today: the only runtime input is C2C_MCP_SESSION_ID presence. No code reads a role file, coordinator alias, or team config to decide tier visibility.",
+      "'Hide a handful of internal-plumbing and footgun commands by default in a managed session' is a reasonable universal default that survives in a flat-mesh world as a simple preference (setcap needs sudo anyway; serve/mcp/supervisor are subprocess-internal; restart-self kills your own supervisor).",
+      "Newly-added commands default to visible-with-care (Tier2, c2c_commands.ml:129) \u2014 a good safe default that a boolean 'advanced=false' preserves."
+    ],
+    "simplification_opportunities": [
+      "Collapse the 4-value `safety` type (c2c_types.ml:8-12) to a 2-state visible/advanced (or just a boolean `advanced` column on the command map). At the top level only setcap, serve, mcp, supervisor are actually agent-blocked; Tier1 vs Tier2 has zero behavioral difference today (both always visible) \u2014 the distinction is purely cosmetic labeling in help.",
+      "Replace `is_agent_session()` as the tier gate with a `C2C_HIDE_ADVANCED` preference (default: on when a session-id is present, off otherwise; overridable by flag/env). This is the 'single show-advanced flag' the north star asks for \u2014 solo user defaults to a clean surface but can opt into everything with one env var or `--all`, zero role concept.",
+      "Eliminate the THREE drifted hand-maintained tier lists: command_tier_map (enforcement, c2c_commands.ml:20-110), commands_by_safety_cmd display (c2c.ml:284-363), and commands_man help prose (c2c.ml:11668-11718) plus fast_path_commands (c2c.ml:11791+). Generate all display from the single map. The audit display already lies (calls install/relay/gui 'Tier3 UNSAFE' while enforcement makes them visible).",
+      "Delete the dev-group inline tier check (c2c.ml:12147-12157) duplication and route it through the same advanced predicate as filter_commands.",
+      "Document in code+CLAUDE.md that tiers are NOT a security boundary (the env gate is bypassable with `env -u C2C_MCP_SESSION_ID`); the real safety layer is the git shim + C2C_COORDINATOR. Prevents future code from mistakenly hanging enforcement on tiers.",
+      "Keep coordinator/team features (coord group, send-as-other, git shim) behind the existing C2C_COORDINATOR env flag as opt-in \u2014 they are already role-file-free and orthogonal to the tier collapse, so a flat-mesh build can simply never set that flag."
+    ],
+    "open_questions": [
+      "restart-self under `c2c dev` has a genuine footgun (signals inner client, kills supervisor inside a managed session \u2014 c2c.ml:11706-11708). Should it stay 'advanced-hidden' for managed sessions specifically, or move to a confirmation prompt? It is session-shaped not role-shaped, so either way no role concept is needed.",
+      "The audit-display drift (install/relay/gui labeled Tier3 'UNSAFE' but enforced as visible) \u2014 is the audit aspirational (intent: these SHOULD be hidden) or stale (intent: enforcement is correct, audit wrong)? Determines whether the fix tightens enforcement or fixes the labels. Given agents routinely run `c2c install`, enforcement (visible) is almost certainly the intended behavior and the audit labels are stale.",
+      "Does anything outside the CLI (docs, scripts, role templates) parse `c2c commands` audit output and depend on the four-tier labels? A grep of scripts/ + .collab/ would confirm the audit can be safely collapsed without breaking tooling."
+    ]
+  },
+  {
+    "dimension": "Approval / supervisor / reviewer-gate machinery (who can approve a tool-use)",
+    "summary": "The \"who can approve\" decision is NOT inherently hierarchical: the single enforced authority check across both the broker (ocaml/c2c_pending_reply_handlers.ml:156) and the CLI (ocaml/cli/c2c.ml:6288-6298) is flat list membership \u2014 `List.mem reply_from_alias pending.supervisors`. There is no role lookup, no supervisor-over-subordinate relation, and no special-casing of `coordinator1` anywhere in the broker/approval code (grep found zero). The supervisors list is chosen by the REQUESTER at open-pending-reply time and can contain any alias \u2014 including the requester's own, so symmetric peer-approval and self-approval are already mechanically supported at the broker layer (only the opencode plugin actively self-excludes). The coupling to coordinator/roles is entirely SOFT: `coordinator1` is a hardcoded default STRING (fallback) in three places, and the role-file `coordinator: true` field only sets `C2C_COORDINATOR=1` which gates unrelated relay/git ops, never approval authority. The entire approval surface is also DEFAULT-OFF on every client (kimi block ships commented out, Claude hook ships with a never-matching sentinel matcher, opencode only fires when opencode itself is set to \"ask\"), so a solo user is never gated unless they opt in. However, there IS a real solo-user footgun once opted in: in the opencode plugin a lone self-as-supervisor collapses to an empty supervisor set yet still runs the wait loop \u2192 guaranteed 10-min timeout \u2192 fail-closed auto-reject; the kimi hook falls back to a possibly-nonexistent `coordinator1` and also falls closed.",
+    "coupling_points": [
+      {
+        "title": "Authority check is flat list-membership, not hierarchy",
+        "what_it_does": "The broker's check_pending_reply and the CLI's do_approval_reply both authorize a verdict by testing whether the replying alias is in pending.supervisors. No role, tier, or seniority is consulted; any alias the requester listed is equally authoritative.",
+        "evidence": "ocaml/c2c_pending_reply_handlers.ml:156 `if List.mem reply_from_alias pending.supervisors`; ocaml/cli/c2c.ml:6288-6298 `if not (List.exists (fun s -> alias_casefold s = alias_casefold reviewer_alias) pending.supervisors) then ... exit 1`",
+        "mechanism": "broker-logic",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already role-agnostic \u2014 this is the irreducible core. Keep as-is. For a flat mesh, the requester simply lists peer aliases (or its own alias for self-approval). No code change needed to support symmetric peer-approval.",
+        "removal_candidate": false
+      },
+      {
+        "title": "`coordinator1` hardcoded as the last-resort supervisor default",
+        "what_it_does": "When no authorizers/supervisors are configured anywhere, the kimi hook, the opencode plugin, and the repo.json examples all fall back to the literal alias `coordinator1`. This is the only place the approval path 'knows' about a coordinator, and it is a plain string default, not a privileged identity.",
+        "evidence": "ocaml/cli/c2c_kimi_hook.ml:230 `AUTHORIZERS+=(\"coordinator1\")`; ocaml/cli/c2c_opencode_plugin_embedded.ml:105 `return [\"coordinator1\"]`; .c2c/repo.json supervisors=[\"coordinator1\"]; broker grep shows NO special-casing of the name",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Replace the `coordinator1` literal default with: (a) for solo, default to the agent's OWN alias (self-approve) or to OFF; (b) for mesh, no default at all \u2192 if supervisors empty, treat as 'no gate' rather than 'ask coordinator1'. Make the default configurable via repo.json `default_supervisor` or just drop it.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Solo-user fail-closed when supervisor set collapses to empty (opencode)",
+        "what_it_does": "selectSupervisors() filters out the agent's own alias; if the agent is the only configured supervisor the result is []. The flow still proceeds into waitForPermissionReply with no DM recipients, so it can never get a reply \u2192 after C2C_PERMISSION_TIMEOUT_MS (default 600000ms / 10min) it auto-rejects (fail-closed). A solo user who turned permission-ask on is blocked 10 minutes then denied.",
+        "evidence": "ocaml/cli/c2c_opencode_plugin_embedded.ml:341-344 self-exclude \u2192 return []; line 1959 `waitForPermissionReply(permId, permissionTimeoutMs, supervisors)` runs regardless; line 1962-1964 timeout maps to `reject` (fail-closed)",
+        "mechanism": "broker-logic",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Add an early escape: if selectSupervisors() returns [] then resolve the permission as ALLOW (or surface a local prompt) instead of entering the wait loop. Solo = no remote supervisor = either auto-allow or local-only gate. Also lets self-approval through (don't self-exclude when the list is exactly [self]).",
+        "removal_candidate": false
+      },
+      {
+        "title": "Kimi hook falls back to coordinator1 then fails closed if absent",
+        "what_it_does": "resolve_authorizers reads repo.json authorizers[]; if absent uses C2C_KIMI_APPROVAL_REVIEWER (deprecated) else literal coordinator1. It then DMs that alias and blocks on await-reply; if the alias does not exist / never replies, every tier times out and the hook exits 2 (deny). A solo user with no coordinator1 peer is hard-denied.",
+        "evidence": "ocaml/cli/c2c_kimi_hook.ml:169-237 (resolve + fallback to coordinator1); lines 322-345 send + await-reply + `exit 2` on empty verdict; the script falls closed by design",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Same as opencode: if no real authorizer resolves (none alive), and in solo mode, fail-OPEN or route to self via the local `c2c authorize` CLI. The is_safe_command allowlist (lines 115-156) already lets read-only commands through without any supervisor \u2014 extend that posture so absence-of-supervisor != hard deny.",
+        "removal_candidate": false
+      },
+      {
+        "title": "supervisor_strategy (first-alive | round-robin | broadcast) routing",
+        "what_it_does": "repo.json supervisor_strategy selects how the configured supervisor list is fanned out. Implemented in the opencode plugin (c2c_opencode_plugin_embedded.ml:346-359) and stubbed in the kimi hook (only first-alive implemented; round-robin/broadcast fall back to first-alive). Pure routing over a flat list \u2014 does not change WHO is authoritative, only the order/breadth of who is asked.",
+        "evidence": "ocaml/cli/c2c_kimi_hook.ml:186-208,299-399 (strategy resolver + dispatcher, round-robin/broadcast not implemented); ocaml/cli/c2c_opencode_plugin_embedded.ml:290-359",
+        "mechanism": "role-file-field",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already role-agnostic (operates over alias list). Trivially works for a 2-peer mesh. Can stay as opt-in; for solo it is moot (list of 0/1).",
+        "removal_candidate": false
+      },
+      {
+        "title": "coord_fallthrough broker scheduler (per-DM redundancy chain)",
+        "what_it_does": "A 60s broker thread escalates unanswered permission DMs down `[swarm] coord_chain` aliases, then broadcasts to swarm-lounge. Reads verbatim aliases from .c2c/config.toml coord_chain; DEFAULT is [] (feature OFF). Skips offline aliases, stamps fired tiers, stops when check_pending_reply marks resolved_at.",
+        "evidence": "ocaml/coord_fallthrough.ml:89-150 (decide_next_action over chain); ocaml/c2c_start.ml:745-753 `swarm_config_coord_chain` defaults to []; broadcast room defaults swarm-lounge",
+        "mechanism": "schedule",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Already opt-in (empty chain = disabled). It is purely an alias-chain escalator with no role semantics; the name 'coord' is cosmetic. For a flat mesh rename to e.g. `escalation_chain` and it works unchanged. Solo: leave empty (default) \u2192 no effect.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Requester binds supervisors at open_pending_reply; broker derives reply identity from session",
+        "what_it_does": "open_pending_reply stores supervisors exactly as passed by the requester (no validation that they are 'real' coordinators) and requires the caller be a registered session. check_pending_reply derives reply_from_alias from the caller's OWN registration, not from arguments \u2014 so authority is session-bound, preventing spoofing, and is symmetric: any registered peer the requester trusts can be a supervisor.",
+        "evidence": "ocaml/c2c_pending_reply_handlers.ml:14-26 (supervisors taken from arguments), :35-39 (caller must be registered), :117-123 (reply_from_alias from registration, legacy arg ignored)",
+        "mechanism": "broker-logic",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "This is the clean symmetric primitive. For self-approval the requester lists its own alias; for peer-approval it lists a peer. No coordinator concept required. Keep.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Default-OFF install posture (every client)",
+        "what_it_does": "Approval forwarding is never active out-of-the-box: kimi TOML block is shipped fully commented; Claude PreToolUse hook is installed with a sentinel matcher `__C2C_PREAUTH_DISABLED__` that matches nothing; opencode only forwards when opencode's own config sets a permission to 'ask'. So a solo user is NOT blocked waiting for a nonexistent supervisor unless they explicitly opt in.",
+        "evidence": "ocaml/cli/c2c_kimi_hook.ml:414-476 (block commented, header 'ships fully commented out'); ocaml/cli/c2c_setup.ml:1380-1397 (sentinel_matcher `__C2C_PREAUTH_DISABLED__`); c2c_opencode_plugin_embedded.ml:1903-1909 (fires only on opencode 'ask' events)",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Good baseline for solo. Keep default-off; the decouple work is purely about making the opted-in path degrade gracefully (fail-open / self-approve) when no peer supervisor exists, rather than fail-closed to coordinator1.",
+        "removal_candidate": false
+      }
+    ],
+    "irreducible_core": [
+      "Session-bound reply identity: check_pending_reply derives the replier alias from the caller's own broker registration, not from request args (anti-spoofing) \u2014 ocaml/c2c_pending_reply_handlers.ml:117-123",
+      "Flat supervisor-list membership as the sole authority test (no roles/tiers) \u2014 c2c_pending_reply_handlers.ml:156, c2c.ml:6288-6298",
+      "File-based pending/verdict side-channel (token, atomic write, sanitized filenames) decoupled from any role concept \u2014 ocaml/cli/c2c_approval_paths.ml",
+      "Per-token TTL + capacity caps + decision audit log (pending_open/check) \u2014 independent of who the supervisors are",
+      "Default-OFF install posture across all clients (solo user is never gated unless they opt in)",
+      "is_safe_command read-only allowlist that bypasses approval entirely without any supervisor \u2014 c2c_kimi_hook.ml:115-156"
+    ],
+    "simplification_opportunities": [
+      "Make the empty-supervisor case fail-OPEN (or self-approve) instead of fail-closed: opencode early-returns ALLOW when selectSupervisors()=[] (c2c_opencode_plugin_embedded.ml:1940-1964) and the kimi hook treats 'no resolvable authorizer' as allow-in-solo rather than exit 2 (c2c_kimi_hook.ml:234-237,343). This directly fixes the solo footgun.",
+      "Drop the hardcoded `coordinator1` literal default in three places (c2c_kimi_hook.ml:230, c2c_opencode_plugin_embedded.ml:105) and replace with: solo \u2192 own alias / OFF; mesh \u2192 no default (empty = no gate). Removes the only coordinator coupling in the approval path.",
+      "Allow self-approval cleanly: stop self-excluding in opencode selectSupervisors when the list is exactly [self] (line 341); the broker already permits requester==supervisor, so a solo agent could approve its own tool-uses (or this whole path is just OFF for solo).",
+      "Collapse the two divergent kimi hook copies: the on-disk scripts/c2c-kimi-approval-hook.sh still uses the legacy single-REVIEWER model while the embedded c2c_kimi_hook.ml uses authorizers[]+strategy. The 'rough sync' convention is drift waiting to happen; embedded copy should be sole source, script regenerated from it.",
+      "Finish or delete the round-robin/broadcast strategy stubs in the kimi hook (c2c_kimi_hook.ml:357-397) \u2014 currently they just re-run first-alive, so the config value is misleading.",
+      "Rename role-flavored config keys (coord_chain, coord_fallthrough_*, primary_authorizer) to neutral names (escalation_chain, escalation_*) so a flat mesh reads naturally; behavior is already role-agnostic."
+    ],
+    "open_questions": [
+      "Intended solo posture when opted-in but no peer exists: fail-open (allow), self-approve (own alias in supervisors), or local interactive prompt? Code currently fail-closes \u2014 is that the desired default for a flat-mesh/solo world?",
+      "Should the broker actively REJECT a supervisors list that equals [requester] (block self-approval) or explicitly bless it? Today it silently permits self-approval (no guard); the opencode plugin alone blocks it via self-exclusion \u2014 these two layers disagree.",
+      "Is there any intended privilege difference between a 'supervisor' and a peer, or is 'supervisor' purely the label for 'whoever the requester chose to gate on'? Code shows the latter; docs/role-files imply the former.",
+      "Cross-host approval is explicitly deferred (c2c_approval_paths.ml:14 'v1 is local-only') \u2014 does the flat-mesh north star require remote approval, which would change the broker_root-embedded-in-pending design?"
+    ]
+  },
+  {
+    "dimension": "Native scheduling / wake and its coupling to team/coordinator structure",
+    "summary": "The scheduling *engine* is almost entirely role-agnostic. The schedule TOML format, the file watcher in `c2c start`, the MCP handlers, the CLI (`c2c schedule set/list/rm/...`), the fire/idle-gating helpers, and `c2c doctor schedule` carry zero coordinator/sitrep/role logic \u2014 they operate on per-alias `.c2c/schedules/<alias>/*.toml` files and idle-gate against the broker's `last_activity_ts`. `c2c install` writes exactly one universal `wake.toml` (interval 4.1m, idle-gated, message \"wake \u2014 poll inbox, advance work\" \u2014 no coordinator reference) for every client, which is the correct universal default for both solo and flat-mesh. The team-structure coupling lives entirely OUTSIDE the engine: (1) the *sitrep* schedule is never installed by code \u2014 it is prose in the coordinator role template instructing the agent to self-run `c2c schedule set sitrep ...`; (2) coordinator failover is a pure runbook convention with no detection or scheduling code (the `c2c failover-status` doctor check is an unchecked TODO); (3) the only code-level role hook in scheduling is `should_heartbeat_apply_to_role`, which filters on a `role_classes` field that installed/CLI-created schedules always leave empty (role-agnostic) \u2014 only role-file `c2c.heartbeats.*` YAML could inject role-gated timers, and no shipped role does. Remaining couplings are soft string defaults: the builtin heartbeat *content* hardcodes \"coordinator1 (or swarm-lounge)\", `swarm-lounge` is hardcoded as the default room, and the planned `swarm_config_coordinator_alias`/`social_room` thunks are comment-only stubs. A separate broker scheduler, `coord_fallthrough`, escalates unacked permission DMs through a `coord_chain` but defaults to `[]` (feature-off), so it is already opt-in.",
+    "irreducible_core": [
+      "The schedule data model + persistence: per-alias `.c2c/schedules/<alias>/*.toml` with interval, align, message, only_when_idle, idle_threshold, enabled. Role-free (ocaml/cli/c2c_schedule.ml:60-73, ocaml/c2c_schedule_handlers.ml:22-35).",
+      "The idle-gating + fire logic in c2c_schedule_fire.ml: `agent_is_idle`, `last_activity_ts_for_alias`, `enqueue_heartbeat`, `should_fire` \u2014 all keyed on alias + broker last_activity_ts, no role concept (ocaml/c2c_schedule_fire.ml:6-37).",
+      "The hot-reload watcher thread in c2c_start.ml that stat-polls the schedule dir every 10s and starts/stops timers per file \u2014 role filter is a no-op when role_classes=[] which is the install/CLI default (ocaml/c2c_start.ml:1149-1221).",
+      "The universal `wake` default itself: poll inbox / advance work, 4.1m interval, idle-gated. This is the right default for a solo user and a flat mesh alike (ocaml/cli/c2c_setup.ml:1564-1576).",
+      "CLI + MCP surfaces `schedule set/list/show/rm/enable/disable` and `c2c doctor schedule` \u2014 fully role-agnostic, operate on current alias (ocaml/cli/c2c_schedule.ml:363-391, ocaml/cli/c2c_doctor_schedule.ml:48-82)."
+    ],
+    "simplification_opportunities": [
+      "Make the wake-default message provider-neutral: `c2c_setup.ml:1570` already uses the clean 'wake \u2014 poll inbox, advance work' (no coordinator), but the *builtin* heartbeat content in c2c_start.ml:163/172 still hardcodes 'ask coordinator1 (or swarm-lounge) for more'. In solo/flat-mesh mode that line is misleading. Replace with role/topology-neutral text, or gate the 'ask coordinator1' tail behind a swarm-mode flag.",
+      "The sitrep schedule has NO code path \u2014 it's manual prose in the coordinator role template. For a flat mesh / solo user there is nothing to remove from the engine; it simply never gets created. Keep it as a coordinator-role opt-in (already is). No engine change needed.",
+      "Coordinator failover is 100% runbook convention with zero code. For a solo/flat deployment it's a no-op already. Nothing to strip from the binary; just ensure docs don't imply the binary enforces it.",
+      "Implement (or delete) the planned `swarm_config_coordinator_alias` / `swarm_config_social_room` thunks (c2c_start.ml:661 comment, c2c_start.mli:340). Today 'swarm-lounge' and 'coordinator1' are hardcoded in ~6 sites. A solo user has no swarm-lounge; making these config-driven with empty/disabled defaults removes the swarm assumption from the wake content and auto-join behavior.",
+      "`role_classes` on schedule entries is dead weight for the universal path (always [] from install + CLI + MCP). Could keep it as an undocumented advanced field but it adds a role concept to the schedule model that 99% of users never touch \u2014 candidate to drop from the schedule_entry surface and keep role-gating purely in the role->heartbeat layer.",
+      "`coord_fallthrough` scheduler is already opt-in (coord_chain defaults to []). For solo/flat-mesh it self-disables. Keep as opt-in structured-team feature; no change needed beyond ensuring it stays default-off."
+    ],
+    "coupling_points": [
+      {
+        "title": "Universal wake.toml auto-created on every install",
+        "what_it_does": "After any `c2c install <client>` for a known client, writes a single `wake` schedule: interval 246s (4.1m), align empty, message 'wake \u2014 poll inbox, advance work', only_when_idle=true, idle_threshold=246s, enabled=true. Skips if wake.toml already exists.",
+        "evidence": "ocaml/cli/c2c_setup.ml:1551-1588 (ensure_default_wake_schedule); called at ocaml/cli/c2c_setup.ml:1641-1643 for known_clients only",
+        "mechanism": "schedule",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already role-agnostic and correct as the universal default. No coordinator reference in the message. Keep verbatim as the solo/flat-mesh default. Optionally make interval configurable, but the current default is fine.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Builtin heartbeat content hardcodes 'ask coordinator1 (or swarm-lounge)'",
+        "what_it_does": "The default and push-aware managed-heartbeat message strings tell the agent: if out of work, ask coordinator1 or swarm-lounge. This is the content used by the codex builtin heartbeat and any role/config heartbeat that doesn't override `message`.",
+        "evidence": "ocaml/c2c_start.ml:161-163 (default_managed_heartbeat_content), 169-172 (push_aware_heartbeat_content), 184 (builtin uses it)",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Swap to topology-neutral text ('if out of work, idle or check your peers'), or template the coordinator/room names via the planned swarm_config_coordinator_alias/social_room thunks so they vanish in solo mode. Note the install-written wake.toml (c2c_setup.ml:1570) does NOT use this string, so a freshly-installed wake schedule is already clean; this only bites the codex builtin and role-default heartbeats.",
+        "removal_candidate": false
+      },
+      {
+        "title": "role_classes filter on schedule firing (should_heartbeat_apply_to_role)",
+        "what_it_does": "When the watcher loads a schedule TOML, it converts to a managed_heartbeat and filters with should_heartbeat_apply_to_role: if role_classes is non-empty, the timer only fires when the launched role's role_class is in the list. Empty role_classes = fire for everyone.",
+        "evidence": "ocaml/c2c_start.ml:939-949 (filter), 1165-1166 (watcher applies it); schedule->heartbeat conversion sets role_classes=[] at ocaml/c2c_start.ml:868 (managed_heartbeat_of_schedule_entry)",
+        "mechanism": "tier-filter",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "For all schedules created by `c2c install`, `c2c schedule set`, and MCP schedule_set, role_classes is ALWAYS [] \u2014 so the filter is a no-op on the universal path. The field is only populated via role-file `c2c.heartbeats.<name>.role_classes` YAML, which no shipped role uses. Can keep the filter (harmless when []) or drop role_classes from the schedule_entry model entirely and keep role-gating in the role->heartbeat resolution layer only.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Role-file heartbeats persisted into schedule dir (c2c.heartbeat / c2c.heartbeats)",
+        "what_it_does": "On `c2c start` with a role file, role-declared heartbeats (c2c.heartbeat.* default override, c2c.heartbeats.<name>.* named) are resolved, role/client-filtered, and written as .toml into .c2c/schedules/<alias>/ for the watcher to pick up. This is the only path that can create a role-specific timer in code.",
+        "evidence": "ocaml/c2c_start.ml:1002-1063 (resolve_managed_heartbeats_and_persist_role), 1133-1143 (persist_role_heartbeats_to_schedule_dir); role fields at ocaml/c2c_role.ml:21-22,43-44,271-272",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "No shipped role (coordinator1.md, Cairn-Vigil.md, templates) actually declares c2c.heartbeat/c2c.heartbeats \u2014 they leave the c2c: block at alias + auto_join_rooms only (verified .c2c/roles/coordinator1.md:6-8). So in practice this path persists nothing extra today; the universal wake.toml from install is what runs. The mechanism is opt-in by role authorship. Solo/flat-mesh users with no role file (role=None) skip it entirely (c2c_start.ml:1009-1011 returns []).",
+        "removal_candidate": false
+      },
+      {
+        "title": "Sitrep schedule is role-template prose, not code",
+        "what_it_does": "Coordinator role templates instruct the agent to self-run `c2c schedule set sitrep --interval 1h --align @1h+7m --message 'sitrep tick'` (or a Monitor fallback). The binary never auto-creates a sitrep schedule; `c2c sitrep` is only a git-commit helper for .sitreps/ files.",
+        "evidence": ".c2c/roles/coordinator1.md:30, .c2c/roles/builtins/Cairn-Vigil.md:40, .c2c/roles/builtins/templates/coordinator.md.tmpl:40,54-58; ocaml/cli/c2c_sitrep.ml:1-131 (commit-only, no schedule writes)",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Already fully decoupled at the code level \u2014 the engine has no sitrep concept. For solo/flat-mesh, no sitrep schedule is ever created because the coordinator role (and its prose) is never loaded. Keep sitrep as a coordinator-role opt-in. The `c2c sitrep commit` helper is harmless and role-agnostic (just commits a dated file).",
+        "removal_candidate": false
+      },
+      {
+        "title": "Coordinator failover protocol (detection + takeover)",
+        "what_it_does": "Defines lyra-quill as recovery agent, succession order, detection signals (no sitrep at :07, unread DMs, dead pid), and takeover/handback steps. Entirely a runbook; no scheduler watches for coord death and no code triggers failover.",
+        "evidence": ".collab/runbooks/coordinator-failover.md:1-60; the proposed `c2c failover-status` doctor check is an UNCHECKED todo at .collab/runbooks/coordinator-failover.md:204; no failover/takeover scheduling code in ocaml/ (grep: only alias-reclaim 'takeover' in registration, ocaml/c2c.ml:3683)",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Zero code to remove \u2014 failover is 100% social/runbook. For solo (no coordinator) or flat mesh (no single coordinator) it is simply inapplicable. Ensure docs frame it as a structured-team-only convention so a solo user isn't told the binary enforces a recovery chain.",
+        "removal_candidate": false
+      },
+      {
+        "title": "coordinator-backup fallthrough broker scheduler (coord_chain)",
+        "what_it_does": "A broker-side Lwt scheduler that, when a permission DM to the primary coord isn't acked within an idle window, escalates through coord_chain backups then broadcasts to swarm-lounge. A genuine scheduling feature that assumes a coordinator hierarchy.",
+        "evidence": "ocaml/coord_fallthrough.mli:1-60; config thunks ocaml/c2c_start.ml:737-783; coord_chain defaults to [] = feature-off (c2c_start.ml:731,745-753)",
+        "mechanism": "broker-logic",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Already opt-in: coord_chain defaults to [] which the scheduler treats as feature-off, so solo/flat-mesh deployments get nothing. Keep default-off. The broadcast tier defaults to 'swarm-lounge' but only fires if a chain is configured. This is the cleanest model for the rest of scheduling to follow: structured-team feature, default-disabled.",
+        "removal_candidate": false
+      },
+      {
+        "title": "swarm-lounge hardcoded as default room + planned config thunks unimplemented",
+        "what_it_does": "swarm-lounge is hardcoded as the auto-join room and broadcast room in multiple sites; the planned swarm_config_coordinator_alias / swarm_config_social_room helpers that would make coordinator alias and social room configurable are comment-only stubs.",
+        "evidence": "ocaml/c2c_start.ml:1625,3128,5573 (hardcoded swarm-lounge default), 739 (broadcast room), 661 (planned thunks comment), ocaml/c2c_start.mli:340 (same comment); install writes C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Implement swarm_config_coordinator_alias/social_room as real config reads (default empty/disabled), then thread them through the heartbeat content + auto-join defaults. A solo user sets nothing and gets no swarm-lounge auto-join and no 'ask coordinator1' tail. This is the single change that most reduces the team assumption baked into the wake/scheduling surface.",
+        "removal_candidate": false
+      }
+    ],
+    "open_questions": [
+      "Should the universal `wake` schedule even be auto-created for a solo user who isn't running a swarm? Today install always writes it. A solo user polling their own inbox on a 4.1m idle timer is arguably useful (self-DM scheduling, reminders) but the message text presumes swarm work. Decide: keep wake universal with neutral text, or gate auto-creation behind a swarm/agent mode.",
+      "Is `role_classes` on schedule_entry worth keeping at all? It is always [] on every code-created schedule and no shipped role populates it. Dropping it simplifies the schedule model and removes a role concept from the universal path, at the cost of breaking the (unused) ability to role-gate a schedule TOML directly.",
+      "Should `c2c schedule` support a non-self-DM target (e.g. a reminder to a peer or a room) for the flat-mesh case, or stay strictly self-DM (enqueue_message from_alias=alias to_alias=alias)? Currently it is self-DM only (c2c_schedule_fire.ml:23-27), which is the right minimal core but forecloses peer/room scheduled pings.",
+      "Do the planned swarm_config_coordinator_alias/social_room thunks get implemented or deleted? They have been comment-only stubs since #318/#341; leaving them as comments while 6 call sites hardcode the values is the actual source of the team assumption in wake content."
+    ]
+  },
+  {
+    "dimension": "Default install/onboarding team-structure assumptions (c2c install + c2c init + c2c start)",
+    "summary": "A brand-new solo user who runs `c2c install` (or `just install-all`) + `c2c init` + `c2c start` is implicitly enrolled into THIS dev swarm's framing at multiple layers. The hard core is small: nothing in the messaging path (register/send/poll) requires a role or coordinator, and DM-based 1:1 works role-agnostically. But the DEFAULTS lean swarm everywhere: every client's MCP env block is written with `C2C_MCP_AUTO_JOIN_ROOMS=\"swarm-lounge\"` + `C2C_AUTO_JOIN_ROLE_ROOM=\"1\"` (install-time, all 5 clients); the broker register/confirm handlers UNCONDITIONALLY announce `peer_register` into a hardcoded `swarm-lounge` room (broker core, ghost-room auto-create, not just config); the default kickoff/restart intro literally opens \"You have been started as a c2c swarm agent... The swarm coordinates via c2c... You are now part of it\"; the role-onboarding preamble and role templates hardcode \"introduce yourself to coordinator1\", peer-PASS gate, and named peers (Cairn-Vigil, stanza-coder\u2026); `c2c install self` installs a `git-pre-reset` shim whose guard hard-codes a coordinator/non-coordinator split (refuses commit-on-master etc. unless `C2C_COORDINATOR=1`); the kimi PreToolUse approval hook falls back to `coordinator1` as authorizer (but is commented-out by default). Most of these are SOFT (defaults/text) and individually opt-out-able, but there is NO neutral/flat default \u2014 the union of defaults presumes a structured multi-agent swarm with a coordinator. A solo user wanting plain 1:1 between two of their own agents gets a working channel but also a phantom swarm-lounge room, swarm-agent intro text, an interactive \"what's this agent's role?\" prompt, and a git shim built around coordinator privilege.",
+    "coupling_points": [
+      {
+        "title": "Install writes swarm-lounge auto-join into every client's MCP env",
+        "what_it_does": "Every `c2c install <client>` writes C2C_MCP_AUTO_JOIN_ROOMS=\"swarm-lounge\" and C2C_AUTO_JOIN_ROLE_ROOM=\"1\" into the client's MCP env block. The MCP server then auto-joins swarm-lounge on first registration (auto_join_rooms_impl). A solo user is placed into the swarm social room without asking.",
+        "evidence": "ocaml/cli/c2c_setup.ml:508-509 (codex), :579-580 (kimi), :697-698 (gemini), :805-807 (opencode), :1161-1162 (claude), :1457-1458 (crush); consumed in ocaml/c2c_mcp_helpers_post_broker.ml:1037-1064 (auto_join_rooms_impl)",
+        "mechanism": "env-var",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Make the auto-join room a single sourced constant defaulting to empty (or to a neutral per-user room) and only write swarm-lounge when an operator opts into swarm mode (e.g. `c2c install --swarm` or a repo.json flag). C2C_AUTO_JOIN_ROLE_ROOM is already inert without a role file, so it can simply be dropped from the default.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Broker hardcodes swarm-lounge for the peer_register announcement (CORE, not config)",
+        "what_it_does": "On every new registration AND on unconfirmed\u2192confirmed promotion, the broker builds `social_rooms = sort_uniq (\"swarm-lounge\" :: auto_rooms)` and send_room's a `\"<alias> registered\"` announcement into it. swarm-lounge is prepended UNCONDITIONALLY, independent of C2C_MCP_AUTO_JOIN_ROOMS. send_room auto-creates a ghost room (members=[], created_by=\"\") and writes room-history, so a solo broker silently materializes a swarm-lounge room on first registration.",
+        "evidence": "ocaml/c2c_identity_handlers.ml:340-360 (register handler, line 349 `\"swarm-lounge\" :: auto_rooms`); ocaml/c2c_broker.ml:4064-4084 (confirm path, line 4073 same); send_room ghost-room behavior ocaml/c2c_broker.ml:3849-3887",
+        "mechanism": "broker-logic",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Drop the hardcoded `\"swarm-lounge\" ::` prefix; announce only into rooms the agent actually joined (auto_rooms), or skip the broadcast entirely when no social room is configured. Currently harmless for a true solo (no members \u2192 history-only) but it writes a phantom room and bakes the swarm assumption into broker core.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Default kickoff / restart intro frames the agent as a swarm member",
+        "what_it_does": "builtin_swarm_restart_intro (rendered by default_kickoff_prompt on `c2c start` when --auto or a role file is present) opens 'You have been started as a c2c swarm agent...', instructs 'Post in the lounge: send_room swarm-lounge', and closes 'The swarm coordinates via c2c instant messaging. You are now part of it.' This is the first thing a managed agent reads.",
+        "evidence": "ocaml/c2c_start.ml:668-678 (builtin_swarm_restart_intro); ocaml/cli/c2c.ml:9118-9150 (default_kickoff_prompt renders it); also default_managed_heartbeat_content references 'ask coordinator1 (or swarm-lounge)' at ocaml/c2c_start.ml:161-163 and 169-172",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Make the intro neutral by default ('You can message peers with c2c send / poll_inbox') and move the swarm/lounge/coordinator framing into a swarm-mode override. The override mechanism already exists ([swarm] restart_intro in .c2c/config.toml, swarm_config_restart_intro) \u2014 invert the default so swarm framing is opt-in. Same for the heartbeat content's coordinator1 reference.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Role onboarding preamble + role templates hardcode coordinator1 and named peers",
+        "what_it_does": "When launched with --agent / a role file, the kickoff preamble tells the agent: 'Join swarm-lounge... Send a message to coordinator1 introducing yourself'. The role-class templates (Role_templates.render) embed THIS swarm's specifics: 'senior coder on the c2c swarm', peers 'coordinator1 (Cairn-Vigil), stanza-coder, galaxy-coder...', the peer-PASS gate, 'DM coordinator1 with peer-PASS by <peer>'.",
+        "evidence": "ocaml/cli/c2c.ml:9496-9506 and 9573-9584 (onboarding_preamble, both role paths); ocaml/cli/role_templates.ml:10,21,24,35,38,42-45,80,93,100,119-120 (coder template); ocaml/cli/role_designer_embedded.ml:5,17,59,92",
+        "mechanism": "role-file-field",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Templates and the preamble are only reached via the role path (opt-in). Strip the THIS-swarm-specific named peers / coordinator1 / peer-PASS text into a separately-sourced 'team profile' so the generic role templates stay role-agnostic; or gate the coordinator-introduction step on a configured supervisor existing.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Interactive 'what is this agent's role?' prompt on plain `c2c start`",
+        "what_it_does": "On a TTY with no role file and no explicit kickoff, `c2c start` interactively prompts: 'What is this agent's role? (e.g. coder, planner, coordinator \u2014 press Enter to skip)' and, if answered, writes a role file and expands the swarm role template. Presumes role-structured team membership; a solo 1:1 user is nudged toward picking a role.",
+        "evidence": "ocaml/cli/c2c.ml:9069-9108 (prompt_for_role); called from the no-role start paths at c2c.ml:9604, 9621, 9644",
+        "mechanism": "hook",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Default to skipping the role prompt (or make it a single y/N 'configure a structured role? [N]'); Enter already skips, but the prompt itself presumes roles are the norm. A flat-mesh default would not prompt at all.",
+        "removal_candidate": true
+      },
+      {
+        "title": "`c2c install self` installs a coordinator-gated git pre-reset shim",
+        "what_it_does": "`c2c install self` / `install all` unconditionally installs git + git-pre-reset shims via ensure_swarm_git_shim_installed. The guard (git-shim.sh) refuses git commit-on-master, reset --hard, switch/checkout/rebase in the main tree for anyone WITHOUT C2C_COORDINATOR=1. This encodes a two-tier coordinator/non-coordinator model into the user's git, irrelevant and obstructive to a solo user.",
+        "evidence": "ocaml/cli/c2c_setup.ml:306-313 (install self installs shim); ocaml/c2c_start.ml:1879-1906 (install_pre_reset_shim / ensure_swarm_git_shim_installed); git-shim.sh:3-4,52,62-67,107-174 (COORDINATOR gate, refuses commit on main unless C2C_COORDINATOR=1); is_coordinator reads C2C_COORDINATOR at ocaml/cli/c2c.ml:105-106",
+        "mechanism": "git-guard",
+        "role_dependency": "hard",
+        "can_decouple": true,
+        "decouple_approach": "Do NOT install the git shim as part of default `install self`. Gate it behind an explicit `c2c install git-shim` / `--swarm` opt-in (uninstall already supports git-shim as a component). For a solo user the shim has no upside (no peers to protect commits from) and actively breaks normal solo git on master.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Kimi PreToolUse approval hook falls back to coordinator1 authorizer",
+        "what_it_does": "The kimi approval hook resolves the authorizer chain; if repo.json has no authorizers[] and no env var, it falls back to literal 'coordinator1'. If the [[hooks]] block were enabled, every non-safe kimi tool call would DM a non-existent coordinator1 and block until timeout/fall-closed. Mitigated: the [[hooks]] TOML block is installed FULLY-COMMENTED by default, so the hook is dormant unless the operator uncomments it.",
+        "evidence": "ocaml/cli/c2c_kimi_hook.ml:163-180,219-237 (resolve_authorizers + line 230 fallback coordinator1); installed commented per ocaml/cli/c2c_setup.ml:607-616 and c2c_kimi_hook.ml:12 ('fully-commented [[hooks]] block'); CLI --reviewer default 'coordinator1' at ocaml/cli/c2c.ml:6509",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Change the last-resort fallback from 'coordinator1' to fall-open (exit 0) or to a clear 'no authorizer configured \u2014 approval disabled' rather than a hardcoded swarm alias. Since the block is commented by default this is low-severity, but the hardcoded alias is the wrong default for solo.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Supervisor/authorizer display + docs default to coordinator1",
+        "what_it_does": "`c2c doctor` and help text present coordinator1 as the implied supervisor default ('supervisor: coordinator1 (default...)', 'authorizers: ... fallback: coordinator1 implicit'). The actual resolver (C2c_authorizers / MCP permission path) returns None/[] when unconfigured \u2014 so this is display/doc text, not enforced behavior, for the claude/opencode MCP path.",
+        "evidence": "ocaml/cli/c2c.ml:1952 (doctor supervisor default text), :1959 (authorizers fallback text), :7310-7311,10862-10863 (help examples); resolver returns None when unset: ocaml/cli/c2c_authorizers.ml:50-69; MCP permission supervisors default to [] at ocaml/cli/c2c.ml:1006-1011",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Reword doctor/help to not present a specific alias as the universal default; say 'no supervisor configured (approvals disabled)'. The code already does the right (neutral) thing; only the surfaced text presumes coordinator1.",
+        "removal_candidate": true
+      },
+      {
+        "title": "README/c2c init onboarding centered on swarm-lounge",
+        "what_it_does": "README 'Quick Start' frames onboarding as 'configure your client, register, join swarm-lounge', and `c2c init` has --room defaulting to swarm-lounge (joins it on init). Opt-out exists ('Pass empty string to skip'), but the documented and default happy-path puts the solo user in the swarm social room.",
+        "evidence": "README.md:11,17; ocaml/cli/c2c.ml:6939-6942 (--room default swarm-lounge), :7056-7064 (join on init), :7299-7307 (init doc 'join swarm-lounge')",
+        "mechanism": "convention-doc-only",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Default `c2c init --room` to empty (skip), and document a neutral 1:1 path first ('register two agents, c2c send between them'), with 'join swarm-lounge / swarm mode' as an explicit opt-in section.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Hardcoded protected-alias list of this swarm's named agents",
+        "what_it_does": "`instances clean-stale` protects a hardcoded list of THIS swarm's specific aliases (coordinator1, swarm-lounge, stanza-coder, jungle-coder, galaxy-coder, lyra-quill, test-agent, dogfood-hunter). Not part of solo onboarding, but it bakes this particular team's roster into the binary.",
+        "evidence": "ocaml/cli/c2c.ml:7708-7719 (clean_stale_protected_aliases)",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Derive the protected set from live registrations / configured supervisors rather than a hardcoded roster, or make it config-driven. Only protect swarm-lounge structurally if swarm mode is on.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Default wake schedule created at install (neutral content)",
+        "what_it_does": "`c2c install <client>` calls ensure_default_wake_schedule, writing a wake.toml (interval 4.1m, idle-gated) with message 'wake \u2014 poll inbox, advance work'. This presumes an autonomous always-on agent loop. The message itself is role-neutral (no coordinator/swarm reference), so it is the least-coupled of the defaults \u2014 but it still assumes an autonomous-agent posture rather than an on-demand 1:1 tool.",
+        "evidence": "ocaml/cli/c2c_setup.ml:1551-1588 (ensure_default_wake_schedule, message at :1570); invoked at :1642-1643",
+        "mechanism": "schedule",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Keep as-is for managed/autonomous use, but consider not creating a wake schedule for a non-autonomous solo install (or gate on swarm/autonomous mode). Low priority \u2014 content is already neutral.",
+        "removal_candidate": false
+      }
+    ],
+    "irreducible_core": [
+      "The messaging path is already role/coordinator-agnostic: register (C2C_MCP_AUTO_REGISTER_ALIAS), send/poll_inbox, list, whoami \u2014 none require a role, a supervisor, or swarm-lounge (ocaml/c2c_identity_handlers.ml, c2c_mcp_helpers_post_broker.ml).",
+      "Alias assignment is neutral: auto-generated word-pair aliases with no role/coordinator concept (ocaml/cli/c2c_setup.ml:92-113, default_alias_for_client).",
+      "Per-agent broker registration + inbox + 1:1 DM delivery is the genuine universal core and works for two of a user's own agents with zero team structure.",
+      "Rooms as a generic primitive (join_room/send_room/room_history) are role-agnostic \u2014 only the swarm-lounge DEFAULT and the broker's hardcoded prepend are coupled, not the room machinery itself.",
+      "The MCP permission/supervisor path already defaults to an empty supervisor list and the authorizers resolver returns None when unconfigured \u2014 the neutral behavior already exists in code; only defaults/text presume coordinator1.",
+      "broker-root resolution, identity/Ed25519 keys, and relay transport are all independent of team structure."
+    ],
+    "simplification_opportunities": [
+      "Introduce a single explicit mode switch (e.g. `c2c install --swarm` / repo.json `\"mode\":\"swarm\"`) and make the FLAT/solo behavior the default: no swarm-lounge auto-join, neutral kickoff intro, no git-shim, no role prompt. Swarm framing becomes additive opt-in.",
+      "Source the social-room name from ONE place. Today 'swarm-lounge' is hardcoded in ~10 spots (setup_*.ml x6, c2c_start.ml multiple, c2c_identity_handlers.ml:349, c2c_broker.ml:4073, c2c.ml init/help). A single `swarm_config_social_room ()` thunk (already planned per the #318 comment at c2c_start.ml:660-661) defaulting to None would let solo = no room, swarm = swarm-lounge.",
+      "Remove the hardcoded `\"swarm-lounge\" ::` prefix in the broker register/confirm announcement (c2c_identity_handlers.ml:349, c2c_broker.ml:4073) so the broker core stops presuming a universal social room \u2014 announce only into rooms actually joined.",
+      "Stop installing the git-pre-reset shim in default `install self`; make it `c2c install git-shim` opt-in (uninstall already treats git-shim as a separate component). The shim's entire reason-for-being is multi-agent main-tree contention.",
+      "Invert the kickoff/restart-intro default to a neutral 1:1 message; the override plumbing (swarm_config_restart_intro, [swarm] restart_intro) already exists \u2014 just swap which side is the default.",
+      "Make `prompt_for_role` opt-in (don't prompt by default) and change the kimi approval fallback + doctor text away from the literal 'coordinator1'.",
+      "Lead the README with a 2-agent 1:1 example before any swarm-lounge/coordinator content; move swarm onboarding to a clearly-labeled 'Swarm mode' section."
+    ],
+    "open_questions": [
+      "Does the project want a single global mode flag (solo vs swarm) or finer-grained per-feature opt-ins? A mode flag is simpler but coarser; per-feature toggles already partly exist (e.g. --room '', [swarm] restart_intro).",
+      "Is the broker's unconditional swarm-lounge `peer_register` announcement relied upon anywhere for presence/discovery (e.g. does any agent watch swarm-lounge for joins)? If so, removing the hardcoded prepend needs a presence-event replacement; if not, it's pure dead weight for solo.",
+      "Should `install self` ever auto-install the git shim, or only when a swarm/coordinator context is detected? Need to confirm no other code path hard-requires the shim being present (uninstall lists it as optional, suggesting not).",
+      "The C2C_AUTO_JOIN_ROLE_ROOM=\"1\" env is written to all clients but only consumed in c2c_start.ml build_env (managed-start path), gated on a role file existing \u2014 is it ever consumed by the MCP server directly? Grep shows no MCP-server consumer, so it appears inert for non-role solo use and could simply be dropped from the install defaults.",
+      "Are the role templates (role_templates.ml / role_designer_embedded.ml) intended to be generic or are they explicitly THIS dev-swarm's onboarding? If generic, the named peers (Cairn-Vigil, stanza-coder, coordinator1) and peer-PASS gate need extracting into a per-team profile."
+    ]
+  },
+  {
+    "dimension": "Surface area: MCP tools, CLI command groups, env vars, config files \u2014 coupling to roles/coordinator",
+    "summary": "c2c exposes 38 base MCP tools (+1 dev-only `debug`) and ~83 top-level CLI command entries. The MCP surface is almost entirely role-agnostic: `tools/list` returns the full static `tool_definitions` to every session unconditionally (ocaml/c2c_mcp.ml:430-432) \u2014 there is NO per-role or per-coordinator tool gating. The `role` field on `register` is stored and displayed but is NEVER read for any send/room/inbox routing decision (it is pure attribution metadata). The CLI does filter, but only on an agent-vs-operator axis (`is_agent_session()` = any session with `C2C_MCP_SESSION_ID` set; ocaml/cli/c2c_commands.ml:113-135) \u2014 not by role/coordinator. The coordinator concept couples in via exactly one env var, `C2C_COORDINATOR=1`, which is a privilege/guard-bypass flag (spoof-as-other-alias, worktree-mismatch-guard skip, main-tree commit allowance) plus the `coord` command group; it is opt-in and the whole mesh works without it. Structured-team surfaces (supervisor/approval/pending-reply permission flow, role-class pmodel table, role-room auto-join, hardcoded `coordinator1` defaults) are a cohesive but separable cluster bolted onto a role-agnostic core. The runbook env-var dictionary (~18 entries) is badly stale vs the ~90 distinct C2C_* vars actually read in code.",
+    "coupling_points": [
+      {
+        "title": "MCP tools/list is fully role-agnostic \u2014 no coordinator/role gating",
+        "what_it_does": "Every MCP session sees all 38 base tools (+debug in dev builds). tools/list returns the static tool_definitions list with no filtering by role, alias, or coordinator status.",
+        "evidence": "ocaml/c2c_mcp.ml:430-432 (`tools/list` returns `tool_definitions` verbatim); base list ocaml/c2c_mcp.ml:29-202; dispatch ocaml/c2c_mcp.ml:231-303",
+        "mechanism": "other",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already decoupled. This is the irreducible-core property to preserve: a solo/flat-mesh user gets the identical tool surface.",
+        "removal_candidate": false
+      },
+      {
+        "title": "register `role` field is display-only metadata, not routing",
+        "what_it_does": "register accepts an optional `role` (coordinator|reviewer|agent|user); it is persisted on the registration and emitted in JSON/list output but never consulted for delivery, send authorization, or room behavior.",
+        "evidence": "tool prop ocaml/c2c_mcp.ml:36; stored/serialized in ocaml/c2c_broker.ml:122,208-214,1970-1991; grep for role in c2c_send_handlers.ml / c2c_room_handlers.ml / c2c_inbox_handlers.ml returns no behavioral read",
+        "mechanism": "role-file-field",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Keep as optional free-text attribution. No structured 'coordinator' semantics depend on it \u2014 it could even be dropped from the schema with zero behavioral change.",
+        "removal_candidate": false
+      },
+      {
+        "title": "C2C_COORDINATOR=1 \u2014 the single real coordinator coupling (privilege bypass)",
+        "what_it_does": "Bypasses the send-as-other-alias spoofing guard (CLI send + rooms), skips the Hardening-B worktree-mismatch guard in the broker, and is required by the `coord` command group + pre-reset git shim. It is a privilege flag, not a routing role.",
+        "evidence": "is_coordinator + validate_from_override ocaml/cli/c2c.ml:105-147; rooms variant ocaml/cli/c2c_rooms.ml:32-72; broker guard skip ocaml/c2c_broker.ml:1133-1134; coord-cherry-pick gate ocaml/cli/c2c_coord.ml:202-210",
+        "mechanism": "env-var",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "For a flat mesh leave it unset everywhere \u2014 all messaging works; only the relay-on-behalf and main-tree-op escape hatches are unavailable, which solo users do not need. Could rename to C2C_PRIVILEGED / C2C_RELAY_AS to drop the 'coordinator' framing without losing the capability.",
+        "removal_candidate": false
+      },
+      {
+        "title": "C2C_AUTO_JOIN_ROLE_ROOM=1 written into every managed client install",
+        "what_it_does": "When set, `c2c start` derives a role-class room name (role_class + 's') and appends it to C2C_MCP_AUTO_JOIN_ROOMS, so agents auto-join class rooms (coders, reviewers, \u2026). c2c install writes it for all 5 clients.",
+        "evidence": "build_env logic ocaml/c2c_start.ml:2914-2923; role_class_to_room ocaml/c2c_role.ml:564-567; install writes it for codex/claude/etc ocaml/cli/c2c_setup.ml:509,580,698,807,1162,1458",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Default it OFF (or omit from install). Without a role_class the branch is a no-op anyway; solo users get only swarm-lounge. Makes structured class-rooms opt-in rather than install-default.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Supervisor / approval / pending-reply permission flow (structured-team only)",
+        "what_it_does": "A whole permission-request subsystem: open-pending-reply/check-pending-reply MCP tools + CLI await-reply, approval-reply, authorize, approval-pending-write/list/show/gc, resolve-authorizer, and the `supervisor` command group (answer/question-reject/approve/reject). Routes agent permission asks to a configured supervisor list.",
+        "evidence": "MCP tools ocaml/c2c_mcp.ml:134-148; supervisor_group ocaml/cli/c2c.ml:11636-11666; supervisor config resolution ocaml/cli/c2c.ml:1904-1912; repo.json supervisors[] /home/xertrov/src/c2c/.c2c/repo.json; kimi hook authorizer chain ocaml/cli/c2c_kimi_hook.ml:165-180",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Gate the entire cluster behind 'supervisors configured'. With no supervisors[] / no C2C_SUPERVISORS, the permission flow should be a no-op (agents self-authorize). Solo/flat mesh never needs it. ~10 CLI commands + 2 MCP tools + 1 group could be hidden when unconfigured.",
+        "removal_candidate": true
+      },
+      {
+        "title": "C2C_SUPERVISORS / C2C_PERMISSION_SUPERVISOR env vars + supervisors[] in repo.json",
+        "what_it_does": "Configure who receives permission/question asks. Single-alias (C2C_PERMISSION_SUPERVISOR) takes priority over comma-list (C2C_SUPERVISORS) over repo.json supervisors[]/authorizers[].",
+        "evidence": "resolution ocaml/cli/c2c.ml:1904-1912; opencode plugin embedded ocaml/cli/c2c_opencode_plugin_embedded.ml:80-84; repo.json /home/xertrov/src/c2c/.c2c/repo.json (supervisor_strategy, supervisors, fallback_supervisors)",
+        "mechanism": "env-var",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Exists purely to support the structured permission flow. For solo/flat mesh leave unset; ensure the approval hooks treat 'unset' as 'no approval required' rather than falling back to a hardcoded coordinator1.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Hardcoded `coordinator1` fallback defaults across CLI/hooks/role-templates",
+        "what_it_does": "Numerous surfaces default to the literal alias 'coordinator1' when nothing is configured: kimi approval reviewer flag default, kimi hook last-resort authorizer, agent refine --agent-mode reply target, health-check supervisor default, role-template onboarding prose ('DM coordinator1').",
+        "evidence": "kimi reviewer default ocaml/cli/c2c.ml:6509; kimi hook fallback ocaml/cli/c2c_kimi_hook.ml:167; agent refine fallback ocaml/cli/c2c_agent.ml:721-722; health default ocaml/cli/c2c.ml:1952; role-template prose ocaml/cli/role_templates.ml:24,45,80,93,160; cold-boot prompt ocaml/cli/c2c.ml:9501,9578",
+        "mechanism": "hardcoded-alias",
+        "role_dependency": "convention-only",
+        "can_decouple": true,
+        "decouple_approach": "Replace literal 'coordinator1' with a config-resolved swarm_config_coordinator_alias() thunk (the CLAUDE.md notes #318 planned exactly this) or, for solo/flat mesh, omit the fallback entirely. Most uses are prose/onboarding (convention-only); the kimi-hook and health ones are soft (change behavior when a peer literally named coordinator1 does/doesn't exist).",
+        "removal_candidate": true
+      },
+      {
+        "title": "role-class pmodel table in config.toml ([pmodel])",
+        "what_it_does": "Maps role classes (coder, coordinator, reviewer, \u2026) to provider:model strings; resolve_pmodel uses role_class to pick a model on `c2c start`.",
+        "evidence": "config /home/xertrov/src/c2c/.c2c/config.toml [pmodel] section; resolver ocaml/c2c_role.ml:300-316; role_class field ocaml/c2c_role.ml:13-16",
+        "mechanism": "role-file-field",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Fully optional already: a role with no role_class falls back to the 'default' key, and an explicit --model always wins. Solo user can ignore the table entirely. Keep as opt-in.",
+        "removal_candidate": false
+      },
+      {
+        "title": "CLI tier filter keys on agent-vs-operator, not role",
+        "what_it_does": "filter_commands hides Tier3/Tier4 commands when C2C_MCP_SESSION_ID is set (i.e. inside any managed agent session). This is the only command-visibility mechanism and it has no coordinator/role dimension.",
+        "evidence": "is_agent_session ocaml/cli/c2c_commands.ml:113-114; tier_visible/filter_commands :117-135; tier map :20-110; applied at root ocaml/cli/c2c.ml:12315-12323",
+        "mechanism": "tier-filter",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Already role-agnostic. The agent/operator split is orthogonal to roles and is fine to keep for a solo user (their interactive shell is 'operator', their managed sessions are 'agent').",
+        "removal_candidate": false
+      },
+      {
+        "title": "coord command group + coord-cherry-pick (top-level)",
+        "what_it_does": "Coordinator-only git helper (cherry-pick SHAs into main tree, install, DM peers). Gated by C2C_COORDINATOR=1; exits 1 otherwise.",
+        "evidence": "ocaml/cli/c2c_coord.ml:200-210, group def :375-377; registered top-level ocaml/cli/c2c.ml:12319",
+        "mechanism": "git-guard",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Pure structured-team workflow tooling. Could be moved under `dev`/hidden unless C2C_COORDINATOR set. Solo/flat mesh never uses it.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Schedule store accumulates per-alias cruft (95 dirs, 77 test-oc-fix)",
+        "what_it_does": "Native scheduling writes per-alias TOML under .c2c/schedules/<alias>/. The dir has grown to 95 entries, 77 of them throwaway test-oc-fix-* sessions plus other stale aliases.",
+        "evidence": "/home/xertrov/src/c2c/.c2c/schedules/ listing (95 entries, 77 match test-oc-fix); sample cedar-coder/heartbeat.toml format",
+        "mechanism": "schedule",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "GC stale schedule dirs (analogous to worktree gc / sweep). Not role-coupled \u2014 just hygiene. Schedules themselves are role-agnostic (interval/idle/align only).",
+        "removal_candidate": true
+      }
+    ],
+    "irreducible_core": [
+      "MCP tools/list returns all tools to every session with zero role/coordinator gating \u2014 this is already the desired flat-mesh property (ocaml/c2c_mcp.ml:430-432)",
+      "Essential-core MCP tools (role-agnostic, needed by solo + flat mesh): register, whoami, list, send, poll_inbox, peek_inbox, send_all, and the room set (join_room, leave_room, send_room, room_history, my_rooms, list_rooms, delete_room, send_room_invite, set_room_visibility). Plus history, server_info, sweep, prune_rooms as housekeeping.",
+      "Send/room/inbox routing is keyed purely on alias + session_id, never on role \u2014 validate_from_override is alias-ownership, not role (ocaml/cli/c2c.ml:108-147)",
+      "The register `role` field is free-text attribution metadata with no behavioral effect \u2014 harmless to a solo user, can be ignored",
+      "Schedules, memory, DND, compact-state are all per-alias and role-agnostic",
+      "The agent-vs-operator tier filter is orthogonal to roles and works fine for a solo user"
+    ],
+    "simplification_opportunities": [
+      "Gate the entire supervisor/approval cluster behind 'supervisors configured': ~10 top-level CLI commands (open/check-pending-reply, await-reply, approval-reply, authorize, approval-pending-write/list/show/gc, resolve-authorizer) + the `supervisor` group + 2 MCP tools (open_pending_reply, check_pending_reply) become invisible/no-op for solo + flat mesh.",
+      "Replace every hardcoded 'coordinator1' literal with a config-resolved coordinator-alias thunk (the #318-planned swarm_config_coordinator_alias) OR drop the fallback so an unset supervisor means 'no approval needed' \u2014 removes the implicit coordinator dependency from kimi hook, agent refine, health check, and cold-boot prompts.",
+      "Stop writing C2C_AUTO_JOIN_ROLE_ROOM=1 into every install (ocaml/cli/c2c_setup.ml x6 sites); make role-class rooms opt-in. Flat mesh then defaults to swarm-lounge only.",
+      "Rename/repurpose C2C_COORDINATOR=1 to a capability flag (e.g. C2C_PRIVILEGED / C2C_RELAY_AS) to drop the 'coordinator role' framing while keeping the relay-on-behalf + guard-skip escape hatch.",
+      "Move the `coord` command group under `dev` (or hide unless C2C_COORDINATOR set) \u2014 it is pure structured-team git tooling.",
+      "Rebuild the env-var dictionary from code: runbook lists ~18 of ~90 actual C2C_* vars; audit and either document or remove dead/test-only ones (C2C_TEST_VAR_ONE/TWO, C2C_TEST_TRIMMED_518, C2C_PREAUTH_DISABLED__ are clearly test/dev).",
+      "GC the schedule store: 77/95 dirs are test-oc-fix-* cruft \u2014 add a `c2c schedule gc` analogous to worktree gc.",
+      "Collapse the deprecated C2C_KIMI_APPROVAL_REVIEWER + C2C_PERMISSION_SUPERVISOR into the single supervisors[] config path (already in progress per #502) and delete the env vars next cycle."
+    ],
+    "open_questions": [
+      "Does any client actually declare experimental.claude/channel such that auto-drain/role-room behavior diverges, or is the role-room auto-join the only install-time structured-team default that reaches a flat-mesh user? (Verified the env var is written for all 5 clients; not verified whether a no-role install leaves role_class empty in practice.)",
+      "When supervisors[]/C2C_SUPERVISORS are unset, do the OpenCode/kimi permission hooks fall closed to a hardcoded coordinator1, or do they treat unconfigured as auto-allow? The kimi hook (c2c_kimi_hook.ml:167) falls back to coordinator1 as 'last resort' \u2014 confirm whether that blocks a solo user with no such peer.",
+      "Are open_pending_reply/check_pending_reply the only two MCP tools that are strictly structured-team, or do set_compact/clear_compact/stop_self also assume a managed-swarm context? (They appear role-agnostic but are swarm-lifecycle-flavored.)",
+      "Should the `role` register field be removed entirely from the schema, or kept as harmless free-text for the social/attribution layer the north-star describes?"
+    ]
+  },
+  {
+    "dimension": "Dead weight removal + irreducible role-agnostic core (1:1 peer messaging)",
+    "summary": "The canonical OCaml binary already has a clean structural separation: the core messaging path (register -> send -> enqueue_message -> poll_inbox) is fully role-agnostic. The broker module (C2c_broker, ocaml/c2c_broker.ml) opens only C2c_mcp_helpers and never references C2c_role, Coord_fallthrough, or Relay_nudge; `role` is captured at register as a free-form optional string that is pure display metadata and never gates routing or delivery. The ONLY hard role coupling is `role.coordinator = Some true` -> `C2C_COORDINATOR=1` env (c2c_start.ml:4400), which is consumed solely by the git-shim guards (git-shim.sh) and the worktree-mismatch warning (c2c_broker.ml:1134) \u2014 both opt-in safety theatre for a shared-tree swarm, not messaging. The strongest *swarm assumption baked into the role-agnostic broker* is the unconditional `\"swarm-lounge\" ::` prepend at registration (c2c_broker.ml:4073 and c2c_identity_handlers.ml:349) plus the always-on Relay_nudge swarm-flavored idle-nudge thread (server inner :537). Substantial dead weight exists at the repo edges: ~50 deprecated root Python scripts (superseded by OCaml subcommands), legacy `run-*-inst*` / `restart-*-self` launcher scripts (git-tracked, zero live callers), full `crush` client residue (deprecated, `c2c start crush` refuses but ~25 code sites remain), the unused `data/c2c_alias_words.txt` (only the deprecated Python registry reads it), and a DEAD `configure_claude_hook` in c2c_setup.ml:1006. None of these block carving out a solo/flat-mesh core.",
+    "coupling_points": [
+      {
+        "title": "swarm-lounge unconditionally auto-joined at every registration",
+        "evidence": "ocaml/c2c_broker.ml:4073 `List.sort_uniq String.compare (\"swarm-lounge\" :: auto_rooms)`; duplicated at ocaml/c2c_identity_handlers.ml:349",
+        "mechanism": "hardcoded-alias",
+        "what_it_does": "Every peer that confirms registration is force-subscribed to a room literally named swarm-lounge (a peer_register announcement is posted on its behalf), regardless of role, config, or whether the user wants a social channel. This is the social-layer north-star assumption leaking into the role-agnostic broker core.",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Replace the hardcoded literal with a `swarm_config_social_room ()` thunk (the planned #318 helper, referenced but not yet implemented per c2c_start.mli:340) reading `.c2c/config.toml [swarm] social_room`. For a solo user, default to empty/none so no auto-room is created; structured teams opt in by setting the key. Removes the only role-agnostic-broker dependency on the social layer.",
+        "removal_candidate": false
+      },
+      {
+        "title": "role.coordinator -> C2C_COORDINATOR=1 env (only hard role consumer)",
+        "evidence": "ocaml/c2c_start.ml:4400 `| Some r when r.C2c_role.coordinator = Some true -> ... \"C2C_COORDINATOR=1\"`; consumed at git-shim.sh:52 and ocaml/c2c_broker.ml:1134",
+        "mechanism": "role-file-field",
+        "what_it_does": "Translates a role-file boolean into an env var that bypasses the git destructive-op guards and the worktree-mismatch warning. The messaging broker's send/deliver path never reads it; it only governs git-safety guard rails for a shared-tree multi-agent layout.",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "The env var and guards are already opt-in: with no role file and no git-shim installed, none of this code runs. For the solo/flat-mesh core, simply don't install the git-shim/pre-reset guard (they are separate `c2c install git-shim` components). Keep C2C_COORDINATOR purely as a guard-bypass escape hatch; it has no messaging semantics to remove.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Relay_nudge swarm-themed idle nudges started unconditionally",
+        "evidence": "ocaml/server/c2c_mcp_server_inner.ml:537 `Relay_nudge.start_nudge_scheduler ... ()`; message bodies hardcode swarm framing at ocaml/relay_nudge.ml:20-25 (\"check the swarm-lounge\", \"want to review a PR?\")",
+        "mechanism": "broker-logic",
+        "what_it_does": "A background Lwt thread DMs idle sessions every ~30min with swarm-coordination prompts. Runs in every MCP server instance, including a solo user's, injecting unsolicited 'grab a task / review a PR' messages.",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Gate `start_nudge_scheduler` behind a config flag (e.g. `[swarm] idle_nudges = true`, default false) or behind the same social-room presence. The default messages are already externalized to a JSON file (relay_nudge.ml ensure_default_messages), so a solo user could also empty them; cleanest is to not start the thread when no social room is configured.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Coord_fallthrough scheduler started unconditionally (no-op when chain empty)",
+        "evidence": "ocaml/server/c2c_mcp_server_inner.ml:~545 `Coord_fallthrough.start_scheduler ~broker_root ~broker ()`; design note at ocaml/coord_fallthrough.ml:1-25",
+        "mechanism": "broker-logic",
+        "what_it_does": "A 60s-tick thread that escalates unresolved pending-permission DMs through a `[swarm] coord_chain` and finally broadcasts to coord_fallthrough_broadcast_room (default swarm-lounge). With the default empty chain every tick is a no-op, but the thread + pending_permissions.json scan still run in a solo broker.",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Already effectively inert for solo use (empty chain). For the core, gate the thread start on a non-empty coord_chain so a solo/flat-mesh broker doesn't spawn it at all. Pure swarm-orchestration feature; not part of irreducible messaging.",
+        "removal_candidate": false
+      },
+      {
+        "title": "Tier filter hides 'unsafe' commands from agent sessions",
+        "evidence": "ocaml/cli/c2c_commands.ml:113 `is_agent_session ()` keyed ONLY on C2c_mcp.session_id_from_env(); tier_visible at :117-120; filter at :124-135",
+        "mechanism": "tier-filter",
+        "what_it_does": "Hides Tier3/Tier4 commands when C2C_MCP_SESSION_ID is set. This is role-AGNOSTIC: it triggers on 'am I running inside any managed session', not on coordinator/role. A solo managed session gets the same filtering.",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "No decoupling needed \u2014 already role-agnostic. Keep as-is in the core; it is a safety affordance, not a swarm/role feature. (The supervisor-* Tier4 entries it lists are part of the kimi-approval feature, separable, but the filter mechanism itself stays.)",
+        "removal_candidate": false
+      },
+      {
+        "title": "Supervisor / pending-reply approval flow (kimi PreToolUse-scoped)",
+        "evidence": "ocaml/c2c_pending_reply_handlers.ml:18-198 (supervisors[] list, check_pending_reply enforces caller is a listed supervisor); CLAUDE.md notes supervisors[] in .c2c/repo.json #490; tools open_pending_reply/check_pending_reply at c2c_mcp.ml:134-148",
+        "mechanism": "role-file-field",
+        "what_it_does": "Implements an opt-in human/coordinator approval gate for risky tool calls (primarily the kimi PreToolUse hook). The broker enforces that only an alias in the per-request supervisors[] list can resolve a pending permission. Entirely absent from the send/poll core.",
+        "role_dependency": "soft",
+        "can_decouple": true,
+        "decouple_approach": "Already opt-in and request-scoped (supervisors passed per open_pending_reply call; empty/absent => feature unused). Solo/flat-mesh never invokes it. Keep as a structured-team opt-in surface; exclude open_pending_reply/check_pending_reply + handlers from a minimal core build if desired.",
+        "removal_candidate": false
+      },
+      {
+        "title": "crush client residue across OCaml (deprecated, start refuses)",
+        "evidence": "deprecation guard ocaml/c2c_start.ml:5256-5265 exits 1; but live residue at c2c_blocklist.ml:13, c2c_setup.ml setup_crush:1442 + known_clients/install_subcommand_clients/start_clients/deliver_watch_clients lists (1538-1548), c2c_uninstall.ml:418/480/633, c2c_start.ml clients hashtbl :1542",
+        "mechanism": "hardcoded-alias",
+        "what_it_does": "Crush is fully deprecated (`c2c start crush` and `c2c install crush` both refuse), yet ~25 code sites still carry crush through client lists, setup_crush, uninstall recompute, and the start clients hashtbl. Pure dead weight that complicates every client-enumeration site.",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Remove crush from c2c_blocklist banned list, all the *_clients lists in c2c_setup.ml, the clients hashtbl entry, setup_crush, recompute_crush_artifacts, and the pgrep guard regex (c2c.ml:1338). Keep only a single 'crush is removed' refusal if back-compat messaging is wanted. Net code reduction with zero behavior change (it already refuses).",
+        "removal_candidate": true
+      },
+      {
+        "title": "DEAD configure_claude_hook in c2c_setup.ml",
+        "evidence": "ocaml/cli/c2c_setup.ml:1006 `let configure_claude_hook () = ...` (~100 lines writing PostToolUse/Stop hooks); grep across ocaml/ (excl _build) finds ZERO callers; c2c_setup has no .mli so it's not even exported as API",
+        "mechanism": "other",
+        "what_it_does": "A complete settings.json hook-installation function that is never called anywhere in the binary. Superseded by the install path that writes hooks elsewhere. Pure dead code.",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Delete the function (and the claude_hook_script / claude_stop_hook_script string constants if they have no other consumer). Confirmed unused via full-tree grep; no .mli to update.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Deprecated root Python scripts (~50 files)",
+        "evidence": "repo root c2c_*.py (c2c_send.py, c2c_list.py, c2c_register.py, c2c_whoami.py, c2c_mcp.py, c2c_health.py, c2c_health.py, c2c_broker_gc.py, c2c_start.py, etc.); mapping in .collab/runbooks/python-scripts-deprecated.md; only live Python consumer is c2c_cli.py legacy shim + c2c_registry.py (read by nothing OCaml)",
+        "mechanism": "convention-doc-only",
+        "what_it_does": "Legacy Python implementation of every CLI surface, superseded by OCaml subcommands. Marked DEPRECATED/DEAD/DELETED in the runbook but the files physically remain at repo root, inflating the tree and confusing 'what is canonical'.",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "These are entirely outside the OCaml binary. Removable in batches once c2c_cli.py's remaining responsibilities (it still claims wire-daemon/deliver-inbox per the runbook, though those are now OCaml) are confirmed dead. The c2c_kimi_wire_bridge.py and c2c_wire_daemon.py are explicitly DEAD CODE per the runbook. Move to deprecated/ (which already exists) or delete; coordinate via swarm-lounge since shared tree.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Legacy run-*-inst* / restart-*-self launcher scripts (git-tracked, no callers)",
+        "evidence": "git ls-files lists run-claude-inst-outer, run-{codex,kimi,opencode,crush}-inst{,-outer,-rearm}, restart-{codex,crush,kimi,opencode}-self; grep for invocations in *.sh/justfile/*.ml (excl .collab/_build) returns NOTHING; only the pgrep STRING at c2c.ml:1338 names them (detects, never invokes)",
+        "mechanism": "convention-doc-only",
+        "what_it_does": "The pre-`c2c start` generation of outer-loop respawn launchers. CLAUDE.md explicitly states `c2c start` replaced them. They are dead but tracked, and carry `.d/*.json` instance configs (including crush instances).",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Delete the run-*-inst* and restart-{client}-self scripts + their .d/ config dirs. The c2c.ml:1338 sweep guard regex that references them becomes a harmless never-match (or simplify it to only match `c2c start`). Keep ./restart-self (still referenced by justfile `bii` recipe:375) \u2014 that one is live.",
+        "removal_candidate": true
+      },
+      {
+        "title": "Unused data/c2c_alias_words.txt (1455-word pool)",
+        "evidence": "data/c2c_alias_words.txt referenced ONLY by c2c_registry.py:13 (deprecated Python); OCaml uses the 128-word pool in ocaml/c2c_alias_words.ml (consumed by c2c_start.ml:2469, c2c_setup.ml:93, c2c.ml:7030)",
+        "mechanism": "convention-doc-only",
+        "what_it_does": "A large alias wordlist read only by the deprecated Python registry. The canonical OCaml alias pool is the hardcoded 128-word list in c2c_alias_words.ml. Confirms CLAUDE.md's 'data/c2c_alias_words.txt is unused' claim against current code.",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "Delete once c2c_registry.py is removed. No OCaml code path reads it; the binary is unaffected.",
+        "removal_candidate": true
+      },
+      {
+        "title": "PTY-inject + Poker fallback paths (C2c_pty_inject / C2c_poker)",
+        "evidence": "ocaml/c2c_poker.ml:1 is an OCaml wrapper that shells to Python c2c_poker.py (resolve_terminal returns None => effectively a no-op); C2c_pty_inject still wired into c2c_start.ml:3471-3480 + c2c_deliver_inbox.ml as a capability-probed delivery mode; CLAUDE.md marks PTY path 'deprecated but still useful for opencode/codex/claude'",
+        "mechanism": "other",
+        "what_it_does": "Legacy PTY-injection delivery (writes to a session's PTY master via a cap-privileged binary) and a PTY heartbeat poker. Poker now resolves no terminal (dead in practice); pty_inject remains a capability-gated alternative delivery mode behind the broker-native and notification-store paths.",
+        "role_dependency": "none",
+        "can_decouple": true,
+        "decouple_approach": "C2c_poker is a near-dead shim to a deprecated Python script (resolve_terminal => None) \u2014 removable. C2c_pty_inject is more entangled (capability probing in c2c_start.ml + c2c_deliver_inbox.ml) and is role-agnostic delivery plumbing, not swarm logic; it can stay out of the irreducible 1:1 core (which uses synchronous poll_inbox drain) but removing it needs care because some clients still negotiate it. Treat poker as removal_candidate; pty_inject as keep-but-not-core.",
+        "removal_candidate": true
+      }
+    ],
+    "irreducible_core": [
+      "BROKER MODULE: ocaml/c2c_broker.ml \u2014 Broker.create, register (with optional role=metadata only), enqueue_message (c2c_broker.ml:2105, the actual 1:1 routing; no role/coord/tier check), inbox drain, registry persistence (atomic write + flock). Opens only C2c_mcp_helpers; structurally independent of role/coord/relay_nudge.",
+      "MCP TOOL SURFACE (minimal): register, whoami, list, send, poll_inbox (ocaml/c2c_mcp.ml:30-57). These five deliver 'two of my agents can message each other' with zero role/coordinator/swarm concept. peek_inbox is a convenience superset of poll_inbox.",
+      "ENVELOPE + ENVELOPE FORMATTING: ocaml/c2c_wire_bridge.ml format_envelope / spool I/O (despite the legacy name) and C2c_mcp.format_c2c_envelope produce the canonical `<c2c event=... from=... to=...>body</c2c>` wire format. Role tag is optional.",
+      "IDENTITY/NAME PRIMITIVES: ocaml/c2c_name.ml (alias validation), ocaml/c2c_alias_words.ml (128-word pool for auto-aliasing), ocaml/c2c_blocklist.ml (user-supplied-alias collision guard \u2014 minus the crush entry). All role-agnostic.",
+      "BROKER ROOT RESOLUTION: ocaml/c2c_repo_fp.ml + C2C_MCP_BROKER_ROOT/XDG resolution. Needed so two local sessions agree on one broker; no role concept.",
+      "CLI ENTRYPOINTS: `c2c register`, `c2c send`, `c2c list`, `c2c whoami`, `c2c poll-inbox` in ocaml/cli/c2c.ml \u2014 the always-available fallback usable by any client without MCP. send_cmd (c2c.ml:383) has no role/coord branch.",
+      "DELIVERY (per-client, role-agnostic): OpenCode embedded plugin drain, C2c_kimi_notifier notification-store, c2c_deliver_inbox watcher. These are client-transport adapters, not swarm logic \u2014 each delivers a plain envelope.",
+      "INSTALL/SETUP minimal: `c2c install <client>` writing mcpServers.c2c config. The swarm-specific C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge it writes (c2c_setup.ml:508 etc.) is the opt-in seam, not core.",
+      "is_agent_session-based tier filter (c2c_commands.ml:113) \u2014 role-AGNOSTIC safety affordance keyed on session presence; stays in core."
+    ],
+    "simplification_opportunities": [
+      "Introduce the already-planned `swarm_config_social_room ()` thunk (#318, stubbed in c2c_start.mli:340) and replace the two hardcoded `\"swarm-lounge\" ::` prepends (c2c_broker.ml:4073, c2c_identity_handlers.ml:349) with it; default None for solo so registration creates no auto-room. This is the single highest-leverage change to make the broker truly role/swarm-agnostic by default while keeping teams opt-in.",
+      "Gate Relay_nudge.start_nudge_scheduler and Coord_fallthrough.start_scheduler (c2c_mcp_server_inner.ml:537/~545) behind config (social_room configured / non-empty coord_chain) so a solo broker spawns neither swarm thread.",
+      "Purge crush entirely: drop it from c2c_blocklist banned list, all *_clients lists (c2c_setup.ml:1538-1548), the clients hashtbl (c2c_start.ml:1542), setup_crush, recompute_crush_artifacts, and the pgrep regex (c2c.ml:1338). ~25 sites, zero behavior change since it already refuses.",
+      "Delete the dead configure_claude_hook function (c2c_setup.ml:1006) and its hook-script constants if unreferenced.",
+      "Remove the legacy launcher generation: run-*-inst* + restart-{client}-self scripts and their .d/*.json (git-tracked, no live callers); simplify the sweep guard at c2c.ml:1338. Keep ./restart-self (live in justfile bii).",
+      "Stage removal of the ~50 deprecated root Python scripts + data/c2c_alias_words.txt once c2c_cli.py / c2c_registry.py are confirmed fully dead (coordinate via swarm-lounge given shared tree). Move to the existing deprecated/ dir or delete.",
+      "Retire C2c_poker (OCaml shim to deprecated Python c2c_poker.py with resolve_terminal=>None \u2014 effectively a no-op).",
+      "Define a build/config notion of 'core profile' vs 'swarm profile': core excludes coord_fallthrough, relay_nudge, supervisor pending-reply, peer_pass, sitrep, git-shim, role rendering \u2014 all of which are already cleanly modularized (separate modules, opt-in tools)."
+    ],
+    "open_questions": [
+      "Is c2c_cli.py still a live dispatch path for ANY OCaml-unimplemented surface, or is it fully superseded? The deprecated-runbook claims it still backs wire-daemon/deliver-inbox, but those appear to be OCaml now (c2c_deliver_inbox.ml exists, wire-daemon removed). If fully dead, the entire root Python tree + c2c_registry.py + data/c2c_alias_words.txt can go as one slice.",
+      "Should the irreducible core ship `peek_inbox`/`history` as part of the minimal 5 tools, or are register/send/poll_inbox/list/whoami the true floor? (peek_inbox is a non-draining poll_inbox; history reads the archive \u2014 both arguably core-adjacent rather than core.)",
+      "Does any installed client config (claude/codex/kimi/opencode) hard-require C2C_MCP_AUTO_JOIN_ROOMS to be present, or is it safely omittable for a solo install? c2c_setup.ml writes it unconditionally to swarm-lounge \u2014 need to confirm clients tolerate its absence before making rooms opt-in.",
+      "The duplicated swarm-lounge auto-join logic exists in BOTH c2c_broker.ml:4073 and c2c_identity_handlers.ml:349 \u2014 is one path dead, or do they fire on different registration transitions (confirm vs new-register)? Should be unified before refactoring to the config thunk.",
+      "Is C2c_pty_inject still negotiated by any live client's delivery-mode probe, or has broker-native + notification-store fully displaced it? Determines whether it can be excluded from a core build or must remain as a fallback transport."
+    ]
+  }
+]
