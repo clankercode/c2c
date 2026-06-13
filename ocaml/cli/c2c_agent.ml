@@ -399,16 +399,36 @@ let run_ephemeral_agent
     ~(reply_to_opt : string option)
     ~(auto_join_rooms_opt : string option)
     () =
-  let role_path = C2c_role.canonical_roles_dir () // (role ^ ".md") in
-  if not (Sys.file_exists role_path) then begin
-    Printf.eprintf "error: role file not found: %s\n  create it first with: c2c agent new %s\n%!" role_path role;
-    exit 1
-  end;
+  let roles_dir = C2c_role.canonical_roles_dir () in
+  let role_path = roles_dir // (role ^ ".md") in
   let r =
-    try C2c_role.parse_file role_path
-    with Sys_error e ->
-      Printf.eprintf "error: failed to read role file %s: %s\n%!" role_path e;
+    if Sys.file_exists role_path then
+      try C2c_role.parse_file role_path
+      with Sys_error e ->
+        Printf.eprintf "error: failed to read role file %s: %s\n%!" role_path e;
+        exit 1
+    else if role = "role-designer" then begin
+      (* Self-heal: the built-in role-designer persona is codegen'd into the
+         binary (role_designer_embedded.ml) from .c2c/roles/builtins/role-designer.md.
+         If the on-disk copy was deleted/renamed, fall back to the embedded copy
+         instead of hard-erroring — refine/run should never break just because
+         a managed builtin file went missing. Snippet includes (e.g. recovery)
+         resolve against the canonical roles dir's sibling snippets/ if present,
+         and degrade to empty gracefully when absent. *)
+      let snippets_dir = Filename.dirname roles_dir // "snippets" in
+      Printf.eprintf
+        "note: %s not found on disk; using built-in role-designer persona.\n%!"
+        role_path;
+      try C2c_role.parse_string ~snippets_dir ~filename:role_path Role_designer_embedded.content
+      with e ->
+        Printf.eprintf "error: failed to parse built-in role-designer persona: %s\n%!"
+          (Printexc.to_string e);
+        exit 1
+    end
+    else begin
+      Printf.eprintf "error: role file not found: %s\n  create it first with: c2c agent new %s\n%!" role_path role;
       exit 1
+    end
   in
   let config_read () : (string * string) list =
     let path = Filename.concat (Sys.getcwd ()) ".c2c/config.toml" in
