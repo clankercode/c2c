@@ -7,11 +7,18 @@ tmux-layout.sh + tui-snapshot.sh into one discoverable CLI with subcommands.
 Usage:
     c2c_tmux.py list
     c2c_tmux.py peek <alias> [-n N]
+    c2c_tmux.py peek-all [-n N]
     c2c_tmux.py send <alias> <text>
+    c2c_tmux.py send-raw <alias> <text>
     c2c_tmux.py enter <alias>
     c2c_tmux.py keys <alias> <key> [<key>...]
     c2c_tmux.py exec <target> <command> [--force|--escape-tui|--dry-run]
     c2c_tmux.py capture <alias|target> [-n N]
+    c2c_tmux.py follow <alias> [logfile]
+    c2c_tmux.py unfollow <alias>
+    c2c_tmux.py grep <regex> [-S SCROLLBACK]
+    c2c_tmux.py grep-echild [-S SCROLLBACK]
+    c2c_tmux.py restart <alias>
     c2c_tmux.py layout <COLSxROWS>
     c2c_tmux.py whoami
     c2c_tmux.py launch <client> [-n ALIAS] [--auto] [--cwd DIR] [--split h|v] [--new-window] [--window NAME] [--extra ARG ...]
@@ -446,6 +453,150 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_peek_all(args: argparse.Namespace) -> int:
+    """Peek the last N lines of every live swarm pane."""
+    panes = enumerate_swarm()
+    if not panes:
+        print("(no live swarm panes)", file=sys.stderr)
+        return 0
+    for p in panes:
+        print(f"===== {p.alias} ({p.target}) =====")
+        out = tmux("capture-pane", "-t", p.target, "-p").stdout
+        lines = out.rstrip("\n").splitlines()
+        for line in lines[-args.lines:]:
+            print(line)
+        print()
+    return 0
+
+
+def cmd_send_raw(args: argparse.Namespace) -> int:
+    """Type text into a pane WITHOUT a trailing Enter."""
+    target, live, is_bare = _resolve_target(args.alias)
+    if not live and not is_bare:
+        print(
+            f"c2c_tmux: refusing to send-raw to CACHED target {target} (pane may belong to another process). "
+            f"Use `c2c_tmux list` to confirm.",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"-- send-raw {args.alias} @ {target} --", file=sys.stderr)
+    tmux("send-keys", "-t", target, args.text, capture=False)
+    return 0
+
+
+def cmd_follow(args: argparse.Namespace) -> int:
+    """Stream a pane's output to a logfile via tmux pipe-pane."""
+    target, live, is_bare = _resolve_target(args.alias)
+    if not live and not is_bare:
+        print(
+            f"c2c_tmux: refusing to follow CACHED target {target}. "
+            f"Use `c2c_tmux list` to confirm.",
+            file=sys.stderr,
+        )
+        return 2
+    logfile = args.logfile or f"/tmp/c2c-swarm-{args.alias}.log"
+    tmux("pipe-pane", "-t", target, "-o", f"cat >> {shlex.quote(logfile)}", capture=False)
+    print(f"streaming {args.alias} ({target}) → {logfile}")
+    print(f"stop with: {sys.argv[0]} unfollow {args.alias}")
+    return 0
+
+
+def cmd_unfollow(args: argparse.Namespace) -> int:
+    """Stop streaming a pane (clear its pipe-pane)."""
+    target, live, is_bare = _resolve_target(args.alias)
+    if not live and not is_bare:
+        print(
+            f"c2c_tmux: refusing to unfollow CACHED target {target}. "
+            f"Use `c2c_tmux list` to confirm.",
+            file=sys.stderr,
+        )
+        return 2
+    tmux("pipe-pane", "-t", target, capture=False)
+    print(f"stopped streaming {args.alias}")
+    return 0
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _grep_swarm(pattern: str, ignore_case: bool, scrollback: int) -> int:
+    """Grep ANSI-stripped scrollback across all live swarm panes.
+    Returns 0 always (matches the bash original's lenient contract)."""
+    flags = re.IGNORECASE if ignore_case else 0
+    try:
+        rx = re.compile(pattern, flags)
+    except re.error as e:
+        print(f"c2c_tmux: bad regex {pattern!r}: {e}", file=sys.stderr)
+        return 2
+    hits = 0
+    for p in enumerate_swarm():
+        out = tmux("capture-pane", "-t", p.target, "-p", "-S", f"-{scrollback}").stdout
+        matched: list[str] = []
+        for i, raw in enumerate(out.splitlines(), start=1):
+            line = _ANSI_RE.sub("", raw)
+            if rx.search(line):
+                matched.append(f"{i}:{line}")
+        if matched:
+            hits += 1
+            print(f"===== {p.alias} ({p.target}) =====")
+            print("\n".join(matched))
+            print()
+    if hits == 0:
+        print("(no matches across swarm)", file=sys.stderr)
+    return 0
+
+
+def cmd_grep(args: argparse.Namespace) -> int:
+    return _grep_swarm(args.pattern, ignore_case=False, scrollback=args.scrollback)
+
+
+def cmd_grep_echild(args: argparse.Namespace) -> int:
+    return _grep_swarm("echild", ignore_case=True, scrollback=args.scrollback)
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    """Send /exit to a pane, wait for it to return to a shell prompt (handling
+    Claude Code's 'Background work is running' confirm dialog along the way),
+    then relaunch `c2c start claude -n <alias>` in the same pane."""
+    import time as _time
+
+    target, live, is_bare = _resolve_target(args.alias)
+    if not live and not is_bare:
+        print(
+            f"c2c_tmux: refusing to restart CACHED target {target}. "
+            f"Use `c2c_tmux list` to confirm.",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"restarting {args.alias} at {target} …")
+    # Claude Code responds to the /exit slash command.
+    tmux("send-keys", "-t", target, "/exit", capture=False)
+    _send_enter(target)
+    print("sent /exit; waiting up to 30s for shell prompt to return…")
+    # The shell-ready signal is the c2c-start wrapper's post-exit banner
+    # ("resume via: c2c start …"). Waiting on a bare "❯" is unreliable
+    # because Claude's "Background work is running" confirmation dialog
+    # also renders "❯ 1. Exit anyway" in its last three lines. If we see
+    # that dialog, press Enter to confirm option 1 (Exit anyway).
+    confirmed = False
+    for _ in range(60):
+        snap_raw = tmux("capture-pane", "-t", target, "-p").stdout
+        snap = _ANSI_RE.sub("", "\n".join(snap_raw.splitlines()[-15:]))
+        if "resume via: c2c start" in snap:
+            print("shell prompt detected (c2c-start exit banner)")
+            break
+        if ("Background work is running" in snap or "Exit anyway" in snap) and not confirmed:
+            print("confirm-exit dialog detected; pressing Enter to confirm")
+            _send_enter(target)
+            confirmed = True
+        _time.sleep(0.5)
+    print(f"relaunching: c2c start claude -n {args.alias}")
+    tmux("send-keys", "-t", target, f"c2c start claude -n {args.alias}", capture=False)
+    _send_enter(target)
+    print("done — give Claude Code a few seconds to boot")
+    return 0
+
+
 # ---------------------------------------------------------------- argparse
 
 
@@ -494,6 +645,37 @@ def build_parser() -> argparse.ArgumentParser:
     ly.set_defaults(func=cmd_layout)
 
     sp.add_parser("whoami", help="identify the calling pane by alias").set_defaults(func=cmd_whoami)
+
+    pa = sp.add_parser("peek-all", help="tail every live swarm pane")
+    pa.add_argument("-n", "--lines", type=int, default=10)
+    pa.set_defaults(func=cmd_peek_all)
+
+    sr = sp.add_parser("send-raw", help="type text into a pane WITHOUT a trailing Enter")
+    sr.add_argument("alias")
+    sr.add_argument("text")
+    sr.set_defaults(func=cmd_send_raw)
+
+    fl = sp.add_parser("follow", help="stream a pane to a logfile (tmux pipe-pane)")
+    fl.add_argument("alias")
+    fl.add_argument("logfile", nargs="?", help="default: /tmp/c2c-swarm-<alias>.log")
+    fl.set_defaults(func=cmd_follow)
+
+    uf = sp.add_parser("unfollow", help="stop streaming a pane (clear pipe-pane)")
+    uf.add_argument("alias")
+    uf.set_defaults(func=cmd_unfollow)
+
+    gr = sp.add_parser("grep", help="grep ANSI-stripped scrollback across all swarm panes")
+    gr.add_argument("pattern", help="regex (Python re syntax)")
+    gr.add_argument("-S", "--scrollback", type=int, default=2000, help="lines of scrollback to search per pane")
+    gr.set_defaults(func=cmd_grep)
+
+    ge = sp.add_parser("grep-echild", help="convenience: grep -i echild across all swarm panes")
+    ge.add_argument("-S", "--scrollback", type=int, default=2000, help="lines of scrollback to search per pane")
+    ge.set_defaults(func=cmd_grep_echild)
+
+    rs = sp.add_parser("restart", help="/exit a claude pane (handle confirm dialog) + relaunch in place")
+    rs.add_argument("alias")
+    rs.set_defaults(func=cmd_restart)
 
     lc = sp.add_parser("launch", help="open a tmux pane and run `c2c start <client> ...`")
     lc.add_argument("client", help="claude | codex | opencode | kimi | crush")
