@@ -613,13 +613,27 @@ let run_ephemeral_agent
 
   match mode with
   | Pane ->
+      let window_title = Printf.sprintf "c2c-%s" name in
+      let shell_cmd = Printf.sprintf "%s %s" env_for_start start_cmd_args in
       (match Sys.getenv_opt "TMUX" with
        | Some s when s <> "" -> ()
        | _ ->
-         Printf.eprintf "error: --mode pane requires running inside tmux (TMUX env var is not set)\n%!";
+         (* Pane mode genuinely needs a running tmux server — `tmux new-window`
+            cannot create a window outside an existing session. Rather than a bare
+            exit, print the exact command the operator can run from inside tmux,
+            and point at the two no-tmux alternatives that already exist. *)
+         Printf.eprintf
+           "error: --mode pane requires a running tmux session (TMUX env var is not set).\n\
+            \n\
+            Options:\n\
+            \  1. Re-run this command from inside a tmux session, OR\n\
+            \  2. From a tmux session, open the agent window manually:\n\
+            \       tmux new-window -n %s %s\n\
+            \  3. Run without tmux using a detached mode:\n\
+            \       --mode background   (detached daemon)\n\
+            \       --mode headless     (codex-headless, no terminal)\n%!"
+           (q window_title) (q shell_cmd);
          exit 1);
-      let window_title = Printf.sprintf "c2c-%s" name in
-      let shell_cmd = Printf.sprintf "%s %s" env_for_start start_cmd_args in
       (match Unix.fork () with
        | 0 ->
          (try Unix.execvp "tmux" [| "tmux"; "new-window"; "-n"; window_title; shell_cmd |] with
