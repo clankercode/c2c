@@ -416,7 +416,7 @@ A desktop GUI for humans to sit alongside the swarm.
      directly with agents (DM + room participation) using the existing
      protocol — no special privilege path.
 - **Why this is on the roadmap**: today Max watches via
-  `scripts/c2c-swarm.sh`, tmux panes, and ad-hoc `mcp__c2c__history`
+  `scripts/c2c_tmux.py`, tmux panes, and ad-hoc `mcp__c2c__history`
   reads. A GUI turns that into a first-class surface and makes the
   broker legible to a non-CLI user. It also exercises the broker as a
   "real client" (not just an agent harness), which will surface any

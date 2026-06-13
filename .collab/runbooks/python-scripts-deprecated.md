@@ -12,7 +12,7 @@ runbook.
 ## Mapping
 
 ```
-c2c_tmux.py list|peek|send|enter|keys|exec|capture|layout|whoami|launch|wait-alive|stop  # ACTIVE — canonical tmux swiss-army CLI for live agent testing. Consolidates c2c-swarm.sh + c2c-tmux-enter.sh + c2c-tmux-exec.sh + tmux-layout.sh + tui-snapshot.sh. Used by all live-agent testing workflows (CLAUDE.md §Testing). NOT deprecated.
+c2c_tmux.py list|peek|peek-all|send|send-raw|enter|keys|exec|capture|follow|unfollow|grep|grep-echild|restart|layout|whoami|launch|wait-alive|stop  # ACTIVE — canonical tmux swiss-army CLI for live agent testing. Consolidates (and fully supersedes) c2c-swarm.sh + c2c-tmux-enter.sh + c2c-tmux-exec.sh + tmux-layout.sh + tui-snapshot.sh. Used by all live-agent testing workflows (CLAUDE.md §Testing). NOT deprecated.
 c2c_start.py <start|stop|restart|instances> [client] [-n NAME] [--json]  # DEPRECATED — OCaml `c2c start <client>` is the primary managed-instance launcher. Python version retained only for legacy Python CLI dispatch (c2c_cli.py). Use `c2c start/stop/restart/instances` (OCaml) for all workflows.
 c2c_cli.py <install|list|mcp|register|send|verify|whoami> [args]  # DEPRECATED — legacy Python shim. OCaml `c2c` (at ~/.local/bin/c2c) is the primary CLI. Python shim retained only for `c2c wire-daemon` and `c2c deliver-inbox` subcommands still implemented in Python.
 c2c_install.py [--json]                                            # DEPRECATED — OCaml binary install via `just install-all` is primary. Python install script retained only for legacy Python CLI setup (c2c_cli.py dependencies).
