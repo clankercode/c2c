@@ -480,7 +480,9 @@ def cmd_send_raw(args: argparse.Namespace) -> int:
         )
         return 2
     print(f"-- send-raw {args.alias} @ {target} --", file=sys.stderr)
-    tmux("send-keys", "-t", target, args.text, capture=False)
+    # -l = literal text (match the bash original's `send-keys -l "$*"`); without
+    # it tokens like Enter / C-c are interpreted as key names, not typed text.
+    tmux("send-keys", "-l", "-t", target, " ".join(args.text), capture=False)
     return 0
 
 
@@ -652,7 +654,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sr = sp.add_parser("send-raw", help="type text into a pane WITHOUT a trailing Enter")
     sr.add_argument("alias")
-    sr.add_argument("text")
+    sr.add_argument("text", nargs="+", help="text to type literally (joined by spaces)")
     sr.set_defaults(func=cmd_send_raw)
 
     fl = sp.add_parser("follow", help="stream a pane to a logfile (tmux pipe-pane)")
