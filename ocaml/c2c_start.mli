@@ -281,8 +281,13 @@ val heartbeat_body_for_alias :
     [push_aware_heartbeat_content]. Otherwise returns [message] unchanged.
     Operator-authored custom heartbeat bodies are never rewritten. *)
 
-val default_managed_heartbeat_content : string
-val push_aware_heartbeat_content : string
+val default_managed_heartbeat_content : unit -> string
+(** Default managed-session heartbeat body. Coordinator alias and social
+    room are resolved through [C2c_swarm_config] so configured repos see
+    overrides. *)
+
+val push_aware_heartbeat_content : unit -> string
+(** Push-aware variant of the default heartbeat body. *)
 
 val repo_config_pmodel : unit -> (string * pmodel) list
 (** Read the [pmodel] table from .c2c/config.toml in the repo root. Returns the
@@ -339,6 +344,19 @@ val swarm_config_restart_intro : unit -> string
     absent or empty. Mirrors the #318 v3 thunk pattern
     (swarm_config_coordinator_alias / swarm_config_social_room). #341. *)
 
+val swarm_config_social_room : unit -> string
+(** [swarm_config_social_room ()] reads the [swarm] [social_room] key from
+    .c2c/config.toml, or returns ["swarm-lounge"] when the section/key is
+    absent or empty. Implemented in [C2c_swarm_config] and re-exported
+    here so both [C2c_start] consumers and the broker share the same
+    config seam without a module cycle. *)
+
+val swarm_config_coordinator_alias : unit -> string
+(** [swarm_config_coordinator_alias ()] reads the [swarm]
+    [coordinator_alias] key from .c2c/config.toml, or returns
+    ["coordinator1"] when the section/key is absent or empty.
+    Implemented in [C2c_swarm_config] and re-exported here. *)
+
 val default_coord_fallthrough_idle_seconds : float
 (** Default seconds the primary (and each subsequent backup) has to ack
     before the next backup is DM'd by the fallthrough scheduler. 120.0.
@@ -346,7 +364,10 @@ val default_coord_fallthrough_idle_seconds : float
 
 val default_coord_fallthrough_broadcast_room : string
 (** Default room ID for the final "all coords missing" broadcast tier
-    of the fallthrough scheduler. ["swarm-lounge"]. *)
+    of the fallthrough scheduler. Derived from
+    [C2c_swarm_config.swarm_config_social_room ()] so it follows the
+    [swarm] [social_room] config; unconfigured repos resolve to
+    ["swarm-lounge"]. *)
 
 val swarm_config_coord_chain : unit -> string list
 (** [swarm_config_coord_chain ()] reads the [swarm] [coord_chain] inline
@@ -618,7 +639,7 @@ val start_poker :
 val codex_heartbeat_interval_s : float
 (** Interval, in seconds, between managed Codex heartbeat messages. *)
 
-val codex_heartbeat_content : string
+val codex_heartbeat_content : unit -> string
 (** Message body delivered to managed Codex agents as a heartbeat. *)
 
 val codex_heartbeat_enabled : client:string -> bool

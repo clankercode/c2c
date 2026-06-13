@@ -158,18 +158,24 @@ type managed_heartbeat = {
       they're considered active and the heartbeat is skipped. *)
 }
 
-let default_managed_heartbeat_content =
-  "Session heartbeat. Poll your C2C inbox and handle any messages. \
-If you have exhausted all work, ask coordinator1 (or swarm-lounge) for more."
+let default_managed_heartbeat_content () =
+  Printf.sprintf
+    "Session heartbeat. Poll your C2C inbox and handle any messages. \
+If you have exhausted all work, ask %s (or %s) for more."
+    (C2c_swarm_config.swarm_config_coordinator_alias ())
+    (C2c_swarm_config.swarm_config_social_room ())
 
 (* Push-aware variant for clients that already receive inbound messages
    via channel notifications (no manual poll needed). The "wake / pick
    up next slice" framing is preserved; only the poll instruction is
    dropped. *)
-let push_aware_heartbeat_content =
-  "Session heartbeat — pick up the next slice / advance the goal. \
+let push_aware_heartbeat_content () =
+  Printf.sprintf
+    "Session heartbeat — pick up the next slice / advance the goal. \
    (Messages arrive via channel notifications; no manual poll_inbox needed.) \
-   If you have exhausted all work, ask coordinator1 (or swarm-lounge) for more."
+   If you have exhausted all work, ask %s (or %s) for more."
+    (C2c_swarm_config.swarm_config_coordinator_alias ())
+    (C2c_swarm_config.swarm_config_social_room ())
 
 let codex_heartbeat_interval_s = 240.0
 let codex_heartbeat_content = default_managed_heartbeat_content
@@ -181,7 +187,7 @@ let builtin_managed_heartbeat =
   { heartbeat_name = "default"
   ; schedule = Interval codex_heartbeat_interval_s
   ; interval_s = codex_heartbeat_interval_s
-  ; message = default_managed_heartbeat_content
+  ; message = default_managed_heartbeat_content ()
   ; command = None
   ; command_timeout_s = 30.0
   ; clients = default_heartbeat_clients
@@ -305,7 +311,7 @@ let should_fire_heartbeat ~(broker_root : string) ~(alias : string)
       ~last_activity_ts
 
 let enqueue_codex_heartbeat ~(broker_root : string) ~(alias : string) : unit =
-  enqueue_heartbeat ~broker_root ~alias ~content:codex_heartbeat_content
+  enqueue_heartbeat ~broker_root ~alias ~content:(codex_heartbeat_content ())
 
 let command_allowlist =
   [ [ "c2c"; "quota" ]
@@ -373,10 +379,10 @@ let automated_delivery_for_alias ~(broker_root : string) ~(alias : string)
    Operator-authored custom messages pass through verbatim. *)
 let heartbeat_body_for_alias ~(broker_root : string) ~(alias : string)
     ~(message : string) : string =
-  if message <> default_managed_heartbeat_content then message
+  if message <> default_managed_heartbeat_content () then message
   else
     match automated_delivery_for_alias ~broker_root ~alias with
-    | Some true -> push_aware_heartbeat_content
+    | Some true -> push_aware_heartbeat_content ()
     | _ -> message
 
 let render_heartbeat_content ?(broker_root : string option)
@@ -654,12 +660,13 @@ let read_toml_sections_with_prefix (prefix : string) :
 (* --------------------------------------------------------------------------- *
  * [swarm] section (#341)
  *
- * Per-repo overrides for swarm-wide rendered strings. Today this is just
- * [restart_intro], the kickoff prompt template emitted into the agent's
- * transcript when [c2c start <client>] launches a fresh session. The
- * thunk pattern (function-of-unit) mirrors the planned #318 v3 helpers
- * (swarm_config_coordinator_alias / swarm_config_social_room) so all
- * three converge on the same lookup once #318 lands.
+ * Per-repo overrides for swarm-wide rendered strings. The restart_intro
+ * thunk lives here; social_room and coordinator_alias live in
+ * [C2c_swarm_config] so the broker can read them without a dependency
+ * cycle, and are re-exported below under their canonical names.
+ * Unconfigured repos resolve to today's hardcoded values so the live
+ * swarm is unaffected; default inversion to solo/flat-mesh values is a
+ * separate later slice.
  * --------------------------------------------------------------------------- *)
 
 (* Default restart/kickoff intro template. Placeholders {name}, {alias},
@@ -717,6 +724,11 @@ let swarm_config_restart_intro () : string =
        | Some "" -> builtin_swarm_restart_intro
        | Some v -> decode_toml_basic_escapes v)
 
+(* Re-exports from [C2c_swarm_config] so callers can continue to use
+   [C2c_start.swarm_config_social_room] / [C2c_start.swarm_config_coordinator_alias]. *)
+let swarm_config_social_room = C2c_swarm_config.swarm_config_social_room
+let swarm_config_coordinator_alias = C2c_swarm_config.swarm_config_coordinator_alias
+
 (* --------------------------------------------------------------------------- *
  * Coordinator-backup fallthrough config (slice/coord-backup-fallthrough)
  *
@@ -736,7 +748,8 @@ let swarm_config_restart_intro () : string =
 
 let default_coord_fallthrough_idle_seconds : float = 120.0
 
-let default_coord_fallthrough_broadcast_room : string = "swarm-lounge"
+let default_coord_fallthrough_broadcast_room : string =
+  C2c_swarm_config.swarm_config_social_room ()
 
 (* Read [swarm] coord_chain from .c2c/config.toml. Returns the configured
    list (parsed as a TOML inline string-array) or the empty list when the
