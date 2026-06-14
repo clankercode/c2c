@@ -80,6 +80,7 @@ let command_tier_map () : (string * safety) list =
    ; "schedule", Tier2
    (* relay subcommands (serve, gc, setup, connect, register, dm, status, list, rooms, poll-inbox)
       are not top-level commands. *)
+   ; "watch", Tier3   (* full-screen interactive operator TUI — agent-hidden *)
    ; "setcap", Tier3
    ; "install", Tier2
     ; "gui", Tier1

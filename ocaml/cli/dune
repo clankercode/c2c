@@ -1,7 +1,7 @@
  (executable
    (name c2c)
-   (modules c2c c2c_stats c2c_sitrep c2c_relay_managed c2c_docs_drift c2c_opencode_plugin_drift c2c_opencode_plugin_embedded c2c_doctor_cherry_pick_readiness c2c_doctor_hooks c2c_doctor_schedule c2c_types c2c_commands c2c_setup c2c_utils c2c_broker_root_check c2c_worktree c2c_rooms c2c_stickers c2c_signing_helpers c2c_memory c2c_migrate c2c_mcp_config_rewriter c2c_peer_pass c2c_agent c2c_coord c2c_git_shim c2c_history c2c_kimi_hook c2c_approval_paths c2c_authorizers role_designer_embedded role_templates c2c_deliver_watch c2c_deliver_inbox_log c2c_schedule c2c_uninstall)
-   (libraries c2c_mcp cmdliner yojson logs unix str lwt.unix cohttp-lwt-unix))
+   (modules c2c c2c_stats c2c_sitrep c2c_relay_managed c2c_docs_drift c2c_opencode_plugin_drift c2c_opencode_plugin_embedded c2c_doctor_cherry_pick_readiness c2c_doctor_hooks c2c_doctor_schedule c2c_types c2c_commands c2c_setup c2c_utils c2c_broker_root_check c2c_worktree c2c_rooms c2c_stickers c2c_signing_helpers c2c_memory c2c_migrate c2c_mcp_config_rewriter c2c_peer_pass c2c_agent c2c_coord c2c_git_shim c2c_history c2c_kimi_hook c2c_approval_paths c2c_authorizers role_designer_embedded role_templates c2c_deliver_watch c2c_deliver_inbox_log c2c_schedule c2c_uninstall c2c_watch c2c_watch_render)
+   (libraries c2c_mcp cmdliner yojson logs unix str lwt.unix cohttp-lwt-unix lambda-term))
 
 ; #482 S1/S3a: deliver-inbox daemon executable
 (executable
@@ -39,6 +39,13 @@
  (name test_c2c_history)
  (modules test_c2c_history c2c_history)
  (libraries c2c_mcp alcotest unix))
+
+; c2c watch B0: golden snapshot of the pure render layer (empty frame).
+(test
+ (name test_c2c_watch_render)
+ (modules test_c2c_watch_render c2c_watch_render)
+ (libraries c2c_mcp alcotest unix)
+ (deps test_fixtures/watch_empty_80x24.txt))
 
 (test
  (name test_c2c_kimi_hook)
