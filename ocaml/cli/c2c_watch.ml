@@ -117,13 +117,14 @@ let run_watch () : unit Lwt.t =
     Lwt_io.eprintl "c2c watch: not a tty (needs an interactive terminal)"
     >>= fun () -> Lwt.return_unit
   end else begin
-    (* Save screen state (alternate-screen equivalent) before entering raw
-       mode so [load_state] can restore the operator's scrollback on exit. *)
-    LTerm.save_state term >>= fun () ->
-    LTerm.enter_raw_mode term >>= fun mode ->
-    let mode_opt = Some mode in
-    (* Install signal handlers so an external SIGINT/SIGTERM still restores the
-       terminal. We capture the previous behaviour to chain a default exit. *)
+    (* Install the synchronous signal handler BEFORE save_state / enter_raw_mode
+       so an external SIGINT/SIGTERM arriving during raw-mode SETUP still
+       restores the terminal. [restore_terminal_sync] is harmless when raw mode
+       / alt-screen were not yet entered (it only re-asserts cooked termios,
+       shows the cursor, and emits rmcup). Installing handlers after entering
+       raw mode would leave a setup-window where a signal takes the default
+       (terminate) action and wedges the terminal. We capture the previous
+       handlers to chain the default behaviour back on a clean exit. *)
     let handle_signal _ =
       restore_terminal_sync ();
       (* exit synchronously; lwt finalizer may not get a chance to run. *)
@@ -131,14 +132,24 @@ let run_watch () : unit Lwt.t =
     in
     let prev_int = Sys.signal Sys.sigint (Sys.Signal_handle handle_signal) in
     let prev_term = Sys.signal Sys.sigterm (Sys.Signal_handle handle_signal) in
+    (* Save screen state (alternate-screen equivalent) before entering raw
+       mode so [load_state] can restore the operator's scrollback on exit. *)
+    LTerm.save_state term >>= fun () ->
+    LTerm.enter_raw_mode term >>= fun mode ->
+    let mode_opt = Some mode in
     LTerm.hide_cursor term >>= fun () ->
     Lwt.finalize
       (fun () -> draw_frame term >>= fun () -> event_loop term)
       (fun () ->
-        (* Restore signal handlers, then the terminal. *)
+        (* Restore the TERMINAL FIRST — while our signal handler is still
+           installed and guarding the teardown — THEN restore the previous
+           signal handlers. Restoring handlers first would open a window where
+           an external SIGINT/SIGTERM during teardown takes the default
+           (terminate) action and bypasses the terminal restore. *)
+        restore_terminal_lwt term mode_opt >>= fun () ->
         Sys.set_signal Sys.sigint prev_int;
         Sys.set_signal Sys.sigterm prev_term;
-        restore_terminal_lwt term mode_opt)
+        Lwt.return_unit)
   end
 
 let watch_term =
