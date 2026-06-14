@@ -181,3 +181,58 @@ let build_snapshot (t : Broker.t) : snapshot =
   ; rooms       = build_rooms t
   ; broker_root = Broker.root t
   }
+
+(* --- Send wrappers (slice B5) ------------------------------------------- *)
+
+(* The ONE state-mutating part of the watch feature. The cardinal requirement
+   (spec §4.3): a send MUST NEVER raise out into the event loop — an unguarded
+   [Invalid_argument] from the broker would crash the watcher and leave the
+   terminal in raw mode. So both wrappers:
+     - guard the CLI-level self-send rule (from = to) BEFORE touching the broker
+       (mirrors send_cmd at c2c.ml:504), and
+     - wrap the broker call in [try ... with Invalid_argument msg -> ...] so the
+       broker's reserved-from / unknown-recipient / dead-recipient / invalid-room
+       rejections become a [Send_failed msg] value rather than an exception.
+   A belt-and-braces catch-all [with e -> Send_failed (Printexc.to_string e)]
+   ensures ANY unexpected exception is still surfaced as a status, never raised.
+
+   These wrappers are the only IO-effecting functions in this module; the read
+   projections above stay pure-ish and untouched. *)
+
+type send_result =
+  | Sent_dm
+  | Sent_room of { delivered : int; skipped : int; warning : string option }
+  | Send_failed of string
+
+(* DM send. [from_alias] is the operator identity (the --as value, default
+   "operator"); the broker stamps it as the sender. Self-send is refused at the
+   CLI level here, matching send_cmd. Any broker rejection -> [Send_failed]. *)
+let send_dm (t : Broker.t) ~(from_alias : string) ~(to_alias : string)
+    ~(content : string) : send_result =
+  if from_alias = to_alias then
+    Send_failed
+      (Printf.sprintf "cannot send a message to yourself (%s)" from_alias)
+  else
+    try
+      Broker.enqueue_message t ~from_alias ~to_alias ~content ();
+      Sent_dm
+    with
+    | Invalid_argument msg -> Send_failed msg
+    | e -> Send_failed (Printexc.to_string e)
+
+(* Room send. Maps [send_room_result]: [sr_delivered_to]/[sr_skipped] become
+   counts, [sr_warning] (e.g. 0-member room — a SOFT warning, NOT an exception)
+   is surfaced verbatim. An invalid room_id / reserved from raises
+   [Invalid_argument] inside the broker -> caught -> [Send_failed]. *)
+let send_room_message (t : Broker.t) ~(from_alias : string)
+    ~(room_id : string) ~(content : string) : send_result =
+  try
+    let r = Broker.send_room t ~from_alias ~room_id ~content in
+    Sent_room
+      { delivered = List.length r.Broker.sr_delivered_to
+      ; skipped = List.length r.Broker.sr_skipped
+      ; warning = r.Broker.sr_warning
+      }
+  with
+  | Invalid_argument msg -> Send_failed msg
+  | e -> Send_failed (Printexc.to_string e)

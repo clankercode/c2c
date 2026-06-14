@@ -88,17 +88,24 @@ let test_per_tab_selection () =
   Alcotest.check Alcotest.int "dms_sel 1" 1 s.dms_sel;
   Alcotest.check Alcotest.int "peers_sel preserved" 2 s.peers_sel
 
-(* Focus defaults to List and resets to List on a tab switch. *)
+(* Focus defaults to List; a tab switch FROM List focus stays in List focus
+   (the [focus = List] in the NextTab/PrevTab/JumpTab arms). B5 refines the
+   Input-focus case: nav events are INERT in Input focus (typing must never
+   navigate — see [test_nav_inert_in_input]); the Input→List reset is now an
+   explicit [cancel_compose] (Esc), not a tab key. *)
 let test_focus_resets_on_tab_switch () =
   let s0 = S.initial in
   Alcotest.check focus_testable "initial focus List" S.List s0.focus;
-  (* Simulate a future state with Input focus (B5); a tab switch must reset. *)
-  let s_input = { s0 with S.focus = S.Input } in
-  let s = S.apply ~list_len:0 s_input S.NextTab in
-  Alcotest.check focus_testable "NextTab resets focus to List" S.List s.focus;
-  let s_input2 = { s0 with S.focus = S.Input } in
-  let s2 = S.apply ~list_len:0 s_input2 (S.JumpTab S.Rooms) in
-  Alcotest.check focus_testable "JumpTab resets focus to List" S.List s2.focus
+  (* A tab switch from List focus keeps List focus. *)
+  let s = S.apply ~list_len:0 s0 S.NextTab in
+  Alcotest.check focus_testable "NextTab keeps List focus" S.List s.focus;
+  let s2 = S.apply ~list_len:0 s0 (S.JumpTab S.Rooms) in
+  Alcotest.check focus_testable "JumpTab keeps List focus" S.List s2.focus;
+  (* From Input focus, cancel_compose returns to List focus. *)
+  let s_input = S.begin_compose s0 (S.Compose_dm "x") in
+  Alcotest.check focus_testable "begin_compose -> Input" S.Input s_input.focus;
+  let s_back = S.cancel_compose s_input in
+  Alcotest.check focus_testable "cancel_compose -> List" S.List s_back.focus
 
 (* clamp_counts re-clamps every per-tab selection against current list
    lengths — the data-driven clamp the loop applies after a snapshot rebuild.
@@ -133,6 +140,84 @@ let test_inert_events () =
   let after_noop = S.apply ~list_len:5 s S.NoOp in
   Alcotest.check Alcotest.int "NoOp inert" 1 after_noop.peers_sel
 
+(* --- B5: compose-mode transitions --------------------------------------- *)
+
+(* begin_compose sets focus=Input, records the target, and clears the buffer. *)
+let test_begin_compose () =
+  let s = { S.initial with S.input = "stale" } in
+  let s = S.begin_compose s (S.Compose_dm "alice") in
+  Alcotest.check focus_testable "focus -> Input" S.Input s.focus;
+  Alcotest.check Alcotest.string "input cleared" "" s.input;
+  (match s.compose with
+   | Some (S.Compose_dm a) ->
+       Alcotest.check Alcotest.string "target alias" "alice" a
+   | _ -> Alcotest.fail "expected Compose_dm target")
+
+(* AppendChar appends in Input focus (incl. a MULTI-BYTE code point); Backspace
+   drops exactly ONE code point (not one byte). *)
+let test_input_edits () =
+  let s = S.begin_compose S.initial (S.Compose_dm "bob") in
+  let s = S.apply ~list_len:0 s (S.AppendChar "h") in
+  let s = S.apply ~list_len:0 s (S.AppendChar "i") in
+  Alcotest.check Alcotest.string "ascii appended" "hi" s.input;
+  (* Append a 4-byte emoji (U+1F642) then a 2-byte é (U+00E9). *)
+  let s = S.apply ~list_len:0 s (S.AppendChar "\xf0\x9f\x99\x82") in
+  let s = S.apply ~list_len:0 s (S.AppendChar "\xc3\xa9") in
+  Alcotest.check Alcotest.string "multibyte appended"
+    "hi\xf0\x9f\x99\x82\xc3\xa9" s.input;
+  (* Backspace drops the é (2 bytes) as ONE code point. *)
+  let s = S.apply ~list_len:0 s S.Backspace in
+  Alcotest.check Alcotest.string "backspace drops 2-byte é"
+    "hi\xf0\x9f\x99\x82" s.input;
+  (* Backspace drops the emoji (4 bytes) as ONE code point. *)
+  let s = S.apply ~list_len:0 s S.Backspace in
+  Alcotest.check Alcotest.string "backspace drops 4-byte emoji" "hi" s.input;
+  let s = S.apply ~list_len:0 s S.Backspace in
+  let s = S.apply ~list_len:0 s S.Backspace in
+  Alcotest.check Alcotest.string "backspace to empty" "" s.input;
+  (* Backspace on empty is a no-op (no underflow). *)
+  let s = S.apply ~list_len:0 s S.Backspace in
+  Alcotest.check Alcotest.string "backspace on empty stays empty" "" s.input
+
+(* cancel_compose resets to List focus, clears the buffer + target. *)
+let test_cancel_compose () =
+  let s = S.begin_compose S.initial (S.Compose_room "swarm-lounge") in
+  let s = S.apply ~list_len:0 s (S.AppendChar "x") in
+  let s = S.cancel_compose s in
+  Alcotest.check focus_testable "focus -> List" S.List s.focus;
+  Alcotest.check Alcotest.string "input cleared" "" s.input;
+  Alcotest.check Alcotest.bool "compose cleared" true (s.compose = None)
+
+(* Nav events are INERT in Input focus: typing '1'/j/k/Tab must NOT navigate or
+   move the selection. (The loop maps printables to AppendChar in Input focus;
+   apply is the defence-in-depth belt asserted here directly.) *)
+let test_nav_inert_in_input () =
+  let s = S.begin_compose S.initial (S.Compose_dm "carol") in
+  let before_tab = s.tab in
+  let s1 = S.apply ~list_len:5 s S.NextTab in
+  Alcotest.check tab_testable "NextTab inert in Input" before_tab s1.tab;
+  Alcotest.check focus_testable "still Input after NextTab" S.Input s1.focus;
+  let s2 = S.apply ~list_len:5 s (S.JumpTab S.Rooms) in
+  Alcotest.check tab_testable "JumpTab inert in Input" before_tab s2.tab;
+  let s3 = S.apply ~list_len:5 s S.SelDown in
+  Alcotest.check Alcotest.int "SelDown inert in Input" 0 (S.active_sel s3)
+
+(* set_status sets the status line without disturbing focus/selection. *)
+let test_set_status () =
+  let s = S.set_status S.initial "\xe2\x9c\x93 sent to alice" in
+  Alcotest.check Alcotest.string "status set" "\xe2\x9c\x93 sent to alice"
+    s.status;
+  Alcotest.check focus_testable "focus unchanged" S.List s.focus
+
+(* AppendChar/Backspace are INERT in List focus (no accidental buffer edits
+   when not composing). *)
+let test_input_edits_inert_in_list () =
+  let s = S.initial in
+  let s = S.apply ~list_len:0 s (S.AppendChar "x") in
+  Alcotest.check Alcotest.string "AppendChar inert in List" "" s.input;
+  let s = S.apply ~list_len:0 { s with S.input = "abc" } S.Backspace in
+  Alcotest.check Alcotest.string "Backspace inert in List" "abc" s.input
+
 let () =
   Alcotest.run "c2c_watch_state"
     [ ( "transitions",
@@ -149,4 +234,12 @@ let () =
             test_apply_recovers_out_of_range;
           Alcotest.test_case "focus_resets_on_tab_switch" `Quick
             test_focus_resets_on_tab_switch;
-          Alcotest.test_case "inert_events" `Quick test_inert_events ] ) ]
+          Alcotest.test_case "inert_events" `Quick test_inert_events;
+          Alcotest.test_case "begin_compose" `Quick test_begin_compose;
+          Alcotest.test_case "input_edits" `Quick test_input_edits;
+          Alcotest.test_case "cancel_compose" `Quick test_cancel_compose;
+          Alcotest.test_case "nav_inert_in_input" `Quick
+            test_nav_inert_in_input;
+          Alcotest.test_case "set_status" `Quick test_set_status;
+          Alcotest.test_case "input_edits_inert_in_list" `Quick
+            test_input_edits_inert_in_list ] ) ]

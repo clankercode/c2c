@@ -181,29 +181,82 @@ let active_list_len (snapshot : C2c_watch_data.snapshot)
   | C2c_watch_state.DMs -> List.length snapshot.shards
   | C2c_watch_state.Rooms -> List.length snapshot.rooms
 
-(* Translate a raw key into a pure state event (spec §6). Shift-Tab arrives as
-   Tab with [shift=true] (lambda-term has no BackTab code). In raw mode Ctrl-c
-   is a Char 'c' with [control=true], NOT SIGINT. *)
-let event_of_key (k : LTerm_key.t) : C2c_watch_state.event =
+(* A loop-level action for a key, AFTER focus-aware translation (spec §4.4 /
+   §6). Most keys map to a pure [C2c_watch_state.event] applied by the loop;
+   [Begin_compose], [Submit], and [Cancel_compose] are IO/snapshot-coupled
+   (compute target / send / refresh) so they are handled directly in the loop,
+   not via the pure variant. *)
+type key_action =
+  | A_event of C2c_watch_state.event
+  | A_quit
+  | A_refresh
+  | A_begin_compose   (* Enter in List focus: open compose for the selection *)
+  | A_submit          (* Enter in Input focus: send the buffer *)
+  | A_cancel_compose  (* Esc in Input focus: drop the buffer, back to List *)
+
+(* The UTF-8 byte encoding of a Uchar (1-4 bytes). Used to append a typed code
+   point to the compose buffer. *)
+let utf8_of_uchar (u : Uchar.t) : string =
+  let b = Buffer.create 4 in
+  Buffer.add_utf_8_uchar b u;
+  Buffer.contents b
+
+(* Translate a raw key into a loop action, FOCUS-AWARE (spec §4.4 / §6).
+   Shift-Tab arrives as Tab with [shift=true] (lambda-term has no BackTab code).
+   In raw mode Ctrl-c is a Char 'c' with [control=true], NOT SIGINT.
+
+   LIST focus: Tab/1/2/3/j/k/r/q/arrows as before, PLUS Enter -> begin compose.
+   INPUT focus (compose line active): a PRINTABLE char -> [AppendChar] (NOT a
+   nav/jump!), Backspace -> [Backspace], Enter -> [A_submit], Esc ->
+   [A_cancel_compose], Ctrl-c -> [A_quit] (still quits from compose). Typing
+   '1'/'q'/'j' etc. in Input focus inserts the literal char and never
+   navigates/quits. *)
+let key_action (focus : C2c_watch_state.focus) (k : LTerm_key.t) : key_action =
   let is_char ch =
     match k.LTerm_key.code with
     | LTerm_key.Char c -> Uchar.equal c (Uchar.of_char ch)
     | _ -> false
   in
-  match k.LTerm_key.code with
-  | LTerm_key.Tab when k.LTerm_key.shift -> C2c_watch_state.PrevTab
-  | LTerm_key.Tab -> C2c_watch_state.NextTab
-  | LTerm_key.Up -> C2c_watch_state.SelUp
-  | LTerm_key.Down -> C2c_watch_state.SelDown
-  | LTerm_key.Char _ when is_char '1' -> C2c_watch_state.JumpTab C2c_watch_state.Peers
-  | LTerm_key.Char _ when is_char '2' -> C2c_watch_state.JumpTab C2c_watch_state.DMs
-  | LTerm_key.Char _ when is_char '3' -> C2c_watch_state.JumpTab C2c_watch_state.Rooms
-  | LTerm_key.Char _ when is_char 'k' -> C2c_watch_state.SelUp
-  | LTerm_key.Char _ when is_char 'j' -> C2c_watch_state.SelDown
-  | LTerm_key.Char _ when is_char 'r' -> C2c_watch_state.Refresh
-  | LTerm_key.Char _ when is_char 'q' -> C2c_watch_state.Quit
-  | LTerm_key.Char _ when k.LTerm_key.control && is_char 'c' -> C2c_watch_state.Quit
-  | _ -> C2c_watch_state.NoOp
+  let ctrl_c = k.LTerm_key.control && is_char 'c' in
+  (* A bare printable nav key — must NOT have the control modifier, so a
+     Ctrl-J / Ctrl-K (when a terminal delivers it as Char 'j'/'k' with
+     control=true rather than as Enter) does not trip the j/k/r/q/1/2/3
+     bindings. Ctrl-c is matched separately via [ctrl_c]. *)
+  let plain_char ch = is_char ch && not k.LTerm_key.control in
+  match focus with
+  | C2c_watch_state.Input -> (
+      (* Ctrl-c still quits even from compose. *)
+      if ctrl_c then A_quit
+      else
+        match k.LTerm_key.code with
+        | LTerm_key.Enter -> A_submit
+        | LTerm_key.Escape -> A_cancel_compose
+        | LTerm_key.Backspace -> A_event C2c_watch_state.Backspace
+        | LTerm_key.Char u ->
+            (* A printable code point. Control combos (e.g. Ctrl-<x>) other than
+               Ctrl-c are ignored so a stray control key cannot inject a glyph. *)
+            if k.LTerm_key.control then A_event C2c_watch_state.NoOp
+            else A_event (C2c_watch_state.AppendChar (utf8_of_uchar u))
+        | _ -> A_event C2c_watch_state.NoOp)
+  | C2c_watch_state.List -> (
+      match k.LTerm_key.code with
+      | LTerm_key.Tab when k.LTerm_key.shift -> A_event C2c_watch_state.PrevTab
+      | LTerm_key.Tab -> A_event C2c_watch_state.NextTab
+      | LTerm_key.Up -> A_event C2c_watch_state.SelUp
+      | LTerm_key.Down -> A_event C2c_watch_state.SelDown
+      | LTerm_key.Enter -> A_begin_compose
+      | LTerm_key.Char _ when plain_char '1' ->
+          A_event (C2c_watch_state.JumpTab C2c_watch_state.Peers)
+      | LTerm_key.Char _ when plain_char '2' ->
+          A_event (C2c_watch_state.JumpTab C2c_watch_state.DMs)
+      | LTerm_key.Char _ when plain_char '3' ->
+          A_event (C2c_watch_state.JumpTab C2c_watch_state.Rooms)
+      | LTerm_key.Char _ when plain_char 'k' -> A_event C2c_watch_state.SelUp
+      | LTerm_key.Char _ when plain_char 'j' -> A_event C2c_watch_state.SelDown
+      | LTerm_key.Char _ when plain_char 'r' -> A_refresh
+      | LTerm_key.Char _ when plain_char 'q' -> A_quit
+      | LTerm_key.Char _ when ctrl_c -> A_quit
+      | _ -> A_event C2c_watch_state.NoOp)
 
 (* Compute the "refreshed Xs ago" label. The LOOP owns the clock — never the
    render layer (spec §1). [last_refresh] is the wall-clock at the most recent
@@ -220,7 +273,86 @@ type loop_ctx = {
   broker : C2c_watch_data.Broker.t;
   root : string;
   interval : float;
+  from_alias : string;
+    (* The operator's send identity (the --as value, default "operator"). Passed
+       straight to the broker as the DM/room sender; the broker validates it.
+       No resolve_alias session-coupling — that is for agent sends. *)
 }
+
+(* Compute the compose target for an Enter in List focus from the active tab +
+   selection + snapshot (spec §4.4). Returns [None] when the active list is
+   empty (nothing to target) so the loop can show "nothing selected" and stay
+   in List focus. PURE. *)
+let compose_target_of (snapshot : C2c_watch_data.snapshot)
+    (state : C2c_watch_state.t) : C2c_watch_state.compose_target option =
+  let nth_opt = List.nth_opt in
+  match state.C2c_watch_state.tab with
+  | C2c_watch_state.Peers -> (
+      match nth_opt snapshot.C2c_watch_data.peers state.C2c_watch_state.peers_sel with
+      | Some p -> Some (C2c_watch_state.Compose_dm p.C2c_watch_data.pr_alias)
+      | None -> None)
+  | C2c_watch_state.DMs -> (
+      match nth_opt snapshot.C2c_watch_data.shards state.C2c_watch_state.dms_sel with
+      | Some s ->
+          (* The DM compose target is the shard's owner alias (its registry
+             label). An orphan shard has no owner — derive the label the same
+             way the render does (newest entry's to_alias), else fall back to
+             the session_id (a send to an unknown recipient surfaces a clean
+             "not registered" error, never a crash). *)
+          let label =
+            match s.C2c_watch_data.ds_owner_alias with
+            | Some a -> a
+            | None -> (
+                match s.C2c_watch_data.ds_entries with
+                | (e : C2c_watch_data.Broker.archive_entry) :: _
+                  when e.ae_to_alias <> "" -> e.ae_to_alias
+                | _ -> s.C2c_watch_data.ds_session_id)
+          in
+          Some (C2c_watch_state.Compose_dm label)
+      | None -> None)
+  | C2c_watch_state.Rooms -> (
+      match nth_opt snapshot.C2c_watch_data.rooms state.C2c_watch_state.rooms_sel with
+      | Some rv ->
+          Some
+            (C2c_watch_state.Compose_room
+               rv.C2c_watch_data.rv_info.C2c_watch_data.Broker.ri_room_id)
+      | None -> None)
+
+(* Map a [send_result] to a status-line string (spec §4.4). PURE. *)
+let status_of_send (target : C2c_watch_state.compose_target)
+    (r : C2c_watch_data.send_result) : string =
+  match r with
+  | C2c_watch_data.Sent_dm -> (
+      match target with
+      | C2c_watch_state.Compose_dm a -> Printf.sprintf "\xe2\x9c\x93 sent to %s" a
+      | C2c_watch_state.Compose_room room ->
+          Printf.sprintf "\xe2\x9c\x93 sent to %s" room)
+  | C2c_watch_data.Sent_room { delivered; skipped; warning } ->
+      let room =
+        match target with
+        | C2c_watch_state.Compose_room r -> r
+        | C2c_watch_state.Compose_dm a -> a
+      in
+      let base =
+        Printf.sprintf "\xe2\x9c\x93 posted to #%s (delivered %d, skipped %d)"
+          room delivered skipped
+      in
+      (match warning with
+       | Some w -> base ^ " — " ^ w
+       | None -> base)
+  | C2c_watch_data.Send_failed msg -> "\xe2\x9c\x97 " ^ msg (* ✗ *)
+
+(* Perform the send for [target] with the current input. Returns the
+   [send_result]; NEVER raises (the data-layer wrappers catch everything). *)
+let do_send (ctx : loop_ctx) (target : C2c_watch_state.compose_target)
+    (content : string) : C2c_watch_data.send_result =
+  match target with
+  | C2c_watch_state.Compose_dm to_alias ->
+      C2c_watch_data.send_dm ctx.broker ~from_alias:ctx.from_alias ~to_alias
+        ~content
+  | C2c_watch_state.Compose_room room_id ->
+      C2c_watch_data.send_room_message ctx.broker ~from_alias:ctx.from_alias
+        ~room_id ~content
 
 (* The event loop (spec §5): race a key read against a refresh timer.
    - key Quit -> return (teardown via the EXISTING B0 finalizer).
@@ -271,40 +403,88 @@ let rec event_loop (ctx : loop_ctx) (snapshot : C2c_watch_data.snapshot)
       draw_state ctx.term snapshot' state' >>= fun () ->
       event_loop ctx snapshot' state' fp' last_refresh'
   | `Event (LTerm_event.Key k) -> (
-      match event_of_key k with
-      | C2c_watch_state.Quit -> Lwt.return_unit
-      | C2c_watch_state.Refresh ->
-          let now = Unix.gettimeofday () in
-          let new_fp = fingerprint ctx.root in
-          let snapshot' = C2c_watch_data.build_snapshot ctx.broker in
-          let state' =
-            C2c_watch_state.clamp_counts
-              ~peers:(List.length snapshot'.C2c_watch_data.peers)
-              ~dms:(List.length snapshot'.C2c_watch_data.shards)
-              ~rooms:(List.length snapshot'.C2c_watch_data.rooms)
-              { state with
-                C2c_watch_state.refreshed_label =
-                  refreshed_label ~now ~last_refresh:now }
-          in
-          draw_state ctx.term snapshot' state' >>= fun () ->
-          event_loop ctx snapshot' state' new_fp now
-      | ev ->
-          let now = Unix.gettimeofday () in
+      (* Force a full snapshot rebuild + re-clamp; carry [extra] state mutation
+         (e.g. the status line / cancel_compose) applied AFTER the clamp. *)
+      let rebuild_and_loop (extra : C2c_watch_state.t -> C2c_watch_state.t) :
+          unit Lwt.t =
+        let now = Unix.gettimeofday () in
+        let new_fp = fingerprint ctx.root in
+        let snapshot' = C2c_watch_data.build_snapshot ctx.broker in
+        let state' =
+          extra
+            (C2c_watch_state.clamp_counts
+               ~peers:(List.length snapshot'.C2c_watch_data.peers)
+               ~dms:(List.length snapshot'.C2c_watch_data.shards)
+               ~rooms:(List.length snapshot'.C2c_watch_data.rooms)
+               { state with
+                 C2c_watch_state.refreshed_label =
+                   refreshed_label ~now ~last_refresh:now })
+        in
+        draw_state ctx.term snapshot' state' >>= fun () ->
+        event_loop ctx snapshot' state' new_fp now
+      in
+      (* Redraw with [state'] against the CURRENT snapshot (no rebuild). *)
+      let redraw_loop (state' : C2c_watch_state.t) : unit Lwt.t =
+        let now = Unix.gettimeofday () in
+        let state' =
+          { state' with
+            C2c_watch_state.refreshed_label =
+              refreshed_label ~now ~last_refresh }
+        in
+        draw_state ctx.term snapshot state' >>= fun () ->
+        event_loop ctx snapshot state' fp last_refresh
+      in
+      match key_action state.C2c_watch_state.focus k with
+      | A_quit -> Lwt.return_unit
+      | A_refresh -> rebuild_and_loop (fun s -> s)
+      | A_begin_compose -> (
+          (* Compute the target from the active tab + selection + snapshot;
+             empty list -> "nothing selected", stay in List focus. *)
+          match compose_target_of snapshot state with
+          | Some target ->
+              redraw_loop (C2c_watch_state.begin_compose state target)
+          | None ->
+              redraw_loop
+                (C2c_watch_state.set_status state "nothing selected"))
+      | A_cancel_compose -> redraw_loop (C2c_watch_state.cancel_compose state)
+      | A_submit -> (
+          (* SUBMIT (Enter in Input focus). The send goes through the
+             data-layer wrappers, which NEVER raise — so a bad recipient / dead
+             peer / reserved-from becomes a ✗ status, never a crash. *)
+          match state.C2c_watch_state.compose with
+          | None ->
+              (* Defensive: Input focus with no target — cancel cleanly. *)
+              redraw_loop (C2c_watch_state.cancel_compose state)
+          | Some target ->
+              let content = state.C2c_watch_state.input in
+              if String.trim content = "" then
+                (* Empty/whitespace -> do NOT send; keep composing. *)
+                redraw_loop
+                  (C2c_watch_state.set_status state "empty message, not sent")
+              else begin
+                let result = do_send ctx target content in
+                let status = status_of_send target result in
+                match result with
+                | C2c_watch_data.Send_failed _ ->
+                    (* FAILURE: keep focus=Input + RETAIN input so the operator
+                       can edit + set the ✗ status. No rebuild. *)
+                    redraw_loop (C2c_watch_state.set_status state status)
+                | _ ->
+                    (* SUCCESS: rebuild the snapshot so the new row shows,
+                       cancel_compose (back to List), set the ✓ status. *)
+                    rebuild_and_loop (fun s ->
+                        C2c_watch_state.set_status
+                          (C2c_watch_state.cancel_compose s) status)
+              end)
+      | A_event ev ->
           let list_len = active_list_len snapshot state in
-          let state' = C2c_watch_state.apply ~list_len state ev in
-          let state' =
-            { state' with
-              C2c_watch_state.refreshed_label =
-                refreshed_label ~now ~last_refresh }
-          in
-          draw_state ctx.term snapshot state' >>= fun () ->
-          event_loop ctx snapshot state' fp last_refresh)
+          redraw_loop (C2c_watch_state.apply ~list_len state ev))
   | `Event (LTerm_event.Resize _) ->
       draw_state ctx.term snapshot state >>= fun () ->
       event_loop ctx snapshot state fp last_refresh
   | `Event _ -> event_loop ctx snapshot state fp last_refresh
 
-let run_watch ~(interval : float) () : unit Lwt.t =
+let run_watch ~(interval : float) ~(from_alias : string) () : unit Lwt.t =
   let open Lwt.Infix in
   Lazy.force LTerm.stdout >>= fun term ->
   (* Refuse gracefully if not a real tty (e.g. piped) rather than crashing in
@@ -349,7 +529,7 @@ let run_watch ~(interval : float) () : unit Lwt.t =
             C2c_watch_state.refreshed_label =
               refreshed_label ~now ~last_refresh:now }
         in
-        let ctx = { term; broker; root; interval } in
+        let ctx = { term; broker; root; interval; from_alias } in
         draw_state term snapshot state >>= fun () ->
         event_loop ctx snapshot state fp now)
       (fun () ->
@@ -374,16 +554,30 @@ let watch_term =
       & opt float 1.0
       & info [ "interval" ] ~docv:"FLOAT" ~doc)
   in
-  let action interval =
+  let from_alias =
+    let doc =
+      "Sender identity for sends (DM / room post). The operator running \
+       $(b,c2c watch) has no agent session id, so this is passed straight to \
+       the broker as the message sender; it must not be a reserved system \
+       alias and (for DMs) the recipient must be registered. Defaults to the \
+       reserved-for-operator alias $(b,operator)."
+    in
+    Arg.(value & opt string "operator" & info [ "as" ] ~docv:"ALIAS" ~doc)
+  in
+  let action interval from_alias =
     let interval = if interval <= 0.0 then 1.0 else interval in
-    (try Lwt_main.run (run_watch ~interval ())
+    let from_alias =
+      let trimmed = String.trim from_alias in
+      if trimmed = "" then "operator" else trimmed
+    in
+    (try Lwt_main.run (run_watch ~interval ~from_alias ())
      with e ->
        (* Last-resort sync restore if something escaped the lwt finalizer. *)
        restore_terminal_sync ();
        Printf.eprintf "c2c watch: %s\n%!" (Printexc.to_string e);
        exit 1)
   in
-  Term.(const action $ interval)
+  Term.(const action $ interval $ from_alias)
 
 let watch_cmd =
   let open Cmdliner in

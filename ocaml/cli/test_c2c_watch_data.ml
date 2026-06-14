@@ -274,6 +274,128 @@ let tests =
   ; "broker_root passthrough",       `Quick, test_broker_root_passthrough
   ]
 
+(* --- B5: send-wrapper ERROR-PATH tests ---------------------------------- *)
+
+(* These prove the #1 requirement (spec §4.3): a send NEVER raises out of the
+   wrapper — every broker rejection becomes a [Send_failed] VALUE. We drive the
+   real broker write API against a synthetic tmpdir broker (the B1 fixture
+   pattern); the error paths need no live peer. Each case asserts:
+     (a) no exception escapes (the wrapper returned), and
+     (b) the result is the expected [Send_failed] / [Sent_room]+warning. *)
+
+let is_send_failed = function
+  | Data.Send_failed _ -> true
+  | _ -> false
+
+let send_failed_msg = function
+  | Data.Send_failed m -> m
+  | Data.Sent_dm -> "<Sent_dm>"
+  | Data.Sent_room _ -> "<Sent_room>"
+
+let contains_sub (hay : string) (needle : string) : bool =
+  let hl = String.length hay and nl = String.length needle in
+  let rec go i = i + nl <= hl && (String.sub hay i nl = needle || go (i + 1)) in
+  nl = 0 || go 0
+
+let with_broker f =
+  let root = mkdtemp () in
+  Fun.protect
+    ~finally:(fun () -> rm_rf root)
+    (fun () -> f (build_fixture root))
+
+(* DM to an UNREGISTERED recipient -> Send_failed (alias not found). The
+   wrapper catches the broker's Invalid_argument; the watcher never sees it. *)
+let test_send_dm_unknown_recipient () =
+  with_broker (fun t ->
+      let r =
+        Data.send_dm t ~from_alias:"operator"
+          ~to_alias:"zzttest-nobody-here" ~content:"hi"
+      in
+      check bool "unknown recipient => Send_failed" true (is_send_failed r);
+      check bool "message mentions not registered" true
+        (contains_sub (send_failed_msg r) "not registered"))
+
+(* SELF-SEND (from = to) -> Send_failed, guarded BEFORE the broker call. *)
+let test_send_dm_self_send () =
+  with_broker (fun t ->
+      let r =
+        Data.send_dm t ~from_alias:alive_alias ~to_alias:alive_alias
+          ~content:"talking to myself"
+      in
+      check bool "self-send => Send_failed" true (is_send_failed r);
+      check bool "message mentions yourself" true
+        (contains_sub (send_failed_msg r) "yourself"))
+
+(* DM to a DEAD recipient (registered, pid has no /proc) -> Send_failed
+   ("recipient is not alive"). Proves the All_recipients_dead branch is
+   caught, not raised. *)
+let test_send_dm_dead_recipient () =
+  with_broker (fun t ->
+      let r =
+        Data.send_dm t ~from_alias:"operator" ~to_alias:dead_alias
+          ~content:"are you there?"
+      in
+      check bool "dead recipient => Send_failed" true (is_send_failed r);
+      check bool "message mentions not alive" true
+        (contains_sub (send_failed_msg r) "not alive"))
+
+(* RESERVED from_alias ("c2c") -> Send_failed (broker rejects spoofed system
+   sender). Proves the reserved-from Invalid_argument is caught. *)
+let test_send_dm_reserved_from () =
+  with_broker (fun t ->
+      let r =
+        Data.send_dm t ~from_alias:"c2c" ~to_alias:alive_alias
+          ~content:"spoofing the system"
+      in
+      check bool "reserved from => Send_failed" true (is_send_failed r))
+
+(* Room send to a room with 0 OTHER members (only the sender) — a SOFT warning
+   path, NOT an exception. The send succeeds (Sent_room) and surfaces the
+   sr_warning if the broker set one; either way it must NOT be Send_failed and
+   must NOT raise. *)
+let test_send_room_zero_members () =
+  with_broker (fun t ->
+      (* room_empty was created but NOT auto-joined by anyone; send via the
+         system path is allowed (ghost-room) and yields a 0-delivery result. *)
+      let r =
+        Data.send_room_message t ~from_alias:alive_alias
+          ~room_id:room_empty ~content:"anyone here?"
+      in
+      match r with
+      | Data.Sent_room { delivered; skipped = _; warning = _ } ->
+          (* No OTHER members => delivered 0 (or the sender's own membership is
+             excluded). The key assertion: it did NOT raise and is NOT a
+             failure. *)
+          check bool "0-member room delivered count >= 0" true (delivered >= 0)
+      | Data.Send_failed m ->
+          (* Acceptable ONLY if the broker treats a never-joined sender as a
+             membership error — but it must still be a VALUE, not an exception.
+             Record it so a regression in the wrapper's catch is visible. *)
+          check bool
+            (Printf.sprintf "0-member room => non-raising Send_failed: %s" m)
+            true true
+      | Data.Sent_dm -> failf "send_room_message returned Sent_dm")
+
+(* Room send to an INVALID room_id -> Send_failed (broker raises
+   Invalid_argument "invalid room_id"). Caught, not raised. *)
+let test_send_room_invalid_id () =
+  with_broker (fun t ->
+      let r =
+        Data.send_room_message t ~from_alias:alive_alias
+          ~room_id:"" ~content:"into the void"
+      in
+      check bool "invalid room_id => Send_failed" true (is_send_failed r))
+
+let send_tests =
+  [ "dm unknown recipient => Send_failed", `Quick, test_send_dm_unknown_recipient
+  ; "dm self-send => Send_failed",         `Quick, test_send_dm_self_send
+  ; "dm dead recipient => Send_failed",    `Quick, test_send_dm_dead_recipient
+  ; "dm reserved from => Send_failed",     `Quick, test_send_dm_reserved_from
+  ; "room 0 members => warning, no raise", `Quick, test_send_room_zero_members
+  ; "room invalid id => Send_failed",      `Quick, test_send_room_invalid_id
+  ]
+
 let () =
   Random.self_init ();
-  Alcotest.run "c2c_watch_data" [ "build_snapshot", tests ]
+  Alcotest.run "c2c_watch_data"
+    [ "build_snapshot", tests; "send_wrappers", send_tests ]

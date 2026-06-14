@@ -557,6 +557,69 @@ let test_rooms_out_of_range_sel () =
     (List.length (String.split_on_char '\n' s));
   check_all_lines_80 s
 
+(* ===== B5: compose line + status golden ================================= *)
+
+(* Input-focus state on the Peers tab: a Compose_dm target with typed input and
+   a prior ✗-failed status, so the golden pins BOTH the compose prompt+caret
+   (last interior row) AND the status row above it. The body above is the
+   normal populated Peers roster (unchanged from the read view) — this proves
+   the read body and the new bottom region coexist exactly. *)
+let state_compose : C2c_watch_state.t =
+  { C2c_watch_state.initial with
+    C2c_watch_state.tab = C2c_watch_state.Peers
+  ; peers_sel = 0
+  ; focus = C2c_watch_state.Input
+  ; compose = Some (C2c_watch_state.Compose_dm "alpha-impl")
+  ; input = "ack — picking up the slice"
+  ; status = "\xe2\x9c\x97 recipient is not alive: gamma-old"
+  ; refreshed_label = "refreshed 0.6s ago" }
+
+let test_compose_golden () =
+  golden_test ~rel:"test_fixtures/watch_compose_80x24.txt"
+    ~snapshot:populated_snapshot ~state:state_compose ()
+
+(* B5: the compose line keeps the caret visible by left-truncating a LONG input
+   (showing its tail nearest the caret with a leading …). At a narrow width the
+   render must still be exact-width and total — no raise, every line = cols. *)
+let test_compose_long_input_narrow () =
+  let long =
+    "this is a very long compose buffer that must be left-truncated so the \
+     caret stays visible at the right edge of the input field no matter how \
+     much the operator types into it"
+  in
+  let st =
+    { state_compose with
+      C2c_watch_state.input = long
+    ; compose = Some (C2c_watch_state.Compose_room "swarm-lounge")
+    ; status = "" }
+  in
+  List.iter
+    (fun (cols, rows) ->
+      let s =
+        C2c_watch_render.render ~cols ~rows ~snapshot:populated_snapshot
+          ~state:st
+      in
+      let lines = String.split_on_char '\n' s in
+      Alcotest.(check int)
+        (Printf.sprintf "%dx%d row count" cols rows)
+        rows (List.length lines);
+      List.iteri
+        (fun i line ->
+          Alcotest.(check int)
+            (Printf.sprintf "%dx%d line %d display-width" cols rows i)
+            cols (utf8_len line))
+        lines;
+      (* The caret stays visible whenever the inner width can hold the prompt +
+         caret (cols >= ~20). At an 8-col degenerate width the prompt itself is
+         truncated to fit and the caret may be dropped — the exact-width
+         contract (asserted above) is what must always hold there. *)
+      if cols >= 20 then
+        Alcotest.(check bool)
+          (Printf.sprintf "%dx%d caret visible" cols rows)
+          true
+          (contains_sub s "\xe2\x96\x8f"))
+    [ (80, 24); (40, 12); (20, 8); (8, 5) ]
+
 (* The render exact-width contract must hold at ANY size >= the clamp floor
    (cols>=8, rows>=5), including narrow terminals where the title border cannot
    hold the fixed lead+tabs. Regression for the Codex finding that title_border
@@ -578,7 +641,15 @@ let test_render_dimensions_various () =
        populated_snapshot) (* Rooms tab over the empty-rooms snapshot *)
     ; (state_rooms, rooms_snapshot) (* Rooms tab over the populated-rooms
                                        snapshot: exercises the two-pane room
-                                       list + history wrap at narrow sizes *) ]
+                                       list + history wrap at narrow sizes *)
+    ; ({ state_peers with
+         C2c_watch_state.focus = C2c_watch_state.Input
+       ; compose = Some (C2c_watch_state.Compose_dm "alpha-impl")
+       ; input = "hello there"
+       ; status = "\xe2\x9c\x93 sent to alpha-impl" },
+       populated_snapshot)
+      (* B5 Input focus: the compose line + status row replace the footer; the
+         exact-width contract must hold at narrow sizes too. *) ]
   in
   List.iter
     (fun (cols, rows) ->
@@ -633,4 +704,8 @@ let () =
           Alcotest.test_case "rooms_out_of_range_sel_total" `Quick
             test_rooms_out_of_range_sel;
           Alcotest.test_case "render_dimensions_various" `Quick
-            test_render_dimensions_various ] ) ]
+            test_render_dimensions_various;
+          Alcotest.test_case "compose_80x24_golden" `Quick
+            test_compose_golden;
+          Alcotest.test_case "compose_long_input_narrow" `Quick
+            test_compose_long_input_narrow ] ) ]

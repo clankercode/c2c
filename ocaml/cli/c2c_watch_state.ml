@@ -22,9 +22,17 @@
 
 type tab = Peers | DMs | Rooms
 
-(* [Input] is declared for B5 (the compose line) but B2 only ever holds
-   [List]; a tab switch resets focus to [List]. *)
+(* [Input] focus = the compose line is active (B5). A tab switch always resets
+   focus to [List] (the compose line never carries across tabs). *)
 type focus = List | Input
+
+(* The send target a compose buffer is bound to (B5). Computed by the loop from
+   the active tab + selection + snapshot when [Enter] begins a compose; carried
+   on the state so [render] can draw the right prompt and the submit path knows
+   whether to call [send_dm] or [send_room_message]. *)
+type compose_target =
+  | Compose_dm of string    (* recipient alias *)
+  | Compose_room of string  (* room_id *)
 
 type t = {
   tab : tab;
@@ -32,8 +40,10 @@ type t = {
   dms_sel : int;         (* selected shard index (B3) *)
   rooms_sel : int;       (* selected room index (B4) *)
   focus : focus;
-  input : string;        (* compose buffer — B5; unused in B2 *)
-  status : string;       (* status line text — B5; unused in B2 *)
+  compose : compose_target option;
+    (* Some _ exactly when focus=Input — the target the input buffer sends to. *)
+  input : string;        (* compose buffer (B5) *)
+  status : string;       (* status line text (B5): last ✓/✗ send result *)
   refreshed_label : string;
     (* The "refreshed Xs ago" header text. The IMPURE loop in c2c_watch.ml
        owns the clock and writes this; render reads it verbatim. Keeping the
@@ -44,11 +54,14 @@ type t = {
 type event =
   | NextTab           (* Tab: Peers -> DMs -> Rooms -> Peers *)
   | PrevTab           (* Shift-Tab: reverse cycle *)
-  | JumpTab of tab    (* '1'/'2'/'3' *)
+  | JumpTab of tab    (* '1'/'2'/'3' (List focus only) *)
   | SelUp             (* Up / k *)
   | SelDown           (* Down / j *)
   | Refresh           (* r — force a data refresh (handled by the loop) *)
   | Quit              (* q / Ctrl-c *)
+  | AppendChar of string
+      (* Input focus: append one typed code point (UTF-8 bytes) to [input]. *)
+  | Backspace         (* Input focus: drop the last code point of [input] *)
   | NoOp              (* unhandled key *)
 
 let initial : t =
@@ -57,6 +70,7 @@ let initial : t =
   ; dms_sel = 0
   ; rooms_sel = 0
   ; focus = List
+  ; compose = None
   ; input = ""
   ; status = ""
   ; refreshed_label = ""
@@ -97,14 +111,72 @@ let clamp_counts ~(peers : int) ~(dms : int) ~(rooms : int) (t : t) : t =
   ; rooms_sel = clamp_sel rooms t.rooms_sel
   }
 
+(* --- B5 compose helpers (pure) ------------------------------------------ *)
+
+(* Enter compose mode targeting [target]: focus moves to [Input], the input
+   buffer is cleared, and [compose] records where a submit will send. PURE —
+   the loop computes [target] from the active tab + selection + snapshot, then
+   calls this. The status is left as-is (cleared on a successful submit). *)
+let begin_compose (t : t) (target : compose_target) : t =
+  { t with focus = Input; compose = Some target; input = "" }
+
+(* Cancel compose (Esc): back to list focus, buffer + target cleared. The
+   status line is preserved so a prior ✓/✗ stays visible. PURE. *)
+let cancel_compose (t : t) : t =
+  { t with focus = List; compose = None; input = "" }
+
+(* Set the status line (a send result / a "nothing selected" note). PURE. *)
+let set_status (t : t) (s : string) : t = { t with status = s }
+
+(* Drop the last UTF-8 code point of [s] (returns "" when already empty). The
+   compose buffer is byte-stored UTF-8; backspace must remove a whole code
+   point, not a single byte, or a multi-byte glyph leaves a dangling
+   continuation byte. Walk from the start tracking the last code-point start. *)
+let drop_last_codepoint (s : string) : string =
+  let n = String.length s in
+  if n = 0 then ""
+  else begin
+    let last_start = ref 0 and i = ref 0 in
+    while !i < n do
+      let c = Char.code s.[!i] in
+      let step =
+        if c < 0x80 then 1
+        else if c < 0xE0 then 2
+        else if c < 0xF0 then 3
+        else 4
+      in
+      last_start := !i;
+      i := !i + step
+    done;
+    String.sub s 0 !last_start
+  end
+
 (* [apply ~list_len t ev] is the pure transition. [list_len] is the length of
    the ACTIVE tab's list at apply time, so selection clamping is correct
    regardless of which tab is focused. A tab switch resets [focus] to [List]
    (the compose line never carries across tabs). [Quit]/[Refresh]/[NoOp] are
-   inert to the navigable state — the loop interprets [Quit]/[Refresh]. *)
+   inert to the navigable state — the loop interprets [Quit]/[Refresh].
+
+   FOCUS-AWARENESS (spec §4.4 / §6): in [Input] focus the navigation events
+   ([NextTab]/[PrevTab]/[JumpTab]/[SelUp]/[SelDown]) are INERT — they never
+   fire here because the loop's focus-aware key translation maps printable keys
+   (incl. '1'/'2'/'3') to [AppendChar] in Input focus. As a defence-in-depth
+   belt, [apply] ALSO ignores those nav events when [focus = Input], so typing
+   can never navigate even if the loop mistranslated. [AppendChar]/[Backspace]
+   only edit the buffer in Input focus (no-op in List focus). *)
 let apply ~(list_len : int) (t : t) (ev : event) : t =
   let max_sel = max 0 (list_len - 1) in
   match ev with
+  | AppendChar s ->
+      if t.focus = Input then { t with input = t.input ^ s } else t
+  | Backspace ->
+      if t.focus = Input then { t with input = drop_last_codepoint t.input }
+      else t
+  | NextTab when t.focus = Input -> t
+  | PrevTab when t.focus = Input -> t
+  | JumpTab _ when t.focus = Input -> t
+  | SelUp when t.focus = Input -> t
+  | SelDown when t.focus = Input -> t
   | NextTab -> { t with tab = next_tab t.tab; focus = List }
   | PrevTab -> { t with tab = prev_tab t.tab; focus = List }
   | JumpTab tab -> { t with tab; focus = List }

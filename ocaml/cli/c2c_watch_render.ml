@@ -692,6 +692,73 @@ let footer_for (tab : C2c_watch_state.tab) : string =
          total for the variant. *)
       "Rooms"
 
+(* ===== B5: compose line + status (the send path's bottom region) ======== *)
+
+(* The compose-line caret glyph (one display column). A solid block ▏ would be
+   ambiguous with content; use ▏ (U+258F left one-eighth block) as a thin
+   caret. PLAIN text — colour deferred like everywhere else here. *)
+let caret = "\xe2\x96\x8f" (* ▏ U+258F *)
+
+(* The prompt prefix for a compose target (spec §4.4):
+     DM  -> "to <alias> \xe2\x80\xba"   (to alice ›)
+     room-> "#<room> \xe2\x80\xba"      (#swarm-lounge ›)
+   The "\xe2\x80\xba" is › (U+203A single right angle quote), one display col. *)
+let compose_prompt (target : C2c_watch_state.compose_target) : string =
+  match target with
+  | C2c_watch_state.Compose_dm alias ->
+      Printf.sprintf "to %s \xe2\x80\xba" alias
+  | C2c_watch_state.Compose_room room ->
+      Printf.sprintf "#%s \xe2\x80\xba" room
+
+(* Render the compose line CONTENT (no walls), exactly [inner_cols] display
+   columns: "<prompt><input-tail><caret>" then space-padded. The prompt + caret
+   are fixed-width; the INPUT is the flexible field. When the prompt + input +
+   caret would exceed [inner_cols] we keep the caret visible by truncating the
+   input from the LEFT (showing its TAIL — the chars nearest the caret, which is
+   where the operator is typing) with a leading "\xe2\x80\xa6" (…) ellipsis.
+   PURE — a function only of [target] and [input]. *)
+let compose_line ~(inner_cols : int) ~(target : C2c_watch_state.compose_target)
+    ~(input : string) : string =
+  let prompt = " " ^ compose_prompt target ^ " " in
+  let pw = disp_width prompt and cw = disp_width caret in
+  (* Columns available for the (possibly left-truncated) input. *)
+  let budget = inner_cols - pw - cw in
+  if budget <= 0 then
+    (* No room for input: show prompt+caret, truncated to fit. *)
+    pad_to (truncate_to (prompt ^ caret) inner_cols) inner_cols
+  else begin
+    let iw = disp_width input in
+    let input_shown =
+      if iw <= budget then input
+      else
+        (* Keep the TAIL nearest the caret; drop a column for the leading … *)
+        let keep = budget - 1 in
+        let drop = iw - keep in
+        (* skip [drop] code points from the front of [input] *)
+        let n = String.length input and i = ref 0 and skipped = ref 0 in
+        while !i < n && !skipped < drop do
+          let c = Char.code input.[!i] in
+          let step =
+            if c < 0x80 then 1
+            else if c < 0xE0 then 2
+            else if c < 0xF0 then 3
+            else 4
+          in
+          i := !i + step;
+          incr skipped
+        done;
+        "\xe2\x80\xa6" ^ String.sub input !i (n - !i)
+    in
+    pad_to (prompt ^ input_shown ^ caret) inner_cols
+  end
+
+(* The status line CONTENT (no walls), exactly [inner_cols] columns: the last
+   ✓/✗ send result (or "" before any send). One leading space for breathing
+   room (matches the heading/footer convention). PURE. *)
+let status_line ~(inner_cols : int) ~(status : string) : string =
+  if status = "" then pad_to "" inner_cols
+  else pad_to (" " ^ status) inner_cols
+
 (* The PEERS/DMs/ROOMS heading line, with the right-aligned refreshed label. *)
 let heading_line ~(inner_cols : int) ~(tab : C2c_watch_state.tab)
     ~(snapshot : C2c_watch_data.snapshot) ~(refreshed_label : string) : string =
@@ -734,11 +801,31 @@ let render ~(cols : int) ~(rows : int) ~(snapshot : C2c_watch_data.snapshot)
   let inner_cols = cols - 2 in
   let top = title_border ~cols ~broker_root:snapshot.broker_root in
   let bottom = bl ^ repeat_glyph h inner_cols ^ br in
-  (* The interior holds rows-2 lines (top+bottom borders consume 2). The
-     footer occupies the last interior row; everything above it is the body
-     budget. *)
+  (* The interior holds rows-2 lines (top+bottom borders consume 2). The bottom
+     region occupies the LAST interior row(s); everything above it is the body
+     budget.
+
+     Bottom region (B5 focus-aware):
+       - List focus  : a single footer/legend row (UNCHANGED from B0-B4 — this
+         keeps every read-view golden byte-identical).
+       - Input focus : the compose line (last interior row) + a status row above
+         it. The footer is replaced by these two rows; the body budget shrinks
+         by one ONLY in this case. *)
   let interior_count = rows - 2 in
-  let body_budget = max 0 (interior_count - 1) in
+  let footer =
+    match state.tab with
+    | C2c_watch_state.DMs -> dms_footer
+    | C2c_watch_state.Rooms -> rooms_footer
+    | C2c_watch_state.Peers -> footer_for state.tab
+  in
+  let bottom_region =
+    match (state.focus, state.compose) with
+    | C2c_watch_state.Input, Some target ->
+        [ status_line ~inner_cols ~status:state.status
+        ; compose_line ~inner_cols ~target ~input:state.input ]
+    | _ -> [ footer ]
+  in
+  let body_budget = max 0 (interior_count - List.length bottom_region) in
   (* [take n] keeps the first [n] elements (tiny-term truncation). *)
   let take n l =
     let rec go n = function
@@ -748,28 +835,20 @@ let render ~(cols : int) ~(rows : int) ~(snapshot : C2c_watch_data.snapshot)
     in
     go n l
   in
-  let interior_text =
+  (* Body content for the active tab, sized to fill [body_budget] rows (it is
+     blank-padded to exactly that many below). Tabs no longer append their own
+     footer — the shared [bottom_region] owns the footer/compose/status rows. *)
+  let body_lines =
     match state.tab with
     | C2c_watch_state.DMs ->
-        (* The DMs tab composes its OWN interior: its custom heading + a blank
-           + the two-pane body sized to fill the remaining budget + its custom
-           footer. Heading + blank consume 2 of [body_budget]; the two-pane
-           body takes the rest. *)
-        let heading =
-          dms_heading ~inner_cols ~snapshot ~sel:state.dms_sel
-        in
+        let heading = dms_heading ~inner_cols ~snapshot ~sel:state.dms_sel in
         let body_rows = max 0 (body_budget - 2) in
         let body =
           dms_body ~inner_cols ~body_budget:body_rows ~snapshot
             ~sel:state.dms_sel
         in
-        let head_lines = take body_budget (heading :: "" :: body) in
-        let fill_n = max 0 (body_budget - List.length head_lines) in
-        head_lines @ List.init fill_n (fun _ -> "") @ [ dms_footer ]
+        heading :: "" :: body
     | C2c_watch_state.Rooms ->
-        (* The Rooms tab composes its OWN interior exactly like DMs: a custom
-           heading (selected room + member tristate) + a blank + the two-pane
-           body (room list | history) + its custom footer (B4). *)
         let heading =
           rooms_heading ~inner_cols ~snapshot ~sel:state.rooms_sel
         in
@@ -778,9 +857,7 @@ let render ~(cols : int) ~(rows : int) ~(snapshot : C2c_watch_data.snapshot)
           rooms_body ~inner_cols ~body_budget:body_rows ~snapshot
             ~sel:state.rooms_sel
         in
-        let head_lines = take body_budget (heading :: "" :: body) in
-        let fill_n = max 0 (body_budget - List.length head_lines) in
-        head_lines @ List.init fill_n (fun _ -> "") @ [ rooms_footer ]
+        heading :: "" :: body
     | C2c_watch_state.Peers ->
         let heading =
           heading_line ~inner_cols ~tab:state.tab ~snapshot
@@ -789,10 +866,12 @@ let render ~(cols : int) ~(rows : int) ~(snapshot : C2c_watch_data.snapshot)
         let body =
           peers_body ~inner_cols ~peers:snapshot.peers ~sel:state.peers_sel
         in
-        let footer = footer_for state.tab in
-        let head_lines = take body_budget (heading :: "" :: body) in
-        let fill_n = max 0 (body_budget - List.length head_lines) in
-        head_lines @ List.init fill_n (fun _ -> "") @ [ footer ]
+        heading :: "" :: body
+  in
+  let interior_text =
+    let head_lines = take body_budget body_lines in
+    let fill_n = max 0 (body_budget - List.length head_lines) in
+    head_lines @ List.init fill_n (fun _ -> "") @ bottom_region
   in
   let interior_lines =
     List.map (fun s -> text_row ~inner_cols s) interior_text
