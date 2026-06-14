@@ -149,6 +149,131 @@ let populated_snapshot : C2c_watch_data.snapshot =
 let quiet_snapshot : C2c_watch_data.snapshot =
   { peers = []; shards = []; rooms = []; broker_root }
 
+(* ===== B3: synthetic DMs fixtures ======================================= *)
+
+(* Synthetic archive_entry — short fixed strings only (spec §9 fixture
+   hygiene: NO live content). ae_drained_at rendered through
+   C2c_history.format_timestamp under forced TZ=UTC for byte stability. *)
+let mk_entry ~from_ ~to_ ~content ~ts : C2c_watch_data.Broker.archive_entry =
+  { ae_drained_at = ts
+  ; ae_from_alias = from_
+  ; ae_to_alias = to_
+  ; ae_content = content
+  ; ae_deferrable = false
+  ; ae_drained_by = "test"
+  ; ae_message_id = None
+  }
+
+(* Synthetic in-flight message (undrained inbox row). *)
+let mk_msg ~from_ ~to_ ~content ~ts : C2c_mcp.message =
+  { from_alias = from_
+  ; to_alias = to_
+  ; content
+  ; deferrable = false
+  ; reply_via = None
+  ; enc_status = None
+  ; ts
+  ; ephemeral = false
+  ; message_id = None
+  }
+
+let ts1 = fixed_ts (* 2024-06-13 14:02:00 UTC *)
+let ts2 = fixed_ts +. 31.0 (* 14:02:31 *)
+let ts3 = fixed_ts +. 95.0 (* 14:03:35 *)
+
+(* IMPORTANT: ds_entries MUST be in the order the real data layer delivers them
+   — NEWEST-FIRST. Broker.read_archive reverses the append-only file on read
+   ("reverse to get newest-first", c2c_broker.ml ~:2465) and B1's build_shards
+   passes that order through unchanged. The render reverses again for display
+   (oldest at top, newest at bottom). Building the fixture newest-first is what
+   makes this golden a faithful regression surface — see test_dms_overflow. *)
+
+(* (i) Normal shard: owner "axl-impl", entries from 2+ senders. NEWEST-FIRST. *)
+let shard_normal : C2c_watch_data.dm_shard =
+  { ds_session_id = "cfef26df-1111-2222-3333-444455556666"
+  ; ds_owner_alias = Some "axl-impl"
+  ; ds_entries =
+      [ mk_entry ~from_:"qix-peer" ~to_:"axl-impl"
+          ~content:"nice — sending you the patch" ~ts:ts3   (* newest *)
+      ; mk_entry ~from_:"axl-impl" ~to_:"zeb-coord"
+          ~content:"on it, build clean rc=0" ~ts:ts2
+      ; mk_entry ~from_:"zeb-coord" ~to_:"axl-impl"
+          ~content:"ack picking up the slice" ~ts:ts1 ]    (* oldest *)
+  ; ds_inflight = []
+  ; ds_is_orphan = false
+  }
+
+(* (ii) Shard with an in-flight (undrained) row. *)
+let shard_inflight : C2c_watch_data.dm_shard =
+  { ds_session_id = "ab12cd34-aaaa-bbbb-cccc-ddddeeeeffff"
+  ; ds_owner_alias = Some "wisp-coord"
+  ; ds_entries =
+      [ mk_entry ~from_:"axl-impl" ~to_:"wisp-coord"
+          ~content:"heads up: zed pin bumped" ~ts:ts1 ]
+  ; ds_inflight =
+      [ mk_msg ~from_:"axl-impl" ~to_:"wisp-coord"
+          ~content:"one more before peer-PASS" ~ts:ts2 ]
+  ; ds_is_orphan = false
+  }
+
+(* (iii) ORPHAN shard: ds_owner_alias=None, label derived from entries'
+   to_alias (the most-recent entry's to_alias = the shard owner). *)
+let shard_orphan : C2c_watch_data.dm_shard =
+  { ds_session_id = "deadbeef-9999-8888-7777-666655554444"
+  ; ds_owner_alias = None
+  ; ds_entries =
+      [ mk_entry ~from_:"zeb-coord" ~to_:"vox-gone"
+          ~content:"are you still around?" ~ts:ts1 ]
+  ; ds_inflight = []
+  ; ds_is_orphan = true
+  }
+
+let dms_snapshot : C2c_watch_data.snapshot =
+  { peers = []
+  ; shards = [ shard_normal; shard_inflight; shard_orphan ]
+  ; rooms = []
+  ; broker_root
+  }
+
+(* State on the DMs tab with the first (normal) shard selected. *)
+let state_dms : C2c_watch_state.t =
+  { C2c_watch_state.initial with
+    C2c_watch_state.tab = C2c_watch_state.DMs
+  ; dms_sel = 0
+  ; refreshed_label = "refreshed 0.6s ago" }
+
+(* (iv) Overflow shard: 12 entries, NEWEST-FIRST (msg-12 newest .. msg-01
+   oldest), for the overflow regression test (newest must stay visible). *)
+let shard_many : C2c_watch_data.dm_shard =
+  { ds_session_id = "facefeed-0000-1111-2222-333344445555"
+  ; ds_owner_alias = Some "axl-impl"
+  ; ds_entries =
+      List.init 12 (fun k ->
+          let n = 12 - k in (* k=0 -> msg-12 (newest); k=11 -> msg-01 (oldest) *)
+          mk_entry ~from_:"peer" ~to_:"axl-impl"
+            ~content:(Printf.sprintf "msg-%02d" n)
+            ~ts:(fixed_ts +. float_of_int n))
+  ; ds_inflight = []
+  ; ds_is_orphan = false
+  }
+
+let many_snapshot : C2c_watch_data.snapshot =
+  { peers = []; shards = [ shard_many ]; rooms = []; broker_root }
+
+(* Substring search (no stdlib helper for this in the std we target). *)
+let contains_sub (hay : string) (needle : string) : bool =
+  let hl = String.length hay and nl = String.length needle in
+  let rec go i = i + nl <= hl && (String.sub hay i nl = needle || go (i + 1)) in
+  nl = 0 || go 0
+
+(* Assert every line of a rendered frame is exactly 80 display columns. *)
+let check_all_lines_80 (s : string) : unit =
+  List.iteri
+    (fun i line ->
+      Alcotest.(check int) (Printf.sprintf "line %d display-width = 80" i) 80
+        (utf8_len line))
+    (String.split_on_char '\n' s)
+
 let read_file_opt path =
   match open_in_bin path with
   | ic ->
@@ -198,6 +323,48 @@ let test_peers_quiet () =
   golden_test ~rel:"test_fixtures/watch_peers_quiet_80x24.txt"
     ~snapshot:quiet_snapshot ~state:state_peers ()
 
+(* B3: DMs tab golden — populated (normal + in-flight + orphan shards, first
+   shard selected so its detail is shown). *)
+let test_dms_populated () =
+  golden_test ~rel:"test_fixtures/watch_dms_populated_80x24.txt"
+    ~snapshot:dms_snapshot ~state:state_dms ()
+
+(* B3: DMs tab golden — empty broker (0 shards). Valid quiet state, not an
+   error. *)
+let test_dms_empty () =
+  golden_test ~rel:"test_fixtures/watch_dms_empty_80x24.txt"
+    ~snapshot:quiet_snapshot ~state:state_dms ()
+
+(* B3 OVERFLOW REGRESSION (the order/clip blocker): when the detail overflows
+   the pane, the NEWEST messages MUST stay visible at the bottom and the OLDEST
+   scroll off behind a "(N older hidden)" marker. ds_entries is newest-first;
+   render reverses for display + the clip keeps the tail (newest). If the order
+   were wrong (the bug), msg-01 (oldest) would show and msg-12 (newest) hide. *)
+let test_dms_overflow () =
+  let s =
+    C2c_watch_render.render ~cols:80 ~rows:12 ~snapshot:many_snapshot
+      ~state:state_dms
+  in
+  Alcotest.(check bool) "newest message (msg-12) visible" true
+    (contains_sub s "msg-12");
+  Alcotest.(check bool) "oldest message (msg-01) scrolled off" false
+    (contains_sub s "msg-01");
+  Alcotest.(check bool) "older-hidden marker present" true
+    (contains_sub s "older hidden");
+  check_all_lines_80 s
+
+(* B3: render is TOTAL for an out-of-range dms_sel (data shrink can leave
+   state.dms_sel past the shard list until the loop's clamp_counts fires) —
+   must not raise and must hold the exact-width contract. *)
+let test_dms_out_of_range_sel () =
+  let st = { state_dms with C2c_watch_state.dms_sel = 99 } in
+  let s =
+    C2c_watch_render.render ~cols:80 ~rows:24 ~snapshot:dms_snapshot ~state:st
+  in
+  Alcotest.(check int) "row count = 24" 24
+    (List.length (String.split_on_char '\n' s));
+  check_all_lines_80 s
+
 (* The render exact-width contract must hold at ANY size >= the clamp floor
    (cols>=8, rows>=5), including narrow terminals where the title border cannot
    hold the fixed lead+tabs. Regression for the Codex finding that title_border
@@ -206,19 +373,23 @@ let test_peers_quiet () =
    span of sizes AND all three tabs. *)
 let test_render_dimensions_various () =
   let sizes = [ (80, 24); (120, 30); (40, 12); (20, 8); (8, 5) ] in
-  let states =
-    [ state_peers
-    ; { state_peers with C2c_watch_state.tab = C2c_watch_state.DMs }
-    ; { state_peers with C2c_watch_state.tab = C2c_watch_state.Rooms } ]
+  (* Each case pairs a state with the snapshot to render it against. The DMs
+     case uses a POPULATED-DMs snapshot (not just the empty shards=[] case) so
+     the two-pane split + detail wrap are exercised at narrow sizes — the B2
+     lesson: narrow-terminal sizes must be tested. *)
+  let cases =
+    [ (state_peers, populated_snapshot)
+    ; ({ state_peers with C2c_watch_state.tab = C2c_watch_state.DMs },
+       populated_snapshot) (* DMs tab over the empty-shards peers snapshot *)
+    ; (state_dms, dms_snapshot) (* DMs tab over the populated-DMs snapshot *)
+    ; ({ state_peers with C2c_watch_state.tab = C2c_watch_state.Rooms },
+       populated_snapshot) ]
   in
   List.iter
     (fun (cols, rows) ->
       List.iter
-        (fun state ->
-          let s =
-            C2c_watch_render.render ~cols ~rows ~snapshot:populated_snapshot
-              ~state
-          in
+        (fun (state, snapshot) ->
+          let s = C2c_watch_render.render ~cols ~rows ~snapshot ~state in
           let lines = String.split_on_char '\n' s in
           Alcotest.(check int)
             (Printf.sprintf "%dx%d row count" cols rows)
@@ -229,7 +400,7 @@ let test_render_dimensions_various () =
                 (Printf.sprintf "%dx%d line %d display-width" cols rows i)
                 cols (utf8_len line))
             lines)
-        states)
+        cases)
     sizes
 
 let () =
@@ -246,5 +417,13 @@ let () =
             test_peers_populated;
           Alcotest.test_case "peers_quiet_80x24_golden" `Quick
             test_peers_quiet;
+          Alcotest.test_case "dms_populated_80x24_golden" `Quick
+            test_dms_populated;
+          Alcotest.test_case "dms_empty_80x24_golden" `Quick
+            test_dms_empty;
+          Alcotest.test_case "dms_overflow_keeps_newest" `Quick
+            test_dms_overflow;
+          Alcotest.test_case "dms_out_of_range_sel_total" `Quick
+            test_dms_out_of_range_sel;
           Alcotest.test_case "render_dimensions_various" `Quick
             test_render_dimensions_various ] ) ]

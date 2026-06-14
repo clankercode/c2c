@@ -1,0 +1,24 @@
+┌ c2c watch ──── broker: /tmp/c2c-fixture/broker ───── [P]eers  [D]Ms  [R]ooms ┐
+│ DMs — no DM shards                                                           │
+│                                                                              │
+│  no DM shards          │                                                     │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│ #room rows hidden here (see Rooms)   ↑/↓ shard · Enter→reply · / search      │
+└──────────────────────────────────────────────────────────────────────────────┘

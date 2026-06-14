@@ -50,7 +50,9 @@
  (libraries c2c_mcp alcotest unix)
  (deps test_fixtures/watch_empty_80x24.txt
        test_fixtures/watch_peers_populated_80x24.txt
-       test_fixtures/watch_peers_quiet_80x24.txt))
+       test_fixtures/watch_peers_quiet_80x24.txt
+       test_fixtures/watch_dms_populated_80x24.txt
+       test_fixtures/watch_dms_empty_80x24.txt))
 
 ; c2c watch B2: pure state-machine transitions (tab cycling, selection clamp).
 (test

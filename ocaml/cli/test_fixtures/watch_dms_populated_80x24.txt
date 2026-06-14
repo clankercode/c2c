@@ -1,0 +1,24 @@
+┌ c2c watch ──── broker: /tmp/c2c-fixture/broker ───── [P]eers  [D]Ms  [R]ooms ┐
+│ DMs — shard: axl-impl (cfef26df…)  3 entries           [3 shards · 1 orphan] │
+│                                                                              │
+│shards (3)              │detail                                               │
+│▸ axl-impl   cfef26df… 3│[2024-06-13 14:02:00] zeb-coord -> axl-impl          │
+│  wisp-coord ab12cd34… 2│ack picking up the slice                             │
+│  vox-gone  deadbeef… ⚠1│                                                     │
+│     (orphan: sid gone) │[2024-06-13 14:02:31] axl-impl -> zeb-coord          │
+│                        │on it, build clean rc=0                              │
+│                        │                                                     │
+│                        │[2024-06-13 14:03:35] qix-peer -> axl-impl           │
+│                        │nice — sending you the patch                         │
+│                        │                                                     │
+│                        │                                                     │
+│                        │                                                     │
+│                        │                                                     │
+│                        │                                                     │
+│                        │                                                     │
+│                        │                                                     │
+│                        │                                                     │
+│                        │                                                     │
+│                        │                                                     │
+│ #room rows hidden here (see Rooms)   ↑/↓ shard · Enter→reply · / search      │
+└──────────────────────────────────────────────────────────────────────────────┘
