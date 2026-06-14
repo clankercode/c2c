@@ -1,4 +1,4 @@
-(* c2c_watch.ml — `c2c watch` subcommand (slices B0, B2).
+(* c2c_watch.ml — `c2c watch` subcommand (slices B0-B5, complete).
 
    This is the ONLY module in the watch feature that touches lambda-term.
    Everything visual is delegated to the pure [C2c_watch_render] layer so a
@@ -8,19 +8,25 @@
    pure [C2c_watch_state] / [C2c_watch_render] / [C2c_watch_data] layers never
    do (spec §1, §5).
 
-   B0 shipped the empty-frame skeleton + the #1 correctness hazard: terminal
-   teardown on EVERY exit path (normal quit, q, Ctrl-c key, uncaught
-   exception, external SIGINT/SIGTERM). B2 layers the live Peers tab on top
-   WITHOUT touching that teardown/signal ordering:
-   - resolve the broker root, [Broker.create], build a [C2c_watch_data.snapshot];
-   - hold a [C2c_watch_state.t] (navigable UI state);
-   - render the active tab via [C2c_watch_render.render] and print it;
-   - run a poll loop: [Lwt.pick [ LTerm.read_event ; refresh_timer ]] — NO
-     separate thread (spec §5). On a refresh tick, stat the watched paths and
-     rebuild the snapshot ONLY when the mtime fingerprint changed; on a key,
-     translate [LTerm_key.t] -> [C2c_watch_state.event] and apply.
-   B2 implements ONLY the Peers tab + tab navigation; DMs/Rooms render
-   placeholder panes (B3/B4). No send / compose line (B5).
+   The #1 correctness hazard — terminal teardown on EVERY exit path (normal
+   quit, q, Ctrl-c key, uncaught exception, external SIGINT/SIGTERM) — was
+   landed first (B0) and is preserved unchanged through everything below. On
+   top of it this module:
+   - resolves the broker root, [Broker.create], builds a [C2c_watch_data.snapshot];
+   - holds a [C2c_watch_state.t] (navigable UI state: active tab, per-tab
+     selection, compose buffer);
+   - renders the active tab via [C2c_watch_render.render] and prints it;
+   - runs a poll loop: [Lwt.pick [ LTerm.read_event ; refresh_timer ]] — NO
+     separate thread (spec §5). On a refresh tick it rebuilds the live peer
+     roster every tick (liveness is process state) and re-reads the heavier
+     archive/room data only when the watched-file mtime fingerprint changed;
+     on a key it translates [LTerm_key.t] -> [C2c_watch_state.event] (FOCUS-
+     aware: nav in list focus, text entry in compose focus) and applies it.
+   All three tabs are live — Peers (roster), DMs (per-session shards + detail),
+   Rooms (room list + canonical history). [Enter] on a selection opens a
+   compose line; submitting sends a DM / room post in-process via the broker
+   ([C2c_watch_data] send wrappers, which never raise — a send error surfaces
+   on the status line, never crashing the watcher).
 
    Teardown design:
    - [Lwt.finalize] wraps the event loop so the normal-quit and
@@ -37,14 +43,21 @@ let doc = "Live TUI over the c2c broker (read + send)."
 let man =
   [ `S "DESCRIPTION"
   ; `P "$(b,c2c watch) opens a full-screen, in-process terminal UI over the \
-        c2c broker. The $(b,Peers) tab shows the live roster with an \
-        Alive/Dead/Unknown liveness tristate; $(b,Tab)/$(b,Shift-Tab) or \
-        $(b,1)/$(b,2)/$(b,3) switch between Peers / DMs / Rooms (DMs and \
-        Rooms detail land in later slices); $(b,Up)/$(b,Down) (or $(b,k)/\
+        c2c broker with three tabs: $(b,Peers) (the live roster with an \
+        Alive/Dead/Unknown liveness tristate), $(b,DMs) (per-session message \
+        shards and their detail), and $(b,Rooms) (the room list with each \
+        room's canonical history). $(b,Tab)/$(b,Shift-Tab) or \
+        $(b,1)/$(b,2)/$(b,3) switch tabs; $(b,Up)/$(b,Down) (or $(b,k)/\
         $(b,j)) move the selection; $(b,r) forces a refresh; $(b,q) or \
         Ctrl-c quit. The view auto-refreshes on a poll interval \
         (see $(b,--interval)), re-reading broker state only when a watched \
         file changed."
+  ; `P "$(b,Enter) on a selected peer / shard / room opens a compose line; \
+        type a message and press $(b,Enter) to send it in-process via the \
+        broker (a DM, or a room post), or $(b,Esc) to cancel. The sender \
+        identity is the $(b,--as) alias (default $(b,operator)). Send errors \
+        (unknown or offline recipient, an empty body, a room with no members) \
+        surface on the status line and never crash the watcher."
   ; `P "This is an interactive operator tool (Tier 3): it is hidden from \
         managed agent sessions and requires a real terminal."
   ]

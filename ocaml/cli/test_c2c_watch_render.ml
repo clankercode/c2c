@@ -701,6 +701,57 @@ let test_status_of_send () =
   Alcotest.(check bool) "Send_failed => cross" true (contains_sub failed fail);
   Alcotest.(check bool) "failure msg surfaced" true (contains_sub failed "not registered")
 
+(* EXACT-WIDTH for ARBITRARY WIDE UNICODE (the whole-feature contract). CJK is
+   2 display columns and emoji 2, so a naive codepoint count would think they
+   fit when they don't and the frame would break. We render real wide content /
+   wide aliases / wide compose input and assert every line is EXACTLY cols
+   columns using C2c_watch_render.disp_width (the SAME wcwidth the renderer
+   uses — Uucp.Break.tty_width_hint). *)
+let test_wide_unicode_exact_width () =
+  let wide_shard : C2c_watch_data.dm_shard =
+    { ds_session_id = "wide-sid-000011112222"
+    ; ds_owner_alias = Some "\xe4\xbd\xa0-peer-\xe5\x90\x8d" (* 你-peer-名 *)
+    ; ds_entries =
+        [ mk_entry ~from_:"\xe6\x93\x8d\xe4\xbd\x9c\xe5\x91\x98" (* 操作员 *)
+            ~to_:"\xe4\xbd\xa0-peer-\xe5\x90\x8d"
+            ~content:"hi \xe4\xbd\xa0\xe5\xa5\xbd\xe4\xb8\x96\xe7\x95\x8c \xf0\x9f\x8c\x8d\xf0\x9f\x9a\x80 end"
+            (* hi 你好世界 🌍🚀 end *)
+            ~ts:ts1 ]
+    ; ds_inflight = []
+    ; ds_is_orphan = false }
+  in
+  let snap : C2c_watch_data.snapshot =
+    { peers = []; shards = [ wide_shard ]; rooms = []; broker_root }
+  in
+  let st = { state_dms with C2c_watch_state.dms_sel = 0 } in
+  let dw line = C2c_watch_render.disp_width line in
+  List.iter
+    (fun (cols, rows) ->
+      let s = C2c_watch_render.render ~cols ~rows ~snapshot:snap ~state:st in
+      let lines = String.split_on_char '\n' s in
+      Alcotest.(check int) (Printf.sprintf "%dx%d rows" cols rows) rows
+        (List.length lines);
+      List.iteri
+        (fun i line ->
+          Alcotest.(check int)
+            (Printf.sprintf "%dx%d DMs line %d TRUE display-width" cols rows i)
+            cols (dw line))
+        lines)
+    [ (80, 24); (40, 12); (20, 8) ];
+  (* Wide compose input must also keep the frame exact. *)
+  let cst = C2c_watch_state.begin_compose state_dms (C2c_watch_state.Compose_dm "\xe4\xbd\xa0-peer") in
+  let cst =
+    { cst with
+      C2c_watch_state.input =
+        "\xe5\x9b\x9e\xe5\xa4\x8d \xf0\x9f\x9a\x80 body \xe6\xb5\x8b\xe8\xaf\x95" }
+    (* 回复 🚀 body 测试 *)
+  in
+  let s = C2c_watch_render.render ~cols:80 ~rows:24 ~snapshot:snap ~state:cst in
+  List.iter
+    (fun line ->
+      Alcotest.(check int) "compose wide-input line TRUE width=80" 80 (dw line))
+    (String.split_on_char '\n' s)
+
 let () =
   (* Force UTC so C2c_history.format_timestamp is deterministic across boxes.
      glibc reads TZ on the first localtime call, so set it before any render. *)
@@ -742,4 +793,6 @@ let () =
           Alcotest.test_case "compose_long_input_narrow" `Quick
             test_compose_long_input_narrow;
           Alcotest.test_case "status_of_send_glyphs" `Quick
-            test_status_of_send ] ) ]
+            test_status_of_send;
+          Alcotest.test_case "wide_unicode_exact_width" `Quick
+            test_wide_unicode_exact_width ] ) ]

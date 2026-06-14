@@ -19,11 +19,12 @@
    verbatim from [State.refreshed_label], which the impure loop in
    [c2c_watch.ml] sets from the clock. Render never touches [Unix.time].
 
-   Column math uses a UTF-8 codepoint-count display-width helper [disp_width]
-   (NOT [Banner.visible_width], which is byte-based and over-counts the 3-byte
-   box-drawing / liveness glyphs). All padding/truncation goes through
-   [pad_to] / [truncate_to] so every emitted line is exactly [cols] DISPLAY
-   columns wide. *)
+   Column math uses a TRUE terminal-width helper [disp_width] (wcwidth via
+   [Uucp.Break.tty_width_hint] — wide CJK/emoji = 2 cols, combining = 0; NOT
+   [Banner.visible_width], which is byte-based and over-counts multibyte
+   glyphs). All padding/truncation goes through [pad_to] / [truncate_to] so
+   every emitted line is exactly [cols] DISPLAY columns wide, even for
+   arbitrary Unicode message content. *)
 
 (* Box-drawing glyphs (each renders as exactly one terminal column). *)
 let tl = "\xe2\x94\x8c" (* ┌ U+250C *)
@@ -71,43 +72,46 @@ let render_empty_frame ~(cols : int) ~(rows : int) : string =
 
 (* ===== B2: display-width helpers + the live [render] ==================== *)
 
-(* Count UTF-8 code points in [s]. Every glyph this module renders (ASCII +
-   box-drawing ─│┌┐└┘ + liveness ●○ + selection ▸) is exactly one code point
-   AND one display column, so code-point count == display width here. This is
-   the SAME counter the B0 test uses for its dimension invariant; defining it
-   here lets the renderer pad/truncate to display columns. *)
-let disp_width (s : string) : int =
-  let n = String.length s and i = ref 0 and count = ref 0 in
-  while !i < n do
-    let c = Char.code s.[!i] in
-    let step =
-      if c < 0x80 then 1
-      else if c < 0xE0 then 2
-      else if c < 0xF0 then 3
-      else 4
-    in
-    i := !i + step;
-    incr count
-  done;
-  !count
+(* TRUE terminal display width. [Uucp.Break.tty_width_hint] is a wcwidth-
+   equivalent (already in the closure via zed/lambda-term, no new dep): wide
+   CJK / emoji code points are 2 columns, combining / zero-width / control are
+   0, everything else 1. Using it here makes the exact-[cols] frame contract
+   hold for ARBITRARY broker message content, aliases, room ids, and compose
+   input — not just ASCII. Every glyph THIS module emits (box-drawing ─│┌┐└┘,
+   liveness ●○, selection ▸, ellipsis …, ✓✗⚠, ‹›, caret ▏, em dash —) is width
+   1 under tty_width_hint, so the checked-in goldens are unaffected. *)
+let uchar_width (u : Uchar.t) : int =
+  match Uucp.Break.tty_width_hint u with w when w < 0 -> 0 | w -> w
 
-(* Take the first [w] display columns of [s] (whole code points only). *)
+(* Sum of display widths of the code points in [s] (a malformed byte decodes to
+   U+FFFD, width 1). *)
+let disp_width (s : string) : int =
+  let n = String.length s and i = ref 0 and w = ref 0 in
+  while !i < n do
+    let d = String.get_utf_8_uchar s !i in
+    w := !w + uchar_width (Uchar.utf_decode_uchar d);
+    i := !i + Uchar.utf_decode_length d
+  done;
+  !w
+
+(* The longest BYTE prefix of [s] whose display width is <= [w] (whole code
+   points; a wide code point that would overflow [w] is excluded, leaving the
+   caller to pad the 1-column gap — so the result is never WIDER than [w]). *)
 let take_disp (s : string) (w : int) : string =
   if w <= 0 then ""
   else begin
-    let n = String.length s and i = ref 0 and count = ref 0 in
-    while !i < n && !count < w do
-      let c = Char.code s.[!i] in
-      let step =
-        if c < 0x80 then 1
-        else if c < 0xE0 then 2
-        else if c < 0xF0 then 3
-        else 4
-      in
-      i := !i + step;
-      incr count
-    done;
-    String.sub s 0 !i
+    let n = String.length s and i = ref 0 and acc = ref 0 and last = ref 0 in
+    (try
+       while !i < n do
+         let d = String.get_utf_8_uchar s !i in
+         let cw = uchar_width (Uchar.utf_decode_uchar d) in
+         if !acc + cw > w then raise Exit;
+         acc := !acc + cw;
+         i := !i + Uchar.utf_decode_length d;
+         last := !i
+       done
+     with Exit -> ());
+    String.sub s 0 !last
   end
 
 (* Truncate [s] to at most [w] display columns, appending a single-column
@@ -338,6 +342,17 @@ let wrap_content (content : string) (w : int) : string list =
         let acc = ref [] and rest = ref seg in
         while disp_width !rest > 0 do
           let head = take_disp !rest w in
+          (* GUARANTEE PROGRESS: when NO code point fits in [w] — a wide (2-col)
+             glyph in a 1-col pane — [take_disp] returns "" and the loop would
+             spin forever. Force-take exactly one code point; the over-wide
+             chunk is later clamped to the column by [pad_to] (-> ellipsis), so
+             the row stays exactly [w] wide and we still make progress. *)
+          let head =
+            if head <> "" then head
+            else
+              let d = String.get_utf_8_uchar !rest 0 in
+              String.sub !rest 0 (Uchar.utf_decode_length d)
+          in
           acc := head :: !acc;
           rest := String.sub !rest (String.length head)
                     (String.length !rest - String.length head)
