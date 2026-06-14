@@ -79,6 +79,24 @@ let set_active_sel (t : t) (sel : int) : t =
 let next_tab = function Peers -> DMs | DMs -> Rooms | Rooms -> Peers
 let prev_tab = function Peers -> Rooms | DMs -> Peers | Rooms -> DMs
 
+(* Clamp a selection index into [0, len-1] (0 when the list is empty). *)
+let clamp_sel (len : int) (sel : int) : int =
+  if len <= 0 then 0
+  else if sel < 0 then 0
+  else if sel > len - 1 then len - 1
+  else sel
+
+(* Re-clamp EVERY per-tab selection against current list lengths. The loop
+   calls this after a snapshot rebuild: [apply]'s clamp only fires on key
+   events, so a list that SHRINKS on refresh (e.g. a peer went away) would
+   otherwise leave a stored index out of range. Data-driven, not event-driven. *)
+let clamp_counts ~(peers : int) ~(dms : int) ~(rooms : int) (t : t) : t =
+  { t with
+    peers_sel = clamp_sel peers t.peers_sel
+  ; dms_sel = clamp_sel dms t.dms_sel
+  ; rooms_sel = clamp_sel rooms t.rooms_sel
+  }
+
 (* [apply ~list_len t ev] is the pure transition. [list_len] is the length of
    the ACTIVE tab's list at apply time, so selection clamping is correct
    regardless of which tab is focused. A tab switch resets [focus] to [List]
@@ -91,11 +109,15 @@ let apply ~(list_len : int) (t : t) (ev : event) : t =
   | PrevTab -> { t with tab = prev_tab t.tab; focus = List }
   | JumpTab tab -> { t with tab; focus = List }
   | SelUp ->
+      (* Clamp to [max_sel] as well as the 0 floor, so even a stored index
+         left out of range by a data shrink recovers on the next key. *)
       let sel = active_sel t in
-      set_active_sel t (max 0 (sel - 1))
+      set_active_sel t (min max_sel (max 0 (sel - 1)))
   | SelDown ->
+      (* [max 0 sel] guards a (defensively) negative start; [min max_sel]
+         clamps the ceiling and also recovers a too-high stored index. *)
       let sel = active_sel t in
-      set_active_sel t (min max_sel (sel + 1))
+      set_active_sel t (min max_sel (max 0 sel + 1))
   | Refresh -> t
   | Quit -> t
   | NoOp -> t

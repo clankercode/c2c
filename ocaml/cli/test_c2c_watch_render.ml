@@ -198,6 +198,40 @@ let test_peers_quiet () =
   golden_test ~rel:"test_fixtures/watch_peers_quiet_80x24.txt"
     ~snapshot:quiet_snapshot ~state:state_peers ()
 
+(* The render exact-width contract must hold at ANY size >= the clamp floor
+   (cols>=8, rows>=5), including narrow terminals where the title border cannot
+   hold the fixed lead+tabs. Regression for the Codex finding that title_border
+   could emit a line WIDER than cols on a narrow terminal. Assert every line is
+   exactly cols display columns and the frame is exactly rows lines, across a
+   span of sizes AND all three tabs. *)
+let test_render_dimensions_various () =
+  let sizes = [ (80, 24); (120, 30); (40, 12); (20, 8); (8, 5) ] in
+  let states =
+    [ state_peers
+    ; { state_peers with C2c_watch_state.tab = C2c_watch_state.DMs }
+    ; { state_peers with C2c_watch_state.tab = C2c_watch_state.Rooms } ]
+  in
+  List.iter
+    (fun (cols, rows) ->
+      List.iter
+        (fun state ->
+          let s =
+            C2c_watch_render.render ~cols ~rows ~snapshot:populated_snapshot
+              ~state
+          in
+          let lines = String.split_on_char '\n' s in
+          Alcotest.(check int)
+            (Printf.sprintf "%dx%d row count" cols rows)
+            rows (List.length lines);
+          List.iteri
+            (fun i line ->
+              Alcotest.(check int)
+                (Printf.sprintf "%dx%d line %d display-width" cols rows i)
+                cols (utf8_len line))
+            lines)
+        states)
+    sizes
+
 let () =
   (* Force UTC so C2c_history.format_timestamp is deterministic across boxes.
      glibc reads TZ on the first localtime call, so set it before any render. *)
@@ -211,4 +245,6 @@ let () =
           Alcotest.test_case "peers_populated_80x24_golden" `Quick
             test_peers_populated;
           Alcotest.test_case "peers_quiet_80x24_golden" `Quick
-            test_peers_quiet ] ) ]
+            test_peers_quiet;
+          Alcotest.test_case "render_dimensions_various" `Quick
+            test_render_dimensions_various ] ) ]

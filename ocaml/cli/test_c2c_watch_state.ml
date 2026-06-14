@@ -100,6 +100,29 @@ let test_focus_resets_on_tab_switch () =
   let s2 = S.apply ~list_len:0 s_input2 (S.JumpTab S.Rooms) in
   Alcotest.check focus_testable "JumpTab resets focus to List" S.List s2.focus
 
+(* clamp_counts re-clamps every per-tab selection against current list
+   lengths — the data-driven clamp the loop applies after a snapshot rebuild.
+   A list that SHRINKS must pull an out-of-range index back into bounds. *)
+let test_clamp_counts_shrink () =
+  (* Selections valid for a 7-row world. *)
+  let s =
+    { S.initial with S.peers_sel = 6; dms_sel = 4; rooms_sel = 2 }
+  in
+  (* World shrinks: peers 7->3, dms 5->0 (emptied), rooms 3->3 (unchanged). *)
+  let s = S.clamp_counts ~peers:3 ~dms:0 ~rooms:3 s in
+  Alcotest.check Alcotest.int "peers_sel clamped 6->2" 2 s.peers_sel;
+  Alcotest.check Alcotest.int "dms_sel clamped to 0 (empty)" 0 s.dms_sel;
+  Alcotest.check Alcotest.int "rooms_sel unchanged (in range)" 2 s.rooms_sel
+
+(* After a shrink left the index out of range, a SelUp/SelDown key recovers it
+   into bounds (apply also clamps to the ceiling, not just the 0 floor). *)
+let test_apply_recovers_out_of_range () =
+  let s = { S.initial with S.peers_sel = 6 } in (* stale: list now has 3 *)
+  let up = S.apply ~list_len:3 s S.SelUp in
+  Alcotest.check Alcotest.int "SelUp from stale 6 -> 2 (<=max)" 2 up.peers_sel;
+  let down = S.apply ~list_len:3 s S.SelDown in
+  Alcotest.check Alcotest.int "SelDown from stale 6 -> 2 (<=max)" 2 down.peers_sel
+
 (* Quit / Refresh / NoOp are inert to navigable state. *)
 let test_inert_events () =
   let s = S.apply ~list_len:5 S.initial S.SelDown in (* peers_sel = 1 *)
@@ -120,6 +143,10 @@ let () =
           Alcotest.test_case "seldown_ceiling" `Quick test_seldown_ceiling;
           Alcotest.test_case "seldown_empty" `Quick test_seldown_empty;
           Alcotest.test_case "per_tab_selection" `Quick test_per_tab_selection;
+          Alcotest.test_case "clamp_counts_shrink" `Quick
+            test_clamp_counts_shrink;
+          Alcotest.test_case "apply_recovers_out_of_range" `Quick
+            test_apply_recovers_out_of_range;
           Alcotest.test_case "focus_resets_on_tab_switch" `Quick
             test_focus_resets_on_tab_switch;
           Alcotest.test_case "inert_events" `Quick test_inert_events ] ) ]

@@ -244,15 +244,29 @@ let rec event_loop (ctx : loop_ctx) (snapshot : C2c_watch_data.snapshot)
   | `Refresh ->
       let now = Unix.gettimeofday () in
       let new_fp = fingerprint ctx.root in
-      let snapshot', last_refresh', fp' =
-        if new_fp <> fp then
-          (C2c_watch_data.build_snapshot ctx.broker, now, new_fp)
-        else (snapshot, last_refresh, fp)
+      (* Liveness is PROCESS state, not file state: a peer process dying (or a
+         lease expiring) does not bump any watched mtime, so an mtime-gated
+         rebuild would show stale Alive/Dead until an unrelated broker write.
+         Rebuild the peers projection EVERY tick (cheap: registry read + per-pid
+         /proc liveness) so the roster's tristate is always fresh; keep the
+         heavy archive/room reads mtime-gated (they ARE append-only files, so
+         mtime is a sound change signal there). *)
+      let peers = C2c_watch_data.build_peers ctx.broker in
+      let snapshot', fp' =
+        if new_fp <> fp then (C2c_watch_data.build_snapshot ctx.broker, new_fp)
+        else ({ snapshot with C2c_watch_data.peers }, fp)
       in
+      (* The displayed roster is rebuilt every tick, so it is at most one
+         interval old — advance last_refresh each tick. *)
+      let last_refresh' = now in
       let state' =
-        { state with
-          C2c_watch_state.refreshed_label =
-            refreshed_label ~now ~last_refresh:last_refresh' }
+        C2c_watch_state.clamp_counts
+          ~peers:(List.length snapshot'.C2c_watch_data.peers)
+          ~dms:(List.length snapshot'.C2c_watch_data.shards)
+          ~rooms:(List.length snapshot'.C2c_watch_data.rooms)
+          { state with
+            C2c_watch_state.refreshed_label =
+              refreshed_label ~now ~last_refresh:last_refresh' }
       in
       draw_state ctx.term snapshot' state' >>= fun () ->
       event_loop ctx snapshot' state' fp' last_refresh'
@@ -264,9 +278,13 @@ let rec event_loop (ctx : loop_ctx) (snapshot : C2c_watch_data.snapshot)
           let new_fp = fingerprint ctx.root in
           let snapshot' = C2c_watch_data.build_snapshot ctx.broker in
           let state' =
-            { state with
-              C2c_watch_state.refreshed_label =
-                refreshed_label ~now ~last_refresh:now }
+            C2c_watch_state.clamp_counts
+              ~peers:(List.length snapshot'.C2c_watch_data.peers)
+              ~dms:(List.length snapshot'.C2c_watch_data.shards)
+              ~rooms:(List.length snapshot'.C2c_watch_data.rooms)
+              { state with
+                C2c_watch_state.refreshed_label =
+                  refreshed_label ~now ~last_refresh:now }
           in
           draw_state ctx.term snapshot' state' >>= fun () ->
           event_loop ctx snapshot' state' new_fp now

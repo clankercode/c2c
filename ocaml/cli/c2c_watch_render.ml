@@ -192,7 +192,13 @@ let title_border ~(cols : int) ~(broker_root : string) : string =
   (* Fill between [assembled] and [tabs] with ─ so the row is exactly cols. *)
   let used = 1 (* tl *) + disp_width assembled + disp_width tabs + 1 (* tr *) in
   let fill = max 0 (cols - used) in
-  tl ^ assembled ^ repeat_glyph h fill ^ tabs ^ tr
+  let line = tl ^ assembled ^ repeat_glyph h fill ^ tabs ^ tr in
+  (* Exact-width contract guard: on a terminal too narrow to hold the fixed
+     lead + tabs (even with the root dropped), [fill] floors at 0 and [line]
+     would exceed [cols]. Degrade to a plain border that is EXACTLY [cols]
+     display columns — the frame stays rectangular at any size. *)
+  if disp_width line > cols then tl ^ repeat_glyph h (max 0 (cols - 2)) ^ tr
+  else line
 
 (* One interior text row (left-aligned, padded), bordered. *)
 let text_row ~(inner_cols : int) (s : string) : string = wall inner_cols s
