@@ -669,6 +669,38 @@ let test_render_dimensions_various () =
         cases)
     sizes
 
+(* B5: status_of_send maps a send_result to the status line. The three outcomes
+   get THREE distinct glyphs — ✓ clean, ⚠ posted-with-warning (0-member room,
+   spec §4.3: a soft warning, NOT a failure), ✗ failure. A 0-member room post
+   must NOT read as a clean ✓ (misleading) nor as a ✗ failure (the message WAS
+   posted to history.jsonl) — it is ⚠ with the warning text surfaced. *)
+let test_status_of_send () =
+  let open C2c_watch_data in
+  let open C2c_watch_state in
+  let ok = "\xe2\x9c\x93" and warn = "\xe2\x9a\xa0" and fail = "\xe2\x9c\x97" in
+  let dm = C2c_watch_render.status_of_send (Compose_dm "alice") Sent_dm in
+  Alcotest.(check bool) "DM sent => check" true (contains_sub dm ok);
+  let warned =
+    C2c_watch_render.status_of_send (Compose_room "lounge")
+      (Sent_room { delivered = 0; skipped = 2; warning = Some "room has no members" })
+  in
+  Alcotest.(check bool) "0-member room => warn glyph" true (contains_sub warned warn);
+  Alcotest.(check bool) "0-member room NOT clean check" false (contains_sub warned ok);
+  Alcotest.(check bool) "0-member room NOT failure cross" false (contains_sub warned fail);
+  Alcotest.(check bool) "warning text surfaced" true (contains_sub warned "no members");
+  Alcotest.(check bool) "delivered count shown" true (contains_sub warned "delivered 0");
+  let clean =
+    C2c_watch_render.status_of_send (Compose_room "lounge")
+      (Sent_room { delivered = 3; skipped = 0; warning = None })
+  in
+  Alcotest.(check bool) "clean room post => check" true (contains_sub clean ok);
+  Alcotest.(check bool) "clean room post NOT warn" false (contains_sub clean warn);
+  let failed =
+    C2c_watch_render.status_of_send (Compose_dm "x") (Send_failed "not registered")
+  in
+  Alcotest.(check bool) "Send_failed => cross" true (contains_sub failed fail);
+  Alcotest.(check bool) "failure msg surfaced" true (contains_sub failed "not registered")
+
 let () =
   (* Force UTC so C2c_history.format_timestamp is deterministic across boxes.
      glibc reads TZ on the first localtime call, so set it before any render. *)
@@ -708,4 +740,6 @@ let () =
           Alcotest.test_case "compose_80x24_golden" `Quick
             test_compose_golden;
           Alcotest.test_case "compose_long_input_narrow" `Quick
-            test_compose_long_input_narrow ] ) ]
+            test_compose_long_input_narrow;
+          Alcotest.test_case "status_of_send_glyphs" `Quick
+            test_status_of_send ] ) ]

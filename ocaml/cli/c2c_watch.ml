@@ -318,30 +318,6 @@ let compose_target_of (snapshot : C2c_watch_data.snapshot)
                rv.C2c_watch_data.rv_info.C2c_watch_data.Broker.ri_room_id)
       | None -> None)
 
-(* Map a [send_result] to a status-line string (spec §4.4). PURE. *)
-let status_of_send (target : C2c_watch_state.compose_target)
-    (r : C2c_watch_data.send_result) : string =
-  match r with
-  | C2c_watch_data.Sent_dm -> (
-      match target with
-      | C2c_watch_state.Compose_dm a -> Printf.sprintf "\xe2\x9c\x93 sent to %s" a
-      | C2c_watch_state.Compose_room room ->
-          Printf.sprintf "\xe2\x9c\x93 sent to %s" room)
-  | C2c_watch_data.Sent_room { delivered; skipped; warning } ->
-      let room =
-        match target with
-        | C2c_watch_state.Compose_room r -> r
-        | C2c_watch_state.Compose_dm a -> a
-      in
-      let base =
-        Printf.sprintf "\xe2\x9c\x93 posted to #%s (delivered %d, skipped %d)"
-          room delivered skipped
-      in
-      (match warning with
-       | Some w -> base ^ " — " ^ w
-       | None -> base)
-  | C2c_watch_data.Send_failed msg -> "\xe2\x9c\x97 " ^ msg (* ✗ *)
-
 (* Perform the send for [target] with the current input. Returns the
    [send_result]; NEVER raises (the data-layer wrappers catch everything). *)
 let do_send (ctx : loop_ctx) (target : C2c_watch_state.compose_target)
@@ -463,7 +439,7 @@ let rec event_loop (ctx : loop_ctx) (snapshot : C2c_watch_data.snapshot)
                   (C2c_watch_state.set_status state "empty message, not sent")
               else begin
                 let result = do_send ctx target content in
-                let status = status_of_send target result in
+                let status = C2c_watch_render.status_of_send target result in
                 match result with
                 | C2c_watch_data.Send_failed _ ->
                     (* FAILURE: keep focus=Input + RETAIN input so the operator
