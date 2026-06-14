@@ -205,6 +205,15 @@ test-ts:
 test-ts-integration:
     python3 -m pytest tests/test_c2c_opencode_plugin_integration.py -v
 
+# `c2c watch` TUI smoke end-to-end: drives the REAL binary in a tmux pane
+# against the live broker (render all tabs + compose UI + clean teardown).
+# SAFE — never submits a send. The headless send DELIVERY round-trip (message
+# reaches the recipient inbox / room history) is the OCaml suite
+# test_c2c_watch_e2e, run by `just test-ocaml`.
+watch-e2e:
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe
+    scripts/c2c-watch-e2e.sh
+
 # Run all tests (Python + OCaml + TS). Always rebuilds OCaml first to avoid stale binary.
 test: build test-ocaml test-py test-ts
 

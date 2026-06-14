@@ -69,6 +69,13 @@
  (modules test_c2c_watch_data c2c_watch_data)
  (libraries c2c_mcp alcotest unix))
 
+; c2c watch: END-TO-END round-trip of the send path against a real on-disk
+; broker — send_dm lands in the recipient inbox, send_room lands in history.
+(test
+ (name test_c2c_watch_e2e)
+ (modules test_c2c_watch_e2e c2c_watch_data)
+ (libraries c2c_mcp alcotest unix))
+
 (test
  (name test_c2c_kimi_hook)
  (modules test_c2c_kimi_hook c2c_kimi_hook)
