@@ -1,0 +1,24 @@
+┌ c2c watch ──── broker: /tmp/c2c-fixture/broker ───── [P]eers  [D]Ms  [R]ooms ┐
+│ PEERS (6)                                                  refreshed 0.6s ago│
+│                                                                              │
+│  alias             live  role        client  last-activity       flags       │
+│▸ alpha-impl        ●     coder       claude  2024-06-13 14:02:00 -           │
+│  beta-coord        ?     coordinator claude  2024-06-13 14:02:00 -           │
+│  gamma-old         ○     —           —       —                   -           │
+│  delta-dnd         ○     —           claude  2024-06-13 14:02:00 dnd         │
+│  wide-alias-18cha… ?     —           —       —                   -           │
+│  overflowing-long… ●     coder       claude  2024-06-13 14:02:00 -           │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│ ● alive  ○ dead  ? unknown(null)   ↑/↓ select · Enter→DM · r refresh         │
+└──────────────────────────────────────────────────────────────────────────────┘
