@@ -260,6 +260,112 @@ let shard_many : C2c_watch_data.dm_shard =
 let many_snapshot : C2c_watch_data.snapshot =
   { peers = []; shards = [ shard_many ]; rooms = []; broker_root }
 
+(* ===== B4: synthetic Rooms fixtures ===================================== *)
+
+(* Synthetic room_message — short fixed strings only (spec §9 fixture hygiene:
+   NO live content). rm_ts rendered through C2c_history.format_timestamp under
+   forced TZ=UTC for byte stability. *)
+let mk_room_msg ~from_ ~room ~content ~ts : C2c_mcp.room_message =
+  { rm_from_alias = from_; rm_room_id = room; rm_content = content; rm_ts = ts }
+
+(* Synthetic room_info — direct record construction (spec §9). *)
+let mk_room_info ~room ~members ~alive ~dead ~unknown ~vis :
+    C2c_watch_data.Broker.room_info =
+  { ri_room_id = room
+  ; ri_member_count = members
+  ; ri_members = []
+  ; ri_alive_member_count = alive
+  ; ri_dead_member_count = dead
+  ; ri_unknown_member_count = unknown
+  ; ri_member_details = []
+  ; ri_visibility = vis
+  ; ri_invited_members = []
+  }
+
+(* (i) PUBLIC room with multiple history messages, built OLDEST-FIRST (ts
+   ascending down the list) — this MIRRORS [Broker.read_room_history], which
+   returns oldest-first / newest-last (it reads the append-only history.jsonl
+   in file order and keeps the newest [limit] WITHOUT a final reverse, see
+   c2c_broker.ml read_room_history ~:3791). The render keeps this order AS-IS
+   (oldest at top, newest at bottom — NO List.rev). 2+ senders. *)
+let room_public : C2c_watch_data.room_view =
+  { rv_info =
+      mk_room_info ~room:"swarm-lounge" ~members:3 ~alive:1 ~dead:1 ~unknown:1
+        ~vis:C2c_mcp.Public
+  ; rv_history =
+      [ mk_room_msg ~from_:"zeb-coord" ~room:"swarm-lounge"
+          ~content:"morning swarm" ~ts:ts1 (* oldest, at top *)
+      ; mk_room_msg ~from_:"axl-impl" ~room:"swarm-lounge"
+          ~content:"joining the watch slice" ~ts:ts2
+      ; mk_room_msg ~from_:"qix-peer" ~room:"swarm-lounge"
+          ~content:"build clean rc=0" ~ts:ts3 (* newest, at bottom *) ]
+  }
+
+(* (ii) INVITE_ONLY EMPTY room (rv_history=[]) — the COMMON quiet case → the
+   detail pane must show "(no history)" explicitly, never an error. *)
+let room_empty : C2c_watch_data.room_view =
+  { rv_info =
+      mk_room_info ~room:"relay-debug" ~members:0 ~alive:0 ~dead:0 ~unknown:0
+        ~vis:C2c_mcp.Invite_only
+  ; rv_history = []
+  }
+
+(* Populated rooms snapshot: a public room (selected) + an empty invite room. *)
+let rooms_snapshot : C2c_watch_data.snapshot =
+  { peers = []
+  ; shards = []
+  ; rooms = [ room_public; room_empty ]
+  ; broker_root
+  }
+
+(* State on the Rooms tab with the first (public) room selected so its history
+   shows in the detail pane. *)
+let state_rooms : C2c_watch_state.t =
+  { C2c_watch_state.initial with
+    C2c_watch_state.tab = C2c_watch_state.Rooms
+  ; rooms_sel = 0
+  ; refreshed_label = "refreshed 0.6s ago" }
+
+(* (iii) Overflow room: 12 messages built OLDEST-FIRST (msg-01 oldest .. msg-12
+   newest) for the order + overflow regression. rv_history is rendered AS-IS
+   (no reverse); the clip keeps the TAIL (newest at the bottom). If the order
+   were wrong (a stray List.rev), msg-12 (newest) would scroll off and msg-01
+   (oldest) would stay — the bug this test guards against. *)
+let room_many : C2c_watch_data.room_view =
+  { rv_info =
+      mk_room_info ~room:"busy-room" ~members:2 ~alive:2 ~dead:0 ~unknown:0
+        ~vis:C2c_mcp.Public
+  ; rv_history =
+      List.init 12 (fun k ->
+          let n = k + 1 in (* k=0 -> msg-01 (oldest); k=11 -> msg-12 (newest) *)
+          mk_room_msg ~from_:"peer" ~room:"busy-room"
+            ~content:(Printf.sprintf "msg-%02d" n)
+            ~ts:(fixed_ts +. float_of_int n))
+  }
+
+let rooms_many_snapshot : C2c_watch_data.snapshot =
+  { peers = []; shards = []; rooms = [ room_many ]; broker_root }
+
+(* (iv) Small order room: 4 messages built OLDEST-FIRST (msg-01 .. msg-04).
+   At 80x24 all 4 fit in the detail pane, so the order test can assert the
+   oldest sits ABOVE the newest (order preserved, NO reverse) WITHOUT clipping
+   confounding the result. The 12-message [room_many] covers the overflow/clip
+   case separately. *)
+let room_order : C2c_watch_data.room_view =
+  { rv_info =
+      mk_room_info ~room:"order-room" ~members:1 ~alive:1 ~dead:0 ~unknown:0
+        ~vis:C2c_mcp.Public
+  ; rv_history =
+      List.init 4 (fun k ->
+          let n = k + 1 in (* k=0 -> msg-01 (oldest); k=3 -> msg-04 (newest) *)
+          mk_room_msg ~from_:"peer" ~room:"order-room"
+            ~content:(Printf.sprintf "msg-%02d" n)
+            ~ts:(fixed_ts +. float_of_int n))
+  }
+
+let rooms_order_snapshot : C2c_watch_data.snapshot =
+  { peers = []; shards = []; rooms = [ room_order ]; broker_root }
+
 (* Substring search (no stdlib helper for this in the std we target). *)
 let contains_sub (hay : string) (needle : string) : bool =
   let hl = String.length hay and nl = String.length needle in
@@ -365,6 +471,92 @@ let test_dms_out_of_range_sel () =
     (List.length (String.split_on_char '\n' s));
   check_all_lines_80 s
 
+(* ===== B4: Rooms tab tests ============================================== *)
+
+(* B4: Rooms tab golden — populated (public room selected so its history shows
+   + an empty invite room visible in the list). *)
+let test_rooms_populated () =
+  golden_test ~rel:"test_fixtures/watch_rooms_populated_80x24.txt"
+    ~snapshot:rooms_snapshot ~state:state_rooms ()
+
+(* B4: Rooms tab golden — empty broker (0 rooms). Valid quiet state, not an
+   error → a clean "no rooms" body. *)
+let test_rooms_empty () =
+  golden_test ~rel:"test_fixtures/watch_rooms_empty_80x24.txt"
+    ~snapshot:quiet_snapshot ~state:state_rooms ()
+
+(* B4 HISTORY-ORDER (the B3-blocker class, opposite direction): rv_history is
+   OLDEST-FIRST and the render must keep it AS-IS — oldest ABOVE newest. Build
+   a room oldest-first, render, assert the oldest message's row appears at a
+   SMALLER line index than the newest's (order preserved, NOT reversed). *)
+let line_index (s : string) (needle : string) : int option =
+  let lines = String.split_on_char '\n' s in
+  let rec go i = function
+    | [] -> None
+    | l :: rest -> if contains_sub l needle then Some i else go (i + 1) rest
+  in
+  go 0 lines
+
+let test_rooms_history_order () =
+  (* room_order has msg-01 (oldest) .. msg-04 (newest), built oldest-first. At
+     80x24 the body holds all 4 (no clipping), so both ends are visible; assert
+     oldest is ABOVE newest (order preserved AS-IS, NOT reversed). *)
+  let s =
+    C2c_watch_render.render ~cols:80 ~rows:24 ~snapshot:rooms_order_snapshot
+      ~state:state_rooms
+  in
+  (match (line_index s "msg-01", line_index s "msg-04") with
+   | Some oldest_i, Some newest_i ->
+       Alcotest.(check bool)
+         "oldest (msg-01) appears ABOVE newest (msg-04)" true
+         (oldest_i < newest_i)
+   | _ ->
+       Alcotest.fail
+         "expected both msg-01 (oldest) and msg-04 (newest) visible at 80x24");
+  check_all_lines_80 s
+
+(* B4 OVERFLOW (mirrors test_dms_overflow but for the OLDEST-FIRST room source):
+   when the detail overflows the pane, the NEWEST message MUST stay visible and
+   the OLDEST scroll off behind a "(N older hidden)" marker. rv_history is
+   oldest-first and the render keeps it AS-IS (NO reverse) so the clip keeps the
+   TAIL = newest. If a stray List.rev were present, msg-01 (oldest) would stay
+   and msg-12 (newest) hide — the bug this guards. *)
+let test_rooms_overflow () =
+  let s =
+    C2c_watch_render.render ~cols:80 ~rows:12 ~snapshot:rooms_many_snapshot
+      ~state:state_rooms
+  in
+  Alcotest.(check bool) "newest message (msg-12) visible" true
+    (contains_sub s "msg-12");
+  Alcotest.(check bool) "oldest message (msg-01) scrolled off" false
+    (contains_sub s "msg-01");
+  Alcotest.(check bool) "older-hidden marker present" true
+    (contains_sub s "older hidden");
+  check_all_lines_80 s
+
+(* B4: empty room must show "(no history)" explicitly (the common quiet case),
+   not blank or an error. Select the second (empty invite) room. *)
+let test_rooms_empty_room_no_history () =
+  let st = { state_rooms with C2c_watch_state.rooms_sel = 1 } in
+  let s =
+    C2c_watch_render.render ~cols:80 ~rows:24 ~snapshot:rooms_snapshot ~state:st
+  in
+  Alcotest.(check bool) "(no history) shown for empty room" true
+    (contains_sub s "(no history)");
+  check_all_lines_80 s
+
+(* B4: render is TOTAL for an out-of-range rooms_sel (data shrink can leave
+   state.rooms_sel past the rooms list until the loop's clamp_counts fires) —
+   must not raise and must hold the exact-width contract. *)
+let test_rooms_out_of_range_sel () =
+  let st = { state_rooms with C2c_watch_state.rooms_sel = 99 } in
+  let s =
+    C2c_watch_render.render ~cols:80 ~rows:24 ~snapshot:rooms_snapshot ~state:st
+  in
+  Alcotest.(check int) "row count = 24" 24
+    (List.length (String.split_on_char '\n' s));
+  check_all_lines_80 s
+
 (* The render exact-width contract must hold at ANY size >= the clamp floor
    (cols>=8, rows>=5), including narrow terminals where the title border cannot
    hold the fixed lead+tabs. Regression for the Codex finding that title_border
@@ -383,7 +575,10 @@ let test_render_dimensions_various () =
        populated_snapshot) (* DMs tab over the empty-shards peers snapshot *)
     ; (state_dms, dms_snapshot) (* DMs tab over the populated-DMs snapshot *)
     ; ({ state_peers with C2c_watch_state.tab = C2c_watch_state.Rooms },
-       populated_snapshot) ]
+       populated_snapshot) (* Rooms tab over the empty-rooms snapshot *)
+    ; (state_rooms, rooms_snapshot) (* Rooms tab over the populated-rooms
+                                       snapshot: exercises the two-pane room
+                                       list + history wrap at narrow sizes *) ]
   in
   List.iter
     (fun (cols, rows) ->
@@ -425,5 +620,17 @@ let () =
             test_dms_overflow;
           Alcotest.test_case "dms_out_of_range_sel_total" `Quick
             test_dms_out_of_range_sel;
+          Alcotest.test_case "rooms_populated_80x24_golden" `Quick
+            test_rooms_populated;
+          Alcotest.test_case "rooms_empty_80x24_golden" `Quick
+            test_rooms_empty;
+          Alcotest.test_case "rooms_history_order_preserved" `Quick
+            test_rooms_history_order;
+          Alcotest.test_case "rooms_overflow_keeps_newest" `Quick
+            test_rooms_overflow;
+          Alcotest.test_case "rooms_empty_room_no_history" `Quick
+            test_rooms_empty_room_no_history;
+          Alcotest.test_case "rooms_out_of_range_sel_total" `Quick
+            test_rooms_out_of_range_sel;
           Alcotest.test_case "render_dimensions_various" `Quick
             test_render_dimensions_various ] ) ]

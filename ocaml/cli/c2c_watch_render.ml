@@ -235,9 +235,6 @@ let peers_body ~(inner_cols : int) ~(peers : C2c_watch_data.peer_row list)
   let _ = inner_cols in
   header :: List.mapi row peers
 
-(* Placeholder body for the Rooms tab (B4 implements it). *)
-let placeholder_body (label : string) : string list = [ ""; "  " ^ label; "" ]
-
 (* ===== B3: DMs tab — two-pane shard browser ============================== *)
 
 (* The DMs left pane (shard list) is a fixed-width column; the right pane (the
@@ -517,6 +514,164 @@ let dms_footer : string =
   ^ "\xe2\x86\x91/\xe2\x86\x93 shard \xc2\xb7 Enter\xe2\x86\x92reply \xc2\xb7 / search"
   (* ↑/↓ shard · Enter→reply · / search *)
 
+(* ===== B4: Rooms tab — two-pane room browser ============================= *)
+
+(* The Rooms tab reuses the DMs two-pane geometry verbatim: a fixed-ish left
+   column (room list) + a │ separator + the right detail pane (selected room's
+   history). The split is chosen by the SAME [dms_split_widths] helper (it is
+   pane-agnostic — a function of [inner_cols] only) so both tabs degrade
+   identically on narrow terminals. NO new width logic. *)
+
+(* Visibility abbreviation (spec §3.3): Public -> "pub", Invite_only -> "inv".
+   [room_visibility] is a top-level [C2c_mcp] type (the [room_info.ri_visibility]
+   field references it from inside the Broker module). *)
+let room_vis_abbrev (v : C2c_mcp.room_visibility) : string =
+  match v with
+  | C2c_mcp.Public -> "pub"
+  | C2c_mcp.Invite_only -> "inv"
+
+(* One left-pane room row (CONTENT only, exactly [w] display columns):
+   "<marker><room_id>  <vis>  <M>". The room_id is the flexible field —
+   reserve room for the vis abbrev (3) + member count + gaps, truncate the
+   room_id to whatever's left. PURE. *)
+let rooms_room_row ~(w : int) ~(selected : bool) (rv : C2c_watch_data.room_view)
+    : string =
+  let marker = if selected then "\xe2\x96\xb8 " (* ▸ + space *) else "  " in
+  let info = rv.C2c_watch_data.rv_info in
+  let vis = room_vis_abbrev info.C2c_watch_data.Broker.ri_visibility in
+  let count_str = string_of_int info.C2c_watch_data.Broker.ri_member_count in
+  let room_id = info.C2c_watch_data.Broker.ri_room_id in
+  (* marker(2) + room_id + "  " + vis(3) + "  " + count_str, padded to [w].
+     Reserve everything but the room_id, truncate the room_id to the rest. *)
+  let fixed = 2 (* marker *) + 2 + disp_width vis + 2 + disp_width count_str in
+  let id_budget = max 0 (w - fixed) in
+  let id_shown = truncate_to room_id id_budget in
+  let row =
+    marker ^ pad_to id_shown id_budget ^ "  " ^ vis ^ "  " ^ count_str
+  in
+  pad_to row w
+
+(* The full left-pane CONTENT lines (no walls, no separator) for the room list,
+   exactly [w] display columns each. One row per room, list order. PURE. *)
+let rooms_left_lines ~(w : int) ~(rooms : C2c_watch_data.room_view list)
+    ~(sel : int) : string list =
+  List.mapi
+    (fun i (rv : C2c_watch_data.room_view) ->
+      rooms_room_row ~w ~selected:(i = sel) rv)
+    rooms
+
+(* Per-message detail blocks for the SELECTED room, in CHRONOLOGICAL display
+   order (oldest at the TOP, newest at the BOTTOM — chat convention).
+
+   ORDER IS LOAD-BEARING and is the OPPOSITE of the DMs case: [rv_history]
+   arrives OLDEST-FIRST from [Broker.read_room_history] (it reads the
+   append-only history.jsonl in file order and keeps the newest [limit] entries
+   WITHOUT a final reverse — see c2c_broker.ml read_room_history ~:3791), and
+   B1's [build_rooms] passes that order through unchanged. So we render it
+   AS-IS — do NOT [List.rev] it. Each block = a "[<ts>] <from>" header + its
+   wrapped content (>=1 line). An EMPTY room ([rv_history]=[]) — the COMMON
+   quiet-broker case, NOT an error — yields a single "(no history)" block.
+
+   PURE except for [C2c_history.format_timestamp] (localtime; tests force
+   TZ=UTC for byte-stable goldens, spec §9). *)
+let rooms_detail_blocks ~(w : int) (rv : C2c_watch_data.room_view) :
+    string list list =
+  let msg_block (m : C2c_mcp.room_message) : string list =
+    let header =
+      Printf.sprintf "[%s] %s"
+        (C2c_history.format_timestamp m.C2c_mcp.rm_ts)
+        m.C2c_mcp.rm_from_alias
+    in
+    header :: wrap_content m.C2c_mcp.rm_content w
+  in
+  match rv.C2c_watch_data.rv_history with
+  | [] -> [ [ "(no history)" ] ]
+  (* rv_history is OLDEST-FIRST: render as-is (oldest at top, newest bottom). *)
+  | history -> List.map msg_block history
+
+(* The Rooms heading line CONTENT (no walls), exactly [inner_cols] columns:
+   "ROOMS (N) — <room_id>  <vis>  <M> members (<A>●/<D>○/<U>?)" for the selected
+   room. When there are no rooms: "ROOMS (0)". The whole line is truncated to
+   [inner_cols] if it would overflow (long room_ids). PURE. *)
+let rooms_heading ~(inner_cols : int) ~(snapshot : C2c_watch_data.snapshot)
+    ~(sel : int) : string =
+  let rooms = snapshot.rooms in
+  let total = List.length rooms in
+  if total = 0 then pad_to " ROOMS (0)" inner_cols
+  else begin
+    let sel = if sel < 0 then 0 else if sel > total - 1 then total - 1 else sel in
+    let rv = List.nth rooms sel in
+    let info = rv.C2c_watch_data.rv_info in
+    let vis = room_vis_abbrev info.C2c_watch_data.Broker.ri_visibility in
+    (* ● alive / ○ dead / ? unknown — the real tristate counts (spec §3.3). *)
+    let line =
+      Printf.sprintf
+        " ROOMS (%d) \xe2\x80\x94 %s  %s  %d members (%d\xe2\x97\x8f/%d\xe2\x97\x8b/%d?)"
+        (* — … ● … ○ *)
+        total info.C2c_watch_data.Broker.ri_room_id vis
+        info.C2c_watch_data.Broker.ri_member_count
+        info.C2c_watch_data.Broker.ri_alive_member_count
+        info.C2c_watch_data.Broker.ri_dead_member_count
+        info.C2c_watch_data.Broker.ri_unknown_member_count
+    in
+    pad_to line inner_cols
+  end
+
+(* Compose the Rooms interior CONTENT lines (no walls), exactly [body_budget]
+   rows. Row layout (mirrors [dms_body] exactly):
+     row 0      : the two-pane column titles ("rooms (N)" │ "history")
+     rows 1..   : left room list | right history detail, joined by │ per row
+   Each composed row is exactly [inner_cols] display columns. PURE. *)
+let rooms_body ~(inner_cols : int) ~(body_budget : int)
+    ~(snapshot : C2c_watch_data.snapshot) ~(sel : int) : string list =
+  let rooms = snapshot.rooms in
+  let left_w, right_w = dms_split_widths inner_cols in
+  let has_split = left_w > 0 && right_w > 0 in
+  let compose (l : string) (r : string) : string =
+    if has_split then pad_to l left_w ^ v ^ pad_to r right_w
+    else pad_to l inner_cols
+  in
+  if body_budget <= 0 then []
+  else if rooms = [] then
+    (* Empty rooms list: a clean "no rooms" body line + blanks (quiet broker). *)
+    let first = compose "  no rooms" "" in
+    first :: List.init (max 0 (body_budget - 1)) (fun _ -> pad_to "" inner_cols)
+  else begin
+    let sel =
+      if sel < 0 then 0
+      else if sel > List.length rooms - 1 then List.length rooms - 1
+      else sel
+    in
+    let title_l = Printf.sprintf "rooms (%d)" (List.length rooms) in
+    let title_r = if has_split then "history" else "" in
+    let title_row = compose title_l title_r in
+    let inner_rows = max 0 (body_budget - 1) in
+    let left_lines = rooms_left_lines ~w:left_w ~rooms ~sel in
+    let sel_room = List.nth rooms sel in
+    let right_lines =
+      if has_split then
+        (* rv_history is oldest-first; dms_detail_clip keeps the TAIL (newest)
+           on overflow + a "(N older hidden)" marker — exactly the room case. *)
+        dms_detail_clip ~avail:inner_rows
+          (rooms_detail_blocks ~w:right_w sel_room)
+      else []
+    in
+    let nth_or_blank lst i =
+      match List.nth_opt lst i with Some x -> x | None -> ""
+    in
+    let rows =
+      List.init inner_rows (fun i ->
+          compose (nth_or_blank left_lines i) (nth_or_blank right_lines i))
+    in
+    title_row :: rows
+  end
+
+(* The Rooms footer (spec §3.3): empty-room note + key legend. *)
+let rooms_footer : string =
+  " empty room \xe2\x86\x92 (no history) is normal   "
+  ^ "\xe2\x86\x91/\xe2\x86\x93 room \xc2\xb7 Enter\xe2\x86\x92post \xc2\xb7 / search"
+  (* ↑/↓ room · Enter→post · / search *)
+
 (* The status/legend footer for the active tab. *)
 let footer_for (tab : C2c_watch_state.tab) : string =
   (* One leading space for breathing room (spec mockup: "│ ● alive"). *)
@@ -531,7 +686,11 @@ let footer_for (tab : C2c_watch_state.tab) : string =
          unused (render branches the DMs tab before [footer_for]) but kept
          total for the variant. *)
       "DMs"
-  | C2c_watch_state.Rooms -> "Rooms detail \xe2\x80\x94 coming in B4"
+  | C2c_watch_state.Rooms ->
+      (* The Rooms tab supplies its own footer via [rooms_footer] (B4); this
+         leg is unused (render branches Rooms before [footer_for]) but kept
+         total for the variant. *)
+      "Rooms"
 
 (* The PEERS/DMs/ROOMS heading line, with the right-aligned refreshed label. *)
 let heading_line ~(inner_cols : int) ~(tab : C2c_watch_state.tab)
@@ -607,17 +766,28 @@ let render ~(cols : int) ~(rows : int) ~(snapshot : C2c_watch_data.snapshot)
         let head_lines = take body_budget (heading :: "" :: body) in
         let fill_n = max 0 (body_budget - List.length head_lines) in
         head_lines @ List.init fill_n (fun _ -> "") @ [ dms_footer ]
-    | C2c_watch_state.Peers | C2c_watch_state.Rooms ->
+    | C2c_watch_state.Rooms ->
+        (* The Rooms tab composes its OWN interior exactly like DMs: a custom
+           heading (selected room + member tristate) + a blank + the two-pane
+           body (room list | history) + its custom footer (B4). *)
+        let heading =
+          rooms_heading ~inner_cols ~snapshot ~sel:state.rooms_sel
+        in
+        let body_rows = max 0 (body_budget - 2) in
+        let body =
+          rooms_body ~inner_cols ~body_budget:body_rows ~snapshot
+            ~sel:state.rooms_sel
+        in
+        let head_lines = take body_budget (heading :: "" :: body) in
+        let fill_n = max 0 (body_budget - List.length head_lines) in
+        head_lines @ List.init fill_n (fun _ -> "") @ [ rooms_footer ]
+    | C2c_watch_state.Peers ->
         let heading =
           heading_line ~inner_cols ~tab:state.tab ~snapshot
             ~refreshed_label:state.refreshed_label
         in
         let body =
-          match state.tab with
-          | C2c_watch_state.Peers ->
-              peers_body ~inner_cols ~peers:snapshot.peers ~sel:state.peers_sel
-          | C2c_watch_state.Rooms -> placeholder_body "Rooms — coming in B4"
-          | C2c_watch_state.DMs -> [] (* unreachable *)
+          peers_body ~inner_cols ~peers:snapshot.peers ~sel:state.peers_sel
         in
         let footer = footer_for state.tab in
         let head_lines = take body_budget (heading :: "" :: body) in
