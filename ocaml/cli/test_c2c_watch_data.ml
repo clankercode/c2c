@@ -386,6 +386,27 @@ let test_send_room_invalid_id () =
       in
       check bool "invalid room_id => Send_failed" true (is_send_failed r))
 
+(* A reserved system [from_alias] for a ROOM send must be REFUSED by the
+   wrapper (Broker.send_room would otherwise treat it as a privileged internal
+   sender), AND the spoofed message must NOT land in the room history — proving
+   the guard runs BEFORE the broker call. This is the security hole the
+   whole-feature audit surfaced. *)
+let test_send_room_reserved_from () =
+  with_broker (fun t ->
+      let spoof = "SYSTEM ANNOUNCEMENT (spoofed via reserved from)" in
+      let r =
+        Data.send_room_message t ~from_alias:"c2c"
+          ~room_id:room_with_history ~content:spoof
+      in
+      check bool "reserved room from => Send_failed" true (is_send_failed r);
+      let hist =
+        Broker.read_room_history t ~room_id:room_with_history ~limit:100 ()
+      in
+      check bool "spoofed reserved-from message is NOT in room history" false
+        (List.exists
+           (fun (m : C2c_mcp.room_message) -> m.rm_content = spoof)
+           hist))
+
 let send_tests =
   [ "dm unknown recipient => Send_failed", `Quick, test_send_dm_unknown_recipient
   ; "dm self-send => Send_failed",         `Quick, test_send_dm_self_send
@@ -393,6 +414,7 @@ let send_tests =
   ; "dm reserved from => Send_failed",     `Quick, test_send_dm_reserved_from
   ; "room 0 members => warning, no raise", `Quick, test_send_room_zero_members
   ; "room invalid id => Send_failed",      `Quick, test_send_room_invalid_id
+  ; "room reserved from => refused+unposted", `Quick, test_send_room_reserved_from
   ]
 
 let () =

@@ -56,8 +56,9 @@ let man =
         type a message and press $(b,Enter) to send it in-process via the \
         broker (a DM, or a room post), or $(b,Esc) to cancel. The sender \
         identity is the $(b,--as) alias (default $(b,operator)). Send errors \
-        (unknown or offline recipient, an empty body, a room with no members) \
-        surface on the status line and never crash the watcher."
+        (an unknown or offline recipient, an empty body) surface on the status \
+        line; a room post that succeeds but reached no live members is shown as \
+        a warning, not an error. A send never crashes the watcher."
   ; `P "This is an interactive operator tool (Tier 3): it is hidden from \
         managed agent sessions and requires a real terminal."
   ]
@@ -82,6 +83,12 @@ let restore_terminal_lwt (term : LTerm.t) (mode : LTerm.mode option) :
   guard (fun () -> LTerm.load_state term) >>= fun () ->
   guard (fun () -> LTerm.flush term)
 
+(* The operator's terminal_io captured BEFORE [enter_raw_mode], so the
+   synchronous signal-handler path can restore it EXACTLY (lambda-term's raw
+   mode clears far more than icanon/echo/isig). Set once at the top of
+   [run_watch]; [None] until then (and on a tcgetattr failure). *)
+let saved_termios : Unix.terminal_io option ref = ref None
+
 (* Synchronous restore for the signal-handler path: we cannot run lwt from a
    signal handler safely, so emit the raw control sequences to the real fd
    directly. Show cursor + leave alternate-screen-ish + reset attributes; and
@@ -98,10 +105,19 @@ let restore_terminal_sync () : unit =
      flush stdout
    with _ -> ());
   (try
-     let attr = Unix.tcgetattr Unix.stdin in
-     (* Re-enable canonical mode + echo so the shell prompt is usable again. *)
-     Unix.tcsetattr Unix.stdin Unix.TCSANOW
-       { attr with Unix.c_icanon = true; c_echo = true; c_isig = true }
+     (* Restore the EXACT termios captured before raw mode was entered.
+        lambda-term's raw mode clears far more than icanon/echo/isig (also
+        brkint/inpck/istrip/ixon/csize/parenb/vmin/vtime), so flipping only
+        those three would leave residual raw-mode flags (e.g. IXON off — broken
+        flow control) after an external SIGINT/SIGTERM. Fall back to re-enabling
+        the cooked-mode flags when no saved termios was captured (e.g. a signal
+        during early setup before the capture). *)
+     match !saved_termios with
+     | Some tio -> Unix.tcsetattr Unix.stdin Unix.TCSANOW tio
+     | None ->
+         let attr = Unix.tcgetattr Unix.stdin in
+         Unix.tcsetattr Unix.stdin Unix.TCSANOW
+           { attr with Unix.c_icanon = true; c_echo = true; c_isig = true }
    with _ -> ())
 
 (* Draw one empty frame sized to the live terminal — the pre-first-snapshot
@@ -482,6 +498,10 @@ let run_watch ~(interval : float) ~(from_alias : string) () : unit Lwt.t =
     Lwt_io.eprintl "c2c watch: not a tty (needs an interactive terminal)"
     >>= fun () -> Lwt.return_unit
   end else begin
+    (* Capture the cooked terminal_io NOW — raw mode is not yet entered — so the
+       synchronous signal-handler restore can put back the EXACT termios (not
+       just three flags) on an external SIGINT/SIGTERM. *)
+    (try saved_termios := Some (Unix.tcgetattr Unix.stdin) with _ -> ());
     (* Install the synchronous signal handler BEFORE save_state / enter_raw_mode
        so an external SIGINT/SIGTERM arriving during raw-mode SETUP still
        restores the terminal. [restore_terminal_sync] is harmless when raw mode
@@ -506,8 +526,10 @@ let run_watch ~(interval : float) ~(from_alias : string) () : unit Lwt.t =
     Lwt.finalize
       (fun () ->
         (* Resolve the broker + build the first snapshot. If broker resolution
-           or the first read raises, fall back to the empty loading frame so
-           teardown still runs cleanly (the finalizer below). *)
+           or the first read raises, the exception propagates through this
+           [Lwt.finalize] — which restores the terminal FIRST — and the
+           top-level [try/with] in [watch_term] prints it and exits non-zero, so
+           teardown still runs cleanly on a startup failure. *)
         let root = C2c_utils.resolve_broker_root () in
         let broker = C2c_watch_data.Broker.create ~root in
         let now = Unix.gettimeofday () in

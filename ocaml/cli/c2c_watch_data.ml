@@ -204,11 +204,26 @@ type send_result =
   | Sent_room of { delivered : int; skipped : int; warning : string option }
   | Send_failed of string
 
+(* Refuse a send whose [from_alias] is a reserved system alias (e.g. "c2c",
+   "c2c-system"). [enqueue_message] rejects these for DMs, but [send_room]
+   treats them as PRIVILEGED internal senders (c2c_broker.ml) — so without this
+   wrapper-level guard, `c2c watch --as c2c-system` could post system-looking
+   room history. Guarding BOTH wrappers keeps the two paths consistent. *)
+let reserved_from_guard (from_alias : string) : send_result option =
+  if Broker.is_reserved_system_alias from_alias then
+    Some
+      (Send_failed
+         (Printf.sprintf "cannot send as reserved system alias '%s'" from_alias))
+  else None
+
 (* DM send. [from_alias] is the operator identity (the --as value, default
-   "operator"); the broker stamps it as the sender. Self-send is refused at the
-   CLI level here, matching send_cmd. Any broker rejection -> [Send_failed]. *)
+   "operator"); the broker stamps it as the sender. Reserved-system and
+   self-sends are refused here; any broker rejection -> [Send_failed]. *)
 let send_dm (t : Broker.t) ~(from_alias : string) ~(to_alias : string)
     ~(content : string) : send_result =
+  match reserved_from_guard from_alias with
+  | Some failed -> failed
+  | None ->
   if from_alias = to_alias then
     Send_failed
       (Printf.sprintf "cannot send a message to yourself (%s)" from_alias)
@@ -223,9 +238,14 @@ let send_dm (t : Broker.t) ~(from_alias : string) ~(to_alias : string)
 (* Room send. Maps [send_room_result]: [sr_delivered_to]/[sr_skipped] become
    counts, [sr_warning] (e.g. 0-member room — a SOFT warning, NOT an exception)
    is surfaced verbatim. An invalid room_id / reserved from raises
-   [Invalid_argument] inside the broker -> caught -> [Send_failed]. *)
+   [Invalid_argument] inside the broker -> caught -> [Send_failed]. A reserved
+   system [from_alias] is refused HERE (send_room would otherwise treat it as a
+   privileged internal sender). *)
 let send_room_message (t : Broker.t) ~(from_alias : string)
     ~(room_id : string) ~(content : string) : send_result =
+  match reserved_from_guard from_alias with
+  | Some failed -> failed
+  | None ->
   try
     let r = Broker.send_room t ~from_alias ~room_id ~content in
     Sent_room
