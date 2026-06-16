@@ -3340,7 +3340,7 @@ let test_start_time_mismatch_is_not_alive () =
     ; automated_delivery = None
     ; tmux_location = None
     ; cwd = None
-    ; metadata_opt_out = false
+    ; metadata_opt_out = false; opaque_host_id = None
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -3372,7 +3372,7 @@ let test_start_time_match_is_alive () =
     ; automated_delivery = None
     ; tmux_location = None
     ; cwd = None
-    ; metadata_opt_out = false
+    ; metadata_opt_out = false; opaque_host_id = None
     }
   in
   check bool "matching start_time → alive" true
@@ -3404,7 +3404,7 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; automated_delivery = None
     ; tmux_location = None
     ; cwd = None
-    ; metadata_opt_out = false
+    ; metadata_opt_out = false; opaque_host_id = None
     }
   in
   check bool "pid exists + no stored start_time → alive" true

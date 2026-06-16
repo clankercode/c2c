@@ -78,6 +78,15 @@ type registration =
         exposure/federation (cwd, canonical alias, etc.) beyond the
         broker's internal guard use. Captured at registration time;
         honored at every read/exposure site. Default false = metadata on. *)
+    ; opaque_host_id : string option
+    (** Slice 1 of .collab/design/2026-06-17-c2c-opaque-host-id.md:
+        client-supplied opaque per-host identifier (12-16 hex chars,
+        computed by `c2c host-id`). Mirrored from the relay lease
+        field for cross-system parity. Local broker does NOT use
+        this for routing in slice 1 (different threat model — local
+        broker is on the same machine as the user) — kept here as a
+        passthrough so consumers can persist it. None = not
+        populated. *)
     }
 type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool; message_id : string option }
 (** [message_id] is set when the message arrived via the relay (which assigns

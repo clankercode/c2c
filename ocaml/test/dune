@@ -245,3 +245,11 @@
  (modules test_c2c_cli)
  (libraries c2c_mcp alcotest yojson unix)
  (deps ../cli/c2c.exe))
+
+; #586 slice 1: opaque_host_id lease round-trip, name validation, recipe parity,
+; and c2c host-id CLI subcommand tests. Requires the c2c binary for the CLI cases.
+(test
+ (name test_relay_opaque_host_id)
+ (modules test_relay_opaque_host_id)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps ../cli/c2c.exe))

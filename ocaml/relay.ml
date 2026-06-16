@@ -144,7 +144,7 @@ let b64url_nopad_encode s =
 
 module RegistrationLease : sig
   type t
-  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> unit -> t
+  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> ?opaque_host_id:string option -> unit -> t
   val is_alive : t -> bool
   val touch : t -> unit
   val to_json : t -> Yojson.Safe.t
@@ -156,6 +156,7 @@ module RegistrationLease : sig
   val signed_at : t -> float
   val sig_b64 : t -> string
   val registered_at : t -> float
+  val opaque_host_id : t -> string option
 end = struct
   type t = {
     node_id : string;
@@ -169,10 +170,17 @@ end = struct
     enc_pubkey : string;
     signed_at : float;
     sig_b64 : string;
+    opaque_host_id : string option;
+    (** Client-supplied opaque identifier for the host (12-16 hex chars,
+        computed by `c2c host-id`). Slice 1 of the
+        opaque_host_id design (.collab/design/2026-06-17-c2c-opaque-host-id.md):
+        purely additive — None for leases registered before this field was
+        added. The relay's /list handler emits the field when set; old
+        consumers (no field in JSON) continue to work unchanged. *)
   }
 
-  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
-    { node_id; session_id; alias; client_type; registered_at = Unix.gettimeofday (); last_seen = Unix.gettimeofday (); ttl; identity_pk; enc_pubkey; signed_at; sig_b64 }
+  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id : string option = None) () =
+    { node_id; session_id; alias; client_type; registered_at = Unix.gettimeofday (); last_seen = Unix.gettimeofday (); ttl; identity_pk; enc_pubkey; signed_at; sig_b64; opaque_host_id }
 
   let is_alive t =
     let now = Unix.gettimeofday () in
@@ -208,6 +216,11 @@ end = struct
       if t.sig_b64 = "" then base
       else base @ [("sig_b64", `String t.sig_b64)]
     in
+    let base =
+      match t.opaque_host_id with
+      | Some h -> base @ [("opaque_host_id", `String h)]
+      | None -> base
+    in
     `Assoc base
 
   let node_id t = t.node_id
@@ -218,6 +231,7 @@ end = struct
   let signed_at t = t.signed_at
   let sig_b64 t = t.sig_b64
   let registered_at t = t.registered_at
+  let opaque_host_id t = t.opaque_host_id
 end
 
 (* --- SqliteRelay helpers and DDL --- *)
@@ -238,7 +252,8 @@ CREATE TABLE IF NOT EXISTS leases (
     identity_pk TEXT NOT NULL DEFAULT '',
     enc_pubkey TEXT NOT NULL DEFAULT '',
     signed_at REAL NOT NULL DEFAULT 0,
-    sig_b64 TEXT NOT NULL DEFAULT ''
+    sig_b64 TEXT NOT NULL DEFAULT '',
+    opaque_host_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS inboxes (
@@ -458,7 +473,7 @@ module type RELAY = sig
   val add_peer_relay : t -> peer_relay_t -> unit
   val peer_relay_of : t -> name:string -> peer_relay_t option
   val peer_relays_list : t -> peer_relay_t list
-  val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> unit -> (string * RegistrationLease.t)
+  val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> ?opaque_host_id:string option -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
   val alias_of_identity_pk : t -> identity_pk:string -> string option
   val alias_of_session : t -> node_id:string -> session_id:string -> string option
@@ -666,10 +681,10 @@ module InMemoryRelay : RELAY = struct
   let set_inbox t key msgs =
     Hashtbl.replace t.inboxes key msgs
 
-  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
+  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id : string option = None) () =
     with_lock t (fun () ->
-      if not (C2c_name.is_valid alias) then
-        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
+      if not (C2c_name.is_valid_with_opaque_host_id alias) then
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
         ("invalid_alias", dummy)
       else
       let allow_state =
@@ -687,7 +702,7 @@ module InMemoryRelay : RELAY = struct
       in
       match allow_state with
       | `AllowMismatch | `ListedNoPk ->
-        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
         ("alias_not_allowed", dummy)
       | `Unlisted | `Allowed ->
       let binding_state =
@@ -700,7 +715,7 @@ module InMemoryRelay : RELAY = struct
       in
       match binding_state with
       | `Mismatch ->
-        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
         (relay_err_alias_identity_mismatch, dummy)
       | _ ->
         let existing = Hashtbl.find_opt t.leases alias in
@@ -726,7 +741,7 @@ module InMemoryRelay : RELAY = struct
                if identity_pk <> "" then identity_pk
                else Option.value ~default:"" (Hashtbl.find_opt t.bindings alias)
              in
-             let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 () in
+             let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
              Hashtbl.replace t.leases alias lease;
              (match binding_state with
               | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
@@ -1356,6 +1371,28 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
     let conn = Sqlite3.db_open db_path in
     Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
     Sqlite3.exec conn sqlite_ddl |> ignore;
+    (* #586 (slice 1): migrate older databases to the opaque_host_id
+       column. `CREATE TABLE IF NOT EXISTS` does not add new columns
+       to an existing leases table, so we probe pragma_table_info and
+       ALTER if the column is missing. Idempotent on fresh installs
+       (the column is already declared in sqlite_ddl). *)
+    let has_opaque_host_id_column =
+      let info_stmt = Sqlite3.prepare conn "PRAGMA table_info(leases)" in
+      let found = ref false in
+      let rec loop () =
+        let rc = Sqlite3.step info_stmt in
+        if rc = Sqlite3.Rc.ROW then begin
+          let col_name = Sqlite3.Data.to_string_exn (Sqlite3.column info_stmt 1) in
+          if col_name = "opaque_host_id" then found := true;
+          loop ()
+        end
+      in
+      (try loop () with _ -> ());
+      (try Sqlite3.finalize info_stmt |> ignore with _ -> ());
+      !found
+    in
+    if not has_opaque_host_id_column then
+      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN opaque_host_id TEXT NOT NULL DEFAULT ''" |> ignore;
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = if persist_dir = "" then None else Some (Filename.concat persist_dir "relay-server-identity.json") in
     let identity =
@@ -1380,7 +1417,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
 
   let get_lease_row_fields row =
     match row with
-    | [alias; node_id; session_id; client_type; registered_at; last_seen; ttl; identity_pk; enc_pubkey; signed_at; sig_b64] ->
+    | [alias; node_id; session_id; client_type; registered_at; last_seen; ttl; identity_pk; enc_pubkey; signed_at; sig_b64; opaque_host_id] ->
       let alias = match alias with Some s -> s | None -> "" in
       let node_id = match node_id with Some s -> s | None -> "" in
       let session_id = match session_id with Some s -> s | None -> "" in
@@ -1392,6 +1429,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
       let enc_pubkey = match enc_pubkey with Some s -> s | None -> "" in
       let signed_at = match signed_at with Some s -> float_of_string s | None -> 0.0 in
       let sig_b64 = match sig_b64 with Some s -> s | None -> "" in
+      let opaque_host_id = match opaque_host_id with Some s when s <> "" -> Some s | _ -> None in
       (alias,
        RegistrationLease.make
          ~node_id
@@ -1403,6 +1441,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
          ~enc_pubkey
          ~signed_at
          ~sig_b64
+         ~opaque_host_id:opaque_host_id
          ())
     | _ -> failwith "Invalid lease row"
 
@@ -1417,13 +1456,13 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
 
   let row_to_string_opt = function Some s -> s | None -> ""
 
-  let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(ttl=default_lease_ttl) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") () =
+  let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(ttl=default_lease_ttl) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") ?(opaque_host_id : string option = None) () =
     with_lock t (fun () ->
       let open Sqlite3 in
       let conn = db_open t.db_path in
       let now = Unix.gettimeofday () in
-      if not (C2c_name.is_valid alias) then
-        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
+      if not (C2c_name.is_valid_with_opaque_host_id alias) then
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
         ("invalid_alias", dummy)
       else
       let allow_state =
@@ -1503,7 +1542,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
               | `Matches -> identity_pk
               | `NoPkNoBinding -> ""
             in
-            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64" in
+            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=excluded.opaque_host_id" in
             bind_text stmt 1 alias |> ignore;
             bind_text stmt 2 node_id |> ignore;
             bind_text stmt 3 session_id |> ignore;
@@ -1515,10 +1554,12 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
             bind_text stmt 9 enc_pubkey |> ignore;
             bind_double stmt 10 signed_at |> ignore;
             bind_text stmt 11 sig_b64 |> ignore;
+            let opaque_host_id_str = match opaque_host_id with Some s -> s | None -> "" in
+            bind_text stmt 12 opaque_host_id_str |> ignore;
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
               failwith ("register insert failed: " ^ Rc.to_string rc);
-            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 () in
+            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
             ("ok", lease)
     )
 
@@ -1758,7 +1799,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
       let conn = Sqlite3.db_open t.db_path in
       let now = Unix.gettimeofday () in
       let found_lease = ref None in
-      let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk FROM leases WHERE node_id = ? AND session_id = ?" in
+      let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM leases WHERE node_id = ? AND session_id = ?" in
       Sqlite3.bind_text stmt 1 node_id |> ignore;
       Sqlite3.bind_text stmt 2 session_id |> ignore;
       let rec find_lease () =
@@ -1787,7 +1828,9 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
             | None -> float_of_string (Sqlite3.Data.to_string_exn col)
           in
           let identity_pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 7) in
-          let lease = RegistrationLease.make ~node_id:node_id' ~session_id:session_id' ~alias ~client_type ~ttl ~identity_pk () in
+          let opaque_host_id_raw = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 8) in
+          let opaque_host_id = if opaque_host_id_raw = "" then None else Some opaque_host_id_raw in
+          let lease = RegistrationLease.make ~node_id:node_id' ~session_id:session_id' ~alias ~client_type ~ttl ~identity_pk ~opaque_host_id:opaque_host_id () in
           found_lease := Some lease;
           find_lease ()
         ) else if rc <> Rc.DONE then
@@ -1811,7 +1854,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
       let conn = Sqlite3.db_open t.db_path in
       let now = Unix.gettimeofday () in
       let leases = ref [] in
-      let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk FROM leases" in
+      let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM leases" in
       let rec loop () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then (
@@ -1838,7 +1881,9 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
             | None -> float_of_string (Sqlite3.Data.to_string_exn col)
           in
           let identity_pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 7) in
-          let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk () in
+          let opaque_host_id_raw = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 8) in
+          let opaque_host_id = if opaque_host_id_raw = "" then None else Some opaque_host_id_raw in
+          let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~opaque_host_id:opaque_host_id () in
           let alive = (last_seen +. ttl) >= now in
           if include_dead || alive then leases := lease :: !leases;
           loop ()
@@ -3374,6 +3419,29 @@ generateKeys();
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     let alias = get_string body "alias" in
+    (* #586 slice 1: extract opaque_host_id from the alias suffix
+       `<name>#<12-16 hex>` (set by `c2c host-id`). The body may also
+       carry an explicit `opaque_host_id` field (clients that don't
+       want the `#hostid` suffix in their canonical alias). Explicit
+       field wins over suffix extraction when both are present. The
+       full alias (with `#hostid` suffix if present) is stored as the
+       lease's unique key — opaque_host_id is a separate field for
+       routing/dedup. *)
+    let alias_embedded_host_id =
+      let _name, host_id_opt = C2c_name.split_opaque_host_id alias in
+      host_id_opt
+    in
+    let body_host_id = get_opt_string body "opaque_host_id" in
+    let opaque_host_id =
+      match body_host_id with
+      | Some s when s <> "" ->
+          if C2c_name.is_opaque_host_id s then Some s
+          else
+            Some s  (* keep as-is; R.register will store it verbatim — we
+                      don't enforce a shape at this layer; the client's
+                      recipe owns the format *)
+      | _ -> alias_embedded_host_id
+    in
     let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
     let actor_id =
       if identity_pk_b64 = "" then ""
@@ -3536,7 +3604,8 @@ generateKeys();
                   else
                     let result =
                       R.register relay ~node_id ~session_id ~alias
-                        ~client_type ~ttl ~identity_pk ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64 ()
+                        ~client_type ~ttl ~identity_pk ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64
+                        ~opaque_host_id:opaque_host_id ()
                     in
                     let receipt =
                       let relay_identity = R.relay_identity relay in
@@ -3554,7 +3623,8 @@ generateKeys();
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
         let result =
-          R.register relay ~node_id ~session_id ~alias ~client_type ~ttl ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64 ()
+          R.register relay ~node_id ~session_id ~alias ~client_type ~ttl ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64
+            ~opaque_host_id:opaque_host_id ()
         in
         let difficulty = finish_register_result result in
         respond_register_ok ~difficulty (json_of_register_result result)
@@ -5147,11 +5217,11 @@ module Relay_client : sig
   val health : t -> Yojson.Safe.t Lwt.t
   val register :
     t -> node_id:string -> session_id:string -> alias:string ->
-    ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string ->
+    ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> ?opaque_host_id:string ->
     unit -> Yojson.Safe.t Lwt.t
   val register_signed :
     t -> node_id:string -> session_id:string -> alias:string ->
-    ?client_type:string -> ?ttl:float ->
+    ?client_type:string -> ?ttl:float -> ?opaque_host_id:string ->
     identity_pk_b64:string -> sig_b64:string -> nonce:string -> ts:string ->
     unit -> Yojson.Safe.t Lwt.t
   val heartbeat : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
@@ -5292,7 +5362,7 @@ end = struct
 
   let register t ~node_id ~session_id ~alias
       ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "")
-      ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
+      ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id = "") () =
     let base = [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
@@ -5313,6 +5383,11 @@ end = struct
         fields @ [("enc_pubkey", `String enc_pubkey); ("signed_at", `Float signed_at); ("sig_b64", `String sig_b64)]
       else fields
     in
+    let fields =
+      if opaque_host_id <> "" then
+        fields @ [("opaque_host_id", `String opaque_host_id)]
+      else fields
+    in
     let actor_id =
       if identity_pk = "" then "" else b64url_nopad_encode identity_pk
     in
@@ -5321,8 +5396,9 @@ end = struct
 
   let register_signed t ~node_id ~session_id ~alias
       ?(client_type = "unknown") ?(ttl = default_lease_ttl)
+      ?(opaque_host_id = "")
       ~identity_pk_b64 ~sig_b64 ~nonce ~ts () =
-    let body = `Assoc [
+    let base = [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
       ("alias", `String alias);
@@ -5333,6 +5409,11 @@ end = struct
       ("nonce", `String nonce);
       ("timestamp", `String ts);
     ] in
+    let body = if opaque_host_id <> "" then
+      `Assoc (("opaque_host_id", `String opaque_host_id) :: base)
+    else
+      `Assoc base
+    in
     post_with_pow_retry t "/register" ~route:"register"
       ~actor_id:identity_pk_b64 body
 

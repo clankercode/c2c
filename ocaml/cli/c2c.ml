@@ -3007,6 +3007,38 @@ let verify =
     (Cmdliner.Cmd.info "verify" ~doc:"Verify c2c message exchange progress.")
     verify_cmd
 
+(* --- subcommand: host-id ------------------------------------------------- *)
+(* Slice 1 of .collab/design/2026-06-17-c2c-opaque-host-id.md. Computes the
+   opaque per-host identifier used by the relay to de-duplicate / route
+   across machines without exposing project name or hostname. The recipe
+   matches the extension's `computeHostHash` byte-for-byte (see
+   ocaml/host_id.ml for the canonical implementation) so c2c and the
+   pi-c2c extension produce the same value on the same host. *)
+let host_id_cmd =
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ]
+      ~doc:"Emit JSON output with the source kind/value + computed id.")
+  in
+  let+ json = json in
+  let info = Host_id.compute_host_hash_with_source () in
+  if json then
+    print_endline (Yojson.Safe.to_string (`Assoc [
+      "host_id", `String info.Host_id.host_id;
+      "kind", `String info.kind;
+      "value", `String info.value;
+    ]))
+  else
+    print_endline info.Host_id.host_id
+
+let host_id =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "host-id"
+      ~doc:"Print the opaque per-host identifier (12 hex chars). \
+            Same recipe as the extension's computeHostHash; pass it as \
+            <alias>#<host_id> to `c2c relay register` for cross-machine \
+            privacy (.collab/design/2026-06-17-c2c-opaque-host-id.md).")
+    host_id_cmd
+
 (* --- subcommand: git ----------------------------------------------------- *)
 
 let has_author_flag args =
@@ -12316,7 +12348,7 @@ let () =
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
-    ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
+    ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; host_id; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; C2c_uninstall.uninstall_subcmd; completion_cmd
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances_deprecated; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; C2c_watch.watch_cmd; help ]
   in

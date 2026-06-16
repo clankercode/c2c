@@ -296,6 +296,7 @@ open C2c_mcp_helpers
     ; tmux_location = str_opt "tmux_location" json
     ; cwd = str_opt "cwd" json
     ; metadata_opt_out = bool_member_default "metadata_opt_out" json false
+    ; opaque_host_id = str_opt "opaque_host_id" json
     }
 
   let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral; message_id } =
@@ -1880,7 +1881,7 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) ?(metadata_opt_out = false) ?(from_auto_gen = false) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) ?(metadata_opt_out = false) ?(opaque_host_id = None) ?(from_auto_gen = false) () =
     if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -1919,8 +1920,8 @@ open C2c_mcp_helpers
            across re-registration. *)
         let old_state =
           match List.find_opt (fun reg -> reg.session_id = session_id) rest with
-          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery, r.tmux_location, r.cwd, r.metadata_opt_out)
-          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None, tmux_location, cwd, metadata_opt_out)
+          | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery, r.tmux_location, r.cwd, r.metadata_opt_out, r.opaque_host_id)
+          | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None, tmux_location, cwd, metadata_opt_out, opaque_host_id)
         in
         (* #529: log when a fresh registration has session_id ≠ alias.
            The inbox filename is based on session_id (original value), so when they
@@ -1942,7 +1943,7 @@ open C2c_mcp_helpers
             log_broker_event ~broker_root:(root t) "session_id_differs_from_alias" fields
           with _ -> ());
           let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery, old_tmux_location, _old_cwd, _old_metadata_opt_out) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery, old_tmux_location, _old_cwd, _old_metadata_opt_out, old_opaque_host_id) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -1993,7 +1994,8 @@ open C2c_mcp_helpers
           ; automated_delivery = old_automated_delivery
           ; tmux_location = effective_tmux_location
           ; cwd
-          ; metadata_opt_out }
+          ; metadata_opt_out
+          ; opaque_host_id = old_opaque_host_id }
         in
         let kept =
           match
