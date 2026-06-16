@@ -111,6 +111,76 @@ For local broker registration, the existing `canonical_alias` is *not* changed i
 - Deprecation warning on `canonical_alias` in the broker log: "WARNING: canonical_alias exposes project + host; consider migrating to opaque_host_id"
 - Removal (1+ release later): drop the `<repo-slug>@<host>` portion of `canonical_alias` entirely; leave just `<alias>` as the bare alias
 
+#### `c2c relay gc --stale` — self-cleaning ghost leases
+
+Ghost leases are registrations from sessions that no longer exist (process
+crashed, session id changed, `C2C_MCP_SESSION_ID` was stale). They persist
+until the 24h TTL (`default_lease_ttl = 86400s` in `ocaml/relay.ml`) expires.
+This is the `pi-25ac7b` problem observed in the field.
+
+The `ee5fa39` fix prevents *new* ghost leases (by clearing the session id
+before relay calls), but existing ghosts need manual cleanup or TTL expiry.
+`c2c relay gc --stale` provides self-service cleanup.
+
+**Subcommand**: `c2c relay gc --stale [OPTIONS]`
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | off | Print leases that would be pruned, don't delete |
+| `--max-age <seconds>` | `86400` (24h) | Only prune leases older than this |
+| `--match-alias <pattern>` | `*` (all) | Glob pattern to scope pruning (e.g. `cli-*` to drop all pre-fix ghost leases) |
+
+**Safety**: the CLI knows its own identity (`~/.config/c2c/identity.json`), so it
+can safely drop leases that match `(identity_pk, alias)` but were registered
+from a different session. It will NOT drop leases owned by a *different*
+identity_pk (those are another machine's legitimate registrations).
+
+**Implementation** (in `ocaml/relay.ml`):
+
+```ocaml
+val gc_stale_leases
+  :  relay_url:string
+  -> token:string option
+  -> identity:identity     (* local Ed25519 keypair *)
+  -> max_age_s:int
+  -> match_alias:string    (* glob pattern *)
+  -> dry_run:bool
+  -> (int * string list)   (* count pruned, aliases pruned *)
+```
+
+The function:
+1. Calls `relay list` to get all leases
+2. Filters to leases where:
+   - `identity_pk` matches the local identity
+   - `registered_at < now - max_age_s`
+   - `alias` matches the glob pattern
+3. For each match: calls `relay register --alias <alias>` with a new session id
+   (the alias-collision rejection surfaces the existing lease, and a
+   re-register with the same identity_pk takes over, effectively dropping
+   the stale session binding)
+4. Returns the count and list of pruned aliases
+
+**CLI** (`ocaml/cli/c2c.ml`):
+
+```
+$ c2c relay gc --stale --dry-run
+Scanning for stale leases (max-age: 86400s, pattern: *)...
+  cli-pi-25ac7b  (registered 23h ago, session cli-pi-25ac7b)
+  cli-pi-test    (registered 4h ago, session cli-pi-test)
+2 stale leases found (dry-run, no changes made)
+
+$ c2c relay gc --stale
+Pruned 2 stale leases: cli-pi-25ac7b, cli-pi-test
+```
+
+**Tests** (`ocaml/test/test_relay_gc.ml`):
+- `gc --dry-run` lists matches without deleting
+- `gc --max-age 3600` respects the age threshold
+- `gc --match-alias 'cli-*'` scopes correctly
+- `gc` does NOT prune leases owned by a different identity_pk
+- `gc` handles empty list gracefully
+- Integration: register a ghost, gc it, verify it's gone from `relay list`
+
 ## Migration / back-compat
 
 The new field is **purely additive**. Existing consumers keep working:
@@ -164,3 +234,22 @@ Old clients (no `opaque_host_id` populated) continue to work; their `canonical_a
 - [ ] Existing tests pass (no regressions on `canonical_alias` consumers)
 - [ ] New test file: `ocaml/test/test_relay_opaque_host_id.ml`, ≥6 tests covering the lease round-trip, the CLI subcommand, the alias parser, and the relay list output
 - [ ] Design doc reviewed and merged
+
+## Files to touch (slice 3, c2c side)
+
+| File | Change |
+|---|---|
+| `ocaml/cli/c2c.ml` | New `c2c relay gc --stale` subcommand with `--dry-run`, `--max-age`, `--match-alias` flags |
+| `ocaml/relay.ml` | `gc_stale_leases` function: list leases, filter by (identity_pk, age, alias glob), re-register to take over stale bindings |
+| `ocaml/test/test_relay_gc.ml` | New test file: dry-run, max-age, match-alias, identity-pk safety, empty list, integration |
+| `ocaml/cli/c2c.ml` | `c2c broker deprecate-canonical-alias` flag |
+
+## Definition of done (slice 3)
+
+- [ ] `c2c relay gc --stale --dry-run` lists stale leases without deleting
+- [ ] `c2c relay gc --stale` prunes ghost leases owned by the local identity
+- [ ] `--max-age` and `--match-alias` flags work as documented
+- [ ] `gc` does NOT prune leases owned by a different identity_pk
+- [ ] `c2c broker deprecate-canonical-alias` flag gates the canonical_alias reformatting
+- [ ] New test file: `ocaml/test/test_relay_gc.ml`, ≥6 tests
+- [ ] Existing tests pass (no regressions)
