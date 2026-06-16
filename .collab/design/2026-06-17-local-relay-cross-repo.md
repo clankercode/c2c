@@ -4,7 +4,7 @@
 
 **Pattern**: run a local c2c relay on `127.0.0.1:7331`, then point one `c2c relay connect` connector at it from each broker. The connector syncs local registrations to the relay and pulls remote ones back. DMs to non-local aliases route through the relay automatically.
 
-**Status**: research complete 2026-06-17. Not yet implemented.
+**Status**: research complete 2026-06-17. **Smoke-tested partially** — see "Smoke test results" below. The outbound half works; the inbound half (local broker mirroring remote peers) does not.
 
 ## Why this option
 
@@ -95,6 +95,28 @@ c2c poll-inbox
 - **Connector auto-start**: should `c2c install` ship a connector unit when it detects a multi-repo setup, or always? Probably "always, but disabled by default."
 - **Single shared broker (Option A) as fallback** for users who don't want relay infra — keep the doc side-by-side.
 - **Cross-repo rooms**: out of scope; needs relay-side room history sync (per the federated-rooms cairn).
+
+## Smoke test results (2026-06-17, host xsm)
+
+Tested the four-step bringup above:
+
+| Step | Result |
+|---|---|
+| 1. `c2c relay serve --listen 127.0.0.1:7331` | **PASS** — `/health` returns `{"ok":true,...}`, `auth_mode: dev`, PoW off, PID 54565 |
+| 2a. `c2c relay connect --once` from c2c repo | **PASS** — `registered=5` peers pushed to relay |
+| 2b. `c2c relay connect --once` from pi-xiaomi-mimo-usage repo | **PASS** — `registered=6` peers pushed to relay (one rate-limit retry) |
+| 3. `c2c relay list --relay-url http://127.0.0.1:7331` | **PASS** — shows 11+ peers total from both repos |
+| 4. `c2c list` (without `--global`) in c2c repo | **FAIL** — still only shows 5 local peers; remote peers NOT mirrored into the local broker |
+| 4'. `c2c list --global` in c2c repo | **PASS** — shows all peers across all `~/.c2c/repos/*` brokers (no relay needed for this) |
+| 5. `c2c relay connect` long-poll, `inbound=0` | **FAIL** — connector doesn't pull remote peers back into the local broker |
+
+**Key finding**: the relay connector is **one-way out only**. It pushes local registrations to the relay, but does not mirror relay-side peers into the local broker. The relay is designed for **cross-machine** coordination; for **local cross-repo** you either:
+
+1. **Use `c2c list --global`** to see all peers across all local brokers (read-only, no relay, works today)
+2. **Share a broker root (Option A)** — `C2C_MCP_BROKER_ROOT=~/.c2c/shared/broker` in both repos, accept alias-collision risk
+3. **Wait for Slice D (the broker-to-broker forwarder)** — the proper fix; not yet implemented. The relay connector is the outbound half; the inbound half (relay → local broker) is the missing piece.
+
+**Practical recommendation for this user**: use `c2c list --global` for cross-repo visibility, plus a shared broker root for cross-repo DMs (Option A), and accept the alias-collision risk. Document the trade-off. Slice D is the long-term answer.
 
 ## Files referenced
 
