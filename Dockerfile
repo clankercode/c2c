@@ -35,7 +35,8 @@ RUN opam update -y \
         mirage-crypto-rng-lwt \
         tls-lwt ca-certs \
         conduit-lwt-unix x509 ptime \
-        hacl-star
+        hacl-star \
+        "lambda-term" "zed" "uucp"
 
 # Layer: sources + build.
 # NOTE: `COPY --chown=...` is silently ignored by the docker legacy
