@@ -157,6 +157,7 @@ Old clients (no `opaque_host_id` populated) continue to work; their `canonical_a
 
 ## Definition of done (slice 1)
 
+- [x] Recipe parity verified by PoC. `ocaml/tools/host_id_poc.ml` (commit `9f11a74c`) ports the extension's `computeHostHash()` to OCaml and produces the same value (`3d08761ae3f3` on this machine). Confirmed: same recipe = same host = same id. The production `c2c host-id` subcommand can safely reuse this recipe.
 - [ ] `c2c host-id` returns the same value as `pi-c2c/src/relay.ts:computeHostHash()` on the same machine (recipe parity)
 - [ ] `c2c relay register --alias <alias>#<host_id>` succeeds and the resulting lease has `opaque_host_id = <host_id>`
 - [ ] `c2c relay list` returns `opaque_host_id` per peer
