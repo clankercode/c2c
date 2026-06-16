@@ -113,6 +113,10 @@ For local broker registration, the existing `canonical_alias` is *not* changed i
 
 #### `c2c relay gc --stale` — self-cleaning ghost leases
 
+> Full spec + 6 tests + DoD: see commit `ad5289e4` (`design: add c2c relay gc --stale to opaque_host_id slice 3`). The summary below is the design rationale; the commit has the implementation details.
+
+Ghost leases are registrations from sessions that no longer exist (process
+
 Ghost leases are registrations from sessions that no longer exist (process
 crashed, session id changed, `C2C_MCP_SESSION_ID` was stale). They persist
 until the 24h TTL (`default_lease_ttl = 86400s` in `ocaml/relay.ml`) expires.
