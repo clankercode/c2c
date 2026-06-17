@@ -7,10 +7,7 @@ let version = "0.8.0"
    shape for parsing. *)
 let git_sha = Version_git_sha.git_sha
 
-let build_date =
-  match Sys.getenv_opt "BUILD_DATE" with
-  | Some d when String.trim d <> "" -> String.trim d
-  | _ -> "dev"
+let build_date = Version_build_date.build_date
 
 let banner ~role ~git_hash =
   Printf.eprintf
