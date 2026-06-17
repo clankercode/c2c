@@ -34,18 +34,18 @@ This is the natural follow-on to:
 
 ### In-flight design proposals
 
-- **willow's inotify sketch** (`2026-05-05T19-35-00Z-willow-coder-deliver-watch-inotify-sketch.md`) — hand-rolled inotify parser + position-based dedup + atomic checkpoint sidecar for `c2c-deliver-inbox`. DRAFT, not shipped. Covers the LOCAL BROKER path. **This doc reuses that design; no need to redo it.**
+- **willow's inotify sketch** (`2026-05-05T19-35-00Z-willow-coder-deliver-watch-inotify-sketch.md`) — hand-rolled inotify parser + position-based dedup + atomic checkpoint sidecar for `c2c-deliver-inbox`. **Already shipped** in `ocaml/cli/c2c_deliver_inbox.ml` as `run_inotify_loop` (lines 155-245) with `--inotify` CLI flag. Covers the LOCAL BROKER path. **This doc exposes that existing logic as a `c2c inbox watch` CLI subcommand for pi-c2c consumption.**
 - **galaxy's SPEC-delivery-latency.md** — focused on watcher delay (5s→2s) and poker interval (600s→180s). Already shipped at 8171bc6, pending origin/master. Out of scope for "push": the inotify/WS work.
 - **stanza's push-aware heartbeat** (`2026-04-26T13-59-00Z-stanza-coder-push-aware-heartbeat.md`) — `automated_delivery` field on registrations; heartbeat body drops "Poll your C2C inbox" for push-capable clients. Landed. Provides the registry-side signal for "is this peer push-aware?".
 
 ### Why the relay needs WebSocket (the new piece)
 
-The per-repo and sessions brokers are file-based on local disk. `inotify` (willow's design) is the right push primitive — sub-millisecond event latency, zero CPU waste, no protocol overhead.
+The per-repo and sessions brokers are file-based on local disk. `inotify` (willow's design, already shipped in `c2c_deliver_inbox.ml`) is the right push primitive — sub-millisecond event latency, zero CPU waste, no protocol overhead.
 
 The relay is a remote HTTP service. `inotify` doesn't apply (no local file). Push has to be a network protocol:
 - **Long-poll**: keeps a connection open until a DM arrives. One connection per subscriber. Simple but connection-heavy.
 - **Server-Sent Events (SSE)**: one-way server→client stream. Works over plain HTTP. No bidirectional frames.
-- **WebSocket**: full-duplex, RFC 6455. Standard, well-understood, already half-implemented (`ocaml/relay_ws_frame.ml` is server-side frame handling). **Pick this.**
+- **WebSocket**: full-duplex, RFC 6455. Standard, well-understood, already implemented in `ocaml/relay_ws_frame.ml` — both server-side (`Session` module) AND client-side (`Client_session` module with `send_text`, `recv`, `close`). **Pick this.**
 
 ## Goal
 
@@ -63,10 +63,12 @@ The pollTick becomes a **fallback** that runs at a much longer interval (60s?) t
 
 ### Slice 1: Per-repo + sessions broker inotify push (small, builds on willow)
 
-Adopt willow's `c2c-deliver-inbox` inotify design with minimal changes. New `c2c inbox watch --broker-root <path>` subcommand (or extend the existing `c2c monitor --alias` to support custom paths).
+Expose the existing `run_inotify_loop` from `c2c_deliver_inbox.ml` as a new `c2c inbox watch --broker-root <path> --session-id <sid>` subcommand. The inotify logic already exists — this slice just wraps it for pi-c2c consumption.
+
+**Prerequisite fix:** `c2c_deliver_inbox.ml:156` incorrectly uses `broker_root // ".inbox" // session_id ^ ".inbox.json"` but actual inbox files are at `broker_root // (session_id ^ ".inbox.json")` (no `.inbox/` subdirectory). Fix this path before proceeding.
 
 **New behavior:**
-- Watch `<broker_root>/<alias>.inbox.json` for `IN_MODIFY`
+- Watch `<broker_root>/<session_id>.inbox.json` for `IN_MODIFY`
 - Position-based dedup against `last_seen_count` (atomic sidecar)
 - On new messages: write to stdout in the same shape as `c2c poll-inbox --json` (one JSON line per message)
 - pi-c2c spawns this for per-repo broker AND sessions broker concurrently
@@ -79,12 +81,12 @@ Adopt willow's `c2c-deliver-inbox` inotify design with minimal changes. New `c2c
 - Keep the 60s pollTick as fallback
 
 **Files:**
-- New: `ocaml/cli/c2c_inbox_watch.ml` (hand-rolled inotify + position dedup, ~150 lines following willow's sketch)
-- New: `pi-c2c/src/broker-watcher.ts` (subprocess management + pipe parser)
+- Modified: `ocaml/cli/c2c_deliver_inbox.ml` (fix inbox path bug, expose `run_inotify_loop` as a CLI subcommand `c2c inbox watch`)
+- New: `ocaml/cli/c2c_inbox_watch.ml` (thin wrapper that calls into `c2c_deliver_inbox`'s inotify loop, ~50 lines)
+- New: `pi-c2c/src/broker-watcher.ts` (subprocess management + pipe parser, ~100 lines)
 - Modified: `pi-c2c/src/index.ts` (replace per-repo + sessions branches of pollTick)
-- Modified: `pi-c2c/src/spool.ts` (already handles "where to write the sidecar" — generalize)
 
-**Why this is small:** the inotify parser and dedup logic already exist in willow's sketch. Just port + integrate.
+**Why this is small:** the inotify parser and dedup logic already exist in `c2c_deliver_inbox.ml`. Just fix the path bug, wrap as CLI, and integrate into pi-c2c.
 
 ### Slice 2: Relay WebSocket push (the new piece)
 
@@ -157,7 +159,7 @@ New subcommand `c2c relay subscribe --alias <me> --relay-url <url>`:
 - On DM frame: writes to stdout as JSON line `{ from, body, ts }`
 - On close/error: exits non-zero (caller restarts with backoff)
 
-The existing `c2c_relay_connector.ml` (which already pulls from relay and delivers to local broker inbox) is the natural place to add this — replace the `relayDmPoll` call with a `relaySubscribe` subprocess piped to the same local-inbox deliver function.
+The existing `c2c_relay_connector.ml` (which already pulls from relay and delivers to local broker inbox) is the natural place to add this — replace the `relayDmPoll` call with a `relaySubscribe` subprocess piped to the same local-inbox deliver function. The client-side WS logic should reuse `Relay_ws_frame.Client_session` which already implements masked writes, pong handling, and recv.
 
 **Why this is the right shape:**
 - Ed25519 auth matches the existing relay lease/registration auth (no new crypto)
@@ -233,15 +235,15 @@ Sender (pi-A)                       Relay (relay.c2c.im)              Receiver (
 2. **Where does the WS server bind?** Currently the relay is one process; adding WS to the same port (443 with cohttp upgrade) is cleaner than a second port. **Recommend same port.**
 3. **Should the WS subscribe replace `c2c relay dm poll` entirely, or run in parallel?** Replace. The poll command stays for ops debugging but the connector doesn't use it.
 4. **Cross-relay mesh**: when a DM is forwarded between relays, does the destination relay push to its subscribers, or store-and-forward only? **Recommend destination pushes** — the source relay has already validated and stored, no need to keep it in source's hands.
-5. **Inotify on macOS / non-Linux dev machines**: inotify is Linux-only. The c2c-cli fallback path should use `fs.watch` (FSEvents) for cross-platform. For production, the relay is Linux-only and most agents are Linux. **Document the limitation, defer macOS support.**
+5. **Inotify on macOS / non-Linux dev machines**: inotify is Linux-only. The existing `c2c_deliver_inbox.ml` already falls back to polling when the `inotifywait` subprocess fails (lines 210-218), so macOS works but at poll latency. For production, the relay is Linux-only and most agents are Linux. **Document the limitation, defer FSEvents support.**
 
 ## Slices
 
-1. **Slice 1: Broker inotify (small, ~300 LoC)** — port willow's sketch into `c2c_inbox_watch.ml`; new `BrokerWatcher` in pi-c2c; replaces per-repo + sessions branches of pollTick. Latency: 5s → 50ms on local.
+1. **Slice 1: Broker inotify (small, ~150 LoC)** — fix path bug + wrap existing `run_inotify_loop` as `c2c inbox watch` CLI; new `BrokerWatcher` in pi-c2c; replaces per-repo + sessions branches of pollTick. Latency: 5s → 50ms on local.
 2. **Slice 2: Relay WebSocket (medium, ~600 LoC)** — new `Relay_ws_server.ml` (server) + `c2c relay subscribe` (client). Wire protocol, auth, reconnect. Latency: 5.5s → 80ms on relay.
 3. **Slice 3: pi-c2c relay watcher (small, ~150 LoC)** — `RelayWatcher` class, replace relay branch of pollTick with subscription. Per-agent memory field for connection state. Wire it all up.
 
-**Total: ~1050 LoC across 3 slices.** Each independently testable; slice 1 is the lowest-risk win.
+**Total: ~900 LoC across 3 slices.** Each independently testable; slice 1 is the lowest-risk win.
 
 ## Verification
 
