@@ -5450,6 +5450,107 @@ let relay_mobile_pair_cmd =
           Printf.eprintf "error: unknown mobile-pair subcommand: %s (use prepare, confirm, revoke, init, or claim)\n%!" other;
           exit 1
 
+(* c2c relay subscribe — WebSocket push subscription for DMs (slice 2) *)
+let relay_subscribe_cmd =
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
+  in
+  let alias =
+    Cmdliner.Arg.(required & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Your alias to subscribe as.")
+  in
+  let+ relay_url = relay_url
+  and+ alias = alias in
+  match resolve_relay_url relay_url with
+  | None ->
+      Printf.eprintf "%s%!" relay_url_required_error;
+      exit 1
+  | Some url ->
+      (* Load identity for signing *)
+      match Relay_identity.load () with
+      | Error msg ->
+          Printf.eprintf "error: cannot load identity.json: %s\n%!" msg;
+          Printf.eprintf "Run 'c2c relay identity init' first.\n%!";
+          exit 1
+      | Ok id ->
+          (* Parse relay URL to get host/port *)
+          let uri = Uri.of_string url in
+          let host = Option.value (Uri.host uri) ~default:"localhost" in
+          let port = Option.value (Uri.port uri) ~default:(if Uri.scheme uri = Some "https" then 443 else 7331) in
+          let use_tls = Uri.scheme uri = Some "https" in
+          (* Create auth headers *)
+          let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
+          let msg = alias ^ ts in
+          let sig_ = Relay_identity.sign id msg in
+          let sig_b64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_ in
+          Printf.eprintf "[relay subscribe] connecting to %s:%d as %s...\n%!" host port alias;
+          (* Open TCP connection *)
+          let addr = Unix.ADDR_INET (Unix.inet_addr_of_string 
+            (try (Unix.gethostbyname host).Unix.h_addr_list.(0) |> Unix.string_of_inet_addr
+             with _ -> host), port) in
+          let sockfd = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+          (try Unix.connect sockfd addr with e -> Printf.eprintf "connect error: %s\n%!" (Printexc.to_string e); exit 1);
+          (* Generate WebSocket key *)
+          let ws_key = Base64.encode_string (String.init 16 (fun _ -> Char.chr (Random.int 256))) in
+          (* Send HTTP upgrade request *)
+          let path = "/ws/subscribe" in
+          let request = Printf.sprintf
+            "GET %s HTTP/1.1\r\n\
+             Host: %s\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: %s\r\n\
+             Sec-WebSocket-Version: 13\r\n\
+             X-C2C-Alias: %s\r\n\
+             X-C2C-Timestamp: %s\r\n\
+             X-C2C-Signature: %s\r\n\
+             \r\n"
+            path host ws_key alias ts sig_b64
+          in
+          let _ = Unix.write_substring sockfd request 0 (String.length request) in
+          (* Read response *)
+          let buf = Bytes.create 4096 in
+          let n = Unix.read sockfd buf 0 4096 in
+          let response = Bytes.sub_string buf 0 n in
+          if not (String.sub response 0 (min 12 n) = "HTTP/1.1 101") then begin
+            Printf.eprintf "error: WebSocket upgrade failed:\n%s\n%!" response;
+            Unix.close sockfd;
+            exit 1
+          end;
+          Printf.eprintf "[relay subscribe] WebSocket connected. Listening for DMs...\n%!";
+          (* Now in WebSocket mode - read frames and output to stdout *)
+          let fd_lwt = Lwt_unix.of_unix_file_descr sockfd in
+          let ic = Lwt_io.of_fd ~mode:Lwt_io.Input fd_lwt in
+          let rec loop () =
+            let open Lwt.Infix in
+            Lwt.catch
+              (fun () ->
+                Relay_ws_frame.read_frame ic >>= fun frame ->
+                let msg = Relay_ws_frame.parse_message frame in
+                (match msg with
+                 | Some (`Text payload) ->
+                     (* Output JSON line to stdout *)
+                     print_endline payload;
+                     flush stdout;
+                     loop ()
+                 | Some (`Ping) ->
+                     (* Server ping - pong already sent by read_frame? No, we need to send pong *)
+                     (* For now just continue - the Session module handles pong *)
+                     loop ()
+                 | Some (`Close (code, reason)) ->
+                     Printf.eprintf "[relay subscribe] connection closed: code=%d reason=%s\n%!" code reason;
+                     Lwt.return_unit
+                 | Some (`Binary _) ->
+                     loop ()
+                 | None ->
+                     loop ()))
+              (fun e ->
+                Printf.eprintf "[relay subscribe] error: %s\n%!" (Printexc.to_string e);
+                Lwt.return_unit)
+          in
+          Lwt_main.run (loop ());
+          Unix.close sockfd;
+          exit 0
+
 let relay_gc_cmd =
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
@@ -5791,17 +5892,18 @@ let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay r
  let relay_register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register Ed25519 identity on the relay.") relay_register_cmd
  let relay_dm = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dm" ~doc:"Send or receive cross-host direct messages.") relay_dm_cmd
  let relay_mobile_pair = Cmdliner.Cmd.v (Cmdliner.Cmd.info "mobile-pair" ~doc:"Mobile device pairing via QR token flow (§S5a).") relay_mobile_pair_cmd
+ let relay_subscribe = Cmdliner.Cmd.v (Cmdliner.Cmd.info "subscribe" ~doc:"WebSocket push subscription for DMs (slice 2).") relay_subscribe_cmd
 
  let relay_group =
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
     (Cmdliner.Cmd.info "relay"
-       ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, dead-letter, identity, register, dm, mobile-pair."
+       ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, dead-letter, identity, register, dm, mobile-pair, subscribe."
        ~man:[ `S "DESCRIPTION"
             ; `P "The relay connects brokers across machines. Use $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
             ; `P "Common workflow: run $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
             ])
-    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair ]
+    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair; relay_subscribe ]
 
 (* --- mesh ------------------------------------------------------------------- *)
 

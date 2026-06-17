@@ -3818,6 +3818,8 @@ generateKeys();
         let result = R.send relay ~from_alias ~to_alias:stripped_to_alias ~content ~message_id in
         (match result with
          | `Ok ts | `Duplicate ts ->
+           (* Push to WS subscribers (slice 2) *)
+           Relay_ws_server.push_dm ~to_alias:stripped_to_alias ~from_alias ~body:content ~ts;
            (match R.identity_pk_of relay ~alias:stripped_to_alias with
             | Some identity_pk ->
               (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
@@ -4962,6 +4964,54 @@ generateKeys();
                   respond_ok (`Assoc ["ok", `Bool true; "msg", `String "websocket_session_started"]))
          | _ ->
            respond_bad_request (json_error_str "observer_upgrade_required" "Upgrade: websocket header required"))
+
+      (* === Slice 2: WebSocket push subscription endpoint === *)
+      | `GET, "/ws/subscribe" ->
+        let upgrade = Header.get (Request.headers req) "Upgrade" in
+        let sec_websocket_key = Header.get (Request.headers req) "Sec-WebSocket-Key" in
+        let c2c_alias = Header.get (Request.headers req) "X-C2C-Alias" in
+        let c2c_ts = Header.get (Request.headers req) "X-C2C-Timestamp" in
+        let c2c_sig = Header.get (Request.headers req) "X-C2C-Signature" in
+        let client_ip = get_client_ip conn in
+        (match upgrade with
+         | Some u when String.lowercase_ascii u = "websocket" ->
+           (match sec_websocket_key, c2c_alias, c2c_ts, c2c_sig with
+            | None, _, _, _ ->
+              respond_bad_request (json_error_str "missing_sec_websocket_key" "Sec-WebSocket-Key header required")
+            | _, None, _, _ | _, _, None, _ | _, _, _, None ->
+              respond_unauthorized (json_error_str "missing_auth_headers" "X-C2C-Alias, X-C2C-Timestamp, X-C2C-Signature required")
+            | Some ws_key, Some alias, Some ts_str, Some sig_b64 ->
+              (* Validate auth *)
+              let lookup_pk ~alias = R.identity_pk_of relay ~alias in
+              (match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str ~sig_b64 with
+               | Relay_ws_server.Auth_error msg ->
+                 Relay_ratelimit.structured_log
+                   ~event:"ws_subscribe"
+                   ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                   ~result:"auth_failed" ();
+                 respond_unauthorized (json_error_str "auth_failed" msg)
+               | Relay_ws_server.Auth_ok validated_alias ->
+                 match get_fd_from_flow conn with
+                 | None ->
+                   respond_json ~status:`Internal_server_error (json_error_str "internal_error" "Could not extract connection fd")
+                 | Some orig_fd ->
+                   let ws_accept = Relay_ws_server.make_upgrade_response ws_key in
+                   let fd_dup = Lwt_unix.unix_file_descr orig_fd |> Unix.dup in
+                   let fd_dup_lwt = Lwt_unix.of_unix_file_descr fd_dup in
+                   let (_:int) = Unix.write (Lwt_unix.unix_file_descr orig_fd) (Bytes.of_string ws_accept) 0 (String.length ws_accept) in
+                   Unix.close (Lwt_unix.unix_file_descr orig_fd);
+                   Relay_ratelimit.structured_log
+                     ~event:"ws_subscribe"
+                     ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                     ~result:"upgraded" ();
+                   Lwt.async (fun () ->
+                     Lwt.catch
+                       (fun () -> Relay_ws_server.handle_subscriber ~alias:validated_alias ~fd:fd_dup_lwt)
+                       (fun _ -> Lwt.return_unit));
+                   respond_ok (`Assoc ["ok", `Bool true; "msg", `String "ws_subscribe_session_started"])))
+         | _ ->
+           respond_bad_request (json_error_str "websocket_upgrade_required" "Upgrade: websocket header required"))
+
       | `GET, "/" ->
         respond_html landing_html
 

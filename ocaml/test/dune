@@ -260,3 +260,9 @@
  (name test_c2c_broker_canonical_alias_deprecation)
  (modules test_c2c_broker_canonical_alias_deprecation)
  (libraries c2c_mcp alcotest unix))
+
+; Slice 2: WebSocket push subscription tests for relay
+(test
+ (name test_relay_ws_server)
+ (modules test_relay_ws_server)
+ (libraries c2c_mcp alcotest base64 mirage-crypto-ec str unix))
