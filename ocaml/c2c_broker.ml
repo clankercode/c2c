@@ -4,7 +4,10 @@
 
 open C2c_mcp_helpers
 
-  type t = { root : string }
+  type t = {
+    root : string;
+    deprecate_canonical_alias : bool;
+  }
 
   (* Hardening B: prior-mismatch state — tracks which aliases were last
      observed in mismatch state. Used to suppress WORKTREE_MATCH log spam:
@@ -888,8 +891,17 @@ open C2c_mcp_helpers
     log_relay_pin_rotate ~broker_root ~alias ~epoch;
     epoch
 
+  let deprecate_canonical_alias_from_env () =
+    (* Slice 3 of .collab/design/2026-06-17-c2c-opaque-host-id.md:
+       gate the canonical_alias reformatting behind an env var so callers
+       can opt into the opaque form without breaking existing consumers. *)
+    match Sys.getenv_opt "C2C_DEPRECATE_CANONICAL_ALIAS" with
+    | Some v -> v = "1" || String.lowercase_ascii v = "true"
+    | None -> false
+
   let create ~root =
-    let t = { root } in
+    let deprecate = deprecate_canonical_alias_from_env () in
+    let t = { root; deprecate_canonical_alias = deprecate } in
     (* [#432 Slice E] Bind the relay-pins persistence root and load any
        previously-persisted pins into the in-memory Hashtbls. Idempotent
        across recreates within the same process: subsequent [create]
@@ -1375,7 +1387,7 @@ open C2c_mcp_helpers
            match docker_broker_root () with
            | Error _ -> true  (* env misconfigured: assume alive rather than false dead *)
            | Ok root ->
-               let path = lease_file_path { root } ~session_id:reg.session_id in
+               let path = lease_file_path { root; deprecate_canonical_alias = false } ~session_id:reg.session_id in
                if not (Sys.file_exists path) then false
                else
                  (try
@@ -1413,7 +1425,7 @@ open C2c_mcp_helpers
           match docker_broker_root () with
           | Error _ -> Unknown  (* env misconfigured: cannot determine *)
           | Ok root ->
-              let path = lease_file_path { root } ~session_id:reg.session_id in
+              let path = lease_file_path { root; deprecate_canonical_alias = false } ~session_id:reg.session_id in
               if not (Sys.file_exists path) then Unknown
               else
                 (try
@@ -1719,10 +1731,16 @@ open C2c_mcp_helpers
       | _ -> h
     with _ -> "unknown"
 
-  let compute_canonical_alias ~alias ~broker_root =
-    Printf.sprintf "%s#%s@%s" alias
-      (repo_slug_of_broker_root broker_root)
-      (short_hostname ())
+  let compute_canonical_alias ?(deprecate_canonical_alias = false) ~alias ~broker_root () =
+    if deprecate_canonical_alias then
+      (* Slice 3 of .collab/design/2026-06-17-c2c-opaque-host-id.md:
+         replace the leaky <repo-slug>@<hostname> suffix with the opaque
+         host id computed by Host_id.compute_host_hash. *)
+      Printf.sprintf "%s#%s" alias (Host_id.compute_host_hash ())
+    else
+      Printf.sprintf "%s#%s@%s" alias
+        (repo_slug_of_broker_root broker_root)
+        (short_hostname ())
 
   (* Primes for alias disambiguation *)
   let small_primes = [| 2; 3; 5; 7; 11; 13; 17; 19; 23; 29; 31; 37; 41; 43; 47 |]
@@ -1978,7 +1996,7 @@ open C2c_mcp_helpers
           in
           { session_id; alias; pid; pid_start_time
           ; registered_at = Some (Unix.gettimeofday ())
-          ; canonical_alias = Some (compute_canonical_alias ~alias ~broker_root:(root t))
+          ; canonical_alias = Some (compute_canonical_alias ~deprecate_canonical_alias:t.deprecate_canonical_alias ~alias ~broker_root:(root t) ())
           ; dnd; dnd_since; dnd_until
           ; client_type = effective_client_type
           ; plugin_version = effective_plugin_version

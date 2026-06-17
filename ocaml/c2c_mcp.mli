@@ -295,9 +295,13 @@ module Broker : sig
       Thread-safe via [with_relay_pins_lock]. Returns the new epoch. *)
   val relay_pin_rotate : broker_root:string -> alias:string -> int
 
-  val compute_canonical_alias : alias:string -> broker_root:string -> string
-  (** [compute_canonical_alias ~alias ~broker_root] returns "<alias>#<repo>@<host>"
-      where repo is derived from broker_root path and host is the short hostname. *)
+  val compute_canonical_alias :
+    ?deprecate_canonical_alias:bool -> alias:string -> broker_root:string -> unit -> string
+  (** [compute_canonical_alias ~alias ~broker_root ()] returns "<alias>#<repo>@<host>"
+      using the broker root to infer the repo slug and [Unix.gethostname ()] for
+      the short hostname. When [~deprecate_canonical_alias:true] is passed, the
+      leaky repo@host suffix is replaced by the opaque host id
+      ("<alias>#<host_id>") per slice 3 of the opaque_host_id design. *)
 
   val suggest_alias_for_alias : t -> alias:string -> string option
   (** [suggest_alias_for_alias t ~alias] returns [Some alias] when [alias] is
