@@ -72,7 +72,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /home/opam/c2c/_build/default/ocaml/cli/c2c.exe /usr/local/bin/c2c
 
-USER c2c
+# Run as root in the CMD so we can chown the volume mount before dropping
+# privileges for the relay process. The c2c user can't write to the
+# /data Railway volume (owned by root at mount time), so without this
+# the relay falls back to in-memory identity and resets on every restart.
+# Use setpriv (in util-linux) to drop to c2c after the chown; we keep
+# USER c2c for the WORKDIR/USER metadata but the CMD is `exec setpriv ...`
+# so the actual relay process runs as the unprivileged c2c user.
+USER root
 WORKDIR /var/lib/c2c
 
 # BUILD_DATE is passed as --build-arg at docker build time so Version.build_date
@@ -94,16 +101,20 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # without it, the relay defaults to in-memory mode and dead_letter
 # entries are lost on restart (no file persistence).
 # --relay-name is set from C2C_RELAY_NAME for cross-host alias validation.
+# chown /data first (volume mount is owned by root at runtime) and then
+# setpriv down to the c2c user so the relay process itself never runs as
+# root. setpriv is in util-linux which ships in the debian:12-slim base.
 CMD ["sh", "-c", "\
+  chown c2c:c2c /data 2>/dev/null || true; \
   persist_flag=${C2C_RELAY_PERSIST_DIR:+--persist-dir ${C2C_RELAY_PERSIST_DIR}}; \
   storage_flag=${C2C_RELAY_PERSIST_DIR:+--storage sqlite}; \
   relay_name_flag=${C2C_RELAY_NAME:+--relay-name ${C2C_RELAY_NAME}}; \
   if [ -f /run/secrets/relay_token ]; then \
-    exec c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token ${storage_flag} ${persist_flag} ${relay_name_flag}; \
+    exec setpriv --reuid=c2c --regid=c2c --init-groups c2c relay serve --listen 0.0.0.0:${PORT} --token-file /run/secrets/relay_token ${storage_flag} ${persist_flag} ${relay_name_flag}; \
   elif [ -n \"${C2C_RELAY_TOKEN:-}\" ]; then \
-    exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${C2C_RELAY_TOKEN}\" ${storage_flag} ${persist_flag} ${relay_name_flag}; \
+    exec setpriv --reuid=c2c --regid=c2c --init-groups c2c relay serve --listen 0.0.0.0:${PORT} --token \"${C2C_RELAY_TOKEN}\" ${storage_flag} ${persist_flag} ${relay_name_flag}; \
   elif [ -n \"${RELAY_TOKEN:-}\" ]; then \
-    exec c2c relay serve --listen 0.0.0.0:${PORT} --token \"${RELAY_TOKEN}\" ${storage_flag} ${persist_flag} ${relay_name_flag}; \
+    exec setpriv --reuid=c2c --regid=c2c --init-groups c2c relay serve --listen 0.0.0.0:${PORT} --token \"${RELAY_TOKEN}\" ${storage_flag} ${persist_flag} ${relay_name_flag}; \
   else \
-    exec c2c relay serve --listen 0.0.0.0:${PORT} ${storage_flag} ${persist_flag} ${relay_name_flag}; \
+    exec setpriv --reuid=c2c --regid=c2c --init-groups c2c relay serve --listen 0.0.0.0:${PORT} ${storage_flag} ${persist_flag} ${relay_name_flag}; \
   fi"]

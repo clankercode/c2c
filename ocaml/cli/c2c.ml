@@ -4457,7 +4457,18 @@ let persist_dir = match persist_dir with
   | None -> Sys.getenv_opt "C2C_RELAY_PERSIST_DIR"
 in
 Random.self_init ();
-Version.banner ~role:"relay-server" ~git_hash:(Option.value (git_shorthash ()) ~default:"unknown");
+(* Banner git hash: prefer RAILWAY_GIT_COMMIT_SHA at runtime (same logic
+   /health uses — see Relay.handle_health), fall back to a `git rev-parse`
+   shell-out, and finally to the literal "unknown". Without this fallback
+   the Docker build context has no .git (see .dockerignore), so the compile
+   time Version.git_sha is "unknown" and the banner would always show
+   "git=unknown" even when Railway sets the SHA at runtime. *)
+let banner_git_hash =
+  match Sys.getenv_opt "RAILWAY_GIT_COMMIT_SHA" with
+  | Some sha when String.length sha >= 7 -> String.sub sha 0 7
+  | _ -> Option.value (git_shorthash ()) ~default:"unknown"
+in
+Version.banner ~role:"relay-server" ~git_hash:banner_git_hash;
 Printf.eprintf "  listen=%s:%d\n%!" host port;
 (* #379 S2: --relay-name defaults to the listen host. The resolved value is
    threaded into Broker.create as ~self_host so the cross-host alias splitter
