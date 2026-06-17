@@ -92,11 +92,6 @@ ARG BUILD_DATE
 RUN if [ -z "$BUILD_DATE" ]; then BUILD_DATE=$(date -u +%Y-%m-%d); fi
 ENV BUILD_DATE=$BUILD_DATE
 
-# BUILD_DATE is passed as --build-arg at docker build time so Version.build_date
-# shows the actual build date in production. Falls back to "dev" when unset.
-ARG BUILD_DATE=dev
-ENV BUILD_DATE=$BUILD_DATE
-
 # Railway sets $PORT; default for local `docker run -p 7331:7331`.
 ENV PORT=7331
 EXPOSE 7331
