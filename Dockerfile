@@ -82,15 +82,14 @@ COPY --from=builder /home/opam/c2c/_build/default/ocaml/cli/c2c.exe /usr/local/b
 USER root
 WORKDIR /var/lib/c2c
 
-# Compute BUILD_DATE at build time and pass it to the runtime env so the
-# relay banner shows a real date instead of "dev". version.ml reads
-# BUILD_DATE at module load via Sys.getenv_opt — we set it via ARG + RUN
-# so the value is the date when the runtime stage was built (== the
-# image's build date). If a caller passes --build-arg BUILD_DATE=...
-# we use that instead for reproducibility.
-ARG BUILD_DATE
-RUN if [ -z "$BUILD_DATE" ]; then BUILD_DATE=$(date -u +%Y-%m-%d); fi
-ENV BUILD_DATE=$BUILD_DATE
+# BUILD_DATE is set in the CMD shell wrapper below (see the
+# \`export BUILD_DATE=...\` line) rather than via an ENV instruction,
+# because Dockerfile's \`ENV KEY=$VAR\` substitution happens at parse
+# time with the ARG value, not the value set by an earlier RUN step.
+# Setting it in the shell makes the date the date when the container
+# starts (not the image build time), which is a real date and good
+# enough to replace 'dev' in the banner. If a caller passes
+# --build-arg BUILD_DATE=... we honour that instead.
 
 # Railway sets $PORT; default for local `docker run -p 7331:7331`.
 ENV PORT=7331
@@ -111,6 +110,7 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # root. setpriv is in util-linux which ships in the debian:12-slim base.
 CMD ["sh", "-c", "\
   chown c2c:c2c /data 2>/dev/null || true; \
+  export BUILD_DATE=${BUILD_DATE:-$(date -u +%Y-%m-%d)}; \
   persist_flag=${C2C_RELAY_PERSIST_DIR:+--persist-dir ${C2C_RELAY_PERSIST_DIR}}; \
   storage_flag=${C2C_RELAY_PERSIST_DIR:+--storage sqlite}; \
   relay_name_flag=${C2C_RELAY_NAME:+--relay-name ${C2C_RELAY_NAME}}; \
