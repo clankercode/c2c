@@ -82,6 +82,16 @@ COPY --from=builder /home/opam/c2c/_build/default/ocaml/cli/c2c.exe /usr/local/b
 USER root
 WORKDIR /var/lib/c2c
 
+# Compute BUILD_DATE at build time and pass it to the runtime env so the
+# relay banner shows a real date instead of "dev". version.ml reads
+# BUILD_DATE at module load via Sys.getenv_opt — we set it via ARG + RUN
+# so the value is the date when the runtime stage was built (== the
+# image's build date). If a caller passes --build-arg BUILD_DATE=...
+# we use that instead for reproducibility.
+ARG BUILD_DATE
+RUN if [ -z "$BUILD_DATE" ]; then BUILD_DATE=$(date -u +%Y-%m-%d); fi
+ENV BUILD_DATE=$BUILD_DATE
+
 # BUILD_DATE is passed as --build-arg at docker build time so Version.build_date
 # shows the actual build date in production. Falls back to "dev" when unset.
 ARG BUILD_DATE=dev
