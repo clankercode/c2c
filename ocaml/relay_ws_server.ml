@@ -221,7 +221,10 @@ let recv_loop sub =
             sub.closed <- true;
             Lwt.return_unit
           | Some `Ping ->
-            (* Pong already sent by Session.recv *)
+            (* Client sent ping - Session.recv auto-sent pong. Just continue. *)
+            loop ()
+          | Some `Pong ->
+            (* Client responded to our ping - update last_pong for timeout check *)
             sub.last_pong <- Unix.gettimeofday ();
             loop ()
           | Some (`Close (_, _)) ->

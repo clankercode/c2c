@@ -24,6 +24,7 @@ type client_message = [
   | `Binary of string
   | `Close of int * string
   | `Ping
+  | `Pong
 ]
 
 (* Unmask client payload. Key is 4 bytes. *)
@@ -121,6 +122,7 @@ let parse_message f =
       in
       Some (`Close (code, reason))
   | n when n = opcode_ping -> Some (`Ping)
+  | n when n = opcode_pong -> Some (`Pong)
   | _ -> None
 
 (* Build HTTP 101 Switching Protocols response. *)
