@@ -89,6 +89,34 @@ test("PATH lookup ignores the npm wrapper currently resolving itself", () => {
   assert.equal(resolved, platformC2c);
 });
 
+test("PATH lookup ignores npm cmd shims that target this wrapper", () => {
+  const dir = tempDir();
+  const packageRoot = path.join(dir, "node_modules", "@clanker-code", "c2c");
+  const binDir = path.join(dir, "node_modules", ".bin");
+  const shim = path.join(binDir, "c2c.cmd");
+  const selfPath = path.join(packageRoot, "bin", "c2c-js-wrapper.js");
+  const platformC2c = makeExecutable(
+    path.join(dir, "node_modules", "@clanker-code", "c2c-win32-x64", "bin", "c2c.exe")
+  );
+  makeExecutable(selfPath);
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(
+    shim,
+    `@ECHO off\r\n"%~dp0\\..\\@clanker-code\\c2c\\bin\\c2c-js-wrapper.js" %*\r\n`
+  );
+
+  const { resolveC2cBinary } = loadResolver();
+  const resolved = resolveC2cBinary({
+    env: { PATH: binDir },
+    platform: "win32",
+    arch: "x64",
+    selfPath,
+    requireFrom: packageRoot,
+  });
+
+  assert.equal(resolved, platformC2c);
+});
+
 test("matching platform package is used when PATH has no c2c", () => {
   const dir = tempDir();
   const platformC2c = makeExecutable(

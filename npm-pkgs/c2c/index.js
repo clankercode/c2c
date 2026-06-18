@@ -47,20 +47,35 @@ function sameFile(left, right) {
   }
 }
 
-function pathCandidates(env) {
+function pathCandidates(env, platform) {
   const pathValue = env.PATH || "";
   const dirs = pathValue.split(path.delimiter).filter(Boolean);
   const names =
-    process.platform === "win32"
+    platform === "win32"
       ? ["c2c.exe", "c2c.cmd", "c2c.bat", "c2c"]
       : ["c2c"];
 
   return dirs.flatMap((dir) => names.map((name) => path.join(dir, name)));
 }
 
-function findSystemC2c(env, selfPath) {
-  for (const candidate of pathCandidates(env)) {
-    if (canExecute(candidate) && !sameFile(candidate, selfPath)) {
+function looksLikeSelfNpmShim(candidate, selfPath) {
+  if (!candidate.match(/\.(cmd|bat)$/i)) {
+    return false;
+  }
+
+  try {
+    const body = fs.readFileSync(candidate, "utf8");
+    const normalizedBody = body.replace(/\\/g, "/").toLowerCase();
+    const normalizedSelf = selfPath.replace(/\\/g, "/").toLowerCase();
+    return normalizedBody.includes(normalizedSelf) || normalizedBody.includes("c2c-js-wrapper.js");
+  } catch {
+    return false;
+  }
+}
+
+function findSystemC2c(env, selfPath, platform) {
+  for (const candidate of pathCandidates(env, platform)) {
+    if (canExecute(candidate) && !sameFile(candidate, selfPath) && !looksLikeSelfNpmShim(candidate, selfPath)) {
       return candidate;
     }
   }
@@ -124,7 +139,7 @@ function resolveC2cBinary(options = {}) {
     return env.C2C_BIN;
   }
 
-  const systemC2c = findSystemC2c(env, selfPath);
+  const systemC2c = findSystemC2c(env, selfPath, platform);
   if (systemC2c) {
     return systemC2c;
   }
