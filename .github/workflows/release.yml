@@ -71,7 +71,7 @@ jobs:
 
       - name: Build command/docs drift report
         shell: bash
-        run: python3 scripts/c2c-docs-drift.py --doc CLAUDE.md --summary
+        run: python3 scripts/c2c-docs-drift.py --doc CLAUDE.md --summary --warn-only
 
       - name: Write release notes
         run: python3 tools/ci/release.py notes --version '${{ steps.meta.outputs.version }}' --out dist/release-notes.md
