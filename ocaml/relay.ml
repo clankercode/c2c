@@ -2885,6 +2885,7 @@ end = struct
       || path = "/mobile-pair"
       || path = "/forward"
       || path = "/poll_inbox"
+      || path = "/ws/subscribe"
       || String.starts_with ~prefix:"/binding/" path
     in
     if is_unauth || is_self_auth then (true, None)

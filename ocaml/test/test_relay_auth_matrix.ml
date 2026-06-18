@@ -168,6 +168,10 @@ let t_send_room_invite_no_header_auth_allowed () =
   Alcotest.(check bool) "/send_room_invite allowed without Ed25519 header (body-auth)" true
     (allowed (decide ~path:"/send_room_invite" ~token:(Some "t0p") ~auth:None ~ed:false ()))
 
+let t_ws_subscribe_no_header_auth_allowed () =
+  Alcotest.(check bool) "/ws/subscribe allowed without Ed25519 header (X-header auth)" true
+    (allowed (decide ~path:"/ws/subscribe" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
 let () =
   Alcotest.run "relay_auth_matrix" [
     "unauth", [
@@ -203,6 +207,8 @@ let () =
         t_set_room_visibility_no_header_auth_allowed;
       Alcotest.test_case "/send_room_invite no header allowed" `Quick
         t_send_room_invite_no_header_auth_allowed;
+      Alcotest.test_case "/ws/subscribe no header allowed" `Quick
+        t_ws_subscribe_no_header_auth_allowed;
     ];
     "admin", [
       Alcotest.test_case "/gc Bearer ok" `Quick t_admin_gc_bearer_ok;

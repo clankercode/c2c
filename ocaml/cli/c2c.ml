@@ -5465,6 +5465,13 @@ let relay_subscribe_cmd =
       Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
+      let uri = Uri.of_string url in
+      let scheme = Uri.scheme uri in
+      if scheme = Some "https" || scheme = Some "wss" then begin
+        Printf.eprintf
+          "error: c2c relay subscribe does not support TLS WebSocket URLs yet; use an http:// relay URL or poll with relay connect.\n%!";
+        exit 1
+      end;
       (* Load identity for signing *)
       match Relay_identity.load () with
       | Error msg ->
@@ -5473,10 +5480,8 @@ let relay_subscribe_cmd =
           exit 1
       | Ok id ->
           (* Parse relay URL to get host/port *)
-          let uri = Uri.of_string url in
           let host = Option.value (Uri.host uri) ~default:"localhost" in
-          let port = Option.value (Uri.port uri) ~default:(if Uri.scheme uri = Some "https" then 443 else 7331) in
-          let use_tls = Uri.scheme uri = Some "https" in
+          let port = Option.value (Uri.port uri) ~default:7331 in
           (* Create auth headers *)
           let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
           let msg = alias ^ ts in
@@ -5520,12 +5525,13 @@ let relay_subscribe_cmd =
           (* Now in WebSocket mode - read frames and output to stdout *)
           let fd_lwt = Lwt_unix.of_unix_file_descr sockfd in
           let ic = Lwt_io.of_fd ~mode:Lwt_io.Input fd_lwt in
+          let oc = Lwt_io.of_fd ~mode:Lwt_io.Output fd_lwt in
+          let session = Relay_ws_frame.Client_session.create ic oc "c2c!" in
           let rec loop () =
             let open Lwt.Infix in
             Lwt.catch
               (fun () ->
-                Relay_ws_frame.read_frame ic >>= fun frame ->
-                let msg = Relay_ws_frame.parse_message frame in
+                Relay_ws_frame.Client_session.recv session >>= fun msg ->
                 (match msg with
                  | Some (`Text payload) ->
                      (* Output JSON line to stdout *)
@@ -5533,8 +5539,9 @@ let relay_subscribe_cmd =
                      flush stdout;
                      loop ()
                  | Some (`Ping) ->
-                     (* Server ping - pong already sent by read_frame? No, we need to send pong *)
-                     (* For now just continue - the Session module handles pong *)
+                     (* Client_session.recv already answered with a masked pong. *)
+                     loop ()
+                 | Some `Pong ->
                      loop ()
                  | Some (`Close (code, reason)) ->
                      Printf.eprintf "[relay subscribe] connection closed: code=%d reason=%s\n%!" code reason;
