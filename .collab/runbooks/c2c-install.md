@@ -17,7 +17,7 @@ c2c install claude --alias my-alias
 c2c install kimi --alias my-alias
 c2c install opencode --alias my-alias --target-dir ./my-project --force
 
-# Git hook (pre-commit) in the current repo
+# Git hooks in the current repo (explicit opt-in only)
 c2c install git-hook
 ```
 
@@ -33,6 +33,27 @@ To remove: c2c uninstall <component>   (preview: c2c uninstall <component> --dry
 ```
 
 Use `--dry-run` to preview and `--json` for machine-readable output.
+
+### Git hooks are disabled by default
+
+As of 2026-06-18, the repo-local `.git/hooks/pre-commit` and
+`.git/hooks/pre-push` symlinks are not installed automatically by
+`just install-all` / `just bi`, and the c2c main checkout has those hooks
+removed unless an operator explicitly reinstalls them.
+
+The hook scripts remain available under `scripts/git-hooks/` for operators who
+want them:
+
+- `pre-commit` checks staged `.opencode/plugins/*.ts` changes with
+  `bun build .opencode/plugins/c2c.ts --target=bun`.
+- `pre-push` rejects non-coordinator pushes to `origin/master` for remotes that
+  look like the c2c repo; `C2C_COORDINATOR=1` bypasses it.
+
+Install them only when that repo-local policy is desired:
+
+```bash
+just install-git-hooks
+```
 
 ## Uninstall
 
