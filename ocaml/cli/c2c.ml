@@ -7191,7 +7191,10 @@ let init_cmd =
         a
   in
   (* Ensure Ed25519 identity exists — idempotent, safe to run always. *)
-  let identity_init_rc = Sys.command "c2c relay identity init 2>/dev/null" in
+  let identity_init_rc =
+    Sys.command (Printf.sprintf "%s relay identity init 2>/dev/null"
+      (Filename.quote (current_c2c_command ())))
+  in
   if identity_init_rc <> 0 then
     Printf.eprintf "  warning: relay identity init failed (rc=%d). Relay features may not work.\n  hint: run 'c2c relay identity init' manually to diagnose.\n%!" identity_init_rc;
 

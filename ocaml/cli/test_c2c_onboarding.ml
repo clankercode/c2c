@@ -58,7 +58,10 @@ let run_c2c ?(env=[]) ~home ~broker args =
   in
   let env_list =
     [ "HOME=" ^ home_dir
+    ; "XDG_CONFIG_HOME=" ^ (home_dir // ".config")
+    ; "XDG_STATE_HOME=" ^ (home_dir // ".local" // "state")
     ; "C2C_MCP_BROKER_ROOT=" ^ broker_dir
+    ; "C2C_CLI_FORCE=1"
     ; "C2C_MCP_SESSION_ID="
     ; "CLAUDE_SESSION_ID="
     ; "C2C_MCP_AUTO_REGISTER_ALIAS="
