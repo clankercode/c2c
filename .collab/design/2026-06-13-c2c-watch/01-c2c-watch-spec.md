@@ -297,11 +297,10 @@ would reparse the error text and double the broker-root resolution.
 `from_alias` = the watcher's own registered alias, resolved via the existing
 `resolve_alias ?override broker` helper (`ocaml/cli/c2c.ml:149`), which maps
 `C2C_MCP_SESSION_ID → alias` through `list_registrations`. For the operator's plain
-shell (no session id), `c2c watch` exposes a `--from ALIAS` flag (mirrors
-`send_cmd`'s `--from`, `ocaml/cli/c2c.ml:394`) — the alias must already be
-registered, or `C2C_COORDINATOR=1` to bypass. If neither is set and no alias
-resolves, the send line shows a clear "no sender alias — pass --from ALIAS" status
-and refuses to send (no silent drop).
+shell (no session id), the shipped `c2c watch` surface exposes `--as ALIAS` — the
+alias must already be registered, or `C2C_COORDINATOR=1` to bypass. If neither is
+set and no alias resolves, the send line shows a clear
+"no sender alias — pass --as ALIAS" status and refuses to send (no silent drop).
 
 ### 4.3 Error surfacing (MUST — these raise, do not assume success)
 
@@ -452,7 +451,7 @@ surface, terminal teardown) are isolated.
 - **B4 — Rooms tab (read).** Room list + canonical `history.jsonl` timeline +
   member tristate counts + empty-room default. Golden snapshots incl. an
   empty-room fixture (the common case).
-- **B5 — Send (DM + room).** Input line, `from_alias` resolution + `--from`, the
+- **B5 — Send (DM + room).** Input line, `from_alias` resolution + `--as`, the
   in-process `enqueue_message` / `send_room` calls, **and the full `Invalid_argument`
   / `sr_warning` error surface** (§4.3). Tested via the data-layer send wrappers
   returning `Error msg` (no live broker needed for the error paths). Land last —

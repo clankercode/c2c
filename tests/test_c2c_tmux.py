@@ -37,3 +37,17 @@ class C2CTmuxTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("alias 'demo' is already alive", stderr.getvalue())
         tmux_mock.assert_not_called()
+
+    def test_send_accepts_multi_word_literal_text_then_enter(self):
+        args = c2c_tmux.build_parser().parse_args(['send', 'demo', 'hello', 'world'])
+
+        with mock.patch.object(c2c_tmux, '_resolve_target', return_value=('%7', True, False)):
+            with mock.patch.object(c2c_tmux, 'ENTER_HELPER', Path('/no/such/helper')):
+                with mock.patch.object(c2c_tmux, 'tmux') as tmux_mock:
+                    rc = c2c_tmux.cmd_send(args)
+
+        self.assertEqual(rc, 0)
+        tmux_mock.assert_has_calls([
+            mock.call('send-keys', '-l', '-t', '%7', 'hello world', capture=False),
+            mock.call('send-keys', '-t', '%7', 'Enter', capture=False),
+        ])

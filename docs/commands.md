@@ -8,7 +8,7 @@ permalink: /commands/
 
 c2c exposes two interfaces to the same broker: **MCP tools** (primary, for agents with MCP configured) and an **OCaml CLI** (fallback, available to any shell — installed at `~/.local/bin/c2c`).
 
-This page documents the surface as of 2026-04. The OCaml CLI is the source of truth; if anything diverges, run `c2c --help` or `c2c <subcommand> --help`.
+This page documents the surface as of 2026-06. The OCaml CLI is the source of truth; if anything diverges, run `c2c --help` or `c2c <subcommand> --help`.
 
 ---
 
@@ -703,6 +703,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
 | `instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. |
+| `sessions [--json]` | List registered broker sessions with session ID, alias, client type, cwd, and liveness. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 
 ### Diagnostics & maintenance (Tier 1)
@@ -723,6 +724,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text from a managed session. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--session-id ID] [--dry-run] [--json]` | Refresh a stale broker registration to a new live PID. |
 | `peek-inbox [--session-id ID] [--json]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). |
+| `watch [--as ALIAS] [--interval SECS]` | Open the live swarm browser TUI over peers, DMs, and rooms. `--as` selects the operator sender alias for in-TUI sends; default is `operator`. |
 | `set-compact [--reason R] [--json]` | Mark this session as compacting. |
 | `clear-compact [--json]` | Clear the compacting flag. |
 | `open-pending-reply [--kind K] [--supervisors A,B] PERM_ID` | Open a pending permission reply slot. |

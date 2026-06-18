@@ -249,7 +249,7 @@ def cmd_send(args: argparse.Namespace) -> int:
         )
         return 2
     print(f"-- send {args.alias} @ {target} --", file=sys.stderr)
-    tmux("send-keys", "-t", target, args.text, capture=False)
+    tmux("send-keys", "-l", "-t", target, " ".join(args.text), capture=False)
     return _send_enter(target)
 
 
@@ -622,7 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sd = sp.add_parser("send", help="type text + Enter into a swarm pane")
     sd.add_argument("alias")
-    sd.add_argument("text")
+    sd.add_argument("text", nargs="+", help="text to type literally (joined by spaces)")
     sd.set_defaults(func=cmd_send)
 
     en = sp.add_parser("enter", help="send a bare Enter (extended-keys safe)")
