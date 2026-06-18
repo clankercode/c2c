@@ -62,7 +62,10 @@ version input for dry runs and draft releases.
 The release workflow builds Linux x64, Linux arm64, macOS x64, and macOS arm64
 artifact bundles. It stages npm platform packages plus the
 `@clanker-code/c2c` meta package, dry-runs every package, and publishes npm
-only when `publish_npm=true` and `NPM_TOKEN` is configured.
+only on manual dispatch with `publish_npm=true`. npm publishing uses Trusted
+Publishing with GitHub Actions OIDC, so configure each npm package on npmjs.com
+for workflow `release.yml`; the first publish for each package may need a
+one-time bootstrap before trusted publishing can take over.
 
 ## Verify Outputs
 

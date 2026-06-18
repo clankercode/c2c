@@ -81,8 +81,19 @@ on operator-local Claude tooling and is not portable c2c runtime surface.
 
 The workflow also stages npm platform packages and the `@clanker-code/c2c`
 meta package. npm publishing is opt-in via manual dispatch with
-`publish_npm=true` and `NPM_TOKEN`; every package is dry-run packed first, and
-platform packages publish before the meta package.
+`publish_npm=true`; every package is dry-run packed first, and platform
+packages publish before the meta package.
+
+npm publishing uses Trusted Publishing with GitHub Actions OIDC. Configure
+each npm package on npmjs.com with:
+
+- GitHub owner/repository for this repo;
+- workflow filename `release.yml`;
+- optional environment `npm-publish` if we add a GitHub environment gate;
+- allowed action `npm publish`.
+
+The first version of each package may need a one-time manual/token bootstrap
+before npm lets CI-owned trusted publishing take over.
 
 ## Verify Release Assets
 

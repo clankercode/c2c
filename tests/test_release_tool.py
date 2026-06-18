@@ -32,6 +32,10 @@ def test_package_npm_stages_meta_and_platform_packages(tmp_path: Path) -> None:
     meta = json.loads((dist / "c2c" / "package.json").read_text(encoding="utf-8"))
     assert meta["name"] == "@clanker-code/c2c"
     assert meta["version"] == "1.2.3"
+    assert meta["repository"] == {
+        "type": "git",
+        "url": "git+https://github.com/clankercode/c2c.git",
+    }
     assert set(meta["optionalDependencies"]) == {
         "@clanker-code/c2c-linux-x64",
         "@clanker-code/c2c-linux-arm64",
@@ -42,6 +46,7 @@ def test_package_npm_stages_meta_and_platform_packages(tmp_path: Path) -> None:
     linux = json.loads((dist / "c2c-linux-x64" / "package.json").read_text(encoding="utf-8"))
     assert linux["os"] == ["linux"]
     assert linux["cpu"] == ["x64"]
+    assert linux["repository"] == meta["repository"]
     assert (dist / "c2c-linux-x64" / "bin" / "c2c").exists()
 
 

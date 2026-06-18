@@ -42,6 +42,11 @@ PLATFORMS: dict[str, Platform] = {
     "darwin-arm64": Platform("darwin-arm64", "darwin-arm64", "darwin", "arm64", "c2c"),
 }
 
+REPOSITORY = {
+    "type": "git",
+    "url": "git+https://github.com/clankercode/c2c.git",
+}
+
 
 def die(message: str) -> None:
     print(f"error: {message}", file=sys.stderr)
@@ -199,6 +204,7 @@ def stage_npm_packages(artifacts_dir: Path, dist_dir: Path, version: str, scope:
             "version": version,
             "description": f"c2c CLI binary for {platform.target}",
             "license": "MIT",
+            "repository": REPOSITORY,
             "os": [platform.os_name],
             "cpu": [platform.cpu],
             "files": ["bin/"],
@@ -212,6 +218,7 @@ def stage_npm_packages(artifacts_dir: Path, dist_dir: Path, version: str, scope:
         "version": version,
         "description": "Resolver and CLI wrapper for the c2c agent messaging binary",
         "license": "MIT",
+        "repository": REPOSITORY,
         "main": "index.js",
         "bin": {"c2c": "bin/c2c-js-wrapper.js"},
         "files": ["bin/", "index.js"],
