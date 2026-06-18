@@ -135,6 +135,34 @@ mcp__c2c__poll_inbox   {}                          # → {"messages": [...]} or 
 
 ---
 
+## Receiving Messages
+
+The inbox is the source of truth. Client integrations make it feel live, but
+manual polling always works:
+
+```bash
+mcp__c2c__poll_inbox {}
+c2c poll-inbox
+```
+
+Claude Code receives through the PostToolUse hook installed by
+`c2c install claude`; reload plugins or restart before expecting transcript
+delivery. For idle-session and swarm-wide awareness, use Claude Code's Monitor
+tool with:
+
+```text
+Monitor({command: "c2c monitor --archive --all", persistent: true})
+```
+
+Codex receives through the XML sideband when available, OpenCode through its
+native plugin, and Kimi through notification-store delivery. Generic clients can
+always fall back to `poll_inbox` / `c2c poll-inbox`.
+
+See [Per-Client Delivery](/client-delivery/) for the full receiving matrix and
+current caveats.
+
+---
+
 ## MCP Tools
 
 These are the tools exposed by the c2c MCP broker (canonical surface defined in `ocaml/c2c_mcp.ml`). Call them as `mcp__c2c__<name>` from your client.

@@ -48,13 +48,57 @@ The broker root resolves in this order (canonical — see root `CLAUDE.md` "Key 
 
 ## Delivery Model
 
+### Receiving Messages
+
+All receives start the same way: the sender writes a JSON message to the
+recipient's broker inbox. What differs by client is how that inbox becomes a
+visible turn, notification, or tool result.
+
+**Universal receive path:** call `mcp__c2c__poll_inbox {}` to drain your inbox,
+or `mcp__c2c__peek_inbox {}` to inspect without draining. The CLI mirrors this
+with `c2c poll-inbox` and `c2c peek-inbox`. This path works everywhere and is
+the fallback when a client integration is not loaded.
+
+**Claude Code:** `c2c install claude` registers a PostToolUse hook
+(`~/.claude/hooks/c2c-inbox-check.sh`) in `~/.claude/settings.json`. After each
+non-MCP tool call, the hook runs `c2c-inbox-hook-ocaml`, drains pending messages,
+and emits `hookSpecificOutput.additionalContext` so c2c envelopes appear in the
+transcript. Restart Claude Code after install, or run `/reload-plugins`, so both
+the MCP server and hook are live.
+
+For idle Claude Code sessions and swarm-wide awareness, run Claude's Monitor
+tool with the race-free archive watcher:
+
+```text
+Monitor({command: "c2c monitor --archive --all", persistent: true})
+```
+
+`--archive` watches append-only drained-message logs, so it does not miss
+messages that the PostToolUse hook already consumed from the live inbox.
+`--all` broadens visibility from your alias to the full broker. Monitor output
+is an awareness surface; the broker inbox/archive remains the message source of
+truth.
+
+**Claude channels:** the MCP `notifications/claude/channel` path is still gated
+behind `experimental.claude/channel`. Standard Claude Code builds do not
+declare that capability, so channel delivery is not the production receive path.
+Use the hook plus Monitor, with `poll_inbox` as the explicit fallback.
+
+**Non-Claude clients:** managed Codex uses the `--xml-input-fd` XML sideband
+when the configured Codex binary supports it; OpenCode uses its TypeScript
+plugin and a `c2c monitor` subprocess to deliver via `promptAsync`; Kimi uses
+`C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi` to write notification
+files into Kimi's notification store. Unmanaged or generic clients should poll
+via MCP/CLI, or run `c2c-deliver-inbox --inotify --loop` when a client-specific
+bridge is available.
+
 ### Today: near-real-time via hooks + polling
 
 Agents call `poll_inbox` to drain their inbox. The sender writes to the recipient's inbox file; the recipient reads it.
 
 For near-real-time delivery without manual polling per turn:
 
-- **Claude Code** — `c2c install claude` registers a PostToolUse hook (`c2c-inbox-check.sh`) that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
+- **Claude Code** — `c2c install claude` registers a PostToolUse hook wrapper that fires after every tool call, drains the inbox, and surfaces messages directly in the transcript. Combined with `C2C_MCP_AUTO_REGISTER_ALIAS`, this gives stable identity + near-real-time delivery with zero per-turn effort.
 - **Codex** — `c2c start codex` now prefers the forked Codex TUI sideband path: if the binary supports `--xml-input-fd`, c2c injects inbound broker messages as real user turns through that sideband FD while keeping the normal TUI in front. Otherwise it falls back to the notify-only PTY daemon, where Codex polls with `poll_inbox`. Use `c2c reset-thread <name> <thread>` to force a managed Codex instance onto an exact thread instead of `resume --last`.
 - **Codex Headless** — `c2c start codex-headless` launches `codex-turn-start-bridge` in XML mode for agentic workflows. Shares the durable XML writer path with the Codex TUI for broker delivery. Uses `--approval-policy never` (no machine-readable approval handoff yet). Resume uses an opaque `thread_id` persisted in instance config, and `c2c reset-thread <name> <thread>` rewrites that persisted target before restart.
 - **OpenCode** — TypeScript plugin (`.opencode/plugins/c2c.ts` under the target project, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync`. In a dev checkout it symlinks to `data/opencode-plugin/c2c.ts`; in a binary-only install it is written from the embedded blob in the compiled `c2c` binary. Background wake uses `c2c monitor --all` subprocess with `moved_to` inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session. `c2c_opencode_wake_daemon.py` is deprecated.

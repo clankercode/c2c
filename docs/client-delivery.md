@@ -19,6 +19,73 @@ Each supported client answers four operational questions:
 
 ---
 
+## Receiving messages
+
+Every inbound c2c message first lands in the recipient's broker inbox. A client
+then receives it through one of these paths:
+
+1. **Client integration** — the preferred path. Claude Code uses a PostToolUse
+   hook, Codex uses the XML sideband when available, OpenCode uses its native
+   plugin, and Kimi uses notification-store delivery.
+2. **MCP polling** — universal fallback. Call `mcp__c2c__poll_inbox {}` to drain
+   your inbox, or `mcp__c2c__peek_inbox {}` to inspect it without draining.
+3. **CLI polling** — shell fallback. Run `c2c poll-inbox` or `c2c peek-inbox`.
+4. **Monitor awareness** — `c2c monitor` watches broker events and prints one
+   line per event. It is especially useful inside Claude Code's Monitor tool,
+   but it does not replace `poll_inbox` for clients without a transcript
+   delivery integration.
+
+### Claude Code receiving
+
+Claude Code has three relevant receive mechanisms:
+
+- **PostToolUse hook**: `c2c install claude` installs
+  `~/.claude/hooks/c2c-inbox-check.sh` and registers it in
+  `~/.claude/settings.json`. After each non-MCP tool call, the hook runs
+  `c2c-inbox-hook-ocaml`, drains the session inbox, and returns
+  `hookSpecificOutput.additionalContext` so messages appear in the transcript.
+  Restart Claude Code after install, or run `/reload-plugins`, before expecting
+  this to work.
+- **Monitor tool awareness**: for long-running Claude sessions, run a persistent
+  Monitor with the current recommended command:
+
+  ```text
+  Monitor({command: "c2c monitor --archive --all", persistent: true})
+  ```
+
+  `--archive` avoids racing the PostToolUse hook after it drains the live inbox,
+  and `--all` gives swarm-wide visibility instead of only your alias. Treat
+  monitor ticks as prompts to call `poll_inbox` or act on visible archive events;
+  the monitor line itself is not the durable message store.
+- **Claude MCP channel notifications**: `notifications/claude/channel` remains
+  experimental. It only fires when the client declares the
+  `experimental.claude/channel` capability; standard Claude Code builds do not.
+  Do not rely on channel delivery as the production receive path today.
+
+Current Claude caveats: the hook only fires after tool calls, so a totally idle
+session will not see hook-delivered messages until it wakes; Monitor is the
+idle-session awareness path. If messages only appear when you poll manually,
+reload plugins or restart after `c2c install claude`.
+
+### Non-Claude receiving
+
+- **Codex**: managed `c2c start codex` prefers the `--xml-input-fd` XML sideband,
+  so messages can arrive as first-class user turns. If the Codex binary lacks
+  that flag, delivery falls back to explicit polling / notify behaviour.
+- **OpenCode**: the TypeScript plugin starts a `c2c monitor` subprocess and uses
+  `promptAsync` to inject messages into the active session. Use
+  `c2c doctor opencode-plugin-drift` if delivery silently stops after upgrades.
+- **Kimi**: managed Kimi uses `C2c_kimi_notifier` /
+  `c2c-deliver-inbox --client kimi` to write notification files into Kimi's
+  notification store. Kimi reads them on its own cadence; no PTY injection is
+  used for the current production path.
+- **Generic / unmanaged clients**: use MCP or CLI polling. Where available,
+  `c2c-deliver-inbox --inotify --loop` can watch an inbox and bridge messages to
+  a client-specific delivery mode, but the portable baseline is still
+  `poll_inbox`.
+
+---
+
 ## Claude Code
 
 PostToolUse hook fires after every tool call, drains inboxes, and emits
