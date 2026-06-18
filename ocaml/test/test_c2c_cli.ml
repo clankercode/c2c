@@ -79,7 +79,7 @@ let c2c_cmd partial =
     (Filename.quote dir) partial
 
 let isolated_home_env home =
-  Printf.sprintf "HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s"
+  Printf.sprintf "HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s C2C_CLI_FORCE=1"
     (Filename.quote home)
     (Filename.quote (Filename.concat home ".config"))
     (Filename.quote (Filename.concat (Filename.concat home ".local") "state"))
@@ -378,7 +378,10 @@ let test_list_output_contains_peer_entries () =
       ) lines in
       let has_empty_state =
         List.exists
-          (fun l -> string_contains l "No peers" || string_contains l "No active")
+          (fun l ->
+            string_contains l "No peers"
+            || string_contains l "No active"
+            || string_contains l "No registered peers")
           lines
       in
       check bool "list output contains peer status entries or empty state" true
