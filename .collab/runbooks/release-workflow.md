@@ -67,6 +67,10 @@ The release workflow builds native c2c binary bundles for:
 - `darwin-x64`
 - `darwin-arm64`
 
+The `darwin-x64` lane runs on GitHub's `macos-15-intel` runner. Do not use
+`macos-13`; that runner image is retired and may leave release jobs stuck in
+queue.
+
 Each tarball includes the local install binary family:
 
 - `c2c`
