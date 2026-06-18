@@ -8,6 +8,7 @@
 .c2c/roles/*.md
 
 node_modules/
+dist/
 __pycache__/
 *.out
 _build/
