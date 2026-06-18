@@ -1980,12 +1980,13 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
       let conn = Sqlite3.db_open t.db_path in
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let ts = Unix.gettimeofday () in
-      let has_row = exec_prepared conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" [`Text to_alias] in
+      let lookup_alias, _ = normalize_relay_alias ~alias:to_alias ~opaque_host_id:None in
+      let has_row = exec_prepared conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" [`Text lookup_alias] in
       if not has_row then
         `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
       else
         let stmt = Sqlite3.prepare conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" in
-        Sqlite3.bind_text stmt 1 to_alias |> ignore;
+        Sqlite3.bind_text stmt 1 lookup_alias |> ignore;
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
           let _alias = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
@@ -2003,7 +2004,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
             `Error (relay_err_recipient_dead, Printf.sprintf "alias %S is registered but lease has expired" to_alias)
           else
             let recv_stmt = Sqlite3.prepare conn "SELECT node_id, session_id FROM leases WHERE alias = ?" in
-            Sqlite3.bind_text recv_stmt 1 to_alias |> ignore;
+            Sqlite3.bind_text recv_stmt 1 lookup_alias |> ignore;
             let rc2 = Sqlite3.step recv_stmt in
             if rc2 = Rc.ROW then
               let recv_node_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 0) in
@@ -3681,10 +3682,18 @@ generateKeys();
     if from_alias = "" || to_alias = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias, to_alias, and content are required")
     else
-      (* #379: split alias@host, validate host is acceptable, strip to bare alias *)
+      (* #379: split alias@host for cross-relay routing. A 12-16 lowercase
+         hex host is the relay opaque-host reply route, not a cross-relay
+         host name, so it stays local while preserving the concrete route
+         in delivered message JSON. *)
       let stripped_to_alias, host_opt = split_alias_host to_alias in
+      let opaque_host_route =
+        match host_opt with
+        | Some h -> C2c_name.is_opaque_host_id h
+        | None -> false
+      in
       let self_host = R.self_host relay in
-      if not (host_acceptable ~self_host host_opt) then
+      if (not opaque_host_route) && not (host_acceptable ~self_host host_opt) then
         (* #330 S2: three-way branch. Pre-bind msg_id and peer_name so the
            forward-outcome callback can reference them via closure. *)
         let msg_id = match get_opt_string body "message_id" with
@@ -3827,7 +3836,8 @@ generateKeys();
       | Some v when v <> from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
       | _ ->
         let message_id = get_opt_string body "message_id" in
-        let result = R.send relay ~from_alias ~to_alias:stripped_to_alias ~content ~message_id in
+        let deliver_to_alias = if opaque_host_route then to_alias else stripped_to_alias in
+        let result = R.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~message_id in
         (match result with
          | `Ok ts | `Duplicate ts ->
            (* Push to WS subscribers (slice 2) *)

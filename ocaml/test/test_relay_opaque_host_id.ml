@@ -113,6 +113,16 @@ let test_name_split_preserves_internal_chars () =
 
 let make_test_relay () = Relay.InMemoryRelay.create ()
 
+let with_temp_dir f =
+  let base = Filename.get_temp_dir_name () in
+  let dir = Filename.concat base
+      (Printf.sprintf "c2c-relay-opaque-%08x" (Random.bits ())) in
+  Unix.mkdir dir 0o755;
+  Fun.protect
+    ~finally:(fun () ->
+      Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)) |> ignore)
+    (fun () -> f dir)
+
 let test_relay_register_with_opaque_host_id () =
   let t = make_test_relay () in
   let status, lease = Relay.InMemoryRelay.register t
@@ -193,6 +203,28 @@ let test_relay_identity_lookup_accepts_reply_route () =
   check (option string) "identity lookup by reply route"
     (Some "raw-test-pk")
     (Relay.InMemoryRelay.identity_pk_of t ~alias:"lyra-quill@3d08761ae3f3")
+
+let test_sqlite_relay_send_to_embedded_host_id_alias () =
+  with_temp_dir (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    let status, lease = Relay.SqliteRelay.register t
+      ~node_id:"n1" ~session_id:"s1"
+      ~alias:"lyra-quill@3d08761ae3f3" () in
+    check string "register status" "ok" status;
+    check string "alias stored as display alias"
+      "lyra-quill" (Relay.RegistrationLease.alias lease);
+    match Relay.SqliteRelay.send t
+            ~from_alias:"alice" ~to_alias:"lyra-quill@3d08761ae3f3"
+            ~content:"hello sqlite" ~message_id:None with
+    | `Ok _ ->
+        let inbox = Relay.SqliteRelay.poll_inbox t ~node_id:"n1" ~session_id:"s1" in
+        check int "one delivered sqlite message" 1 (List.length inbox);
+        check string "sqlite to_alias preserves reply route"
+          "lyra-quill@3d08761ae3f3"
+          (json_get_string (List.hd inbox) "to_alias")
+    | `Duplicate _ -> fail "sqlite send unexpectedly reported duplicate"
+    | `Error (err, msg) ->
+        fail (Printf.sprintf "sqlite send failed: %s %s" err msg))
 
 let test_relay_register_rejects_legacy_hash_alias () =
   let t = make_test_relay () in
@@ -289,6 +321,8 @@ let () =
           test_relay_send_to_embedded_host_id_alias;
         test_case "identity lookup accepts <name>@<host_id> reply route" `Quick
           test_relay_identity_lookup_accepts_reply_route;
+        test_case "sqlite send to <name>@<host_id> reaches display alias lease" `Quick
+          test_sqlite_relay_send_to_embedded_host_id_alias;
         test_case "register rejects legacy #hostid alias" `Quick
           test_relay_register_rejects_legacy_hash_alias;
       ];
