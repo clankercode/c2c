@@ -13,8 +13,8 @@ nav_label: Changelog
   CI runs restore dependencies instead of rebuilding them from scratch.
 - Fixed CI install tests to use the freshly built CLI and deterministic fake
   client commands, matching the GitHub Actions environment.
-- Added Windows x64 release artifact support and included the Windows npm
-  platform package in the meta package dependency set.
+- Confirmed native Windows release artifacts are not part of 0.8.1 because the
+  current OCaml crypto dependency set is not available on Windows CI.
 
 ## 0.8.0
 

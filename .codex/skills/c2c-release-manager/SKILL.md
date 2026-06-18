@@ -61,7 +61,8 @@ unsigned annotated tag form above. The release workflow also supports manual
 dispatch with a version input for dry runs and draft releases.
 
 The release workflow builds Linux x64, Linux arm64, macOS x64, and macOS arm64
-artifact bundles. It stages npm platform packages plus the
+artifact bundles. Native Windows binaries are deferred until the OCaml crypto
+dependency set is Windows-compatible. It stages npm platform packages plus the
 `@clanker-code/c2c` meta package, dry-runs every package, and publishes npm
 only on manual dispatch with `publish_npm=true`. npm publishing uses Trusted
 Publishing with GitHub Actions OIDC, so configure each npm package on npmjs.com

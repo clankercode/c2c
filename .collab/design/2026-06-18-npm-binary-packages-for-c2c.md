@@ -38,7 +38,6 @@ Use one tiny meta package plus platform packages:
 @clanker-code/c2c-linux-arm64
 @clanker-code/c2c-darwin-x64
 @clanker-code/c2c-darwin-arm64
-@clanker-code/c2c-win32-x64
 ```
 
 The platform packages contain exactly one executable payload plus package
@@ -74,7 +73,8 @@ are skipped instead of installed:
 }
 ```
 
-Windows uses `bin/c2c.exe` and `os: ["win32"]`. macOS uses `os: ["darwin"]`.
+macOS uses `os: ["darwin"]`. Windows packages should use `bin/c2c.exe` and
+`os: ["win32"]` once native Windows binaries are supported.
 
 The meta package `@clanker-code/c2c` can declare platform packages as optional
 dependencies:
@@ -90,8 +90,7 @@ dependencies:
     "@clanker-code/c2c-linux-x64": "X.Y.Z",
     "@clanker-code/c2c-linux-arm64": "X.Y.Z",
     "@clanker-code/c2c-darwin-x64": "X.Y.Z",
-    "@clanker-code/c2c-darwin-arm64": "X.Y.Z",
-    "@clanker-code/c2c-win32-x64": "X.Y.Z"
+    "@clanker-code/c2c-darwin-arm64": "X.Y.Z"
   }
 }
 ```
@@ -168,9 +167,6 @@ dist/npm/
   c2c-darwin-arm64/
     package.json
     bin/c2c
-  c2c-win32-x64/
-    package.json
-    bin/c2c.exe
 ```
 
 The publish command should dry-run every package, then publish platform

@@ -96,8 +96,6 @@ jobs:
             os: macos-13
           - target: darwin-arm64
             os: macos-14
-          - target: win32-x64
-            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -141,23 +139,13 @@ jobs:
             ./ocaml/tools/c2c_cold_boot_hook.exe \
             ./ocaml/tools/c2c_post_compact_hook_bin.exe
           mkdir -p "dist/c2c-${{ matrix.target }}"
-          if [ "${{ matrix.target }}" = "win32-x64" ]; then
-            c2c_name=c2c.exe
-            deliver_name=c2c-deliver-inbox.exe
-            server_name=c2c-mcp-server.exe
-            inner_name=c2c-mcp-inner.exe
-            hook_name=c2c-inbox-hook-ocaml.exe
-            cold_boot_name=c2c-cold-boot-hook.exe
-            post_compact_name=c2c-post-compact-hook.exe
-          else
-            c2c_name=c2c
-            deliver_name=c2c-deliver-inbox
-            server_name=c2c-mcp-server
-            inner_name=c2c-mcp-inner
-            hook_name=c2c-inbox-hook-ocaml
-            cold_boot_name=c2c-cold-boot-hook
-            post_compact_name=c2c-post-compact-hook
-          fi
+          c2c_name=c2c
+          deliver_name=c2c-deliver-inbox
+          server_name=c2c-mcp-server
+          inner_name=c2c-mcp-inner
+          hook_name=c2c-inbox-hook-ocaml
+          cold_boot_name=c2c-cold-boot-hook
+          post_compact_name=c2c-post-compact-hook
           cp _build/default/ocaml/cli/c2c.exe "dist/c2c-${{ matrix.target }}/${c2c_name}"
           cp _build/default/ocaml/cli/c2c_deliver_inbox.exe "dist/c2c-${{ matrix.target }}/${deliver_name}"
           cp _build/default/ocaml/server/c2c_mcp_server.exe "dist/c2c-${{ matrix.target }}/${server_name}"

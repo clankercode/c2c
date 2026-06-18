@@ -41,7 +41,6 @@ def test_package_npm_stages_meta_and_platform_packages(tmp_path: Path) -> None:
         "@clanker-code/c2c-linux-arm64",
         "@clanker-code/c2c-darwin-x64",
         "@clanker-code/c2c-darwin-arm64",
-        "@clanker-code/c2c-win32-x64",
     }
 
     linux = json.loads((dist / "c2c-linux-x64" / "package.json").read_text(encoding="utf-8"))
@@ -49,12 +48,6 @@ def test_package_npm_stages_meta_and_platform_packages(tmp_path: Path) -> None:
     assert linux["cpu"] == ["x64"]
     assert linux["repository"] == meta["repository"]
     assert (dist / "c2c-linux-x64" / "bin" / "c2c").exists()
-
-    win32 = json.loads((dist / "c2c-win32-x64" / "package.json").read_text(encoding="utf-8"))
-    assert win32["os"] == ["win32"]
-    assert win32["cpu"] == ["x64"]
-    assert win32["bin"] == {"c2c": "bin/c2c.exe"}
-    assert (dist / "c2c-win32-x64" / "bin" / "c2c.exe").exists()
 
 
 def test_publish_order_puts_meta_package_last(tmp_path: Path) -> None:
