@@ -136,7 +136,6 @@ jobs:
           cp _build/default/ocaml/tools/c2c_inbox_hook.exe "dist/c2c-${{ matrix.target }}/c2c-inbox-hook-ocaml"
           cp _build/default/ocaml/tools/c2c_cold_boot_hook.exe "dist/c2c-${{ matrix.target }}/c2c-cold-boot-hook"
           cp _build/default/ocaml/tools/c2c_post_compact_hook_bin.exe "dist/c2c-${{ matrix.target }}/c2c-post-compact-hook"
-          cp scripts/cc-quota "dist/c2c-${{ matrix.target }}/cc-quota"
           chmod +x "dist/c2c-${{ matrix.target }}/c2c"
           chmod +x "dist/c2c-${{ matrix.target }}/c2c-deliver-inbox"
           chmod +x "dist/c2c-${{ matrix.target }}/c2c-mcp-server"
@@ -144,12 +143,11 @@ jobs:
           chmod +x "dist/c2c-${{ matrix.target }}/c2c-inbox-hook-ocaml"
           chmod +x "dist/c2c-${{ matrix.target }}/c2c-cold-boot-hook"
           chmod +x "dist/c2c-${{ matrix.target }}/c2c-post-compact-hook"
-          chmod +x "dist/c2c-${{ matrix.target }}/cc-quota"
           "dist/c2c-${{ matrix.target }}/c2c" --version
           tar -czf "dist/c2c-${{ matrix.target }}/c2c-${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz" \
             -C "dist/c2c-${{ matrix.target }}" \
             c2c c2c-deliver-inbox c2c-mcp-server c2c-mcp-inner c2c-inbox-hook-ocaml \
-            c2c-cold-boot-hook c2c-post-compact-hook cc-quota
+            c2c-cold-boot-hook c2c-post-compact-hook
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

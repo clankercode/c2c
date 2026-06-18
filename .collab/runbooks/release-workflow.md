@@ -75,7 +75,9 @@ Each tarball includes the local install binary family:
 - `c2c-inbox-hook-ocaml`
 - `c2c-cold-boot-hook`
 - `c2c-post-compact-hook`
-- `cc-quota`
+
+`cc-quota` is intentionally excluded from release tarballs because it depends
+on operator-local Claude tooling and is not portable c2c runtime surface.
 
 The workflow also stages npm platform packages and the `@clanker-code/c2c`
 meta package. npm publishing is opt-in via manual dispatch with

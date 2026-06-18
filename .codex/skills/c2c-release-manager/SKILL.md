@@ -72,7 +72,8 @@ For GitHub Release assets, verify:
 - `release-manifest.json` names the expected SHA;
 - `SHA256SUMS` covers every tarball;
 - each tarball contains `c2c`, `c2c-mcp-server`, `c2c-mcp-inner`,
-  `c2c-deliver-inbox`, hooks, and `cc-quota`;
+  `c2c-deliver-inbox`, and hooks;
+- each tarball excludes operator-local helpers such as `cc-quota`;
 - npm package dry-runs ran before any publish;
 - the meta npm package was published after all platform packages.
 
