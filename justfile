@@ -193,8 +193,13 @@ test-py:
 
 # Run OCaml tests only
 test-ocaml:
+    #!/usr/bin/env bash
+    set -euo pipefail
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune runtest --root "$PWD" ocaml/
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-60}" opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe
+    ln -sf "$PWD/_build/default/ocaml/cli/c2c.exe" "$PWD/_build/default/ocaml/cli/c2c"
+    PATH="$PWD/_build/default/ocaml/cli:$PATH" \
+      flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-60}" opam exec -- dune runtest --root "$PWD" ocaml/
 
 # Run TypeScript (vitest) unit tests for the .opencode plugin
 # Installs devDependencies on demand (idempotent if already installed).

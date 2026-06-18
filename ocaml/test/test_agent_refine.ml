@@ -21,10 +21,26 @@ let with_cwd dir f =
       Unix.chdir dir;
       f ())
 
+let repo_root = Sys.getcwd ()
+
 let c2c_path =
-  match Sys.getenv_opt "HOME" with
-  | Some home -> Filename.concat home ".local/bin/c2c"
-  | None -> "/home/xertrov/.local/bin/c2c"
+  let exe =
+    if Filename.is_relative Sys.executable_name then
+      Filename.concat repo_root Sys.executable_name
+    else
+      Sys.executable_name
+  in
+  let test_dir = Filename.dirname exe in
+  let ocaml_dir = Filename.dirname test_dir in
+  Filename.concat ocaml_dir (Filename.concat "cli" "c2c.exe")
+
+let copy_role_designer roles_subdir =
+  let src_role_designer =
+    Filename.concat repo_root (Filename.concat ".c2c" (Filename.concat "roles" "role-designer.md"))
+  in
+  let dst_role_designer = Filename.concat roles_subdir "role-designer.md" in
+  ignore (Sys.command (Printf.sprintf "cp %s %s"
+    (Filename.quote src_role_designer) (Filename.quote dst_role_designer)))
 
 (* Capture stdout+stderr from a child process running `c2c agent new` *)
 let capture_new_role ?(extra_args=[]) role_name =
@@ -120,10 +136,7 @@ let test_refine_dry_run_composes_correct_prompt () =
   let roles_subdir = Filename.concat roles_dir "roles" in
   Unix.mkdir roles_subdir 0o755;
   (* also copy role-designer.md into the temp roles dir for refine to use *)
-  let src_role_designer = "/home/xertrov/src/c2c/.c2c/roles/role-designer.md" in
-  let dst_role_designer = Filename.concat roles_subdir "role-designer.md" in
-  ignore (Sys.command (Printf.sprintf "cp %s %s"
-    (Filename.quote src_role_designer) (Filename.quote dst_role_designer)));
+  copy_role_designer roles_subdir;
   (* write a test role *)
   let test_role_path = Filename.concat roles_subdir "test-ephemeral.md" in
   let oc = open_out test_role_path in
@@ -219,10 +232,7 @@ let test_refine_dry_run_bin_flag () =
   Unix.mkdir roles_dir 0o755;
   let roles_subdir = Filename.concat roles_dir "roles" in
   Unix.mkdir roles_subdir 0o755;
-  let src_role_designer = "/home/xertrov/src/c2c/.c2c/roles/role-designer.md" in
-  let dst_role_designer = Filename.concat roles_subdir "role-designer.md" in
-  ignore (Sys.command (Printf.sprintf "cp %s %s"
-    (Filename.quote src_role_designer) (Filename.quote dst_role_designer)));
+  copy_role_designer roles_subdir;
   let test_role_path = Filename.concat roles_subdir "test-ephemeral.md" in
   let oc = open_out test_role_path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
@@ -246,10 +256,7 @@ let test_refine_dry_run_timeout_flag () =
   Unix.mkdir roles_dir 0o755;
   let roles_subdir = Filename.concat roles_dir "roles" in
   Unix.mkdir roles_subdir 0o755;
-  let src_role_designer = "/home/xertrov/src/c2c/.c2c/roles/role-designer.md" in
-  let dst_role_designer = Filename.concat roles_subdir "role-designer.md" in
-  ignore (Sys.command (Printf.sprintf "cp %s %s"
-    (Filename.quote src_role_designer) (Filename.quote dst_role_designer)));
+  copy_role_designer roles_subdir;
   let test_role_path = Filename.concat roles_subdir "test-ephemeral.md" in
   let oc = open_out test_role_path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
@@ -273,10 +280,7 @@ let test_refine_dry_run_pane_flag () =
   Unix.mkdir roles_dir 0o755;
   let roles_subdir = Filename.concat roles_dir "roles" in
   Unix.mkdir roles_subdir 0o755;
-  let src_role_designer = "/home/xertrov/src/c2c/.c2c/roles/role-designer.md" in
-  let dst_role_designer = Filename.concat roles_subdir "role-designer.md" in
-  ignore (Sys.command (Printf.sprintf "cp %s %s"
-    (Filename.quote src_role_designer) (Filename.quote dst_role_designer)));
+  copy_role_designer roles_subdir;
   let test_role_path = Filename.concat roles_subdir "test-ephemeral.md" in
   let oc = open_out test_role_path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->

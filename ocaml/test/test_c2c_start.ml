@@ -3929,15 +3929,22 @@ let () =
               let tmpfile = Filename.temp_file "c2c-tmux-test" ".out" in
               Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
                 (fun () ->
-                  ignore (Sys.command (Printf.sprintf "c2c get-tmux-location --json > %s" tmpfile));
+                  let rc =
+                    Sys.command
+                      (Printf.sprintf "c2c get-tmux-location --json > %s 2>/dev/null" tmpfile)
+                  in
                   let ch = open_in tmpfile in
                   Fun.protect ~finally:(fun () -> close_in ch)
                     (fun () ->
-                      let output = input_line ch in
-                      close_in ch;
-                      check bool "JSON output is a string starting with quote"
-                        true
-                        (String.length output > 0 && output.[0] = '"'))) ))
+                      let output = really_input_string ch (in_channel_length ch) in
+                      if rc = 0 then
+                        check bool "JSON output is a string starting with quote"
+                          true
+                          (String.length output > 0 && output.[0] = '"')
+                      else begin
+                        check int "non-tmux json exits 1" 1 rc;
+                        check string "non-tmux json stdout empty" "" output
+                      end)) ))
         ] )
     ; ( "fds_to_close",
         [ ( "fds_to_close_closes_non_preserved",

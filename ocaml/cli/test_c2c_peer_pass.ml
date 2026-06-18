@@ -51,6 +51,26 @@ let init_repo dir =
   run_in_dir dir (g "config user.name 'primary-author'");
   run_in_dir dir (g "config commit.gpgsign false")
 
+let commit_tree_with_message dir message =
+  let msg = Filename.concat dir "commit-message.txt" in
+  let oc = open_out msg in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc message);
+  let prev = Sys.getcwd () in
+  Sys.chdir dir;
+  Fun.protect ~finally:(fun () -> Sys.chdir prev) (fun () ->
+    let tree_ic = Unix.open_process_in (g "hash-object -t tree /dev/null -w") in
+    let tree = input_line tree_ic in
+    ignore (Unix.close_process_in tree_ic);
+    let commit_cmd = Printf.sprintf "%s commit-tree %s -F %s"
+      real_git (Filename.quote tree) (Filename.quote msg)
+    in
+    let commit_ic = Unix.open_process_in commit_cmd in
+    let commit = input_line commit_ic in
+    ignore (Unix.close_process_in commit_ic);
+    run_in_dir dir (Printf.sprintf "%s update-ref refs/heads/master %s"
+      real_git (Filename.quote commit)))
+
 let head_sha dir =
   let prev = Sys.getcwd () in
   Sys.chdir dir;
@@ -78,11 +98,8 @@ let test_reviewer_is_author_blocks_co_authored_by () =
   Git_helpers.reset_git_circuit_breaker ();
   with_temp_repo (fun dir ->
     init_repo dir;
-    let cmd =
-      g "commit --allow-empty -m 'feat: thing' \
-         --trailer='Co-authored-by: stanza-coder <stanza-coder@c2c.im>'"
-    in
-    run_in_dir dir cmd;
+    commit_tree_with_message dir
+      "feat: thing\n\nCo-authored-by: stanza-coder <stanza-coder@c2c.im>\n";
     let sha = head_sha dir in
     let prev = Sys.getcwd () in
     Sys.chdir dir;
@@ -106,11 +123,8 @@ let test_reviewer_is_author_doesnt_match_unrelated_co_author () =
   Git_helpers.reset_git_circuit_breaker ();
   with_temp_repo (fun dir ->
     init_repo dir;
-    let cmd =
-      g "commit --allow-empty -m 'feat: other' \
-         --trailer='Co-authored-by: someone-else <unrelated@c2c.im>'"
-    in
-    run_in_dir dir cmd;
+    commit_tree_with_message dir
+      "feat: other\n\nCo-authored-by: someone-else <unrelated@c2c.im>\n";
     let sha = head_sha dir in
     let prev = Sys.getcwd () in
     Sys.chdir dir;
