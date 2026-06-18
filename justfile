@@ -345,8 +345,8 @@ install-hook:
 
 # Install all OCaml binaries (CLI + MCP server + MCP inner + inbox hook)
 # Build all first, then copy all; avoids half-updated state on build failure.
-# Also installs git hooks (including pre-push coordinator gate).
-install-all: codegen-role-designer codegen-opencode-plugin install-git-hooks
+# Git hooks are opt-in via `just install-git-hooks`.
+install-all: codegen-role-designer codegen-opencode-plugin
     scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/server/c2c_mcp_server_inner_bin.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
     # Guard + atomic install + stamp under a single flock so concurrent
     # `just bi` runs from different worktrees can't race past the guard
