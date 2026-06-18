@@ -51,6 +51,12 @@ let with_temp_dir f =
       ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
     (fun () -> f dir)
 
+let with_cwd dir f =
+  let prev = Sys.getcwd () in
+  Fun.protect ~finally:(fun () -> Sys.chdir prev) (fun () ->
+    Sys.chdir dir;
+    f ())
+
 let write_file path contents =
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
@@ -227,6 +233,24 @@ let test_env_marker_absent_when_alias_explicit () =
     "env marker absent when alias explicit (blocklist must apply)"
     false
     (List.mem_assoc "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" env_fields)
+
+let test_kimi_config_uses_configured_social_room () =
+  with_temp_dir (fun dir ->
+    let c2c_dir = dir // ".c2c" in
+    Unix.mkdir c2c_dir 0o700;
+    write_file (c2c_dir // "config.toml") "[swarm]\nsocial_room = \"mesh-lounge\"\n";
+    with_cwd dir (fun () ->
+      let result =
+        C2c_setup.build_kimi_mcp_config ~alias_from_auto_gen:false
+          ~root ~alias_val:"kimi-mesh" ~server_path (`Assoc [])
+      in
+      let env_fields = c2c_env_fields result in
+      Alcotest.(check (option string))
+        "C2C_MCP_AUTO_JOIN_ROOMS follows configured social_room"
+        (Some "mesh-lounge")
+        (match List.assoc_opt "C2C_MCP_AUTO_JOIN_ROOMS" env_fields with
+         | Some (`String s) -> Some s
+         | _ -> None)))
 
 (* ------------------------------------------------------------------ *)
 (* Feature B env-marker: setup_codex writes marker in config.toml      *)
@@ -653,6 +677,8 @@ let () =
             test_env_marker_present_when_alias_from_auto_gen
         ; Alcotest.test_case "env marker absent when alias explicit" `Quick
             test_env_marker_absent_when_alias_explicit
+        ; Alcotest.test_case "configured social_room becomes auto-join env" `Quick
+            test_kimi_config_uses_configured_social_room
         ] )
     ; ("claude-hook",
         [ Alcotest.test_case "prefers OCaml inbox hook" `Quick
