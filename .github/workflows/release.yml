@@ -132,7 +132,7 @@ jobs:
           C2C_BUILD_DATE: ${{ needs.validate.outputs.date }}
         run: |
           set -euo pipefail
-          opam exec -- dune build --root "$PWD" --release \
+          opam exec -- dune build --release \
             ./ocaml/cli/c2c.exe \
             ./ocaml/cli/c2c_deliver_inbox.exe \
             ./ocaml/server/c2c_mcp_server.exe \
