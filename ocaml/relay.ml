@@ -529,6 +529,19 @@ module type RELAY = sig
   val remove_device_pair_pending : t -> user_code:string -> unit
 end
 
+let normalize_relay_alias ~alias ~opaque_host_id =
+  let alias_name, alias_host_id = C2c_name.split_opaque_host_id alias in
+  let opaque_host_id =
+    match opaque_host_id with
+    | Some _ -> opaque_host_id
+    | None -> alias_host_id
+  in
+  (alias_name, opaque_host_id)
+
+let alias_matches_display ~query alias =
+  let display, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
+  display = query
+
 (* --- InMemoryRelay --- *)
 
 module InMemoryRelay : RELAY = struct
@@ -687,6 +700,7 @@ module InMemoryRelay : RELAY = struct
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
         ("invalid_alias", dummy)
       else
+      let alias, opaque_host_id = normalize_relay_alias ~alias ~opaque_host_id in
       let allow_state =
         match Hashtbl.find_opt t.allowed_identities alias with
         | None -> `Unlisted
@@ -754,6 +768,7 @@ module InMemoryRelay : RELAY = struct
 
 
   let identity_pk_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () -> Hashtbl.find_opt t.bindings alias)
 
   let alias_of_identity_pk t ~identity_pk =
@@ -821,11 +836,12 @@ module InMemoryRelay : RELAY = struct
     Hashtbl.remove t.device_pair_pending_mem user_code
 
   let query_messages_since t ~alias ~since_ts =
+    let query_alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let results = ref [] in
       let min_ts = max since_ts (Unix.gettimeofday () -. 86400.0) in
       Hashtbl.iter (fun alias' lease ->
-        if alias' = alias then (
+        if alias_matches_display ~query:query_alias alias' then (
           let key = (RegistrationLease.node_id lease, RegistrationLease.session_id lease) in
           match Hashtbl.find_opt t.inboxes key with
           | Some msgs ->
@@ -835,7 +851,10 @@ module InMemoryRelay : RELAY = struct
                 let ts = try List.assoc "ts" fields |> function `Float f -> f | `Int i -> float_of_int i | _ -> 0.0 with _ -> 0.0 in
                 let from = try match List.assoc "from_alias" fields with `String s -> s | _ -> "" with _ -> "" in
                 let to_ = try match List.assoc "to_alias" fields with `String s -> s | _ -> "" with _ -> "" in
-                if ts > min_ts && (from = alias || to_ = alias) then results := msg :: !results
+                if ts > min_ts
+                   && (alias_matches_display ~query:query_alias from
+                       || alias_matches_display ~query:query_alias to_)
+                then results := msg :: !results
               | _ -> ()
             ) msgs
           | None -> ()
@@ -1465,6 +1484,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
         ("invalid_alias", dummy)
       else
+      let alias, opaque_host_id = normalize_relay_alias ~alias ~opaque_host_id in
       let allow_state =
         if identity_pk <> "" then
           let submitted_b64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet identity_pk in
@@ -1564,6 +1584,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
     )
 
   let identity_pk_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let has_row = exec_prepared conn "SELECT identity_pk FROM leases WHERE alias = ?" [`Text alias] in
@@ -1597,18 +1618,17 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
     )
 
   let query_messages_since t ~alias ~since_ts =
+    let query_alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let msgs = ref [] in
       let min_ts = max since_ts (Unix.gettimeofday () -. 86400.0) in
       let stmt = prepare conn
         "SELECT message_id, from_alias, to_alias, content, ts FROM inboxes \
-         WHERE (to_alias = ? OR from_alias = ?) AND ts > ? \
+         WHERE ts > ? \
          ORDER BY ts ASC LIMIT 500"
       in
-      bind_text stmt 1 alias |> ignore;
-      bind_text stmt 2 alias |> ignore;
-      bind_double stmt 3 min_ts |> ignore;
+      bind_double stmt 1 min_ts |> ignore;
       let rec loop () =
         let rc = step stmt in
         if rc = Rc.ROW then (
@@ -1622,13 +1642,16 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
             | Some f -> f
             | None -> float_of_string (Data.to_string_exn col)
           in
-          msgs := `Assoc [
-            ("message_id", `String message_id);
-            ("from_alias", `String from_alias);
-            ("to_alias", `String to_alias);
-            ("content", `String content);
-            ("ts", `Float ts)
-          ] :: !msgs;
+          if alias_matches_display ~query:query_alias from_alias
+             || alias_matches_display ~query:query_alias to_alias
+          then
+            msgs := `Assoc [
+              ("message_id", `String message_id);
+              ("from_alias", `String from_alias);
+              ("to_alias", `String to_alias);
+              ("content", `String content);
+              ("ts", `Float ts)
+            ] :: !msgs;
           loop ()
         ) else if rc <> Rc.DONE then
           failwith ("query_messages_since step failed: " ^ Rc.to_string rc)
@@ -1967,12 +1990,13 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
       let conn = Sqlite3.db_open t.db_path in
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let ts = Unix.gettimeofday () in
-      let has_row = exec_prepared conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" [`Text to_alias] in
+      let lookup_alias, _ = normalize_relay_alias ~alias:to_alias ~opaque_host_id:None in
+      let has_row = exec_prepared conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" [`Text lookup_alias] in
       if not has_row then
         `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
       else
         let stmt = Sqlite3.prepare conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" in
-        Sqlite3.bind_text stmt 1 to_alias |> ignore;
+        Sqlite3.bind_text stmt 1 lookup_alias |> ignore;
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
           let _alias = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
@@ -1990,7 +2014,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
             `Error (relay_err_recipient_dead, Printf.sprintf "alias %S is registered but lease has expired" to_alias)
           else
             let recv_stmt = Sqlite3.prepare conn "SELECT node_id, session_id FROM leases WHERE alias = ?" in
-            Sqlite3.bind_text recv_stmt 1 to_alias |> ignore;
+            Sqlite3.bind_text recv_stmt 1 lookup_alias |> ignore;
             let rc2 = Sqlite3.step recv_stmt in
             if rc2 = Rc.ROW then
               let recv_node_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 0) in
@@ -3419,14 +3443,13 @@ generateKeys();
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     let alias = get_string body "alias" in
-    (* #586 slice 1: extract opaque_host_id from the alias suffix
-       `<name>#<12-16 hex>` (set by `c2c host-id`). The body may also
+    (* Extract opaque_host_id from the relay address suffix
+       `<name>@<12-16 hex>` (set by `c2c host-id`). The body may also
        carry an explicit `opaque_host_id` field (clients that don't
-       want the `#hostid` suffix in their canonical alias). Explicit
+       want the `@hostid` suffix in their relay address). Explicit
        field wins over suffix extraction when both are present. The
-       full alias (with `#hostid` suffix if present) is stored as the
-       lease's unique key — opaque_host_id is a separate field for
-       routing/dedup. *)
+       relay stores the display alias as the lease key; opaque_host_id is a
+       separate field for routing/dedup/reply-route reconstruction. *)
     let alias_embedded_host_id =
       let _name, host_id_opt = C2c_name.split_opaque_host_id alias in
       host_id_opt
@@ -3669,10 +3692,18 @@ generateKeys();
     if from_alias = "" || to_alias = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias, to_alias, and content are required")
     else
-      (* #379: split alias@host, validate host is acceptable, strip to bare alias *)
+      (* #379: split alias@host for cross-relay routing. A 12-16 lowercase
+         hex host is the relay opaque-host reply route, not a cross-relay
+         host name, so it stays local while preserving the concrete route
+         in delivered message JSON. *)
       let stripped_to_alias, host_opt = split_alias_host to_alias in
+      let opaque_host_route =
+        match host_opt with
+        | Some h -> C2c_name.is_opaque_host_id h
+        | None -> false
+      in
       let self_host = R.self_host relay in
-      if not (host_acceptable ~self_host host_opt) then
+      if (not opaque_host_route) && not (host_acceptable ~self_host host_opt) then
         (* #330 S2: three-way branch. Pre-bind msg_id and peer_name so the
            forward-outcome callback can reference them via closure. *)
         let msg_id = match get_opt_string body "message_id" with
@@ -3815,7 +3846,8 @@ generateKeys();
       | Some v when v <> from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
       | _ ->
         let message_id = get_opt_string body "message_id" in
-        let result = R.send relay ~from_alias ~to_alias:stripped_to_alias ~content ~message_id in
+        let deliver_to_alias = if opaque_host_route then to_alias else stripped_to_alias in
+        let result = R.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~message_id in
         (match result with
          | `Ok ts | `Duplicate ts ->
            (* Push to WS subscribers (slice 2) *)
@@ -4675,7 +4707,10 @@ generateKeys();
                           ~body_sha256_b64 ~ts:ts_str ~nonce
                      in
                      if Relay_identity.verify ~pk ~msg:blob ~sig_ then
-                       Ok (Some alias)
+                       let display_alias, _ =
+                         normalize_relay_alias ~alias ~opaque_host_id:None
+                       in
+                       Ok (Some display_alias)
                      else
                          Error (relay_err_signature_invalid,
                            "Ed25519 request signature does not verify"))

@@ -362,8 +362,13 @@ let test_relay_list_rooms_shows_all_with_counts () =
    replace with a relay-to-relay POST. *)
 let send_with_cross_host_check relay ~from_alias ~to_alias ~content =
   let stripped, host_opt = Relay.split_alias_host to_alias in
+  let opaque_host_route =
+    match host_opt with
+    | Some h -> C2c_name.is_opaque_host_id h
+    | None -> false
+  in
   let self_host = Relay.InMemoryRelay.self_host relay in
-  if not (Relay.host_acceptable ~self_host host_opt) then begin
+  if (not opaque_host_route) && not (Relay.host_acceptable ~self_host host_opt) then begin
     (* Mirror relay.ml:3177-3187: generate dead_letter entry with reason
        cross_host_not_implemented before returning the error. *)
     let msg_id = Uuidm.to_string (Uuidm.v `V4) in
@@ -380,7 +385,8 @@ let send_with_cross_host_check relay ~from_alias ~to_alias ~content =
     `Cross_host_rejected
       (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias)
   end else
-    match Relay.InMemoryRelay.send relay ~from_alias ~to_alias:stripped ~content ~message_id:None with
+    let deliver_to_alias = if opaque_host_route then to_alias else stripped in
+    match Relay.InMemoryRelay.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~message_id:None with
     | `Ok ts -> `Ok ts
     | `Duplicate ts -> `Duplicate ts
     | `Error (err, msg) -> `Error (err, msg)
@@ -431,6 +437,27 @@ let test_cross_host_alias_matching_self_host_accepted () =
         (json_get_string (List.hd inbox) "content")
   | `Duplicate _ts -> fail_fmt "unexpected Duplicate"
   | `Error (err, msg) -> fail_fmt "bob@hostA send failed: %s %s" err msg
+
+let test_cross_host_opaque_host_id_route_is_local () =
+  let relay = Relay.InMemoryRelay.create ~self_host:(Some "relay.c2c.im") () in
+  let (_status_a, _lease_a) = Relay.InMemoryRelay.register relay
+    ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status_b, _lease_b) = Relay.InMemoryRelay.register relay
+    ~node_id:"n2" ~session_id:"s2" ~alias:"bob@3d08761ae3f3" () in
+  match send_with_cross_host_check relay
+    ~from_alias:"alice" ~to_alias:"bob@3d08761ae3f3" ~content:"hello opaque bob" with
+  | `Cross_host_rejected reason ->
+      fail_fmt "bob@3d08761ae3f3 should be accepted as a local opaque reply route, got: %s" reason
+  | `Ok _ts ->
+      let inbox = Relay.InMemoryRelay.poll_inbox relay ~node_id:"n2" ~session_id:"s2" in
+      if List.length inbox <> 1 then fail_fmt "expected 1 message, got %d" (List.length inbox);
+      let msg = List.hd inbox in
+      Alcotest.(check string) "content" "hello opaque bob"
+        (json_get_string msg "content");
+      Alcotest.(check string) "to_alias keeps opaque reply route"
+        "bob@3d08761ae3f3" (json_get_string msg "to_alias")
+  | `Duplicate _ts -> fail_fmt "unexpected Duplicate"
+  | `Error (err, msg) -> fail_fmt "bob@3d08761ae3f3 send failed: %s %s" err msg
 
 let test_cross_host_alias_unknown_host_rejected () =
   let relay = Relay.InMemoryRelay.create ~self_host:(Some "hostA") () in
@@ -508,6 +535,7 @@ let tests = [
   (* #330 V1 cross_host_not_implemented error-path seam tests *)
   "cross_host bare alias works when self_host is set", test_cross_host_bare_alias_works_when_self_host_is_set;
   "cross_host alias@matching self_host accepted", test_cross_host_alias_matching_self_host_accepted;
+  "cross_host alias@opaque host id accepted locally", test_cross_host_opaque_host_id_route_is_local;
   "cross_host alias@unknown host rejected to dead_letter", test_cross_host_alias_unknown_host_rejected;
 ]
 

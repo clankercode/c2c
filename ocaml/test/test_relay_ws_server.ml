@@ -28,7 +28,7 @@ let test_validate_auth_valid () =
     (* Generate a test identity *)
     let id = Relay_identity.generate ~alias_hint:"test" () in
     let pk = id.Relay_identity.public_key in
-    let alias = "test-alias#abc123" in
+    let alias = "test-alias@3d08761ae3f3" in
     let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
     let msg = alias ^ ts in
     let sig_ = Relay_identity.sign id msg in
@@ -49,7 +49,7 @@ let test_validate_auth_invalid_sig () =
   else begin
     let id = Relay_identity.generate ~alias_hint:"test" () in
     let pk = id.Relay_identity.public_key in
-    let alias = "test-alias#abc123" in
+    let alias = "test-alias@3d08761ae3f3" in
     let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
     (* Wrong signature - sign different data *)
     let sig_ = Relay_identity.sign id "wrong-data" in
@@ -70,7 +70,7 @@ let test_validate_auth_invalid_sig () =
 let test_validate_auth_unknown_alias () =
   if skip_if_ci () then Alcotest.(check bool) "skip in CI" true true
   else begin
-    let alias = "unknown-alias#xyz789" in
+    let alias = "unknown-alias@abcdef012345" in
     let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
     let sig_b64 = "fakesig123456" in
     
@@ -92,7 +92,7 @@ let test_validate_auth_expired_ts () =
   else begin
     let id = Relay_identity.generate ~alias_hint:"test" () in
     let pk = id.Relay_identity.public_key in
-    let alias = "test-alias#abc123" in
+    let alias = "test-alias@3d08761ae3f3" in
     (* Timestamp 10 minutes ago - outside the 60s window *)
     let ts = Printf.sprintf "%.0f" (Unix.gettimeofday () -. 600.0) in
     let msg = alias ^ ts in
