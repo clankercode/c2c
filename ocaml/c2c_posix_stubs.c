@@ -9,7 +9,11 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <sys/types.h>
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#include <util.h>
+#else
 #include <pty.h>
+#endif
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
