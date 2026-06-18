@@ -230,6 +230,16 @@ jobs:
       - name: Ensure trusted-publishing-capable npm
         run: npm install -g npm@latest
 
+      - name: Remove token auth for npm trusted publishing
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_npm }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          if [ -f "$npmrc" ]; then
+            sed -i.bak '/_authToken/d' "$npmrc"
+          fi
+
       - name: npm pack dry-run
         shell: bash
         run: |
@@ -265,5 +275,5 @@ jobs:
         run: |
           set -euo pipefail
           while IFS= read -r package_dir; do
-            npm publish "$package_dir" --access public
+            npm publish "$package_dir" --access public --provenance
           done < dist/npm-publish-order.txt

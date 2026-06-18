@@ -69,6 +69,10 @@ Publishing with GitHub Actions OIDC, so configure each npm package on npmjs.com
 for workflow `release.yml`; the first publish for each package may need a
 one-time bootstrap before trusted publishing can take over.
 
+For OIDC publishing, do not leave setup-node's `_authToken=${NODE_AUTH_TOKEN}`
+entry in the npmrc. Remove it before `npm publish` and publish with provenance;
+otherwise npm may attempt classic token auth and report a misleading `E404`.
+
 ## Verify Outputs
 
 For GitHub Release assets, verify:

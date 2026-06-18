@@ -104,6 +104,11 @@ each npm package on npmjs.com with:
 The first version of each package may need a one-time manual/token bootstrap
 before npm lets CI-owned trusted publishing take over.
 
+`actions/setup-node` writes an `_authToken=${NODE_AUTH_TOKEN}` npmrc entry when
+`registry-url` is set. For tokenless Trusted Publishing, remove that line before
+`npm publish`; otherwise npm can attempt classic token auth and fail with a
+misleading `E404` instead of using OIDC.
+
 ## Verify Release Assets
 
 Check the GitHub Release contains:

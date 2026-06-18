@@ -15,6 +15,8 @@ nav_label: Changelog
   client commands, matching the GitHub Actions environment.
 - Moved the macOS Intel release lane to GitHub's supported `macos-15-intel`
   runner after `macos-13` retirement.
+- Fixed the npm publish lane to use GitHub Actions OIDC trusted publishing
+  instead of setup-node's token-auth npmrc fallback.
 - Confirmed native Windows release artifacts are not part of 0.8.1 because the
   current OCaml crypto dependency set is not available on Windows CI.
 
