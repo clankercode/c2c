@@ -211,7 +211,7 @@ npm-stage-smoke BINARY_ROOT:
     #!/usr/bin/env bash
     set -euo pipefail
     version="$(sed -n 's/^let version = "\([^"]*\)"/\1/p' ocaml/version.ml)"
-    out_dir="${TMPDIR:-/tmp}/c2c-npm-stage-smoke"
+    out_dir="${TMPDIR:-/tmp}/c2c-npm-stage-smoke/dist/npm"
     node npm-pkgs/scripts/stage-npm-packages.js --version "$version" --binary-root "{{BINARY_ROOT}}" --out-dir "$out_dir"
     for package_dir in "$out_dir"/c2c-*; do
         (cd "$package_dir" && npm pack --dry-run --json >/dev/null)

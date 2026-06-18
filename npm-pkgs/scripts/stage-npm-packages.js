@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const TARGETS = [
@@ -50,6 +51,38 @@ function copyExecutable(src, dst) {
   fs.copyFileSync(src, dst);
   if (process.platform !== "win32") {
     fs.chmodSync(dst, 0o755);
+  }
+}
+
+function isSameOrInside(candidate, parent) {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function pathsOverlap(left, right) {
+  return isSameOrInside(left, right) || isSameOrInside(right, left);
+}
+
+function assertSafeOutDir({ outDir, binaryRoot, sourceRoot = path.resolve(__dirname, "..") }) {
+  const resolvedOutDir = path.resolve(outDir);
+  const resolvedBinaryRoot = path.resolve(binaryRoot);
+  const resolvedSourceRoot = path.resolve(sourceRoot);
+  const unsafeRoots = [path.parse(resolvedOutDir).root, os.homedir()].filter(Boolean);
+
+  if (unsafeRoots.includes(resolvedOutDir)) {
+    throw new Error(`refusing unsafe --out-dir: ${resolvedOutDir}`);
+  }
+
+  if (path.basename(path.dirname(resolvedOutDir)) !== "dist" || path.basename(resolvedOutDir) !== "npm") {
+    throw new Error(`refusing unsafe --out-dir: ${resolvedOutDir} must end with dist/npm`);
+  }
+
+  if (pathsOverlap(resolvedOutDir, resolvedSourceRoot)) {
+    throw new Error(`refusing unsafe --out-dir: ${resolvedOutDir} overlaps source tree ${resolvedSourceRoot}`);
+  }
+
+  if (pathsOverlap(resolvedOutDir, resolvedBinaryRoot)) {
+    throw new Error(`refusing unsafe --out-dir: ${resolvedOutDir} overlaps binary root ${resolvedBinaryRoot}`);
   }
 }
 
@@ -103,6 +136,7 @@ function stagePlatformPackage({ version, binaryRoot, outDir, target }) {
 }
 
 function stagePackages(options) {
+  assertSafeOutDir(options);
   fs.rmSync(options.outDir, { recursive: true, force: true });
   fs.mkdirSync(options.outDir, { recursive: true });
   stageMetaPackage(options);
@@ -127,5 +161,6 @@ if (require.main === module) {
 
 module.exports = {
   TARGETS,
+  assertSafeOutDir,
   stagePackages,
 };

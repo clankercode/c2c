@@ -6,7 +6,7 @@ const test = require("node:test");
 
 const repoRoot = path.resolve(__dirname, "..", "..");
 const stageScript = path.join(repoRoot, "npm-pkgs", "scripts", "stage-npm-packages.js");
-const { stagePackages } = require(stageScript);
+const { assertSafeOutDir, stagePackages } = require(stageScript);
 
 const targets = [
   ["c2c-linux-x64", "linux", "x64", "c2c"],
@@ -74,5 +74,41 @@ test("stage script refuses to create packages when a required binary is missing"
   assert.throws(
     () => stagePackages({ version: "0.8.0", binaryRoot, outDir }),
     /missing required binary.*c2c-darwin-arm64/s
+  );
+});
+
+test("stage script rejects destructive output directories before removing files", () => {
+  const dir = tempDir();
+  const binaryRoot = path.join(dir, "bin");
+  const sourceRoot = path.join(repoRoot, "npm-pkgs");
+
+  for (const outDir of [
+    repoRoot,
+    sourceRoot,
+    dir,
+    binaryRoot,
+    path.join(binaryRoot, "dist", "npm"),
+    path.parse(repoRoot).root,
+    os.homedir(),
+  ]) {
+    assert.throws(
+      () => assertSafeOutDir({ outDir, binaryRoot, sourceRoot }),
+      /refusing unsafe --out-dir/
+    );
+  }
+});
+
+test("stage script accepts only a non-overlapping dist/npm output leaf", () => {
+  const dir = tempDir();
+  const binaryRoot = path.join(dir, "bin");
+  const sourceRoot = path.join(repoRoot, "npm-pkgs");
+
+  assert.throws(
+    () => assertSafeOutDir({ outDir: path.join(dir, "packages"), binaryRoot, sourceRoot }),
+    /refusing unsafe --out-dir/
+  );
+
+  assert.doesNotThrow(() =>
+    assertSafeOutDir({ outDir: path.join(dir, "dist", "npm"), binaryRoot, sourceRoot })
   );
 });
