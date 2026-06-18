@@ -226,6 +226,39 @@ let test_sqlite_relay_send_to_embedded_host_id_alias () =
     | `Error (err, msg) ->
         fail (Printf.sprintf "sqlite send failed: %s %s" err msg))
 
+let test_relay_query_messages_since_matches_reply_route () =
+  let t = make_test_relay () in
+  let status, _lease = Relay.InMemoryRelay.register t
+    ~node_id:"n1" ~session_id:"s1"
+    ~alias:"lyra-quill@3d08761ae3f3" () in
+  check string "register status" "ok" status;
+  let _ = Relay.InMemoryRelay.send t
+      ~from_alias:"alice" ~to_alias:"lyra-quill@3d08761ae3f3"
+      ~content:"for backfill" ~message_id:None in
+  let msgs = Relay.InMemoryRelay.query_messages_since t
+      ~alias:"lyra-quill" ~since_ts:0.0 in
+  check int "query_messages_since sees opaque route message"
+    1 (List.length msgs);
+  check string "backfill to_alias preserves reply route"
+    "lyra-quill@3d08761ae3f3" (json_get_string (List.hd msgs) "to_alias")
+
+let test_sqlite_query_messages_since_matches_reply_route () =
+  with_temp_dir (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    let status, _lease = Relay.SqliteRelay.register t
+      ~node_id:"n1" ~session_id:"s1"
+      ~alias:"lyra-quill@3d08761ae3f3" () in
+    check string "register status" "ok" status;
+    let _ = Relay.SqliteRelay.send t
+        ~from_alias:"alice" ~to_alias:"lyra-quill@3d08761ae3f3"
+        ~content:"sqlite backfill" ~message_id:None in
+    let msgs = Relay.SqliteRelay.query_messages_since t
+        ~alias:"lyra-quill" ~since_ts:0.0 in
+    check int "sqlite query_messages_since sees opaque route message"
+      1 (List.length msgs);
+    check string "sqlite backfill to_alias preserves reply route"
+      "lyra-quill@3d08761ae3f3" (json_get_string (List.hd msgs) "to_alias"))
+
 let test_relay_register_rejects_legacy_hash_alias () =
   let t = make_test_relay () in
   let status, _lease = Relay.InMemoryRelay.register t
@@ -323,6 +356,10 @@ let () =
           test_relay_identity_lookup_accepts_reply_route;
         test_case "sqlite send to <name>@<host_id> reaches display alias lease" `Quick
           test_sqlite_relay_send_to_embedded_host_id_alias;
+        test_case "query_messages_since matches <name>@<host_id> route" `Quick
+          test_relay_query_messages_since_matches_reply_route;
+        test_case "sqlite query_messages_since matches <name>@<host_id> route" `Quick
+          test_sqlite_query_messages_since_matches_reply_route;
         test_case "register rejects legacy #hostid alias" `Quick
           test_relay_register_rejects_legacy_hash_alias;
       ];
