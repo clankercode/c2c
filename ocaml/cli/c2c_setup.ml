@@ -61,11 +61,18 @@ let print_json json =
    C2c_start module is from the c2c_mcp library. *)
 
 let find_ocaml_server_path () =
-  (* Look for c2c_mcp_server.exe in _build, then try opam *)
-  let candidates = [
-    "_build/default/ocaml/server/c2c_mcp_server.exe";
-    "_build/ocaml/server/c2c_mcp_server.exe";
-  ] in
+  (* Look for c2c_mcp_server.exe beside the running build artifact first.
+     Dune runs tests from a sandbox cwd, so repo-relative _build paths alone
+     are not enough for install tests. *)
+  let exe_dir = Filename.dirname (current_c2c_command ()) in
+  let build_root = Filename.dirname exe_dir in
+  let candidates =
+    [
+      build_root // "server" // "c2c_mcp_server.exe";
+      "_build/default/ocaml/server/c2c_mcp_server.exe";
+      "_build/ocaml/server/c2c_mcp_server.exe";
+    ]
+  in
   let extra_candidates =
     try
       let switch = Sys.getenv "OPAM_SWITCH_PREFIX" in
