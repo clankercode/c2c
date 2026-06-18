@@ -28,6 +28,14 @@
  (modules test_wire_bridge)
  (libraries c2c_mcp alcotest unix))
 
+(executable
+ (name test_dogfood_hint)
+ (modules test_dogfood_hint)
+ (libraries c2c_mcp yojson)
+ ; ad-hoc dogfood helper - not a test, prints actual wire-bridge output.
+ ; Run with: ./_build/default/ocaml/test/test_dogfood_hint.exe
+ )
+
 (test
  (name test_c2c_kimi_notifier)
  (modules test_c2c_kimi_notifier)
