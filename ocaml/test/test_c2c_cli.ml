@@ -88,6 +88,19 @@ let isolated_home_env home =
     (Filename.quote (Filename.concat home ".config"))
     (Filename.quote (Filename.concat (Filename.concat home ".local") "state"))
 
+let fake_client_path_env home clients =
+  let bin = Filename.concat home "fake-bin" in
+  if not (Sys.file_exists bin) then Unix.mkdir bin 0o755;
+  List.iter
+    (fun client ->
+      let path = Filename.concat bin client in
+      let oc = open_out path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+        output_string oc "#!/bin/sh\nexit 0\n");
+      Unix.chmod path 0o755)
+    clients;
+  Printf.sprintf "PATH=%s:$PATH" (Filename.quote bin)
+
 let debug_install_failure label cmd rc content =
   if rc <> 0 || not (string_contains content "[DRY-RUN]") then
     Printf.eprintf
@@ -1315,12 +1328,13 @@ let test_install_all_dry_run_exits_zero () =
 
 let test_install_all_dry_run_shows_dry_run_markers () =
   with_temp_dir (fun home ->
+    let fake_clients = fake_client_path_env home [ "codex"; "opencode"; "kimi" ] in
     let tmpfile = Filename.temp_file "c2c-install-all-dry" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
       let cmd = c2c_cmd (Printf.sprintf
-        "%s c2c install all --dry-run > %s 2>&1 < /dev/null"
-        (isolated_home_env home) tmpfile) in
+        "%s %s c2c install all --dry-run > %s 2>&1 < /dev/null"
+        fake_clients (isolated_home_env home) tmpfile) in
       let rc = Sys.command cmd in
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
