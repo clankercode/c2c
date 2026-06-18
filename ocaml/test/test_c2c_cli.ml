@@ -1671,6 +1671,21 @@ let test_relay_dead_letter_no_relay_url_exits_nonzero () =
       check bool "stderr mentions --relay-url" true
         (string_contains err "--relay-url"))
 
+let test_relay_subscribe_rejects_https_until_tls_supported () =
+  let outfile = Filename.temp_file "relay-subscribe-https" ".out" in
+  let errfile = Filename.temp_file "relay-subscribe-https" ".err" in
+  Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf
+        "C2C_CLI_FORCE=1 %s relay subscribe --relay-url https://relay.example --alias alice > %s 2> %s"
+        c2c_exe outfile errfile
+      in
+      let rc = Sys.command cmd in
+      check int "relay subscribe https exits non-zero" 1 rc;
+      let err = read_file errfile in
+      check bool "stderr explains TLS unsupported" true
+        (string_contains err "does not support TLS"))
+
 (* ------------------------------------------------------------------------- *)
 (* c2c send --from spoofing protection tests                                 *)
 (* ------------------------------------------------------------------------- *)
@@ -2298,6 +2313,7 @@ let () =
     ; ( "relay_dead_letter",
         [ ( "relay dead-letter --help exits 0", `Quick, test_relay_dead_letter_help_exits_zero )
         ; ( "relay dead-letter without relay-url exits non-zero", `Quick, test_relay_dead_letter_no_relay_url_exits_nonzero )
+        ; ( "relay subscribe rejects https until TLS is supported", `Quick, test_relay_subscribe_rejects_https_until_tls_supported )
         ] )
     ; ( "send_from_spoofing",
         [ ( "send --from spoofing rejected when alias held by different session", `Quick, test_send_from_spoofing_rejected )
