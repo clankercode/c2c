@@ -106,3 +106,57 @@ Old recipients see unknown `reply_via` attribute — XML parsers ignore it. The 
 1. **DM-only vs all messages**: Should room messages also get `reply_via="room"`? Coordinator1 to confirm.
 2. **Source attribution**: Currently hardcoded as `"broker"` in `format_envelope` — should relay-bridged messages carry `source="relay"`? Requires passing source through the call chain.
 3. **Default value**: `c2c_send` is safe as default since most messages are DMs. Room messages could explicitly carry `reply_via="room"` if we decide to tag them.
+
+---
+
+## Reply hint (system-reminder) v2 — 2026-06-18 follow-up
+
+The `reply_via` attribute is easy for LLMs to miss in long
+transcripts, so the broker additionally emits a `<system-reminder>`
+block after every `<c2c>` envelope (sibling, not inside). The block
+names the sender, gives the exact call shape, and warns against
+plain-text reply:
+
+```
+<c2c event="message" from="alice" to="bob"
+      source="broker" reply_via="c2c_send" action_after="continue">
+hi bob
+</c2c>
+
+<system-reminder>
+You received a c2c direct message from `alice`.
+To reply, call c2c_send(to_alias="alice", content="<your reply>").
+If c2c_send is unavailable in this session, the MCP tool c2c_send works the same way (to_alias="alice").
+Do NOT reply in plain text — the peer will not see it.
+</system-reminder>
+```
+
+**Detection of room vs DM**: `to_alias` carries a `#<room-id>`
+suffix for room deliveries (per `C2c_broker.fan_out_room_message`).
+A 12-lowercase-hex `#<host-hash>` suffix is the relay address, NOT
+a room, so the hint asks for `c2c_send` (DM) rather than
+`c2c_send_room`. Same heuristic the pi-c2c extension uses
+(`isRoomMessage` in `src/delivery.ts`).
+
+**Wire-bridge default**: ON. Every consumer of
+`C2c_wire_bridge.format_envelope` / `format_prompt` (the
+OpenCode-plugin drain path, `c2c_start.ml` tmux message payload,
+inbox-hook `PostToolUse` injection) is LLM-visible and gets the
+hint automatically. CLI commands (`ocaml/cli/c2c.ml:4266`) keep
+`with_reply_hint:false` because their output is terminal-visible,
+not LLM-injected.
+
+**Client-specific tool names**: The broker hint mentions only
+`c2c_send` and `c2c_send_room`. Clients that need a client-specific
+tool name (e.g. pi-c2c's `c2c_pi_send` / `c2c_pi_send_room`)
+suppress or override locally. The pi-c2c extension emits its own
+hint in parallel today; if it ever adopts the c2c CLI path, a
+dedup rule (skip if a `<system-reminder>` block is already in the
+content) would be needed.
+
+**Channel-notification push path** (`ocaml/c2c_mcp_helpers_post_broker.ml:341`)
+appends the same hint to the `<channel source="c2c">` body so
+Claude Code agents on the push path see the same instructions as
+agents that drain via `poll_inbox`.
+
+Full design: `docs/superpowers/specs/2026-06-18-reply-hint-system-reminder-design.md`.
