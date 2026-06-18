@@ -1,0 +1,4 @@
+interface:
+  display_name: "C2C Release Manager"
+  short_description: "Manage c2c version, changelog, CI artifacts, and releases."
+  default_prompt: "Prepare, validate, or troubleshoot a c2c release using the repo-local release workflow."

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install just
+        run: sudo apt-get update && sudo apt-get install -y just
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.3.0
+
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test --yes
+
+      - name: Build
+        run: just build
+
+      - name: Python release-tool tests
+        run: python3 -m pytest tests/test_release_tool.py -q --force-test-env
+
+      - name: OCaml tests
+        run: just test-ocaml

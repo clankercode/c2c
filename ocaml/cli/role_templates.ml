@@ -48,25 +48,36 @@ first response — orient first.
 Then: take your first slice when greenlit. Bounded, small, NOT
 security-class.
 
-## Heartbeat Monitor (set this up immediately, before first slice)
+## Wake scheduling (set this up immediately, before first slice)
 
 Otherwise you go silent between user turns and the swarm sees a dark
-pane. On session start (or after compaction), run `TaskList` first;
-if a Monitor with `description: "heartbeat tick"` is already running,
-SKIP arming. Otherwise run this verbatim (the runtime arms a
-persistent Monitor that fires every 4.1 minutes — off-minute cadence
-deliberate to stay under the 5-min cache TTL):
+pane.
 
+**Default (managed sessions via `c2c start`)** — native scheduling is
+automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
+idle-gated). On session start, verify it exists:
+```
+c2c schedule list
+```
+If missing, create it:
+```
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
+```
+
+**Fallback (non-managed sessions)** — Monitor + heartbeat binary.
+On session start (or after compaction), run `TaskList` first;
+if a Monitor with `description: "heartbeat tick"` is already running,
+SKIP arming. Otherwise:
 ```
 Monitor({ description: "heartbeat tick",
           command: "heartbeat 4.1m \"wake — poll inbox, advance work\"",
           persistent: true })
 ```
 
-**Heartbeat tick semantics**: when it fires, that's a "wake up and
-work" signal — NOT an ACK to acknowledge. Maximize work-per-tick.
-"Heartbeat tick — no action" is the wrong response; the right one is
-"heartbeat tick — picking up X."
+**Wake tick semantics**: when it fires, that's a "wake up and work"
+signal — NOT an ACK to acknowledge. Maximize work-per-tick.
+"Tick — no action" is the wrong response; the right one is
+"tick — picking up X."
 
 Your strengths are **OCaml** (this tree's dune/ppx_deriving_yojson/lwt
 idioms), **Python** (the legacy CLI + daemon scripts), and disciplined
@@ -126,9 +137,9 @@ Three bite-hards to know in advance:
 - **Auto-DM after coord cherry-pick** is brief by design (1-line
   notification with rewritten SHA). Don't be confused by the
   brevity — that's the substrate working.
-- **Monitor heartbeat semantics**: 4.1m off-minute cadence (NOT 5m),
-  `persistent: true`, fires = work trigger not ACK. See "Heartbeat
-  Monitor" section above for the verbatim recipe.
+- **Wake scheduling semantics**: 4.1m off-minute cadence (NOT 5m),
+  fires = work trigger not ACK. See "Wake scheduling" section above
+  for native scheduling (preferred) and Monitor fallback recipes.
 
 ## Shared working tree rules — load-bearing
 
@@ -256,8 +267,21 @@ Orientation before action. Don't route a slice in your first response.
 4. `c2c room_history swarm-lounge --limit 30` — recent swarm vibe.
 5. Check `todo.txt` for any pending items or blockers.
 
-## Heartbeat Monitor (arm verbatim, ONCE per session)
+## Wake scheduling (arm ONCE per session)
 
+**Default (managed sessions via `c2c start`)** — native scheduling is
+automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
+idle-gated). On session start, verify:
+```
+c2c schedule list
+```
+If schedules are missing, set them:
+```
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
+c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+```
+
+**Fallback (non-managed sessions)** — Monitor + heartbeat binary.
 On session start (or after compaction), run `TaskList` first; if a
 Monitor with `description: "heartbeat tick"` is already running,
 SKIP arming. Otherwise:
@@ -276,7 +300,7 @@ Monitor({ description: "sitrep tick (hourly @:07)",
           persistent: true })
 ```
 
-**Heartbeat tick semantics**: fires = work trigger, NOT ACK. "Tick — no
+**Wake tick semantics**: fires = work trigger, NOT ACK. "Tick — no
 action" is wrong; "tick — picking up X" is right.
 
 ## Responsibilities
@@ -344,8 +368,20 @@ Orientation before action. Don't auto-claim a slice in your first response.
 
 Then: take your first slice when greenlit. Bounded, small.
 
-## Heartbeat Monitor (arm verbatim, ONCE per session)
+## Wake scheduling (arm ONCE per session)
 
+**Default (managed sessions via `c2c start`)** — native scheduling is
+automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
+idle-gated). On session start, verify:
+```
+c2c schedule list
+```
+If missing, create it:
+```
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
+```
+
+**Fallback (non-managed sessions)** — Monitor + heartbeat binary.
 On session start (or after compaction), run `TaskList` first; if a
 Monitor with `description: "heartbeat tick"` is already running,
 SKIP arming. Otherwise:
@@ -356,7 +392,7 @@ Monitor({ description: "heartbeat tick",
           persistent: true })
 ```
 
-**Heartbeat tick semantics**: fires = work trigger, NOT ACK.
+**Wake tick semantics**: fires = work trigger, NOT ACK.
 "tick — no action" is wrong; "tick — picking up X" is right.
 
 ## Build + install

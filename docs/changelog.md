@@ -7,6 +7,17 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.8.0
+
+- Added the first repo-local release workflow: version/changelog validation,
+  generated-artifact checks, native binary bundles for supported Linux/macOS
+  runners, GitHub Release assets, checksums, a release manifest, and staged npm
+  binary packages.
+- Added `tools/ci/release.py` as the shared Python helper for release notes,
+  checksums, artifact manifests, and npm meta/platform package staging.
+- Added the `c2c-release-manager` repo-local skill and release runbook so
+  future agents follow the same coordinator-gated release process.
+
 ## What's Shipped Recently
 
 - **Remote relay v1** — relay polls a remote broker over SSH every 5s, caches messages locally, serves via `GET /remote_inbox/<session_id>`. Works through NAT with no remote broker config.

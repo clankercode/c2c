@@ -1,0 +1,250 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, with or without leading v'
+        required: true
+        type: string
+      draft:
+        description: 'Create the GitHub release as a draft'
+        required: false
+        default: true
+        type: boolean
+      publish_npm:
+        description: 'Publish npm packages after dry-run checks'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      date: ${{ steps.meta.outputs.date }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install just
+        run: sudo apt-get update && sudo apt-get install -y just
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          version="${version#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate version and changelog
+        run: python3 tools/ci/release.py validate --version '${{ steps.meta.outputs.version }}'
+
+      - name: Verify generated files are committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          just codegen-role-designer
+          just codegen-role-templates
+          just codegen-opencode-plugin
+          git diff --exit-code -- .c2c ocaml data
+
+      - name: Build command/docs drift report
+        shell: bash
+        run: python3 scripts/c2c-docs-drift.py --doc CLAUDE.md --summary
+
+      - name: Write release notes
+        run: python3 tools/ci/release.py notes --version '${{ steps.meta.outputs.version }}' --out dist/release-notes.md
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: dist/release-notes.md
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+          - target: darwin-x64
+            os: macos-13
+          - target: darwin-arm64
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install just
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y just
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.3.0
+
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test --yes
+
+      - name: Build c2c binary
+        shell: bash
+        env:
+          C2C_BUILD_GIT_SHA: ${{ github.sha }}
+          C2C_BUILD_DATE: ${{ needs.validate.outputs.date }}
+        run: |
+          set -euo pipefail
+          opam exec -- dune build --root "$PWD" --release \
+            ./ocaml/cli/c2c.exe \
+            ./ocaml/cli/c2c_deliver_inbox.exe \
+            ./ocaml/server/c2c_mcp_server.exe \
+            ./ocaml/server/c2c_mcp_server_inner_bin.exe \
+            ./ocaml/tools/c2c_inbox_hook.exe \
+            ./ocaml/tools/c2c_cold_boot_hook.exe \
+            ./ocaml/tools/c2c_post_compact_hook_bin.exe
+          mkdir -p "dist/c2c-${{ matrix.target }}"
+          cp _build/default/ocaml/cli/c2c.exe "dist/c2c-${{ matrix.target }}/c2c"
+          cp _build/default/ocaml/cli/c2c_deliver_inbox.exe "dist/c2c-${{ matrix.target }}/c2c-deliver-inbox"
+          cp _build/default/ocaml/server/c2c_mcp_server.exe "dist/c2c-${{ matrix.target }}/c2c-mcp-server"
+          cp _build/default/ocaml/server/c2c_mcp_server_inner_bin.exe "dist/c2c-${{ matrix.target }}/c2c-mcp-inner"
+          cp _build/default/ocaml/tools/c2c_inbox_hook.exe "dist/c2c-${{ matrix.target }}/c2c-inbox-hook-ocaml"
+          cp _build/default/ocaml/tools/c2c_cold_boot_hook.exe "dist/c2c-${{ matrix.target }}/c2c-cold-boot-hook"
+          cp _build/default/ocaml/tools/c2c_post_compact_hook_bin.exe "dist/c2c-${{ matrix.target }}/c2c-post-compact-hook"
+          cp scripts/cc-quota "dist/c2c-${{ matrix.target }}/cc-quota"
+          chmod +x "dist/c2c-${{ matrix.target }}/c2c"
+          chmod +x "dist/c2c-${{ matrix.target }}/c2c-deliver-inbox"
+          chmod +x "dist/c2c-${{ matrix.target }}/c2c-mcp-server"
+          chmod +x "dist/c2c-${{ matrix.target }}/c2c-mcp-inner"
+          chmod +x "dist/c2c-${{ matrix.target }}/c2c-inbox-hook-ocaml"
+          chmod +x "dist/c2c-${{ matrix.target }}/c2c-cold-boot-hook"
+          chmod +x "dist/c2c-${{ matrix.target }}/c2c-post-compact-hook"
+          chmod +x "dist/c2c-${{ matrix.target }}/cc-quota"
+          "dist/c2c-${{ matrix.target }}/c2c" --version
+          tar -czf "dist/c2c-${{ matrix.target }}/c2c-${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz" \
+            -C "dist/c2c-${{ matrix.target }}" \
+            c2c c2c-deliver-inbox c2c-mcp-server c2c-mcp-inner c2c-inbox-hook-ocaml \
+            c2c-cold-boot-hook c2c-post-compact-hook cc-quota
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2c-${{ matrix.target }}
+          path: dist/c2c-${{ matrix.target }}/
+
+  package:
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: c2c-*
+          path: dist/artifacts
+
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: dist
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          find dist/artifacts -name '*.tar.gz' -type f -exec cp {} dist/release/ \;
+          python3 tools/ci/release.py checksums --input-dir dist/release --out dist/release/SHA256SUMS
+          python3 tools/ci/release.py manifest \
+            --version '${{ needs.validate.outputs.version }}' \
+            --artifacts-dir dist/release \
+            --out dist/release/release-manifest.json
+
+      - name: Stage npm packages
+        run: |
+          python3 tools/ci/release.py package-npm \
+            --version '${{ needs.validate.outputs.version }}' \
+            --artifacts-dir dist/artifacts \
+            --dist-dir dist/npm
+          python3 tools/ci/release.py npm-publish-order --dist-dir dist/npm --out dist/npm-publish-order.txt
+          tar -czf "dist/release/c2c-${{ needs.validate.outputs.version }}-npm-packages.tar.gz" -C dist npm
+
+      - name: Dry-run npm packages
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: npm pack dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r package_dir; do
+            npm pack --dry-run "$package_dir"
+          done < dist/npm-publish-order.txt
+
+      - name: Create or update GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='${{ needs.validate.outputs.tag }}'
+          draft_flag=()
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.draft }}" = "true" ]; then
+            draft_flag=(--draft)
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/release/* --clobber
+          else
+            gh release create "$tag" dist/release/* \
+              --target "$GITHUB_SHA" \
+              --title "c2c ${{ needs.validate.outputs.version }}" \
+              --notes-file dist/release-notes.md \
+              "${draft_flag[@]}"
+          fi
+
+      - name: Publish npm packages
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_npm }}
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "publish_npm=true but NPM_TOKEN is not configured" >&2
+            exit 1
+          fi
+          npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
+          while IFS= read -r package_dir; do
+            npm publish "$package_dir" --access public
+          done < dist/npm-publish-order.txt
