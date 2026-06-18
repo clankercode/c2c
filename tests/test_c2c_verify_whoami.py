@@ -12,7 +12,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 import c2c_prune
-import c2c_verify
+from deprecated import c2c_verify
 import c2c_whoami
 from c2c_registry import load_registry, save_registry
 

@@ -30,7 +30,7 @@ import c2c_setcap
 import c2c_smoke_test
 import c2c_status
 import c2c_sweep_dryrun
-import c2c_verify
+from deprecated import c2c_verify
 import c2c_watch
 import c2c_whoami
 import c2c_coord_cherry_pick
