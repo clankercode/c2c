@@ -4,7 +4,7 @@
 
  (package
   (name c2c)
-  (depends dune cmdliner yojson lwt logs alcotest cohttp-lwt-unix uuidm
+  (depends dune cmdliner yojson lwt logs alcotest cohttp-lwt-unix uuidm uucp
            base64 digestif mirage-crypto-ec mirage-crypto-rng
            tls-lwt mirage-crypto-rng-lwt ca-certs hacl-star sqlite3
            (lambda-term (= 3.4.0))
