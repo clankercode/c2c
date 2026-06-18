@@ -178,17 +178,12 @@ jobs:
           name: release-notes
           path: dist
 
-      - name: Stage release assets
+      - name: Stage binary release assets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist/release
           find dist/artifacts -name '*.tar.gz' -type f -exec cp {} dist/release/ \;
-          python3 tools/ci/release.py checksums --input-dir dist/release --out dist/release/SHA256SUMS
-          python3 tools/ci/release.py manifest \
-            --version '${{ needs.validate.outputs.version }}' \
-            --artifacts-dir dist/release \
-            --out dist/release/release-manifest.json
 
       - name: Stage npm packages
         run: |
@@ -198,6 +193,16 @@ jobs:
             --dist-dir dist/npm
           python3 tools/ci/release.py npm-publish-order --dist-dir dist/npm --out dist/npm-publish-order.txt
           tar -czf "dist/release/c2c-${{ needs.validate.outputs.version }}-npm-packages.tar.gz" -C dist npm
+
+      - name: Write checksums and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/ci/release.py checksums --input-dir dist/release --out dist/release/SHA256SUMS
+          python3 tools/ci/release.py manifest \
+            --version '${{ needs.validate.outputs.version }}' \
+            --artifacts-dir dist/release \
+            --out dist/release/release-manifest.json
 
       - name: Dry-run npm packages
         uses: actions/setup-node@v4

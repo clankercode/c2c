@@ -57,3 +57,30 @@ def test_publish_order_puts_meta_package_last(tmp_path: Path) -> None:
 
     lines = out.read_text(encoding="utf-8").splitlines()
     assert lines[-1].endswith("/c2c")
+
+
+def test_checksums_and_manifest_cover_final_release_tarballs(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    release_dir = tmp_path / "release"
+    (root / "ocaml").mkdir(parents=True)
+    (root / "ocaml" / "version.ml").write_text('let version = "1.2.3"\n', encoding="utf-8")
+    release_dir.mkdir()
+    for name in [
+        "c2c-1.2.3-linux-x64.tar.gz",
+        "c2c-1.2.3-npm-packages.tar.gz",
+    ]:
+        (release_dir / name).write_text(name, encoding="utf-8")
+
+    sums = release_dir / "SHA256SUMS"
+    manifest = release_dir / "release-manifest.json"
+    release.write_checksums(release_dir, sums)
+    release.write_manifest(root, release_dir, "1.2.3", manifest)
+
+    sums_text = sums.read_text(encoding="utf-8")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_paths = {entry["path"] for entry in manifest_json["artifacts"]}
+
+    assert "c2c-1.2.3-linux-x64.tar.gz" in sums_text
+    assert "c2c-1.2.3-npm-packages.tar.gz" in sums_text
+    assert "c2c-1.2.3-linux-x64.tar.gz" in manifest_paths
+    assert "c2c-1.2.3-npm-packages.tar.gz" in manifest_paths
