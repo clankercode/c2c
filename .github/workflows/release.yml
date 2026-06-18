@@ -111,7 +111,7 @@ jobs:
           ocaml-compiler: 5.3.0
 
       - name: Install OCaml dependencies
-        run: opam install . --deps-only --with-test --yes
+        run: just install-deps
 
       - name: Build c2c binary
         shell: bash
