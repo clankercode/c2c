@@ -96,6 +96,8 @@ jobs:
             os: macos-13
           - target: darwin-arm64
             os: macos-14
+          - target: win32-x64
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -139,25 +141,42 @@ jobs:
             ./ocaml/tools/c2c_cold_boot_hook.exe \
             ./ocaml/tools/c2c_post_compact_hook_bin.exe
           mkdir -p "dist/c2c-${{ matrix.target }}"
-          cp _build/default/ocaml/cli/c2c.exe "dist/c2c-${{ matrix.target }}/c2c"
-          cp _build/default/ocaml/cli/c2c_deliver_inbox.exe "dist/c2c-${{ matrix.target }}/c2c-deliver-inbox"
-          cp _build/default/ocaml/server/c2c_mcp_server.exe "dist/c2c-${{ matrix.target }}/c2c-mcp-server"
-          cp _build/default/ocaml/server/c2c_mcp_server_inner_bin.exe "dist/c2c-${{ matrix.target }}/c2c-mcp-inner"
-          cp _build/default/ocaml/tools/c2c_inbox_hook.exe "dist/c2c-${{ matrix.target }}/c2c-inbox-hook-ocaml"
-          cp _build/default/ocaml/tools/c2c_cold_boot_hook.exe "dist/c2c-${{ matrix.target }}/c2c-cold-boot-hook"
-          cp _build/default/ocaml/tools/c2c_post_compact_hook_bin.exe "dist/c2c-${{ matrix.target }}/c2c-post-compact-hook"
-          chmod +x "dist/c2c-${{ matrix.target }}/c2c"
-          chmod +x "dist/c2c-${{ matrix.target }}/c2c-deliver-inbox"
-          chmod +x "dist/c2c-${{ matrix.target }}/c2c-mcp-server"
-          chmod +x "dist/c2c-${{ matrix.target }}/c2c-mcp-inner"
-          chmod +x "dist/c2c-${{ matrix.target }}/c2c-inbox-hook-ocaml"
-          chmod +x "dist/c2c-${{ matrix.target }}/c2c-cold-boot-hook"
-          chmod +x "dist/c2c-${{ matrix.target }}/c2c-post-compact-hook"
-          "dist/c2c-${{ matrix.target }}/c2c" --version
+          if [ "${{ matrix.target }}" = "win32-x64" ]; then
+            c2c_name=c2c.exe
+            deliver_name=c2c-deliver-inbox.exe
+            server_name=c2c-mcp-server.exe
+            inner_name=c2c-mcp-inner.exe
+            hook_name=c2c-inbox-hook-ocaml.exe
+            cold_boot_name=c2c-cold-boot-hook.exe
+            post_compact_name=c2c-post-compact-hook.exe
+          else
+            c2c_name=c2c
+            deliver_name=c2c-deliver-inbox
+            server_name=c2c-mcp-server
+            inner_name=c2c-mcp-inner
+            hook_name=c2c-inbox-hook-ocaml
+            cold_boot_name=c2c-cold-boot-hook
+            post_compact_name=c2c-post-compact-hook
+          fi
+          cp _build/default/ocaml/cli/c2c.exe "dist/c2c-${{ matrix.target }}/${c2c_name}"
+          cp _build/default/ocaml/cli/c2c_deliver_inbox.exe "dist/c2c-${{ matrix.target }}/${deliver_name}"
+          cp _build/default/ocaml/server/c2c_mcp_server.exe "dist/c2c-${{ matrix.target }}/${server_name}"
+          cp _build/default/ocaml/server/c2c_mcp_server_inner_bin.exe "dist/c2c-${{ matrix.target }}/${inner_name}"
+          cp _build/default/ocaml/tools/c2c_inbox_hook.exe "dist/c2c-${{ matrix.target }}/${hook_name}"
+          cp _build/default/ocaml/tools/c2c_cold_boot_hook.exe "dist/c2c-${{ matrix.target }}/${cold_boot_name}"
+          cp _build/default/ocaml/tools/c2c_post_compact_hook_bin.exe "dist/c2c-${{ matrix.target }}/${post_compact_name}"
+          chmod +x "dist/c2c-${{ matrix.target }}/${c2c_name}"
+          chmod +x "dist/c2c-${{ matrix.target }}/${deliver_name}"
+          chmod +x "dist/c2c-${{ matrix.target }}/${server_name}"
+          chmod +x "dist/c2c-${{ matrix.target }}/${inner_name}"
+          chmod +x "dist/c2c-${{ matrix.target }}/${hook_name}"
+          chmod +x "dist/c2c-${{ matrix.target }}/${cold_boot_name}"
+          chmod +x "dist/c2c-${{ matrix.target }}/${post_compact_name}"
+          "dist/c2c-${{ matrix.target }}/${c2c_name}" --version
           tar -czf "dist/c2c-${{ matrix.target }}/c2c-${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz" \
             -C "dist/c2c-${{ matrix.target }}" \
-            c2c c2c-deliver-inbox c2c-mcp-server c2c-mcp-inner c2c-inbox-hook-ocaml \
-            c2c-cold-boot-hook c2c-post-compact-hook
+            "${c2c_name}" "${deliver_name}" "${server_name}" "${inner_name}" "${hook_name}" \
+            "${cold_boot_name}" "${post_compact_name}"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

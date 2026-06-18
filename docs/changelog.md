@@ -7,6 +7,15 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.8.1
+
+- Added CI caching for Dune build artifacts and OCaml dependency state so warm
+  CI runs restore dependencies instead of rebuilding them from scratch.
+- Fixed CI install tests to use the freshly built CLI and deterministic fake
+  client commands, matching the GitHub Actions environment.
+- Added Windows x64 release artifact support and included the Windows npm
+  platform package in the meta package dependency set.
+
 ## 0.8.0
 
 - Added the first repo-local release workflow: version/changelog validation,

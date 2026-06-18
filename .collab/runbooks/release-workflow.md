@@ -65,6 +65,7 @@ The release workflow builds native c2c binary bundles for:
 - `linux-arm64`
 - `darwin-x64`
 - `darwin-arm64`
+- `win32-x64`
 
 Each tarball includes the local install binary family:
 
@@ -75,6 +76,8 @@ Each tarball includes the local install binary family:
 - `c2c-inbox-hook-ocaml`
 - `c2c-cold-boot-hook`
 - `c2c-post-compact-hook`
+
+Windows tarballs use the same payload family with `.exe` suffixes.
 
 `cc-quota` is intentionally excluded from release tarballs because it depends
 on operator-local Claude tooling and is not portable c2c runtime surface.
