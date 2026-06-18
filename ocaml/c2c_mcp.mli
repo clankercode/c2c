@@ -41,9 +41,31 @@ val validate_session_id : string -> (string, string) result
 (** Validate session IDs that will be used as broker inbox filenames.
     Returns the trimmed ID on success. *)
 
-val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> ?ts:float -> content:string -> unit -> string
+val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> ?ts:float -> ?with_reply_hint:bool -> content:string -> unit -> string
 (** [#392b] Canonical c2c message envelope formatter. Optional [tag]
-    surfaces FAIL/BLOCKING/URGENT to programmatic consumers. *)
+    surfaces FAIL/BLOCKING/URGENT to programmatic consumers.
+
+    [{!with_reply_hint}] (default [false]) appends a
+    [<system-reminder>] block after the envelope with a self-contained
+    reply call shape (c2c_send for DMs, c2c_send_room for rooms).
+    The wire-bridge enables this by default; CLI commands and other
+    terminal-visible paths keep it off. The hint mentions only
+    [c2c_send] / [c2c_send_room]; clients that need a client-specific
+    tool name (e.g. pi-c2c's [c2c_pi_send]) override locally. See
+    [docs/superpowers/specs/2026-06-18-reply-hint-system-reminder-design.md]. *)
+
+val format_reply_hint : from:string -> to_alias:string -> string
+(** Build the [<system-reminder>] reply hint block. Sibling of the
+    [<c2c>] envelope; not inside it. Sender [from] is XML-escaped
+    and backtick/backslash-escaped before being interpolated into
+    the fenced example so a malicious peer cannot break out and
+    re-instruct the agent. Returns an empty string for relay DMs
+    (suffixed `#<12-hex-host-hash>`), which are direct messages. *)
+
+val is_room_recipient : to_alias:string -> bool
+(** True iff [to_alias] carries a `#<room-id>` suffix (per
+    [C2c_broker.fan_out_room_message]'s room-delivery convention).
+    A 12-lowercase-hex suffix is the relay host-hash, not a room. *)
 
 type compacting = { started_at : float; reason : string option }
 type registration =

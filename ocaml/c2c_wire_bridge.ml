@@ -10,7 +10,8 @@
  * Message envelope (centralised via C2c_mcp.format_c2c_envelope)
  * --------------------------------------------------------------------------- *)
 
-let format_envelope ?(sender_role : string option) ?ts (msg : C2c_mcp.message) =
+let format_envelope ?(sender_role : string option) ?ts
+    ?(with_reply_hint = true) (msg : C2c_mcp.message) =
   let tag = C2c_mcp.extract_tag_from_content msg.content in
   C2c_mcp.format_c2c_envelope
     ~from_alias:msg.from_alias
@@ -19,6 +20,7 @@ let format_envelope ?(sender_role : string option) ?ts (msg : C2c_mcp.message) =
     ?role:sender_role
     ?reply_via:msg.reply_via
     ?ts
+    ~with_reply_hint
     ~content:msg.content
     ()
 

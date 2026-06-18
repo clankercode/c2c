@@ -695,7 +695,93 @@ let xml_escape s =
     channel notification meta. Shared helper to prevent format drift. *)
 let format_ts_hhmm (t : float) : string = C2c_time.hhmm t
 
-let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts ~content () =
+(** Determine whether a `to_alias` represents a room delivery.
+    The OCaml broker ([C2c_broker.fan_out_room_message]) tags
+    room-delivered messages with [to_alias = "<recipient-alias>#<room-id>"]
+    so the recipient can recognise them on drain without consulting
+    room state.
+
+    Cross-machine relay DMs ALSO carry a `#`-suffixed [to_alias] (the
+    receiver's relay address is `<name>#<12-hex-host-hash>`, see
+    [derive_relay_alias] in the c2c main project). Those are direct
+    messages that must reply via [c2c_send], not [c2c_send_room].
+
+    Disambiguate by suffix shape: a 12-lowercase-hex suffix is the
+    relay host hash; anything else is treated as a room id. If the
+    relay address format ever changes, this helper and the relay
+    address derivation must move together. *)
+let is_room_recipient ~to_alias : bool =
+  let i = String.index to_alias '#' in
+  let suffix = String.sub to_alias (i + 1) (String.length to_alias - i - 1) in
+  not (String.length suffix = 12
+       && (let rec is_hex s = match s with
+           | "" -> true
+           | _ ->
+             let c = s.[0] in
+             (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+             && is_hex (String.sub s 1 (String.length s - 1))
+           in
+           is_hex suffix))
+
+let room_recipient_p ~to_alias : bool =
+  try is_room_recipient ~to_alias
+  with Not_found -> false
+
+(** Build the `<system-reminder>…</system-reminder>` block that follows
+    an inbound c2c envelope. The block names the sender, gives the exact
+    tool call shape, and tells the LLM NOT to reply in plain text.
+
+    Sender [from] is XML-escaped and additionally backtick/backslash
+    escaped before being interpolated into the code-fenced example.
+    A malicious peer who forges an alias with backticks or backslashes
+    cannot break out of the fenced region and re-instruct the agent.
+
+    For room messages ([to_alias] has a non-12-hex `#` suffix), the
+    reminder directs the agent to [c2c_send_room] with the room id
+    placeholder. The actual room id is recoverable from the envelope
+    `to=` attribute (`<alias>#<room-id>`), but we don't inline it here
+    because:
+      1. the [from] value is the load-bearing target (room replies
+         target the room, but the peer's identity is what the agent
+         wants to address);
+      2. the room id is a non-trivial string; agents that pipeline
+         room replies typically already track the room they joined.
+
+    Empty string returned when the recipient is a relay DM
+    (`<alias>#<12-hex-host-hash>`) — relay DMs are not rooms.
+
+    This is the canonical, broker-agnostic reply hint. It mentions
+    only [c2c_send] and [c2c_send_room]; clients that need a
+    client-specific tool name (e.g. pi-c2c's [c2c_pi_send]) suppress
+    or override this hint locally. See
+    [docs/superpowers/specs/2026-06-18-reply-hint-system-reminder-design.md]. *)
+let format_reply_hint ~from ~to_alias : string =
+  if room_recipient_p ~to_alias then
+    (* Room delivery: keep `<from>` literal, ask for c2c_send_room. *)
+    let safe_from = from |> xml_escape in
+    Printf.sprintf
+      "<system-reminder>\n\
+       You received a c2c room message from `%s`.\n\
+       To reply to the room, call c2c_send_room(room_id=\"<room id>\", content=\"<your reply>\").\n\
+       If c2c_send_room is unavailable in this session, the MCP tool c2c_send_room works the same way (room_id=\"<room id>\").\n\
+       Do NOT reply in plain text — the room will not see it.\n\
+       </system-reminder>"
+      safe_from
+  else
+    let safe_from = from |> xml_escape in
+    Printf.sprintf
+      "<system-reminder>\n\
+       You received a c2c direct message from `%s`.\n\
+       To reply, call c2c_send(to_alias=\"%s\", content=\"<your reply>\").\n\
+       If c2c_send is unavailable in this session, the MCP tool c2c_send works the same way (to_alias=\"%s\").\n\
+       Do NOT reply in plain text — the peer will not see it.\n\
+       </system-reminder>"
+      safe_from
+      safe_from
+      safe_from
+
+let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts
+    ?(with_reply_hint = false) ~content () =
   let tag_attr = match tag with
     | Some t -> Printf.sprintf " tag=\"%s\"" (xml_escape t)
     | None -> ""
@@ -709,8 +795,12 @@ let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts ~content
     | None -> ""
   in
   let reply_via_str = xml_escape (Option.value reply_via ~default:"c2c_send") in
+  let hint_str = if with_reply_hint
+    then "\n" ^ format_reply_hint ~from:from_alias ~to_alias
+    else ""
+  in
   Printf.sprintf
-    "<c2c event=\"message\" from=\"%s\" to=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s%s%s>\n%s\n</c2c>"
+    "<c2c event=\"message\" from=\"%s\" to=\"%s\" source=\"broker\" reply_via=\"%s\" action_after=\"continue\"%s%s%s>\n%s\n</c2c>%s"
     (xml_escape from_alias)
     (xml_escape to_alias)
     reply_via_str
@@ -718,6 +808,7 @@ let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts ~content
     tag_attr
     ts_attr
     content
+    hint_str
 
 (* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string
    list. Also accepts a bare comma-separated form ("alice, bob") for
