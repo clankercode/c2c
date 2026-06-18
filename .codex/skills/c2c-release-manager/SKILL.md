@@ -48,16 +48,17 @@ in a handoff and the release is stopped before tagging.
 
 ## Cut A Release
 
-Preferred path:
+Tag path:
 
 ```bash
-git tag -s vX.Y.Z
+git tag -a vX.Y.Z -m "c2c X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-If signing is unavailable, do not silently downgrade; ask coordinator1 which
-tag policy to use. The release workflow also supports manual dispatch with a
-version input for dry runs and draft releases.
+Signed tags are not required for c2c releases. If the coordinator explicitly
+asks for signing for a particular release, use `git tag -s`; otherwise use the
+unsigned annotated tag form above. The release workflow also supports manual
+dispatch with a version input for dry runs and draft releases.
 
 The release workflow builds Linux x64, Linux arm64, macOS x64, and macOS arm64
 artifact bundles. It stages npm platform packages plus the

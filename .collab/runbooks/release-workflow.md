@@ -41,15 +41,16 @@ Commit version/changelog/generated-file updates before tagging.
 
 ## Tag
 
-Preferred:
+Default:
 
 ```bash
-git tag -s vX.Y.Z
+git tag -a vX.Y.Z -m "c2c X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-If signed tags are not available, stop and ask coordinator1 which tag policy
-to use. Do not quietly downgrade a signed-release expectation.
+Signed tags are not required for normal c2c releases. If coordinator1
+explicitly requests a signed tag for a particular release, use
+`git tag -s vX.Y.Z`; otherwise use the unsigned annotated tag form above.
 
 Manual draft path:
 
