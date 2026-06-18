@@ -110,6 +110,16 @@ jobs:
           ocaml-compiler: 5.3.0
           dune-cache: true
 
+      - name: Restore OCaml dependency cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            _opam
+            ~/.opam/download-cache
+          key: ocaml-deps-${{ runner.os }}-${{ runner.arch }}-5.3.0-${{ hashFiles('justfile', 'dune-project', 'ocaml/**/dune') }}
+          restore-keys: |
+            ocaml-deps-${{ runner.os }}-${{ runner.arch }}-5.3.0-
+
       - name: Install OCaml dependencies
         run: just install-deps
 
