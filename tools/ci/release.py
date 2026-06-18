@@ -40,6 +40,7 @@ PLATFORMS: dict[str, Platform] = {
     "linux-arm64": Platform("linux-arm64", "linux-arm64", "linux", "arm64", "c2c"),
     "darwin-x64": Platform("darwin-x64", "darwin-x64", "darwin", "x64", "c2c"),
     "darwin-arm64": Platform("darwin-arm64", "darwin-arm64", "darwin", "arm64", "c2c"),
+    "win32-x64": Platform("win32-x64", "win32-x64", "win32", "x64", "c2c.exe"),
 }
 
 REPOSITORY = {
@@ -238,6 +239,7 @@ const PACKAGE_BY_PLATFORM = {
   "linux-arm64": "__C2C_NPM_SCOPE__/c2c-linux-arm64",
   "darwin-x64": "__C2C_NPM_SCOPE__/c2c-darwin-x64",
   "darwin-arm64": "__C2C_NPM_SCOPE__/c2c-darwin-arm64",
+  "win32-x64": "__C2C_NPM_SCOPE__/c2c-win32-x64",
 };
 
 function isExecutable(file) {
@@ -274,7 +276,7 @@ function resolvePlatformPackage() {
   const pkg = PACKAGE_BY_PLATFORM[key];
   if (!pkg) return null;
   try {
-    return require.resolve(`${pkg}/bin/c2c`);
+    return require.resolve(`${pkg}/bin/${process.platform === "win32" ? "c2c.exe" : "c2c"}`);
   } catch (_) {
     return null;
   }
