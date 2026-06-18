@@ -9,6 +9,8 @@ open C2c_mcp
 open C2c_types
 open C2c_install_manifest
 
+let default_social_room () = C2c_swarm_config.swarm_config_social_room ()
+
 let json_flag =
   Cmdliner.Arg.(value & flag & info [ "json"; "j" ] ~doc:"Output machine-readable JSON.")
 
@@ -505,7 +507,8 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
   Buffer.add_string buf "C2C_MCP_CLIENT_TYPE = \"codex\"\n";
   Buffer.add_string buf "C2C_MCP_AUTO_DRAIN_CHANNEL = \"0\"\n";
-  Buffer.add_string buf "C2C_MCP_AUTO_JOIN_ROOMS = \"swarm-lounge\"\n";
+  Buffer.add_string buf
+    (Printf.sprintf "C2C_MCP_AUTO_JOIN_ROOMS = \"%s\"\n" (default_social_room ()));
   Buffer.add_string buf "C2C_AUTO_JOIN_ROLE_ROOM = \"1\"\n";
   if alias_from_auto_gen then
     Buffer.add_string buf "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN = \"1\"\n";
@@ -576,7 +579,7 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen exi
           ([ ("C2C_MCP_BROKER_ROOT", `String root)
            ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
            ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String (default_social_room ()))
            ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
            ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
       ; ("allowedTools", c2c_allowed_tools_json)
@@ -694,7 +697,7 @@ let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_comman
           ([ ("C2C_MCP_BROKER_ROOT", `String root)
            ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
            ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String (default_social_room ()))
            ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
            ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
       ; ("trust", `Bool true)
@@ -802,7 +805,7 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
                 ; ("environment", `Assoc
                     ([ ("C2C_MCP_BROKER_ROOT", `String root)
                      ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-                     ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+                     ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String (default_social_room ()))
                      ; ("C2C_CLI_COMMAND", `String (current_c2c_command ()))
                      ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
                      ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
@@ -1158,7 +1161,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     [ ("C2C_MCP_BROKER_ROOT", `String root)
     ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
     ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-    ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+    ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String (default_social_room ()))
     ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
     ] @ (if channel_delivery then [ ("C2C_MCP_CHANNEL_DELIVERY", `String "1") ] else [])
       @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])
@@ -1454,7 +1457,7 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_wat
           ([ ("C2C_MCP_BROKER_ROOT", `String root)
            ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
            ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge")
+           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String (default_social_room ()))
            ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
            ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
       ]

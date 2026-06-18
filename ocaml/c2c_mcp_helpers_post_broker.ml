@@ -981,7 +981,10 @@ let auto_register_impl ~broker_root ?session_id_override () =
               Printf.eprintf "[auto_register_startup] warning: could not load X25519 key: %s\n%!" e;
               None
         in
-        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type ~plugin_version ~enc_pubkey ~from_auto_gen:(auto_register_alias_from_auto_gen ()) ();
+        let cwd = try Some (Sys.getcwd ()) with Sys_error _ -> None in
+        Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type
+          ~plugin_version ~enc_pubkey ~cwd
+          ~from_auto_gen:(auto_register_alias_from_auto_gen ()) ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end else begin
         (* Log which guard triggered and by which registration, for debugging.

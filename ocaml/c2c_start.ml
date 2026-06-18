@@ -1633,9 +1633,10 @@ module OpenCodeAdapter : CLIENT_ADAPTER = struct
     (if Sys.file_exists config_path then
       (try
         let cfg = Yojson.Safe.from_file config_path in
+        let social_room = C2c_swarm_config.swarm_config_social_room () in
         let identity_env = [
           ("C2C_MCP_BROKER_ROOT", `String broker_root);
-          ("C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge");
+          ("C2C_MCP_AUTO_JOIN_ROOMS", `String social_room);
           ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0");
           ("C2C_CLI_COMMAND", `String (current_c2c_command ()));
         ] in
@@ -2836,7 +2837,8 @@ let run_tmux_loop ~(name : string) ~(tmux_location : string)
     ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
     ~client_type:(Some "tmux") ();
   let rooms =
-    Option.value auto_join_rooms ~default:"swarm-lounge"
+    Option.value auto_join_rooms
+      ~default:(C2c_swarm_config.swarm_config_social_room ())
     |> String.split_on_char ','
     |> List.map String.trim
     |> List.filter ((<>) "")
@@ -3135,10 +3137,11 @@ let build_kimi_mcp_config ?(alias_from_auto_gen : bool = false) (name : string) 
        "override"  = broker_root was explicitly set; use C2C_MCP_BROKER_ROOT *)
   let resolver_default = try resolve_broker_root () with _ -> "" in
   let env_pairs =
+    let social_room = C2c_swarm_config.swarm_config_social_room () in
     let base = [
       "C2C_MCP_SESSION_ID", `String name;
       "C2C_MCP_AUTO_REGISTER_ALIAS", `String alias;
-      "C2C_MCP_AUTO_JOIN_ROOMS", `String "swarm-lounge";
+      "C2C_MCP_AUTO_JOIN_ROOMS", `String social_room;
       "C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0";
     ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else []) in
     if br = "" || br = resolver_default
@@ -5583,7 +5586,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     extra_args;
     created_at = (match existing with Some ex -> ex.created_at | None -> Unix.gettimeofday ());
     broker_root;
-    auto_join_rooms = Option.value auto_join_rooms ~default:"swarm-lounge";
+    auto_join_rooms = Option.value auto_join_rooms
+      ~default:(C2c_swarm_config.swarm_config_social_room ());
     binary_override;
     model_override;
     agent_name;
@@ -5602,7 +5606,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     | Some loc ->
         run_tmux_loop ~name ~tmux_location:loc
           ~tmux_command:(Option.value tmux_command ~default:extra_args)
-          ~broker_root ?alias_override ?auto_join_rooms ()
+          ~broker_root ?alias_override ~auto_join_rooms:cfg.auto_join_rooms ()
   else
 
   (* The persisted empty string sentinel means "no thread id yet" for a fresh
@@ -5618,7 +5622,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?resume_session_id:launch_resume_session_id
     ?codex_resume_target:cfg.codex_resume_target
     ?model_override:cfg.model_override
-    ~one_hr_cache ?kickoff_prompt ?auto_join_rooms
+    ~one_hr_cache ?kickoff_prompt ~auto_join_rooms:cfg.auto_join_rooms
     ?agent_name ?reply_to ~alias_from_auto_gen ?no_prompt
     ~opencode_plugin_embedded ()
 
@@ -5724,7 +5728,7 @@ let build_start_argv ~(cfg : instance_config) : string array =
    | Some n -> argv := !argv @ [ "--agent"; n ]
    | None -> ());
   (* --auto-join-rooms — only if non-default *)
-  if cfg.auto_join_rooms <> "swarm-lounge" then
+  if cfg.auto_join_rooms <> C2c_swarm_config.swarm_config_social_room () then
     argv := !argv @ [ "--auto-join"; cfg.auto_join_rooms ];
   (* extra_args — preserve any non-standard flags *)
   argv := !argv @ cfg.extra_args;

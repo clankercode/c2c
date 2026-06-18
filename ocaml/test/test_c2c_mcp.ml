@@ -2620,7 +2620,8 @@ let test_server_startup_auto_registers_alias_from_env () =
           let reg = List.hd regs in
           check string "registered session" "session-auto" reg.session_id;
           check string "registered alias" "opencode-local" reg.alias;
-          check bool "registered pid" true (reg.pid = Some (Unix.getpid ()))))
+          check bool "registered pid" true (reg.pid = Some (Unix.getpid ()));
+          check (option string) "registered cwd" (Some (Sys.getcwd ())) reg.cwd))
 
 let test_server_startup_auto_register_ignores_dead_client_pid_env () =
   with_temp_dir (fun dir ->

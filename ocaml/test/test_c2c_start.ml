@@ -2544,6 +2544,23 @@ let test_social_room_override () =
     "mesh-lounge"
     (C2c_start.swarm_config_social_room ())
 
+let test_build_env_uses_configured_social_room_default () =
+  with_temp_dir @@ fun dir ->
+  let c2c_dir = Filename.concat dir ".c2c" in
+  Unix.mkdir c2c_dir 0o755;
+  let config_path = Filename.concat c2c_dir "config.toml" in
+  let oc = open_out config_path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc "[swarm]\nsocial_room = \"mesh-lounge\"\n");
+  with_cwd dir @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~auto_join_rooms_override:(Some (C2c_start.swarm_config_social_room ()))
+      ~client:(Some "codex") "codex-mesh" (Some "codex-mesh")
+  in
+  check bool "configured social room exported for auto-join" true
+    (env_contains env "C2C_MCP_AUTO_JOIN_ROOMS=mesh-lounge")
+
 (* #318 keystone: unconfigured repos resolve to the built-in coordinator
    alias default (today's hardcoded literal). *)
 let test_coordinator_alias_builtin_default () =
@@ -3788,6 +3805,8 @@ let () =
            test_social_room_builtin_default)
         ; ("social_room_override", `Quick,
            test_social_room_override)
+        ; ("build_env_uses_configured_social_room_default", `Quick,
+           test_build_env_uses_configured_social_room_default)
         ; ("coordinator_alias_builtin_default", `Quick,
            test_coordinator_alias_builtin_default)
         ; ("coordinator_alias_override", `Quick,
