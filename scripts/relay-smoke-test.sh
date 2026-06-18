@@ -8,6 +8,7 @@
 set -euo pipefail
 
 RELAY="${1:-https://relay.c2c.im}"
+C2C_BIN="${C2C_BIN:-c2c}"
 ALIAS="smoke-$(date +%s)"
 PASS=0
 FAIL=0
@@ -16,8 +17,28 @@ green() { printf '\033[32m✓ %s\033[0m\n' "$*"; ((PASS++)) || true; }
 red()   { printf '\033[31m✗ %s\033[0m\n' "$*"; ((FAIL++)) || true; }
 info()  { printf '  %s\n' "$*"; }
 
+# Retry wrapper: tries a command up to N times with a short delay between attempts.
+# Usage: retry 3 1 "$C2C_BIN" relay rooms send ... (3 attempts, 1s delay)
+retry() {
+  local max_attempts=$1; local delay=$2; shift 2
+  local attempt=1
+  local out err
+  while (( attempt <= max_attempts )); do
+    out=$("$@" 2>&1) && { echo "$out"; return 0; }
+    err=$out
+    if (( attempt < max_attempts )); then
+      printf '  attempt %d failed, retrying in %ss...\n' "$attempt" "$delay" >&2
+      sleep "$delay"
+    fi
+    ((attempt++))
+  done
+  echo "$err"
+  return 1
+}
+
 echo "=== c2c Relay Smoke Test ==="
 echo "  Relay:  $RELAY"
+echo "  c2c:    $C2C_BIN"
 echo "  Alias:  $ALIAS"
 echo ""
 
@@ -37,7 +58,7 @@ echo ""
 
 # 2. Register alias
 echo "--- 2. Register ---"
-reg_out=$(c2c relay register --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+reg_out=$("$C2C_BIN" relay register --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
 echo "$reg_out"
 if echo "$reg_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "register succeeded"
@@ -52,7 +73,7 @@ echo ""
 
 # 3. List (C2C_MCP_AUTO_REGISTER_ALIAS tells the CLI which alias to sign as for the peer route)
 echo "--- 3. List ---"
-list_out=$(C2C_MCP_AUTO_REGISTER_ALIAS="$ALIAS" c2c relay list --relay-url "$RELAY" 2>&1) || true
+list_out=$(C2C_MCP_AUTO_REGISTER_ALIAS="$ALIAS" "$C2C_BIN" relay list --relay-url "$RELAY" 2>&1) || true
 echo "$list_out"
 if echo "$list_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "list succeeded"
@@ -63,7 +84,7 @@ echo ""
 
 # 4. Send DM to self (loopback)
 echo "--- 4. Loopback DM ---"
-dm_out=$(c2c relay dm send "$ALIAS" "smoke-test loopback" --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+dm_out=$(retry 3 1 "$C2C_BIN" relay dm send "$ALIAS" "smoke-test loopback" --alias "$ALIAS" --relay-url "$RELAY") || true
 echo "$dm_out"
 if echo "$dm_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "loopback DM send succeeded"
@@ -74,7 +95,7 @@ echo ""
 
 # 5. Poll inbox
 echo "--- 5. Poll inbox ---"
-poll_out=$(c2c relay dm poll --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+poll_out=$(retry 3 1 "$C2C_BIN" relay dm poll --alias "$ALIAS" --relay-url "$RELAY") || true
 echo "$poll_out"
 if echo "$poll_out" | python3 -c "import json,sys; d=json.load(sys.stdin); msgs=d.get('messages',[]); exit(0 if len(msgs)>0 else 1)" 2>/dev/null; then
   green "loopback DM received"
@@ -87,7 +108,7 @@ echo ""
 ROOM="smoke-room-$(date +%s)"
 echo "--- 6. Room operations (room: $ROOM) ---"
 
-join_out=$(c2c relay rooms join --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY" 2>&1) || true
+join_out=$(retry 3 1 "$C2C_BIN" relay rooms join --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY") || true
 echo "$join_out"
 if echo "$join_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room join succeeded"
@@ -96,33 +117,15 @@ else
 fi
 
 # List rooms (unauthenticated — should work without Ed25519)
-list_rooms_out=$(c2c relay rooms list --relay-url "$RELAY" 2>&1) || true
+list_rooms_out=$(retry 3 1 "$C2C_BIN" relay rooms list --relay-url "$RELAY") || true
+echo "$list_rooms_out"
 if echo "$list_rooms_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room list (unauthenticated) succeeded"
 else
   red "room list failed"
 fi
 
-# Retry wrapper: tries a command up to N times with a short delay between attempts.
-# Usage: retry 3 1 c2c relay rooms send ... (3 attempts, 1s delay)
-retry() {
-  local max_attempts=$1; local delay=$2; shift 2
-  local attempt=1
-  local out err
-  while (( attempt <= max_attempts )); do
-    out=$("$@" 2>&1) && { echo "$out"; return 0; }
-    err=$out
-    if (( attempt < max_attempts )); then
-      info "attempt $attempt failed, retrying in ${delay}s..."
-      sleep "$delay"
-    fi
-    ((attempt++))
-  done
-  echo "$err"
-  return 1
-}
-
-send_room_out=$(retry 3 1 c2c relay rooms send --alias "$ALIAS" --room "$ROOM" "smoke test message" --relay-url "$RELAY" 2>&1) || true
+send_room_out=$(retry 3 1 "$C2C_BIN" relay rooms send --alias "$ALIAS" --room "$ROOM" "smoke test message" --relay-url "$RELAY") || true
 echo "$send_room_out"
 if echo "$send_room_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room send succeeded"
@@ -132,7 +135,7 @@ fi
 
 # NOTE: room leave was non-fatal on older prod relays that lacked /leave_room.
 # join+send+history are the critical room ops; leave is best-effort.
-leave_out=$(c2c relay rooms leave --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY" 2>&1) || true
+leave_out=$(retry 3 1 "$C2C_BIN" relay rooms leave --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY") || true
 echo "$leave_out"
 if echo "$leave_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room leave succeeded"
@@ -141,7 +144,8 @@ else
 fi
 
 # Room history (unauthenticated — should work without Ed25519)
-hist_out=$(c2c relay rooms history --room "$ROOM" --relay-url "$RELAY" 2>&1) || true
+hist_out=$(retry 3 1 "$C2C_BIN" relay rooms history --room "$ROOM" --relay-url "$RELAY") || true
+echo "$hist_out"
 if echo "$hist_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room history (unauthenticated) succeeded"
 else
@@ -178,8 +182,8 @@ echo ""
 # section's expectations need to flip.
 echo "--- 8. Cross-host rejection + dead-letter ---"
 CROSS_HOST_TARGET="$ALIAS@unknown-relay-host.invalid"
-ch_out=$(c2c relay dm send "$CROSS_HOST_TARGET" "smoke cross-host probe" \
-           --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+ch_out=$(retry 3 1 "$C2C_BIN" relay dm send "$CROSS_HOST_TARGET" "smoke cross-host probe" \
+           --alias "$ALIAS" --relay-url "$RELAY") || true
 echo "$ch_out"
 if echo "$ch_out" | python3 -c "import json,sys
 try:
@@ -273,7 +277,7 @@ echo ""
 # .collab/research/2026-04-29-smoke-coverage-audit-cairn.md proposal D.
 echo "--- 10. send_all broadcast loopback ---"
 SA_PROBE="smoke send_all probe $(date +%s)"
-sa_out=$(c2c relay dm send-all "$SA_PROBE" --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+sa_out=$(retry 3 1 "$C2C_BIN" relay dm send-all "$SA_PROBE" --alias "$ALIAS" --relay-url "$RELAY") || true
 echo "$sa_out"
 if echo "$sa_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "send_all ack ok"
@@ -281,7 +285,7 @@ if echo "$sa_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 
   # either (a) message landed (self-loopback included) as hard PASS, or
   # (b) message absent (sender excluded) as info — both are defensible
   # spec choices. The ack itself is the regression-catcher.
-  sa_poll=$(c2c relay dm poll --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+  sa_poll=$("$C2C_BIN" relay dm poll --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
   if echo "$sa_poll" | grep -qF "$SA_PROBE"; then
     green "send_all delivered to self-loopback"
   else
