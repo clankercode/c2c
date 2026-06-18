@@ -201,6 +201,23 @@ test-ocaml:
 test-ts:
     cd .opencode && npm install --no-audit --no-fund --silent && npx vitest run tests/
 
+# Run npm package unit tests without installing dependencies.
+npm-test:
+    node --test npm-pkgs/c2c/test/*.test.js npm-pkgs/test/*.test.js
+
+# Stage npm package directories and dry-run pack every generated package.
+# Usage: just npm-stage-smoke /tmp/c2c-release-bin
+npm-stage-smoke BINARY_ROOT:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="$(sed -n 's/^let version = "\([^"]*\)"/\1/p' ocaml/version.ml)"
+    out_dir="${TMPDIR:-/tmp}/c2c-npm-stage-smoke"
+    node npm-pkgs/scripts/stage-npm-packages.js --version "$version" --binary-root "{{BINARY_ROOT}}" --out-dir "$out_dir"
+    for package_dir in "$out_dir"/c2c-*; do
+        (cd "$package_dir" && npm pack --dry-run --json >/dev/null)
+    done
+    (cd "$out_dir"/c2c && npm pack --dry-run --json >/dev/null)
+
 # Run the OpenCode plugin Python integration test (harness-driven)
 test-ts-integration:
     python3 -m pytest tests/test_c2c_opencode_plugin_integration.py -v
@@ -214,8 +231,8 @@ watch-e2e:
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe
     scripts/c2c-watch-e2e.sh
 
-# Run all tests (Python + OCaml + TS). Always rebuilds OCaml first to avoid stale binary.
-test: build test-ocaml test-py test-ts
+# Run all tests (Python + OCaml + TS + npm packaging). Always rebuilds OCaml first to avoid stale binary.
+test: build test-ocaml test-py test-ts npm-test
 
 # Run a specific Python test file or pattern
 # Usage: just test-one tests/test_c2c_history.py
