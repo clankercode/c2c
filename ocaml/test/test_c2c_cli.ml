@@ -66,6 +66,7 @@ let read_file path =
 let c2c_binary =
   let exe = Sys.executable_name in
   let exe = if Filename.is_relative exe then Filename.concat (Sys.getcwd ()) exe else exe in
+  let exe = try Unix.realpath exe with _ -> exe in
   let test_dir = Filename.dirname exe in
   let ocaml_dir = Filename.dirname test_dir in
   Filename.concat ocaml_dir (Filename.concat "cli" "c2c.exe")
