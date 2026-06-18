@@ -32,7 +32,7 @@ c2c_wire_daemon.py <start|stop|status|restart|list> [--session-id S] [--alias A]
 c2c_register.py <session> [--json]  # DEPRECATED — use `c2c register` (OCaml). Registers a Claude session for c2c messaging, assigns an alias.
 c2c_send.py <alias> <message...> [--dry-run] [--json]  # DEPRECATED — use `c2c send` (OCaml). Sends a c2c message to an opted-in session by alias.
 c2c_list.py [--all] [--json]  # DEPRECATED — use `c2c list` (OCaml). Lists opted-in c2c sessions (--all includes unregistered).
-c2c_verify.py [--json]  # DEPRECATED — use `c2c verify` (OCaml). Verifies c2c message exchange progress across all participants.
+c2c_verify.py [--json]  # DEPRECATED + MOVED to deprecated/c2c_verify.py (2026-06-18) — use `c2c verify` (OCaml). Verifies c2c message exchange progress across all participants. Importers: c2c_cli.py, tests/test_c2c_verify_whoami.py (both updated to `from deprecated import c2c_verify`).
 c2c_whoami.py [session] [--json]  # DEPRECATED — use `c2c whoami` (OCaml). Shows c2c identity (alias, session ID) for current or given session.
 c2c_mcp.py [args]  # DEPRECATED — use `c2c mcp` (OCaml). Launches the OCaml MCP server with opam env and broker defaults.
 c2c_registry.py                                                    # Library: registry YAML load/save, alias allocation, locking (not runnable)
