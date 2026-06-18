@@ -707,7 +707,7 @@ let test_channel_notification_relay_dm_uses_dm_hint () =
     (string_contains content "c2c_send_room")
 
 let test_format_reply_hint_basic_dm () =
-  let hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob" in
+  let hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob" () in
   check bool "starts with <system-reminder>" true
     (String.starts_with ~prefix:"<system-reminder>\n" hint);
   check bool "ends with </system-reminder>" true
@@ -717,8 +717,8 @@ let test_format_reply_hint_basic_dm () =
     (string_contains hint "c2c_send(to_alias=\"alice\"")
 
 let test_format_reply_hint_room_detection () =
-  let room_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#swarm-lounge" in
-  let relay_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#0123456789ab" in
+  let room_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#swarm-lounge" () in
+  let relay_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#0123456789ab" () in
   check bool "room hint asks for c2c_send_room" true (string_contains room_hint "c2c_send_room");
   check bool "relay hint asks for c2c_send (not room)" true
     (string_contains relay_hint "c2c_send("
@@ -728,7 +728,7 @@ let test_format_reply_hint_xml_escapes_sender () =
   (* Adversarial peer: alias with XML metacharacters. The hint must
      still produce valid XML and the alias must not break out of the
      inline examples. *)
-  let hint = C2c_mcp.format_reply_hint ~from:"a&b<c>d\"e'f" ~to_alias:"bob" in
+  let hint = C2c_mcp.format_reply_hint ~from:"a&b<c>d\"e'f" ~to_alias:"bob" () in
   check bool "ampersand escaped to &amp;" true (string_contains hint "a&amp;b");
   check bool "angle bracket in sender escaped" true
     (string_contains hint "a&amp;b&lt;c&gt;d&quot;e&#39;f");
@@ -736,7 +736,7 @@ let test_format_reply_hint_xml_escapes_sender () =
     (string_contains hint "a&b<c>d\"e'f")
 
 let test_format_reply_hint_escapes_backticks_and_backslashes () =
-  let hint = C2c_mcp.format_reply_hint ~from:"ali`ce\\ops" ~to_alias:"bob" in
+  let hint = C2c_mcp.format_reply_hint ~from:"ali`ce\\ops" ~to_alias:"bob" () in
   check bool "sender mention escapes backtick" true
     (string_contains hint "from `ali\\`ce\\\\ops`");
   check bool "reply call escapes backtick and backslash" true

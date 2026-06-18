@@ -368,7 +368,7 @@ let channel_notification ?(role : string option = None) ?(with_reply_hint = true
      suppress or override locally. *)
   let content_with_hint =
     if with_reply_hint
-    then content ^ "\n" ^ C2c_mcp_helpers.format_reply_hint ~from:from_alias ~to_alias
+    then content ^ "\n" ^ C2c_mcp_helpers.format_reply_hint ~from:from_alias ~to_alias ()
     else content
   in
   `Assoc

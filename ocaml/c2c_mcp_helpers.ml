@@ -762,7 +762,7 @@ let escape_reminder_literal s =
     or override this hint locally. See the 2026-06-18 follow-up
     section in
     [docs/superpowers/specs/2026-04-22-reply-via-envelope-design.md]. *)
-let format_reply_hint ?(escape_text_for_xml = false) ~from ~to_alias : string =
+let format_reply_hint ?(escape_text_for_xml = false) ~from ~to_alias () : string =
   let reply_placeholder =
     if escape_text_for_xml then "&lt;your reply&gt;" else "<your reply>"
   in
@@ -811,7 +811,7 @@ let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts
   let hint_str = if with_reply_hint
     then "\n"
          ^ format_reply_hint ~escape_text_for_xml:escape_content_for_xml
-             ~from:from_alias ~to_alias
+             ~from:from_alias ~to_alias ()
     else ""
   in
   Printf.sprintf
