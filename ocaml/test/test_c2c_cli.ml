@@ -88,6 +88,12 @@ let isolated_home_env home =
     (Filename.quote (Filename.concat home ".config"))
     (Filename.quote (Filename.concat (Filename.concat home ".local") "state"))
 
+let debug_install_failure label cmd rc content =
+  if rc <> 0 || not (string_contains content "[DRY-RUN]") then
+    Printf.eprintf
+      "\n[install-test-debug:%s]\ncmd=%s\nrc=%d\noutput-start\n%s\noutput-end\n%!"
+      label cmd rc content
+
 (* ------------------------------------------------------------------------- *)
 (* c2c doctor — verify health check output and exit 0 on clean run          *)
 (* ------------------------------------------------------------------------- *)
@@ -857,11 +863,12 @@ let test_install_dry_run_kimi () =
       let cmd = c2c_cmd (Printf.sprintf "%s c2c install kimi --dry-run --alias %s > %s 2>&1"
         (isolated_home_env home) (Filename.quote alias) tmpfile) in
       let rc = Sys.command cmd in
-      check int "install kimi --dry-run exits 0" 0 rc;
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
+      debug_install_failure "kimi" cmd rc content;
+      check int "install kimi --dry-run exits 0" 0 rc;
       check bool "dry-run output contains [DRY-RUN]" true
         (string_contains content "[DRY-RUN]");
       check bool "dry-run output mentions kimi config" true
@@ -876,11 +883,12 @@ let test_install_dry_run_opencode () =
       let cmd = c2c_cmd (Printf.sprintf "%s c2c install opencode --dry-run --alias %s > %s 2>&1"
         (isolated_home_env home) (Filename.quote alias) tmpfile) in
       let rc = Sys.command cmd in
-      check int "install opencode --dry-run exits 0" 0 rc;
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
+      debug_install_failure "opencode" cmd rc content;
+      check int "install opencode --dry-run exits 0" 0 rc;
       check bool "dry-run output contains [DRY-RUN]" true
         (string_contains content "[DRY-RUN]")))
 
@@ -893,11 +901,12 @@ let test_install_dry_run_codex () =
       let cmd = c2c_cmd (Printf.sprintf "%s c2c install codex --dry-run --alias %s > %s 2>&1"
         (isolated_home_env home) (Filename.quote alias) tmpfile) in
       let rc = Sys.command cmd in
-      check int "install codex --dry-run exits 0" 0 rc;
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
+      debug_install_failure "codex" cmd rc content;
+      check int "install codex --dry-run exits 0" 0 rc;
       check bool "dry-run output contains [DRY-RUN]" true
         (string_contains content "[DRY-RUN]")))
 
@@ -1309,13 +1318,15 @@ let test_install_all_dry_run_shows_dry_run_markers () =
     let tmpfile = Filename.temp_file "c2c-install-all-dry" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
-      ignore (Sys.command (c2c_cmd (Printf.sprintf
+      let cmd = c2c_cmd (Printf.sprintf
         "%s c2c install all --dry-run > %s 2>&1 < /dev/null"
-        (isolated_home_env home) tmpfile)));
+        (isolated_home_env home) tmpfile) in
+      let rc = Sys.command cmd in
       let ch = open_in tmpfile in
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
+      debug_install_failure "all-markers" cmd rc content;
       check bool "output contains [DRY-RUN] marker" true
         (string_contains content "[DRY-RUN]")))
 
@@ -1381,6 +1392,11 @@ let test_install_opencode_creates_deliver_watch_scripts () =
             "%s c2c install opencode --force --alias %s --target-dir %s > %s 2>&1"
             env_prefix (Filename.quote alias) (Filename.quote target_dir) tmpfile) in
           let rc = Sys.command cmd in
+          let ch = open_in tmpfile in
+          let content = Fun.protect ~finally:(fun () -> close_in ch)
+            (fun () -> really_input_string ch (in_channel_length ch))
+          in
+          if rc <> 0 then debug_install_failure "opencode-real" cmd rc content;
           (* Must not crash — exit 0 *)
           check int "install opencode --force exits 0" 0 rc;
           (* client dir must exist *)
