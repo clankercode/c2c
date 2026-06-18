@@ -2733,6 +2733,7 @@ let test_coord_broadcast_room_empty_disables () =
    rather than whatever happens to be on PATH. *)
 let built_c2c_binary () =
   let exe = Sys.executable_name in
+  let exe = if Filename.is_relative exe then Filename.concat (Sys.getcwd ()) exe else exe in
   let test_dir = Filename.dirname exe in            (* .../ocaml/test *)
   let ocaml_dir = Filename.dirname test_dir in      (* .../ocaml *)
   Filename.concat ocaml_dir (Filename.concat "cli" "c2c.exe")
