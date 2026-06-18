@@ -3035,8 +3035,8 @@ let host_id =
     (Cmdliner.Cmd.info "host-id"
       ~doc:"Print the opaque per-host identifier (12 hex chars). \
             Same recipe as the extension's computeHostHash; pass it as \
-            <alias>#<host_id> to `c2c relay register` for cross-machine \
-            privacy (.collab/design/2026-06-17-c2c-opaque-host-id.md).")
+            <alias>@<host_id> to `c2c relay register` for cross-machine \
+            privacy (.collab/design/2026-06-18-relay-address-at-host-id.md).")
     host_id_cmd
 
 (* --- subcommand: git ----------------------------------------------------- *)
