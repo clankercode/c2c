@@ -73,9 +73,12 @@ let c2c_binary =
 
 let c2c_cmd partial =
   let dir = Filename.dirname c2c_binary in
-  let link = Filename.concat dir "c2c" in
-  (try Sys.remove link with _ -> ());
-  (try Unix.symlink c2c_binary link with Unix.Unix_error _ -> ());
+  let wrapper = Filename.concat dir "c2c" in
+  (try Sys.remove wrapper with _ -> ());
+  let oc = open_out wrapper in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    Printf.fprintf oc "#!/bin/sh\nexec %s \"$@\"\n" (Filename.quote c2c_binary));
+  Unix.chmod wrapper 0o755;
   Printf.sprintf "PATH=%s:$PATH C2C_MCP_AUTO_REGISTER_ALIAS=cli-test %s"
     (Filename.quote dir) partial
 
