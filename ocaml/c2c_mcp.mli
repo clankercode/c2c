@@ -667,7 +667,7 @@ val notify_shared_with_recipients :
 
 (* Native OCaml relay modules *)
 
-val channel_notification : ?role:string option -> message -> Yojson.Safe.t
+val channel_notification : ?role:string option -> ?with_reply_hint:bool -> message -> Yojson.Safe.t
 val decrypt_message_for_push : message -> alias:string -> message
 
 val decrypt_envelope :
