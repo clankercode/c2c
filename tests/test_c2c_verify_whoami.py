@@ -27,7 +27,8 @@ class C2CVerifyUnitTests(unittest.TestCase):
         stdout = io.StringIO()
         with (
             mock.patch(
-                "c2c_verify.verify_progress_broker", return_value=payload
+                "deprecated.c2c_verify.verify_progress_broker",
+                return_value=payload,
             ) as verify_mock,
             mock.patch("sys.stdout", stdout),
         ):
@@ -102,9 +103,11 @@ class C2CVerifyUnitTests(unittest.TestCase):
                 mock.patch.dict(
                     os.environ, {"C2C_REGISTRY_PATH": str(registry_path)}, clear=False
                 ),
-                mock.patch("c2c_verify.load_sessions", return_value=sessions),
                 mock.patch(
-                    "c2c_verify.summarize_transcript",
+                    "deprecated.c2c_verify.load_sessions", return_value=sessions
+                ),
+                mock.patch(
+                    "deprecated.c2c_verify.summarize_transcript",
                     side_effect=[
                         {"sent": 2, "received": 3},
                         {"sent": 4, "received": 5},
@@ -145,9 +148,11 @@ class C2CVerifyUnitTests(unittest.TestCase):
                 mock.patch.dict(
                     os.environ, {"C2C_REGISTRY_PATH": str(registry_path)}, clear=False
                 ),
-                mock.patch("c2c_verify.load_sessions", return_value=sessions),
                 mock.patch(
-                    "c2c_verify.summarize_transcript",
+                    "deprecated.c2c_verify.load_sessions", return_value=sessions
+                ),
+                mock.patch(
+                    "deprecated.c2c_verify.summarize_transcript",
                     side_effect=[
                         {"sent": 20, "received": 20},
                         {"sent": 20, "received": 20},
@@ -191,9 +196,11 @@ class C2CVerifyUnitTests(unittest.TestCase):
                 mock.patch.dict(
                     os.environ, {"C2C_REGISTRY_PATH": str(registry_path)}, clear=False
                 ),
-                mock.patch("c2c_verify.load_sessions", return_value=sessions),
                 mock.patch(
-                    "c2c_verify.summarize_transcript",
+                    "deprecated.c2c_verify.load_sessions", return_value=sessions
+                ),
+                mock.patch(
+                    "deprecated.c2c_verify.summarize_transcript",
                     side_effect=[
                         {"sent": 2, "received": 3},
                         {"sent": 99, "received": 99},
@@ -234,9 +241,11 @@ class C2CVerifyUnitTests(unittest.TestCase):
                 mock.patch.dict(
                     os.environ, {"C2C_REGISTRY_PATH": str(registry_path)}, clear=False
                 ),
-                mock.patch("c2c_verify.load_sessions", return_value=sessions),
                 mock.patch(
-                    "c2c_verify.summarize_transcript",
+                    "deprecated.c2c_verify.load_sessions", return_value=sessions
+                ),
+                mock.patch(
+                    "deprecated.c2c_verify.summarize_transcript",
                     return_value={"sent": 1, "received": 4},
                 ) as summarize,
             ):
@@ -564,7 +573,7 @@ class C2CVerifyBrokerTests(unittest.TestCase):
 
     def test_falls_back_to_yaml_registry_when_json_absent(self):
         # No registry.json — falls back to load_registry() (Python YAML)
-        with mock.patch("c2c_verify.load_registry") as mock_load:
+        with mock.patch("deprecated.c2c_verify.load_registry") as mock_load:
             mock_load.return_value = {
                 "registrations": [{"alias": "agent-z", "session_id": "sess-z"}]
             }
