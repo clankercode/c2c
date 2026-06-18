@@ -12,7 +12,7 @@ let msg ?(from_alias="") ?(to_alias="") ?(reply_via=None) ?(enc_status=None) con
 
 let test_envelope_basic () =
   let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello world" in
-  let got = C2c_wire_bridge.format_envelope m in
+  let got = C2c_wire_bridge.format_envelope ~with_reply_hint:false m in
   let expected =
     "<c2c event=\"message\" from=\"alice\" to=\"bob\" source=\"broker\" reply_via=\"c2c_send\" action_after=\"continue\">\nhello world\n</c2c>"
   in
@@ -21,7 +21,7 @@ let test_envelope_basic () =
 let test_envelope_xml_escaping () =
   (* ampersand, angle brackets, and quotes in sender/alias/content must be escaped *)
   let m = msg ~from_alias:"a&b" ~to_alias:"<x>" "say hi and bye" in
-  let got = C2c_wire_bridge.format_envelope m in
+  let got = C2c_wire_bridge.format_envelope ~with_reply_hint:false m in
   (* Python html.escape with quote=True escapes ampersand, angle brackets, quotes *)
   Alcotest.(check bool) "from attr escapes &"
     true (String.sub got 0 100 |> fun s ->
@@ -35,7 +35,7 @@ let test_envelope_xml_escaping () =
 
 let test_envelope_multiline_content () =
   let m = msg ~from_alias:"agent1" ~to_alias:"agent2" "line1\nline2\nline3" in
-  let got = C2c_wire_bridge.format_envelope m in
+  let got = C2c_wire_bridge.format_envelope ~with_reply_hint:false m in
   Alcotest.(check bool) "content preserved"
     true (let needle = "line1\nline2\nline3" in
             let nl = String.length needle and ll = String.length got in
@@ -43,7 +43,7 @@ let test_envelope_multiline_content () =
 
 let test_envelope_empty_from () =
   let m = msg ~from_alias:"" ~to_alias:"target" "body" in
-  let got = C2c_wire_bridge.format_envelope m in
+  let got = C2c_wire_bridge.format_envelope ~with_reply_hint:false m in
   Alcotest.(check bool) "empty from_alias renders as empty"
     true (let needle = "from=\"\"" in
             let nl = String.length needle and ll = String.length got in
@@ -54,7 +54,7 @@ let test_envelope_empty_from () =
 let test_envelope_with_role () =
   let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello" in
   let role : string option = Some "coder" in
-  let got = C2c_wire_bridge.format_envelope ?sender_role:role m in
+  let got = C2c_wire_bridge.format_envelope ~with_reply_hint:false ?sender_role:role m in
   Alcotest.(check bool) "role attr emitted"
     true (let needle = "role=\"coder\"" in
             let nl = String.length needle and ll = String.length got in
@@ -64,7 +64,7 @@ let test_envelope_role_xml_escaped () =
   (* role value with special chars must be escaped *)
   let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello" in
   let role : string option = Some "a&b" in
-  let got = C2c_wire_bridge.format_envelope ?sender_role:role m in
+  let got = C2c_wire_bridge.format_envelope ~with_reply_hint:false ?sender_role:role m in
   Alcotest.(check bool) "role value escaped"
     true (let needle = "role=\"a&amp;b\"" in
             let nl = String.length needle and ll = String.length got in
@@ -73,7 +73,7 @@ let test_envelope_role_xml_escaped () =
 let test_envelope_role_absent_when_none () =
   (* absent sender_role must not emit any role attr *)
   let m = msg ~from_alias:"alice" ~to_alias:"bob" "hello" in
-  let got = C2c_wire_bridge.format_envelope m in
+  let got = C2c_wire_bridge.format_envelope ~with_reply_hint:false m in
   Alcotest.(check bool) "no role attr when sender_role is None"
     false (let needle = "role=" in
             let nl = String.length needle and ll = String.length got in
@@ -87,7 +87,7 @@ let test_prompt_with_role_lookup () =
     | "carol" -> Some "reviewer"
     | _ -> None
   in
-  let got = C2c_wire_bridge.format_prompt ~role_lookup:lookup [m1; m2] in
+  let got = C2c_wire_bridge.format_prompt ~with_reply_hint:false ~role_lookup:lookup [m1; m2] in
   (* Check alice's envelope has role="coordinator" *)
   Alcotest.(check bool) "alice role present"
     true (let needle = "role=\"coordinator\"" in
@@ -107,7 +107,7 @@ let test_prompt_with_role_lookup () =
 let test_prompt_role_omitted_when_lookup_returns_none () =
   let m = msg ~from_alias:"unknown" ~to_alias:"bob" "hello" in
   let lookup (_ : string) : string option = None in
-  let got = C2c_wire_bridge.format_prompt ~role_lookup:lookup [m] in
+  let got = C2c_wire_bridge.format_prompt ~with_reply_hint:false ~role_lookup:lookup [m] in
   Alcotest.(check bool) "no role attr for unknown sender"
     false (let needle = "role=" in
             let nl = String.length needle and ll = String.length got in
@@ -119,17 +119,17 @@ let test_prompt_role_omitted_when_lookup_returns_none () =
 
 let test_prompt_single () =
   let m = msg ~from_alias:"a" ~to_alias:"b" "hello" in
-  let got = C2c_wire_bridge.format_prompt [m] in
-  let expected = C2c_wire_bridge.format_envelope m in
+  let got = C2c_wire_bridge.format_prompt ~with_reply_hint:false [m] in
+  let expected = C2c_wire_bridge.format_envelope ~with_reply_hint:false m in
   Alcotest.(check string) "single-message prompt equals envelope" expected got
 
 let test_prompt_multiple () =
   let m1 = msg ~from_alias:"a" ~to_alias:"b" "first" in
   let m2 = msg ~from_alias:"c" ~to_alias:"b" "second" in
-  let got = C2c_wire_bridge.format_prompt [m1; m2] in
+  let got = C2c_wire_bridge.format_prompt ~with_reply_hint:false [m1; m2] in
   (* Python: "\n\n".join([envelope1, envelope2]) *)
-  let e1 = C2c_wire_bridge.format_envelope m1 in
-  let e2 = C2c_wire_bridge.format_envelope m2 in
+  let e1 = C2c_wire_bridge.format_envelope ~with_reply_hint:false m1 in
+  let e2 = C2c_wire_bridge.format_envelope ~with_reply_hint:false m2 in
   let expected = e1 ^ "\n\n" ^ e2 in
   Alcotest.(check string) "two-message prompt joined with blank line" expected got
 
@@ -189,11 +189,61 @@ let test_spool_missing_file () =
 let test_xml_escape_amp () =
   (* Only test via envelope since xml_escape is not exported *)
   let m = msg ~from_alias:"a&b" ~to_alias:"c" "x" in
-  let got = C2c_wire_bridge.format_envelope m in
+  let got = C2c_wire_bridge.format_envelope ~with_reply_hint:false m in
   Alcotest.(check bool) "& → &amp;"
     true (let needle = "a&amp;b" in
             let nl = String.length needle and ll = String.length got in
             let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
+
+(* ---- Reply hint (Slice A of the 2026-06-18 design) ---- *)
+
+let test_envelope_includes_reply_hint_by_default () =
+  let m = msg ~from_alias:"alice" ~to_alias:"bob" "hi" in
+  let got = C2c_wire_bridge.format_envelope m in
+  Alcotest.(check bool) "envelope + <system-reminder> block"
+    true (let needle = "</c2c>\n<system-reminder>" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0);
+  Alcotest.(check bool) "hint names sender"
+    true (let needle = "from `alice`" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0);
+  Alcotest.(check bool) "hint gives c2c_send call shape"
+    true (let needle = "c2c_send(to_alias=\"alice\"" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0);
+  Alcotest.(check bool) "hint warns against plain text"
+    true (let needle = "Do NOT reply in plain text" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
+
+let test_envelope_reply_hint_omitted_when_disabled () =
+  let m = msg ~from_alias:"alice" ~to_alias:"bob" "hi" in
+  let got = C2c_wire_bridge.format_envelope ~with_reply_hint:false m in
+  Alcotest.(check bool) "no <system-reminder> when with_reply_hint:false"
+    false (let needle = "<system-reminder>" in
+            let nl = String.length needle and ll = String.length got in
+            let rec f i = i + nl <= ll && (String.sub got i nl = needle || f (i+1)) in f 0)
+
+let test_envelope_reply_hint_room_vs_dm () =
+  let m_dm = msg ~from_alias:"alice" ~to_alias:"bob" "hi" in
+  let m_room = msg ~from_alias:"alice" ~to_alias:"bob#swarm-lounge" "lounge ping" in
+  let m_relay = msg ~from_alias:"alice" ~to_alias:"bob#0123456789ab" "relay ping" in
+  let got_dm = C2c_wire_bridge.format_envelope m_dm in
+  let got_room = C2c_wire_bridge.format_envelope m_room in
+  let got_relay = C2c_wire_bridge.format_envelope m_relay in
+  let has s needle =
+    let nl = String.length needle and ll = String.length s in
+    let rec f i = i + nl <= ll && (String.sub s i nl = needle || f (i+1)) in f 0
+  in
+  Alcotest.(check bool) "DM hint mentions c2c_send (not room)" true
+    (has got_dm "c2c_send(to_alias=\"alice\""
+     && not (has got_dm "c2c_send_room"));
+  Alcotest.(check bool) "room hint mentions c2c_send_room" true
+    (has got_room "c2c_send_room(room_id=\"<room id>\"");
+  Alcotest.(check bool) "relay DM hint is DM-shaped (not room)" true
+    (has got_relay "c2c_send(to_alias=\"alice\""
+     && not (has got_relay "c2c_send_room"))
 
 (* ---------------------------------------------------------------------------
  * Registration
@@ -209,6 +259,9 @@ let () =
         ; Alcotest.test_case "with_role"       `Quick test_envelope_with_role
         ; Alcotest.test_case "role_xml_escaped" `Quick test_envelope_role_xml_escaped
         ; Alcotest.test_case "role_absent_when_none" `Quick test_envelope_role_absent_when_none
+        ; Alcotest.test_case "reply_hint_default_on" `Quick test_envelope_includes_reply_hint_by_default
+        ; Alcotest.test_case "reply_hint_omitted_when_disabled" `Quick test_envelope_reply_hint_omitted_when_disabled
+        ; Alcotest.test_case "reply_hint_room_vs_dm" `Quick test_envelope_reply_hint_room_vs_dm
         ] )
     ; ( "prompt"
       , [ Alcotest.test_case "single"          `Quick test_prompt_single

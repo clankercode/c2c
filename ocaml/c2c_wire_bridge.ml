@@ -26,11 +26,12 @@ let format_envelope ?(sender_role : string option) ?ts
 
 let format_prompt
     ?(role_lookup : string -> string option = fun _ -> None)
+    ?(with_reply_hint = true)
     (messages : C2c_mcp.message list) =
   String.concat "\n\n"
     (List.map (fun msg ->
       let sender_role = role_lookup msg.C2c_mcp.from_alias in
-      format_envelope ?sender_role msg) messages)
+      format_envelope ?sender_role ~with_reply_hint msg) messages)
 
 (* ---------------------------------------------------------------------------
  * Spool: write before deliver, clear after ACK (crash-safe)

@@ -352,8 +352,14 @@ let test_tmux_message_payload_uses_c2c_envelope () =
     (string_contains payload "from=\"alice\"");
   check bool "contains message content" true
     (string_contains payload "hello");
+  (* With reply-hint on by default (Slice A of the 2026-06-18
+     design), the payload ends with </system-reminder> rather than
+     </c2c>. The envelope still closes with </c2c>; the hint is
+     appended after. *)
   check bool "closes envelope" true
-    (String.ends_with ~suffix:"</c2c>" payload)
+    (String.ends_with ~suffix:"</system-reminder>" payload);
+  check bool "envelope closes before hint" true
+    (string_contains payload "</c2c>\n<system-reminder>")
 
 let test_parse_tmux_target_info () =
   let parsed = C2c_start.parse_tmux_target_info "0:1.2 %42" in
@@ -3289,6 +3295,43 @@ let test_format_c2c_envelope_xml_escapes_attributes () =
   check bool "body content NOT escaped (verbatim pass-through)" true
     (string_contains env "plain body")
 
+let test_format_c2c_envelope_no_hint_by_default () =
+  (* Default behaviour is opt-out — the wire-bridge opts in
+     explicitly via its own parameter, but format_c2c_envelope stays
+     opt-out by default so CLI and tests can call it without
+     ballooning output. *)
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob"
+      ~content:"hi" ()
+  in
+  check bool "no <system-reminder> by default" false
+    (string_contains env "<system-reminder>")
+
+let test_format_c2c_envelope_with_reply_hint_appends_block () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob"
+      ~with_reply_hint:true
+      ~content:"hi" ()
+  in
+  check bool "hint appended after </c2c>" true
+    (string_contains env "</c2c>\n<system-reminder>");
+  check bool "hint names sender" true
+    (string_contains env "from `alice`");
+  check bool "hint gives c2c_send call shape" true
+    (string_contains env "c2c_send(to_alias=\"alice\"")
+
+let test_format_c2c_envelope_reply_hint_room_uses_room_tool () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob#swarm-lounge"
+      ~with_reply_hint:true
+      ~content:"lounge ping" ()
+  in
+  check bool "room hint uses c2c_send_room" true
+    (string_contains env "c2c_send_room(room_id=\"<room id>\"")
+
 (* #462 — swarm-wide git-shim install path. *)
 
 let with_env_override key value f =
@@ -3497,6 +3540,12 @@ let () =
             `Quick, test_format_c2c_envelope_passes_through_tag_and_role )
         ; ( "format_c2c_envelope_xml_escapes_attributes",
             `Quick, test_format_c2c_envelope_xml_escapes_attributes )
+        ; ( "format_c2c_envelope_no_hint_by_default",
+            `Quick, test_format_c2c_envelope_no_hint_by_default )
+        ; ( "format_c2c_envelope_with_reply_hint_appends_block",
+            `Quick, test_format_c2c_envelope_with_reply_hint_appends_block )
+        ; ( "format_c2c_envelope_reply_hint_room_uses_room_tool",
+            `Quick, test_format_c2c_envelope_reply_hint_room_uses_room_tool )
         ] )
     ; ( "gemini_adapter",
         [ ( "fresh_session_no_resume_flag",
