@@ -2,7 +2,7 @@
  (targets build_flags.ml)
  (action
   (with-stdout-to %{targets}
-   (run /usr/bin/bash -lc "if [ \"${C2C_ENABLE_MCP_DEBUG_TOOL:-}\" = 1 ]; then echo 'let mcp_debug_tool_enabled = true'; elif [ \"${C2C_ENABLE_MCP_DEBUG_TOOL:-}\" = 0 ]; then echo 'let mcp_debug_tool_enabled = false'; elif [ \"%{profile}\" = release ]; then echo 'let mcp_debug_tool_enabled = false'; else echo 'let mcp_debug_tool_enabled = true'; fi"))))
+   (run /bin/sh -c "if [ \"${C2C_ENABLE_MCP_DEBUG_TOOL:-}\" = 1 ]; then echo 'let mcp_debug_tool_enabled = true'; elif [ \"${C2C_ENABLE_MCP_DEBUG_TOOL:-}\" = 0 ]; then echo 'let mcp_debug_tool_enabled = false'; elif [ \"%{profile}\" = release ]; then echo 'let mcp_debug_tool_enabled = false'; else echo 'let mcp_debug_tool_enabled = true'; fi"))))
 
 ; #420: embed git SHA at compile time so c2c --version no longer pays a
 ; ~1s shell-out to `git rev-parse` on every invocation. Falls back to
@@ -24,7 +24,7 @@
  (targets version_git_sha.ml)
  (action
   (with-stdout-to %{targets}
-   (run /usr/bin/bash -lc "sha=\"${C2C_BUILD_GIT_SHA:-}\"; if [ -z \"$sha\" ]; then sha=\"$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)\"; fi; echo \"let git_sha = \\\"$sha\\\"\""))))
+   (run /bin/sh -c "sha=\"${C2C_BUILD_GIT_SHA:-}\"; if [ -z \"$sha\" ]; then sha=\"$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)\"; fi; echo \"let git_sha = \\\"$sha\\\"\""))))
 
 ; Bake the build date into the binary at compile time. Replaces the
 ; env-var approach (version.ml used to read BUILD_DATE from the process
@@ -38,7 +38,7 @@
  (targets version_build_date.ml)
  (action
   (with-stdout-to %{targets}
-   (run /usr/bin/bash -lc "date=\"${C2C_BUILD_DATE:-}\"; if [ -z \"$date\" ]; then date=\"$(date -u +%Y-%m-%d)\"; fi; echo \"let build_date = \\\"$date\\\"\""))))
+   (run /bin/sh -c "date=\"${C2C_BUILD_DATE:-}\"; if [ -z \"$date\" ]; then date=\"$(date -u +%Y-%m-%d)\"; fi; echo \"let build_date = \\\"$date\\\"\""))))
 
   (library
    (name c2c_mcp)
