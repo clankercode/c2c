@@ -74,8 +74,8 @@ let c2c_binary =
 let c2c_cmd partial =
   let dir = Filename.dirname c2c_binary in
   let link = Filename.concat dir "c2c" in
-  if not (Sys.file_exists link) then
-    (try Unix.symlink c2c_binary link with Unix.Unix_error _ -> ());
+  (try Sys.remove link with _ -> ());
+  (try Unix.symlink c2c_binary link with Unix.Unix_error _ -> ());
   Printf.sprintf "PATH=%s:$PATH C2C_MCP_AUTO_REGISTER_ALIAS=cli-test %s"
     (Filename.quote dir) partial
 
