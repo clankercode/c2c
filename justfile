@@ -7,7 +7,7 @@ default:
 # Install OCaml deps into the current opam switch.
 # Keep in sync with the `depends` list in dune-project.
 install-deps:
-    opam install --yes dune cmdliner yojson lwt logs alcotest cohttp-lwt-unix uuidm uucp \
+    opam install --yes dune cmdliner yojson lwt logs alcotest cohttp-lwt-unix uuidm uucp lambda-term zed \
         base64 digestif mirage-crypto-ec mirage-crypto-rng \
         tls-lwt mirage-crypto-rng-lwt ca-certs hacl-star sqlite3
 
