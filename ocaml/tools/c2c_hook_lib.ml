@@ -191,6 +191,7 @@ let format_messages_as_text ~repo_broker messages =
               ?role
               ?reply_via:m.reply_via
               ~ts:m.ts
+              ~with_reply_hint:true
               ~content:m.content
               ()
           in

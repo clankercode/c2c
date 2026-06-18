@@ -136,27 +136,6 @@ let xml_deliver_loop_daemon
   let oc = Unix.out_channel_of_descr out_fd in
   let iterations = ref 0 in
   let total_delivered = ref 0 in
-  let xml_escape (s : string) : string =
-    let b = Bytes.make (String.length s * 7) '\000' in
-    let j = ref 0 in
-    for i = 0 to String.length s - 1 do
-      let c = s.[i] in
-      match c with
-      | '&' ->
-        Bytes.blit_string "&amp;" 0 b !j 5; j := !j + 5
-      | '<' ->
-        Bytes.blit_string "&lt;" 0 b !j 4; j := !j + 4
-      | '>' ->
-        Bytes.blit_string "&gt;" 0 b !j 4; j := !j + 4
-      | '"' ->
-        Bytes.blit_string "&quot;" 0 b !j 6; j := !j + 6
-      | '\'' ->
-        Bytes.blit_string "&apos;" 0 b !j 6; j := !j + 6
-      | _ ->
-        Bytes.set b !j c; incr j
-    done;
-    Bytes.sub_string b 0 !j
-  in
   let rec loop () =
     match max_iterations with
     | Some m when !iterations >= m ->
@@ -171,18 +150,26 @@ let xml_deliver_loop_daemon
        | _ ->
          incr iterations;
          let messages =
-           C2c_mcp.Broker.drain_inbox ~drained_by:"xml" broker ~session_id
+          C2c_mcp.Broker.drain_inbox ~drained_by:"xml" broker ~session_id
          in
           List.iter
             (fun (msg : C2c_mcp.message) ->
-               (* Escape all user-supplied values before interpolating into XML *)
-               let from_escaped = xml_escape msg.from_alias in
-               let to_escaped = xml_escape session_id in
-               let content_escaped = xml_escape msg.content in
+               let tag = C2c_mcp.extract_tag_from_content msg.content in
+               let envelope =
+                 C2c_mcp.format_c2c_envelope
+                   ~from_alias:msg.from_alias
+                   ~to_alias:msg.to_alias
+                   ?tag
+                   ?reply_via:msg.reply_via
+                   ~with_reply_hint:true
+                   ~escape_content_for_xml:true
+                   ~content:msg.content
+                   ()
+               in
                let xml_frame =
                  Printf.sprintf
-                   "<message type=\"user\" queue=\"AfterAnyItem\"><c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c></message>\n"
-                   from_escaped to_escaped content_escaped
+                   "<message type=\"user\" queue=\"AfterAnyItem\">%s</message>\n"
+                   envelope
                in
                (* G-5 fix: 3-retry exponential backoff for EPIPE, dead-letter on
                   persistent failure. Transient EPIPE (reader closed temporarily) is

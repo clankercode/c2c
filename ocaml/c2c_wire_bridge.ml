@@ -10,7 +10,8 @@
  * Message envelope (centralised via C2c_mcp.format_c2c_envelope)
  * --------------------------------------------------------------------------- *)
 
-let format_envelope ?(sender_role : string option) ?ts (msg : C2c_mcp.message) =
+let format_envelope ?(sender_role : string option) ?ts
+    ?(with_reply_hint = true) (msg : C2c_mcp.message) =
   let tag = C2c_mcp.extract_tag_from_content msg.content in
   C2c_mcp.format_c2c_envelope
     ~from_alias:msg.from_alias
@@ -19,16 +20,18 @@ let format_envelope ?(sender_role : string option) ?ts (msg : C2c_mcp.message) =
     ?role:sender_role
     ?reply_via:msg.reply_via
     ?ts
+    ~with_reply_hint
     ~content:msg.content
     ()
 
 let format_prompt
     ?(role_lookup : string -> string option = fun _ -> None)
+    ?(with_reply_hint = true)
     (messages : C2c_mcp.message list) =
   String.concat "\n\n"
     (List.map (fun msg ->
       let sender_role = role_lookup msg.C2c_mcp.from_alias in
-      format_envelope ?sender_role msg) messages)
+      format_envelope ?sender_role ~with_reply_hint msg) messages)
 
 (* ---------------------------------------------------------------------------
  * Spool: write before deliver, clear after ACK (crash-safe)

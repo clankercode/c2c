@@ -338,7 +338,7 @@ let notify_shared_with_recipients
             None)
       shared_with
 
-let channel_notification ?(role : string option = None) ({ from_alias; to_alias; content; ts; _ } : message) =
+let channel_notification ?(role : string option = None) ?(with_reply_hint = true) ({ from_alias; to_alias; content; ts; _ } : message) =
   (* The meta JSON keys here are rendered by Claude Code as XML
      attributes on the `<channel …>` tag in the agent transcript.
      They are deliberately named `from` / `to` (not `from_alias` /
@@ -356,12 +356,27 @@ let channel_notification ?(role : string option = None) ({ from_alias; to_alias;
     | Some r -> base @ [ ("role", `String r) ]
     | None   -> base
   in
+  (* Reply-hint (Slice F of the 2026-06-18 design): the channel
+     notification is LLM-visible by definition — Claude Code renders
+     the [content] field as the body of a <channel source="c2c"> tag
+     in the agent's transcript. Without the hint, agents may reply
+     in plain text and the sender never sees the reply. The hint
+     uses the same shape as [C2c_mcp.format_reply_hint], so push
+     and drain paths look identical to the agent. The hint
+     mentions only [c2c_send] / [c2c_send_room]; clients that need
+     a client-specific tool name (e.g. pi-c2c's [c2c_pi_send])
+     suppress or override locally. *)
+  let content_with_hint =
+    if with_reply_hint
+    then content ^ "\n" ^ C2c_mcp_helpers.format_reply_hint ~from:from_alias ~to_alias ()
+    else content
+  in
   `Assoc
     [ ("jsonrpc", `String "2.0")
     ; ("method", `String "notifications/claude/channel")
     ; ( "params",
         `Assoc
-          [ ("content", `String content)
+          [ ("content", `String content_with_hint)
           ; ("meta", `Assoc meta)
           ] )
     ]

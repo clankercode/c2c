@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import c2c_mcp
-from c2c_verify import GOAL_COUNT, verify_progress_broker
+from deprecated.c2c_verify import GOAL_COUNT, verify_progress_broker
 
 
 def _last_recv_ts(archive_dir: Path, session_id: str, alias: str) -> float | None:

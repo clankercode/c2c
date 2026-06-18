@@ -1493,7 +1493,33 @@ const C2CDelivery: Plugin = async (ctx) => {
   function formatEnvelope(msg: Msg): string {
     const from = msg.from_alias || "unknown";
     const to = msg.to_alias || sessionId;
-    return `<c2c event="message" from="${from}" to="${to}" source="broker" reply_via="c2c_send" action_after="continue">\n${msg.content}\n</c2c>`;
+    // Same reply-hint shape as c2c_mcp_helpers.format_reply_hint. The
+    // OpenCode plugin is LLM-visible (it injects into the agent's
+    // transcript via promptAsync), so the hint MUST be present —
+    // otherwise the agent may not realise it should reply via c2c_send.
+    //
+    // Pi-c2c (../pi-c2c) emits its own equivalent hint with the
+    // c2c_pi_send tool name. The two paths are parallel today
+    // (pi-c2c does not use the c2c CLI's wire bridge), so there is
+    // no duplication. If pi-c2c ever adopts the c2c CLI path, a
+    // dedup rule (skip if a <system-reminder> block is already in
+    // the body) would be needed.
+    const safeFrom = from.replace(/[`\\]/g, "\\$&");
+    const isRoom = /#[A-Za-z0-9_-]+/.test(to) && !/^[^#]*#[0-9a-f]{12}$/.test(to);
+    const hint = isRoom
+      ? `<system-reminder>
+You received a c2c room message from \`${safeFrom}\`.
+To reply to the room, call c2c_send_room(room_id="<room id>", content="<your reply>").
+If c2c_send_room is unavailable in this session, the MCP tool c2c_send_room works the same way (room_id="<room id>").
+Do NOT reply in plain text — the room will not see it.
+</system-reminder>`
+      : `<system-reminder>
+You received a c2c direct message from \`${safeFrom}\`.
+To reply, call c2c_send(to_alias="${safeFrom}", content="<your reply>").
+If c2c_send is unavailable in this session, the MCP tool c2c_send works the same way (to_alias="${safeFrom}").
+Do NOT reply in plain text — the peer will not see it.
+</system-reminder>`;
+    return `<c2c event="message" from="${from}" to="${to}" source="broker" reply_via="c2c_send" action_after="continue">\n${msg.content}\n</c2c>\n${hint}`;
   }
 
   /** Deliver drained messages to the active session via promptAsync. */

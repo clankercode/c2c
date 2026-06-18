@@ -476,7 +476,7 @@ let test_tools_call_history_ignores_session_id_argument () =
 
 let test_channel_notification_matches_claude_channel_shape () =
   let json =
-    C2c_mcp.channel_notification
+    C2c_mcp.channel_notification ~with_reply_hint:false
       { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "debate me"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
@@ -490,7 +490,7 @@ let test_channel_notification_matches_claude_channel_shape () =
 
 let test_channel_notification_empty_content () =
   let json =
-    C2c_mcp.channel_notification
+    C2c_mcp.channel_notification ~with_reply_hint:false
       { from_alias = "storm-ember"; to_alias = "storm-storm"; content = ""; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
@@ -507,7 +507,7 @@ let test_channel_notification_empty_content () =
 let test_channel_notification_special_chars () =
   let content = "line1\nline2\t\"quoted\" <angle> \xc3\xa9\xc3\xa0\xc3\xbc" in
   let json =
-    C2c_mcp.channel_notification
+    C2c_mcp.channel_notification ~with_reply_hint:false
       { from_alias = "storm-ember"; to_alias = "storm-storm"; content; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
@@ -522,7 +522,7 @@ let test_channel_notification_special_chars () =
 
 let test_channel_notification_has_no_id_field () =
   let json =
-    C2c_mcp.channel_notification
+    C2c_mcp.channel_notification ~with_reply_hint:false
       { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
@@ -597,7 +597,7 @@ let test_initialize_without_channel_capability () =
 
 let test_channel_notification_method_is_correct () =
   let json =
-    C2c_mcp.channel_notification
+    C2c_mcp.channel_notification ~with_reply_hint:false
       { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
@@ -610,7 +610,7 @@ let test_channel_notification_method_is_correct () =
 
 let test_channel_notification_with_role () =
   let json =
-    C2c_mcp.channel_notification ~role:(Some "coordinator")
+    C2c_mcp.channel_notification ~with_reply_hint:false ~role:(Some "coordinator")
       { from_alias = "cairn-vigil"; to_alias = "stanza-coder"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
@@ -620,7 +620,7 @@ let test_channel_notification_with_role () =
 
 let test_channel_notification_without_role_omits () =
   let json =
-    C2c_mcp.channel_notification
+    C2c_mcp.channel_notification ~with_reply_hint:false
       { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
@@ -637,7 +637,7 @@ let test_channel_notification_ts_utc_hhmm () =
        (c) format matches \d\d:\d\d (no leading junk, no seconds)
      Mirror of format_c2c_envelope: Printf.sprintf "%02d:%02d" tm.tm_hour tm.tm_min. *)
   let json =
-    C2c_mcp.channel_notification
+    C2c_mcp.channel_notification ~with_reply_hint:false
       { from_alias = "jungle-coder"; to_alias = "stanza-coder"; content = "ping"; deferrable = false; reply_via = None; enc_status = None; ts = 1746009600.0; ephemeral = false; message_id = None }
   in
   let open Yojson.Safe.Util in
@@ -650,6 +650,136 @@ let test_channel_notification_ts_utc_hhmm () =
   check bool "ts format is DD:DD" true
     (is_digit ts_val.[0] && is_digit ts_val.[1]
      && ts_val.[2] = ':' && is_digit ts_val.[3] && is_digit ts_val.[4])
+
+(* ---- Reply hint (Slice F of the 2026-06-18 design) ---- *)
+
+let mk_msg ?(from = "alice") ?(to_alias = "bob") ?(content = "hi") ?(ts = 0.0) () : C2c_mcp.message =
+  { from_alias = from; to_alias = to_alias; content = content; deferrable = false; reply_via = None; enc_status = None; ts = ts; ephemeral = false; message_id = None }
+
+let test_channel_notification_appends_reply_hint_by_default () =
+  let json =
+    C2c_mcp.channel_notification (mk_msg ())
+  in
+  let open Yojson.Safe.Util in
+  let content = json |> member "params" |> member "content" |> to_string in
+  check bool "content contains <system-reminder> block" true
+    (string_contains content "<system-reminder>");
+  check bool "content contains 'c2c_send(' call shape" true
+    (string_contains content "c2c_send(");
+  check bool "content contains 'Do NOT reply in plain text' warning" true
+    (string_contains content "Do NOT reply in plain text")
+
+let test_channel_notification_with_reply_hint_false_omits_hint () =
+  let json =
+    C2c_mcp.channel_notification
+      ~with_reply_hint:false
+      (mk_msg ())
+  in
+  let open Yojson.Safe.Util in
+  let content = json |> member "params" |> member "content" |> to_string in
+  check string "content is original (no hint appended)" "hi" content;
+  check bool "no <system-reminder> in content" false
+    (String.contains content '<' && String.contains content '>')
+
+let test_channel_notification_room_to_alias_uses_room_hint () =
+  let json =
+    C2c_mcp.channel_notification
+      (mk_msg ~to_alias:"bob#swarm-lounge" ())
+  in
+  let open Yojson.Safe.Util in
+  let content = json |> member "params" |> member "content" |> to_string in
+  check bool "room hint mentions c2c_send_room" true (string_contains content "c2c_send_room");
+  check bool "room hint mentions room_id" true (string_contains content "room_id")
+
+let test_channel_notification_relay_dm_uses_dm_hint () =
+  (* Relay DM to_alias is `<name>#<12-hex-host-hash>` per
+     deriveRelayAlias in the c2c main project. The 12-hex suffix
+     distinguishes relay DMs from room deliveries; relay DMs reply
+     via c2c_send like any DM. *)
+  let json =
+    C2c_mcp.channel_notification
+      (mk_msg ~to_alias:"bob#0123456789ab" ())
+  in
+  let open Yojson.Safe.Util in
+  let content = json |> member "params" |> member "content" |> to_string in
+  check bool "relay DM hint mentions c2c_send" true (string_contains content "c2c_send(");
+  check bool "relay DM hint does NOT mention c2c_send_room" false
+    (string_contains content "c2c_send_room")
+
+let test_format_reply_hint_basic_dm () =
+  let hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob" () in
+  check bool "starts with <system-reminder>" true
+    (String.starts_with ~prefix:"<system-reminder>\n" hint);
+  check bool "ends with </system-reminder>" true
+    (String.ends_with ~suffix:"</system-reminder>" hint);
+  check bool "names the sender" true (string_contains hint "from `alice`");
+  check bool "gives c2c_send call shape" true
+    (string_contains hint "c2c_send(to_alias=\"alice\"")
+
+let test_format_reply_hint_room_detection () =
+  let room_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#swarm-lounge" () in
+  let relay_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#0123456789ab" () in
+  check bool "room hint asks for c2c_send_room" true (string_contains room_hint "c2c_send_room");
+  check bool "relay hint asks for c2c_send (not room)" true
+    (string_contains relay_hint "c2c_send("
+     && not (string_contains relay_hint "c2c_send_room"))
+
+let test_format_reply_hint_xml_escapes_sender () =
+  (* Adversarial peer: alias with XML metacharacters. The hint must
+     still produce valid XML and the alias must not break out of the
+     inline examples. *)
+  let hint = C2c_mcp.format_reply_hint ~from:"a&b<c>d\"e'f" ~to_alias:"bob" () in
+  check bool "ampersand escaped to &amp;" true (string_contains hint "a&amp;b");
+  check bool "angle bracket in sender escaped" true
+    (string_contains hint "a&amp;b&lt;c&gt;d&quot;e&#39;f");
+  check bool "no raw sender fragment can break markup" false
+    (string_contains hint "a&b<c>d\"e'f")
+
+let test_format_reply_hint_escapes_backticks_and_backslashes () =
+  let hint = C2c_mcp.format_reply_hint ~from:"ali`ce\\ops" ~to_alias:"bob" () in
+  check bool "sender mention escapes backtick" true
+    (string_contains hint "from `ali\\`ce\\\\ops`");
+  check bool "reply call escapes backtick and backslash" true
+    (string_contains hint "c2c_send(to_alias=\"ali\\`ce\\\\ops\"")
+
+let test_is_room_recipient () =
+  check bool "DM has no #" false
+    (C2c_mcp.is_room_recipient ~to_alias:"bob");
+  check bool "room delivery has #room-id" true
+    (C2c_mcp.is_room_recipient ~to_alias:"bob#swarm-lounge");
+  check bool "relay DM has 12-hex host hash (NOT a room)" false
+    (C2c_mcp.is_room_recipient ~to_alias:"bob#0123456789ab");
+  check bool "empty to_alias is not a room" false
+    (C2c_mcp.is_room_recipient ~to_alias:"")
+
+let test_format_c2c_envelope_with_reply_hint () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob"
+      ~with_reply_hint:true
+      ~content:"hi" ()
+  in
+  check bool "envelope shape preserved" true
+    (string_contains env "<c2c event=\"message\"");
+  check bool "hint appended after </c2c>" true
+    (string_contains env "</c2c>\n<system-reminder>");
+  check bool "hint mentions sender" true (string_contains env "from `alice`")
+
+let test_format_c2c_envelope_escape_content_for_xml () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob"
+      ~with_reply_hint:true
+      ~escape_content_for_xml:true
+      ~content:"a < b & </message>" ()
+  in
+  check bool "message body escaped for nested XML" true
+    (string_contains env "a &lt; b &amp; &lt;/message&gt;");
+  check bool "reply placeholder escaped for nested XML" true
+    (string_contains env "content=\"&lt;your reply&gt;\"");
+  check bool "system-reminder tag still present" true
+    (string_contains env "<system-reminder>")
+
 
 let test_initialize_returns_mcp_capabilities () =
   with_temp_dir (fun dir ->
@@ -13327,6 +13457,28 @@ let () =
             test_channel_notification_without_role_omits
         ; test_case "channel notification ts UTC HH:MM (#157)" `Quick
             test_channel_notification_ts_utc_hhmm
+        ; test_case "channel notification appends reply hint by default" `Quick
+            test_channel_notification_appends_reply_hint_by_default
+        ; test_case "channel notification with_reply_hint:false omits hint" `Quick
+            test_channel_notification_with_reply_hint_false_omits_hint
+        ; test_case "channel notification room to_alias uses room hint" `Quick
+            test_channel_notification_room_to_alias_uses_room_hint
+        ; test_case "channel notification relay DM uses DM hint" `Quick
+            test_channel_notification_relay_dm_uses_dm_hint
+        ; test_case "format_reply_hint basic DM" `Quick
+            test_format_reply_hint_basic_dm
+        ; test_case "format_reply_hint room detection" `Quick
+            test_format_reply_hint_room_detection
+        ; test_case "format_reply_hint XML-escapes sender" `Quick
+            test_format_reply_hint_xml_escapes_sender
+        ; test_case "format_reply_hint escapes backticks and backslashes" `Quick
+            test_format_reply_hint_escapes_backticks_and_backslashes
+        ; test_case "is_room_recipient distinguishes DM room and relay" `Quick
+            test_is_room_recipient
+        ; test_case "format_c2c_envelope with reply hint" `Quick
+            test_format_c2c_envelope_with_reply_hint
+        ; test_case "format_c2c_envelope escapes nested XML content" `Quick
+            test_format_c2c_envelope_escape_content_for_xml
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
         ; test_case "initialize experimental capability values are objects" `Quick
             test_initialize_experimental_capability_values_are_objects

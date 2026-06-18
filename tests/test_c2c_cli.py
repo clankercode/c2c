@@ -86,6 +86,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         )
     else:
         shutil.copy2(source_git_path, target_git_path)
+    (target_root / "deprecated").mkdir(exist_ok=True)
     for relative_path in [
         "c2c",
         "c2c-broker-gc",
@@ -147,19 +148,22 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_install.py",
         "c2c_deliver_inbox.py",
         "c2c_inject.py",
+        "deprecated/c2c_inject.py",
         "c2c_poker.py",
         "c2c_poker_sweep.py",
         "c2c_poll_inbox.py",
         "c2c_pts_inject.py",
-        "c2c_verify.py",
+        "deprecated/c2c_verify.py",
         "c2c_watch.py",
         "c2c_whoami.py",
         "c2c_health.py",
-        "c2c_claude_wake_daemon.py",
+        "deprecated/c2c_claude_wake_daemon.py",
         "c2c_kimi_wake_daemon.py",
-        "c2c_kimi_wire_bridge.py",
+        "deprecated/c2c_kimi_wake_daemon.py",
+        "deprecated/c2c_kimi_wire_bridge.py",
         "c2c_opencode_wake_daemon.py",
-        "c2c_crush_wake_daemon.py",
+        "deprecated/c2c_opencode_wake_daemon.py",
+        "deprecated/c2c_crush_wake_daemon.py",
         "c2c_cli.py",
         "c2c_history.py",
         "c2c_pty_inject.py",
@@ -169,6 +173,7 @@ def copy_cli_checkout(source_root: Path, target_root: Path) -> None:
         "c2c_sweep_dryrun.py",
         "c2c_mcp.py",
         "c2c_registry.py",
+        "c2c_coord_cherry_pick.py",
         "claude_send_msg.py",
         "claude_list_sessions.py",
     ]:

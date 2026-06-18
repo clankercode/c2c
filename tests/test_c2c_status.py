@@ -517,7 +517,7 @@ class C2CStatusLegacyTests(unittest.TestCase):
         self.assertEqual(peer["sent"], 2)
 
     def test_goal_met_flag_set_when_thresholds_reached(self):
-        from c2c_verify import GOAL_COUNT
+        from deprecated.c2c_verify import GOAL_COUNT
 
         self._write_registry(
             [
@@ -547,7 +547,7 @@ class C2CStatusLegacyTests(unittest.TestCase):
         self.assertTrue(data["overall_goal_met"])
 
     def test_overall_goal_not_met_when_one_peer_short(self):
-        from c2c_verify import GOAL_COUNT
+        from deprecated.c2c_verify import GOAL_COUNT
 
         self._write_registry(
             [
