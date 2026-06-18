@@ -709,11 +709,9 @@ let test_channel_notification_relay_dm_uses_dm_hint () =
 let test_format_reply_hint_basic_dm () =
   let hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob" in
   check bool "starts with <system-reminder>" true
-    (let open String in
-     length hint > 16 && sub hint 0 17 = "<system-reminder>\n");
+    (String.starts_with ~prefix:"<system-reminder>\n" hint);
   check bool "ends with </system-reminder>" true
-    (let n = String.length hint in
-     n > 17 && String.sub hint (n - 18) 18 = "</system-reminder>");
+    (String.ends_with ~suffix:"</system-reminder>" hint);
   check bool "names the sender" true (string_contains hint "from `alice`");
   check bool "gives c2c_send call shape" true
     (string_contains hint "c2c_send(to_alias=\"alice\"")
@@ -729,23 +727,20 @@ let test_format_reply_hint_room_detection () =
 let test_format_reply_hint_xml_escapes_sender () =
   (* Adversarial peer: alias with XML metacharacters. The hint must
      still produce valid XML and the alias must not break out of the
-     code-fenced example. *)
+     inline examples. *)
   let hint = C2c_mcp.format_reply_hint ~from:"a&b<c>d\"e'f" ~to_alias:"bob" in
   check bool "ampersand escaped to &amp;" true (string_contains hint "a&amp;b");
-  check bool "no raw < in the hint (other than the fence tags)" false
-    (let n = String.length hint in
-     let rec count_lt i acc =
-       if i >= n then acc
-       else if hint.[i] = '<' then
-         (* Skip the two fence tags we DO want. *)
-         let is_fence_open = i + 16 <= n
-           && String.sub hint i 16 = "<system-reminde" in
-         let is_fence_close = i + 17 <= n
-           && String.sub hint i 17 = "</system-reminde" in
-         count_lt (i + 1) (if is_fence_open || is_fence_close then acc else acc + 1)
-       else count_lt (i + 1) acc
-     in
-     count_lt 0 0 > 0)
+  check bool "angle bracket in sender escaped" true
+    (string_contains hint "a&amp;b&lt;c&gt;d&quot;e&#39;f");
+  check bool "no raw sender fragment can break markup" false
+    (string_contains hint "a&b<c>d\"e'f")
+
+let test_format_reply_hint_escapes_backticks_and_backslashes () =
+  let hint = C2c_mcp.format_reply_hint ~from:"ali`ce\\ops" ~to_alias:"bob" in
+  check bool "sender mention escapes backtick" true
+    (string_contains hint "from `ali\\`ce\\\\ops`");
+  check bool "reply call escapes backtick and backslash" true
+    (string_contains hint "c2c_send(to_alias=\"ali\\`ce\\\\ops\"")
 
 let test_is_room_recipient () =
   check bool "DM has no #" false
@@ -13447,6 +13442,26 @@ let () =
             test_channel_notification_without_role_omits
         ; test_case "channel notification ts UTC HH:MM (#157)" `Quick
             test_channel_notification_ts_utc_hhmm
+        ; test_case "channel notification appends reply hint by default" `Quick
+            test_channel_notification_appends_reply_hint_by_default
+        ; test_case "channel notification with_reply_hint:false omits hint" `Quick
+            test_channel_notification_with_reply_hint_false_omits_hint
+        ; test_case "channel notification room to_alias uses room hint" `Quick
+            test_channel_notification_room_to_alias_uses_room_hint
+        ; test_case "channel notification relay DM uses DM hint" `Quick
+            test_channel_notification_relay_dm_uses_dm_hint
+        ; test_case "format_reply_hint basic DM" `Quick
+            test_format_reply_hint_basic_dm
+        ; test_case "format_reply_hint room detection" `Quick
+            test_format_reply_hint_room_detection
+        ; test_case "format_reply_hint XML-escapes sender" `Quick
+            test_format_reply_hint_xml_escapes_sender
+        ; test_case "format_reply_hint escapes backticks and backslashes" `Quick
+            test_format_reply_hint_escapes_backticks_and_backslashes
+        ; test_case "is_room_recipient distinguishes DM room and relay" `Quick
+            test_is_room_recipient
+        ; test_case "format_c2c_envelope with reply hint" `Quick
+            test_format_c2c_envelope_with_reply_hint
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
         ; test_case "initialize experimental capability values are objects" `Quick
             test_initialize_experimental_capability_values_are_objects

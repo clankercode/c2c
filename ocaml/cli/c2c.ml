@@ -4270,6 +4270,7 @@ let hook_cmd =
                    ?role
                    ?reply_via:m.reply_via
                    ~ts:m.ts
+                   ~with_reply_hint:true
                    ~content:m.content
                    ()
                in

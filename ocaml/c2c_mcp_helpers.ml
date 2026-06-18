@@ -711,21 +711,30 @@ let format_ts_hhmm (t : float) : string = C2c_time.hhmm t
     relay address format ever changes, this helper and the relay
     address derivation must move together. *)
 let is_room_recipient ~to_alias : bool =
-  let i = String.index to_alias '#' in
-  let suffix = String.sub to_alias (i + 1) (String.length to_alias - i - 1) in
-  not (String.length suffix = 12
-       && (let rec is_hex s = match s with
-           | "" -> true
-           | _ ->
-             let c = s.[0] in
-             (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
-             && is_hex (String.sub s 1 (String.length s - 1))
-           in
-           is_hex suffix))
+  match String.index_opt to_alias '#' with
+  | None -> false
+  | Some i ->
+    let suffix = String.sub to_alias (i + 1) (String.length to_alias - i - 1) in
+    not (String.length suffix = 12
+         && (let rec is_hex s = match s with
+             | "" -> true
+             | _ ->
+               let c = s.[0] in
+               ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
+               && is_hex (String.sub s 1 (String.length s - 1))
+             in
+             is_hex suffix))
 
-let room_recipient_p ~to_alias : bool =
-  try is_room_recipient ~to_alias
-  with Not_found -> false
+let escape_reminder_literal s =
+  let escaped = xml_escape s in
+  let b = Buffer.create (String.length escaped) in
+  String.iter (function
+    | '\\' | '`' as c ->
+      Buffer.add_char b '\\';
+      Buffer.add_char b c
+    | c -> Buffer.add_char b c)
+    escaped;
+  Buffer.contents b
 
 (** Build the `<system-reminder>…</system-reminder>` block that follows
     an inbound c2c envelope. The block names the sender, gives the exact
@@ -747,18 +756,16 @@ let room_recipient_p ~to_alias : bool =
       2. the room id is a non-trivial string; agents that pipeline
          room replies typically already track the room they joined.
 
-    Empty string returned when the recipient is a relay DM
-    (`<alias>#<12-hex-host-hash>`) — relay DMs are not rooms.
-
     This is the canonical, broker-agnostic reply hint. It mentions
     only [c2c_send] and [c2c_send_room]; clients that need a
     client-specific tool name (e.g. pi-c2c's [c2c_pi_send]) suppress
-    or override this hint locally. See
-    [docs/superpowers/specs/2026-06-18-reply-hint-system-reminder-design.md]. *)
+    or override this hint locally. See the 2026-06-18 follow-up
+    section in
+    [docs/superpowers/specs/2026-04-22-reply-via-envelope-design.md]. *)
 let format_reply_hint ~from ~to_alias : string =
-  if room_recipient_p ~to_alias then
+  if is_room_recipient ~to_alias then
     (* Room delivery: keep `<from>` literal, ask for c2c_send_room. *)
-    let safe_from = from |> xml_escape in
+    let safe_from = escape_reminder_literal from in
     Printf.sprintf
       "<system-reminder>\n\
        You received a c2c room message from `%s`.\n\
@@ -768,7 +775,7 @@ let format_reply_hint ~from ~to_alias : string =
        </system-reminder>"
       safe_from
   else
-    let safe_from = from |> xml_escape in
+    let safe_from = escape_reminder_literal from in
     Printf.sprintf
       "<system-reminder>\n\
        You received a c2c direct message from `%s`.\n\

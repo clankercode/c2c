@@ -75,13 +75,21 @@ let watch_loop
             Printf.printf "[%s] %s\n%!" msg.from_alias msg.content;
             flush stdout
         | XmlFd fd ->
-            let from_e = C2c_mcp.xml_escape msg.from_alias in
-            let to_e   = C2c_mcp.xml_escape session_id in
-            let body_e = C2c_mcp.xml_escape msg.content in
+            let tag = C2c_mcp.extract_tag_from_content msg.content in
+            let envelope =
+              C2c_mcp.format_c2c_envelope
+                ~from_alias:msg.from_alias
+                ~to_alias:msg.to_alias
+                ?tag
+                ?reply_via:msg.reply_via
+                ~with_reply_hint:true
+                ~content:msg.content
+                ()
+            in
             let frame =
               Printf.sprintf
-                "<message type=\"user\" queue=\"AfterAnyItem\"><c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c></message>\n"
-                from_e to_e body_e
+                "<message type=\"user\" queue=\"AfterAnyItem\">%s</message>\n"
+                envelope
             in
             let oc = Unix.out_channel_of_descr fd in
             (try output_string oc frame; flush oc

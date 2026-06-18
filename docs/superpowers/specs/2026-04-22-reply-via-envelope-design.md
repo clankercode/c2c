@@ -159,4 +159,4 @@ appends the same hint to the `<channel source="c2c">` body so
 Claude Code agents on the push path see the same instructions as
 agents that drain via `poll_inbox`.
 
-Full design: `docs/superpowers/specs/2026-06-18-reply-hint-system-reminder-design.md`.
+Full design: this document's 2026-06-18 follow-up section.

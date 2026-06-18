@@ -214,7 +214,48 @@ let test_hook_reads_stdin_session_and_drains_global_inbox () =
           (string_contains context "hello world");
         check bool "additionalContext closes c2c envelope" true
           (string_contains context "</c2c>");
+        check bool "additionalContext appends system-reminder" true
+          (string_contains context "<system-reminder>");
         check int "global session inbox drained" 0
+          (json_list_length inbox_path)))
+
+let test_cli_hook_reads_stdin_session_and_drains_global_inbox () =
+  with_temp_dir (fun dir ->
+    let sid = "test-sid-cli-hook-p0" in
+    let inbox_path = Filename.concat dir (sid ^ ".inbox.json") in
+    write_file inbox_path
+      {|[{"from_alias":"sender-a","to_alias":"test-sid-cli-hook-p0","content":"hello from cli hook","ts":1.0}]|};
+    let out = Filename.temp_file "c2c-cli-hook" ".out" in
+    let err = Filename.temp_file "c2c-cli-hook" ".err" in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Sys.remove out with _ -> ());
+        (try Sys.remove err with _ -> ()))
+      (fun () ->
+        let cmd =
+          Printf.sprintf
+            "env C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
+             C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s hook > %s 2> %s"
+            (Filename.quote sid) (Filename.quote dir) (Filename.quote dir)
+            (Filename.quote built_c2c) (Filename.quote out)
+            (Filename.quote err)
+        in
+        let rc = Sys.command cmd in
+        check int "cli hook exits 0" 0 rc;
+        let stdout = read_file out in
+        let json = Yojson.Safe.from_string stdout in
+        let open Yojson.Safe.Util in
+        let context =
+          json |> member "hookSpecificOutput" |> member "additionalContext"
+          |> to_string
+        in
+        check bool "cli hook emits c2c envelope" true
+          (string_contains context "<c2c ");
+        check bool "cli hook emits system-reminder" true
+          (string_contains context "<system-reminder>");
+        check bool "cli hook preserves content" true
+          (string_contains context "hello from cli hook");
+        check int "cli hook drains inbox" 0
           (json_list_length inbox_path)))
 
 let test_hook_extracts_session_from_truncated_large_payload () =
@@ -364,6 +405,8 @@ let () =
     ; ( "hook",
         [ ( "reads stdin session_id and drains global inbox", `Quick,
             test_hook_reads_stdin_session_and_drains_global_inbox )
+        ; ( "legacy cli hook reads stdin session_id and drains global inbox", `Quick,
+            test_cli_hook_reads_stdin_session_and_drains_global_inbox )
         ; ( "extracts session_id from truncated large payload", `Quick,
             test_hook_extracts_session_from_truncated_large_payload )
         ; ( "merges message and cold boot context", `Quick,
