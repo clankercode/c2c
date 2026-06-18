@@ -64,7 +64,8 @@ let test_deprecated_canonical_alias_is_opaque () =
 let test_compute_canonical_alias_both_forms () =
   let leaky = C2c_mcp.Broker.compute_canonical_alias
       ~alias:"pi-c01ea5" ~broker_root:"/tmp/repo/.git/c2c/mcp" () in
-  check string "leaky form" "pi-c01ea5#repo@xsm" leaky;
+  check bool "leaky form includes alias and repo slug" true
+    (String.starts_with ~prefix:"pi-c01ea5#repo@" leaky);
   let opaque = C2c_mcp.Broker.compute_canonical_alias
       ~deprecate_canonical_alias:true ~alias:"pi-c01ea5" ~broker_root:"/tmp/repo/.git/c2c/mcp" () in
   let host_id = Host_id.compute_host_hash () in

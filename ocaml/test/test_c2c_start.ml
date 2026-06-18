@@ -3921,7 +3921,13 @@ let () =
                  implementation reads both (#418).  Unsetting TMUX_PANE too
                  makes this assertion deterministic across in-tmux developer
                  runs and clean-env CI. *)
-              let rc = Sys.command "env -u TMUX -u TMUX_PANE c2c get-tmux-location > /dev/null 2>&1" in
+              let bin = built_c2c_binary () in
+              let rc =
+                Sys.command
+                  (Printf.sprintf
+                     "env -u TMUX -u TMUX_PANE %s get-tmux-location > /dev/null 2>&1"
+                     (Filename.quote bin))
+              in
               check int "non-zero exit when not in tmux" 1 rc) )
         ; ( "get_tmux_location_json_flag",
             `Quick,
@@ -3931,7 +3937,8 @@ let () =
                 (fun () ->
                   let rc =
                     Sys.command
-                      (Printf.sprintf "c2c get-tmux-location --json > %s 2>/dev/null" tmpfile)
+                      (Printf.sprintf "%s get-tmux-location --json > %s 2>/dev/null"
+                         (Filename.quote (built_c2c_binary ())) tmpfile)
                   in
                   let ch = open_in tmpfile in
                   Fun.protect ~finally:(fun () -> close_in ch)
