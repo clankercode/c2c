@@ -112,3 +112,18 @@ test("stage script accepts only a non-overlapping dist/npm output leaf", () => {
     assertSafeOutDir({ outDir: path.join(dir, "dist", "npm"), binaryRoot, sourceRoot })
   );
 });
+
+test("stage script rejects symlink components in the output path", () => {
+  const dir = tempDir();
+  const binaryRoot = path.join(dir, "bin");
+  const sourceRoot = path.join(repoRoot, "npm-pkgs");
+  const victim = path.join(dir, "victim");
+  const link = path.join(dir, "dist");
+  fs.mkdirSync(victim);
+  fs.symlinkSync(victim, link, "dir");
+
+  assert.throws(
+    () => assertSafeOutDir({ outDir: path.join(link, "npm"), binaryRoot, sourceRoot }),
+    /refusing unsafe --out-dir.*symlink/
+  );
+});

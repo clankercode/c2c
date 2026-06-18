@@ -63,6 +63,27 @@ function pathsOverlap(left, right) {
   return isSameOrInside(left, right) || isSameOrInside(right, left);
 }
 
+function assertNoSymlinkComponents(targetPath) {
+  const resolvedTarget = path.resolve(targetPath);
+  const root = path.parse(resolvedTarget).root;
+  const relativeParts = path.relative(root, resolvedTarget).split(path.sep).filter(Boolean);
+  let current = root;
+
+  for (const part of relativeParts) {
+    current = path.join(current, part);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        throw new Error(`refusing unsafe --out-dir: ${resolvedTarget} contains symlink component ${current}`);
+      }
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+  }
+}
+
 function assertSafeOutDir({ outDir, binaryRoot, sourceRoot = path.resolve(__dirname, "..") }) {
   const resolvedOutDir = path.resolve(outDir);
   const resolvedBinaryRoot = path.resolve(binaryRoot);
@@ -76,6 +97,8 @@ function assertSafeOutDir({ outDir, binaryRoot, sourceRoot = path.resolve(__dirn
   if (path.basename(path.dirname(resolvedOutDir)) !== "dist" || path.basename(resolvedOutDir) !== "npm") {
     throw new Error(`refusing unsafe --out-dir: ${resolvedOutDir} must end with dist/npm`);
   }
+
+  assertNoSymlinkComponents(resolvedOutDir);
 
   if (pathsOverlap(resolvedOutDir, resolvedSourceRoot)) {
     throw new Error(`refusing unsafe --out-dir: ${resolvedOutDir} overlaps source tree ${resolvedSourceRoot}`);
