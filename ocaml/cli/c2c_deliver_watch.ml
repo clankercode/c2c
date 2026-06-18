@@ -83,6 +83,7 @@ let watch_loop
                 ?tag
                 ?reply_via:msg.reply_via
                 ~with_reply_hint:true
+                ~escape_content_for_xml:true
                 ~content:msg.content
                 ()
             in

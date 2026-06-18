@@ -765,6 +765,21 @@ let test_format_c2c_envelope_with_reply_hint () =
     (string_contains env "</c2c>\n<system-reminder>");
   check bool "hint mentions sender" true (string_contains env "from `alice`")
 
+let test_format_c2c_envelope_escape_content_for_xml () =
+  let env =
+    C2c_mcp.format_c2c_envelope
+      ~from_alias:"alice" ~to_alias:"bob"
+      ~with_reply_hint:true
+      ~escape_content_for_xml:true
+      ~content:"a < b & </message>" ()
+  in
+  check bool "message body escaped for nested XML" true
+    (string_contains env "a &lt; b &amp; &lt;/message&gt;");
+  check bool "reply placeholder escaped for nested XML" true
+    (string_contains env "content=\"&lt;your reply&gt;\"");
+  check bool "system-reminder tag still present" true
+    (string_contains env "<system-reminder>")
+
 
 let test_initialize_returns_mcp_capabilities () =
   with_temp_dir (fun dir ->
@@ -13462,6 +13477,8 @@ let () =
             test_is_room_recipient
         ; test_case "format_c2c_envelope with reply hint" `Quick
             test_format_c2c_envelope_with_reply_hint
+        ; test_case "format_c2c_envelope escapes nested XML content" `Quick
+            test_format_c2c_envelope_escape_content_for_xml
         ; test_case "initialize returns capabilities" `Quick test_initialize_returns_mcp_capabilities
         ; test_case "initialize experimental capability values are objects" `Quick
             test_initialize_experimental_capability_values_are_objects

@@ -162,6 +162,7 @@ let xml_deliver_loop_daemon
                    ?tag
                    ?reply_via:msg.reply_via
                    ~with_reply_hint:true
+                   ~escape_content_for_xml:true
                    ~content:msg.content
                    ()
                in

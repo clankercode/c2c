@@ -762,33 +762,38 @@ let escape_reminder_literal s =
     or override this hint locally. See the 2026-06-18 follow-up
     section in
     [docs/superpowers/specs/2026-04-22-reply-via-envelope-design.md]. *)
-let format_reply_hint ~from ~to_alias : string =
+let format_reply_hint ?(escape_text_for_xml = false) ~from ~to_alias : string =
+  let reply_placeholder =
+    if escape_text_for_xml then "&lt;your reply&gt;" else "<your reply>"
+  in
   if is_room_recipient ~to_alias then
     (* Room delivery: keep `<from>` literal, ask for c2c_send_room. *)
     let safe_from = escape_reminder_literal from in
     Printf.sprintf
       "<system-reminder>\n\
        You received a c2c room message from `%s`.\n\
-       To reply to the room, call c2c_send_room(room_id=\"<room id>\", content=\"<your reply>\").\n\
+       To reply to the room, call c2c_send_room(room_id=\"<room id>\", content=\"%s\").\n\
        If c2c_send_room is unavailable in this session, the MCP tool c2c_send_room works the same way (room_id=\"<room id>\").\n\
        Do NOT reply in plain text — the room will not see it.\n\
        </system-reminder>"
       safe_from
+      reply_placeholder
   else
     let safe_from = escape_reminder_literal from in
     Printf.sprintf
       "<system-reminder>\n\
        You received a c2c direct message from `%s`.\n\
-       To reply, call c2c_send(to_alias=\"%s\", content=\"<your reply>\").\n\
+       To reply, call c2c_send(to_alias=\"%s\", content=\"%s\").\n\
        If c2c_send is unavailable in this session, the MCP tool c2c_send works the same way (to_alias=\"%s\").\n\
        Do NOT reply in plain text — the peer will not see it.\n\
        </system-reminder>"
       safe_from
       safe_from
+      reply_placeholder
       safe_from
 
 let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts
-    ?(with_reply_hint = false) ~content () =
+    ?(with_reply_hint = false) ?(escape_content_for_xml = false) ~content () =
   let tag_attr = match tag with
     | Some t -> Printf.sprintf " tag=\"%s\"" (xml_escape t)
     | None -> ""
@@ -802,8 +807,11 @@ let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts
     | None -> ""
   in
   let reply_via_str = xml_escape (Option.value reply_via ~default:"c2c_send") in
+  let content_str = if escape_content_for_xml then xml_escape content else content in
   let hint_str = if with_reply_hint
-    then "\n" ^ format_reply_hint ~from:from_alias ~to_alias
+    then "\n"
+         ^ format_reply_hint ~escape_text_for_xml:escape_content_for_xml
+             ~from:from_alias ~to_alias
     else ""
   in
   Printf.sprintf
@@ -814,7 +822,7 @@ let format_c2c_envelope ~from_alias ~to_alias ?tag ?role ?reply_via ?ts
     role_attr
     tag_attr
     ts_attr
-    content
+    content_str
     hint_str
 
 (* Parse a YAML-flow list value (e.g. "[alice, bob]" or "[]") into a string

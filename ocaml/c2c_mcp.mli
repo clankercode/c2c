@@ -41,7 +41,7 @@ val validate_session_id : string -> (string, string) result
 (** Validate session IDs that will be used as broker inbox filenames.
     Returns the trimmed ID on success. *)
 
-val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> ?ts:float -> ?with_reply_hint:bool -> content:string -> unit -> string
+val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string -> ?role:string -> ?reply_via:string -> ?ts:float -> ?with_reply_hint:bool -> ?escape_content_for_xml:bool -> content:string -> unit -> string
 (** [#392b] Canonical c2c message envelope formatter. Optional [tag]
     surfaces FAIL/BLOCKING/URGENT to programmatic consumers.
 
@@ -53,15 +53,21 @@ val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string ->
     [c2c_send] / [c2c_send_room]; clients that need a client-specific
     tool name (e.g. pi-c2c's [c2c_pi_send]) override locally. See the
     2026-06-18 follow-up section in
-    [docs/superpowers/specs/2026-04-22-reply-via-envelope-design.md]. *)
+    [docs/superpowers/specs/2026-04-22-reply-via-envelope-design.md].
 
-val format_reply_hint : from:string -> to_alias:string -> string
+    [{!escape_content_for_xml}] (default [false]) XML-escapes the
+    message body and the reply-hint placeholder examples for nested
+    XML transports such as Codex [--xml-input-fd]. *)
+
+val format_reply_hint : ?escape_text_for_xml:bool -> from:string -> to_alias:string -> string
 (** Build the [<system-reminder>] reply hint block. Sibling of the
     [<c2c>] envelope; not inside it. Sender [from] is XML-escaped
     and backtick/backslash-escaped before being interpolated into
     the inline examples so a malicious peer cannot break out and
     re-instruct the agent. Relay DMs (suffixed
-    `#<12-hex-host-hash>`) are treated as direct messages, not rooms. *)
+    `#<12-hex-host-hash>`) are treated as direct messages, not rooms.
+    Set [{!escape_text_for_xml}] for nested XML transports so example
+    placeholders like [<your reply>] stay well-formed. *)
 
 val is_room_recipient : to_alias:string -> bool
 (** True iff [to_alias] carries a `#<room-id>` suffix (per
