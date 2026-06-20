@@ -2316,6 +2316,27 @@ let test_deliver_inbox_cross_repo_alias_drains_full_body () =
       check int ("peek after delivery exits 0: " ^ peek) 0 rc;
       check bool "delivery drains inbox" true (string_contains peek "(no messages)"))
 
+let test_deliver_inbox_inotify_ignores_unrelated_events () =
+  with_temp_dir (fun broker_root ->
+      let live_pid = string_of_int (Unix.getpid ()) in
+      let env = Printf.sprintf "C2C_SESSIONS_BROKER_ROOT=%s" (Filename.quote broker_root) in
+      let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s C2C_MCP_SESSION_ID=recv-sid C2C_MCP_CLIENT_PID=%s c2c register --cross-repo --alias recv" env live_pid)) in
+      check int ("register recv exits 0: " ^ out) 0 rc;
+      let outfile = Filename.temp_file "c2c-deliver-inotify" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore) (fun () ->
+          let cmd = Printf.sprintf
+            "%s %s --inotify --loop --cross-repo --alias recv --full-body > %s 2>&1 & pid=$!; sleep 1; : > %s; sleep 1; kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true"
+            env
+            (Filename.quote c2c_deliver_inbox_binary)
+            (Filename.quote outfile)
+            (Filename.quote (Filename.concat broker_root "unrelated.inbox.json"))
+          in
+          let rc = Sys.command cmd in
+          check int "inotify unrelated-event harness exits 0" 0 rc;
+          let out = read_file outfile in
+          check bool "unrelated event does not emit delivery" false (string_contains out "delivered from=");
+          check bool "unrelated event does not emit zero summary" false (string_contains out "delivered=0")))
+
 let () =
   Alcotest.run "c2c_cli"
     [ ( "doctor",
@@ -2360,6 +2381,7 @@ let () =
     ; ( "deliver_inbox",
         [ ( "dry-run does not drain", `Quick, test_deliver_inbox_dry_run_does_not_drain )
         ; ( "cross-repo alias drains full body", `Quick, test_deliver_inbox_cross_repo_alias_drains_full_body )
+        ; ( "inotify ignores unrelated events", `Quick, test_deliver_inbox_inotify_ignores_unrelated_events )
         ] )
     ; ( "schedule_list",
         [ ( "schedule list exits 0", `Quick, test_schedule_list_exits_zero )

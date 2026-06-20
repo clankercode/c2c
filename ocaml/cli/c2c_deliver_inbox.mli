@@ -49,6 +49,7 @@ val resolve_session_id_by_alias : broker_root:string -> alias:string -> string
 (** Resolve an alias to a session id using the selected broker. Prefers live registrations. *)
 
 val deliver_generic_once :
+  emit_zero_summary:bool ->
   broker_root:string ->
   session_id:string ->
   client:string ->

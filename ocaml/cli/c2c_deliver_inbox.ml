@@ -358,7 +358,8 @@ let print_summary ~(json : bool) ~(session_id : string) ~(broker_root : string)
     Printf.printf "[c2c-deliver-inbox] session=%s broker_root=%s client=%s delivered=%d\n%!"
       session_id broker_root client delivered
 
-let deliver_generic_once ~(broker_root : string) ~(session_id : string)
+let deliver_generic_once ~(emit_zero_summary : bool)
+    ~(broker_root : string) ~(session_id : string)
     ~(client : string) ~(dry_run : bool) ~(json : bool) ~(full_body : bool)
     ~(drained_by_pid : int) : int =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
@@ -375,7 +376,8 @@ let deliver_generic_once ~(broker_root : string) ~(session_id : string)
       ~drained_by_pid;
   print_messages ~json ~full_body ~dry_run messages;
   let delivered = if dry_run then 0 else List.length messages in
-  print_summary ~json ~session_id ~broker_root ~client ~dry_run ~delivered;
+  if delivered > 0 || emit_zero_summary then
+    print_summary ~json ~session_id ~broker_root ~client ~dry_run ~delivered;
   delivered
 
 let run_inotify_drain_loop
@@ -390,10 +392,21 @@ let run_inotify_drain_loop
     : unit =
   let inbox_dir = broker_root in
   let inbox_path = inbox_dir // session_id ^ ".inbox.json" in
+  let inbox_basename = Filename.basename inbox_path in
+  let event_targets_inbox line =
+    String.trim line
+    |> String.split_on_char ' '
+    |> List.filter (fun s -> s <> "")
+    |> List.rev
+    |> function
+    | filename :: _ -> filename = inbox_basename
+    | [] -> false
+  in
   let iterations = ref 0 in
   let total_delivered = ref 0 in
   let drain_once () =
     let delivered = deliver_generic_once
+      ~emit_zero_summary:false
       ~broker_root ~session_id ~client
       ~dry_run:false ~json ~full_body
       ~drained_by_pid:(Unix.getpid ())
@@ -438,9 +451,11 @@ let run_inotify_drain_loop
            | Some wp when not (pid_is_alive wp) -> ()
            | _ ->
                try
-                 ignore (input_line ic : string);
-                 incr iterations;
-                 drain_once ();
+                 let line = input_line ic in
+                 if event_targets_inbox line then begin
+                   incr iterations;
+                   drain_once ()
+                 end;
                  loop ()
                with End_of_file | Sys_error _ -> fallback_poll ())
     in
@@ -575,6 +590,7 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
                       poll_once_kimi ~broker_root:args.broker_root ~session_id
                     else
                       deliver_generic_once
+                        ~emit_zero_summary:true
                         ~broker_root:args.broker_root
                         ~session_id
                         ~client:args.client
@@ -852,6 +868,7 @@ let () =
           ~delivered
       else
         ignore (deliver_generic_once
+          ~emit_zero_summary:true
           ~broker_root
           ~session_id
           ~client:args.client
