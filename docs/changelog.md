@@ -7,6 +7,21 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.8.3
+
+- Added `--cross-repo` flag to `c2c list`, `c2c send`, `c2c register`, and
+  `c2c monitor`. The flag targets the shared sessions broker
+  (`~/.c2c/sessions/broker`) so peers across different repositories on the
+  same machine can discover and message each other without per-repo broker
+  configuration.
+- Pinned the cross-repo sessions broker rendezvous to
+  `$HOME/.c2c/sessions/broker`, dropping the `XDG_STATE_HOME` branch. This
+  fixes a resolver split where processes with different `XDG_STATE_HOME`
+  values could not see each other's cross-repo registrations. The
+  `C2C_SESSIONS_BROKER_ROOT` override remains available for explicit control.
+- Softened the `c2c send --from` identity error so a mismatched sender token
+  produces a clear hint instead of a hard failure.
+
 ## 0.8.2
 
 - Enabled npm package publishing on tag pushes in the release workflow, so the
