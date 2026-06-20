@@ -2226,6 +2226,51 @@ let test_init_rejects_banned_alias () =
       check bool "error mentions blocked" true
         (string_contains content "blocked"))
 
+let run_capture command =
+  let tmpfile = Filename.temp_file "c2c-cli-capture" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let rc = Sys.command (Printf.sprintf "%s > %s 2>&1" command (Filename.quote tmpfile)) in
+      (rc, read_file tmpfile))
+
+let test_poll_inbox_cross_repo_alias_drains () =
+  with_temp_dir (fun broker_root ->
+      let root = Filename.quote broker_root in
+      let live_pid = string_of_int (Unix.getpid ()) in
+      let env = Printf.sprintf "C2C_SESSIONS_BROKER_ROOT=%s" root in
+      let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s C2C_MCP_SESSION_ID=recv-sid C2C_MCP_CLIENT_PID=%s c2c register --cross-repo --alias recv" env live_pid)) in
+      check int ("register recv exits 0: " ^ out) 0 rc;
+      let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s C2C_MCP_SESSION_ID=sender-sid C2C_MCP_CLIENT_PID=%s c2c register --cross-repo --alias sender" env live_pid)) in
+      check int ("register sender exits 0: " ^ out) 0 rc;
+      let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s C2C_MCP_SESSION_ID=sender-sid c2c send --cross-repo --from sender recv msg-one" env)) in
+      check int ("send exits 0: " ^ out) 0 rc;
+
+      let rc, peek1 = run_capture (c2c_cmd (Printf.sprintf "%s c2c peek-inbox --cross-repo --alias recv" env)) in
+      check int ("peek alias exits 0: " ^ peek1) 0 rc;
+      check bool "peek sees message" true (string_contains peek1 "msg-one");
+      let rc, peek2 = run_capture (c2c_cmd (Printf.sprintf "%s c2c peek-inbox --cross-repo --alias recv" env)) in
+      check int ("second peek exits 0: " ^ peek2) 0 rc;
+      check bool "peek is non-destructive" true (string_contains peek2 "msg-one");
+      let rc, drained = run_capture (c2c_cmd (Printf.sprintf "%s c2c poll-inbox --cross-repo --alias recv" env)) in
+      check int ("poll alias exits 0: " ^ drained) 0 rc;
+      check bool "poll drains message" true (string_contains drained "msg-one");
+      let rc, after = run_capture (c2c_cmd (Printf.sprintf "%s c2c peek-inbox --cross-repo --alias recv" env)) in
+      check int ("peek after drain exits 0: " ^ after) 0 rc;
+      check bool "inbox empty after drain" true (string_contains after "(no messages)"))
+
+let test_poll_inbox_cross_repo_alias_errors () =
+  with_temp_dir (fun broker_root ->
+      let live_pid = string_of_int (Unix.getpid ()) in
+      let env = Printf.sprintf "C2C_SESSIONS_BROKER_ROOT=%s" (Filename.quote broker_root) in
+      let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s C2C_MCP_SESSION_ID=recv-sid C2C_MCP_CLIENT_PID=%s c2c register --cross-repo --alias recv" env live_pid)) in
+      check int ("register recv exits 0: " ^ out) 0 rc;
+      let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s c2c poll-inbox --cross-repo --alias recv --session-id recv-sid" env)) in
+      check bool "poll alias/session mutex exits non-zero" true (rc <> 0);
+      check bool "poll mutex mentions mutually exclusive" true (string_contains out "mutually exclusive");
+      let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s c2c peek-inbox --cross-repo --alias missing" env)) in
+      check bool "peek missing alias exits non-zero" true (rc <> 0);
+      check bool "peek missing alias mentions unregistered" true (string_contains out "alias missing is not registered"))
+
 let () =
   Alcotest.run "c2c_cli"
     [ ( "doctor",
@@ -2262,6 +2307,10 @@ let () =
         ] )
     ; ( "history",
         [ ( "history exits 0", `Quick, test_history_exits_zero )
+        ] )
+    ; ( "poll_inbox",
+        [ ( "cross-repo alias drains", `Quick, test_poll_inbox_cross_repo_alias_drains )
+        ; ( "cross-repo alias errors", `Quick, test_poll_inbox_cross_repo_alias_errors )
         ] )
     ; ( "schedule_list",
         [ ( "schedule list exits 0", `Quick, test_schedule_list_exits_zero )
