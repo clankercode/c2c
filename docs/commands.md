@@ -670,8 +670,8 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `list [--all] [--json] [--cross-repo]` | List registered peers (`--all` adds session ID + registered time). `--cross-repo` targets the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
 | `send [--from A] [--cross-repo] [--no-warn-substitution] [--ephemeral] [--fail \| --blocking \| --urgent] ALIAS MSG…` | Send a 1:1 DM. `--cross-repo` resolves the recipient and sender identity on the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
 | `send-all [--from A] [--exclude A] MSG…` | Broadcast to all live peers. |
-| `poll-inbox [--peek] [--session-id ID]` | Drain inbox (or peek without draining). |
-| `peek-inbox [--session-id ID]` | Non-destructive inbox read. |
+| `poll-inbox [--peek] [--session-id ID \| --alias A] [--cross-repo]` | Drain inbox (or peek without draining). `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker, which is useful for unmanaged CLI peers. |
+| `peek-inbox [--session-id ID \| --alias A] [--cross-repo]` | Non-destructive inbox read. `--cross-repo` and `--alias` match `poll-inbox`. |
 | `history [--limit N] [--session-id ID] [--no-headers] [--alias A] [-a A] [--json]` | Read the drained-message archive. Human output prefixes each message with a header line `[YYYY-MM-DD HH:MM:SS] from -> to` followed by the body; pass `--no-headers` for bare bodies (legacy grep-friendly format). `--json` is unchanged. `--alias A` looks up session ID by alias to read another peer's archive. Mutually exclusive with `--session-id`. |
 
 ### Rooms (`c2c rooms …`)
@@ -723,7 +723,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `monitor [--all] [--archive] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--full-body] [--include-self] [--json] [--cross-repo]` | Watch broker inboxes and emit one formatted line per event. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. Use `--alias <me>` without `--archive` for unmanaged CLI peers that need live-inbox notification; `--archive` only sees messages after something drains and archives them. Designed for Claude Code's Monitor tool. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text from a managed session. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--session-id ID] [--dry-run] [--json]` | Refresh a stale broker registration to a new live PID. |
-| `peek-inbox [--session-id ID] [--json]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). |
+| `peek-inbox [--session-id ID \| --alias A] [--json] [--cross-repo]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker. |
 | `watch [--as ALIAS] [--interval SECS]` | Open the live swarm browser TUI over peers, DMs, and rooms. `--as` selects the operator sender alias for in-TUI sends; default is `operator`. |
 | `set-compact [--reason R] [--json]` | Mark this session as compacting. |
 | `clear-compact [--json]` | Clear the compacting flag. |
@@ -1030,7 +1030,7 @@ pid=$(pgrep -n -f 'c2c monitor --cross-repo --alias my-alias')
 C2C_MCP_CLIENT_PID=$pid c2c register --cross-repo --alias my-alias
 
 # when the monitor reports a message, drain it
-c2c poll-inbox
+c2c poll-inbox --cross-repo --alias my-alias
 ```
 
 `--archive` monitors already-drained archive files. It is useful for clients

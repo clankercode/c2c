@@ -209,26 +209,53 @@ let resolve_session_id () =
    where C2C_MCP_SESSION_ID was set by the harness to one value (e.g. "planner1")
    but the actual broker registration used a different session_id (e.g. "opencode-c2c")
    because the MCP server registered under a different identifier. *)
-let resolve_session_id_for_inbox broker =
-  let sid = resolve_session_id () in
+let resolve_session_id_by_alias broker alias =
+  let alias_norm = String.lowercase_ascii alias in
   let regs = C2c_mcp.Broker.list_registrations broker in
-  let has_direct = List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs in
-  if debug_enabled then Printf.eprintf "[DEBUG resolve_sid_for_inbox] sid=%s has_direct=%b regs_count=%d\n%!"
-    sid has_direct (List.length regs);
-  if has_direct then sid
-  else begin
-    (* Fall back: look for a registration whose alias matches C2C_MCP_AUTO_REGISTER_ALIAS *)
-    match env_auto_alias () with
-    | None -> sid (* no fallback available, use original sid *)
-    | Some alias ->
-        (match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = alias) regs with
-         | None -> sid
-         | Some r ->
-             Printf.eprintf
-               "info: C2C_MCP_SESSION_ID=%s not in registry; using session_id=%s (alias=%s)\n%!"
-               sid r.session_id alias;
-             r.session_id)
-  end
+  let matches =
+    List.filter
+      (fun (r : C2c_mcp.registration) -> String.lowercase_ascii r.alias = alias_norm)
+      regs
+  in
+  match matches with
+  | [] ->
+      Printf.eprintf "error: alias %s is not registered in this broker.\n%!" alias;
+      exit 1
+  | regs ->
+      let live =
+        List.filter
+          (fun r -> C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive)
+          regs
+      in
+      let chosen = match live with r :: _ -> r | [] -> List.hd regs in
+      if debug_enabled then
+        Printf.eprintf "[DEBUG resolve_sid_by_alias] alias=%s session_id=%s matches=%d live=%d\n%!"
+          alias chosen.session_id (List.length regs) (List.length live);
+      chosen.session_id
+
+let resolve_session_id_for_inbox ?alias broker =
+  match alias with
+  | Some a -> resolve_session_id_by_alias broker a
+  | None ->
+      let sid = resolve_session_id () in
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      let has_direct = List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs in
+      if debug_enabled then Printf.eprintf "[DEBUG resolve_sid_for_inbox] sid=%s has_direct=%b regs_count=%d\n%!"
+        sid has_direct (List.length regs);
+      if has_direct then sid
+      else begin
+        (* Fall back: look for a registration whose alias matches C2C_MCP_AUTO_REGISTER_ALIAS *)
+        match env_auto_alias () with
+        | None -> sid (* no fallback available, use original sid *)
+        | Some alias ->
+            (match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = alias) regs with
+             | None -> sid
+             | Some r ->
+                 Printf.eprintf
+                   "info: C2C_MCP_SESSION_ID=%s not in registry; using session_id=%s (alias=%s)\n%!"
+                   sid r.session_id alias;
+                 r.session_id)
+      end
 
 (* --- output helpers -------------------------------------------------------- *)
 
@@ -1133,14 +1160,23 @@ let poll_inbox_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID"
       ~doc:"Session ID whose inbox to drain. Overrides C2C_MCP_SESSION_ID.")
   in
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Alias whose inbox to drain. Useful for unmanaged CLI peers; mutually exclusive with --session-id.")
+  in
   let+ json = json_flag
   and+ peek = peek
-  and+ session_id_opt = session_id_flag in
+  and+ session_id_opt = session_id_flag
+  and+ alias_opt = alias_flag
+  and+ cross_repo = cross_repo_flag in
   mcp_nudge_if_needed ~cmd:"poll-inbox";
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  (match session_id_opt, alias_opt with
+   | Some _, Some _ -> Printf.eprintf "error: --session-id and --alias are mutually exclusive.\n%!"; exit 1
+   | _ -> ());
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
   let session_id = match session_id_opt with
     | Some sid -> sid
-    | None -> resolve_session_id_for_inbox broker
+    | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
   in
   let messages =
     if peek then
@@ -6256,13 +6292,22 @@ let peek_inbox_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID"
       ~doc:"Session ID whose inbox to peek. Overrides C2C_MCP_SESSION_ID.")
   in
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Alias whose inbox to peek. Useful for unmanaged CLI peers; mutually exclusive with --session-id.")
+  in
   let+ json = json_flag
-  and+ session_id_opt = session_id_flag in
+  and+ session_id_opt = session_id_flag
+  and+ alias_opt = alias_flag
+  and+ cross_repo = cross_repo_flag in
   mcp_nudge_if_needed ~cmd:"peek-inbox";
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  (match session_id_opt, alias_opt with
+   | Some _, Some _ -> Printf.eprintf "error: --session-id and --alias are mutually exclusive.\n%!"; exit 1
+   | _ -> ());
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
   let session_id = match session_id_opt with
     | Some sid -> sid
-    | None -> resolve_session_id_for_inbox broker
+    | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
   in
   let messages = C2c_mcp.Broker.read_inbox broker ~session_id in
   let output_mode = if json then Json else Human in
