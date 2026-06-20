@@ -196,8 +196,9 @@ test-ocaml:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-60}" opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-60}" opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
     ln -sf "$PWD/_build/default/ocaml/cli/c2c.exe" "$PWD/_build/default/ocaml/cli/c2c"
+    ln -sf "$PWD/_build/default/ocaml/cli/c2c_deliver_inbox.exe" "$PWD/_build/default/ocaml/cli/c2c-deliver-inbox"
     PATH="$PWD/_build/default/ocaml/cli:$PATH" \
       flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-60}" opam exec -- dune runtest --root "$PWD" ocaml/
 
