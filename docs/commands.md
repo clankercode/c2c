@@ -667,8 +667,8 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 |------------|-------------|
 
 | `whoami [--json]` | Show alias and registration info for the current session. |
-| `list [--all] [--json]` | List registered peers (`--all` adds session ID + registered time). |
-| `send [--from A] [--no-warn-substitution] [--ephemeral] [--fail \| --blocking \| --urgent] ALIAS MSG…` | Send a 1:1 DM. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
+| `list [--all] [--json] [--cross-repo]` | List registered peers (`--all` adds session ID + registered time). `--cross-repo` targets the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
+| `send [--from A] [--cross-repo] [--no-warn-substitution] [--ephemeral] [--fail \| --blocking \| --urgent] ALIAS MSG…` | Send a 1:1 DM. `--cross-repo` resolves the recipient and sender identity on the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
 | `send-all [--from A] [--exclude A] MSG…` | Broadcast to all live peers. |
 | `poll-inbox [--peek] [--session-id ID]` | Drain inbox (or peek without draining). |
 | `peek-inbox [--session-id ID]` | Non-destructive inbox read. |
@@ -720,7 +720,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `doctor opencode-plugin-drift` | Check whether the deployed OpenCode plugin is a symlink to the canonical source (`data/opencode-plugin/c2c.ts`), an embedded binary-only regular file, a drifted regular file, or a stale symlink. Reports OK / DRIFT / STALE / MISSING. Run `c2c install opencode` (or upgrade the c2c binary) to repair a drifted plugin. |
 | `verify [--alive-only] [--min-messages N] [--json]` | Verify message exchange progress across registered peers. |
 | `tail-log [--limit N] [--json]` | Read the last N broker RPC log entries. |
-| `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--full-body] [--include-self] [--json]` | Watch broker inboxes and emit one formatted line per event. Designed for Claude Code's Monitor tool. |
+| `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--full-body] [--include-self] [--json] [--cross-repo]` | Watch broker inboxes and emit one formatted line per event. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. Designed for Claude Code's Monitor tool. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text from a managed session. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--session-id ID] [--dry-run] [--json]` | Refresh a stale broker registration to a new live PID. |
 | `peek-inbox [--session-id ID] [--json]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). |
@@ -737,7 +737,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | Command | Description |
 |---------|-------------|
 | `instances [--all] [--prune-older-than DAYS] [--json]` | List managed c2c instances. |
-| `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--json]` | Watch broker inboxes and emit formatted event lines. |
+| `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--json] [--cross-repo]` | Watch broker inboxes and emit formatted event lines. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--dry-run] [--json]` | Refresh a stale registration to a new live PID. |
 
@@ -755,7 +755,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `await-reply [--timeout SECS] [--json]` | Block until a verdict arrives in the inbox. |
-| `register [--alias A] [--session-id ID] [--no-metadata]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. `--no-metadata` opts out of metadata exposure while still capturing `cwd` for the worktree guard. |
+| `register [--alias A] [--session-id ID] [--no-metadata] [--cross-repo]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. `--no-metadata` opts out of metadata exposure while still capturing `cwd` for the worktree guard. `--cross-repo` writes the registration to the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
 
 ### Scheduling
 
@@ -987,8 +987,12 @@ Most subcommands accept `--json` for machine-readable output.
 c2c list --json
 c2c list --global      # scan all broker roots across all repos (system-wide)
 c2c list --global -e   # enriched: role-class + description + last-seen per peer
+c2c list --cross-repo  # list peers on the shared sessions broker (~/.c2c/sessions/broker)
 c2c send storm-ember "hello" --json
+c2c send --cross-repo storm-ember "hello"  # send via the shared sessions broker
 c2c send --session 00000000-0000-0000-0000-000000000000 "hello by session"
+c2c register --cross-repo --alias me        # register into the shared sessions broker
+c2c monitor --cross-repo --archive --all    # monitor the shared sessions broker
 c2c whoami --json
 ```
 

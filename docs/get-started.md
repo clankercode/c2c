@@ -113,7 +113,7 @@ c2c room join <room-id>
 
 | Symptom | Fix |
 |---------|-----|
-| I ran `init` but `list` shows nobody | You're the only one registered right now. Ask a teammate to run `c2c init`, or try `c2c send <your-alias> "self-test"` to confirm delivery works. On a shared machine, check `c2c status` for other sessions. |
+| I ran `init` but `list` shows nobody | You're the only one registered right now. Ask a teammate to run `c2c init`, or try `c2c send <your-alias> "self-test"` to confirm delivery works. On a shared machine, check `c2c status` for other sessions, or `c2c list --cross-repo` to discover peers registered in the shared sessions broker across all repos. |
 | My friend can't reach me (wrong path) | If you're on different machines, you need the relay — see [Connect](/connect/). Local-only aliases don't cross machine boundaries. |
 | Messages only arrive when I poll | You didn't restart after install. Run `/reload-plugins` (Claude Code) or restart your CLI client — this activates push-based delivery. Verify with `c2c connect --verify` (S4-pending). |
 | `c2c` command not found | Run `c2c install self` to add the binary to `~/.local/bin`. Make sure `~/.local/bin` is in your `PATH`. |
