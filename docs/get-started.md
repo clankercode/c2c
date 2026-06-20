@@ -107,24 +107,22 @@ c2c poll-inbox
 c2c room join <room-id>
 ```
 
-To be reachable as a live CLI/non-pi peer across repos, keep a live inbox
-monitor running and pin registration liveness to that monitor's PID:
+To be reachable as a live CLI/non-pi peer across repos, run a long-lived
+receiver and pin registration liveness to that receiver's PID. The simplest
+receiver drains messages and prints full bodies on arrival:
 
 ```bash
-# terminal 1: live inbox monitor; do not use --archive for no-drainer CLI peers
-c2c monitor --cross-repo --alias my-alias
+# terminal 1: live receiver; long-lived, Monitor-compatible
+c2c-deliver-inbox --inotify --loop --cross-repo --alias my-alias --full-body
 
-# terminal 2: register against the durable monitor process
-pid=$(pgrep -n -f 'c2c monitor --cross-repo --alias my-alias')
+# terminal 2: register against the durable receiver process
+pid=$(pgrep -n -f 'c2c-deliver-inbox .*--cross-repo .*--alias my-alias')
 C2C_MCP_CLIENT_PID=$pid c2c register --cross-repo --alias my-alias
-
-# when the monitor reports a message, drain it
-c2c poll-inbox --cross-repo --alias my-alias
 ```
 
-`--archive` monitors only already-drained messages, so it is best for clients
-with an auto-drainer hook/poller. Plain CLI peers should monitor the live inbox
-(no `--archive`) and then call `poll-inbox --cross-repo --alias <me>`.
+Fallback: `c2c monitor --cross-repo --alias my-alias` is awareness-only and
+does not drain. If you use it, do not use `--archive` for no-drainer CLI peers,
+and run `c2c poll-inbox --cross-repo --alias my-alias` when the monitor fires.
 
 ---
 
@@ -134,7 +132,7 @@ with an auto-drainer hook/poller. Plain CLI peers should monitor the live inbox
 |---------|-----|
 | I ran `init` but `list` shows nobody | You're the only one registered right now. Ask a teammate to run `c2c init`, or try `c2c send <your-alias> "self-test"` to confirm delivery works. On a shared machine, check `c2c status` for other sessions, or `c2c list --cross-repo` to discover peers registered in the shared sessions broker across all repos. |
 | My friend can't reach me (wrong path) | If you're on different machines, you need the relay — see [Connect](/connect/). Local-only aliases don't cross machine boundaries. |
-| Messages only arrive when I poll | Managed clients need a restart after install. Run `/reload-plugins` (Claude Code) or restart your CLI client — this activates push-based delivery. Verify with `c2c connect --verify` (S4-pending). For unmanaged CLI peers, run `c2c monitor --cross-repo --alias <me>` without `--archive`, register with `C2C_MCP_CLIENT_PID` set to that monitor's PID, and call `c2c poll-inbox --cross-repo --alias <me>` when the monitor fires. |
+| Messages only arrive when I poll | Managed clients need a restart after install. Run `/reload-plugins` (Claude Code) or restart your CLI client — this activates push-based delivery. Verify with `c2c connect --verify` (S4-pending). For unmanaged CLI peers, prefer `c2c-deliver-inbox --inotify --loop --cross-repo --alias <me> --full-body`, register with `C2C_MCP_CLIENT_PID` set to that receiver's PID, and leave it running. If using `c2c monitor --cross-repo --alias <me>` instead, remember it is awareness-only and still requires `c2c poll-inbox --cross-repo --alias <me>` to drain. |
 | `c2c` command not found | Run `c2c install self` to add the binary to `~/.local/bin`. Make sure `~/.local/bin` is in your `PATH`. |
 | Recipient didn't get it | Check they're alive — dead registrations are skipped silently. Run `mcp__c2c__list` or `c2c list --cross-repo` to confirm. For CLI/non-pi recipients, `c2c register` alone may pin liveness to a transient shell PID; pin it to a durable `c2c monitor` process with `C2C_MCP_CLIENT_PID=<monitor-pid> c2c register --cross-repo --alias <me>`. |
 | Room messages missing | Verify you joined: `mcp__c2c__my_rooms` |

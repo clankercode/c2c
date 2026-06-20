@@ -71,6 +71,10 @@ let c2c_binary =
   let ocaml_dir = Filename.dirname test_dir in
   Filename.concat ocaml_dir (Filename.concat "cli" "c2c.exe")
 
+let c2c_deliver_inbox_binary =
+  let dir = Filename.dirname c2c_binary in
+  Filename.concat dir "c2c_deliver_inbox.exe"
+
 let c2c_cmd partial =
   let dir = Filename.dirname c2c_binary in
   let wrapper = Filename.concat dir "c2c" in
@@ -2271,6 +2275,47 @@ let test_poll_inbox_cross_repo_alias_errors () =
       check bool "peek missing alias exits non-zero" true (rc <> 0);
       check bool "peek missing alias mentions unregistered" true (string_contains out "alias missing is not registered"))
 
+let seed_cross_repo_message broker_root message =
+  let live_pid = string_of_int (Unix.getpid ()) in
+  let env = Printf.sprintf "C2C_SESSIONS_BROKER_ROOT=%s" (Filename.quote broker_root) in
+  let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s C2C_MCP_SESSION_ID=recv-sid C2C_MCP_CLIENT_PID=%s c2c register --cross-repo --alias recv" env live_pid)) in
+  check int ("register recv exits 0: " ^ out) 0 rc;
+  let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s C2C_MCP_SESSION_ID=sender-sid C2C_MCP_CLIENT_PID=%s c2c register --cross-repo --alias sender" env live_pid)) in
+  check int ("register sender exits 0: " ^ out) 0 rc;
+  let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s C2C_MCP_SESSION_ID=sender-sid c2c send --cross-repo --from sender recv %s" env (Filename.quote message))) in
+  check int ("send exits 0: " ^ out) 0 rc;
+  env
+
+let test_deliver_inbox_dry_run_does_not_drain () =
+  with_temp_dir (fun broker_root ->
+      let message = "full body line one\nline two with enough content to prove full-body" in
+      let env = seed_cross_repo_message broker_root message in
+      let cmd = Printf.sprintf "%s %s --cross-repo --alias recv --dry-run --json --full-body"
+        env (Filename.quote c2c_deliver_inbox_binary)
+      in
+      let rc, out = run_capture cmd in
+      check int ("deliver-inbox dry-run exits 0: " ^ out) 0 rc;
+      check bool "dry-run JSON reports delivered zero" true (string_contains out "\"delivered\":0");
+      check bool "dry-run JSON includes full body" true (string_contains out "line two with enough content");
+      let rc, peek = run_capture (c2c_cmd (Printf.sprintf "%s c2c peek-inbox --cross-repo --alias recv" env)) in
+      check int ("peek after dry-run exits 0: " ^ peek) 0 rc;
+      check bool "dry-run leaves inbox intact" true (string_contains peek "line two with enough content"))
+
+let test_deliver_inbox_cross_repo_alias_drains_full_body () =
+  with_temp_dir (fun broker_root ->
+      let message = "full body line one\nline two with enough content to prove full-body" in
+      let env = seed_cross_repo_message broker_root message in
+      let cmd = Printf.sprintf "%s %s --cross-repo --alias recv --json --full-body"
+        env (Filename.quote c2c_deliver_inbox_binary)
+      in
+      let rc, out = run_capture cmd in
+      check int ("deliver-inbox exits 0: " ^ out) 0 rc;
+      check bool "delivery JSON reports delivered one" true (string_contains out "\"delivered\":1");
+      check bool "delivery JSON includes full body" true (string_contains out "line two with enough content");
+      let rc, peek = run_capture (c2c_cmd (Printf.sprintf "%s c2c peek-inbox --cross-repo --alias recv" env)) in
+      check int ("peek after delivery exits 0: " ^ peek) 0 rc;
+      check bool "delivery drains inbox" true (string_contains peek "(no messages)"))
+
 let () =
   Alcotest.run "c2c_cli"
     [ ( "doctor",
@@ -2311,6 +2356,10 @@ let () =
     ; ( "poll_inbox",
         [ ( "cross-repo alias drains", `Quick, test_poll_inbox_cross_repo_alias_drains )
         ; ( "cross-repo alias errors", `Quick, test_poll_inbox_cross_repo_alias_errors )
+        ] )
+    ; ( "deliver_inbox",
+        [ ( "dry-run does not drain", `Quick, test_deliver_inbox_dry_run_does_not_drain )
+        ; ( "cross-repo alias drains full body", `Quick, test_deliver_inbox_cross_repo_alias_drains_full_body )
         ] )
     ; ( "schedule_list",
         [ ( "schedule list exits 0", `Quick, test_schedule_list_exits_zero )

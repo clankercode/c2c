@@ -6,6 +6,8 @@ type cli_args = {
   terminal_pid : int option;
   pts : string option;
   broker_root : string;
+  alias : string option;
+  cross_repo : bool;
   client : string;
   loop : bool;
   interval : float;
@@ -21,6 +23,7 @@ type cli_args = {
   timeout : float;
   dry_run : bool;
   json : bool;
+  full_body : bool;
   pty_master_fd : int option;  (* S4: PTY master fd for PTY-based delivery *)
   use_inotify : bool;          (* H3: inotifywait-based watcher *)
 }
@@ -41,6 +44,20 @@ val parse_args : unit -> cli_args
 
 val default_broker_root : unit -> string
 (** [default_broker_root ()] mirrors c2c_poll_inbox.default_broker_root. *)
+
+val resolve_session_id_by_alias : broker_root:string -> alias:string -> string
+(** Resolve an alias to a session id using the selected broker. Prefers live registrations. *)
+
+val deliver_generic_once :
+  broker_root:string ->
+  session_id:string ->
+  client:string ->
+  dry_run:bool ->
+  json:bool ->
+  full_body:bool ->
+  drained_by_pid:int ->
+  int
+(** Deliver one generic-client batch. [dry_run] peeks without draining and returns 0. *)
 
 type daemon_start_result = [
   | `Already_running of int

@@ -24,6 +24,8 @@ type cli_args = {
   terminal_pid : int option;
   pts : string option;
   broker_root : string;
+  alias : string option;
+  cross_repo : bool;
   client : string;
   loop : bool;
   interval : float;
@@ -39,6 +41,7 @@ type cli_args = {
   timeout : float;
   dry_run : bool;
   json : bool;
+  full_body : bool;
   pty_master_fd : int option;  (* S4: PTY master fd for PTY-based delivery *)
   use_inotify : bool;          (* H3: inotifywait-based watcher *)
 }
@@ -305,6 +308,148 @@ let poll_once_generic ~(broker : C2c_mcp.Broker.t) ~(session_id : string)
   C2c_mcp.Broker.confirm_registration broker ~session_id;
   C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-inbox" broker ~session_id
 
+let peek_once_generic ~(broker : C2c_mcp.Broker.t) ~(session_id : string)
+    : C2c_mcp.message list =
+  C2c_mcp.Broker.confirm_registration broker ~session_id;
+  C2c_mcp.Broker.read_inbox broker ~session_id
+
+let truncate_content ~(full_body : bool) (content : string) =
+  if full_body then content
+  else String.sub content 0 (min (String.length content) 110)
+
+let message_to_json ~(dry_run : bool) (m : C2c_mcp.message) : Yojson.Safe.t =
+  `Assoc
+    [ ("event", `String (if dry_run then "would_deliver" else "delivered"))
+    ; ("dry_run", `Bool dry_run)
+    ; ("delivered", `Int (if dry_run then 0 else 1))
+    ; ("from_alias", `String m.from_alias)
+    ; ("to_alias", `String m.to_alias)
+    ; ("content", `String m.content)
+    ; ("ts", `Float m.ts)
+    ]
+
+let print_messages ~(json : bool) ~(full_body : bool) ~(dry_run : bool)
+    (messages : C2c_mcp.message list) : unit =
+  List.iter
+    (fun (m : C2c_mcp.message) ->
+       if json then
+         Printf.printf "%s\n%!" (Yojson.Safe.to_string (message_to_json ~dry_run m))
+       else
+         Printf.printf "[c2c-deliver-inbox] %s from=%s: %s\n%!"
+           (if dry_run then "would deliver" else "delivered")
+           m.from_alias
+           (truncate_content ~full_body m.content))
+    messages
+
+let print_summary ~(json : bool) ~(session_id : string) ~(broker_root : string)
+    ~(client : string) ~(dry_run : bool) ~(delivered : int) : unit =
+  if json then
+    Printf.printf "%s\n%!"
+      (Yojson.Safe.to_string
+         (`Assoc
+            [ ("event", `String "summary")
+            ; ("session", `String session_id)
+            ; ("broker_root", `String broker_root)
+            ; ("client", `String client)
+            ; ("dry_run", `Bool dry_run)
+            ; ("delivered", `Int delivered)
+            ]))
+  else
+    Printf.printf "[c2c-deliver-inbox] session=%s broker_root=%s client=%s delivered=%d\n%!"
+      session_id broker_root client delivered
+
+let deliver_generic_once ~(broker_root : string) ~(session_id : string)
+    ~(client : string) ~(dry_run : bool) ~(json : bool) ~(full_body : bool)
+    ~(drained_by_pid : int) : int =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let messages =
+    if dry_run then peek_once_generic ~broker ~session_id
+    else poll_once_generic ~broker ~session_id
+  in
+  if not dry_run then
+    C2c_deliver_inbox_log.log_drain
+      ~broker_root
+      ~session_id
+      ~client
+      ~count:(List.length messages)
+      ~drained_by_pid;
+  print_messages ~json ~full_body ~dry_run messages;
+  let delivered = if dry_run then 0 else List.length messages in
+  print_summary ~json ~session_id ~broker_root ~client ~dry_run ~delivered;
+  delivered
+
+let run_inotify_drain_loop
+    ~(broker_root : string)
+    ~(session_id : string)
+    ~(client : string)
+    ~(watched_pid : int option)
+    ~(poll_interval : float)
+    ~(max_iterations : int option)
+    ~(json : bool)
+    ~(full_body : bool)
+    : unit =
+  let inbox_dir = broker_root in
+  let inbox_path = inbox_dir // session_id ^ ".inbox.json" in
+  let iterations = ref 0 in
+  let total_delivered = ref 0 in
+  let drain_once () =
+    let delivered = deliver_generic_once
+      ~broker_root ~session_id ~client
+      ~dry_run:false ~json ~full_body
+      ~drained_by_pid:(Unix.getpid ())
+    in
+    total_delivered := !total_delivered + delivered
+  in
+  if not (Sys.file_exists inbox_path) then
+    Printf.printf "[c2c-deliver-inbox] inotify-drain: inbox not found yet: %s\n%!" inbox_path
+  else
+    Printf.printf "[c2c-deliver-inbox] inotify-drain: watching %s\n%!" inbox_path;
+  flush stdout;
+  (* Drain anything already queued before waiting for future writes. *)
+  drain_once ();
+  let cmd = Printf.sprintf
+    "mkdir -p %s && inotifywait -m -e close_write,modify,create,moved_to --format '%%e %%f' %s"
+    (Filename.quote inbox_dir)
+    (Filename.quote inbox_dir)
+  in
+  let rec fallback_poll () =
+    match max_iterations with
+    | Some m when !iterations >= m -> ()
+    | _ ->
+        (match watched_pid with
+         | Some wp when not (pid_is_alive wp) -> ()
+         | _ ->
+             incr iterations;
+             drain_once ();
+             Unix.sleepf (max 0.01 poll_interval);
+             fallback_poll ())
+  in
+  let (ic, _oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
+  Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
+    let _err_thread = Thread.create (fun () ->
+      try while true do ignore (input_line err_ic : string) done
+      with End_of_file | Sys_error _ -> ()) () in
+    Printf.printf "[c2c-deliver-inbox] inotify-drain: watcher ready\n%!";
+    let rec loop () =
+      match max_iterations with
+      | Some m when !iterations >= m -> ()
+      | _ ->
+          (match watched_pid with
+           | Some wp when not (pid_is_alive wp) -> ()
+           | _ ->
+               try
+                 ignore (input_line ic : string);
+                 incr iterations;
+                 drain_once ();
+                 loop ()
+               with End_of_file | Sys_error _ -> fallback_poll ())
+    in
+    loop ());
+  Printf.printf "[c2c-deliver-inbox] inotify-drain loop finished, total delivered=%d\n%!"
+    !total_delivered;
+  flush stdout
+
+
 (* ---------------------------------------------------------------------------
  * Daemon: fork + setsid + pgrp + log redirection
  * --------------------------------------------------------------------------- *)
@@ -383,13 +528,24 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
   | None ->
       (* H3: inotify-based delivery when --inotify is set *)
       (if args.use_inotify then
-         run_inotify_loop
-           ~broker_root:args.broker_root
-           ~session_id
-           ~client:args.client
-           ~watched_pid
-           ~poll_interval:args.interval
-           ~max_iterations:args.max_iterations
+         if args.client = "generic" then
+           run_inotify_drain_loop
+             ~broker_root:args.broker_root
+             ~session_id
+             ~client:args.client
+             ~watched_pid
+             ~poll_interval:args.interval
+             ~max_iterations:args.max_iterations
+             ~json:args.json
+             ~full_body:args.full_body
+         else
+           run_inotify_loop
+             ~broker_root:args.broker_root
+             ~session_id
+             ~client:args.client
+             ~watched_pid
+             ~poll_interval:args.interval
+             ~max_iterations:args.max_iterations
        else
          (* S5: XML sideband delivery via --xml-output-fd for Codex *)
          match args.xml_output_fd with
@@ -407,12 +563,6 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
             let total_delivered = ref 0 in
             let max_iterations = args.max_iterations in
             let is_kimi = args.client = "kimi" in
-            (* For kimi: notifier handles broker lifecycle internally.
-               For others: create broker once and reuse. *)
-            let broker =
-              if is_kimi then None
-              else Some (C2c_mcp.Broker.create ~root:args.broker_root)
-            in
             let rec loop () =
               match max_iterations with
               | Some m when !iterations >= m ->
@@ -424,24 +574,14 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
                     if is_kimi then
                       poll_once_kimi ~broker_root:args.broker_root ~session_id
                     else
-                      let messages = poll_once_generic
-                        ~broker:(Option.get broker)
-                        ~session_id
-                      in
-                      (* #562: log drain event *)
-                      C2c_deliver_inbox_log.log_drain
+                      deliver_generic_once
                         ~broker_root:args.broker_root
                         ~session_id
                         ~client:args.client
-                        ~count:(List.length messages)
-                        ~drained_by_pid:(Unix.getpid ());
-                      List.iter
-                        (fun (m : C2c_mcp.message) ->
-                           Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
-                             m.from_alias
-                             (String.sub m.content 0 (min (String.length m.content) 80)))
-                        messages;
-                      List.length messages
+                        ~dry_run:args.dry_run
+                        ~json:args.json
+                        ~full_body:args.full_body
+                        ~drained_by_pid:(Unix.getpid ())
                   in
                   total_delivered := !total_delivered + delivered;
                   (if delivered > 0 then
@@ -476,6 +616,8 @@ let parse_args () : cli_args =
   let terminal_pid = ref None in
   let pts = ref None in
   let broker_root = ref None in
+  let alias = ref None in
+  let cross_repo = ref false in
   let client = ref "generic" in
   let loop = ref false in
   let interval = ref 1.0 in
@@ -491,14 +633,23 @@ let parse_args () : cli_args =
   let timeout = ref 5.0 in
   let dry_run = ref false in
   let json = ref false in
+  let full_body = ref false in
   let pty_master_fd = ref None in
   let use_inotify = ref false in
 
   let speclist = [
     ("--session-id", Arg.String (fun s -> session_id := Some s),
      " broker session id to deliver");
+    ("--alias", Arg.String (fun s -> alias := Some s),
+     " alias whose inbox to deliver (reverse-looks-up session id)");
+    ("-a", Arg.String (fun s -> alias := Some s),
+     " alias whose inbox to deliver (same as --alias)");
     ("--broker-root", Arg.String (fun s -> broker_root := Some s),
      " broker root directory");
+    ("--cross-repo", Arg.Set cross_repo,
+     " use the shared sessions broker instead of the repo broker");
+    ("--global-broker", Arg.Set cross_repo,
+     " alias for --cross-repo");
     ("--client", Arg.String (fun s -> client := s),
      " client type (claude|codex|codex-headless|opencode|kimi|crush|generic)");
     ("--loop", Arg.Set loop, " keep polling and delivering");
@@ -525,6 +676,8 @@ let parse_args () : cli_args =
     ("--dry-run", Arg.Set dry_run,
      " peek and render without draining or injecting");
     ("--json", Arg.Set json, " output JSON");
+    ("--full-body", Arg.Set full_body,
+     " print complete message bodies instead of truncating previews");
     ("--pid", Arg.Int (fun i -> terminal_pid := Some i),
      " terminal/process pid");
     ("--terminal-pid", Arg.Int (fun i -> terminal_pid := Some i),
@@ -538,16 +691,22 @@ let parse_args () : cli_args =
   ] in
   let anon _ = () in
   Arg.parse speclist anon "c2c-deliver-inbox [options]";
+  (match !session_id, !alias with
+   | Some _, Some _ -> failwith "--session-id and --alias are mutually exclusive"
+   | _ -> ());
   let broker_root_val =
     match !broker_root with
     | Some b -> b
-    | None -> failwith "--broker-root required"
+    | None when !cross_repo -> C2c_repo_fp.resolve_sessions_broker_root ()
+    | None -> ""
   in
   {
     session_id = !session_id;
     terminal_pid = !terminal_pid;
     pts = !pts;
     broker_root = broker_root_val;
+    alias = !alias;
+    cross_repo = !cross_repo;
     client = !client;
     loop = !loop;
     interval = !interval;
@@ -563,6 +722,7 @@ let parse_args () : cli_args =
     timeout = !timeout;
     dry_run = !dry_run;
     json = !json;
+    full_body = !full_body;
     pty_master_fd = !pty_master_fd;
     use_inotify = !use_inotify;
   }
@@ -579,6 +739,32 @@ let default_broker_root () : string =
     let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
     home // ".c2c" // "repos" // "default" // "broker"
 
+let resolve_session_id_by_alias ~(broker_root : string) ~(alias : string) : string =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let alias_norm = String.lowercase_ascii alias in
+  let matches =
+    C2c_mcp.Broker.list_registrations broker
+    |> List.filter (fun (r : C2c_mcp.registration) ->
+           String.lowercase_ascii r.alias = alias_norm)
+  in
+  match matches with
+  | [] -> failwith (Printf.sprintf "alias %s is not registered in this broker" alias)
+  | regs ->
+      let live =
+        List.filter
+          (fun r -> C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive)
+          regs
+      in
+      let chosen = match live with r :: _ -> r | [] -> List.hd regs in
+      chosen.session_id
+
+let resolve_effective_session_id ~(broker_root : string) (args : cli_args) : string =
+  match args.session_id, args.alias with
+  | Some sid, None -> sid
+  | None, Some alias -> resolve_session_id_by_alias ~broker_root ~alias
+  | Some _, Some _ -> failwith "--session-id and --alias are mutually exclusive"
+  | None, None -> failwith "--session-id or --alias required"
+
 (* ---------------------------------------------------------------------------
  * OCaml program body — the `let () =` below IS the executable entry point.
  * --------------------------------------------------------------------------- *)
@@ -589,11 +775,7 @@ let () =
     if args.broker_root <> "" then args.broker_root
     else default_broker_root ()
   in
-  let session_id =
-    match args.session_id with
-    | Some s -> s
-    | None -> failwith "--session-id required"
-  in
+  let session_id = resolve_effective_session_id ~broker_root args in
   let pidfile_path =
     match args.pidfile with
     | Some p -> p
@@ -608,6 +790,8 @@ let () =
     | Some l -> l
     | None -> pidfile_path ^ ".log"
   in
+
+  let args = { args with session_id = Some session_id; broker_root } in
 
   if args.daemon then begin
     match start_daemon
@@ -656,28 +840,23 @@ let () =
     if args.loop then
       run_loop ~args ~watched_pid
     else
-      (* Single-shot: one poll + deliver for kimi, poll-only for others *)
-      let delivered =
-        if args.client = "kimi" then
-          poll_once_kimi ~broker_root ~session_id
-        else
-          let broker = C2c_mcp.Broker.create ~root:broker_root in
-          let messages = poll_once_generic ~broker ~session_id in
-          (* #562: log single-shot drain (pid=0 = not a daemon) *)
-          C2c_deliver_inbox_log.log_drain
-            ~broker_root
-            ~session_id
-            ~client:args.client
-            ~count:(List.length messages)
-            ~drained_by_pid:0;
-          List.iter
-            (fun (m : C2c_mcp.message) ->
-               Printf.printf "[c2c-deliver-inbox] would deliver to %s: %s\n%!"
-                 m.from_alias
-                 (String.sub m.content 0 (min (String.length m.content) 80)))
-            messages;
-          List.length messages
-      in
-      Printf.printf "[c2c-deliver-inbox] session=%s broker_root=%s client=%s delivered=%d\n%!"
-        session_id broker_root args.client delivered
+      (* Single-shot: one poll + deliver for kimi, full render/drain for others. *)
+      if args.client = "kimi" then
+        let delivered = poll_once_kimi ~broker_root ~session_id in
+        print_summary
+          ~json:args.json
+          ~session_id
+          ~broker_root
+          ~client:args.client
+          ~dry_run:args.dry_run
+          ~delivered
+      else
+        ignore (deliver_generic_once
+          ~broker_root
+          ~session_id
+          ~client:args.client
+          ~dry_run:args.dry_run
+          ~json:args.json
+          ~full_body:args.full_body
+          ~drained_by_pid:0)
   end

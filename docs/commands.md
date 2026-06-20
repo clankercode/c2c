@@ -904,26 +904,28 @@ kimi-wire-bridge-cleanup slice. Kimi delivery now uses the notification-store
 notifier (`C2c_kimi_notifier`), launched automatically by `c2c start kimi`.
 
 `c2c-deliver-inbox` is a standalone binary installed at `~/.local/bin/c2c-deliver-inbox`.
-It is launched automatically by `c2c start kimi`; operators typically do not need
-to invoke it directly.
+It is launched automatically by managed clients such as `c2c start kimi`, but it
+can also be used directly by unmanaged CLI peers that need one Monitor-compatible
+command which both drains and prints message bodies.
 
 | Flag | Description |
 |------|-------------|
-| `--session-id ID` | Broker session ID to drain (required) |
-| `--broker-root DIR` | Broker root directory (default: from env) |
-| `--client TYPE` | Client type — pass `kimi` here; other values: `claude`, `codex`, `codex-headless`, `opencode`, `generic` |
-| `--loop` | Keep polling and delivering continuously |
-| `--interval SECS` | Polling interval in seconds (default: 2.0) |
-| `--max-iterations N` | Exit after N iterations |
-| `--pidfile PATH` | Write daemon PID to this file |
-| `--daemon` | Start detached (fork + setsid) |
-| `--daemon-log PATH` | Daemon stdout/stderr log path |
-| `--daemon-timeout SECS` | Seconds to wait for pidfile write (default: 10) |
-| `--notify-only` | Peek only — inject nudge without content |
-| `--notify-debounce SECS` | Minimum seconds between repeated nudges (default: 30) |
-| `--submit-delay SECS` | Override delay before wake-prompt (default: 1.5s for kimi) |
-| `--timeout SECS` | Inbox drain timeout (default: 5.0) |
-| `--json` | Emit JSON output |
+| `--session-id ID` | Broker session ID to deliver. Mutually exclusive with `--alias`. |
+| `--alias A`, `-a A` | Alias whose session ID should be reverse-looked-up in the selected broker. Useful for unmanaged CLI peers. |
+| `--broker-root DIR` | Broker root directory. Defaults to `C2C_MCP_BROKER_ROOT` or the fallback repo broker. |
+| `--cross-repo`, `--global-broker` | Use the shared sessions broker (`~/.c2c/sessions/broker`). |
+| `--client TYPE` | Client type — `kimi` uses the Kimi notification store; `generic` drains and prints messages. Other managed values include `claude`, `codex`, `codex-headless`, and `opencode`. |
+| `--loop` | Keep polling/delivering continuously. |
+| `--inotify` | Watch for inbox changes instead of polling. For `--client generic`, this drains on arrival and prints message bodies. |
+| `--interval SECS` | Polling interval in seconds. |
+| `--max-iterations N` | Exit after N iterations/events. |
+| `--pidfile PATH` | Write daemon PID to this file. |
+| `--daemon` | Start detached (fork + setsid). |
+| `--daemon-log PATH` | Daemon stdout/stderr log path. |
+| `--daemon-timeout SECS` | Seconds to wait for pidfile write. |
+| `--dry-run` | Peek and render without draining. |
+| `--json` | Emit one JSON object per message plus a summary object. Message objects include full `content`. |
+| `--full-body` | Print complete message bodies in human output instead of truncating previews. |
 
 ```bash
 # Preview help:
@@ -932,8 +934,14 @@ c2c-deliver-inbox --help
 # Start a detached kimi delivery daemon (normal production path):
 c2c-deliver-inbox --session-id my-kimi-alias --client kimi --loop --daemon --pidfile /run/user/1000/c2c-kimi.pid
 
-# One-shot drain (dry-run / smoke test):
-c2c-deliver-inbox --session-id my-kimi-alias --client kimi --max-iterations 1 --json
+# One-shot generic drain by alias from the shared sessions broker:
+c2c-deliver-inbox --cross-repo --alias my-alias --full-body
+
+# Monitor-compatible unmanaged CLI receiver: drains and prints full bodies on arrival.
+c2c-deliver-inbox --inotify --loop --cross-repo --alias my-alias --full-body
+
+# Dry-run smoke test: render without draining.
+c2c-deliver-inbox --cross-repo --alias my-alias --dry-run --json --full-body
 ```
 
 For kimi specifically, the notifier polls every 1 second (default), writes each DM to the

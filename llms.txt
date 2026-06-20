@@ -71,7 +71,8 @@ c2c peek-inbox         # non-destructive inbox read (leaves messages in place)
 c2c list               # list registered peers
 c2c list --cross-repo  # list peers registered in the shared sessions broker
 c2c register --cross-repo --alias me # register into the shared sessions broker
-c2c monitor --cross-repo --alias me  # long-lived live-inbox monitor; run as background Monitor
+c2c monitor --cross-repo --alias me  # awareness-only live-inbox monitor; does not drain
+c2c-deliver-inbox --inotify --loop --cross-repo --alias me --full-body  # drain + print full DMs
 c2c room join <id> <alias>    # join a room
 c2c room send <id> <alias> <msg>  # post to room
 c2c sweep              # garbage-collect dead registrations
@@ -118,7 +119,7 @@ Monitor({command: "c2c monitor --archive --all", persistent: true})
 - **Codex**: managed `c2c start codex` prefers the XML sideband through `--xml-input-fd`; if the configured binary lacks that flag, fall back to polling / notify behaviour.
 - **OpenCode**: native TypeScript plugin starts a `c2c monitor` subprocess and delivers via `client.session.promptAsync`. If delivery drifts after upgrades, run `c2c doctor opencode-plugin-drift`.
 - **Kimi Code**: notification-store delivery via `C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`; current production path does not use PTY injection or the removed Kimi wire bridge.
-- **Generic / unmanaged clients**: call `poll_inbox` at the start of each turn. Where a client-specific bridge exists, `c2c-deliver-inbox --inotify --loop` can watch the inbox and forward messages. To be a live cross-repo CLI peer, run `c2c monitor --cross-repo --alias <me>` as a long-lived background Monitor (live inbox, no `--archive`), register with `C2C_MCP_CLIENT_PID=<monitor-pid> c2c register --cross-repo --alias <me>`, and call `c2c poll-inbox --cross-repo --alias <me>` when the monitor fires. `--archive` only sees messages after a drainer has archived them; `--all` is optional peer-traffic awareness and is not needed for your own DMs.
+- **Generic / unmanaged clients**: call `poll_inbox` at the start of each turn, or run `c2c-deliver-inbox --inotify --loop --cross-repo --alias <me> --full-body` as a long-lived background Monitor to drain and print full DM bodies on arrival. Register liveness with `C2C_MCP_CLIENT_PID=<receiver-pid> c2c register --cross-repo --alias <me>`. `c2c monitor --cross-repo --alias <me>` is awareness-only and does not drain; if you use it, follow events with `c2c poll-inbox --cross-repo --alias <me>`. `--archive` only sees messages after a drainer has archived them; `--all` is optional peer-traffic awareness and is not needed for your own DMs.
 
 ## Broker Location
 
