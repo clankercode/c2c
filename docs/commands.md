@@ -720,7 +720,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `doctor opencode-plugin-drift` | Check whether the deployed OpenCode plugin is a symlink to the canonical source (`data/opencode-plugin/c2c.ts`), an embedded binary-only regular file, a drifted regular file, or a stale symlink. Reports OK / DRIFT / STALE / MISSING. Run `c2c install opencode` (or upgrade the c2c binary) to repair a drifted plugin. |
 | `verify [--alive-only] [--min-messages N] [--json]` | Verify message exchange progress across registered peers. |
 | `tail-log [--limit N] [--json]` | Read the last N broker RPC log entries. |
-| `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--full-body] [--include-self] [--json] [--cross-repo]` | Watch broker inboxes and emit one formatted line per event. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. Designed for Claude Code's Monitor tool. |
+| `monitor [--all] [--archive] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--full-body] [--include-self] [--json] [--cross-repo]` | Watch broker inboxes and emit one formatted line per event. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. Use `--alias <me>` without `--archive` for unmanaged CLI peers that need live-inbox notification; `--archive` only sees messages after something drains and archives them. Designed for Claude Code's Monitor tool. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text from a managed session. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--session-id ID] [--dry-run] [--json]` | Refresh a stale broker registration to a new live PID. |
 | `peek-inbox [--session-id ID] [--json]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). |
@@ -737,7 +737,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | Command | Description |
 |---------|-------------|
 | `instances [--all] [--prune-older-than DAYS] [--json]` | List managed c2c instances. |
-| `monitor [--all] [--archive] [--drains] [--sweeps] [--from A] [--json] [--cross-repo]` | Watch broker inboxes and emit formatted event lines. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
+| `monitor [--all] [--archive] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--json] [--cross-repo]` | Watch broker inboxes and emit formatted event lines. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. Use live-inbox mode (`--alias <me>`, no `--archive`) for CLI/non-pi peers that do not auto-drain; use `--archive` only when another hook/poller drains first. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--dry-run] [--json]` | Refresh a stale registration to a new live PID. |
 
@@ -992,7 +992,7 @@ c2c send storm-ember "hello" --json
 c2c send --cross-repo storm-ember "hello"  # send via the shared sessions broker
 c2c send --session 00000000-0000-0000-0000-000000000000 "hello by session"
 c2c register --cross-repo --alias me        # register into the shared sessions broker
-c2c monitor --cross-repo --archive --all    # monitor the shared sessions broker
+c2c monitor --cross-repo --alias me         # live inbox monitor for your cross-repo DMs
 c2c whoami --json
 ```
 
@@ -1014,6 +1014,29 @@ c2c identifies sessions by their **session ID** — a UUID assigned by the host 
 Once registered, the alias is the handle you use for sends and receives. Aliases are short lowercase words (e.g., `storm-beacon`, `tide-runner`) drawn from the cartesian product of a 128-word pool hardcoded in `c2c_start.ml` and `c2c_setup.ml` (16,384 ordered pairs). The file `data/c2c_alias_words.txt` (1,455 words) is unused.
 
 The auto-register behaviour (`C2C_MCP_AUTO_REGISTER_ALIAS`) and auto-join behaviour (`C2C_MCP_AUTO_JOIN_ROOMS`) are written into each client's MCP config by `c2c install <client>`, so a fresh session reconnects with a stable alias and joins `swarm-lounge` automatically.
+
+### Unmanaged CLI live peers
+
+A plain CLI/non-pi process can send via `c2c send`, but to be reachable as a
+**live** cross-repo peer it needs a durable process for liveness and live-inbox
+notification:
+
+```bash
+# terminal 1: live inbox monitor; do not use --archive for no-drainer CLI peers
+c2c monitor --cross-repo --alias my-alias
+
+# terminal 2: register liveness against the monitor process, not the transient shell
+pid=$(pgrep -n -f 'c2c monitor --cross-repo --alias my-alias')
+C2C_MCP_CLIENT_PID=$pid c2c register --cross-repo --alias my-alias
+
+# when the monitor reports a message, drain it
+c2c poll-inbox
+```
+
+`--archive` monitors already-drained archive files. It is useful for clients
+with an auto-drainer hook/poller (for example Claude Code's hook), but it will
+not fire for a plain CLI peer whose messages are still sitting in the live
+inbox.
 
 > **MCP vs. CLI nudge**: When `C2C_MCP_SESSION_ID` and `C2C_MCP_AUTO_REGISTER_ALIAS` are both set (i.e., inside an active MCP session), the CLI commands `send`, `list`, `whoami`, `poll-inbox`, and `peek-inbox` emit a hint suggesting the equivalent `mcp__c2c__*` tool instead. This is informational — the CLI still works. Suppress with `C2C_CLI_FORCE=1`.
 
