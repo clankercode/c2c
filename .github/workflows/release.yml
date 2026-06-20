@@ -228,7 +228,25 @@ jobs:
           package-manager-cache: false
 
       - name: Ensure trusted-publishing-capable npm
-        run: npm install -g npm@latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(npm --version)"
+          if node - "$current" <<'NODE'
+          const current = process.argv[2].split('.').map(Number);
+          const minimum = [11, 5, 1];
+          for (let i = 0; i < minimum.length; i += 1) {
+            if ((current[i] || 0) > minimum[i]) process.exit(0);
+            if ((current[i] || 0) < minimum[i]) process.exit(1);
+          }
+          process.exit(0);
+          NODE
+          then
+            echo "npm ${current} is trusted-publishing capable"
+          else
+            echo "npm ${current} is too old for trusted publishing; upgrading"
+            npm install -g npm@latest
+          fi
 
       - name: Remove token auth for npm trusted publishing
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_npm) }}

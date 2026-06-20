@@ -25,6 +25,14 @@ jobs:
       - name: Install just
         uses: taiki-e/install-action@just
 
+      - name: Restore Python pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('tests/test_release_tool.py') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
       - name: Install Python test dependencies
         run: python3 -m pip install pytest
 
