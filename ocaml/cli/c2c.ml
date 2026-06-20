@@ -48,6 +48,13 @@ let resolve_claude_dir () =
 
 let resolve_broker_root = C2c_utils.resolve_broker_root
 
+let resolve_effective_broker_root ?(explicit_root : string option = None) ~cross_repo () =
+  match explicit_root with
+  | Some r when String.trim r <> "" -> String.trim r
+  | _ ->
+      if cross_repo then Repo_fp.resolve_sessions_broker_root ()
+      else resolve_broker_root ()
+
 let broker_root_from_env () =
   match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
   | Some path when String.trim path <> "" -> Some path
@@ -131,10 +138,8 @@ let validate_from_override broker ~caller_session_id ~from_alias =
       in
       if from_registered_to_other then begin
         Printf.eprintf
-          "refusing to send as '%s': that alias is registered to a different session \
-           (not your identity). Set C2C_COORDINATOR=1 to relay on behalf of another agent, \
-           or send as your own alias.\n%!"
-          from_alias;
+          "refusing to send as '%s': that alias is registered to a different session than yours.\n- If you ARE %s: set C2C_MCP_SESSION_ID to that session's id so the broker recognizes you (this is the usual fix).\n- To relay on behalf of another agent: set C2C_COORDINATOR=1.\n- Otherwise: send as your own alias.\n%!"
+          from_alias from_alias;
         exit 1
       end else begin
         Printf.eprintf
@@ -229,6 +234,10 @@ let resolve_session_id_for_inbox broker =
 
 let json_flag =
   Cmdliner.Arg.(value & flag & info [ "json"; "j" ] ~doc:"Output machine-readable JSON.")
+
+let cross_repo_flag =
+  Cmdliner.Arg.(value & flag & info [ "cross-repo"; "global-broker" ]
+    ~doc:"Target the cross-repo sessions broker ($(b,~/.c2c/sessions/broker)) instead of this repo's per-repo broker. Auto-resolves the rendezvous root (override with $(b,C2C_SESSIONS_BROKER_ROOT)); no manual $(b,C2C_MCP_BROKER_ROOT) needed. An explicit $(b,--root), where available, still wins.")
 
 let print_json json =
   Yojson.Safe.pretty_to_channel stdout json;
@@ -425,9 +434,10 @@ let send_cmd =
   and+ ephemeral = ephemeral_flag
   and+ fail = fail_flag
   and+ blocking = blocking_flag
-  and+ urgent = urgent_flag in
+  and+ urgent = urgent_flag
+  and+ cross_repo = cross_repo_flag in
   mcp_nudge_if_needed ~cmd:"send";
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
   let target, content =
     match session_target, args with
     | Some sid, tokens ->
@@ -626,8 +636,14 @@ let list_cmd =
   and+ all = all
   and+ enriched = enriched
   and+ global = global
-  and+ alive_only = alive_only in
+  and+ alive_only = alive_only
+  and+ cross_repo = cross_repo_flag in
   mcp_nudge_if_needed ~cmd:"list";
+
+  if global && cross_repo then begin
+    Printf.eprintf "error: --global (scan per-repo brokers) and --cross-repo (sessions broker) are mutually exclusive.\n%!";
+    exit 2
+  end;
 
   let is_alive r = C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive in
   let regs_filter = if alive_only then List.filter is_alive else Fun.id in
@@ -755,13 +771,28 @@ let list_cmd =
             ) all_roots
           end
   else
-    (* single-broker (default): use current repo's broker root *)
-    let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+    (* single-broker (default or --cross-repo): use effective broker root *)
+    let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
     let regs = C2c_mcp.Broker.list_registrations broker |> regs_filter in
     if regs = [] then (
       match output_mode with
       | Json -> print_json (`List [])
-      | Human -> Printf.printf "No registered peers.\n")
+      | Human ->
+          if cross_repo then Printf.printf "No registered peers on the sessions broker.\n"
+          else begin
+            let n_alive =
+              try
+                let sb = C2c_mcp.Broker.create ~root:(Repo_fp.resolve_sessions_broker_root ()) in
+                C2c_mcp.Broker.list_registrations sb
+                |> List.filter (fun r -> C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive)
+                |> List.length
+              with _ -> 0
+            in
+            if n_alive > 0 then
+              Printf.printf "No peers in this repo; %d alive on the sessions broker — try `c2c list --cross-repo`.\n" n_alive
+            else
+              Printf.printf "No registered peers.\n"
+          end)
     else
       match output_mode with
       | Json ->
@@ -3128,8 +3159,9 @@ let register_cmd =
   let+ json = json_flag
   and+ alias_opt = alias
   and+ session_id_opt = session_id_opt
-  and+ no_metadata = no_metadata in
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  and+ no_metadata = no_metadata
+  and+ cross_repo = cross_repo_flag in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
   let alias, alias_from_auto_gen =
     match alias_opt with
     | Some a -> (a, false)
@@ -3597,7 +3629,8 @@ let monitor_cmd =
                  automatically; $(b,--force) is only needed to displace a \
                  still-alive holder.")
   in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self force ->
+  let cross_repo = cross_repo_flag in
+  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self force cross_repo ->
     let broker_root =
       (* #518: treat empty-string env/arg as "unset" — same shape as #496/#497.
          C2C_MCP_BROKER_ROOT='' should fall through to resolve_broker_root ()
@@ -3610,12 +3643,13 @@ let monitor_cmd =
       match resolved broker_root_arg with
       | Some r -> r
       | None ->
-          (match C2c_utils.trimmed_env_value "C2C_MCP_BROKER_ROOT" with
-           | Some r -> r
-           | None -> (try resolve_broker_root () with _ ->
-               Printf.eprintf "c2c monitor: cannot resolve broker root \
-                 (set C2C_MCP_BROKER_ROOT or run from inside the repo)\n%!";
-               exit 1))
+          if cross_repo then Repo_fp.resolve_sessions_broker_root ()
+          else (match C2c_utils.trimmed_env_value "C2C_MCP_BROKER_ROOT" with
+                | Some r -> r
+                | None -> (try resolve_broker_root () with _ ->
+                    Printf.eprintf "c2c monitor: cannot resolve broker root \
+                      (set C2C_MCP_BROKER_ROOT or run from inside the repo)\n%!";
+                    exit 1))
     in
     let my_alias =
       match alias_arg with
@@ -4168,7 +4202,7 @@ let monitor_cmd =
       done with End_of_file -> ())
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ from_opt $ json_flag $ archive_flag $ include_self_flag
-    $ force_flag
+    $ force_flag $ cross_repo
 
 let monitor =
   Cmdliner.Cmd.v

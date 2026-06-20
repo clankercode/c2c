@@ -117,21 +117,23 @@ let resolve_broker_root_canonical () = resolve_broker_root_fallback ()
 
     This is intentionally not repo-fingerprinted: Claude PostToolUse payloads
     carry a real session_id even for sessions that never initialized c2c, so
-    the rendezvous point must be fixed across repos. *)
+    the rendezvous point must be fixed across repos and across processes.
+
+    Resolution order (Option A, 2026-06-20):
+      1. C2C_SESSIONS_BROKER_ROOT env var (explicit override)
+      2. $HOME/.c2c/sessions/broker  (canonical pinned rendezvous)
+      3. ~/.c2c/sessions/broker      (HOME unset fallback, relative to cwd)
+ *)
 let resolve_sessions_broker_root () =
   match Sys.getenv_opt "C2C_SESSIONS_BROKER_ROOT" with
   | Some dir when String.trim dir <> "" ->
       let p = String.trim dir in
       if Filename.is_relative p then Sys.getcwd () // p else p
   | _ ->
-      (match Sys.getenv_opt "XDG_STATE_HOME" with
-       | Some xdg when String.trim xdg <> "" ->
-           String.trim xdg // "sessions" // "broker"
-       | _ ->
-           (match Sys.getenv_opt "HOME" with
-            | Some h when String.trim h <> "" ->
-                String.trim h // ".c2c" // "sessions" // "broker"
-            | _ -> xdg_state_home () // "sessions" // "broker"))
+      (match Sys.getenv_opt "HOME" with
+       | Some h when String.trim h <> "" ->
+           String.trim h // ".c2c" // "sessions" // "broker"
+       | _ -> ".c2c" // "sessions" // "broker")
 
 (** {1 Scan all known broker roots for --global listing}
 
