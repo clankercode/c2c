@@ -52,7 +52,7 @@ test("C2C_BIN must point at an executable file", () => {
   );
 });
 
-test("system c2c on PATH is used before npm platform package", () => {
+test("npm platform package is used before system c2c on PATH", () => {
   const dir = tempDir();
   const systemC2c = makeExecutable(path.join(dir, "bin", "c2c"));
   const platformC2c = makeExecutable(
@@ -65,6 +65,21 @@ test("system c2c on PATH is used before npm platform package", () => {
     platform: "linux",
     arch: "x64",
     requireFrom: path.dirname(path.dirname(path.dirname(platformC2c))),
+  });
+
+  assert.equal(resolved, platformC2c);
+});
+
+test("system c2c on PATH is fallback when platform package is missing", () => {
+  const dir = tempDir();
+  const systemC2c = makeExecutable(path.join(dir, "bin", "c2c"));
+  const { resolveC2cBinary } = loadResolver();
+
+  const resolved = resolveC2cBinary({
+    env: { PATH: path.dirname(systemC2c) },
+    platform: "linux",
+    arch: "x64",
+    requireFrom: path.join(dir, "missing-root"),
   });
 
   assert.equal(resolved, systemC2c);

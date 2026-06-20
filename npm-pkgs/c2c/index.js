@@ -135,12 +135,26 @@ function resolveC2cBinary(options = {}) {
     return env.C2C_BIN;
   }
 
+  const target = platformTarget(platform, arch);
+  let platformError = null;
+
+  if (target) {
+    try {
+      const resolved = resolvePlatformPackage(target, requireFrom);
+      if (canExecute(resolved)) {
+        return resolved;
+      }
+      throw new Error(`resolved package binary is not executable: ${resolved}`);
+    } catch (error) {
+      platformError = error;
+    }
+  }
+
   const systemC2c = findSystemC2c(env, selfPath, platform);
   if (systemC2c) {
     return systemC2c;
   }
 
-  const target = platformTarget(platform, arch);
   if (!target) {
     throw new Error(
       `No c2c npm binary package is available for ${platform}-${arch}. ` +
@@ -148,19 +162,11 @@ function resolveC2cBinary(options = {}) {
     );
   }
 
-  try {
-    const resolved = resolvePlatformPackage(target, requireFrom);
-    if (canExecute(resolved)) {
-      return resolved;
-    }
-    throw new Error(`resolved package binary is not executable: ${resolved}`);
-  } catch (error) {
-    throw new Error(
-      `Unable to find executable ${target.packageName} for ${platform}-${arch}. ` +
-        `Install @clanker-code/c2c with optional dependencies enabled, install c2c system-wide, or set C2C_BIN. ` +
-        `Cause: ${error.message}`
-    );
-  }
+  throw new Error(
+    `Unable to find executable ${target.packageName} for ${platform}-${arch}. ` +
+      `Install @clanker-code/c2c with optional dependencies enabled, install c2c system-wide, or set C2C_BIN. ` +
+      `Cause: ${platformError.message}`
+  );
 }
 
 module.exports = {
