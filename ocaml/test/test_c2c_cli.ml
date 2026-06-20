@@ -2337,6 +2337,27 @@ let test_deliver_inbox_inotify_ignores_unrelated_events () =
           check bool "unrelated event does not emit delivery" false (string_contains out "delivered from=");
           check bool "unrelated event does not emit zero summary" false (string_contains out "delivered=0")))
 
+let test_deliver_inbox_register_self_enables_alias_send () =
+  with_temp_dir (fun broker_root ->
+      let env = Printf.sprintf "C2C_SESSIONS_BROKER_ROOT=%s" (Filename.quote broker_root) in
+      let live_pid = string_of_int (Unix.getpid ()) in
+      let rc, out = run_capture (c2c_cmd (Printf.sprintf "%s C2C_MCP_SESSION_ID=sender-sid C2C_MCP_CLIENT_PID=%s c2c register --cross-repo --alias sender" env live_pid)) in
+      check int ("register sender exits 0: " ^ out) 0 rc;
+      let outfile = Filename.temp_file "c2c-deliver-register" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore) (fun () ->
+          let cmd = Printf.sprintf
+            "%s %s --inotify --loop --cross-repo --alias recv --register --full-body > %s 2>&1 & pid=$!; sleep 1; %s C2C_MCP_SESSION_ID=sender-sid c2c send --cross-repo --from sender recv 'registered receiver body'; sleep 1; kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true"
+            env
+            (Filename.quote c2c_deliver_inbox_binary)
+            (Filename.quote outfile)
+            env
+          in
+          let rc = Sys.command cmd in
+          check int "self-register harness exits 0" 0 rc;
+          let out = read_file outfile in
+          check bool "self-registered receiver gets alias send" true (string_contains out "registered receiver body");
+          check bool "self-registered receiver drains exactly one" true (string_contains out "delivered=1")))
+
 let () =
   Alcotest.run "c2c_cli"
     [ ( "doctor",
@@ -2382,6 +2403,7 @@ let () =
         [ ( "dry-run does not drain", `Quick, test_deliver_inbox_dry_run_does_not_drain )
         ; ( "cross-repo alias drains full body", `Quick, test_deliver_inbox_cross_repo_alias_drains_full_body )
         ; ( "inotify ignores unrelated events", `Quick, test_deliver_inbox_inotify_ignores_unrelated_events )
+        ; ( "register self enables alias send", `Quick, test_deliver_inbox_register_self_enables_alias_send )
         ] )
     ; ( "schedule_list",
         [ ( "schedule list exits 0", `Quick, test_schedule_list_exits_zero )

@@ -937,8 +937,8 @@ c2c-deliver-inbox --session-id my-kimi-alias --client kimi --loop --daemon --pid
 # One-shot generic drain by alias from the shared sessions broker:
 c2c-deliver-inbox --cross-repo --alias my-alias --full-body
 
-# Monitor-compatible unmanaged CLI receiver: drains and prints full bodies on arrival.
-c2c-deliver-inbox --inotify --loop --cross-repo --alias my-alias --full-body
+# Monitor-compatible unmanaged CLI receiver: drains, prints full bodies, and self-registers liveness.
+c2c-deliver-inbox --inotify --loop --cross-repo --alias my-alias --full-body --register
 
 # Dry-run smoke test: render without draining.
 c2c-deliver-inbox --cross-repo --alias my-alias --dry-run --json --full-body
@@ -1027,19 +1027,23 @@ The auto-register behaviour (`C2C_MCP_AUTO_REGISTER_ALIAS`) and auto-join behavi
 
 A plain CLI/non-pi process can send via `c2c send`, but to be reachable as a
 **live** cross-repo peer it needs a durable process for liveness and live-inbox
-notification:
+notification. Prefer the self-registering receiver; it drains and prints full
+message bodies on arrival:
 
 ```bash
-# terminal 1: live inbox monitor; do not use --archive for no-drainer CLI peers
-c2c monitor --cross-repo --alias my-alias
-
-# terminal 2: register liveness against the monitor process, not the transient shell
-pid=$(pgrep -n -f 'c2c monitor --cross-repo --alias my-alias')
-C2C_MCP_CLIENT_PID=$pid c2c register --cross-repo --alias my-alias
-
-# when the monitor reports a message, drain it
-c2c poll-inbox --cross-repo --alias my-alias
+c2c-deliver-inbox --inotify --loop --cross-repo --alias my-alias --full-body --register
 ```
+
+If you cannot use `--register`, use `--pidfile` rather than `pgrep -f` so the
+registration cannot accidentally pin to the transient shell running `pgrep`:
+
+```bash
+c2c-deliver-inbox --inotify --loop --cross-repo --alias my-alias --full-body --pidfile ~/.c2c/my-alias.pid &
+C2C_MCP_CLIENT_PID=$(cat ~/.c2c/my-alias.pid) c2c register --cross-repo --alias my-alias
+```
+
+Fallback: `c2c monitor --cross-repo --alias my-alias` is awareness-only. When
+it reports a message, drain it with `c2c poll-inbox --cross-repo --alias my-alias`.
 
 `--archive` monitors already-drained archive files. It is useful for clients
 with an auto-drainer hook/poller (for example Claude Code's hook), but it will

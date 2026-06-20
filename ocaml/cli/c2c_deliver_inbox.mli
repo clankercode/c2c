@@ -8,6 +8,7 @@ type cli_args = {
   broker_root : string;
   alias : string option;
   cross_repo : bool;
+  register_self : bool;
   client : string;
   loop : bool;
   interval : float;

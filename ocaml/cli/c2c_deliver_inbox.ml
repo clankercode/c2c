@@ -26,6 +26,7 @@ type cli_args = {
   broker_root : string;
   alias : string option;
   cross_repo : bool;
+  register_self : bool;
   client : string;
   loop : bool;
   interval : float;
@@ -464,6 +465,17 @@ let run_inotify_drain_loop
     !total_delivered;
   flush stdout
 
+let register_self_if_requested ~(broker_root : string) ~(session_id : string) (args : cli_args) : unit =
+  match args.register_self, args.alias with
+  | false, _ -> ()
+  | true, None -> failwith "--register requires --alias"
+  | true, Some alias ->
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      let pid = Some (Unix.getpid ()) in
+      let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
+      C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time
+        ~client_type:(Some args.client) ~cwd:(Some (Sys.getcwd ())) ()
+
 
 (* ---------------------------------------------------------------------------
  * Daemon: fork + setsid + pgrp + log redirection
@@ -529,6 +541,7 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
      flush stderr;
      exit 1);
   let session_id = Option.get session_id in
+  register_self_if_requested ~broker_root:args.broker_root ~session_id args;
   (* S4/S5: delivery path selection based on available fd *)
   match args.pty_master_fd with
   | Some fd ->
@@ -634,6 +647,7 @@ let parse_args () : cli_args =
   let broker_root = ref None in
   let alias = ref None in
   let cross_repo = ref false in
+  let register_self = ref false in
   let client = ref "generic" in
   let loop = ref false in
   let interval = ref 1.0 in
@@ -666,6 +680,8 @@ let parse_args () : cli_args =
      " use the shared sessions broker instead of the repo broker");
     ("--global-broker", Arg.Set cross_repo,
      " alias for --cross-repo");
+    ("--register", Arg.Set register_self,
+     " register --alias as a live receiver pinned to this process pid");
     ("--client", Arg.String (fun s -> client := s),
      " client type (claude|codex|codex-headless|opencode|kimi|crush|generic)");
     ("--loop", Arg.Set loop, " keep polling and delivering");
@@ -723,6 +739,7 @@ let parse_args () : cli_args =
     broker_root = broker_root_val;
     alias = !alias;
     cross_repo = !cross_repo;
+    register_self = !register_self;
     client = !client;
     loop = !loop;
     interval = !interval;
@@ -777,7 +794,12 @@ let resolve_session_id_by_alias ~(broker_root : string) ~(alias : string) : stri
 let resolve_effective_session_id ~(broker_root : string) (args : cli_args) : string =
   match args.session_id, args.alias with
   | Some sid, None -> sid
-  | None, Some alias -> resolve_session_id_by_alias ~broker_root ~alias
+  | None, Some alias ->
+      if args.register_self then
+        try resolve_session_id_by_alias ~broker_root ~alias
+        with Failure _ -> alias
+      else
+        resolve_session_id_by_alias ~broker_root ~alias
   | Some _, Some _ -> failwith "--session-id and --alias are mutually exclusive"
   | None, None -> failwith "--session-id or --alias required"
 
