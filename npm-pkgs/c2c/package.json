@@ -1,6 +1,6 @@
 {
   "name": "@clanker-code/c2c",
-  "version": "0.8.0",
+  "version": "0.8.2",
   "description": "c2c CLI resolver and npm binary-package wrapper",
   "license": "MIT",
   "type": "commonjs",
@@ -16,8 +16,7 @@
     "@clanker-code/c2c-linux-x64": "0.8.0",
     "@clanker-code/c2c-linux-arm64": "0.8.0",
     "@clanker-code/c2c-darwin-x64": "0.8.0",
-    "@clanker-code/c2c-darwin-arm64": "0.8.0",
-    "@clanker-code/c2c-win32-x64": "0.8.0"
+    "@clanker-code/c2c-darwin-arm64": "0.8.2"
   },
   "scripts": {
     "test": "node --test test/*.test.js"

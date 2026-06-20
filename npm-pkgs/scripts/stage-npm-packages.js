@@ -10,7 +10,6 @@ const TARGETS = [
   { dir: "c2c-linux-arm64", os: "linux", cpu: "arm64", executable: "c2c" },
   { dir: "c2c-darwin-x64", os: "darwin", cpu: "x64", executable: "c2c" },
   { dir: "c2c-darwin-arm64", os: "darwin", cpu: "arm64", executable: "c2c" },
-  { dir: "c2c-win32-x64", os: "win32", cpu: "x64", executable: "c2c.exe" },
 ];
 
 function parseArgs(argv) {

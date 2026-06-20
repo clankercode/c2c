@@ -20,10 +20,6 @@ const TARGETS = {
     packageName: "@clanker-code/c2c-darwin-arm64",
     executable: "c2c",
   },
-  "win32-x64": {
-    packageName: "@clanker-code/c2c-win32-x64",
-    executable: "c2c.exe",
-  },
 };
 
 function canExecute(file) {

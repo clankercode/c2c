@@ -231,7 +231,7 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Remove token auth for npm trusted publishing
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_npm }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_npm) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -270,7 +270,7 @@ jobs:
           fi
 
       - name: Publish npm packages
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_npm }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_npm) }}
         shell: bash
         run: |
           set -euo pipefail
