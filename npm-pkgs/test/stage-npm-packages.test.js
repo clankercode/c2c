@@ -13,7 +13,6 @@ const targets = [
   ["c2c-linux-arm64", "linux", "arm64", "c2c"],
   ["c2c-darwin-x64", "darwin", "x64", "c2c"],
   ["c2c-darwin-arm64", "darwin", "arm64", "c2c"],
-  ["c2c-win32-x64", "win32", "x64", "c2c.exe"],
 ];
 
 function tempDir() {

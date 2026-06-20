@@ -7,6 +7,16 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.8.2
+
+- Enabled npm package publishing on tag pushes in the release workflow, so the
+  meta package and all platform binary packages publish automatically alongside
+  GitHub Releases.
+- Bumped version to 0.8.2 to restore parity between the native binary releases
+  and the npm packages.
+- Removed the unused `win32-x64` platform from the committed npm package
+  templates and staging script to match the four platforms actually built in CI.
+
 ## 0.8.1
 
 - Added CI caching for Dune build artifacts and OCaml dependency state so warm
