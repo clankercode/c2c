@@ -7,6 +7,18 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.8.4
+
+- Added `--cross-repo` and `--alias` to `c2c poll-inbox` and
+  `c2c peek-inbox`, allowing unmanaged CLI peers to drain the shared sessions
+  broker by alias with `c2c poll-inbox --cross-repo --alias <me>` instead of
+  manually exporting `C2C_MCP_SESSION_ID`.
+- Updated the cross-repo CLI live-peer recipe to use live-inbox monitoring plus
+  alias-based draining, matching the dogfooded no-drainer CLI setup.
+- Added CLI regression coverage for cross-repo inbox draining by alias,
+  non-destructive peek behavior, drain-to-empty behavior, and alias/session
+  error cases.
+
 ## 0.8.3
 
 - Added `--cross-repo` flag to `c2c list`, `c2c send`, `c2c register`, and
