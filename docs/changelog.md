@@ -7,6 +7,20 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.8.6
+
+- Fixed npm release packaging so the published `@clanker-code/c2c` wrapper is
+  copied from the checked-in `npm-pkgs/c2c/index.js` resolver instead of a
+  divergent inline template. The resolver now uses `C2C_BIN` /
+  `C2C_DELIVER_INBOX_BIN` overrides first, then bundled platform binaries, then
+  PATH fallback.
+- Added `c2c-deliver-inbox` to every npm platform package and exposed a
+  `c2c-deliver-inbox` bin from the meta package, so npm-only installs can run
+  the documented unmanaged CLI receiver recipe.
+- Added release-tool and npm staging tests that verify the staged wrapper is
+  sourced from the checked-in resolver and that platform packages include both
+  `c2c` and `c2c-deliver-inbox`.
+
 ## 0.8.5
 
 - Added `c2c-deliver-inbox --inotify --loop --cross-repo --alias <me> --full-body`
