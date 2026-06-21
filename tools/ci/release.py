@@ -158,13 +158,14 @@ def write_manifest(root: Path, artifacts_dir: Path, version: str, out: Path) -> 
     print(out)
 
 
-def artifact_binary(artifacts_dir: Path, platform: Platform) -> Path:
+def artifact_binary(artifacts_dir: Path, platform: Platform, executable: str | None = None) -> Path:
+    executable = executable or platform.exe_name
     candidates = [
-        path for path in artifacts_dir.rglob(platform.exe_name)
+        path for path in artifacts_dir.rglob(executable)
         if platform.target in path.as_posix()
     ]
     if not candidates:
-        die(f"missing {platform.exe_name} artifact for {platform.target} under {artifacts_dir}")
+        die(f"missing {executable} artifact for {platform.target} under {artifacts_dir}")
     if len(candidates) > 1:
         formatted = ", ".join(str(path) for path in candidates)
         die(f"multiple candidate binaries for {platform.target}: {formatted}")
@@ -197,8 +198,10 @@ def stage_npm_packages(artifacts_dir: Path, dist_dir: Path, version: str, scope:
         pkg_dir = dist_dir / f"c2c-{platform.npm_suffix}"
         bin_dir = pkg_dir / "bin"
         bin_dir.mkdir(parents=True)
-        shutil.copy2(artifact_binary(artifacts_dir, platform), bin_dir / platform.exe_name)
+        shutil.copy2(artifact_binary(artifacts_dir, platform, platform.exe_name), bin_dir / platform.exe_name)
         (bin_dir / platform.exe_name).chmod(0o755)
+        shutil.copy2(artifact_binary(artifacts_dir, platform, "c2c-deliver-inbox"), bin_dir / "c2c-deliver-inbox")
+        (bin_dir / "c2c-deliver-inbox").chmod(0o755)
         package_json(pkg_dir / "package.json", {
             "name": pkg_name,
             "version": version,
@@ -208,10 +211,14 @@ def stage_npm_packages(artifacts_dir: Path, dist_dir: Path, version: str, scope:
             "os": [platform.os_name],
             "cpu": [platform.cpu],
             "files": ["bin/"],
-            "bin": {"c2c": f"bin/{platform.exe_name}"},
+            "bin": {
+                "c2c": f"bin/{platform.exe_name}",
+                "c2c-deliver-inbox": "bin/c2c-deliver-inbox",
+            },
         })
 
     meta_dir = dist_dir / "c2c"
+    source_pkg = repo_root() / "npm-pkgs" / "c2c"
     (meta_dir / "bin").mkdir(parents=True)
     package_json(meta_dir / "package.json", {
         "name": f"{scope}/c2c",
@@ -220,98 +227,19 @@ def stage_npm_packages(artifacts_dir: Path, dist_dir: Path, version: str, scope:
         "license": "MIT",
         "repository": REPOSITORY,
         "main": "index.js",
-        "bin": {"c2c": "bin/c2c-js-wrapper.js"},
+        "bin": {
+            "c2c": "bin/c2c-js-wrapper.js",
+            "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js",
+        },
         "files": ["bin/", "index.js"],
         "optionalDependencies": optional_dependencies,
     })
-    (meta_dir / "index.js").write_text(INDEX_JS_TEMPLATE.replace("__C2C_NPM_SCOPE__", scope), encoding="utf-8")
-    write_executable(meta_dir / "bin" / "c2c-js-wrapper.js", WRAPPER_JS)
+    shutil.copy2(source_pkg / "index.js", meta_dir / "index.js")
+    shutil.copy2(source_pkg / "bin" / "c2c-js-wrapper.js", meta_dir / "bin" / "c2c-js-wrapper.js")
+    shutil.copy2(source_pkg / "bin" / "c2c-js-wrapper.js", meta_dir / "bin" / "c2c-deliver-inbox-js-wrapper.js")
+    (meta_dir / "bin" / "c2c-js-wrapper.js").chmod(0o755)
+    (meta_dir / "bin" / "c2c-deliver-inbox-js-wrapper.js").chmod(0o755)
     print(dist_dir)
-
-
-INDEX_JS_TEMPLATE = r'''const fs = require("fs");
-const path = require("path");
-const { spawnSync } = require("child_process");
-
-const PACKAGE_BY_PLATFORM = {
-  "linux-x64": "__C2C_NPM_SCOPE__/c2c-linux-x64",
-  "linux-arm64": "__C2C_NPM_SCOPE__/c2c-linux-arm64",
-  "darwin-x64": "__C2C_NPM_SCOPE__/c2c-darwin-x64",
-  "darwin-arm64": "__C2C_NPM_SCOPE__/c2c-darwin-arm64",
-};
-
-function isExecutable(file) {
-  try {
-    fs.accessSync(file, fs.constants.X_OK);
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-function pathEntries() {
-  return (process.env.PATH || "").split(path.delimiter).filter(Boolean);
-}
-
-function resolveOnPath(name) {
-  let currentWrapper = null;
-  try {
-    currentWrapper = process.argv[1] ? fs.realpathSync(process.argv[1]) : null;
-  } catch (_) {}
-  for (const dir of pathEntries()) {
-    const candidate = path.join(dir, name);
-    if (!isExecutable(candidate)) continue;
-    try {
-      if (currentWrapper && fs.realpathSync(candidate) === currentWrapper) continue;
-    } catch (_) {}
-    return candidate;
-  }
-  return null;
-}
-
-function resolvePlatformPackage() {
-  const key = `${process.platform}-${process.arch}`;
-  const pkg = PACKAGE_BY_PLATFORM[key];
-  if (!pkg) return null;
-  try {
-    return require.resolve(`${pkg}/bin/${process.platform === "win32" ? "c2c.exe" : "c2c"}`);
-  } catch (_) {
-    return null;
-  }
-}
-
-function resolveC2cBinary() {
-  if (process.env.C2C_BIN) {
-    if (!isExecutable(process.env.C2C_BIN)) {
-      throw new Error(`C2C_BIN is set but is not executable: ${process.env.C2C_BIN}`);
-    }
-    return process.env.C2C_BIN;
-  }
-  const system = resolveOnPath(process.platform === "win32" ? "c2c.exe" : "c2c");
-  if (system) return system;
-  const packaged = resolvePlatformPackage();
-  if (packaged && isExecutable(packaged)) return packaged;
-  throw new Error(
-    `No c2c binary is available for ${process.platform}-${process.arch}. ` +
-    "Install c2c system-wide, install a supported @clanker-code/c2c platform package, " +
-    "or set C2C_BIN=/path/to/c2c."
-  );
-}
-
-module.exports = { resolveC2cBinary };
-'''
-
-
-WRAPPER_JS = r'''#!/usr/bin/env node
-const { spawnSync } = require("child_process");
-const { resolveC2cBinary } = require("../index.js");
-
-const binary = resolveC2cBinary();
-const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
-if (result.error) throw result.error;
-if (result.signal) process.kill(process.pid, result.signal);
-process.exit(result.status === null ? 1 : result.status);
-'''
 
 
 def write_publish_order(dist_dir: Path, out: Path) -> None:

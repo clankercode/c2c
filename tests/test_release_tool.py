@@ -21,10 +21,12 @@ def test_validate_release_accepts_matching_version_and_changelog(tmp_path: Path)
 def test_package_npm_stages_meta_and_platform_packages(tmp_path: Path) -> None:
     artifacts = tmp_path / "artifacts"
     for platform in release.PLATFORMS.values():
-        binary = artifacts / f"c2c-{platform.target}" / platform.exe_name
-        binary.parent.mkdir(parents=True)
-        binary.write_text("binary", encoding="utf-8")
-        binary.chmod(0o755)
+        binary_dir = artifacts / f"c2c-{platform.target}"
+        for executable in [platform.exe_name, "c2c-deliver-inbox"]:
+            binary = binary_dir / executable
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_text("binary", encoding="utf-8")
+            binary.chmod(0o755)
 
     dist = tmp_path / "npm"
     release.stage_npm_packages(artifacts, dist, "1.2.3", "@clanker-code")
@@ -47,7 +49,20 @@ def test_package_npm_stages_meta_and_platform_packages(tmp_path: Path) -> None:
     assert linux["os"] == ["linux"]
     assert linux["cpu"] == ["x64"]
     assert linux["repository"] == meta["repository"]
+    assert linux["bin"] == {
+        "c2c": "bin/c2c",
+        "c2c-deliver-inbox": "bin/c2c-deliver-inbox",
+    }
     assert (dist / "c2c-linux-x64" / "bin" / "c2c").exists()
+    assert (dist / "c2c-linux-x64" / "bin" / "c2c-deliver-inbox").exists()
+    assert meta["bin"] == {
+        "c2c": "bin/c2c-js-wrapper.js",
+        "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js",
+    }
+    assert (dist / "c2c" / "index.js").read_text(encoding="utf-8") == (
+        release.repo_root() / "npm-pkgs" / "c2c" / "index.js"
+    ).read_text(encoding="utf-8")
+    assert (dist / "c2c" / "bin" / "c2c-deliver-inbox-js-wrapper.js").exists()
 
 
 def test_publish_order_puts_meta_package_last(tmp_path: Path) -> None:

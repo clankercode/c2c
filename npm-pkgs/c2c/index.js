@@ -6,21 +6,30 @@ const path = require("node:path");
 const TARGETS = {
   "linux-x64": {
     packageName: "@clanker-code/c2c-linux-x64",
-    executable: "c2c",
   },
   "linux-arm64": {
     packageName: "@clanker-code/c2c-linux-arm64",
-    executable: "c2c",
   },
   "darwin-x64": {
     packageName: "@clanker-code/c2c-darwin-x64",
-    executable: "c2c",
   },
   "darwin-arm64": {
     packageName: "@clanker-code/c2c-darwin-arm64",
-    executable: "c2c",
   },
 };
+
+const EXECUTABLES = new Set(["c2c", "c2c-deliver-inbox"]);
+
+function normalizeExecutable(executable = "c2c") {
+  if (!EXECUTABLES.has(executable)) {
+    throw new Error(`unsupported c2c executable: ${executable}`);
+  }
+  return executable;
+}
+
+function envOverrideName(executable) {
+  return executable === "c2c-deliver-inbox" ? "C2C_DELIVER_INBOX_BIN" : "C2C_BIN";
+}
 
 function canExecute(file) {
   try {
@@ -43,13 +52,13 @@ function sameFile(left, right) {
   }
 }
 
-function pathCandidates(env, platform) {
+function pathCandidates(env, platform, executable) {
   const pathValue = env.PATH || "";
   const dirs = pathValue.split(path.delimiter).filter(Boolean);
   const names =
     platform === "win32"
-      ? ["c2c.exe", "c2c.cmd", "c2c.bat", "c2c"]
-      : ["c2c"];
+      ? [`${executable}.exe`, `${executable}.cmd`, `${executable}.bat`, executable]
+      : [executable];
 
   return dirs.flatMap((dir) => names.map((name) => path.join(dir, name)));
 }
@@ -69,8 +78,8 @@ function looksLikeSelfNpmShim(candidate, selfPath) {
   }
 }
 
-function findSystemC2c(env, selfPath, platform) {
-  for (const candidate of pathCandidates(env, platform)) {
+function findSystemExecutable(env, selfPath, platform, executable) {
+  for (const candidate of pathCandidates(env, platform, executable)) {
     if (canExecute(candidate) && !sameFile(candidate, selfPath) && !looksLikeSelfNpmShim(candidate, selfPath)) {
       return candidate;
     }
@@ -87,28 +96,28 @@ function platformPackageName(platform = process.platform, arch = process.arch) {
   return target ? target.packageName : null;
 }
 
-function resolvePlatformPackage(target, requireFrom) {
+function resolvePlatformPackage(target, requireFrom, executable) {
   try {
     const packageJson = require.resolve(`${target.packageName}/package.json`, {
       paths: [requireFrom],
     });
-    return path.join(path.dirname(packageJson), "bin", target.executable);
+    return path.join(path.dirname(packageJson), "bin", executable);
   } catch (error) {
-    const directRoot = findDirectPackageRoot(requireFrom, target);
+    const directRoot = findDirectPackageRoot(requireFrom, target, executable);
     if (directRoot) {
-      return path.join(directRoot, "bin", target.executable);
+      return path.join(directRoot, "bin", executable);
     }
     throw error;
   }
 }
 
-function findDirectPackageRoot(requireFrom, target) {
+function findDirectPackageRoot(requireFrom, target, executable) {
   let current = path.resolve(requireFrom);
   const parts = target.packageName.split("/");
 
   while (true) {
     const candidate = path.join(current, "node_modules", ...parts);
-    const bin = path.join(candidate, "bin", target.executable);
+    const bin = path.join(candidate, "bin", executable);
     if (fs.existsSync(bin)) {
       return candidate;
     }
@@ -122,17 +131,19 @@ function findDirectPackageRoot(requireFrom, target) {
 }
 
 function resolveC2cBinary(options = {}) {
+  const executable = normalizeExecutable(options.executable || "c2c");
   const env = options.env || process.env;
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
   const requireFrom = options.requireFrom || __dirname;
   const selfPath = options.selfPath || path.join(__dirname, "bin", "c2c-js-wrapper.js");
+  const overrideName = envOverrideName(executable);
 
-  if (env.C2C_BIN) {
-    if (!canExecute(env.C2C_BIN)) {
-      throw new Error(`C2C_BIN is set but is not executable: ${env.C2C_BIN}`);
+  if (env[overrideName]) {
+    if (!canExecute(env[overrideName])) {
+      throw new Error(`${overrideName} is set but is not executable: ${env[overrideName]}`);
     }
-    return env.C2C_BIN;
+    return env[overrideName];
   }
 
   const target = platformTarget(platform, arch);
@@ -140,7 +151,7 @@ function resolveC2cBinary(options = {}) {
 
   if (target) {
     try {
-      const resolved = resolvePlatformPackage(target, requireFrom);
+      const resolved = resolvePlatformPackage(target, requireFrom, executable);
       if (canExecute(resolved)) {
         return resolved;
       }
@@ -150,21 +161,21 @@ function resolveC2cBinary(options = {}) {
     }
   }
 
-  const systemC2c = findSystemC2c(env, selfPath, platform);
-  if (systemC2c) {
-    return systemC2c;
+  const systemExecutable = findSystemExecutable(env, selfPath, platform, executable);
+  if (systemExecutable) {
+    return systemExecutable;
   }
 
   if (!target) {
     throw new Error(
       `No c2c npm binary package is available for ${platform}-${arch}. ` +
-        "Install c2c system-wide, choose a supported platform, or set C2C_BIN to a c2c executable."
+        `Install ${executable} system-wide, choose a supported platform, or set ${overrideName} to a ${executable} executable.`
     );
   }
 
   throw new Error(
-    `Unable to find executable ${target.packageName} for ${platform}-${arch}. ` +
-      `Install @clanker-code/c2c with optional dependencies enabled, install c2c system-wide, or set C2C_BIN. ` +
+    `Unable to find executable ${executable} in ${target.packageName} for ${platform}-${arch}. ` +
+      `Install @clanker-code/c2c with optional dependencies enabled, install ${executable} system-wide, or set ${overrideName}. ` +
       `Cause: ${platformError.message}`
   );
 }

@@ -9,22 +9,25 @@ const stageScript = path.join(repoRoot, "npm-pkgs", "scripts", "stage-npm-packag
 const { assertSafeOutDir, stagePackages } = require(stageScript);
 
 const targets = [
-  ["c2c-linux-x64", "linux", "x64", "c2c"],
-  ["c2c-linux-arm64", "linux", "arm64", "c2c"],
-  ["c2c-darwin-x64", "darwin", "x64", "c2c"],
-  ["c2c-darwin-arm64", "darwin", "arm64", "c2c"],
+  ["c2c-linux-x64", "linux", "x64"],
+  ["c2c-linux-arm64", "linux", "arm64"],
+  ["c2c-darwin-x64", "darwin", "x64"],
+  ["c2c-darwin-arm64", "darwin", "arm64"],
 ];
+const executables = ["c2c", "c2c-deliver-inbox"];
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "c2c-npm-stage-"));
 }
 
 function writeFakeBinaries(binaryRoot) {
-  for (const [pkgDir, , , executable] of targets) {
-    const file = path.join(binaryRoot, pkgDir, executable);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${pkgDir}\n`, { mode: 0o755 });
-    fs.chmodSync(file, 0o755);
+  for (const [pkgDir] of targets) {
+    for (const executable of executables) {
+      const file = path.join(binaryRoot, pkgDir, executable);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `${pkgDir}:${executable}\n`, { mode: 0o755 });
+      fs.chmodSync(file, 0o755);
+    }
   }
 }
 
@@ -43,23 +46,35 @@ test("stage script creates meta and platform package directories", () => {
   const metaPackage = readJson(path.join(outDir, "c2c", "package.json"));
   assert.equal(metaPackage.name, "@clanker-code/c2c");
   assert.equal(metaPackage.version, "0.8.0");
-  assert.equal(metaPackage.bin.c2c, "bin/c2c-js-wrapper.js");
-  assert.deepEqual(metaPackage.files, ["bin/c2c-js-wrapper.js", "index.js"]);
+  assert.deepEqual(metaPackage.bin, {
+    c2c: "bin/c2c-js-wrapper.js",
+    "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js",
+  });
+  assert.deepEqual(metaPackage.files, ["bin/", "index.js"]);
 
   const optionalDependencyNames = Object.keys(metaPackage.optionalDependencies).sort();
   assert.deepEqual(optionalDependencyNames, targets.map(([pkgDir]) => `@clanker-code/${pkgDir}`).sort());
   assert.ok(fs.existsSync(path.join(outDir, "c2c", "index.js")));
   assert.ok(fs.existsSync(path.join(outDir, "c2c", "bin", "c2c-js-wrapper.js")));
+  assert.ok(fs.existsSync(path.join(outDir, "c2c", "bin", "c2c-deliver-inbox-js-wrapper.js")));
 
-  for (const [pkgDir, osName, cpuName, executable] of targets) {
+  for (const [pkgDir, osName, cpuName] of targets) {
     const packageJson = readJson(path.join(outDir, pkgDir, "package.json"));
     assert.equal(packageJson.name, `@clanker-code/${pkgDir}`);
     assert.equal(packageJson.version, "0.8.0");
     assert.deepEqual(packageJson.os, [osName]);
     assert.deepEqual(packageJson.cpu, [cpuName]);
-    assert.deepEqual(packageJson.files, [`bin/${executable}`]);
-    assert.equal(packageJson.bin.c2c, `bin/${executable}`);
-    assert.equal(fs.readFileSync(path.join(outDir, pkgDir, "bin", executable), "utf8"), `${pkgDir}\n`);
+    assert.deepEqual(packageJson.files, ["bin/"]);
+    assert.deepEqual(packageJson.bin, {
+      c2c: "bin/c2c",
+      "c2c-deliver-inbox": "bin/c2c-deliver-inbox",
+    });
+    for (const executable of executables) {
+      assert.equal(
+        fs.readFileSync(path.join(outDir, pkgDir, "bin", executable), "utf8"),
+        `${pkgDir}:${executable}\n`
+      );
+    }
   }
 });
 

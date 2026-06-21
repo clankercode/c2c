@@ -7,6 +7,7 @@ const test = require("node:test");
 
 const packageRoot = path.resolve(__dirname, "..");
 const wrapperPath = path.join(packageRoot, "bin", "c2c-js-wrapper.js");
+const deliverWrapperPath = path.join(packageRoot, "bin", "c2c-deliver-inbox-js-wrapper.js");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "c2c-npm-resolver-"));
@@ -40,6 +41,25 @@ test("C2C_BIN wins over PATH and platform package fallback", () => {
   assert.equal(resolved, explicit);
 });
 
+test("C2C_DELIVER_INBOX_BIN wins for deliver-inbox", () => {
+  const dir = tempDir();
+  const explicit = makeExecutable(path.join(dir, "custom-deliver-inbox"));
+  const platformDeliver = makeExecutable(
+    path.join(dir, "node_modules", "@clanker-code", "c2c-linux-x64", "bin", "c2c-deliver-inbox")
+  );
+  const { resolveC2cBinary } = loadResolver();
+
+  const resolved = resolveC2cBinary({
+    executable: "c2c-deliver-inbox",
+    env: { C2C_DELIVER_INBOX_BIN: explicit, PATH: "" },
+    platform: "linux",
+    arch: "x64",
+    requireFrom: path.dirname(path.dirname(path.dirname(platformDeliver))),
+  });
+
+  assert.equal(resolved, explicit);
+});
+
 test("C2C_BIN must point at an executable file", () => {
   const dir = tempDir();
   const explicit = path.join(dir, "not-executable");
@@ -50,6 +70,25 @@ test("C2C_BIN must point at an executable file", () => {
     () => resolveC2cBinary({ env: { C2C_BIN: explicit, PATH: "" } }),
     /C2C_BIN is set but is not executable/
   );
+});
+
+test("npm platform deliver-inbox is used before system deliver-inbox on PATH", () => {
+  const dir = tempDir();
+  const systemDeliver = makeExecutable(path.join(dir, "bin", "c2c-deliver-inbox"));
+  const platformDeliver = makeExecutable(
+    path.join(dir, "node_modules", "@clanker-code", "c2c-linux-x64", "bin", "c2c-deliver-inbox")
+  );
+  const { resolveC2cBinary } = loadResolver();
+
+  const resolved = resolveC2cBinary({
+    executable: "c2c-deliver-inbox",
+    env: { PATH: path.dirname(systemDeliver) },
+    platform: "linux",
+    arch: "x64",
+    requireFrom: path.dirname(path.dirname(path.dirname(platformDeliver))),
+  });
+
+  assert.equal(resolved, platformDeliver);
 });
 
 test("npm platform package is used before system c2c on PATH", () => {
@@ -128,6 +167,26 @@ test("unsupported platforms fail with actionable guidance", () => {
     () => resolveC2cBinary({ env: { PATH: "" }, platform: "freebsd", arch: "riscv64" }),
     /No c2c npm binary package is available for freebsd-riscv64.*C2C_BIN/s
   );
+});
+
+test("deliver-inbox wrapper forwards to c2c-deliver-inbox binary", () => {
+  const dir = tempDir();
+  const log = path.join(dir, "deliver-argv.log");
+  const fakeDeliver = makeExecutable(
+    path.join(dir, "fake-deliver-inbox"),
+    `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\nexit 19\n`
+  );
+  const result = childProcess.spawnSync(
+    process.execPath,
+    [deliverWrapperPath, "--full-body", "--register"],
+    {
+      env: { ...process.env, C2C_DELIVER_INBOX_BIN: fakeDeliver, PATH: "" },
+      encoding: "utf8",
+    }
+  );
+
+  assert.equal(result.status, 19);
+  assert.equal(fs.readFileSync(log, "utf8"), "--full-body\n--register\n");
 });
 
 test("wrapper forwards arguments and exits with child status", () => {

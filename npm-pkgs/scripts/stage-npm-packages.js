@@ -6,11 +6,13 @@ const os = require("node:os");
 const path = require("node:path");
 
 const TARGETS = [
-  { dir: "c2c-linux-x64", os: "linux", cpu: "x64", executable: "c2c" },
-  { dir: "c2c-linux-arm64", os: "linux", cpu: "arm64", executable: "c2c" },
-  { dir: "c2c-darwin-x64", os: "darwin", cpu: "x64", executable: "c2c" },
-  { dir: "c2c-darwin-arm64", os: "darwin", cpu: "arm64", executable: "c2c" },
+  { dir: "c2c-linux-x64", os: "linux", cpu: "x64" },
+  { dir: "c2c-linux-arm64", os: "linux", cpu: "arm64" },
+  { dir: "c2c-darwin-x64", os: "darwin", cpu: "x64" },
+  { dir: "c2c-darwin-arm64", os: "darwin", cpu: "arm64" },
 ];
+
+const EXECUTABLES = ["c2c", "c2c-deliver-inbox"];
 
 function parseArgs(argv) {
   const options = {};
@@ -124,7 +126,12 @@ function stageMetaPackage({ version, outDir }) {
     path.join(sourceRoot, "bin", "c2c-js-wrapper.js"),
     path.join(packageDir, "bin", "c2c-js-wrapper.js")
   );
+  fs.copyFileSync(
+    path.join(sourceRoot, "bin", "c2c-js-wrapper.js"),
+    path.join(packageDir, "bin", "c2c-deliver-inbox-js-wrapper.js")
+  );
   fs.chmodSync(path.join(packageDir, "bin", "c2c-js-wrapper.js"), 0o755);
+  fs.chmodSync(path.join(packageDir, "bin", "c2c-deliver-inbox-js-wrapper.js"), 0o755);
 
   writeJson(path.join(packageDir, "package.json"), {
     name: "@clanker-code/c2c",
@@ -133,18 +140,22 @@ function stageMetaPackage({ version, outDir }) {
     license: "MIT",
     type: "commonjs",
     main: "index.js",
-    bin: { c2c: "bin/c2c-js-wrapper.js" },
-    files: ["bin/c2c-js-wrapper.js", "index.js"],
+    bin: {
+      c2c: "bin/c2c-js-wrapper.js",
+      "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js",
+    },
+    files: ["bin/", "index.js"],
     optionalDependencies: optionalDependencies(version),
   });
 }
 
 function stagePlatformPackage({ version, binaryRoot, outDir, target }) {
   const packageDir = path.join(outDir, target.dir);
-  const binarySrc = path.join(binaryRoot, target.dir, target.executable);
-  const binaryDst = path.join(packageDir, "bin", target.executable);
-
-  copyExecutable(binarySrc, binaryDst);
+  for (const executable of EXECUTABLES) {
+    const binarySrc = path.join(binaryRoot, target.dir, executable);
+    const binaryDst = path.join(packageDir, "bin", executable);
+    copyExecutable(binarySrc, binaryDst);
+  }
   writeJson(path.join(packageDir, "package.json"), {
     name: `@clanker-code/${target.dir}`,
     version,
@@ -152,8 +163,11 @@ function stagePlatformPackage({ version, binaryRoot, outDir, target }) {
     license: "MIT",
     os: [target.os],
     cpu: [target.cpu],
-    files: [`bin/${target.executable}`],
-    bin: { c2c: `bin/${target.executable}` },
+    files: ["bin/"],
+    bin: {
+      c2c: "bin/c2c",
+      "c2c-deliver-inbox": "bin/c2c-deliver-inbox",
+    },
   });
 }
 

@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 "use strict";
 
+const path = require("node:path");
 const childProcess = require("node:child_process");
 const { resolveC2cBinary } = require("..");
 
+function executableForWrapper(argv1) {
+  const basename = path.basename(argv1 || "c2c");
+  return basename.startsWith("c2c-deliver-inbox") ? "c2c-deliver-inbox" : "c2c";
+}
+
 function main() {
+  const executable = executableForWrapper(process.argv[1]);
   let binary;
   try {
-    binary = resolveC2cBinary({ selfPath: __filename });
+    binary = resolveC2cBinary({ selfPath: __filename, executable });
   } catch (error) {
     console.error(error.message);
     process.exit(1);
