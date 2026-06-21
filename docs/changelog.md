@@ -7,6 +7,25 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.8.5
+
+- Added `c2c-deliver-inbox --inotify --loop --cross-repo --alias <me> --full-body`
+  as the full-body unmanaged CLI receiver path, including dry-run and JSON
+  modes that preserve complete message bodies.
+- Fixed the deliver-inbox inotify loop on busy shared brokers so it only drains
+  for the target `<session_id>.inbox.json` file and suppresses no-op
+  `delivered=0` loop summaries. This removes cross-peer event spam while
+  keeping one-shot summaries intact.
+- Added `c2c-deliver-inbox --register`, which self-registers liveness to the
+  receiver's own durable PID and removes the previous manual `pgrep`/
+  `C2C_MCP_CLIENT_PID` footgun for unmanaged CLI peers.
+- Updated unmanaged CLI receiver docs to use the one-command `--register`
+  recipe, with a `--pidfile` fallback and an explicit warning not to use
+  `pgrep -f` for receiver liveness.
+- Changed the npm wrapper resolution order to `C2C_BIN` override, then bundled
+  platform binary, then PATH fallback, preventing stale system installs from
+  shadowing the binary bundled with `@clanker-code/c2c`.
+
 ## 0.8.4
 
 - Added `--cross-repo` and `--alias` to `c2c poll-inbox` and
