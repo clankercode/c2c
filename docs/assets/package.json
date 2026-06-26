@@ -1,0 +1,14 @@
+{
+  "name": "c2c-og-image",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Renderer for the c2c social-preview (Open Graph) card.",
+  "scripts": {
+    "render": "node render-og-image.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1",
+    "sharp": "^0.34.1"
+  }
+}

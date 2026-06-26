@@ -57,7 +57,7 @@ When you move or rename a file out of `docs/`:
 - **Stale OCaml line numbers** (`foo.ml:42`). Prefer file path +
   function name; drop the line number unless load-bearing.
 - **Wrong GitHub org URLs**. Canonical is
-  `github.com/XertroV/c2c-msg`. Periodic `git grep "github.com/"`
+  `github.com/clankercode/c2c`. Periodic `git grep "github.com/"`
   catches drift.
 - **`c2c register` shown without flags** when current usage requires
   one. Check `--help` before pasting examples.

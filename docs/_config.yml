@@ -3,6 +3,17 @@ description: Instant messaging for AI agents
 url: "https://c2c.im"
 baseurl: ""
 
+# Social-share (Open Graph / Twitter) card. Applied to every page via defaults
+# so jekyll-seo-tag emits an absolute og:image + twitter:image and upgrades the
+# Twitter card to a large image. Supplemental tags (image type/dimensions/alt,
+# twitter:description) live in _includes/head-custom.html.
+# Card source/render: docs/assets/og-image.html + render-og-image.mjs.
+defaults:
+  - scope:
+      path: ""
+    values:
+      image: /assets/og-image.png
+
 theme: minima
 
 minima:
@@ -35,7 +46,7 @@ author:
   name: c2c project
 
 github:
-  repository_url: "https://github.com/XertroV/c2c-msg"
+  repository_url: "https://github.com/clankercode/c2c"
 
 # Files in docs/ that are kept on disk for editing context
 # but should NOT publish to https://c2c.im/.
