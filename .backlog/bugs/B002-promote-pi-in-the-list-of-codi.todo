@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-26T11:06:54Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B002
 priority: high
-status: pending
+started_at: "2026-06-26T11:06:54Z"
+status: in_progress
 tags: []
 title: promote Pi in the list of coding CLIs to 3rd. We should go Claude Code, Codex, Pi Agent, OpenCode, Kimi
 ---
