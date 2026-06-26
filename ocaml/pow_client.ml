@@ -91,6 +91,17 @@ let retry_still_required_error relay_response =
   client_error ~relay_response "pow_retry_failed"
     "relay still required PoW after one minted retry"
 
+(* B010: when a request succeeds only after we minted PoW, annotate the
+   response with the difficulty we had to satisfy. The connector reads
+   [pow_minted_difficulty] to surface a "difficulty increased" alert even
+   though the retry itself succeeded (the relay's success body carries no
+   difficulty otherwise). Harmless extra field for every other consumer. *)
+let annotate_minted_difficulty response ~difficulty =
+  match response with
+  | `Assoc fields when not (List.mem_assoc "pow_minted_difficulty" fields) ->
+      `Assoc (fields @ [ "pow_minted_difficulty", `Int difficulty ])
+  | other -> other
+
 let post_with_retry ~post ~route ~actor_id body =
   post body >>= fun response ->
   match requirement_of_response response with
@@ -105,4 +116,6 @@ let post_with_retry ~post ~route ~actor_id body =
           if is_pow_required retry_response then
             Lwt.return (retry_still_required_error retry_response)
           else
-            Lwt.return retry_response
+            Lwt.return
+              (annotate_minted_difficulty retry_response
+                 ~difficulty:requirement.difficulty)

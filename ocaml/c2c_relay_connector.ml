@@ -50,6 +50,7 @@ type sync_result = {
   outbox_failed : int;
   outbox_dlqed : int;  (* entries moved to local DLQ this sync *)
   inbound_delivered : int;
+  alerts_emitted : int;  (* B010: c2c-system alert messages injected this sync *)
   last_error : sync_error option;
 }
 
@@ -64,6 +65,7 @@ type t = {
   verbose : bool;
   mutable registered : string list;
   mutable active_ws_bindings : string list;
+  mutable alert_state : C2c_relay_alert.state;  (* B010: edge-trigger dedup *)
 }
 
 (* ---------------------------------------------------------------------------
@@ -723,9 +725,117 @@ let maintain_ws_connections (t : t) : unit =
     ignore (broker_ws_connect ~relay_url:t.relay_url ~binding_id ~broker_root:t.broker_root ~verbose:t.verbose ~t)
   ) new_bindings
 
+(* ---------------------------------------------------------------------------
+ * B010: relay-event passthrough
+ *
+ * The connector is the natural producer for relay-originated "degrading
+ * events" — it owns the HTTP exchange and so sees difficulty challenges,
+ * rate-limit rejections, PoW-retry failures, and dead-letter decisions. We
+ * funnel those observations through the pure C2c_relay_alert module (severity
+ * + edge-triggered dedup + routing) and inject the resulting messages from the
+ * reserved [c2c-system] alias into local inboxes — the same files this module
+ * already writes relay-pulled inbound messages to, so the alerts ride every
+ * existing delivery surface for free.
+ * --------------------------------------------------------------------------- *)
+
+let system_alias = "c2c-system"
+
+let alias_eq a b = String.lowercase_ascii a = String.lowercase_ascii b
+
+(* Extract a PoW difficulty from a relay response, wherever it may appear:
+   - [pow_minted_difficulty]: annotation added by Pow_client.post_with_retry
+     when a register only succeeded after we minted PoW (success body has no
+     difficulty otherwise);
+   - top-level [required.difficulty]: a raw pow_required challenge body (the
+     connector's /send path does not auto-mint, so it sees these directly);
+   - nested [relay_response.required.difficulty]: a pow_retry_failed error
+     wraps the still-required challenge. *)
+let response_difficulty json =
+  let open Yojson.Safe.Util in
+  let required_difficulty j =
+    match j |> member "required" |> member "difficulty" with
+    | `Int n -> Some n
+    | `Float f -> Some (int_of_float f)
+    | _ -> None
+  in
+  match json |> member "pow_minted_difficulty" with
+  | `Int n -> Some n
+  | `Float f -> Some (int_of_float f)
+  | _ ->
+      (match required_difficulty json with
+       | Some n -> Some n
+       | None ->
+           (match json |> member "relay_response" with
+            | `Null -> None
+            | rr -> required_difficulty rr))
+
+let response_is_rate_limited json =
+  let open Yojson.Safe.Util in
+  let is_rl = function `String "rate_limit_exceeded" -> true | _ -> false in
+  is_rl (json |> member "error") || is_rl (json |> member "error_code")
+
+let response_is_pow_retry_failed json =
+  match Yojson.Safe.Util.member "error_code" json with
+  | `String "pow_retry_failed" -> true
+  | _ -> false
+
+(* Build a single inbox message from the reserved system alias. Shape matches
+   C2c_broker.message_of_json (from_alias/to_alias/content/ts/message_id). *)
+let system_message_json ~to_alias ~content =
+  `Assoc [
+    ("from_alias", `String system_alias);
+    ("to_alias", `String to_alias);
+    ("content", `String content);
+    ("ts", `Float (Unix.gettimeofday ()));
+    ("message_id", `String (Printf.sprintf "sys-%d-%d-%d"
+       (Unix.getpid ()) (int_of_float (Unix.gettimeofday ())) (Random.bits ())));
+  ]
+
+(* Deliver alert emissions into the relevant local inboxes.
+   [regs] is the (session_id, alias, client_type) list for this broker.
+   Returns the count of system messages written. *)
+let deliver_alert_emissions broker_root regs (emissions : C2c_relay_alert.emission list) : int =
+  List.fold_left (fun delivered (em : C2c_relay_alert.emission) ->
+    let targets =
+      match em.C2c_relay_alert.target with
+      | C2c_relay_alert.Broadcast ->
+          List.map (fun (sid, al, _) -> (sid, al)) regs
+      | C2c_relay_alert.Dm alias ->
+          List.filter_map
+            (fun (sid, al, _) -> if alias_eq al alias then Some (sid, al) else None)
+            regs
+    in
+    List.fold_left (fun d (sid, al) ->
+      let m = system_message_json ~to_alias:al ~content:em.C2c_relay_alert.body in
+      d + append_to_local_inbox broker_root sid [m]
+    ) delivered targets
+  ) 0 emissions
+
 let sync (t : t) : sync_result Lwt.t =
   let client = Relay_client.make ?token:t.token ?identity:t.identity t.relay_url in
   let regs = read_local_registrations t.broker_root in
+
+  (* B010: accumulate relay-event observations across this sync pass. *)
+  let obs_difficulty = ref None in
+  let obs_rate_limited = ref false in
+  let obs_pow_failed = ref false in
+  let obs_pow_sender = ref None in
+  let obs_dlqs = ref [] in
+  let note_difficulty d =
+    obs_difficulty :=
+      Some (max d (Option.value ~default:0 !obs_difficulty))
+  in
+  let note_observation ~(sender : string option) json =
+    (match response_difficulty json with Some d -> note_difficulty d | None -> ());
+    if response_is_rate_limited json then obs_rate_limited := true;
+    if response_is_pow_retry_failed json then begin
+      obs_pow_failed := true;
+      (* keep the first known sender for routing *)
+      match !obs_pow_sender, sender with
+      | None, Some _ -> obs_pow_sender := sender
+      | _ -> ()
+    end
+  in
 
   (* 0. Maintain WS connections to mobile bindings *)
   maintain_ws_connections t;
@@ -735,6 +845,7 @@ let sync (t : t) : sync_result Lwt.t =
     List.fold_left (fun (registered, heartbeated, reg_list, errs) (session_id, alias, client_type) ->
       if List.mem session_id t.registered then
         let json = Lwt_main.run (Relay_client.heartbeat client ~node_id:t.node_id ~session_id ~alias ()) in
+        note_observation ~sender:None json;
         if json_bool_member ~key:"ok" json then
           (registered, alias :: heartbeated, reg_list, errs)
         else
@@ -743,6 +854,7 @@ let sync (t : t) : sync_result Lwt.t =
       else
         let json = Lwt_main.run (Relay_client.register client
           ~node_id:t.node_id ~session_id ~alias ~client_type ~ttl:t.heartbeat_ttl ()) in
+        note_observation ~sender:None json;
         if json_bool_member ~key:"ok" json then
           (alias :: registered, heartbeated, session_id :: reg_list, errs)
         else
@@ -766,6 +878,7 @@ let sync (t : t) : sync_result Lwt.t =
           ~to_alias:entry.ob_to
           ~content:entry.ob_content
           ?message_id:entry.ob_msg_id ()) in
+        note_observation ~sender:(Some entry.ob_from) json;
         if json_bool_member ~key:"ok" json then
           (fwd + 1, failed, remaining, dlqed, errs)
         else
@@ -774,14 +887,21 @@ let sync (t : t) : sync_result Lwt.t =
           let too_old = now -. entry.ob_enqueued_at > max_age_seconds in
           let over_attempts = entry.ob_attempts >= max_attempts in
           let detail = Yojson.Safe.to_string json in
+          (* B010: record a discrete DLQ event so the sender is DM'd. *)
+          let note_dlq reason =
+            obs_dlqs := { C2c_relay_alert.dlq_sender = entry.ob_from;
+                          dlq_to = entry.ob_to; dlq_reason = reason } :: !obs_dlqs
+          in
           if err_class = "unknown_alias" || err_class = "recipient_dead" then
             (* Permanent error: immediate DLQ *)
             let () = append_dlq_entry t.broker_root entry ~reason:err_class in
+            let () = note_dlq err_class in
             (fwd, failed + 1, remaining, dlqed + 1, ("send", err_class ^ ": " ^ detail) :: errs)
           else if over_attempts || too_old then
             (* Backstop reached: DLQ *)
             let dlq_reason = if over_attempts then "max_attempts" else "max_age" in
             let () = append_dlq_entry t.broker_root { entry with ob_last_error = Some err_class } ~reason:dlq_reason in
+            let () = note_dlq dlq_reason in
             (fwd, failed + 1, remaining, dlqed + 1, ("send", dlq_reason ^ ": " ^ detail) :: errs)
           else
             (* Retry: increment attempts, update last_error, keep in outbox *)
@@ -797,6 +917,7 @@ let sync (t : t) : sync_result Lwt.t =
     List.fold_left (fun (delivered, errs) (session_id, alias, _) ->
       if List.mem session_id t.registered then
         let json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
+        note_observation ~sender:None json;
         let msgs = json_list_member ~key:"messages" json in
         if msgs <> [] then
           delivered + append_to_local_inbox t.broker_root session_id msgs, errs
@@ -816,12 +937,28 @@ let sync (t : t) : sync_result Lwt.t =
         Some { err_op = op; err_detail = detail; err_ts = Unix.gettimeofday () }
   in
 
+  (* B010: turn this sync's observations into severity-tagged emissions
+     (edge-triggered against t.alert_state) and inject them as c2c-system
+     messages into the appropriate local inboxes. Pure decision, side-effecting
+     delivery — same inbox-write path used for relay-pulled messages. *)
+  let observation = {
+    C2c_relay_alert.obs_difficulty = !obs_difficulty;
+    obs_rate_limited = !obs_rate_limited;
+    obs_pow_retry_failed = !obs_pow_failed;
+    obs_pow_retry_sender = !obs_pow_sender;
+    obs_dlqs = List.rev !obs_dlqs;
+  } in
+  let emissions, new_alert_state = C2c_relay_alert.step t.alert_state observation in
+  t.alert_state <- new_alert_state;
+  let alerts_emitted = deliver_alert_emissions t.broker_root regs emissions in
+
   Lwt.return {
     registered;
     heartbeated;
     outbox_forwarded;
     outbox_failed;
     outbox_dlqed = dlqed;
+    alerts_emitted;
     inbound_delivered;
     last_error;
   }
@@ -856,13 +993,14 @@ let run (t : t) : unit =
                   String.sub e.err_detail 0 80 ^ "..."
                 else e.err_detail)
         in
-        Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d%s\n%!"
+        Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d alerts=%d%s\n%!"
           (List.length result.registered)
           (List.length result.heartbeated)
           result.outbox_forwarded
           result.outbox_failed
           result.outbox_dlqed
           result.inbound_delivered
+          result.alerts_emitted
           err_str
       with exn ->
         Printf.eprintf "[relay-connector] sync exception: %s\n%!" (Printexc.to_string exn));
@@ -896,6 +1034,7 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
       heartbeat_ttl; interval; verbose;
       registered = [];
       active_ws_bindings = [];
+      alert_state = C2c_relay_alert.initial_state;
     } in
     if once then begin
       match Lwt_main.run (sync t) with
@@ -904,13 +1043,14 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
             | None -> ""
             | Some e -> Printf.sprintf " [%s: %s]" e.err_op e.err_detail
           in
-          Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d%s\n%!"
+          Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d alerts=%d%s\n%!"
             (List.length result.registered)
             (List.length result.heartbeated)
             result.outbox_forwarded
             result.outbox_failed
             result.outbox_dlqed
             result.inbound_delivered
+            result.alerts_emitted
             err_str;
           0
       | exception exn ->
