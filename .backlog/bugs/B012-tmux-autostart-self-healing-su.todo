@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-26T14:23:58Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-06-26T14:36:56Z"
 complexity: high
 depends_on: []
+duration_minutes: 12.974832643066666
 estimate_hours: 1
 id: B012
 priority: medium
 started_at: "2026-06-26T14:23:58Z"
-status: in_progress
+status: done
 tags: []
 title: tmux autostart / self-healing supervisor (declarative manifest + respawn)
 ---
