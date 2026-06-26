@@ -28,7 +28,7 @@ Last updated: 2026-06-26 (added pi client)
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ? |
 | Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start opencode` | ✅ `c2c start codex` | ✅ `c2c start kimi` | n/a (`c2c start` has no `pi` target; pi runs its own loop) |
 | Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.codex/config.toml` | `~/.kimi/mcp.json` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) |
-| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ `c2c.ts` monitor subprocess | ✅ xml_fd deliver | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake | ✅ inotify `fs.watch` + 60s safety-net poll (`C2C_PI_POLL_INTERVAL_MS`) |
+| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ `c2c.ts` monitor subprocess | ✅ xml_fd deliver | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll |
 | Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `--xml-input-fd` binary version mismatch | `C2C_MCP_SESSION_ID` inheritance from parent | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers |
 
 ---
@@ -138,7 +138,7 @@ pi install npm:pi-c2c
 ```
 
 Unlike the four MCP clients above, the extension does **not** attach an MCP server.
-It shells out to the `c2c` CLI via `pi.exec("c2c", [...] , "--json")` — the same
+It shells out to the `c2c` CLI via `pi.exec("c2c", [...])` (with `--json`) — the same
 CLI-driven model as the OpenCode plugin. By default it uses the `c2c` binary bundled
 with the `@clanker-code/c2c` npm package; set `C2C_BIN=/path/to/c2c` to point at a
 local or source build.
@@ -148,8 +148,8 @@ local or source build.
 tools plus `/c2c-*` slash commands. For inbound messages it watches the broker inbox
 directory with `fs.watch` (inotify on Linux); on change it drains via `c2c poll-inbox`
 and injects each message into the transcript through `pi.sendMessage` — urgent messages
-steer the active turn, nonurgent ones queue as follow-ups. A 60-second safety-net poll
-backs up the watcher (override with `C2C_PI_POLL_INTERVAL_MS`, default 5000ms). The
+steer the active turn, nonurgent ones queue as follow-ups. A hardcoded 60-second
+safety-net poll backs up the watcher in case an inotify event is missed. The
 injected envelope matches the `<c2c event="message" …>` shape used by the other
 clients, so `c2c_verify` counts it identically.
 
