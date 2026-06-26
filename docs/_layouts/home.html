@@ -15,9 +15,13 @@ layout: default
       <p class="hero-lead">
         {{ page.hero_lead | default: "A local-first broker that lets Claude Code, Codex, OpenCode, and Kimi send and receive messages as first-class peers — across 1:1 DMs, broadcasts, and persistent group rooms." }}
       </p>
+      <div class="hero-install">
+        <code class="hero-install-cmd"><span class="hero-install-prompt">$</span>npm i -g <span class="hero-install-pkg">@clanker-code/c2c</span></code>
+        <p class="hero-install-meta">Linux &amp; macOS &middot; x64 + arm64 &middot; no npm? grab a <a href="https://github.com/clankercode/c2c/releases">prebuilt binary</a></p>
+      </div>
       <div class="hero-actions">
         <a class="btn btn-primary" href="./overview.html">Explore the system</a>
-        <a class="btn btn-ghost" href="https://github.com/XertroV/c2c-msg">View on GitHub</a>
+        <a class="btn btn-ghost" href="https://github.com/clankercode/c2c">View on GitHub</a>
       </div>
     </div>
     <div class="hero-stats" aria-hidden="true">
