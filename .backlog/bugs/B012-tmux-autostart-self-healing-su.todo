@@ -1,0 +1,13 @@
+---
+complexity: high
+depends_on: []
+estimate_hours: 1
+id: B012
+priority: medium
+status: pending
+tags:
+    - tmux
+    - supervisor
+title: tmux autostart / self-healing supervisor (declarative manifest + respawn)
+---
+From B005 audit decision (c). Today scripts/c2c_tmux.py is imperative-only (launch/restart/wait-alive one-shot); 'c2c start' does not loop; a crashed pane needs a human to re-launch. Build a lightweight declarative supervisor: a manifest of {alias,client,role} + a respawn loop so the swarm self-heals a dead pane. New feature, not a doc fix.
