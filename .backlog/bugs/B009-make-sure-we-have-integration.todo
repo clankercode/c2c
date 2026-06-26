@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-26T13:49:45Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B009
 priority: high
-status: pending
+started_at: "2026-06-26T13:49:45Z"
+status: in_progress
 tags: []
 title: 'make sure we have integration tests that test the *live* relayer for PoW rate limiting and difficulty increase: does it reject msgs after an increase if the difficutly is too low? does increasing our PoW still work for submitting requests? Can we get to say 32x difficulty by flooding relay with requests?'
 ---
