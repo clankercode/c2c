@@ -53,6 +53,7 @@
         inset: 24px;
         border-radius: 16px;
         background:
+          repeating-linear-gradient(0deg, rgba(0,0,0,0.16) 0px, rgba(0,0,0,0.16) 1px, transparent 1px, transparent 3px),
           radial-gradient(circle, rgba(255,240,200,0.022) 1px, transparent 1.4px) 0 0 / 24px 24px,
           linear-gradient(180deg, rgba(255,240,200,0.015), rgba(0,0,0,0) 120px),
           var(--surface);
@@ -246,17 +247,40 @@
             <stop offset="45%" stop-color="#f5a623" stop-opacity="0.16" />
             <stop offset="100%" stop-color="#f5a623" stop-opacity="0" />
           </radialGradient>
-          <radialGradient id="chipDotGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="#fff" stop-opacity="0.0" />
-          </radialGradient>
+          <!-- chip body: subtle top-lit depth -->
+          <linearGradient id="chipFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#1d1912" />
+            <stop offset="100%" stop-color="#100d09" />
+          </linearGradient>
+          <!-- relay ring: amber -> gold sweep for richness -->
+          <linearGradient id="relayRing" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#ffd24a" />
+            <stop offset="52%" stop-color="#f5a623" />
+            <stop offset="100%" stop-color="#d98b14" />
+          </linearGradient>
+          <!-- host container: faint top sheen so it reads as a machine surface -->
+          <linearGradient id="hostFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#fff0c8" stop-opacity="0.045" />
+            <stop offset="55%" stop-color="#fff0c8" stop-opacity="0" />
+          </linearGradient>
         </defs>
 
-        <!-- ===== Host containers ===== -->
+        <!-- ===== Host containers (two machines) ===== -->
         <g>
           <rect x="92" y="250" width="262" height="196" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
+          <rect x="92" y="250" width="262" height="196" rx="14" fill="url(#hostFill)" />
           <rect x="846" y="250" width="262" height="196" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
-          <text x="112" y="242" class="host-tab">host: box1</text>
-          <text x="1088" y="242" class="host-tab" text-anchor="end">host: box2</text>
+          <rect x="846" y="250" width="262" height="196" rx="14" fill="url(#hostFill)" />
+          <!-- machine glyph (stacked server units) beside each host label -->
+          <g stroke="#9c968a" stroke-width="1.4" fill="none">
+            <rect x="92" y="231.5" width="15" height="5" rx="1.5" />
+            <rect x="92" y="238.5" width="15" height="5" rx="1.5" />
+            <rect x="1093" y="231.5" width="15" height="5" rx="1.5" />
+            <rect x="1093" y="238.5" width="15" height="5" rx="1.5" />
+          </g>
+          <g fill="#3eff8c"><circle cx="103.5" cy="234" r="1.1" /><circle cx="103.5" cy="241" r="1.1" /><circle cx="1096.5" cy="234" r="1.1" /><circle cx="1096.5" cy="241" r="1.1" /></g>
+          <text x="116" y="242" class="host-tab">host: box1</text>
+          <text x="1084" y="242" class="host-tab" text-anchor="end">host: box2</text>
         </g>
 
         <!-- ===== Intra-host links (thin, green, two-way) ===== -->
@@ -293,21 +317,21 @@
         <!-- ===== Agent chips ===== -->
         <!-- box1: claude (amber), codex (cyan) -->
         <g>
-          <rect x="128" y="274" width="156" height="46" rx="9" fill="#14110d" stroke="#f5a623" stroke-width="1.6" opacity="0.96" />
+          <rect x="128" y="274" width="156" height="46" rx="9" fill="url(#chipFill)" stroke="#f5a623" stroke-width="1.6" opacity="0.96" />
           <circle cx="150" cy="297" r="5" fill="#f5a623" />
           <text x="170" y="304" class="chip-label" text-anchor="start">claude</text>
 
-          <rect x="128" y="370" width="156" height="46" rx="9" fill="#14110d" stroke="#3ee8f5" stroke-width="1.6" opacity="0.96" />
+          <rect x="128" y="370" width="156" height="46" rx="9" fill="url(#chipFill)" stroke="#3ee8f5" stroke-width="1.6" opacity="0.96" />
           <circle cx="150" cy="393" r="5" fill="#3ee8f5" />
           <text x="170" y="400" class="chip-label" text-anchor="start">codex</text>
         </g>
-        <!-- box2: opencode (green), kimi (magenta) -->
+        <!-- box2: opencode (green), pi agent (magenta) -->
         <g>
-          <rect x="916" y="274" width="156" height="46" rx="9" fill="#14110d" stroke="#3eff8c" stroke-width="1.6" opacity="0.96" />
+          <rect x="916" y="274" width="156" height="46" rx="9" fill="url(#chipFill)" stroke="#3eff8c" stroke-width="1.6" opacity="0.96" />
           <circle cx="1050" cy="297" r="5" fill="#3eff8c" />
           <text x="1030" y="304" class="chip-label" text-anchor="end">opencode</text>
 
-          <rect x="916" y="370" width="156" height="46" rx="9" fill="#14110d" stroke="#e85c9c" stroke-width="1.6" opacity="0.96" />
+          <rect x="916" y="370" width="156" height="46" rx="9" fill="url(#chipFill)" stroke="#e85c9c" stroke-width="1.6" opacity="0.96" />
           <circle cx="1050" cy="393" r="5" fill="#e85c9c" />
           <text x="1030" y="400" class="chip-label" text-anchor="end">pi agent</text>
         </g>
@@ -315,8 +339,11 @@
         <!-- ===== Relay hub (center, dominant) ===== -->
         <g>
           <circle cx="600" cy="345" r="86" fill="url(#relayGlow)" />
+          <!-- broadcast pulse rings: liveness / fan-out energy -->
+          <circle cx="600" cy="345" r="93" fill="none" stroke="#f5a623" stroke-width="1.2" opacity="0.12" />
+          <circle cx="600" cy="345" r="78" fill="none" stroke="#f5a623" stroke-width="1.4" opacity="0.22" />
           <circle cx="600" cy="345" r="64" fill="none" stroke="#b87a18" stroke-width="1" stroke-dasharray="3 6" />
-          <circle cx="600" cy="345" r="52" fill="#0f0d0a" stroke="#f5a623" stroke-width="3" />
+          <circle cx="600" cy="345" r="52" fill="#0f0d0a" stroke="url(#relayRing)" stroke-width="3" />
           <text x="600" y="352" class="relay-label">RELAY</text>
           <text x="600" y="426" class="relay-sub">self-hostable</text>
         </g>
