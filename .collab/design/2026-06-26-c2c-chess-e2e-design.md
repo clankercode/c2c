@@ -89,6 +89,24 @@ Existing tests keep the default socket (no behavior change). Unit-test that the
 - Not asserting chess *quality* — only that a refereed-by-each-side game over
   c2c reaches a terminal state.
 
+## Live status (2026-06-26)
+
+Built + unit-tested (CLI 13 tests, tmux socket 2 tests, full suite 77 passed).
+Live validation so far:
+- pi (White) launches + registers cleanly on the isolated `-f /dev/null` socket;
+  the chess CLI, kickoff via referee alias, and terminal-polling all work.
+- The dedicated-socket isolation works ONLY with `-f /dev/null` — without it,
+  tmux-resurrect/continuum auto-restore clones the operator's sessions onto the
+  socket and hangs `new-session` (finding:
+  `.collab/findings/2026-06-26T11-20-00Z-tmux-continuum-breaks-L-socket-isolation.md`).
+- **Not yet achieved: a full live game.** opencode (Black) managed-start does
+  not stay up on the isolated server — its pane dies and `wait_for_init` times
+  out (pi is fine). This is the same opencode managed-start fragility seen in
+  the pi/opencode slice (`test_opencode_smoke_model_override`). FOLLOW-UP:
+  diagnose `c2c start opencode` on a `-f /dev/null` tmux server (does it need
+  the user's tmux config? more boot time? a different model flag path?). The
+  full game remains a manual exercise until opencode launch is reliable here.
+
 ## Test plan
 - `c2c_chess.py` unit tests (deterministic, no agents) — full coverage of the
   CLI + state manager.
