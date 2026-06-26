@@ -398,7 +398,6 @@ let set_room_visibility ~broker ~session_id_override ~arguments =
     | "unlisted" -> Unlisted
     | "gated" -> Gated
     | "private" -> Private
-    | "invite_only" | "invite-only" | "invite" -> Private
     | _ -> Public
   in
   (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with

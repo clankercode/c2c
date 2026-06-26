@@ -11,8 +11,7 @@
      since         → Broker.float_opt_member → None if absent
      force         → Yojson.Safe.Util.member + bool match
      visibility    → string_member → "public"/"unlisted"/"gated"/"private"
-                     (legacy "invite"/"invite_only"/"invite-only" map to Private;
-                      unknown maps to Public)
+                     (unknown maps to Public)
      tag           → Yojson.Safe.Util.member + parse_send_tag
      invitee_alias → string_member → raises if missing
 
@@ -182,13 +181,6 @@ let test_force_wrong_type () =
 (* visibility (set_room_visibility): member + string                           *)
 (* ------------------------------------------------------------------------- *)
 
-let test_visibility_invite_only () =
-  let args = `Assoc [("visibility", `String "invite_only")] in
-  let v = J.member "visibility" args in
-  match v with
-  | `String s -> check string "visibility" "invite_only" s
-  | _ -> Alcotest.fail "expected `String \"invite_only\""
-
 let test_visibility_public () =
   let args = `Assoc [("visibility", `String "public")] in
   let v = J.member "visibility" args in
@@ -278,7 +270,6 @@ let room_handler_tests : unit test =
     "force false"             , `Quick, test_force_false;
     "force wrong type → false" , `Quick, test_force_wrong_type;
     (* visibility (set_room_visibility) *)
-    "visibility invite_only"   , `Quick, test_visibility_invite_only;
     "visibility public"       , `Quick, test_visibility_public;
     "visibility private"       , `Quick, test_visibility_private;
     "visibility unlisted"      , `Quick, test_visibility_unlisted;

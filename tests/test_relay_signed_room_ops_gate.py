@@ -571,8 +571,8 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
 
     def test_signed_set_visibility_hides_room(self):
         # Create as public (listed), then flip to private (hidden).
-        # The signed blob must carry the CANONICAL value the server stores;
-        # body sends "invite_only", server canonicalizes to "private".
+        # The signed blob and body must both carry the canonical value the
+        # server stores ("private").
         r = self._signed_join("vis-e2e-flip", "public")
         self.assertTrue(r["ok"], f"signed join should be accepted: {r}")
         self.assertIn("vis-e2e-flip", self._list_room_ids())
@@ -580,7 +580,7 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
             self.SETVIS_CTX, "vis-e2e-flip", "private")
         r2 = self.client.post("/set_room_visibility", {
             "alias": self.ALIAS, "room_id": "vis-e2e-flip",
-            "visibility": "invite_only", **proof,
+            "visibility": "private", **proof,
         })
         self.assertTrue(r2["ok"],
                         f"signed set_room_visibility should be accepted: {r2}")

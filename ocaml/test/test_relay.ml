@@ -367,15 +367,19 @@ let test_relay_canonical_visibility_normalizes () =
   chk "unlisted" "unlisted";
   chk "gated" "gated";
   chk "private" "private";
-  (* old invite* tokens are synonyms for the new "private" (unlisted+invite) *)
-  chk "invite" "private";
-  chk "invite_only" "private";
-  chk "invite-only" "private";
   chk "  PUBLIC  " "public";
   chk "  Gated " "gated";
-  (match Relay.canonical_visibility "bogus" with
-   | None -> ()
-   | Some v -> fail_fmt "canonical_visibility \"bogus\" should be None, got %S" v)
+  (* legacy invite* tokens are no longer accepted — rejected like any
+     unknown token so callers fail loud instead of silently downgrading *)
+  let chk_none input =
+    match Relay.canonical_visibility input with
+    | None -> ()
+    | Some v -> fail_fmt "canonical_visibility %S should be None, got %S" input v
+  in
+  chk_none "invite";
+  chk_none "invite_only";
+  chk_none "invite-only";
+  chk_none "bogus"
 
 (* Mirror of the relay HTTP join-admission gate (handle_join_room): public and
    unlisted are open-join; gated and private require the caller to be on the
@@ -451,10 +455,9 @@ let test_relay_join_visibility_set_on_create () =
   let _ = Relay.InMemoryRelay.join_room t ~visibility:"gated" ~alias:"alice" ~room_id:"rm3" () in
   if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm3" <> "gated" then
     fail_fmt "room created with --visibility gated should store gated";
-  (* old invite_only token maps to canonical private *)
-  let _ = Relay.InMemoryRelay.join_room t ~visibility:"invite_only" ~alias:"alice" ~room_id:"rm4" () in
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"rm4" () in
   if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm4" <> "private" then
-    fail_fmt "room created with --visibility invite_only should store canonical private"
+    fail_fmt "room created with --visibility private should store private"
 
 let test_relay_join_visibility_not_overridden_after_create () =
   let t = make_test_relay () in

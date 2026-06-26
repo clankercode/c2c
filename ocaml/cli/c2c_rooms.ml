@@ -578,7 +578,6 @@ let rooms_visibility_cmd =
             | "unlisted" -> Unlisted
             | "gated" -> Gated
             | "private" -> Private
-            | "invite_only" | "invite-only" | "invite" -> Private
             | _ ->
                 Printf.eprintf "error: unknown visibility '%s'. Use 'public', 'unlisted', 'gated', or 'private'.\n%!" vis_str;
                 exit 1
@@ -717,7 +716,6 @@ let rooms_create_cmd =
     | "unlisted" -> Unlisted
     | "gated" -> Gated
     | "private" -> Private
-    | "invite_only" | "invite-only" | "invite" -> Private
     | _ ->
         Printf.eprintf "error: unknown visibility '%s'. Use 'public', 'unlisted', 'gated', or 'private'.\n%!" vis_str;
         exit 1

@@ -3338,7 +3338,6 @@ open C2c_mcp_helpers
     | `String "unlisted" -> Unlisted
     | `String "gated" -> Gated
     | `String "private" -> Private
-    | `String "invite" | `String "invite_only" | `String "invite-only" -> Private
     | _ -> Public
 
   let room_meta_to_json { visibility; invited_members; created_by } =

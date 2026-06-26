@@ -377,9 +377,12 @@ let test_invite_list_roundtrip () =
 
 let test_set_visibility () =
   let r = InMemoryRelay.create () in
-  InMemoryRelay.set_room_visibility r ~room_id:"r" ~visibility:"invite";
-  Alcotest.(check string) "invite"
-    "invite" (InMemoryRelay.room_visibility_of r ~room_id:"r");
+  InMemoryRelay.set_room_visibility r ~room_id:"r" ~visibility:"private";
+  Alcotest.(check string) "private"
+    "private" (InMemoryRelay.room_visibility_of r ~room_id:"r");
+  InMemoryRelay.set_room_visibility r ~room_id:"r" ~visibility:"gated";
+  Alcotest.(check string) "gated"
+    "gated" (InMemoryRelay.room_visibility_of r ~room_id:"r");
   InMemoryRelay.set_room_visibility r ~room_id:"r" ~visibility:"public";
   Alcotest.(check string) "public"
     "public" (InMemoryRelay.room_visibility_of r ~room_id:"r")

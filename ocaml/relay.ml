@@ -86,19 +86,16 @@ let room_set_visibility_sign_ctx = "c2c/v1/room-set-visibility"
      "private"  — NOT listed, and join requires the caller's identity_pk to
                   be on the room's invite list (ACL-gated); read requires
                   membership.
-   [canonical_visibility] normalizes operator/CLI input to one of these,
-   accepting "invite"/"invite_only"/"invite-only" as synonyms for "private"
-   (the old tokens meant unlisted+invite = new private). Returns [None] for
-   unrecognized input so callers can reject it. Only "public" and "gated"
-   rooms are returned by list_rooms; "gated" and "private" rooms are
-   join-gated. *)
+   [canonical_visibility] normalizes operator/CLI input to one of these.
+   Returns [None] for unrecognized input so callers can reject it. Only
+   "public" and "gated" rooms are returned by list_rooms; "gated" and
+   "private" rooms are join-gated. *)
 let canonical_visibility v =
   match String.lowercase_ascii (String.trim v) with
   | "public" -> Some "public"
   | "unlisted" -> Some "unlisted"
   | "gated" -> Some "gated"
   | "private" -> Some "private"
-  | "invite" | "invite_only" | "invite-only" -> Some "private"
   | _ -> None
 
 let canonical_visibility_exn v =
