@@ -6,3 +6,4 @@ bugs:
     - file: B005-confirm-claude-has-good-workin.todo
     - file: B006-add-c2c-agent-help-thing-comma.todo
     - file: B007-plugins-should-provide-a-c2c-h.todo
+    - file: B008-claude-and-codex-plugins-as-be.todo
