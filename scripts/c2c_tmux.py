@@ -24,6 +24,7 @@ Usage:
     c2c_tmux.py launch <client> [-n ALIAS] [--auto] [--cwd DIR] [--split h|v] [--new-window] [--window NAME] [--extra ARG ...]
     c2c_tmux.py wait-alive <alias> [--timeout SECONDS]
     c2c_tmux.py stop <alias>
+    c2c_tmux.py supervise [--manifest PATH] [--once] [--dry-run] [--interval S]
 
 Shared conventions:
     <alias>  — a swarm agent alias (resolved via `c2c start <client> -n <alias>`).
@@ -40,8 +41,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, NamedTuple
+from typing import Callable, Iterator, NamedTuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENTER_HELPER = SCRIPT_DIR / "c2c-tmux-enter.sh"
@@ -599,6 +601,328 @@ def cmd_restart(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------ supervise (self-healing)
+#
+# A lightweight DECLARATIVE supervisor: a TOML manifest of agents to keep
+# alive, plus a respawn loop that detects a dead/exited agent and relaunches
+# it in a fresh tmux window. The decision logic is factored into pure
+# functions (parse_supervise_manifest / decide_respawns / backoff_delay) so it
+# is unit-testable without a real tmux server; the only effectful pieces are
+# live_aliases() (queries the broker via `c2c list --json`) and
+# _respawn_agent() (drives tmux). run_supervise_tick() takes those as
+# injectable callables so tests never touch tmux or the broker.
+#
+# Manifest shape (.c2c/supervise.toml — see .c2c/supervise.example.toml):
+#
+#     [supervisor]
+#     poll_interval_s = 15      # seconds between liveness polls
+#     backoff_base_s  = 30      # post-launch grace + first retry delay
+#     backoff_max_s   = 300     # exponential-backoff ceiling
+#     session         = ""      # optional tmux session to spawn windows in
+#
+#     [[agent]]
+#     alias  = "coordinator1"
+#     client = "claude"
+#     role   = "coordinator"     # optional; pre-seeds .c2c/roles/<alias>.md
+#     cwd    = "/path/to/repo"   # optional; cd before `c2c start`
+#     extra  = ["--auto"]        # optional extra args to `c2c start`
+
+DEFAULT_SUPERVISE_OPTS: dict[str, object] = {
+    "poll_interval_s": 15.0,
+    "backoff_base_s": 30.0,
+    "backoff_max_s": 300.0,
+    "session": None,
+}
+
+
+@dataclass
+class SuperviseSpec:
+    """A single agent the supervisor keeps alive."""
+
+    alias: str
+    client: str
+    role: str = ""
+    cwd: str = ""
+    extra: list[str] = field(default_factory=list)
+
+
+def _default_manifest_path() -> Path:
+    env = os.environ.get("C2C_SUPERVISE_MANIFEST")
+    if env:
+        return Path(env)
+    return Path.cwd() / ".c2c" / "supervise.toml"
+
+
+def parse_supervise_manifest(text: str) -> tuple[list[SuperviseSpec], dict[str, object]]:
+    """Parse a TOML supervise manifest into (specs, supervisor-options).
+
+    Pure: string in, data out. Raises ValueError on a malformed agent entry
+    (missing alias/client) so the caller can keep the last-good config.
+    """
+    import tomllib  # stdlib, Python 3.11+; imported lazily so other
+    # subcommands keep working on older interpreters.
+
+    data = tomllib.loads(text)
+
+    opts = dict(DEFAULT_SUPERVISE_OPTS)
+    raw = data.get("supervisor", {})
+    if isinstance(raw, dict):
+        for k in ("poll_interval_s", "backoff_base_s", "backoff_max_s"):
+            if k in raw:
+                opts[k] = float(raw[k])
+        if "session" in raw:
+            session = str(raw["session"]).strip()
+            opts["session"] = session or None
+
+    specs: list[SuperviseSpec] = []
+    for entry in data.get("agent", []):
+        if not isinstance(entry, dict):
+            continue
+        alias = str(entry.get("alias", "")).strip()
+        client = str(entry.get("client", "")).strip()
+        if not alias or not client:
+            raise ValueError(f"agent entry missing alias/client: {entry!r}")
+        extra_raw = entry.get("extra", [])
+        extra = [str(x) for x in extra_raw] if isinstance(extra_raw, list) else []
+        specs.append(
+            SuperviseSpec(
+                alias=alias,
+                client=client,
+                role=str(entry.get("role", "")),
+                cwd=str(entry.get("cwd", "")),
+                extra=extra,
+            )
+        )
+    return specs, opts
+
+
+def backoff_delay(fail_count: int, base_s: float, cap_s: float) -> float:
+    """Exponential backoff: base * 2**(fail_count-1), capped at cap_s.
+
+    fail_count is 1 on the first respawn attempt. The base delay doubles as
+    the post-launch grace period — after issuing a respawn we wait at least
+    base_s before considering the agent failed again, so a slow-booting agent
+    is not double-launched.
+    """
+    if fail_count <= 1:
+        return min(base_s, cap_s)
+    return min(base_s * (2 ** (fail_count - 1)), cap_s)
+
+
+def decide_respawns(
+    specs: list[SuperviseSpec],
+    live: set[str],
+    state: dict[str, dict],
+    now: float,
+    *,
+    base_s: float,
+    cap_s: float,
+) -> tuple[list[SuperviseSpec], dict[str, dict]]:
+    """Pure respawn decision.
+
+    Given the desired *specs*, the set of currently-*live* aliases, the prior
+    backoff *state* (alias -> {"fail_count", "next_attempt_ts"}) and the
+    current time *now*, return (to_respawn, new_state).
+
+    Invariants:
+      - A live alias is never respawned (idempotent) and its backoff resets.
+      - A dead alias is respawned only when now >= its next_attempt_ts.
+      - Each respawn pushes next_attempt_ts out by backoff_delay(...) to damp
+        crash-loops.
+      - State for aliases no longer in the manifest is dropped.
+    """
+    new_state = {a: dict(v) for a, v in state.items()}
+    to_respawn: list[SuperviseSpec] = []
+    spec_aliases: set[str] = set()
+
+    for spec in specs:
+        spec_aliases.add(spec.alias)
+        if spec.alias in live:
+            new_state.pop(spec.alias, None)  # healthy → reset backoff
+            continue
+        entry = new_state.get(spec.alias, {"fail_count": 0, "next_attempt_ts": 0.0})
+        if now >= entry["next_attempt_ts"]:
+            fail_count = int(entry["fail_count"]) + 1
+            delay = backoff_delay(fail_count, base_s, cap_s)
+            new_state[spec.alias] = {
+                "fail_count": fail_count,
+                "next_attempt_ts": now + delay,
+            }
+            to_respawn.append(spec)
+        else:
+            new_state[spec.alias] = entry  # still backing off
+
+    for alias in list(new_state):
+        if alias not in spec_aliases:
+            new_state.pop(alias, None)  # drop stale (removed from manifest)
+
+    return to_respawn, new_state
+
+
+def live_aliases() -> set[str]:
+    """Set of aliases the broker reports as alive (via `c2c list --json`)."""
+    c2c_bin = shutil.which("c2c") or "c2c"
+    try:
+        out = subprocess.run(
+            [c2c_bin, "list", "--json"], capture_output=True, text=True, check=False
+        ).stdout
+        rows = json.loads(out) if out.strip() else []
+    except (json.JSONDecodeError, FileNotFoundError):
+        return set()
+    return {r.get("alias") for r in rows if r.get("alive") is True and r.get("alias")}
+
+
+def _respawn_agent(spec: SuperviseSpec, session: str | None = None) -> bool:
+    """Launch `c2c start <client> -n <alias>` in a fresh detached tmux window.
+
+    Returns True if the launch was issued. Requires being inside tmux.
+    """
+    if not os.environ.get("TMUX"):
+        print(
+            "supervise: not inside tmux — cannot respawn "
+            "(run the supervisor inside a tmux session)",
+            file=sys.stderr,
+        )
+        return False
+
+    c2c_bin = shutil.which("c2c") or "c2c"
+    cmd = [c2c_bin, "start", spec.client, "-n", spec.alias, *spec.extra]
+    shell_cmd = shlex.join(cmd)
+
+    title = f"c2c-{spec.alias}"
+    window_args = ["new-window", "-d", "-n", title, "-P", "-F", "#{pane_id}"]
+    if session:
+        window_args.extend(["-t", session])
+    window_args.append("bash")
+    res = tmux(*window_args)
+    pane = res.stdout.strip()
+    if not pane:
+        print(f"supervise: failed to create window for {spec.alias}", file=sys.stderr)
+        return False
+
+    if spec.cwd:
+        tmux("send-keys", "-t", pane, f"cd {shlex.quote(spec.cwd)}", "Enter", capture=False)
+    # Pre-seed a role file so `c2c start` doesn't block on the role prompt.
+    # Mirrors cmd_launch --role semantics. Targets the workdir the client will
+    # run in (spec.cwd if set, else the supervisor's cwd).
+    if spec.role:
+        role_dir = Path(spec.cwd) if spec.cwd else Path.cwd()
+        roles = role_dir / ".c2c" / "roles"
+        roles.mkdir(parents=True, exist_ok=True)
+        (roles / f"{spec.alias}.md").write_text(spec.role.rstrip() + "\n")
+    tmux("send-keys", "-t", pane, shell_cmd, "Enter", capture=False)
+    print(f"supervise: respawned {spec.alias} ({spec.client}) on {pane} [{title}]")
+    return True
+
+
+def run_supervise_tick(
+    specs: list[SuperviseSpec],
+    state: dict[str, dict],
+    *,
+    live_fn: Callable[[], set[str]],
+    respawn_fn: Callable[[SuperviseSpec], bool],
+    now: float,
+    base_s: float,
+    cap_s: float,
+    dry_run: bool = False,
+) -> dict[str, dict]:
+    """Run one supervise iteration; return the updated backoff state.
+
+    Effects are confined to the injected *live_fn* / *respawn_fn*, so unit
+    tests pass fakes and never touch tmux or the broker.
+    """
+    live = live_fn()
+    to_respawn, new_state = decide_respawns(
+        specs, live, state, now, base_s=base_s, cap_s=cap_s
+    )
+    for spec in to_respawn:
+        if dry_run:
+            fail_count = new_state.get(spec.alias, {}).get("fail_count", 1)
+            print(
+                f"supervise[dry-run]: would respawn {spec.alias} "
+                f"({spec.client}) — attempt #{fail_count}"
+            )
+        else:
+            respawn_fn(spec)
+    return new_state
+
+
+def cmd_supervise(args: argparse.Namespace) -> int:
+    """Declarative self-healing loop: keep manifest agents alive.
+
+    Re-reads the manifest each tick (hot-reload), polls broker liveness, and
+    respawns any dead agent whose backoff window has elapsed. `--once` runs a
+    single tick (cron-friendly); `--dry-run` reports decisions without
+    launching anything.
+    """
+    import time as _time
+
+    manifest_path = Path(args.manifest) if args.manifest else _default_manifest_path()
+    specs: list[SuperviseSpec] = []
+    opts: dict[str, object] = dict(DEFAULT_SUPERVISE_OPTS)
+
+    def load() -> bool:
+        """Reload manifest; keep last-good config on parse error. Returns
+        False only when nothing usable is available."""
+        nonlocal specs, opts
+        try:
+            text = manifest_path.read_text()
+        except FileNotFoundError:
+            print(f"supervise: manifest not found: {manifest_path}", file=sys.stderr)
+            return bool(specs)
+        try:
+            specs, opts = parse_supervise_manifest(text)
+        except Exception as exc:  # parse/validation error
+            print(
+                f"supervise: manifest parse error ({exc}); keeping last-good config",
+                file=sys.stderr,
+            )
+            return bool(specs)
+        return True
+
+    if not load() and not specs:
+        return 1
+    if not specs:
+        print(f"supervise: no agents in manifest {manifest_path}", file=sys.stderr)
+        return 1
+
+    state: dict[str, dict] = {}
+
+    def respawn(spec: SuperviseSpec) -> bool:
+        return _respawn_agent(spec, session=opts.get("session"))  # type: ignore[arg-type]
+
+    print(
+        f"supervise: watching {len(specs)} agent(s) from {manifest_path} "
+        f"({'dry-run' if args.dry_run else 'live'}"
+        f"{', once' if args.once else ''})",
+        file=sys.stderr,
+    )
+    try:
+        while True:
+            load()  # hot-reload before each tick
+            interval = float(
+                args.interval if args.interval is not None else opts["poll_interval_s"]
+            )
+            base_s = float(opts["backoff_base_s"])
+            cap_s = float(opts["backoff_max_s"])
+            state = run_supervise_tick(
+                specs,
+                state,
+                live_fn=live_aliases,
+                respawn_fn=respawn,
+                now=_time.monotonic(),
+                base_s=base_s,
+                cap_s=cap_s,
+                dry_run=args.dry_run,
+            )
+            if args.once:
+                return 0
+            _time.sleep(max(interval, 1.0))
+    except KeyboardInterrupt:
+        print("\nsupervise: interrupted — exiting", file=sys.stderr)
+        return 0
+
+
 # ---------------------------------------------------------------- argparse
 
 
@@ -699,6 +1023,24 @@ def build_parser() -> argparse.ArgumentParser:
     st = sp.add_parser("stop", help="`c2c stop <alias>` a managed instance")
     st.add_argument("alias")
     st.set_defaults(func=cmd_stop)
+
+    su = sp.add_parser(
+        "supervise",
+        help="declarative self-healing loop: keep manifest agents alive",
+    )
+    su.add_argument(
+        "--manifest",
+        help="path to the TOML manifest (default: $C2C_SUPERVISE_MANIFEST or .c2c/supervise.toml)",
+    )
+    su.add_argument("--once", action="store_true", help="run a single tick then exit (cron-friendly)")
+    su.add_argument("--dry-run", action="store_true", help="report respawn decisions without launching")
+    su.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help="override poll interval (seconds); default from manifest [supervisor].poll_interval_s",
+    )
+    su.set_defaults(func=cmd_supervise)
 
     return p
 
