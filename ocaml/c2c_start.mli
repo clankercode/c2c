@@ -337,6 +337,20 @@ val builtin_swarm_restart_intro : string
     transcript when [c2c start <client>] launches a fresh session.
     Contains {name}, {alias}, {role} placeholders. #341. *)
 
+val claude_onboarding_preamble : name:string -> string
+(** [claude_onboarding_preamble ~name] is the startup-steps preamble injected
+    as the first transcript turn for a managed [c2c start claude] session.
+    Contains NO heartbeat-Monitor step — managed sessions already get a native
+    4.1m wake.toml via the inner MCP schedule timer, so arming a Monitor would
+    double-wake. B011. *)
+
+val intro_on_no_role : string -> bool
+(** [intro_on_no_role client] is [true] when a no-role managed start of
+    [client] should still receive the minimal builtin swarm intro (so a plain
+    [c2c start <agent>] is never intro-less). [false] for raw passthrough /
+    bridge clients (pty, tmux, relay-connect) that ignore or have no use for a
+    kickoff prompt. B011. *)
+
 val swarm_config_restart_intro : unit -> string
 (** [swarm_config_restart_intro ()] reads the [swarm] [restart_intro] key
     from .c2c/config.toml and returns the override (with \n / \t escapes

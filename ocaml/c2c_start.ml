@@ -684,6 +684,37 @@ let builtin_swarm_restart_intro : string =
    The swarm coordinates via c2c instant messaging. You are now part of it.\n\
    Reminder: replies to peers must go through c2c_send (`mcp__c2c__send` / `c2c send`) — they don't see your assistant output."
 
+(* B011: startup-steps preamble injected as the first transcript turn for a
+   managed `c2c start claude` session. Deliberately has NO heartbeat-Monitor
+   step: managed sessions already get a native 4.1m wake.toml that fires via
+   the inner MCP schedule timer, so arming a Monitor here would double-wake
+   (violates CLAUDE.md "Agent wake-up + scheduling" / "dedupe before arming").
+   Step 5 has the agent verify the native schedule instead. Non-managed
+   sessions are not launched via `c2c start` and keep the Monitor + `heartbeat`
+   fallback documented in .collab/runbooks/agent-wake-setup.md. *)
+let claude_onboarding_preamble ~name =
+  Printf.sprintf
+    "You are now running as %s. Complete these startup steps:\n\
+     1. Call `whoami` to confirm your identity and registration.\n\
+     2. Join the `swarm-lounge` room: use `join_room` with {\"room_id\": \"swarm-lounge\"}.\n\
+     3. Send a message to coordinator1 introducing yourself: use `send` with \
+     {\"to_alias\": \"coordinator1\", \"content\": \"<brief intro of your role and capabilities>\"}.\n\
+     4. Call `poll_inbox` to check for any messages addressed to you.\n\
+     5. Verify your wake schedule with `c2c schedule list` — this managed \
+     session already has a native 4.1m wake; do NOT arm a separate heartbeat \
+     Monitor (that would double-wake).\n\
+     Begin now."
+    name
+
+(* B011: should a no-role managed `c2c start <client>` still receive the
+   minimal builtin swarm intro (default_kickoff_prompt with no role)? Raw
+   passthrough clients (pty/tmux) ignore kickoff prompts downstream and
+   relay-connect is a relay bridge rather than an agent transcript, so they get
+   no intro; every actual agent client does, so a plain no-role start is never
+   intro-less. *)
+let intro_on_no_role (client : string) : bool =
+  not (List.mem client [ "pty"; "tmux"; "relay-connect" ])
+
 (* Decode common backslash escapes in a TOML basic-string value
    (newline, tab, backslash, quote). Lets operators encode multi-line
    restart_intro overrides on a single TOML line. Conservative: unknown

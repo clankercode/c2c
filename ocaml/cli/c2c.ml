@@ -9858,21 +9858,8 @@ let start_cmd =
                   write_agent_file ~client ~name:agent_name ~content:rendered;
                   write_kimi_system_prompt ~name:agent_name ~content:role.C2c_role.body;
                 end;
-                let onboarding_preamble =
-                  Printf.sprintf
-                    "You are now running as %s. Complete these startup steps:\n\
-                     1. Call `whoami` to confirm your identity and registration.\n\
-                     2. Join the `swarm-lounge` room: use `join_room` with {\"room_id\": \"swarm-lounge\"}.\n\
-                     3. Send a message to coordinator1 introducing yourself: use `send` with \
-                     {\"to_alias\": \"coordinator1\", \"content\": \"<brief intro of your role and capabilities>\"}.\n\
-                     4. Call `poll_inbox` to check for any messages addressed to you.\n\
-                     5. Arm a heartbeat Monitor: use Monitor tool with \
-                     command `heartbeat 4.1m \"<wake message>\"`, persistent:true.\n\
-                     Begin now."
-                    agent_name
-                in
                 let kickoff =
-                  if client = "claude" then Some onboarding_preamble
+                  if client = "claude" then Some (C2c_start.claude_onboarding_preamble ~name:agent_name)
                   else Some (default_kickoff_prompt ~name:agent_name ~alias:effective_alias ~role:role.C2c_role.body ())
                 in
                 let alias_override = role.C2c_role.c2c_alias in
@@ -9935,21 +9922,8 @@ let start_cmd =
                        divergence details. *)
                     if client = "opencode" || client = "claude" then
                       write_agent_file ~client ~name ~content:rendered;
-                    let onboarding_preamble =
-                      Printf.sprintf
-                        "You are now running as %s. Complete these startup steps:\n\
-                         1. Call `whoami` to confirm your identity and registration.\n\
-                         2. Join the `swarm-lounge` room: use `join_room` with {\"room_id\": \"swarm-lounge\"}.\n\
-                         3. Send a message to coordinator1 introducing yourself: use `send` with \
-                         {\"to_alias\": \"coordinator1\", \"content\": \"<brief intro of your role and capabilities>\"}.\n\
-                         4. Call `poll_inbox` to check for any messages addressed to you.\n\
-                         5. Arm a heartbeat Monitor: use Monitor tool with \
-                         command `heartbeat 4.1m \"<wake message>\"`, persistent:true.\n\
-                         Begin now."
-                        name
-                    in
                     let kickoff =
-                      if client = "claude" then Some onboarding_preamble
+                      if client = "claude" then Some (C2c_start.claude_onboarding_preamble ~name)
                       else Some (default_kickoff_prompt ~name ~alias:effective_alias ~role:role.C2c_role.body ())
                     in
                     let alias_override = role.C2c_role.c2c_alias in
@@ -9975,7 +9949,11 @@ let start_cmd =
                            | None ->
                                (match role_opt with
                                 | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
-                                 | None -> None)
+                                 | None ->
+                                     (* B011: a no-role start is never intro-less for agent clients. *)
+                                     if C2c_start.intro_on_no_role client
+                                     then Some (default_kickoff_prompt ~name ~alias:effective_alias ())
+                                     else None)
                           in
                           (kickoff_prompt, alias_opt, None, None, None))
              with Sys_error _ ->
@@ -9992,7 +9970,11 @@ let start_cmd =
                 | None ->
                     (match role_opt with
                      | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
-                      | None -> None)
+                      | None ->
+                          (* B011: a no-role start is never intro-less for agent clients. *)
+                          if C2c_start.intro_on_no_role client
+                          then Some (default_kickoff_prompt ~name ~alias:effective_alias ())
+                          else None)
                  in
                  (kickoff_prompt, alias_opt, None, None, None))
         else
@@ -10015,7 +9997,11 @@ let start_cmd =
             | None ->
                 (match role_opt with
                  | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
-                 | None -> None)
+                 | None ->
+                     (* B011: a no-role start is never intro-less for agent clients. *)
+                     if C2c_start.intro_on_no_role client
+                     then Some (default_kickoff_prompt ~name ~alias:effective_alias ())
+                     else None)
            in
            (kickoff_prompt, alias_opt, None, None, None)
    in
