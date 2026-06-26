@@ -220,13 +220,20 @@ def test_pi_plays_over_relay_via_native_tools(relay, tmp_path: Path) -> None:
         else:
             pytest.fail("pi never registered on the relay")
 
+        # The controller signs its relay sends with its FULL address
+        # (`<name>@<host>`) — exactly what pi-c2c uses, and what the relay.ml
+        # full-address-signer fix enables. This makes pi RECEIVE the moves from
+        # `white@host`, so pi's UI tags the recv line `▼⇄` (relay) instead of
+        # defaulting to `▼◎` (the bare-alias "route unknown" fallback). Registration
+        # stays bare so pi's bare-target replies still reach white's relay outbox.
+        white_addr = f"{white}@{host}"
         kickoff = (
             f"You are playing CHESS as BLACK against {white} over c2c. Use ONLY your "
             f"c2c_pi_send tool to send moves (target={white}). Do NOT use bash, the "
             f"shell, or the c2c CLI. I (White) will send 'MOVE <uci>'. Reply with your "
             f"move as 'MOVE <uci>' (UCI, e.g. e7e5) via c2c_pi_send. I move first."
         )
-        assert _relay(relay, "dm", "send", black, kickoff, "--alias", white).get("ok") is True
+        assert _relay(relay, "dm", "send", black, kickoff, "--alias", white_addr).get("ok") is True
 
         # Controller plays White (first legal move); pi replies as Black.
         for _ in range(MIN_PI_MOVES + 2):
@@ -235,7 +242,7 @@ def test_pi_plays_over_relay_via_native_tools(relay, tmp_path: Path) -> None:
                 break
             wmove = _chess("moves", str(board)).stdout.split()[0]
             _chess("move", str(board), wmove)
-            assert _relay(relay, "dm", "send", black, f"MOVE {wmove}", "--alias", white).get("ok") is True
+            assert _relay(relay, "dm", "send", black, f"MOVE {wmove}", "--alias", white_addr).get("ok") is True
             transcript.append(f"{white}@{host} -> {black}@{host}  MOVE {wmove}")
 
             recv = _relay_recv_move(relay, white, timeout=90.0)
