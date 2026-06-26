@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B005
+priority: high
+status: pending
+tags: []
+title: confirm claude has good working instructions (monitor), also codex (tool hooks?) or autostart in tmux
+---
+
+confirm claude has good working instructions (monitor), also codex (tool hooks?) or autostart in tmux
