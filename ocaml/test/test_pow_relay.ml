@@ -34,11 +34,15 @@ let loopback_socket () =
   | Unix.ADDR_INET (_, port) -> Lwt.return (fd, port)
   | _ -> Lwt.fail_with "loopback_socket: expected INET socket"
 
-let with_server f =
+let with_server ?rate_limiter f =
   Lwt_main.run
     (loopback_socket () >>= fun (fd, port) ->
      let relay = Relay.InMemoryRelay.create () in
-     let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+     let rate_limiter =
+       match rate_limiter with
+       | Some rl -> rl
+       | None -> Relay.Rate_limiter_inst.create ~gc_interval:300.0 ()
+     in
      let stop, wake_stop = Lwt.wait () in
      let callback (conn, _) req body =
        RS.make_callback relay None conn req body ?broker_root:None ~rate_limiter
@@ -251,6 +255,18 @@ let mint_in_band ~challenge ~min_difficulty ~below_difficulty =
   in
   loop 0
 
+(* The /register endpoint also sits behind a per-IP token bucket (capacity 10,
+   refill 0.5/s) that is ORTHOGONAL to the PoW policy. Every loopback request
+   shares the 127.0.0.1 bucket, so a test that compresses many registrations
+   into milliseconds would trip the IP throttle (`rate_limit_exceeded`) long
+   before exercising the PoW curve. Resetting the bucket — exactly the relay's
+   own periodic GC (`cleanup`) — isolates the PoW difficulty-escalation
+   behaviour under test while leaving the process-global PoW cost accumulator
+   (`relay_pow_policy`) untouched. (`older_than:0.0` evicts any bucket whose
+   last request is >0s old, i.e. all of them.) *)
+let reset_ip_rate_limit rate_limiter =
+  ignore (Relay.Rate_limiter_inst.cleanup rate_limiter ~older_than:0.0 : int)
+
 (* One full register handshake at the actor's CURRENT required difficulty,
    mirroring the real `Pow_client` retry behaviour: POST without PoW; if the
    live relay answers `pow_required`, mint at the demanded difficulty and
@@ -258,11 +274,16 @@ let mint_in_band ~challenge ~min_difficulty ~below_difficulty =
    the register route-cost (10) to the actor's accumulated cost, so repeated
    calls walk the difficulty curve upward.
 
+   Resets the IP token bucket first so the (<=2) POSTs it makes never collide
+   with the orthogonal per-IP throttle (see `reset_ip_rate_limit`).
+
    Returns (required_difficulty_demanded, next_difficulty_advertised_on_success)
    where the second component is the `X-C2C-PoW-Next` header value on the
    accepted response — the difficulty the relay pre-announces for the *next*
    request from this actor. *)
-let register_handshake ~base_url ~identity ~actor_id ~alias ~session_id =
+let register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
+    ~session_id =
+  reset_ip_rate_limit rate_limiter;
   let body () =
     register_body ~node_id:"node-climb" ~session_id ~alias ~identity
       ~relay_url:base_url ()
@@ -535,7 +556,8 @@ let test_malformed_pow_fields_are_rejected_without_exception () =
    next rung (so the escalation is visible to the agent before it bites). *)
 let test_increasing_pow_walks_difficulty_curve_up () =
   with_pow_env "1" (fun () ->
-    with_server (fun ~base_url ~relay:_ ->
+    let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+    with_server ~rate_limiter (fun ~base_url ~relay:_ ->
       let alias = "pow-climb-curve" in
       let identity = Relay_identity.generate ~alias_hint:alias () in
       let actor_id = b64url identity.public_key in
@@ -543,7 +565,7 @@ let test_increasing_pow_walks_difficulty_curve_up () =
       let rec climb k acc =
         if k > steps then Lwt.return (List.rev acc)
         else
-          register_handshake ~base_url ~identity ~actor_id ~alias
+          register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
             ~session_id:(Printf.sprintf "session-curve-%d" k)
           >>= fun pair ->
           climb (k + 1) (pair :: acc)
@@ -576,7 +598,8 @@ let test_increasing_pow_walks_difficulty_curve_up () =
    there no matter how much more we flood (it is never driven above the cap). *)
 let test_flood_drives_difficulty_to_cap () =
   with_pow_env "1" (fun () ->
-    with_server (fun ~base_url ~relay:_ ->
+    let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+    with_server ~rate_limiter (fun ~base_url ~relay:_ ->
       let alias = "pow-flood-cap" in
       let identity = Relay_identity.generate ~alias_hint:alias () in
       let actor_id = b64url identity.public_key in
@@ -584,7 +607,7 @@ let test_flood_drives_difficulty_to_cap () =
       let rec loop k last =
         if k > flood then Lwt.return last
         else
-          register_handshake ~base_url ~identity ~actor_id ~alias
+          register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
             ~session_id:(Printf.sprintf "session-flood-%d" k)
           >>= fun (required, _next) ->
           Alcotest.(check bool) "flood difficulty never exceeds d_max=12" true
@@ -595,7 +618,7 @@ let test_flood_drives_difficulty_to_cap () =
       Alcotest.(check int) "flooding saturates difficulty at the d_max=12 cap"
         12 final_required;
       (* Continued flood: still pinned at the cap, never above it. *)
-      register_handshake ~base_url ~identity ~actor_id ~alias
+      register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
         ~session_id:"session-flood-extra"
       >|= fun (required, next_header) ->
       Alcotest.(check int) "cap holds under continued flood" 12 required;
@@ -611,7 +634,8 @@ let test_flood_drives_difficulty_to_cap () =
    before `consume_if_valid`, leaving the challenge intact on a failed verify. *)
 let test_stale_low_difficulty_proof_rejected_after_escalation () =
   with_pow_env "1" (fun () ->
-    with_server (fun ~base_url ~relay:_ ->
+    let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+    with_server ~rate_limiter (fun ~base_url ~relay:_ ->
       let alias = "pow-stale-proof" in
       let identity = Relay_identity.generate ~alias_hint:alias () in
       let actor_id = b64url identity.public_key in
@@ -621,7 +645,7 @@ let test_stale_low_difficulty_proof_rejected_after_escalation () =
       let rec climb k =
         if k > 4 then Lwt.return_unit
         else
-          register_handshake ~base_url ~identity ~actor_id ~alias
+          register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
             ~session_id:(Printf.sprintf "session-stale-climb-%d" k)
           >>= fun (required, _) ->
           let expected = if k <= 3 then 0 else 4 in
@@ -631,9 +655,10 @@ let test_stale_low_difficulty_proof_rejected_after_escalation () =
           climb (k + 1)
       in
       climb 1 >>= fun () ->
+      reset_ip_rate_limit rate_limiter;
       (* Escalate: a fresh register now demands the bucket-2 difficulty (8). *)
       let challenge_req =
-        register_body ~node_id:"node-stale" ~session_id:"session-stale-escalated"
+        register_body ~node_id:"node-climb" ~session_id:"session-stale-escalated"
           ~alias ~identity ~relay_url:base_url ()
       in
       post_register ~base_url challenge_req >>= fun rejected ->
@@ -659,7 +684,7 @@ let test_stale_low_difficulty_proof_rejected_after_escalation () =
         (Pow.verify ~challenge ~difficulty:new_difficulty ~pow_nonce:stale_nonce);
       let stale_body =
         register_body ~pow_nonce:stale_nonce ~pow_epoch:epoch
-          ~pow_server_nonce:server_nonce ~node_id:"node-stale"
+          ~pow_server_nonce:server_nonce ~node_id:"node-climb"
           ~session_id:"session-stale-submit" ~alias ~identity
           ~relay_url:base_url ()
       in
@@ -682,7 +707,7 @@ let test_stale_low_difficulty_proof_rejected_after_escalation () =
       in
       let fresh_body =
         register_body ~pow_nonce:fresh_nonce ~pow_epoch:epoch
-          ~pow_server_nonce:server_nonce ~node_id:"node-stale"
+          ~pow_server_nonce:server_nonce ~node_id:"node-climb"
           ~session_id:"session-stale-accepted" ~alias ~identity
           ~relay_url:base_url ()
       in
