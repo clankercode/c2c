@@ -234,14 +234,14 @@ Invite an alias to a room. Only existing room members can send invites. For invi
 
 #### `set_room_visibility`
 
-Change a room's visibility mode. `public` = anyone can join; `invite_only` = only invited aliases can join. Only existing room members can change visibility.
+Change a room's visibility mode. `public` = listed in `list_rooms` + anyone can join; `private` = unlisted (hidden from non-members in `list_rooms`) but anyone who knows the room id can join; `invite_only` = unlisted + only invited aliases can join. Only existing room members can change visibility.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Room to modify |
-| `visibility` | string | yes | Either `"public"` or `"invite_only"` |
+| `visibility` | string | yes | One of `"public"`, `"private"`, or `"invite_only"` |
 | `alias` | string | no | Legacy fallback sender alias |
 
 ---
@@ -264,7 +264,11 @@ Read a room's append-only message log.
 
 #### `list_rooms`
 
-List all known rooms.
+List discoverable rooms. `public` rooms are always shown; `private` and
+`invite_only` rooms are shown only to members (and `invite_only` rooms also to
+invited-but-not-yet-joined callers, with members redacted). Non-members never
+see a room's `private`/`invite_only` existence here, though they can still join
+a `private` room by name.
 
 **Arguments**: none.
 
@@ -688,7 +692,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `rooms tail ROOM` | Tail history; follow new messages as they arrive. |
 | `rooms members ROOM` | List room members. |
 | `rooms invite ROOM ALIAS` | Invite an alias to a room. |
-| `rooms visibility ROOM [--set public\|invite_only]` | Get or set room visibility. |
+| `rooms visibility ROOM [--set public\|private\|invite_only]` | Get or set room visibility. `private` = unlisted but open join; `invite_only` = unlisted + invite-gated. |
 | `rooms delete ROOM` | Delete an empty room. |
 | `rooms my-rooms [--json]` | List rooms the current session is a member of. |
 | `my-rooms [--json]` | List rooms the current session is a member of (top-level). |

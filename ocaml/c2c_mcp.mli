@@ -173,7 +173,7 @@ type message =
   }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
-type room_visibility = Public | Invite_only
+type room_visibility = Public | Private | Invite_only
 type room_meta =
   { visibility : room_visibility
   ; invited_members : string list

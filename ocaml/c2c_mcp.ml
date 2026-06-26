@@ -117,9 +117,9 @@ let base_tool_definitions =
       ~required:["room_id"; "invitee_alias"]
       ~properties:[ prop "room_id" "Room to invite to."; prop "invitee_alias" "Alias to invite."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
   ; tool_definition ~name:"set_room_visibility"
-      ~description:"Change a room's visibility mode. public = anyone can join; invite_only = only invited aliases can join. Only existing room members can change visibility."
+      ~description:"Change a room's visibility mode. public = listed in list_rooms + anyone can join; private = unlisted (hidden from non-members in list_rooms) but anyone who knows the room id can join; invite_only = unlisted + only invited aliases can join. Only existing room members can change visibility."
       ~required:["room_id"; "visibility"]
-      ~properties:[ prop "room_id" "Room to modify."; prop "visibility" "Either 'public' or 'invite_only'."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
+      ~properties:[ prop "room_id" "Room to modify."; prop "visibility" "One of 'public', 'private', or 'invite_only'."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
   ; tool_definition ~name:"set_dnd"
       ~description:"Enable or disable Do-Not-Disturb for this session. When DND is on, channel-push delivery (notifications/claude/channel) is suppressed — inbox still accumulates messages, poll_inbox always works. Optional `until_epoch` sets an auto-expire Unix timestamp; omit for manual-off only. Returns JSON {ok:true,dnd:bool}."
       ~required:["on"]

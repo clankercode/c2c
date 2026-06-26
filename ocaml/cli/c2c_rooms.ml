@@ -340,6 +340,7 @@ let rooms_list_cmd =
                      `String
                        (match r.ri_visibility with
                        | Public -> "public"
+                       | Private -> "private"
                        | Invite_only -> "invite_only"))
                  ])
              rooms))
@@ -352,6 +353,7 @@ let rooms_list_cmd =
             let vis =
               match r.ri_visibility with
               | Public -> ""
+              | Private -> " [private]"
               | Invite_only -> " [invite-only]"
             in
             let alive = if r.ri_alive_member_count > 0 then
@@ -391,6 +393,7 @@ let rooms_my_rooms_cmd =
                      `String
                        (match r.ri_visibility with
                        | Public -> "public"
+                       | Private -> "private"
                        | Invite_only -> "invite_only"))
                  ])
              rooms))
@@ -403,6 +406,7 @@ let rooms_my_rooms_cmd =
             let vis =
               match r.ri_visibility with
               | Public -> ""
+              | Private -> " [private]"
               | Invite_only -> " [invite-only]"
             in
             let alive = if r.ri_alive_member_count > 0 then
@@ -553,7 +557,7 @@ let rooms_visibility_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
   in
   let visibility =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "set"; "s" ] ~docv:"VIS" ~doc:"Visibility: public or invite_only.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "set"; "s" ] ~docv:"VIS" ~doc:"Visibility: public (listed + open join), private (unlisted + open join), or invite_only (unlisted + invite-gated join).")
   in
   let+ json = json_flag
   and+ room_id = room_id
@@ -568,8 +572,9 @@ let rooms_visibility_cmd =
             match String.lowercase_ascii vis_str with
             | "public" -> Public
             | "invite_only" | "invite-only" -> Invite_only
+            | "private" -> Private
             | _ ->
-                Printf.eprintf "error: unknown visibility '%s'. Use 'public' or 'invite_only'.\n%!" vis_str;
+                Printf.eprintf "error: unknown visibility '%s'. Use 'public', 'private', or 'invite_only'.\n%!" vis_str;
                 exit 1
           in
           Broker.set_room_visibility broker ~room_id ~from_alias ~visibility:vis;
@@ -581,6 +586,7 @@ let rooms_visibility_cmd =
           let vis_str =
             match meta.visibility with
             | Public -> "public"
+            | Private -> "private"
             | Invite_only -> "invite_only"
           in
           (match output_mode with
@@ -676,7 +682,7 @@ let rooms_create_cmd =
   in
   let visibility =
     Cmdliner.Arg.(value & opt string "public" & info [ "visibility" ] ~docv:"VIS"
-      ~doc:"Visibility: 'public' (default) or 'invite_only'.")
+      ~doc:"Visibility: 'public' (default, listed + open join), 'private' (unlisted + open join), or 'invite_only' (unlisted + invite-gated join).")
   in
   let invite =
     Cmdliner.Arg.(value & opt_all string [] & info [ "invite" ] ~docv:"ALIAS"
@@ -702,8 +708,9 @@ let rooms_create_cmd =
     match String.lowercase_ascii vis_str with
     | "public" -> Public
     | "invite_only" | "invite-only" -> Invite_only
+    | "private" -> Private
     | _ ->
-        Printf.eprintf "error: unknown visibility '%s'. Use 'public' or 'invite_only'.\n%!" vis_str;
+        Printf.eprintf "error: unknown visibility '%s'. Use 'public', 'private', or 'invite_only'.\n%!" vis_str;
         exit 1
   in
   let auto_join = not no_join in
@@ -734,6 +741,7 @@ let rooms_create_cmd =
                , `String
                    (match r.cr_visibility with
                     | Public -> "public"
+                    | Private -> "private"
                     | Invite_only -> "invite_only") )
              ; ( "invited_members"
                , `List (List.map (fun a -> `String a) r.cr_invited_members) )
@@ -744,6 +752,7 @@ let rooms_create_cmd =
          let vis_label =
            match r.cr_visibility with
            | Public -> "public"
+           | Private -> "private"
            | Invite_only -> "invite_only"
          in
          Printf.printf "Created room: %s\n" r.cr_room_id;
@@ -770,7 +779,7 @@ let rooms_history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show room 
 let rooms_tail = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail" ~doc:"Tail room history; follow new messages as they arrive.") rooms_tail_cmd
 let rooms_invite = Cmdliner.Cmd.v (Cmdliner.Cmd.info "invite" ~doc:"Invite an alias to a room.") rooms_invite_cmd
 let rooms_members = Cmdliner.Cmd.v (Cmdliner.Cmd.info "members" ~doc:"List room members.") rooms_members_cmd
-let rooms_visibility = Cmdliner.Cmd.v (Cmdliner.Cmd.info "visibility" ~doc:"Get or set room visibility (public or invite_only).") rooms_visibility_cmd
+let rooms_visibility = Cmdliner.Cmd.v (Cmdliner.Cmd.info "visibility" ~doc:"Get or set room visibility (public, private, or invite_only).") rooms_visibility_cmd
 let rooms_create = Cmdliner.Cmd.v (Cmdliner.Cmd.info "create" ~doc:"Create a room with explicit visibility (#394).") rooms_create_cmd
 let rooms_my_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "my-rooms" ~doc:"List rooms you are a member of.") rooms_my_rooms_cmd
 

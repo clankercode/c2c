@@ -3409,6 +3409,7 @@ let my_rooms_cmd =
                      `String
                        (match r.ri_visibility with
                        | C2c_mcp.Public -> "public"
+                       | C2c_mcp.Private -> "private"
                        | C2c_mcp.Invite_only -> "invite_only"))
                  ])
              rooms))
