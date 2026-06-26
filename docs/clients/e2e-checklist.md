@@ -7,20 +7,23 @@ layout: page
 # Client E2E Verification Checklist
 
 Source of truth: [`docs/clients/feature-matrix.md`](./feature-matrix.md).
-Clients: **Claude Code**, **OpenCode**, **Codex**, **Kimi**.
+Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**.
 
-Last updated: 2026-05-01 (willow-coder, #592 S1)
+Last updated: 2026-06-26 (B002 Pi Agent ordering update)
 
 ---
 
 ## How to run
 
-Each row is a discrete tmux-pane smoke test. Run each client in its own tmux pane
-via `c2c start <client> -n <test-alias>`. Capture results with
-`./scripts/c2c_tmux.py peek <pane-name>`.
+Each row is a discrete tmux-pane smoke test. For MCP-managed clients, run each
+client in its own tmux pane via `c2c start <client> -n <test-alias>`. For Pi
+Agent, install and run the `pi-c2c` extension with pi's own launcher instead of
+`c2c start`. Capture results with `./scripts/c2c_tmux.py peek <pane-name>` when
+the client is tmux-managed.
 
-Use ephemeral test aliases (e.g. `test-claude-$(date +%s)`) and clean up with
-`c2c stop <test-alias>` when done.
+Use ephemeral test aliases (e.g. `test-claude-$(date +%s)`). Clean up
+MCP-managed clients with `c2c stop <test-alias>` when done; stop Pi Agent
+through the pi session that loaded `pi-c2c`.
 
 Result format per row:
 
@@ -45,18 +48,21 @@ c2c list
 
 ---
 
-## 1. MCP attachment: <Client>
+## 1. Client attachment: <Client>
 
 - **Setup**:
-  - `c2c install <client>` (in a test repo)
-  - `c2c start <client> -n test-<client>-<rand>`
+  - MCP-managed clients: `c2c install <client>` (in a test repo)
+  - MCP-managed clients: `c2c start <client> -n test-<client>-<rand>`
+  - Pi Agent: `pi install npm:pi-c2c`, then launch pi with the extension loaded
 - **Action**:
   - `c2c whoami`
 - **Expected**:
   - Returns a valid c2c alias (not empty, not an error)
+  - Pi Agent registers through `pi-c2c` / the `c2c` CLI, not through MCP
 - **Failure modes**:
-  - MCP binary not on PATH → "command not found"
+  - MCP-managed clients: MCP binary not on PATH -> "command not found"
   - Wrong `[default_binary]` entry → wrong deliver mode (see codex xml_fd footgun)
+  - Pi Agent: `pi-c2c` extension not installed or `C2C_BIN` points to a bad binary
 - **Repro time**: ~15s
 
 ---
@@ -73,6 +79,7 @@ c2c list
   - `<c2c event="message" from="..." to="<client-alias>">ping</c2c>` appears in the client's transcript / output
   - For Claude/OpenCode: PostToolUse hook fires on next tool use and inbox is drained
   - For Codex: xml_fd deliver injects the message
+  - For Pi Agent: `pi-c2c` drains the inbox and injects via `pi.sendMessage`
   - For Kimi: message appears in notification store / TUI prefill
 - **Failure modes**:
   - ECHILD race on Claude (known, fixed via bash wrapper)
@@ -143,6 +150,7 @@ c2c list
 - **Setup**:
   - Client running
   - Set DND on first via MCP: `mcp__c2c__set_dnd` (MCP-only, no CLI equivalent)
+  - Pi Agent: SKIP until a Pi-side DND control is verified
 - **Action**:
   - From another terminal: `c2c send <client-alias> "deferrable test" --deferrable`
   - Check DND status via MCP: `mcp__c2c__dnd_status` (MCP-only)
@@ -161,6 +169,7 @@ c2c list
 
 - **Setup**:
   - Client running
+  - Pi Agent: SKIP until a Pi-side DND control is verified
 - **Action**:
   - Set DND on via MCP: `mcp__c2c__set_dnd` (MCP-only, no CLI equivalent)
   - From another terminal: `c2c send <client-alias> "DND test"`
@@ -181,12 +190,14 @@ c2c list
 ## 8. Auto-register: <Client>
 
 - **Setup**:
-  - Fresh alias via `c2c install <client>` with a named instance
+  - MCP-managed clients: fresh alias via `c2c install <client>` with a named instance
+  - Pi Agent: set `C2C_PI_ALIAS=test-pi-<rand>` before launching pi with `pi-c2c`
   - `c2c list` shows the alias
 - **Action**:
-  - `c2c stop <test-alias>`
+  - MCP-managed clients: `c2c stop <test-alias>`
   - Wait 2s
-  - `c2c start <client> -n <test-alias>` (same name)
+  - MCP-managed clients: `c2c start <client> -n <test-alias>` (same name)
+  - Pi Agent: restart the pi session with the same `C2C_PI_ALIAS`
   - `c2c whoami`
 - **Expected**:
   - Same alias returned by `whoami` after restart
@@ -201,6 +212,7 @@ c2c list
 
 - **Setup**:
   - Client running (from step 1), verify `swarm-lounge` is a known room
+  - Pi Agent: SKIP until `pi-c2c` auto-join room behavior is verified
 - **Action**:
   - `c2c rooms list`
 - **Expected**:
@@ -214,12 +226,15 @@ c2c list
 
 ## 10. Managed-instance lifecycle: <Client>
 
+Pi Agent is not a `c2c start` target; mark this row SKIP for Pi Agent and test
+the pi launcher / extension lifecycle separately.
+
 - **Setup**:
-  - Use the test pane running from step 1
+  - MCP-managed clients: use the test pane running from step 1
 - **Action**:
-  - `c2c stop <test-alias>`
+  - MCP-managed clients: `c2c stop <test-alias>`
   - Wait 2s
-  - `c2c start <client> -n <test-alias>`
+  - MCP-managed clients: `c2c start <client> -n <test-alias>`
 - **Expected**:
   - `c2c start` succeeds (exit 0)
   - Client runs in new tmux pane
@@ -243,6 +258,22 @@ This is client-specific — different clients use different permission mechanism
 - **Failure modes**: Hook bypasses approval entirely (yolo mode); hook not registered
 - **Repro time**: ~30s
 
+### Codex
+
+- **Setup**: Client running
+- **Action**: Attempt an operation that would route through Codex's MCP approval mechanism
+- **Expected**: Approval flow routes correctly (Codex auto-approves MCP tools via TOML)
+- **Failure modes**: Approval mechanism not wired up
+- **Repro time**: ~30s
+
+### Pi Agent
+
+- **Setup**: Pi Agent running with `pi-c2c`
+- **Action**: N/A for MCP permission prompts
+- **Expected**: Mark SKIP unless a Pi-side permission flow is explicitly configured and documented
+- **Failure modes**: Do not treat MCP approval absence as a Pi Agent failure
+- **Repro time**: ~0s
+
 ### OpenCode
 
 - **Setup**: Client running
@@ -259,14 +290,6 @@ This is client-specific — different clients use different permission mechanism
 - **Failure modes**:
   - Hook sends DMs for ALL Shell calls (including safe reads) — known issue, hook over-forward bug; safe-pattern allowlist (#591, #587) should fix this
 - **Repro time**: ~60s
-
-### Codex
-
-- **Setup**: Client running
-- **Action**: Attempt an operation that would route through Codex's MCP approval mechanism
-- **Expected**: Approval flow routes correctly (Codex auto-approves MCP tools via TOML)
-- **Failure modes**: Approval mechanism not wired up
-- **Repro time**: ~30s
 
 ---
 
@@ -293,9 +316,10 @@ This is client-specific — different clients use different permission mechanism
   - Send messages to client B while it is running normally
   - Leave messages queued in the inbox
 - **Action**:
-  - `c2c stop <client-B>`
+  - MCP-managed clients: `c2c stop <client-B>`
   - Wait 2s
-  - `c2c start <client> -n <client-B-name>` (same name/alias)
+  - MCP-managed clients: `c2c start <client> -n <client-B-name>` (same name/alias)
+  - Pi Agent: restart the pi session with the same `C2C_PI_ALIAS`
   - Wait ~10s
   - `c2c poll-inbox` (or wait for auto-delivery)
 - **Expected**:
@@ -320,8 +344,9 @@ After running all applicable rows, save:
 | Client | PASS | FAIL | SKIP | Notes |
 |--------|------|------|------|-------|
 | Claude Code | N | N | N | ... |
-| OpenCode    | N | N | N | ... |
 | Codex       | N | N | N | ... |
+| Pi Agent    | N | N | N | ... |
+| OpenCode    | N | N | N | ... |
 | Kimi        | N | N | N | ... |
 
 ## Full log

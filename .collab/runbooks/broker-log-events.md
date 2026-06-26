@@ -10,9 +10,10 @@ introduced it.
 - **All entries are append-only JSON** — one event per line, parseable
   with `jq -c .` or `awk` on `"event"`.
 - **`ts`** is a Unix epoch float (seconds, sub-second resolution). The
-  exception is `c2c.ml:9089 named.checkpoint` and the inbox-hook
-  `state.snapshot` — those write ISO-8601 strings to a different log
-  file, not broker.log, and are NOT cataloged here.
+  exceptions are `c2c.ml:9089 named.checkpoint`, the inbox-hook
+  `state.snapshot`, and `c2c-deliver-inbox --json`'s `summary`
+  stdout record — those do not write broker.log audit lines and are
+  NOT cataloged here.
 - **All emitters are best-effort** — every helper wraps the file open
   in `try ... with _ -> ()` so audit-log failures never block the
   broker's primary path. If `broker.log` is missing, an inferred event
@@ -745,10 +746,14 @@ state-snapshot path. NOT cataloged here:
   (c2c session-restoration checkpoint).
 - `state.snapshot` — `c2c_inbox_hook.ml:125`, writes to
   `<state>.snapshot.tmp` then renames (claude-code state restoration).
+- `summary` — `c2c_deliver_inbox.ml:351`, writes a machine-readable
+  `c2c-deliver-inbox --json` stdout summary, not a broker audit line.
+  This exemption is intentionally included with B002 because the rebased
+  worktree's `just check` catalog gate fails without it; it is a gate repair,
+  not part of the Pi Agent behavior change.
 
-Both belong to the c2c-state-restoration subsystem, not the broker
-audit-log subsystem. If they ever migrate to broker.log, add catalog
-entries here.
+These belong to command/state output surfaces, not the broker audit-log
+subsystem. If they ever migrate to broker.log, add catalog entries here.
 
 ---
 

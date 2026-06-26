@@ -10,22 +10,23 @@ A single reference tracking every delivery method in c2c: how messages
 get from one agent to another, which clients support each method, what
 implements it, and where the sharp edges are.
 
-Last updated: 2026-04-26
+Last updated: 2026-06-26
 
 ---
 
 ## Summary Table
 
-| # | Method | One-liner | Claude Code | Codex | OpenCode | Kimi | Status |
-|---|--------|-----------|:-----------:|:-----:|:--------:|:----:|--------|
-| 1 | [MCP Channel Notifications](#1-mcp-channel-notifications) | Server pushes messages into the chat UI via JSON-RPC notification | Gated | No | No | No | Experimental / gated behind dev flag |
-| 2 | [PostToolUse Hook](#2-posttooluse-hook) | Auto-drains inbox after every tool call | Yes | No | No | No | Working (primary for Claude Code) |
-| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Sentinel only | Fallback | No | Legacy for Claude Code; active for Codex only (Kimi uses notification-store) |
-| 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | Experimental; not real-time |
-| 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP tool that drains and returns pending messages | Yes | Yes | Yes | Yes | Working (universal baseline) |
-| 6 | [Wake Daemon](#6-wake-daemon) | inotifywait watches inbox, PTY-injects a poll sentinel to wake idle agents | Yes | Yes | Yes | Yes | Working; per-client variants |
-| 7 | [Kimi Wire Bridge](#7-kimi-wire-bridge) | Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method | No | No | No | Deprecated | Deprecated; notification-store is preferred |
-| 8 | [OpenCode Native Plugin](#8-opencode-native-plugin) | TypeScript plugin polls broker, delivers via `promptAsync` | No | No | Yes | No | Proven; preferred for OpenCode |
+| # | Method | One-liner | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Status |
+|---|--------|-----------|:-----------:|:-----:|:--------:|:--------:|:----:|--------|
+| 1 | [MCP Channel Notifications](#1-mcp-channel-notifications) | Server pushes messages into the chat UI via JSON-RPC notification | Gated | No | No MCP | No | No | Experimental / gated behind dev flag |
+| 2 | [PostToolUse Hook](#2-posttooluse-hook) | Auto-drains inbox after every tool call | Yes | No | No | No | No | Working (primary for Claude Code) |
+| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Sentinel only | No | Fallback | No | Legacy for Claude Code; active for Codex only (Kimi uses notification-store) |
+| 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | No | Experimental; not real-time |
+| 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP/CLI tool that drains and returns pending messages | Yes | Yes | Yes (CLI) | Yes | Yes | Working (universal baseline) |
+| 6 | [Wake Daemon](#6-wake-daemon) | inotify watches inbox and wakes/delivers to idle agents | Yes | Yes | Yes (`pi-c2c`) | Yes | Yes | Working; per-client variants |
+| 7 | [Kimi Wire Bridge](#7-kimi-wire-bridge) | Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method | No | No | No | No | Deprecated | Deprecated; notification-store is preferred |
+| 8 | [OpenCode Native Plugin](#8-opencode-native-plugin) | TypeScript plugin polls broker, delivers via `promptAsync` | No | No | No | Yes | No | Proven; preferred for OpenCode |
+| 9 | [Kimi Notification-Store](#9-kimi-notification-store) | File-based notification push to Kimi's native notification subsystem | No | No | No | No | Yes | Preferred for Kimi |
 
 ---
 
@@ -70,6 +71,7 @@ just post-initialize).
 |--------|-----------|-------|
 | Claude Code | Gated | Requires `--dangerously-load-development-channels server:c2c`. Standard Claude Code does NOT declare `experimental.claude/channel` in its `initialize` request, so auto-drain never fires. |
 | Codex | No | No MCP channel notification support. No equivalent mechanism. |
+| Pi Agent | No | No MCP channel notification support; `pi-c2c` uses CLI polling and inbox watching. |
 | OpenCode | No | No MCP channel notification support. Closest equivalent is `/tui/show-toast` HTTP API (ephemeral, 5s, not in message history). |
 | Kimi | No | No MCP channel notification support. |
 
@@ -89,7 +91,7 @@ just post-initialize).
   check fails and auto-drain does not fire.
 - Requires the `--dangerously-load-development-channels` launch flag, which is
   not suitable for production use.
-- No other client (Codex, OpenCode, Kimi) supports this mechanism.
+- No other client (Codex, Pi Agent, OpenCode, Kimi) supports this mechanism.
 - Auto-drain and continuous delivery are implemented server-side but remain
   effectively dormant until Claude Code ships native channel support.
 
@@ -150,6 +152,7 @@ calling tools will not receive messages via this path -- see
 |--------|-----------|-------|
 | Claude Code | Yes | Primary delivery mechanism. Installed by `c2c install claude`. |
 | Codex | No | Codex has no PostToolUse hook system. |
+| Pi Agent | No | Pi Agent uses the `pi-c2c` extension rather than Claude Code hooks. |
 | OpenCode | No | OpenCode has no PostToolUse hook system. |
 | Kimi | No | Kimi has no PostToolUse hook system. |
 
@@ -202,6 +205,7 @@ it as keyboard input.
 |--------|-----------|------|-------|
 | Claude Code | Deprecated | Full or sentinel | Legacy path. Superseded by PostToolUse hook. Still available via `claude_send_msg.py`. |
 | Codex | Yes (sentinel) | Notify-only | Managed harness starts `c2c_deliver_inbox.py --notify-only`. Sentinel triggers `poll_inbox`. |
+| Pi Agent | No | — | Uses `pi-c2c` (`fs.watch` + CLI drain + `pi.sendMessage`), not PTY injection. |
 | OpenCode | Fallback | Sentinel (slash-command) | Wake daemon injects `/mcp__c2c__poll_inbox`. Superseded by native TypeScript plugin. |
 | Kimi | No | — | Superseded by notification-store (`C2c_kimi_notifier`). |
 
@@ -254,6 +258,7 @@ context refresh.
 |--------|-----------|-------|
 | Claude Code | Partial | Works for appending to transcript, but not visible in real-time UI. Only seen on reload. |
 | Codex | No | No documented transcript file format to target. |
+| Pi Agent | No | Pi Agent receives through the extension API, not transcript-file mutation. |
 | OpenCode | No | No documented transcript file injection path. |
 | Kimi | No | No documented transcript file injection path. |
 
@@ -307,6 +312,7 @@ This is the universal baseline: every client that has MCP support can use
 |--------|-----------|-------|
 | Claude Code | Yes | Manual fallback; automatic PostToolUse delivery uses `c2c-inbox-hook-ocaml` directly. |
 | Codex | Yes | Primary delivery: notify daemon triggers the agent to call this. |
+| Pi Agent | Yes | `pi-c2c` drains through `c2c poll-inbox` via the CLI. |
 | OpenCode | Yes | Called by native TypeScript plugin or wake daemon. |
 | Kimi | Yes | Called manually or triggered by Wire bridge / wake daemon. |
 
@@ -354,6 +360,7 @@ injection text and PTY coordination:
 |--------|--------|----------------|
 | `c2c_claude_wake_daemon.py` (**deprecated**) | Claude Code | Wake prompt asking the agent to call `poll_inbox` |
 | `c2c-deliver-inbox --notify-only` (OCaml binary) | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel |
+| `pi-c2c` extension | Pi Agent | `fs.watch` inbox watcher drains via `c2c poll-inbox` and injects with `pi.sendMessage` |
 | `c2c_opencode_wake_daemon.py` (**deprecated**) | OpenCode | Superseded by TypeScript plugin + `c2c monitor` subprocess |
 | `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by notification-store (C2c_kimi_notifier, file-based push) |
 | `c2c_crush_wake_daemon.py` (**deprecated**) | Crush | Unreliable; Crush not a first-class peer |
@@ -364,6 +371,7 @@ injection text and PTY coordination:
 |--------|-----------|-------|
 | Claude Code | Yes (gap) | PostToolUse hook covers active tool calls. AFK gap (idle session) has no non-PTY fix yet; `c2c_claude_wake_daemon.py` deprecated. |
 | Codex | Yes | `c2c-deliver-inbox --notify-only --loop` (OCaml binary) started by managed harness. |
+| Pi Agent | Yes ✓ | `pi-c2c` watches inbox changes with `fs.watch`, with a 60s safety-net poll. |
 | OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via `c2c monitor` subprocess → `promptAsync`. No PTY. |
 | Kimi | Yes ✓ | Notification-store (C2c_kimi_notifier, file-based push). Preferred over deprecated PTY wake. |
 | Crush | Deprecated | Unreliable; Crush lacks context compaction. |
@@ -458,6 +466,7 @@ until the plugin drains them and injects them through the official plugin API.
 |--------|-----------|-------|
 | Claude Code | No | Claude Code does not have an equivalent plugin `promptAsync` API. |
 | Codex | No | Codex does not have a plugin system with `promptAsync`. |
+| Pi Agent | No | Pi Agent has its own extension API. |
 | OpenCode | Yes | Preferred delivery mechanism. Proven 2026-04-14. |
 | Kimi | No | Kimi does not have an equivalent plugin `promptAsync` API. |
 
@@ -506,6 +515,7 @@ agent-context injection (llm-sink, drained at turn boundaries).
 | Kimi | **Yes — Preferred** | File-based push to notification store. Replaces wire-bridge. |
 | Claude Code | No | — |
 | Codex | No | — |
+| Pi Agent | No | Uses `pi-c2c` extension delivery instead. |
 | OpenCode | No | — |
 
 #### Key files
@@ -532,19 +542,20 @@ full troubleshooting guide.
 
 Which methods are primary, fallback, or unavailable for each client:
 
-| Method | Claude Code | Codex | OpenCode | Kimi |
-|--------|:-----------:|:-----:|:--------:|:----:|
-| MCP Channel Notifications | Fallback (gated) | -- | -- | -- |
-| PostToolUse Hook | **Primary** | -- | -- | -- |
-| PTY Injection | Deprecated | **Sentinel** | Fallback | Fallback |
-| History.jsonl Injection | Experimental | -- | -- | -- |
-| poll_inbox Tool | Baseline | Baseline | Baseline | Baseline |
-| Wake Daemon | Idle bridge | **Primary daemon** | Fallback | Fallback |
-| Kimi Wire Bridge | -- | -- | -- | Deprecated |
-| Kimi Notification-Store | -- | -- | -- | **Primary** |
-| OpenCode Native Plugin | -- | -- | **Primary** | -- |
+| Method | Claude Code | Codex | Pi Agent | OpenCode | Kimi |
+|--------|:-----------:|:-----:|:--------:|:--------:|:----:|
+| MCP Channel Notifications | Fallback (gated) | -- | -- | -- | -- |
+| PostToolUse Hook | **Primary** | -- | -- | -- | -- |
+| PTY Injection | Deprecated | **Sentinel** | -- | Fallback | Fallback |
+| History.jsonl Injection | Experimental | -- | -- | -- | -- |
+| poll_inbox Tool | Baseline | Baseline | CLI baseline | Baseline | Baseline |
+| Wake Daemon | Idle bridge | **Primary daemon** | **Primary** (`pi-c2c`) | Fallback | Fallback |
+| Kimi Wire Bridge | -- | -- | -- | -- | Deprecated |
+| Kimi Notification-Store | -- | -- | -- | -- | **Primary** |
+| OpenCode Native Plugin | -- | -- | -- | **Primary** | -- |
 
-**Primary** = recommended path installed by `c2c install <client>`.
+**Primary** = recommended path for that client; for MCP clients this is installed
+by `c2c install <client>`, while Pi Agent uses `pi install npm:pi-c2c`.
 **Baseline** = always available as a universal pull-based fallback.
 **Fallback** = works but superseded by a better method.
 **--** = not applicable or not supported.

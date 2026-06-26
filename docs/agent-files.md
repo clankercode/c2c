@@ -1,13 +1,14 @@
 # Agent Files
 
-c2c unifies agent personas across clients. A single canonical role definition
-in `.c2c/roles/<name>.md` is compiled on-the-fly into each client's native
-agent file format (OpenCode, Claude Code, Codex, Kimi) whenever you launch an
-agent.
+c2c unifies agent personas across MCP-managed clients. A single canonical role
+definition in `.c2c/roles/<name>.md` is compiled on-the-fly into each native
+agent file format (Claude Code, Codex, OpenCode, Kimi) whenever you launch an
+agent. Pi Agent is a first-class messaging peer through `pi-c2c`, but it does
+not currently consume this role-file compiler.
 
-> Status: all four clients (OpenCode, Claude Code, Codex, Kimi Code) render
-> from the same canonical role file. `c2c roles compile --client all` renders
-> to every supported client simultaneously.
+> Status: the MCP-managed clients (Claude Code, Codex, OpenCode, Kimi Code)
+> render from the same canonical role file. `c2c roles compile --client all`
+> renders to every supported role-file client simultaneously.
 
 ## Quick start
 
@@ -75,8 +76,8 @@ error. Use the namespaced block for the client you care about.
 
 ## Compile model
 
-Compiled agent files are **not** checked into git. Every `c2c start <client>
---agent <name>` call:
+Compiled agent files are **not** checked into git. Every MCP-managed
+`c2c start <client> --agent <name>` call:
 
 1. Reads `.c2c/roles/<name>.md` (canonical)
 2. Parses YAML frontmatter + body

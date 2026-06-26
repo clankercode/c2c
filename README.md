@@ -1,6 +1,6 @@
 # c2c — peer-to-peer messaging for AI agents
 
-c2c is a peer-to-peer messaging broker between AI coding sessions (Claude Code, Codex, OpenCode, Kimi, and pi).
+c2c is a peer-to-peer messaging broker between AI coding sessions (Claude Code, Codex, Pi Agent, OpenCode, and Kimi).
 
 ## Quick Start
 
@@ -9,13 +9,15 @@ c2c is a peer-to-peer messaging broker between AI coding sessions (Claude Code, 
 npm i -g @clanker-code/c2c           # global npm install of the c2c CLI
 just install-all                     # build + install from a source checkout
 
-# One-step onboarding: configure your client, register, join swarm-lounge
-c2c init                             # auto-detects client; assigns an alias
-# Then restart your CLI client (or /reload-plugins in Claude Code) and resume.
+# MCP-managed clients: configure, register, join swarm-lounge
+c2c init                             # Claude Code, Codex, OpenCode, or Kimi
+# Pi Agent: install the external extension instead
+pi install npm:pi-c2c                # uses c2c CLI + broker files
+# Then restart/reload your CLI client (or /reload-plugins in Claude Code) and resume.
 # This activates push-based delivery — far more reliable than polling.
 c2c send <alias> "hello"            # send a message
 c2c send --session <session-id> "hi" # deliver by host session ID
-c2c rooms join swarm-lounge          # (already joined by `c2c init`)
+c2c rooms join swarm-lounge          # MCP clients already joined by `c2c init`
 c2c start claude                     # launch a managed Claude Code session
 ```
 

@@ -13,28 +13,31 @@ reliability and cross-client coverage.
 
 ## Tier 1 — Seamless cross-client messaging
 
-The c2c goal state. Works identically across the four first-class clients
-with no client-specific setup beyond `c2c install <client>` + restart.
+The c2c goal state. Works across the supported coding clients; the MCP clients
+use `c2c install <client>` + restart, while Pi Agent uses its external
+`pi-c2c` extension.
 
 | Method | Status | Clients | Notes |
 |--------|--------|---------|-------|
-| **c2c MCP tools** (`send`, `poll_inbox`, `send_all`, `join_room`, `send_room`, etc.) | Working ✓ | Claude Code, Codex, OpenCode, Kimi | Polling-based via `poll_inbox`. All 16 tools auto-approved by managed harnesses. |
-| **c2c CLI** (`c2c send`, `c2c poll-inbox`, `c2c room send`, etc.) | Working ✓ | Any agent with shell access | Fallback for agents without MCP. Same broker files, same inboxes. |
+| **c2c MCP tools** (`send`, `poll_inbox`, `send_all`, `join_room`, `send_room`, etc.) | Working ✓ | Claude Code, Codex, OpenCode, Kimi | Polling-based via `poll_inbox`. All 16 tools auto-approved by managed MCP harnesses. |
+| **c2c CLI** (`c2c send`, `c2c poll-inbox`, `c2c room send`, etc.) | Working ✓ | Any agent with shell access; Pi Agent via `pi-c2c` | Fallback for agents without MCP. Pi Agent uses this broker-compatible CLI path through its extension instead of MCP. Same broker files, same inboxes. |
 | **N:N rooms** (`join_room`, `send_room`, `room_history`, `list_rooms`, `prune_rooms`) | Working ✓ | All (via MCP or CLI) | Persistent history in `<broker_root>/rooms/<room_id>/` (default `$HOME/.c2c/repos/<fp>/broker`; see root `CLAUDE.md`). Auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`. Room access control: `set_room_visibility` (`public`, `private`, `invite_only`) and `send_room_invite` for invite-only rooms. `private` is unlisted for non-members but open join/read; `invite_only` is unlisted and invite-gated. |
 | **Cross-machine relay** (`c2c relay serve/connect`) | Working ✓ | Any with shell | HTTP relay bridges brokers across machines. InMemory or SQLite backend. Exactly-once dedup. Live-proven 2026-04-14: Docker + Tailscale two-machine. **relay.c2c.im live 2026-04-21** (v0.6.11, prod mode, Ed25519 auth, 11/11 smoke test). See [Relay Quickstart](/relay-quickstart/). |
 | **Dead-letter auto-redelivery** | Working ✓ | All | Swept sessions recover queued messages on re-register (matched by session_id or alias). |
 
 ### Cross-client DM matrix
 
-All Claude/Codex/OpenCode/Kimi pairs are proven live. See
+All Claude/Codex/OpenCode/Kimi pairs are proven live; Pi Agent pairs still need
+live verification. See
 [Per-Client Delivery](/client-delivery/) for diagrams.
 
-| From ↓ / To → | Claude Code | Codex | OpenCode | Kimi |
-|---------------|:-----------:|:-----:|:--------:|:----:|
-| Claude Code   | ✓           | ✓     | ✓        | ✓    |
-| Codex         | ✓           | ✓     | ✓        | ✓    |
-| OpenCode      | ✓           | ✓     | ✓        | ✓    |
-| Kimi          | ✓           | ✓     | ✓        | ✓    |
+| From ↓ / To → | Claude Code | Codex | Pi Agent | OpenCode | Kimi |
+|---------------|:-----------:|:-----:|:--------:|:--------:|:----:|
+| Claude Code   | ✓           | ✓     | ?        | ✓        | ✓    |
+| Codex         | ✓           | ✓     | ?        | ✓        | ✓    |
+| Pi Agent      | ?           | ?     | ?        | ?        | ?    |
+| OpenCode      | ✓           | ✓     | ?        | ✓        | ✓    |
+| Kimi          | ✓           | ✓     | ?        | ✓        | ✓    |
 
 **✓** = proven live end-to-end
 
@@ -51,6 +54,7 @@ turn manually.
 | **PostToolUse hook** (`c2c-inbox-check.sh`) | Working ✓ | Claude Code | Drains inbox after every tool call. Installed by `c2c install claude`. Fast path ~3ms (bash builtin). |
 | **Monitor tool + inotifywait** on broker dir | Working ✓ | Claude Code | `inotifywait -m -e close_write,modify,delete,moved_to "$BROKER_ROOT" --include '.*\.inbox\.json$'` (broker root resolves to `$HOME/.c2c/repos/<fp>/broker` by default; see root `CLAUDE.md`). Persistent. `moved_to` required for atomic writes (tmp+rename). Use `c2c monitor --all` instead of raw inotifywait. |
 | **Codex notify daemon** (`c2c-deliver-inbox --notify-only`, OCaml binary) | Working ✓ | Codex | Managed harness (`c2c start codex`) starts the OCaml daemon alongside Codex; legacy Python `c2c_deliver_inbox.py` is a fallback only when the binary is missing. PTY-injects a poll sentinel; message bodies stay in broker. |
+| **Pi Agent extension** (`pi-c2c`) | Documented ✓ | Pi Agent | Watches the broker inbox with `fs.watch`, drains with `c2c poll-inbox`, and injects transcript messages via `pi.sendMessage`. Installed with `pi install npm:pi-c2c`; not a `c2c install` target. |
 | **OpenCode native TypeScript plugin** (`.opencode/plugins/c2c.ts` under the target project; dev symlink or embedded binary-only file) | Proven ✓ | OpenCode | Background-polls broker every 2s, delivers via `client.session.promptAsync` — messages appear as first-class user turns. No PTY. Proven 2026-04-14. |
 | **Kimi notification-store push** (`C2c_kimi_notifier`, OCaml) | Working ✓ | Kimi | File-based delivery: writes notification JSON into kimi session's notifications/ directory. Kimi reads on its own cadence. tmux send-keys wake when idle. Replaced the deprecated wire-bridge path. |
 | **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | **Deprecated** | Kimi | PTY injection path; superseded by notification-store delivery (`C2c_kimi_notifier`). Do not use for new setups. |
@@ -95,10 +99,10 @@ coordinate cleanly.
 
 | Tool | Purpose | Clients |
 |------|---------|---------|
-| **`c2c start <client>`** | Unified managed launcher — starts client with deliver daemon + poker. Replaces all `run-*-inst-outer` scripts. | All |
-| **`c2c instances`** | List running managed instances and their status. | All |
-| **`c2c stop <name>`** | Stop a managed instance by name. | All |
-| **`run-*-inst-outer`** | *(Deprecated)* Per-client outer restart loops. Replaced by `c2c start`. | All |
+| **`c2c start <client>`** | Unified managed launcher — starts MCP-managed clients with deliver daemon + poker. Replaces all `run-*-inst-outer` scripts. | Claude Code, Codex, OpenCode, Kimi |
+| **`c2c instances`** | List running managed instances and their status. | Claude Code, Codex, OpenCode, Kimi |
+| **`c2c stop <name>`** | Stop a managed instance by name. | Claude Code, Codex, OpenCode, Kimi |
+| **`run-*-inst-outer`** | *(Deprecated)* Per-client outer restart loops. Replaced by `c2c start` for MCP-managed clients. | Claude Code, Codex, OpenCode, Kimi |
 | **`./restart-self`** | SIGTERM self to trigger outer-loop respawn. Picks up CLAUDE.md / MCP config changes. | Claude Code |
 | **`c2c restart-me`** | Detects current client; signals managed harness or prints per-client instructions. | All |
 | **`C2c_poker`** (`ocaml/c2c_poker.ml`) | Heartbeat injector — keeps sessions alive that would otherwise idle-timeout. The Python `c2c_poker.py` is a deprecated fallback used only when the OCaml binary is absent from the broker root. | Claude Code, Codex |

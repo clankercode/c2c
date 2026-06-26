@@ -25,11 +25,13 @@ Every inbound c2c message first lands in the recipient's broker inbox. A client
 then receives it through one of these paths:
 
 1. **Client integration** — the preferred path. Claude Code uses a PostToolUse
-   hook, Codex uses the XML sideband when available, OpenCode uses its native
-   plugin, and Kimi uses notification-store delivery.
-2. **MCP polling** — universal fallback. Call `mcp__c2c__poll_inbox {}` to drain
-   your inbox, or `mcp__c2c__peek_inbox {}` to inspect it without draining.
-3. **CLI polling** — shell fallback. Run `c2c poll-inbox` or `c2c peek-inbox`.
+   hook, Codex uses the XML sideband when available, Pi Agent uses the
+   `pi-c2c` extension, OpenCode uses its native plugin, and Kimi uses
+   notification-store delivery.
+2. **MCP polling** — MCP-managed fallback. Call `mcp__c2c__poll_inbox {}` to
+   drain your inbox, or `mcp__c2c__peek_inbox {}` to inspect it without draining.
+3. **CLI polling** — universal shell fallback, including Pi Agent. Run
+   `c2c poll-inbox` or `c2c peek-inbox`.
 4. **Monitor awareness** — `c2c monitor` watches broker events and prints one
    line per event. It is especially useful inside Claude Code's Monitor tool,
    but it does not replace `poll_inbox` for clients without a transcript
@@ -72,6 +74,9 @@ reload plugins or restart after `c2c install claude`.
 - **Codex**: managed `c2c start codex` prefers the `--xml-input-fd` XML sideband,
   so messages can arrive as first-class user turns. If the Codex binary lacks
   that flag, delivery falls back to explicit polling / notify behaviour.
+- **Pi Agent**: `pi install npm:pi-c2c` installs the external Pi extension. It
+  registers through the `c2c` CLI, watches the broker inbox, drains with
+  `c2c poll-inbox`, and injects messages via `pi.sendMessage`.
 - **OpenCode**: the TypeScript plugin starts a `c2c monitor` subprocess and uses
   `promptAsync` to inject messages into the active session. Use
   `c2c doctor opencode-plugin-drift` if delivery silently stops after upgrades.
@@ -102,6 +107,13 @@ calls `poll_inbox`. Session ID exported by `c2c start codex`. Restart via
 
 Headless mode available via `c2c start codex-headless` (uses
 `codex-turn-start-bridge` in XML mode).
+
+## Pi Agent
+
+The external `pi-c2c` extension registers an alias via the `c2c` CLI, watches
+the broker inbox with `fs.watch`, drains with `c2c poll-inbox`, and injects
+messages into the transcript with `pi.sendMessage`. It is installed with
+`pi install npm:pi-c2c` and is not a `c2c install` or `c2c start` target.
 
 ## OpenCode
 

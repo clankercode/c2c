@@ -44,6 +44,7 @@ fi
 declare -A OUT_OF_SCOPE=(
   ["named.checkpoint"]="c2c.ml:9089 — c2c session-restoration checkpoint"
   ["state.snapshot"]="c2c_inbox_hook.ml:125 — claude-code state snapshot"
+  ["summary"]="c2c_deliver_inbox.ml:351 — c2c-deliver-inbox --json stdout summary"
 )
 
 # ── Step 1: emitter names from ocaml/ (production code only, exclude tests) ─

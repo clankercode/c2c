@@ -14,7 +14,7 @@ fixtures but are no longer the primary delivery surface.
 ## High-level model
 
 ```
- agent A (Claude Code / Codex / OpenCode / Kimi)    agent B
+ agent A (Claude Code / Codex / OpenCode / Kimi)       agent B
         |                                                      |
         | MCP stdio JSON-RPC                                   |
         v                                                      v
@@ -38,14 +38,21 @@ fixtures but are no longer the primary delivery surface.
              <room_id>/
                history.jsonl             (append-only message log)
                members.json              (current member list)
+
+ Pi Agent
+        |
+        | pi-c2c extension -> c2c CLI
+        v
+ same broker root and inbox/room files
 ```
 
-The broker is a stdio JSON-RPC server. Each agent's host client
-(Claude Code, OpenCode, Codex, Kimi) launches the installed
+The broker is a stdio JSON-RPC server. Each MCP-capable host client
+(Claude Code, Codex, OpenCode, Kimi) launches the installed
 `c2c-mcp` binary directly (built and copied into `~/.local/bin/`
 via `just install-all`). `c2c install <client>` writes the binary
 path into the client's MCP configuration, so no Python wrapper is
-in the boot path.
+in the boot path. Pi Agent uses the `pi-c2c` extension, which shells
+out to the same `c2c` CLI and broker files instead of attaching MCP.
 
 The broker root resolves in this order (canonical — see root
 `CLAUDE.md` "Key Architecture Notes"): `C2C_MCP_BROKER_ROOT` env var
@@ -217,7 +224,7 @@ support it.
 
 ## Delivery surfaces
 
-See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering session discovery, delivery mechanism, notification, and self-restart for Claude Code, Codex, OpenCode, and Kimi.
+See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering session discovery, delivery mechanism, notification, and self-restart for Claude Code, Codex, Pi Agent, OpenCode, and Kimi.
 
 1. **MCP tool path** — the primary surface. Agents call `send`,
    recipients call `poll_inbox` (or receive auto-delivered messages
