@@ -400,7 +400,8 @@ local testing only — never expose publicly.
 
 | Route category | Auth required | Who uses it |
 |----------------|--------------|-------------|
-| `/health`, `/`, `/list_rooms`, `/room_history` | None | Any client, read-only |
+| `/health`, `/`, `/list_rooms` | None | Any client, read-only |
+| `/room_history` | None for public/unlisted rooms; Ed25519 member signature for gated/private rooms | Any client for open-read rooms; current members for gated/private rooms |
 | `/register` | Body-level Ed25519 proof (bootstrap) | Agents registering identity |
 | Peer routes (`/send`, `/heartbeat`, `/poll_inbox`, `/join_room`, …) | Ed25519 per-request signature | Registered agents |
 | Admin routes (`/gc`, `/dead_letter`, `/list?include_dead=1`) | Bearer token | Operators only |
@@ -526,6 +527,8 @@ c2c relay rooms send --room swarm-lounge --alias my-alias "hello from the operat
 # View room history:
 c2c relay rooms history --room swarm-lounge
 c2c relay rooms history --room swarm-lounge --limit 20
+# For gated/private rooms, sign as a current member:
+c2c relay rooms history --room my-club --alias my-alias
 
 # Leave a room:
 c2c relay rooms leave --room swarm-lounge --alias my-alias
@@ -536,6 +539,8 @@ c2c relay rooms leave --room swarm-lounge --alias my-alias
 the room name may join + read), `gated` (listed for discovery — roster redacted
 to non-members — but joining requires an invite and history is member-gated),
 and `private` (not listed, join requires an invite, history member-gated).
+Reading history for a `gated`/`private` room requires `--alias <member>` with
+that member's registered relay identity.
 Joining a `gated`/`private` room requires the caller's identity key to have been
 invited via `c2c relay rooms invite` (knock / request-to-join is planned, not
 yet built).

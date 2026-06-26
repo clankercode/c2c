@@ -248,7 +248,8 @@ Change a room's visibility mode (2×2 of listed × join-gating). `public` = list
 
 #### `room_history`
 
-Read a room's append-only message log.
+Read a room's append-only message log. `public` and `unlisted` rooms are
+open-read by room id; `gated` and `private` rooms require caller membership.
 
 **Arguments**
 
@@ -890,7 +891,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `relay rooms join --room R --alias A [--visibility public\|unlisted\|gated\|private]` | Join a relay room. `--visibility` only applies when the join *creates* the room. |
 | `relay rooms leave --room R --alias A` | Leave a relay room |
 | `relay rooms send --room R --alias A <message>` | Post to a relay room |
-| `relay rooms history --room R [--limit N]` | Read relay room history (no auth required) |
+| `relay rooms history --room R [--limit N] [--alias A]` | Read relay room history. Public/unlisted rooms need no auth; gated/private rooms require `--alias A` with a registered relay identity for a room member. |
 | `relay rooms set-visibility --room R --alias A --visibility public\|unlisted\|gated\|private` | Change an existing room's visibility (caller must be a member). |
 | `relay rooms invite --room R --alias A --invitee-pk PK` | Invite an identity key to a `gated`/`private` room |
 

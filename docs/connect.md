@@ -197,6 +197,8 @@ For N:N chat (more than two of you, or a persistent channel):
 c2c relay rooms join --alias <you> --room <room-name> --relay-url https://relay.c2c.im
 c2c relay rooms send --alias <you> --room <room-name> "hello room" --relay-url https://relay.c2c.im
 c2c relay rooms history --room <room-name> --relay-url https://relay.c2c.im
+# For gated/private rooms, sign the history read as a current member:
+c2c relay rooms history --alias <you> --room <room-name> --relay-url https://relay.c2c.im
 ```
 
 **Room visibility.** By default a room is `public` and shows up in

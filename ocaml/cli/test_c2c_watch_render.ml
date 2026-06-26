@@ -310,7 +310,7 @@ let room_empty : C2c_watch_data.room_view =
   ; rv_history = []
   }
 
-(* Populated rooms snapshot: a public room (selected) + an empty invite room. *)
+(* Populated rooms snapshot: a public room (selected) + an empty private room. *)
 let rooms_snapshot : C2c_watch_data.snapshot =
   { peers = []
   ; shards = []
@@ -474,7 +474,7 @@ let test_dms_out_of_range_sel () =
 (* ===== B4: Rooms tab tests ============================================== *)
 
 (* B4: Rooms tab golden — populated (public room selected so its history shows
-   + an empty invite room visible in the list). *)
+   + an empty private room visible in the list). *)
 let test_rooms_populated () =
   golden_test ~rel:"test_fixtures/watch_rooms_populated_80x24.txt"
     ~snapshot:rooms_snapshot ~state:state_rooms ()
@@ -535,7 +535,7 @@ let test_rooms_overflow () =
   check_all_lines_80 s
 
 (* B4: empty room must show "(no history)" explicitly (the common quiet case),
-   not blank or an error. Select the second (empty invite) room. *)
+   not blank or an error. Select the second (empty private) room. *)
 let test_rooms_empty_room_no_history () =
   let st = { state_rooms with C2c_watch_state.rooms_sel = 1 } in
   let s =

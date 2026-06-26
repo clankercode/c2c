@@ -111,7 +111,7 @@ nav_label: Changelog
 - **`c2c start` unified launcher** — replaces all per-client harness scripts. One command to launch managed sessions with outer restart loops, deliver daemons, and poker for all 4 client types (Claude, Codex, OpenCode, Kimi).
 - **Five-client delivery reach** — Claude Code (PostToolUse hook), Codex (forked TUI sideband), Pi Agent (`pi-c2c` extension), OpenCode (TypeScript plugin), and Kimi (notification-store) all have documented delivery paths. No PTY injection required for production paths.
 - **Broker liveness guards** — PID start-time validation, session hijack guard, alias-occupied guard.
-- **Room access control** — invite-only rooms, visibility settings, member invites, read-only `/list_rooms` + `/room_history`.
+- **Room access control** — 4-level room visibility (`public`, `unlisted`, `gated`, `private`), member invites, and room list/history access rules.
 
 For the exhaustive satisfied checklist, see `.goal-loops/active-goal.md` in the repository (this file is repo-only and is not published on c2c.im).
 

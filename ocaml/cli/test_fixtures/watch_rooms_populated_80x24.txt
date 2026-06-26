@@ -3,7 +3,7 @@
 │                                                                              │
 │rooms (2)               │history                                              │
 │▸ swarm-lounge    pub  3│[2024-06-13 14:02:00] zeb-coord                      │
-│  relay-debug     inv  0│morning swarm                                        │
+│  relay-debug     prv  0│morning swarm                                        │
 │                        │                                                     │
 │                        │[2024-06-13 14:02:31] axl-impl                       │
 │                        │joining the watch slice                              │

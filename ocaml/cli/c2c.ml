@@ -4986,7 +4986,7 @@ let relay_rooms_cmd =
     Cmdliner.Arg.(value & opt int 50 & info [ "limit" ] ~docv:"N" ~doc:"Max messages for history (default 50).")
   in
   let alias =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias (required for join/leave/send/invite/uninvite).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias (required for join/leave/send/invite/uninvite; optional for history, required there for gated/private rooms).")
   in
   let invitee_pk =
     Cmdliner.Arg.(value & opt (some string) None & info [ "invitee-pk" ] ~docv:"PK" ~doc:"Base64url invitee identity public key (required for invite/uninvite).")
@@ -5115,7 +5115,27 @@ let relay_rooms_cmd =
            exit 1
        | Some url, Some room_id ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           let result = Lwt_main.run (Relay.Relay_client.room_history client ~room_id ~limit ()) in
+           let result =
+             match Relay_identity.load (), alias with
+             | Ok id, Some alias ->
+                 let body =
+                   `Assoc
+                     [ ("room_id", `String room_id)
+                     ; ("limit", `Int limit)
+                     ]
+                 in
+                 let auth =
+                   Relay_signed_ops.sign_request id ~alias ~meth:"POST"
+                     ~path:"/room_history"
+                     ~body_str:(Yojson.Safe.to_string body) ()
+                 in
+                 Lwt_main.run
+                   (Relay.Relay_client.room_history_signed client ~room_id ~limit
+                      ~auth_header:auth ())
+             | _ ->
+                 Lwt_main.run
+                   (Relay.Relay_client.room_history client ~room_id ~limit ())
+           in
            (* L4/3 client verify: annotate each history entry with sig_ok. *)
            let annotate entry =
              match entry with

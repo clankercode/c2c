@@ -2955,10 +2955,10 @@ end = struct
   let err_unauthorized = "unauthorized"
 
   let auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified =
-    (* /list_rooms and /room_history are read-only queries with no state mutation;
-       treating them as peer routes (Ed25519 required) would break `c2c relay rooms list`
-       and `room history` which have no natural signing alias in prod mode. Allow
-       unauthenticated read access — same as /health. *)
+    (* /list_rooms is a read-only public directory. /room_history is allowed
+       through here because the handler applies per-room visibility: public and
+       unlisted rooms remain open-read, while gated/private rooms require a
+       verified Ed25519 member alias. *)
     let is_unauth = List.mem path ["/health"; "/"; "/list_rooms"; "/room_history"; "/device-login"] in
     let is_admin =
       path = "/gc"
@@ -4457,14 +4457,26 @@ generateKeys();
            ) delivered;
            respond_ok (json_of_send_room_result (ts, delivered, skipped))
 
-  let handle_room_history relay body =
+  let handle_room_history relay ~verified_alias body =
     let room_id = get_string body "room_id" in
     if room_id = "" then
       respond_bad_request (json_error_str err_bad_request "room_id is required")
     else
       let limit = get_int body "limit" 50 in
-      let history = R.room_history relay ~room_id ~limit in
-      respond_ok (json_ok [ ("room_id", `String room_id); ("history", `List history) ])
+      let visibility = R.room_visibility_of relay ~room_id in
+      let open_read = visibility = "public" || visibility = "unlisted" in
+      let member_read =
+        match verified_alias with
+        | Some alias -> R.is_room_member_alias relay ~room_id ~alias
+        | None -> false
+      in
+      if (not open_read) && not member_read then
+        respond_unauthorized
+          (json_error_str relay_err_not_a_member
+             (Printf.sprintf "room %S history requires membership" room_id))
+      else
+        let history = R.room_history relay ~room_id ~limit in
+        respond_ok (json_ok [ ("room_id", `String room_id); ("history", `List history) ])
 
   (* S5a: POST /mobile-pair/prepare — store signed pairing token, return binding_id *)
   let handle_mobile_pair_prepare relay ~client_ip body =
@@ -5284,7 +5296,7 @@ generateKeys();
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_room_history relay j)
+         | Ok j -> handle_room_history relay ~verified_alias j)
 
       (* === #330 S4: inbound forward from peer relay === *)
       | `POST, "/forward" ->
@@ -5453,6 +5465,8 @@ module Relay_client : sig
   val list_rooms : t -> Yojson.Safe.t Lwt.t
   val room_history :
     t -> room_id:string -> ?limit:int -> unit -> Yojson.Safe.t Lwt.t
+  val room_history_signed :
+    t -> room_id:string -> ?limit:int -> auth_header:string -> unit -> Yojson.Safe.t Lwt.t
   val join_room : t -> ?visibility:string -> alias:string -> room_id:string -> Yojson.Safe.t Lwt.t
   val join_room_signed : t -> ?visibility:string -> alias:string -> room_id:string
     -> identity_pk:string -> ts:string -> nonce:string -> sig_:string
@@ -5699,6 +5713,14 @@ end = struct
       ("room_id", `String room_id);
       ("limit", `Int limit);
     ])
+
+  let room_history_signed t ~room_id ?(limit = 50) ~auth_header () =
+    post_auth t "/room_history"
+      (`Assoc [
+        ("room_id", `String room_id);
+        ("limit", `Int limit);
+      ])
+      auth_header
 
   let join_room t ?visibility ~alias ~room_id =
     let fields = [

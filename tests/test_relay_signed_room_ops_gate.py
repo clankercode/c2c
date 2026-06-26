@@ -17,6 +17,7 @@ Requires: cryptography (pip install cryptography)
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -46,12 +47,20 @@ class RelayClient:
         self.base_url = base_url.rstrip("/")
         self.token = token
 
-    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        auth_header: str | None = None,
+    ) -> dict:
         url = f"{self.base_url}{path}"
         data = json.dumps(body or {}).encode() if body is not None else b""
         req = urllib.request.Request(url, data=data or None, method=method)
         req.add_header("Content-Type", "application/json")
-        if self.token:
+        if auth_header:
+            req.add_header("Authorization", auth_header)
+        elif self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -65,8 +74,8 @@ class RelayClient:
     def get(self, path: str) -> dict:
         return self._request("GET", path)
 
-    def post(self, path: str, body: dict) -> dict:
-        return self._request("POST", path, body)
+    def post(self, path: str, body: dict, auth_header: str | None = None) -> dict:
+        return self._request("POST", path, body, auth_header=auth_header)
 
     def register(self, node_id: str, session_id: str, alias: str, **kw) -> dict:
         return self.post("/register", {"node_id": node_id, "session_id": session_id,
@@ -195,6 +204,47 @@ class SignedRoomOpHelper:
         secret = base64.urlsafe_b64decode(self.secret_b64 + "==")
         key = ed25519.Ed25519PrivateKey.from_private_bytes(secret)
         return key.sign(msg.encode())
+
+    def sign_register(self, relay_url: str) -> dict:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        nonce = self._b64url_nopad_encode(os.urandom(16))
+        blob = "\x1f".join([
+            "c2c/v1/register",
+            self.alias,
+            relay_url.lower(),
+            self.identity_pk_b64,
+            ts,
+            nonce,
+        ])
+        sig = self._sign(blob)
+        return {
+            "identity_pk": self.identity_pk_b64,
+            "signature": self._b64url_nopad_encode(sig),
+            "timestamp": ts,
+            "nonce": nonce,
+        }
+
+    def sign_request(self, method: str, path: str, body: dict) -> str:
+        ts = f"{time.time():.6f}"
+        nonce = self._b64url_nopad_encode(os.urandom(16))
+        body_str = json.dumps(body or {})
+        body_hash = self._b64url_nopad_encode(
+            hashlib.sha256(body_str.encode()).digest()
+        )
+        blob = "\x1f".join([
+            "c2c/v1/request",
+            method.upper(),
+            path,
+            "",
+            body_hash,
+            ts,
+            nonce,
+        ])
+        sig = self._sign(blob)
+        return (
+            f"Ed25519 alias={self.alias},ts={ts},nonce={nonce},"
+            f"sig={self._b64url_nopad_encode(sig)}"
+        )
 
     def sign_room_op(self, sign_ctx: str, room_id: str) -> dict:
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -371,10 +421,16 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
         cls.server.start()
         cls.client = RelayClient(cls.server.base_url, token=TOKEN)
         cls.helper = SignedRoomOpHelper(generate_identity(cls.ALIAS))
-        cls.client.register("n-vis", "s-vis", cls.ALIAS)
+        cls.client.register(
+            "n-vis", "s-vis", cls.ALIAS,
+            **cls.helper.sign_register(cls.server.base_url),
+        )
         # A second signed identity used to exercise the join-gate cells.
         cls.helper2 = SignedRoomOpHelper(generate_identity(cls.ALIAS2))
-        cls.client.register("n-vis2", "s-vis2", cls.ALIAS2)
+        cls.client.register(
+            "n-vis2", "s-vis2", cls.ALIAS2,
+            **cls.helper2.sign_register(cls.server.base_url),
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -392,6 +448,14 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
         r = self.client.get("/list_rooms")
         self.assertTrue(r.get("ok"), f"list_rooms failed: {r}")
         return {room["room_id"] for room in r.get("rooms", [])}
+
+    def _signed_history(self, helper: SignedRoomOpHelper, room_id: str) -> dict:
+        body = {"room_id": room_id, "limit": 20}
+        return self.client.post(
+            "/room_history",
+            body,
+            auth_header=helper.sign_request("POST", "/room_history", body),
+        )
 
     def test_signed_join_public_is_listed(self):
         r = self._signed_join("vis-e2e-public", "public")
@@ -444,6 +508,50 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
         })
         self.assertTrue(r2["ok"],
                         f"open join into an unlisted room must be accepted: {r2}")
+
+    def test_gated_history_member_gated(self):
+        r = self._signed_join("vis-e2e-gated-history", "gated")
+        self.assertTrue(r["ok"], f"signed join (gated) should be accepted: {r}")
+
+        outsider = self._signed_history(self.helper2, "vis-e2e-gated-history")
+        self.assertFalse(
+            outsider["ok"],
+            f"non-member must not read gated history: {outsider}",
+        )
+        self.assertEqual(outsider.get("error_code"), "not_a_member")
+
+        member = self._signed_history(self.helper, "vis-e2e-gated-history")
+        self.assertTrue(member["ok"], f"member must read gated history: {member}")
+
+    def test_private_history_member_gated(self):
+        r = self._signed_join("vis-e2e-private-history", "private")
+        self.assertTrue(r["ok"], f"signed join (private) should be accepted: {r}")
+
+        outsider = self._signed_history(self.helper2, "vis-e2e-private-history")
+        self.assertFalse(
+            outsider["ok"],
+            f"non-member must not read private history: {outsider}",
+        )
+        self.assertEqual(outsider.get("error_code"), "not_a_member")
+
+        member = self._signed_history(self.helper, "vis-e2e-private-history")
+        self.assertTrue(member["ok"], f"member must read private history: {member}")
+
+    def test_public_and_unlisted_history_open_read(self):
+        for room_id, visibility in [
+            ("vis-e2e-public-history", "public"),
+            ("vis-e2e-unlisted-history", "unlisted"),
+        ]:
+            r = self._signed_join(room_id, visibility)
+            self.assertTrue(
+                r["ok"],
+                f"signed join ({visibility}) should be accepted: {r}",
+            )
+            anon = self.client.post("/room_history", {"room_id": room_id, "limit": 20})
+            self.assertTrue(
+                anon["ok"],
+                f"{visibility} history should be open-read without auth: {anon}",
+            )
 
     def test_signed_set_visibility_gated_stays_listed(self):
         # Create as public (listed), then flip to gated — still listed.
