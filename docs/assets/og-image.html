@@ -5,9 +5,9 @@
   or `just og-image` from the repo root). Self-contained except for Google
   Fonts (the render script waits for document.fonts.ready before screenshotting).
 
-  Identity: terminal / CLI hacker aesthetic — warm near-black, amber + green,
-  monospace. The diagram is c2c's actual model: named agent harnesses clustered
-  on two hosts, bridged peer-to-peer by a self-hostable relay.
+  Identity: terminal / CLI hacker aesthetic — warm near-black, amber + green.
+  Diagram: named agent harnesses on two hosts, each fanning out to subagents,
+  bridged peer-to-peer by a self-hostable relay.
 -->
 <html lang="en">
   <head>
@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
     <style>
@@ -97,49 +97,49 @@
       /* Corner taglines flanking the wordmark */
       .tag-left, .tag-right {
         position: absolute;
-        top: 66px;
+        top: 60px;
         z-index: 4;
-        font-family: "Inter", sans-serif;
-        font-weight: 600;
-        font-size: 33px;
-        line-height: 1.16;
-        letter-spacing: 0.002em;
+        font-family: "Space Grotesk", sans-serif;
+        font-weight: 700;
+        font-size: 41px;
+        line-height: 1.1;
+        letter-spacing: -0.005em;
       }
-      .tag-left { left: 48px; color: var(--heading); }
+      .tag-left { left: 46px; color: var(--heading); }
       .tag-left .em { color: var(--amber); }
-      .tag-right { right: 48px; text-align: right; color: var(--amber); }
+      .tag-right { right: 46px; text-align: right; color: var(--amber); }
       .tag-right .sm { color: var(--muted); font-weight: 500; }
 
       /* Hero wordmark (center) */
       .hero {
         position: absolute;
-        top: 60px; left: 0; right: 0;
+        top: 48px; left: 0; right: 0;
         text-align: center;
         z-index: 4;
       }
       .wordmark {
         font-weight: 800;
-        font-size: 96px;
+        font-size: 116px;
         line-height: 1;
         letter-spacing: 0.01em;
         color: var(--heading);
-        text-shadow: 0 0 46px rgba(245,166,35,0.28);
+        text-shadow: 0 0 50px rgba(245,166,35,0.30);
       }
       .wordmark .prompt {
         color: var(--green);
-        text-shadow: 0 0 30px rgba(62,255,140,0.55);
+        text-shadow: 0 0 34px rgba(62,255,140,0.55);
         margin-right: 0.16em;
       }
       .wordmark .c2c { color: var(--amber); }
       .wordmark .cursor {
         display: inline-block;
-        width: 18px;
-        height: 76px;
+        width: 22px;
+        height: 92px;
         background: var(--green);
-        border-radius: 3px;
-        margin-left: 0.12em;
-        vertical-align: -10px;
-        box-shadow: 0 0 26px rgba(62,255,140,0.6);
+        border-radius: 4px;
+        margin-left: 0.1em;
+        vertical-align: -12px;
+        box-shadow: 0 0 30px rgba(62,255,140,0.6);
       }
 
       /* Diagram */
@@ -154,36 +154,47 @@
       }
       .chip-label {
         fill: var(--text);
-        font-size: 23px;
+        font-size: 25px;
         font-weight: 500;
         letter-spacing: 0.01em;
       }
+      .sub-label {
+        fill: var(--muted);
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: 0.03em;
+        text-anchor: middle;
+      }
       .relay-label {
         fill: var(--heading);
-        font-size: 24px;
+        font-size: 27px;
         font-weight: 800;
-        letter-spacing: 0.13em;
+        letter-spacing: 0.12em;
         text-anchor: middle;
       }
       .relay-sub {
         fill: var(--amber);
-        font-size: 17px;
+        font-size: 22.5px;
         font-weight: 500;
         text-anchor: middle;
         letter-spacing: 0.02em;
+        paint-order: stroke;
+        stroke: #0a0806;
+        stroke-width: 3.6px;
+        stroke-linejoin: round;
       }
 
       /* Command status row (3 boxes, full width) */
       .cmdrow {
         position: absolute;
         left: 60px; right: 60px;
-        bottom: 70px;
+        bottom: 56px;
         display: flex;
         gap: 14px;
         z-index: 4;
       }
       .cmdbox {
-        height: 56px;
+        height: 54px;
         border-radius: 10px;
         background: var(--void);
         border: 1px solid var(--border);
@@ -208,7 +219,7 @@
       .statusbar {
         position: absolute;
         left: 0; right: 0; bottom: 0;
-        height: 40px;
+        height: 38px;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -236,13 +247,16 @@
         <div class="status"><span class="live"></span>relay.c2c.im &middot; connected</div>
       </div>
 
-      <!-- Network diagram: two hosts of named harnesses, bridged by a self-hostable relay -->
+      <!-- Network diagram: two hosts of named harnesses + subagents, bridged by a self-hostable relay -->
       <svg class="diagram" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
         <defs>
           <marker id="agL" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,1.5 L8,5 L0,8.5 z" fill="#2baf63" />
           </marker>
-          <marker id="agA" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.4" markerHeight="5.4" orient="auto-start-reverse">
+          <marker id="agS" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+            <path d="M0,1.5 L8,5 L0,8.5 z" fill="#2baf63" />
+          </marker>
+          <marker id="agA" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.2" markerHeight="5.2" orient="auto-start-reverse">
             <path d="M0,1 L9,5 L0,9 z" fill="#f5a623" />
           </marker>
           <radialGradient id="relayGlow" cx="50%" cy="50%" r="50%">
@@ -250,113 +264,124 @@
             <stop offset="45%" stop-color="#f5a623" stop-opacity="0.16" />
             <stop offset="100%" stop-color="#f5a623" stop-opacity="0" />
           </radialGradient>
-          <!-- chip body: subtle top-lit depth -->
           <linearGradient id="chipFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stop-color="#1d1912" />
             <stop offset="100%" stop-color="#100d09" />
           </linearGradient>
-          <!-- relay ring: amber -> gold sweep for richness -->
           <linearGradient id="relayRing" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0%" stop-color="#ffd24a" />
             <stop offset="52%" stop-color="#f5a623" />
             <stop offset="100%" stop-color="#d98b14" />
           </linearGradient>
-          <!-- host container: faint top sheen so it reads as a machine surface -->
           <linearGradient id="hostFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stop-color="#fff0c8" stop-opacity="0.045" />
             <stop offset="55%" stop-color="#fff0c8" stop-opacity="0" />
           </linearGradient>
         </defs>
 
-        <!-- diagram shifted into the space freed by the compact header + lowered status row -->
-        <g transform="translate(0,18)">
+        <g transform="translate(0,6)">
+        <!-- ===== Subagents (outer-edge satellites, two-way thin links) ===== -->
+        <g stroke="#2baf63" stroke-width="1.8" opacity="0.7" marker-start="url(#agS)" marker-end="url(#agS)" fill="none">
+          <line x1="206" y1="310" x2="138" y2="300" />
+          <line x1="206" y1="412" x2="138" y2="422" />
+          <line x1="994" y1="310" x2="1062" y2="300" />
+          <line x1="994" y1="412" x2="1062" y2="422" />
+        </g>
+        <g>
+          <circle cx="116" cy="300" r="16" fill="#100d09" stroke="#f5a623" stroke-width="1.5" opacity="0.92" />
+          <circle cx="116" cy="300" r="3.4" fill="#f5a623" />
+          <circle cx="116" cy="422" r="16" fill="#100d09" stroke="#3ee8f5" stroke-width="1.5" opacity="0.92" />
+          <circle cx="116" cy="422" r="3.4" fill="#3ee8f5" />
+          <circle cx="1084" cy="300" r="16" fill="#100d09" stroke="#3eff8c" stroke-width="1.5" opacity="0.92" />
+          <circle cx="1084" cy="300" r="3.4" fill="#3eff8c" />
+          <circle cx="1084" cy="422" r="16" fill="#100d09" stroke="#e85c9c" stroke-width="1.5" opacity="0.92" />
+          <circle cx="1084" cy="422" r="3.4" fill="#e85c9c" />
+          <text x="116" y="356" class="sub-label">subagents</text>
+          <text x="1084" y="356" class="sub-label">subagents</text>
+        </g>
+
         <!-- ===== Host containers (two machines) ===== -->
         <g>
-          <rect x="84" y="252" width="278" height="208" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
-          <rect x="84" y="252" width="278" height="208" rx="14" fill="url(#hostFill)" />
-          <rect x="838" y="252" width="278" height="208" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
-          <rect x="838" y="252" width="278" height="208" rx="14" fill="url(#hostFill)" />
-          <!-- machine glyph (stacked server units) beside each host label -->
+          <rect x="190" y="256" width="246" height="208" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
+          <rect x="190" y="256" width="246" height="208" rx="14" fill="url(#hostFill)" />
+          <rect x="764" y="256" width="246" height="208" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
+          <rect x="764" y="256" width="246" height="208" rx="14" fill="url(#hostFill)" />
           <g stroke="#9c968a" stroke-width="1.4" fill="none">
-            <rect x="84" y="232.5" width="15" height="5" rx="1.5" />
-            <rect x="84" y="239.5" width="15" height="5" rx="1.5" />
-            <rect x="1101" y="232.5" width="15" height="5" rx="1.5" />
-            <rect x="1101" y="239.5" width="15" height="5" rx="1.5" />
+            <rect x="190" y="236.5" width="15" height="5" rx="1.5" />
+            <rect x="190" y="243.5" width="15" height="5" rx="1.5" />
+            <rect x="995" y="236.5" width="15" height="5" rx="1.5" />
+            <rect x="995" y="243.5" width="15" height="5" rx="1.5" />
           </g>
-          <g fill="#3eff8c"><circle cx="95.5" cy="235" r="1.1" /><circle cx="95.5" cy="242" r="1.1" /><circle cx="1104.5" cy="235" r="1.1" /><circle cx="1104.5" cy="242" r="1.1" /></g>
-          <text x="108" y="243" class="host-tab">host: box1</text>
-          <text x="1092" y="243" class="host-tab" text-anchor="end">host: box2</text>
+          <g fill="#3eff8c"><circle cx="201.5" cy="239" r="1.1" /><circle cx="201.5" cy="246" r="1.1" /><circle cx="998.5" cy="239" r="1.1" /><circle cx="998.5" cy="246" r="1.1" /></g>
+          <text x="214" y="247" class="host-tab">host: box1</text>
+          <text x="986" y="247" class="host-tab" text-anchor="end">host: box2</text>
         </g>
 
         <!-- ===== Intra-host links (green, two-way) ===== -->
         <g stroke="#2baf63" stroke-width="2.8" opacity="0.85" marker-start="url(#agL)" marker-end="url(#agL)">
           <!-- box1: claude <-> codex, each to hub -->
-          <line x1="206" y1="320" x2="206" y2="384" />
-          <line x1="288" y1="298" x2="345" y2="340" />
-          <line x1="288" y1="406" x2="345" y2="364" />
+          <line x1="313" y1="338" x2="313" y2="386" />
+          <line x1="414" y1="312" x2="450" y2="346" />
+          <line x1="414" y1="410" x2="450" y2="358" />
           <!-- box2: opencode <-> pi agent, each to hub -->
-          <line x1="994" y1="320" x2="994" y2="384" />
-          <line x1="912" y1="298" x2="855" y2="340" />
-          <line x1="912" y1="406" x2="855" y2="364" />
+          <line x1="887" y1="338" x2="887" y2="386" />
+          <line x1="786" y1="312" x2="750" y2="346" />
+          <line x1="786" y1="410" x2="750" y2="358" />
         </g>
 
-        <!-- ===== Relay spine (thick, amber, two-way) ===== -->
-        <g stroke="#f5a623" stroke-width="5" marker-start="url(#agA)" marker-end="url(#agA)">
-          <line x1="362" y1="352" x2="524" y2="352" />
-          <line x1="676" y1="352" x2="838" y2="352" />
+        <!-- ===== Relay spine (thick, amber, two-way, SHORT) ===== -->
+        <g stroke="#f5a623" stroke-width="5.2" marker-start="url(#agA)" marker-end="url(#agA)">
+          <line x1="462" y1="352" x2="516" y2="352" />
+          <line x1="684" y1="352" x2="738" y2="352" />
         </g>
-        <!-- in-flight packet dots: imply traffic flowing through the relay -->
         <g fill="#ffd27a">
-          <circle cx="430" cy="352" r="5" />
-          <circle cx="470" cy="352" r="3.2" opacity="0.6" />
-          <circle cx="730" cy="352" r="3.2" opacity="0.6" />
-          <circle cx="770" cy="352" r="5" />
+          <circle cx="489" cy="352" r="4.5" />
+          <circle cx="711" cy="352" r="4.5" />
         </g>
 
         <!-- ===== Host hubs ===== -->
         <g>
-          <circle cx="350" cy="352" r="8" fill="#1a1714" stroke="#f5a623" stroke-width="2.2" />
-          <circle cx="850" cy="352" r="8" fill="#1a1714" stroke="#f5a623" stroke-width="2.2" />
+          <circle cx="452" cy="352" r="8" fill="#1a1714" stroke="#f5a623" stroke-width="2.2" />
+          <circle cx="748" cy="352" r="8" fill="#1a1714" stroke="#f5a623" stroke-width="2.2" />
         </g>
 
         <!-- ===== Agent chips ===== -->
         <!-- box1: claude (amber), codex (cyan) -->
         <g>
-          <rect x="116" y="276" width="172" height="50" rx="10" fill="url(#chipFill)" stroke="#f5a623" stroke-width="1.7" opacity="0.96" />
-          <circle cx="140" cy="301" r="5.5" fill="#f5a623" />
-          <text x="162" y="309" class="chip-label" text-anchor="start">claude</text>
+          <rect x="212" y="284" width="202" height="56" rx="10" fill="url(#chipFill)" stroke="#f5a623" stroke-width="1.8" opacity="0.96" />
+          <circle cx="238" cy="312" r="6" fill="#f5a623" />
+          <text x="262" y="321" class="chip-label" text-anchor="start">claude</text>
 
-          <rect x="116" y="378" width="172" height="50" rx="10" fill="url(#chipFill)" stroke="#3ee8f5" stroke-width="1.7" opacity="0.96" />
-          <circle cx="140" cy="403" r="5.5" fill="#3ee8f5" />
-          <text x="162" y="411" class="chip-label" text-anchor="start">codex</text>
+          <rect x="212" y="384" width="202" height="56" rx="10" fill="url(#chipFill)" stroke="#3ee8f5" stroke-width="1.8" opacity="0.96" />
+          <circle cx="238" cy="412" r="6" fill="#3ee8f5" />
+          <text x="262" y="421" class="chip-label" text-anchor="start">codex</text>
         </g>
         <!-- box2: opencode (green), pi agent (magenta) -->
         <g>
-          <rect x="912" y="276" width="172" height="50" rx="10" fill="url(#chipFill)" stroke="#3eff8c" stroke-width="1.7" opacity="0.96" />
-          <circle cx="1060" cy="301" r="5.5" fill="#3eff8c" />
-          <text x="1038" y="309" class="chip-label" text-anchor="end">opencode</text>
+          <rect x="786" y="284" width="202" height="56" rx="10" fill="url(#chipFill)" stroke="#3eff8c" stroke-width="1.8" opacity="0.96" />
+          <circle cx="962" cy="312" r="6" fill="#3eff8c" />
+          <text x="938" y="321" class="chip-label" text-anchor="end">opencode</text>
 
-          <rect x="912" y="378" width="172" height="50" rx="10" fill="url(#chipFill)" stroke="#e85c9c" stroke-width="1.7" opacity="0.96" />
-          <circle cx="1060" cy="403" r="5.5" fill="#e85c9c" />
-          <text x="1038" y="411" class="chip-label" text-anchor="end">pi agent</text>
+          <rect x="786" y="384" width="202" height="56" rx="10" fill="url(#chipFill)" stroke="#e85c9c" stroke-width="1.8" opacity="0.96" />
+          <circle cx="962" cy="412" r="6" fill="#e85c9c" />
+          <text x="938" y="421" class="chip-label" text-anchor="end">pi agent</text>
         </g>
 
         <!-- ===== Relay hub (center, dominant) ===== -->
         <g>
-          <circle cx="600" cy="352" r="104" fill="url(#relayGlow)" />
-          <!-- broadcast pulse rings: liveness / fan-out energy -->
-          <circle cx="600" cy="352" r="112" fill="none" stroke="#f5a623" stroke-width="1.3" opacity="0.12" />
-          <circle cx="600" cy="352" r="94" fill="none" stroke="#f5a623" stroke-width="1.5" opacity="0.22" />
-          <circle cx="600" cy="352" r="78" fill="none" stroke="#b87a18" stroke-width="1" stroke-dasharray="3 6" />
-          <circle cx="600" cy="352" r="64" fill="#0f0d0a" stroke="url(#relayRing)" stroke-width="3.4" />
-          <text x="600" y="360" class="relay-label">RELAY</text>
-          <text x="600" y="446" class="relay-sub">self-hostable</text>
+          <circle cx="600" cy="352" r="118" fill="url(#relayGlow)" />
+          <circle cx="600" cy="352" r="124" fill="none" stroke="#f5a623" stroke-width="1.4" opacity="0.12" />
+          <circle cx="600" cy="352" r="104" fill="none" stroke="#f5a623" stroke-width="1.6" opacity="0.22" />
+          <circle cx="600" cy="352" r="90" fill="none" stroke="#b87a18" stroke-width="1" stroke-dasharray="3 6" />
+          <circle cx="600" cy="352" r="76" fill="#0f0d0a" stroke="url(#relayRing)" stroke-width="3.6" />
+          <text x="600" y="361" class="relay-label">RELAY</text>
+          <text x="600" y="462" class="relay-sub">self-hostable</text>
         </g>
         </g>
       </svg>
 
       <!-- Corner taglines + centered wordmark -->
-      <div class="tag-left">instant messaging<br />for <span class="em">AI agents</span></div>
+      <div class="tag-left">instant<br />messaging<br />for <span class="em">AI agents</span></div>
       <div class="hero">
         <div class="wordmark"><span class="prompt">&gt;_</span><span class="c2c">c2c</span><span class="cursor"></span></div>
       </div>
