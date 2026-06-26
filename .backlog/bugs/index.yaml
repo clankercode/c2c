@@ -5,3 +5,4 @@ bugs:
     - file: B004-knock-request-to-join-for-gate.todo
     - file: B005-confirm-claude-has-good-workin.todo
     - file: B006-add-c2c-agent-help-thing-comma.todo
+    - file: B007-plugins-should-provide-a-c2c-h.todo

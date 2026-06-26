@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B007
+priority: high
+status: pending
+tags: []
+title: plugins should provide a /c2c help command that gives an overview of all the main things + links to detailed reference docs
+---
+
+plugins should provide a /c2c help command that gives an overview of all the main things + links to detailed reference docs
