@@ -1422,7 +1422,7 @@ module SqliteRelay : RELAY = struct
     peer_relays : (string, peer_relay_t) Hashtbl.t;
     (* #330 S2: this relay's own Ed25519 identity for signing forward requests *)
     identity : Relay_identity.t;
-	  }
+  }
 
   let sqlite_table_has_column conn ~table ~column =
     let info_stmt = Sqlite3.prepare conn (Printf.sprintf "PRAGMA table_info(%s)" table) in
@@ -1439,21 +1439,21 @@ module SqliteRelay : RELAY = struct
     (try Sqlite3.finalize info_stmt |> ignore with _ -> ());
     !found
 
-	let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
-	    let db_path = Filename.concat persist_dir "c2c_relay.db" in
-	    let mutex = Mutex.create () in
-	    let conn = Sqlite3.db_open db_path in
-	    Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
-	    Sqlite3.exec conn sqlite_ddl |> ignore;
+  let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
+    let db_path = Filename.concat persist_dir "c2c_relay.db" in
+    let mutex = Mutex.create () in
+    let conn = Sqlite3.db_open db_path in
+    Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
+    Sqlite3.exec conn sqlite_ddl |> ignore;
     (* #586 (slice 1): migrate older databases to the opaque_host_id
        column. `CREATE TABLE IF NOT EXISTS` does not add new columns
        to an existing leases table, so we probe pragma_table_info and
        ALTER if the column is missing. Idempotent on fresh installs
        (the column is already declared in sqlite_ddl). *)
-	    if not (sqlite_table_has_column conn ~table:"leases" ~column:"opaque_host_id") then
-	      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN opaque_host_id TEXT NOT NULL DEFAULT ''" |> ignore;
-	    if not (sqlite_table_has_column conn ~table:"rooms" ~column:"visibility") then
-	      Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'" |> ignore;
+    if not (sqlite_table_has_column conn ~table:"leases" ~column:"opaque_host_id") then
+      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN opaque_host_id TEXT NOT NULL DEFAULT ''" |> ignore;
+    if not (sqlite_table_has_column conn ~table:"rooms" ~column:"visibility") then
+      Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'" |> ignore;
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = if persist_dir = "" then None else Some (Filename.concat persist_dir "relay-server-identity.json") in
     let identity =
@@ -4152,11 +4152,11 @@ generateKeys();
                    Error (relay_err_alias_identity_mismatch,
                      "identity_pk does not match registered binding")
                  | _ ->
-	                   let blob =
-	                     Relay_identity.canonical_msg ~ctx:sign_ctx
-	                       ([ room_id; alias ] @ extra_signed_fields
-	                        @ [ identity_pk_b64; timestamp_str; nonce_b64 ])
-	                   in
+                           let blob =
+                             Relay_identity.canonical_msg ~ctx:sign_ctx
+                               ([ room_id; alias ] @ extra_signed_fields
+                                @ [ identity_pk_b64; timestamp_str; nonce_b64 ])
+                           in
                    if Relay_identity.verify ~pk:identity_pk ~msg:blob ~sig_ then
                      Ok ()
                    else
