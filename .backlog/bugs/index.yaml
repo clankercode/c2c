@@ -1,3 +1,4 @@
 bugs:
     - file: B001-add-relay-support-to-mcp.todo
     - file: B002-promote-pi-in-the-list-of-codi.todo
+    - file: B003-add-project-status-alpha-macos.todo

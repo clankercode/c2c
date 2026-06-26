@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B003
+priority: high
+status: pending
+tags: []
+title: Add project status (Alpha / macos untested) warning-kinda-info-ish notice-y-box to the main docs index page.
+---
+
+Add project status (Alpha / macos untested) warning-kinda-info-ish notice-y-box to the main docs index page.
