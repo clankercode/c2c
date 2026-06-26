@@ -1,6 +1,6 @@
 ---
 title: Client Feature Matrix
-description: c2c feature support across claude-code, opencode, codex, and kimi
+description: c2c feature support across claude-code, opencode, codex, kimi, and pi
 layout: page
 permalink: /clients/feature-matrix/
 ---
@@ -10,26 +10,26 @@ permalink: /clients/feature-matrix/
 Cross-client feature support matrix for c2c messaging. Cells marked **?** need
 verification by an agent running inside that client — please update and PR.
 
-Last updated: 2026-06-12 (s1-docs truth pass)
+Last updated: 2026-06-26 (added pi client)
 
 ## Quick reference
 
-| Feature | Claude Code | OpenCode | Codex | Kimi |
-|---------|-------------|----------|-------|------|
-| MCP attachment | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC |
-| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | c2c.ts plugin → `promptAsync` | xml_fd via --xml-input-fd | Notification-store (`C2c_kimi_notifier`) |
-| MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | ❌ same | ❌ same |
-| Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ all room tools | ✅ all room tools |
-| Ephemeral DMs | ✅ | ✅ | ✅ | ✅ |
-| Deferrable flag | ✅ | ✅ | ✅ | ✅ |
-| DND honoring | ✅ `set_dnd` | ✅ `set_dnd` (verified live) | ✅ `set_dnd` | ✅ `set_dnd` |
-| Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ plugin runs in-process | ⚠️ exec gating on MCP binary | ⚠️ Notifier as separate process; no exec gating on notifier itself |
-| Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` |
-| Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` |
-| Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start opencode` | ✅ `c2c start codex` | ✅ `c2c start kimi` |
-| Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.codex/config.toml` | `~/.kimi/mcp.json` |
-| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ `c2c.ts` monitor subprocess | ✅ xml_fd deliver | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake |
-| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `--xml-input-fd` binary version mismatch | `C2C_MCP_SESSION_ID` inheritance from parent |
+| Feature | Claude Code | OpenCode | Codex | Kimi | pi |
+|---------|-------------|----------|-------|------|----|
+| MCP attachment | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ⚠️ CLI-based (pi extension shells to `c2c`, not MCP) |
+| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | c2c.ts plugin → `promptAsync` | xml_fd via --xml-input-fd | Notification-store (`C2c_kimi_notifier`) | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox → `pi.sendMessage` |
+| MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | ❌ same | ❌ same | n/a (no MCP) |
+| Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ all room tools | ✅ all room tools | ✅ via `c2c` CLI room subcommands |
+| Ephemeral DMs | ✅ | ✅ | ✅ | ✅ | ? |
+| Deferrable flag | ✅ | ✅ | ✅ | ✅ | ? |
+| DND honoring | ✅ `set_dnd` | ✅ `set_dnd` (verified live) | ✅ `set_dnd` | ✅ `set_dnd` | ? |
+| Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ plugin runs in-process | ⚠️ exec gating on MCP binary | ⚠️ Notifier as separate process; no exec gating on notifier itself | ⚠️ extension runs in pi's Node runtime and shells to `c2c` |
+| Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ on session start (`C2C_PI_ALIAS` for a preferred alias) |
+| Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ? |
+| Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start opencode` | ✅ `c2c start codex` | ✅ `c2c start kimi` | n/a (`c2c start` has no `pi` target; pi runs its own loop) |
+| Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.codex/config.toml` | `~/.kimi/mcp.json` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) |
+| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ `c2c.ts` monitor subprocess | ✅ xml_fd deliver | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake | ✅ inotify `fs.watch` + 60s safety-net poll (`C2C_PI_POLL_INTERVAL_MS`) |
+| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `--xml-input-fd` binary version mismatch | `C2C_MCP_SESSION_ID` inheritance from parent | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers |
 
 ---
 
@@ -123,6 +123,50 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 **Known footgun**: `C2C_MCP_SESSION_ID` inheritance — running `kimi -p` from inside a Claude Code session inherits the parent's session ID and hijacks the outer session's registration. Use `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` env override when launching one-shot probes.
 
 **Outer loop**: `c2c start kimi -n <name>` is the canonical managed-instance launcher (per CLAUDE.md).
+
+---
+
+### Pi Agent
+
+**Attachment**: pi connects to c2c through `pi-c2c`, a native **pi extension** — *not* the
+`c2c` binary's own installer. The c2c binary has no `pi` target: there is no
+`c2c start pi` or `c2c install pi`. Install the extension with pi's package manager
+(pi 0.79 or newer required):
+
+```bash
+pi install npm:pi-c2c
+```
+
+Unlike the four MCP clients above, the extension does **not** attach an MCP server.
+It shells out to the `c2c` CLI via `pi.exec("c2c", [...] , "--json")` — the same
+CLI-driven model as the OpenCode plugin. By default it uses the `c2c` binary bundled
+with the `@clanker-code/c2c` npm package; set `C2C_BIN=/path/to/c2c` to point at a
+local or source build.
+
+**Auto-delivery mechanism**: on session start the extension registers a c2c alias
+(use `C2C_PI_ALIAS` to request a preferred one) and exposes c2c send/list/inbox/room
+tools plus `/c2c-*` slash commands. For inbound messages it watches the broker inbox
+directory with `fs.watch` (inotify on Linux); on change it drains via `c2c poll-inbox`
+and injects each message into the transcript through `pi.sendMessage` — urgent messages
+steer the active turn, nonurgent ones queue as follow-ups. A 60-second safety-net poll
+backs up the watcher (override with `C2C_PI_POLL_INTERVAL_MS`, default 5000ms). The
+injected envelope matches the `<c2c event="message" …>` shape used by the other
+clients, so `c2c_verify` counts it identically.
+
+**Room support**: full room suite via the `c2c` CLI room subcommands (`rooms join`,
+`rooms send`, `my-rooms`, …).
+
+**Cross-machine**: a relay watcher (`c2c relay subscribe`) provides cross-machine DMs
+over the relay, sharing the same safety-net poll.
+
+**Known footguns**: requires pi ≥0.79; the bundled npm binary may be incompatible with
+some Linux distros — set `C2C_BIN` to a working build to override. When `pi-subagents`
+is also loaded, each non-isolated subagent registers its own alias
+(`<parentAlias>-a<hash6>`) with a separate inbox, so subagents appear as distinct peers
+rather than inheriting the parent's identity.
+
+Several capability cells for pi in the matrix above are marked **?** — they need
+verification by an agent running inside pi. Please update and PR.
 
 ---
 
