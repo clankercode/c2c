@@ -270,6 +270,34 @@ let print_json json =
   Yojson.Safe.pretty_to_channel stdout json;
   print_newline ()
 
+(* Commands that are runnable in any session (Tier1/Tier2) but are
+   de-emphasised in the curated `c2c commands` / `c2c --help` listings
+   unless `--dev` (or `--all`) is passed. Orthogonal to the tier map:
+   hiding here only affects help text, never runnability. See
+   .collab/design/2026-06-26-c2c-list-glyphs-registry.md. *)
+let hidden_unless_dev = [ "list-glyphs" ]
+
+(* One-line descriptions for the hidden-unless-dev commands, used to render
+   the curated DEV section. *)
+let hidden_unless_dev_descriptions =
+  [ ("list-glyphs", "(dev) emit the canonical c2c TUI glyph registry as JSON") ]
+
+(* The (name, description) rows to render in the curated DEV section —
+   driven by `hidden_unless_dev` so the gate and the listing never drift. *)
+let dev_listing_entries () =
+  List.filter_map
+    (fun name ->
+      Option.map (fun d -> (name, d)) (List.assoc_opt name hidden_unless_dev_descriptions))
+    hidden_unless_dev
+
+(* Scan argv for `--dev` (mirrors the existing `--all` pre-scan). When
+   present, curated listings reveal `hidden_unless_dev` entries (and dev
+   sections behave as `--all` does). *)
+let argv_has_dev () =
+  let n = Array.length Sys.argv in
+  let rec loop i = i < n && (Sys.argv.(i) = "--dev" || loop (i + 1)) in
+  loop 1
+
 let current_c2c_command () =
   let fallback =
     if Array.length Sys.argv > 0 then Sys.argv.(0) else "c2c"
@@ -316,7 +344,13 @@ let commands_by_safety_cmd =
   let show_all =
     Cmdliner.Arg.(value & flag & info [ "all" ] ~doc:"Include tier-4 internal commands.")
   in
-  let+ show_all = show_all in
+  let show_dev =
+    Cmdliner.Arg.(value & flag & info [ "dev" ]
+      ~doc:"Reveal dev-only commands (e.g. list-glyphs) hidden from the default listing.")
+  in
+  let+ show_all = show_all
+  and+ show_dev = show_dev in
+  let reveal_dev = show_all || show_dev in
   let tier1 = [
     ("list", "List registered c2c peers");
     ("sessions", "List registered sessions (session_id, alias, client_type, liveness)");
@@ -401,11 +435,13 @@ let commands_by_safety_cmd =
     Printf.printf "\n== %s ==\n\n" title;
     List.iter (fun (name, desc) -> Printf.printf "  %-30s %s\n" name desc) cmds
   in
+  let dev = dev_listing_entries () in
   Printf.printf "c2c commands by safety tier\n";
   print_section (safety_to_label Tier1) tier1;
   print_section (safety_to_label Tier2) tier2;
   if not (is_agent_session ()) then print_section (safety_to_label Tier3) tier3;
-  if show_all then print_section (safety_to_label Tier4) tier4
+  if show_all then print_section (safety_to_label Tier4) tier4;
+  if reveal_dev && dev <> [] then print_section "DEV (hidden without --dev)" dev
 
 let commands_by_safety =
   Cmdliner.Cmd.v
@@ -3105,6 +3141,36 @@ let host_id =
             <alias>@<host_id> to `c2c relay register` for cross-machine \
             privacy (.collab/design/2026-06-18-relay-address-at-host-id.md).")
     host_id_cmd
+
+(* --- subcommand: list-glyphs --------------------------------------------- *)
+(* .collab/design/2026-06-26-c2c-list-glyphs-registry.md — emit the canonical
+   c2c TUI glyph registry (message direction, broker route, liveness,
+   subagent-registration vocabulary + ascii fallbacks + semantic colors +
+   action tokens + message-sources) as JSON so clients (pi-c2c today) can
+   fetch the vocabulary at launch instead of hardcoding it.
+
+   HARD CONSTRAINT: this command MUST be always-runnable in any session.
+   pi-c2c invokes it with the host session env (which may set a session-id
+   var that flips `is_agent_session ()` true). It is therefore classified
+   Tier1 in command_tier_map so `filter_commands` never drops it from the
+   dispatchable cmdliner group. "Hidden from help by default" is handled in
+   the help-text layer via `hidden_unless_dev` + the global `--dev` flag,
+   NOT via the tier filter (which would make it unrunnable). *)
+let list_glyphs_cmd =
+  let compact =
+    Cmdliner.Arg.(value & flag & info [ "compact" ]
+      ~doc:"Emit single-line JSON instead of pretty-printed.")
+  in
+  let+ compact = compact in
+  let json = Glyphs.to_json () in
+  if compact then print_endline (Yojson.Safe.to_string json)
+  else print_json json
+
+let list_glyphs =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "list-glyphs"
+      ~doc:"(dev) emit the canonical c2c TUI glyph registry as JSON")
+    list_glyphs_cmd
 
 (* --- subcommand: git ----------------------------------------------------- *)
 
@@ -11944,6 +12010,17 @@ let supervisor_group =
 
 (* Build tier-grouped COMMANDS man page text *)
 let commands_man is_agent =
+  (* DEV section: only revealed when `--dev` is on argv (mirrors the `--all`
+     pre-scan). Driven by `hidden_unless_dev` so the gate and listing can't
+     drift. *)
+  let dev_block =
+    if argv_has_dev () then
+      `P "== DEV (hidden without --dev) =="
+      :: List.map
+           (fun (name, desc) -> `P (Printf.sprintf "$(b,%s) — %s" name desc))
+           (dev_listing_entries ())
+    else []
+  in
   if is_agent then
     [ `S "COMMANDS"
     ; `P "TIER LEGEND: Tier 1 = routine use, Tier 2 = lifecycle/setup (use with care), Tier 3 = system (hidden from agents), Tier 4 = internal plumbing."
@@ -11964,6 +12041,7 @@ let commands_man is_agent =
     ; `P "$(b,init) $(b,repo)"
     ; `P "$(b,Tier 3 and 4 commands hidden when running as an agent.)"
     ]
+    @ dev_block
   else
     [ `S "COMMANDS"
     ; `P "TIER LEGEND: Tier 1 = routine use, Tier 2 = lifecycle/setup (use with care), Tier 3 = system infrastructure (do NOT run inside an agent), Tier 4 = internal plumbing."
@@ -11993,6 +12071,7 @@ let commands_man is_agent =
          $(b,cc-plugin), $(b,state-read), $(b,state-write), \
          $(b,supervisor)"
     ]
+    @ dev_block
 
 (* Fast-path dispatch (#418): handle a small set of subcommands BEFORE
    the heavy Cmdliner setup (~1.5s) that builds the manpage for ~50 cmds.
@@ -12069,9 +12148,11 @@ let fast_path_commands () =
   (* Replicates commands_by_safety_cmd without cmdliner overhead.
      Tier3 section is suppressed in agent sessions. *)
   let is_all = ref false in
+  let is_dev = ref false in
   let n = Array.length Sys.argv in
   for i = 2 to n - 1 do
-    if Sys.argv.(i) = "--all" then is_all := true
+    if Sys.argv.(i) = "--all" then is_all := true;
+    if Sys.argv.(i) = "--dev" then is_dev := true
   done;
   let is_agent = is_agent_session () in
   let tier1 = [
@@ -12164,11 +12245,13 @@ let fast_path_commands () =
     | Tier3 -> "TIER 3 — UNSAFE FOR AGENTS (systemic, requires operator)"
     | Tier4 -> "TIER 4 — INTERNAL (hidden without --all)"
   in
+  let dev = dev_listing_entries () in
   Printf.printf "c2c commands by safety tier\n";
   print_section (safety_to_label Tier1) tier1;
   print_section (safety_to_label Tier2) tier2;
   if not is_agent then print_section (safety_to_label Tier3) tier3;
-  if !is_all then print_section (safety_to_label Tier4) tier4
+  if !is_all then print_section (safety_to_label Tier4) tier4;
+  if (!is_dev || !is_all) && dev <> [] then print_section "DEV (hidden without --dev)" dev
 
 let fast_path_server_info ~json () =
   let info = C2c_mcp.server_info () in
@@ -12594,7 +12677,7 @@ let () =
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
     ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; host_id; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
-    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; C2c_uninstall.uninstall_subcmd; completion_cmd
+    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; C2c_uninstall.uninstall_subcmd; completion_cmd; list_glyphs
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances_deprecated; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; C2c_watch.watch_cmd; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in

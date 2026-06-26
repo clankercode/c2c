@@ -59,6 +59,11 @@ let command_tier_map () : (string * safety) list =
   ; "commands", Tier1
   ; "monitor", Tier1      (* read-only inbox/archive event stream — required by agent recovery-snippet *)
   ; "skills", Tier1
+  (* list-glyphs: read-only, side-effect-free glyph registry dump. Tier1 so
+     filter_commands NEVER drops it from the dispatch group — pi-c2c invokes
+     it with the host session env, which can flip is_agent_session true.
+     "Hidden from help" is handled via hidden_unless_dev + --dev, not here. *)
+  ; "list-glyphs", Tier1
   (* relay subcommands (serve, gc, connect, setup, status, list, rooms, poll-inbox) are
      not top-level commands; they inherit tier from the relay parent and are not
      independently filtered by filter_commands. *)
