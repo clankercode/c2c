@@ -34,11 +34,15 @@ let loopback_socket () =
   | Unix.ADDR_INET (_, port) -> Lwt.return (fd, port)
   | _ -> Lwt.fail_with "loopback_socket: expected INET socket"
 
-let with_server f =
+let with_server ?rate_limiter f =
   Lwt_main.run
     (loopback_socket () >>= fun (fd, port) ->
      let relay = Relay.InMemoryRelay.create () in
-     let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+     let rate_limiter =
+       match rate_limiter with
+       | Some rl -> rl
+       | None -> Relay.Rate_limiter_inst.create ~gc_interval:300.0 ()
+     in
      let stop, wake_stop = Lwt.wait () in
      let callback (conn, _) req body =
        RS.make_callback relay None conn req body ?broker_root:None ~rate_limiter
@@ -231,6 +235,82 @@ let mint_required_pow ~actor_id ~difficulty ~epoch ~server_nonce =
   match Pow.mint ~challenge ~difficulty with
   | None -> Alcotest.fail "Pow.mint failed at relay-required difficulty"
   | Some pow_nonce -> pow_nonce
+
+(* Mint a nonce whose SHA-256 has leading-zero-bits in [min_difficulty,
+   below_difficulty): valid at the lower bar, stale at the higher one. This
+   yields a deterministic "proof minted at the OLD difficulty" — unlike
+   `Pow.mint ~difficulty:min`, whose first hit might *coincidentally* also
+   clear the higher bar (~1/16 of the time), which would flake the
+   escalation-rejection assertion. *)
+let mint_in_band ~challenge ~min_difficulty ~below_difficulty =
+  let rec loop counter =
+    if counter >= Pow.max_mint_iterations then
+      Alcotest.fail "mint_in_band: no nonce found in difficulty band"
+    else
+      let pow_nonce = string_of_int counter in
+      if Pow.verify ~challenge ~difficulty:min_difficulty ~pow_nonce
+         && not (Pow.verify ~challenge ~difficulty:below_difficulty ~pow_nonce)
+      then pow_nonce
+      else loop (counter + 1)
+  in
+  loop 0
+
+(* The /register endpoint also sits behind a per-IP token bucket (capacity 10,
+   refill 0.5/s) that is ORTHOGONAL to the PoW policy. Every loopback request
+   shares the 127.0.0.1 bucket, so a test that compresses many registrations
+   into milliseconds would trip the IP throttle (`rate_limit_exceeded`) long
+   before exercising the PoW curve. Resetting the bucket — exactly the relay's
+   own periodic GC (`cleanup`) — isolates the PoW difficulty-escalation
+   behaviour under test while leaving the process-global PoW cost accumulator
+   (`relay_pow_policy`) untouched. (`older_than:0.0` evicts any bucket whose
+   last request is >0s old, i.e. all of them.) *)
+let reset_ip_rate_limit rate_limiter =
+  ignore (Relay.Rate_limiter_inst.cleanup rate_limiter ~older_than:0.0 : int)
+
+(* One full register handshake at the actor's CURRENT required difficulty,
+   mirroring the real `Pow_client` retry behaviour: POST without PoW; if the
+   live relay answers `pow_required`, mint at the demanded difficulty and
+   resubmit, asserting the retry lands (200). Each successful register adds
+   the register route-cost (10) to the actor's accumulated cost, so repeated
+   calls walk the difficulty curve upward.
+
+   Resets the IP token bucket first so the (<=2) POSTs it makes never collide
+   with the orthogonal per-IP throttle (see `reset_ip_rate_limit`).
+
+   Returns (required_difficulty_demanded, next_difficulty_advertised_on_success)
+   where the second component is the `X-C2C-PoW-Next` header value on the
+   accepted response — the difficulty the relay pre-announces for the *next*
+   request from this actor. *)
+let register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
+    ~session_id =
+  reset_ip_rate_limit rate_limiter;
+  let body () =
+    register_body ~node_id:"node-climb" ~session_id ~alias ~identity
+      ~relay_url:base_url ()
+  in
+  post_register ~base_url (body ()) >>= fun first ->
+  match Cohttp.Code.code_of_status first.status with
+  | 200 ->
+      (* Grace window / difficulty 0: accepted with no PoW. *)
+      Lwt.return (0, header_difficulty (require_pow_header first))
+  | 429 ->
+      Alcotest.(check string) "handshake 429 is pow_required" "pow_required"
+        (json_string "error_code" first.json);
+      let difficulty, epoch, server_nonce = required_pow_fields first in
+      let pow_nonce =
+        mint_required_pow ~actor_id ~difficulty ~epoch ~server_nonce
+      in
+      let retry =
+        register_body ~pow_nonce ~pow_epoch:epoch ~pow_server_nonce:server_nonce
+          ~node_id:"node-climb" ~session_id ~alias ~identity ~relay_url:base_url ()
+      in
+      post_register ~base_url retry >|= fun accepted ->
+      Alcotest.(check int) "minted PoW retry is accepted" 200
+        (Cohttp.Code.code_of_status accepted.status);
+      Alcotest.(check bool) "retry ok" true
+        (json_member "ok" accepted.json = `Bool true);
+      (difficulty, header_difficulty (require_pow_header accepted))
+  | code -> failf "register_handshake: unexpected status %d" code
 
 let test_enabled_pow_required_then_minted_nonce_succeeds () =
   with_pow_env "1" (fun () ->
@@ -455,6 +535,188 @@ let test_malformed_pow_fields_are_rejected_without_exception () =
       Alcotest.(check string) "malformed pow error" "pow_required"
         (json_string "error_code" result.json)))
 
+(* ------------------------------------------------------------------ *)
+(* B009: live-relayer PoW rate-limiting + difficulty-escalation tests. *)
+(*                                                                      *)
+(* The difficulty curve is set by `Pow_policy` (step=4, d_max=12), so   *)
+(* the ONLY difficulties the relay ever emits are 0/4/8/12 = the        *)
+(* 1x/16x/256x/4096x rungs. The B009 ticket asks about reaching "32x"   *)
+(* (2^5); with step=4 the relay can never return difficulty 5, so 32x   *)
+(* is unreachable BY CONSTRUCTION. These tests assert the REAL curve    *)
+(* (0->4->8->12 and the d_max=12 cap) rather than chasing 32x. Each     *)
+(* successful `register` adds route-cost 10 to the actor's accumulated  *)
+(* cost; required_difficulty(C) = 0 for C<=grace(20), else              *)
+(* min(d_max, step*ceil((C-grace)/bucket)). So a run of registers under *)
+(* one identity drives required = [0;0;0;4;8;12;12;...].                *)
+(* ------------------------------------------------------------------ *)
+
+(* Q2: increasing PoW still works as difficulty climbs — walk the curve UP,
+   asserting every escalated register is accepted once the higher proof is
+   supplied, and that the relay's `X-C2C-PoW-Next` header pre-announces the
+   next rung (so the escalation is visible to the agent before it bites). *)
+let test_increasing_pow_walks_difficulty_curve_up () =
+  with_pow_env "1" (fun () ->
+    let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+    with_server ~rate_limiter (fun ~base_url ~relay:_ ->
+      let alias = "pow-climb-curve" in
+      let identity = Relay_identity.generate ~alias_hint:alias () in
+      let actor_id = b64url identity.public_key in
+      let steps = 8 in
+      let rec climb k acc =
+        if k > steps then Lwt.return (List.rev acc)
+        else
+          register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
+            ~session_id:(Printf.sprintf "session-curve-%d" k)
+          >>= fun pair ->
+          climb (k + 1) (pair :: acc)
+      in
+      climb 1 [] >|= fun results ->
+      let requireds = List.map fst results in
+      let next_headers = List.map snd results in
+      (* Required difficulty walks 0->0->0->4->8->12 then holds at the
+         d_max=12 cap. Only emittable rungs (0/4/8/12) appear; never 32x. *)
+      Alcotest.(check (list int)) "required difficulty walks the curve up"
+        [ 0; 0; 0; 4; 8; 12; 12; 12 ] requireds;
+      (* The success-path next-difficulty header pre-announces the rung the
+         *next* register will demand: header[k] = required[k+1]. *)
+      Alcotest.(check (list int))
+        "X-C2C-PoW-Next pre-announces the next escalation"
+        [ 0; 0; 4; 8; 12; 12; 12; 12 ] next_headers;
+      (* Monotonic non-decreasing and never above the cap. *)
+      ignore
+        (List.fold_left
+           (fun prev d ->
+              Alcotest.(check bool) "difficulty non-decreasing" true (d >= prev);
+              Alcotest.(check bool) "difficulty never exceeds d_max=12" true
+                (d <= 12);
+              d)
+           0 requireds)))
+
+(* Q3: flooding the relay drives difficulty UP toward — and pins it at — the
+   d_max cap. Every successful register under one identity escalates cost, so
+   after enough requests the required difficulty saturates at 12 and stays
+   there no matter how much more we flood (it is never driven above the cap). *)
+let test_flood_drives_difficulty_to_cap () =
+  with_pow_env "1" (fun () ->
+    let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+    with_server ~rate_limiter (fun ~base_url ~relay:_ ->
+      let alias = "pow-flood-cap" in
+      let identity = Relay_identity.generate ~alias_hint:alias () in
+      let actor_id = b64url identity.public_key in
+      let flood = 12 in
+      let rec loop k last =
+        if k > flood then Lwt.return last
+        else
+          register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
+            ~session_id:(Printf.sprintf "session-flood-%d" k)
+          >>= fun (required, _next) ->
+          Alcotest.(check bool) "flood difficulty never exceeds d_max=12" true
+            (required <= 12);
+          loop (k + 1) required
+      in
+      loop 1 0 >>= fun final_required ->
+      Alcotest.(check int) "flooding saturates difficulty at the d_max=12 cap"
+        12 final_required;
+      (* Continued flood: still pinned at the cap, never above it. *)
+      register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
+        ~session_id:"session-flood-extra"
+      >|= fun (required, next_header) ->
+      Alcotest.(check int) "cap holds under continued flood" 12 required;
+      Alcotest.(check int) "next-difficulty header pinned at the cap" 12
+        next_header))
+
+(* Q1: after difficulty escalates (bucket N -> N+1), a proof minted at the OLD
+   (lower) difficulty is REJECTED. We climb to the bucket-2 rung (difficulty
+   8), mint a proof that clears the OLD bar (4) but not the new one (8), and
+   confirm the relay rejects it. Then a correctly-escalated proof on the SAME
+   challenge is accepted — isolating the rejection cause to the proof's
+   difficulty (not a stale/spent challenge), because `verify` short-circuits
+   before `consume_if_valid`, leaving the challenge intact on a failed verify. *)
+let test_stale_low_difficulty_proof_rejected_after_escalation () =
+  with_pow_env "1" (fun () ->
+    let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+    with_server ~rate_limiter (fun ~base_url ~relay:_ ->
+      let alias = "pow-stale-proof" in
+      let identity = Relay_identity.generate ~alias_hint:alias () in
+      let actor_id = b64url identity.public_key in
+      (* Climb so the actor sits one bucket below the bucket-2 rung: registers
+         1-3 are in grace (required 0), register 4 demands difficulty 4. After
+         it lands, the *next* fresh register will demand difficulty 8. *)
+      let rec climb k =
+        if k > 4 then Lwt.return_unit
+        else
+          register_handshake ~rate_limiter ~base_url ~identity ~actor_id ~alias
+            ~session_id:(Printf.sprintf "session-stale-climb-%d" k)
+          >>= fun (required, _) ->
+          let expected = if k <= 3 then 0 else 4 in
+          Alcotest.(check int)
+            (Printf.sprintf "stale-climb step %d demands old/grace rung" k)
+            expected required;
+          climb (k + 1)
+      in
+      climb 1 >>= fun () ->
+      reset_ip_rate_limit rate_limiter;
+      (* Escalate: a fresh register now demands the bucket-2 difficulty (8). *)
+      let challenge_req =
+        register_body ~node_id:"node-climb" ~session_id:"session-stale-escalated"
+          ~alias ~identity ~relay_url:base_url ()
+      in
+      post_register ~base_url challenge_req >>= fun rejected ->
+      Alcotest.(check int) "escalated register is pow_required (429)" 429
+        (Cohttp.Code.code_of_status rejected.status);
+      let new_difficulty, epoch, server_nonce = required_pow_fields rejected in
+      Alcotest.(check int) "escalated to bucket-2 difficulty (8 = 256x)" 8
+        new_difficulty;
+      let challenge =
+        Pow.challenge_string ~ctx:Pow.ctx ~route:"register" ~actor_id ~epoch
+          ~server_nonce
+      in
+      let old_difficulty = 4 in
+      let stale_nonce =
+        mint_in_band ~challenge ~min_difficulty:old_difficulty
+          ~below_difficulty:new_difficulty
+      in
+      (* The stale proof clears the OLD bar but not the escalated one. *)
+      Alcotest.(check bool) "stale proof clears the old difficulty (4)" true
+        (Pow.verify ~challenge ~difficulty:old_difficulty ~pow_nonce:stale_nonce);
+      Alcotest.(check bool) "stale proof fails the escalated difficulty (8)"
+        false
+        (Pow.verify ~challenge ~difficulty:new_difficulty ~pow_nonce:stale_nonce);
+      let stale_body =
+        register_body ~pow_nonce:stale_nonce ~pow_epoch:epoch
+          ~pow_server_nonce:server_nonce ~node_id:"node-climb"
+          ~session_id:"session-stale-submit" ~alias ~identity
+          ~relay_url:base_url ()
+      in
+      post_register ~base_url stale_body >>= fun stale_resp ->
+      Alcotest.(check int) "old-difficulty proof REJECTED after escalation" 429
+        (Cohttp.Code.code_of_status stale_resp.status);
+      Alcotest.(check string) "rejection is pow_required" "pow_required"
+        (json_string "error_code" stale_resp.json);
+      let still_required, _, _ = required_pow_fields stale_resp in
+      Alcotest.(check int) "relay still demands the escalated difficulty (8)" 8
+        still_required;
+      (* Re-mint against the SAME challenge at the escalated difficulty. The
+         failed verify above did NOT consume the challenge, so a correctly
+         escalated proof on it is accepted — proving the rejection was about
+         difficulty, not a spent/stale challenge. *)
+      let fresh_nonce =
+        match Pow.mint ~challenge ~difficulty:new_difficulty with
+        | Some n -> n
+        | None -> Alcotest.fail "Pow.mint failed at escalated difficulty"
+      in
+      let fresh_body =
+        register_body ~pow_nonce:fresh_nonce ~pow_epoch:epoch
+          ~pow_server_nonce:server_nonce ~node_id:"node-climb"
+          ~session_id:"session-stale-accepted" ~alias ~identity
+          ~relay_url:base_url ()
+      in
+      post_register ~base_url fresh_body >|= fun fresh_resp ->
+      Alcotest.(check int) "escalated proof on the SAME challenge accepted" 200
+        (Cohttp.Code.code_of_status fresh_resp.status);
+      Alcotest.(check bool) "accepted ok" true
+        (json_member "ok" fresh_resp.json = `Bool true)))
+
 let () =
   Alcotest.run "pow_relay" [
     "relay", [
@@ -482,5 +744,14 @@ let () =
         `Quick test_forged_pow_challenge_fields_are_rejected;
       Alcotest.test_case "enabled: malformed PoW fields are rejected"
         `Quick test_malformed_pow_fields_are_rejected_without_exception;
+      Alcotest.test_case
+        "B009: increasing PoW walks the difficulty curve up (0->4->8->12)"
+        `Quick test_increasing_pow_walks_difficulty_curve_up;
+      Alcotest.test_case
+        "B009: flooding drives difficulty up to the d_max=12 cap"
+        `Quick test_flood_drives_difficulty_to_cap;
+      Alcotest.test_case
+        "B009: old-difficulty proof rejected after difficulty escalation"
+        `Quick test_stale_low_difficulty_proof_rejected_after_escalation;
     ];
   ]
