@@ -1,13 +1,15 @@
 ---
+claimed_at: "2026-06-26T14:23:58Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B011
 priority: high
-status: pending
-tags:
-    - claude
-    - wake
+started_at: "2026-06-26T14:23:58Z"
+status: in_progress
+tags: []
 title: 'claude kickoff/wake hygiene: drop duplicate heartbeat Monitor + always-on minimal intro'
 ---
 From B005 audit. Two fixes in the claude onboarding/kickoff region of ocaml/cli/c2c.ml: (1) DUPLICATE WAKE — the role onboarding preamble (c2c.ml ~9781-9783, ~9858-9860) arms a 'heartbeat 4.1m' Monitor ON TOP of the native 4.1m wake.toml; remove the redundant Monitor step for managed sessions (native wake already fires; violates 'dedupe before arming'). (2) NO-INTRO PLAIN START — plain 'c2c start claude' (no role, no --auto) can hand NO intro (c2c.ml ~9910-9932); give it a minimal always-on intro so a no-role start isn't intro-less. Bundled because both touch the same kickoff code.

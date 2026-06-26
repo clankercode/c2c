@@ -1,14 +1,15 @@
 ---
+claimed_at: "2026-06-26T14:23:58Z"
+claimed_by: cli-user
+completed_at: null
 complexity: high
 depends_on: []
 estimate_hours: 1
 id: B013
 priority: high
-status: pending
-tags:
-    - codex
-    - delivery
-    - tmux
+started_at: "2026-06-26T14:23:58Z"
+status: in_progress
+tags: []
 title: codex delivery hardening + e2e tmux delivery tests (managed path)
 ---
 From B005 audit decision (b), scoped per Max: focus on codex DELIVERY + e2e tests of delivery IN TMUX (the managed/c2c-deliver-inbox + xml-fd path). NAKED/forked codex is OUT OF SCOPE (Max forked it; not practical to keep updated). Harden: (1) 240s codex heartbeat is silently suppressed if the deliver daemon fails to start (c2c_start.ml ~203-205) — surface the failure; (2) possible inotify/xml-fd dispatch shadowing — run_inotify_loop's deliver_new_messages only logs to /dev/null (c2c_deliver_inbox.ml ~158), may never write XML to fd4 (~556-589) — verify/fix ordering. Add e2e tmux delivery tests via scripts/c2c_tmux.py.
