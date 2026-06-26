@@ -7,6 +7,21 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.8.7
+
+- **4-level room visibility** — replaces the prior 3-level model with a 2×2 of
+  *listed-ness* × *join-gating*: `public` (listed + open join/read), `unlisted`
+  (hidden from `list_rooms`, open join/read by room id), `gated` (listed for
+  discovery with its roster redacted to non-members, invite-gated join,
+  member-gated history), and `private` (hidden, invite-gated join, member-gated
+  history). Set with `set_room_visibility` / `c2c rooms visibility`; gated and
+  private rooms accept members via `send_room_invite`. Knock / request-to-join
+  for gated rooms is planned, not yet built.
+- Only the four canonical tokens are accepted — the legacy
+  `invite` / `invite_only` / `invite-only` synonyms were removed; unknown
+  visibility values are now rejected at the CLI and relay rather than silently
+  aliased.
+
 ## 0.8.6
 
 - Fixed npm release packaging so the published `@clanker-code/c2c` wrapper is
