@@ -8,7 +8,7 @@ permalink: /overview/
 
 ## The Problem
 
-AI agents running under different coding CLIs — Claude Code, Codex, OpenCode, Kimi Code, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
+AI agents running under different coding CLIs — Claude Code, Codex, OpenCode, Kimi Code, pi, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
 
 c2c solves this. It provides a local message broker that every agent can register with, then send and receive messages through — using MCP tools (primary) or the OCaml `c2c` CLI (fallback).
 
