@@ -710,6 +710,52 @@ def test_tmux_driver_start_uses_new_session_and_returns_pane_handle(
     assert "env" not in kwargs or kwargs["env"].get("C2C_TEST_ENV") != "alpha"
 
 
+def test_tmux_driver_threads_socket_through_every_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append(cmd)
+        return mock.Mock(stdout="%7\n", returncode=0)
+
+    monkeypatch.setattr("tests.e2e.framework.tmux_driver.subprocess.run", fake_run)
+
+    driver = TmuxDriver(repo_root=tmp_path, socket="c2c-chess-e2e")
+    handle = TerminalHandle(backend="tmux", target="%7", process_pid=7)
+    driver.start(
+        TerminalStartSpec(command=["bash", "-lc", "echo hi"], cwd=tmp_path, env={}, title="t")
+    )
+    driver.capture(handle)
+    driver.is_alive(handle)
+    driver.stop(handle)
+    # send_key Enter must bypass the default-socket enter helper when isolated.
+    driver.send_key(handle, "Enter")
+
+    for cmd in calls:
+        assert cmd[:3] == ["tmux", "-L", "c2c-chess-e2e"], cmd
+    # The Enter path used plain send-keys (not the repo helper script).
+    assert calls[-1] == ["tmux", "-L", "c2c-chess-e2e", "send-keys", "-t", "%7", "Enter"]
+
+
+def test_tmux_driver_default_socket_omits_dash_l(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append(cmd)
+        return mock.Mock(stdout="%1\n", returncode=0)
+
+    monkeypatch.setattr("tests.e2e.framework.tmux_driver.subprocess.run", fake_run)
+
+    driver = TmuxDriver(repo_root=tmp_path)  # no socket
+    driver.capture(TerminalHandle(backend="tmux", target="%1", process_pid=1))
+
+    assert calls[0][0] == "tmux"
+    assert "-L" not in calls[0]
+
+
 def test_tmux_driver_enter_uses_repo_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
