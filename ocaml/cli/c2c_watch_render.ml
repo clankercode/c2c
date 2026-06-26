@@ -537,14 +537,16 @@ let dms_footer : string =
    pane-agnostic — a function of [inner_cols] only) so both tabs degrade
    identically on narrow terminals. NO new width logic. *)
 
-(* Visibility abbreviation (spec §3.3): Public -> "pub", Invite_only -> "inv".
+(* Visibility abbreviation (4-level): Public -> "pub", Unlisted -> "unl",
+   Gated -> "gat", Private -> "prv".
    [room_visibility] is a top-level [C2c_mcp] type (the [room_info.ri_visibility]
    field references it from inside the Broker module). *)
 let room_vis_abbrev (v : C2c_mcp.room_visibility) : string =
   match v with
   | C2c_mcp.Public -> "pub"
+  | C2c_mcp.Unlisted -> "unl"
+  | C2c_mcp.Gated -> "gat"
   | C2c_mcp.Private -> "prv"
-  | C2c_mcp.Invite_only -> "inv"
 
 (* One left-pane room row (CONTENT only, exactly [w] display columns):
    "<marker><room_id>  <vis>  <M>". The room_id is the flexible field —

@@ -85,7 +85,7 @@ let base_tool_definitions =
       ~required:["room_id"; "content"]
       ~properties:[ prop "room_id" "Target room."; prop "content" "Message body."; prop "alias" "Legacy fallback sender alias (deprecated)."; prop "tag" "Optional #392 visual indicator: \"fail\", \"blocking\", or \"urgent\". Recipients see the corresponding emoji+keyword prefix in their transcript. Unknown values rejected." ]
   ; tool_definition ~name:"list_rooms"
-      ~description:"List discoverable persistent rooms with member counts and member aliases. Public rooms are visible to everyone; private rooms are visible only to members; invite_only rooms are visible to members and invited-but-not-yet-joined callers, with invited pre-join rows redacted. Returns a JSON array of {room_id, member_count, members, visibility, invited_members}."
+      ~description:"List discoverable persistent rooms with member counts and member aliases. 4-level visibility: public and gated rooms are listed to everyone (a gated room's roster — members/details/invited — is redacted for non-members, leaving room_id + member_count for discovery); unlisted rooms are hidden from non-members; private rooms are hidden except for invited-but-not-yet-joined callers, whose row is shown with the roster redacted. Returns a JSON array of {room_id, member_count, members, visibility, invited_members}."
       ~required:[]
       ~properties:[]
   ; tool_definition ~name:"my_rooms"
@@ -113,13 +113,13 @@ let base_tool_definitions =
       ~required:[]
       ~properties:[]
   ; tool_definition ~name:"send_room_invite"
-      ~description:"Invite an alias to a room. Only existing room members can send invites. For invite-only rooms, the invitee will be allowed to join."
+      ~description:"Invite an alias to a room. Only existing room members can send invites. For gated and private rooms, the invitee will be allowed to join."
       ~required:["room_id"; "invitee_alias"]
       ~properties:[ prop "room_id" "Room to invite to."; prop "invitee_alias" "Alias to invite."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
   ; tool_definition ~name:"set_room_visibility"
-      ~description:"Change a room's visibility mode. public = listed in list_rooms + anyone can join; private = unlisted (hidden from non-members in list_rooms) but anyone who knows the room id can join; invite_only = unlisted + only invited aliases can join. Only existing room members can change visibility."
+      ~description:"Change a room's visibility mode. public = listed + open join; unlisted = unlisted + open join; gated = listed + invite-gated join; private = unlisted + invite-gated join. Only existing room members can change visibility."
       ~required:["room_id"; "visibility"]
-      ~properties:[ prop "room_id" "Room to modify."; prop "visibility" "One of 'public', 'private', or 'invite_only'."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
+      ~properties:[ prop "room_id" "Room to modify."; prop "visibility" "One of 'public', 'unlisted', 'gated', or 'private'."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
   ; tool_definition ~name:"set_dnd"
       ~description:"Enable or disable Do-Not-Disturb for this session. When DND is on, channel-push delivery (notifications/claude/channel) is suppressed — inbox still accumulates messages, poll_inbox always works. Optional `until_epoch` sets an auto-expire Unix timestamp; omit for manual-off only. Returns JSON {ok:true,dnd:bool}."
       ~required:["on"]

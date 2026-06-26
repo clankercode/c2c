@@ -3476,8 +3476,9 @@ let my_rooms_cmd =
                      `String
                        (match r.ri_visibility with
                        | C2c_mcp.Public -> "public"
-                       | C2c_mcp.Private -> "private"
-                       | C2c_mcp.Invite_only -> "invite_only"))
+                       | C2c_mcp.Unlisted -> "unlisted"
+                       | C2c_mcp.Gated -> "gated"
+                       | C2c_mcp.Private -> "private"))
                  ])
              rooms))
   | Human ->
@@ -4991,7 +4992,7 @@ let relay_rooms_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "invitee-pk" ] ~docv:"PK" ~doc:"Base64url invitee identity public key (required for invite/uninvite).")
   in
   let visibility =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "visibility" ] ~docv:"public|private|invite_only" ~doc:"Room visibility: 'public' (listed + open join), 'private' (unlisted + open join), or 'invite_only' (unlisted + invite-gated join). Required for set-visibility; optional for join, where it applies only when the join creates the room.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "visibility" ] ~docv:"public|unlisted|gated|private" ~doc:"Room visibility: 'public' (listed + open join), 'unlisted' (unlisted + open join), 'gated' (listed + invite-gated join), or 'private' (unlisted + invite-gated join). Required for set-visibility; optional for join, where it applies only when the join creates the room.")
   in
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"Message body for 'send' (joined with spaces).")

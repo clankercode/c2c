@@ -173,7 +173,7 @@ type message =
   }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
-type room_visibility = Public | Private | Invite_only
+type room_visibility = Public | Unlisted | Gated | Private
 type room_meta =
   { visibility : room_visibility
   ; invited_members : string list
@@ -529,7 +529,7 @@ module Broker : sig
   (** [create_room] (#394) atomically creates [room_id] with [caller_alias]
       recorded as [created_by]. Errors with [Invalid_argument] if the room
       already exists. When [auto_join] is true, [caller_alias]/[caller_session_id]
-      are added to the member list (the only path by which an invite_only
+      are added to the member list (the only path by which a gated/private
       room gets a first member without a separate join_room call). *)
   val join_room : t -> room_id:string -> alias:string -> session_id:string -> room_member list
   val leave_room : t -> room_id:string -> alias:string -> room_member list

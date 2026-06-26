@@ -220,15 +220,18 @@ let send_room ~broker ~session_id_override ~arguments =
 
 let list_rooms ~broker ~session_id_override ~arguments:_ =
   let rooms = Broker.list_rooms broker in
-  (* H2 rooms-acl: filter rooms the caller can't see.
-     - Public: include as-is.
+  (* H2 rooms-acl: filter rooms the caller can't see (4-level model).
+     - Public: include as-is (listed to everyone).
+     - Unlisted: hidden from non-members. Member -> include as-is; non-member
+       -> exclude entirely (still joinable by name, just not discoverable).
+     - Gated: LISTED to everyone for discovery. Member -> include as-is;
+       non-member -> include but redact the roster (members/details/invited/
+       counts) so room_id + member_count remain visible but the membership is
+       not leaked.
      - Private + caller is a member: include as-is.
-     - Private + caller is not a member: exclude entirely (unlisted; the room
-       is still joinable by name, just not discoverable here).
-     - Invite_only + caller is a member: include as-is.
-     - Invite_only + caller in invited_members but not yet joined:
-       include but redact members/details/invited_members.
-     - Invite_only + caller unrelated: exclude entirely. *)
+     - Private + caller in invited_members but not yet joined: include but
+       redact members/details/invited_members.
+     - Private + caller unrelated: exclude entirely. *)
   let caller_session_id, caller_alias = resolve_caller_identity ~broker ~session_id_override in
   let filtered =
     List.filter_map
@@ -245,10 +248,23 @@ let list_rooms ~broker ~session_id_override ~arguments:_ =
           | Some a -> List.mem a r.ri_members
         in
         let is_member = is_member_by_session || is_member_by_alias in
+        let redacted_roster (r : Broker.room_info) : Broker.room_info =
+          { r with
+            ri_members = []
+          ; ri_member_details = []
+          ; ri_invited_members = []
+          ; ri_alive_member_count = 0
+          ; ri_dead_member_count = 0
+          ; ri_unknown_member_count = 0
+          }
+        in
         match r.ri_visibility with
         | Public -> Some r
-        | Private -> if is_member then Some r else None
-        | Invite_only ->
+        | Unlisted -> if is_member then Some r else None
+        | Gated ->
+            (* Listed to everyone; roster redacted for non-members. *)
+            if is_member then Some r else Some (redacted_roster r)
+        | Private ->
             if is_member then Some r
             else
               let is_invited =
@@ -256,16 +272,7 @@ let list_rooms ~broker ~session_id_override ~arguments:_ =
                 | None -> false
                 | Some a -> List.mem a r.ri_invited_members
               in
-              if is_invited then
-                Some
-                  { r with
-                    ri_members = []
-                  ; ri_member_details = []
-                  ; ri_invited_members = []
-                  ; ri_alive_member_count = 0
-                  ; ri_dead_member_count = 0
-                  ; ri_unknown_member_count = 0
-                  }
+              if is_invited then Some (redacted_roster r)
               else None)
       rooms
   in
@@ -305,29 +312,32 @@ let room_history ~broker ~session_id_override ~arguments =
     | None -> 50
   in
   let since = Broker.float_opt_member "since" arguments |> Option.value ~default:0.0 in
-  (* H1 rooms-acl: invite-only rooms require caller membership.
-     Public rooms have no read gate (public contract). *)
+  (* H1 rooms-acl: gated and private rooms require caller membership to read
+     history. Public and unlisted rooms have no read gate (open read). *)
   let meta = Broker.load_room_meta broker ~room_id in
+  let is_member_read () =
+    let caller_session_id, caller_alias = resolve_caller_identity ~broker ~session_id_override in
+    let members = Broker.read_room_members broker ~room_id in
+    let by_session =
+      match caller_session_id with
+      | None -> false
+      | Some sid -> List.exists (fun m -> m.rm_session_id = sid) members
+    in
+    let by_alias =
+      match caller_alias with
+      | None -> false
+      | Some a -> List.exists (fun m -> m.rm_alias = a) members
+    in
+    by_session || by_alias
+  in
   let allow =
     match meta.visibility with
     | Public -> true
-    (* Private is unlisted but not read-gated: anyone who knows the room id
-       may read its history, same as a public room. *)
-    | Private -> true
-    | Invite_only ->
-        let caller_session_id, caller_alias = resolve_caller_identity ~broker ~session_id_override in
-        let members = Broker.read_room_members broker ~room_id in
-        let by_session =
-          match caller_session_id with
-          | None -> false
-          | Some sid -> List.exists (fun m -> m.rm_session_id = sid) members
-        in
-        let by_alias =
-          match caller_alias with
-          | None -> false
-          | Some a -> List.exists (fun m -> m.rm_alias = a) members
-        in
-        by_session || by_alias
+    (* Unlisted is hidden from list_rooms but not read-gated: anyone who knows
+       the room id may read its history, same as a public room. *)
+    | Unlisted -> true
+    | Gated -> is_member_read ()
+    | Private -> is_member_read ()
   in
   if not allow then
     let content =
@@ -385,8 +395,10 @@ let set_room_visibility ~broker ~session_id_override ~arguments =
   let visibility_str = string_member "visibility" arguments in
   let visibility =
     match visibility_str with
-    | "invite_only" | "invite-only" | "invite" -> Invite_only
+    | "unlisted" -> Unlisted
+    | "gated" -> Gated
     | "private" -> Private
+    | "invite_only" | "invite-only" | "invite" -> Private
     | _ -> Public
   in
   (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
@@ -412,8 +424,9 @@ let set_room_visibility ~broker ~session_id_override ~arguments =
                 ; ("visibility",
                     match visibility with
                     | Public -> `String "public"
-                    | Private -> `String "private"
-                    | Invite_only -> `String "invite_only")
+                    | Unlisted -> `String "unlisted"
+                    | Gated -> `String "gated"
+                    | Private -> `String "private")
                 ]
               |> Yojson.Safe.to_string
              in

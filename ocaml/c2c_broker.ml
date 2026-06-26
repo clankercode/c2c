@@ -3329,13 +3329,16 @@ open C2c_mcp_helpers
 
   let room_visibility_to_json = function
     | Public -> `String "public"
+    | Unlisted -> `String "unlisted"
+    | Gated -> `String "gated"
     | Private -> `String "private"
-    | Invite_only -> `String "invite_only"
 
   let room_visibility_of_json json =
     match json with
-    | `String "invite_only" | `String "invite-only" | `String "invite" -> Invite_only
+    | `String "unlisted" -> Unlisted
+    | `String "gated" -> Gated
     | `String "private" -> Private
+    | `String "invite" | `String "invite_only" | `String "invite-only" -> Private
     | _ -> Public
 
   let room_meta_to_json { visibility; invited_members; created_by } =
@@ -3465,10 +3468,11 @@ open C2c_mcp_helpers
         (fun m -> m.rm_alias = alias || m.rm_session_id = session_id)
         current_members
     in
-    if meta.visibility = Invite_only && not already_member then
+    let invite_gated = meta.visibility = Gated || meta.visibility = Private in
+    if invite_gated && not already_member then
       if not (List.mem alias meta.invited_members) then
         invalid_arg
-          ("join_room rejected: room '" ^ room_id ^ "' is invite-only and '" ^ alias ^ "' is not on the invite list");
+          ("join_room rejected: room '" ^ room_id ^ "' requires an invite and '" ^ alias ^ "' is not on the invite list");
     (* H3 rooms-acl: stamp [created_by] when the joiner is establishing the
        room (no members yet, no creator recorded). Subsequent joiners do
        not overwrite. Legacy rooms (members exist, created_by="") stay

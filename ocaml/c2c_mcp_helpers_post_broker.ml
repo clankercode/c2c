@@ -593,8 +593,9 @@ let room_info_json (r : Broker.room_info) =
     ; ("visibility",
         match r.ri_visibility with
         | Public -> `String "public"
-        | Private -> `String "private"
-        | Invite_only -> `String "invite_only")
+        | Unlisted -> `String "unlisted"
+        | Gated -> `String "gated"
+        | Private -> `String "private")
     ; ("invited_members", `List (List.map (fun a -> `String a) r.ri_invited_members))
     ]
 (* Required-string variant: raises [Invalid_argument] on missing or

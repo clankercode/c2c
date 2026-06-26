@@ -76,20 +76,29 @@ let room_invite_sign_ctx = "c2c/v1/room-invite"
 let room_uninvite_sign_ctx = "c2c/v1/room-uninvite"
 let room_set_visibility_sign_ctx = "c2c/v1/room-set-visibility"
 
-(* Room visibility — three levels (relay-canonical wire values):
-     "public"  — listed in /list_rooms, anyone may join.
-     "private" — NOT listed, but anyone who knows the room id may join.
-     "invite"  — NOT listed, and join requires the caller's identity_pk to
-                 be on the room's invite list (ACL-gated).
+(* Room visibility — four levels (relay-canonical wire values), a 2x2 of
+   listed-ness x join-gating:
+     "public"   — listed in /list_rooms, open join, open read.
+     "unlisted" — NOT listed, but anyone who knows the room id may join + read.
+     "gated"    — listed in /list_rooms, but join requires the caller's
+                  identity_pk to be on the room's invite list (ACL-gated);
+                  read requires membership.
+     "private"  — NOT listed, and join requires the caller's identity_pk to
+                  be on the room's invite list (ACL-gated); read requires
+                  membership.
    [canonical_visibility] normalizes operator/CLI input to one of these,
-   accepting "invite_only"/"invite-only" as synonyms for "invite". Returns
-   [None] for unrecognized input so callers can reject it. Only "public"
-   rooms are returned by list_rooms; only "invite" rooms are join-gated. *)
+   accepting "invite"/"invite_only"/"invite-only" as synonyms for "private"
+   (the old tokens meant unlisted+invite = new private). Returns [None] for
+   unrecognized input so callers can reject it. Only "public" and "gated"
+   rooms are returned by list_rooms; "gated" and "private" rooms are
+   join-gated. *)
 let canonical_visibility v =
   match String.lowercase_ascii (String.trim v) with
   | "public" -> Some "public"
+  | "unlisted" -> Some "unlisted"
+  | "gated" -> Some "gated"
   | "private" -> Some "private"
-  | "invite" | "invite_only" | "invite-only" -> Some "invite"
+  | "invite" | "invite_only" | "invite-only" -> Some "private"
   | _ -> None
 
 let canonical_visibility_exn v =
@@ -1286,12 +1295,12 @@ module InMemoryRelay : RELAY = struct
   let list_rooms t =
     with_lock t (fun () ->
       Hashtbl.fold (fun room_id members acc ->
-        (* Only public rooms appear in the directory; private/invite rooms
-           are reachable by id but never listed. Absent visibility (legacy
-           in-memory rooms) defaults to public. *)
+        (* Only public and gated rooms appear in the directory; unlisted and
+           private rooms are reachable by id but never listed. Absent
+           visibility (legacy in-memory rooms) defaults to public. *)
         let visibility = match Hashtbl.find_opt t.room_visibility room_id with
           | Some v -> v | None -> "public" in
-        if visibility <> "public" then acc
+        if not (visibility = "public" || visibility = "gated") then acc
         else
           `Assoc [
             ("room_id", `String room_id);
@@ -2340,9 +2349,9 @@ module SqliteRelay : RELAY = struct
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let rooms = ref [] in
-      (* Only public rooms are listed; private/invite rooms stay reachable by
-         id but are omitted from the directory. *)
-      let stmt = Sqlite3.prepare conn "SELECT room_id FROM rooms WHERE visibility = 'public'" in
+      (* Only public and gated rooms are listed; unlisted/private rooms stay
+         reachable by id but are omitted from the directory. *)
+      let stmt = Sqlite3.prepare conn "SELECT room_id FROM rooms WHERE visibility IN ('public','gated')" in
       let rec loop () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
@@ -3239,11 +3248,12 @@ POST /leave_room    { alias, room_id }
 POST /send_room     { from_alias, room_id, content, message_id? }
 POST /room_history  { room_id, limit? }</pre>
 
-<p>Room visibility accepts <code>public</code>, <code>private</code>, or
-<code>invite_only</code>. A room is public by default; <code>visibility</code>
-on <code>/join_room</code> only applies when that join creates the room.
-Only public rooms appear in <code>/list_rooms</code>; private and invite-only
-rooms remain reachable by name.</p>
+<p>Room visibility accepts <code>public</code>, <code>unlisted</code>,
+<code>gated</code>, or <code>private</code>. A room is public by default;
+<code>visibility</code> on <code>/join_room</code> only applies when that join
+creates the room. Only public and gated rooms appear in
+<code>/list_rooms</code>; unlisted and private rooms stay reachable by id but
+never listed.</p>
 
 <p>Responses are always <code>{"ok": true, ...}</code> or
 <code>{"ok": false, "error_code": "...", "error": "..."}</code>.</p>
@@ -4198,7 +4208,7 @@ generateKeys();
     else match requested_visibility with
     | None ->
       respond_bad_request (json_error_str err_bad_request
-        "visibility must be \"public\", \"private\", or \"invite_only\"")
+        "visibility must be \"public\", \"unlisted\", \"gated\", or \"private\"")
     | Some requested_visibility ->
       let extra_signed_fields =
         match visibility_raw with
@@ -4213,19 +4223,21 @@ generateKeys();
         else
           respond_unauthorized (json_error_str code msg)
       | Ok () ->
-        (* L4/5 ACL: if the EXISTING room is invite-only, require identity_pk ∈
-           invited. A brand-new room has no stored visibility yet (defaults to
-           "public" here), so the creator is always admitted and the room is
-           then created with [requested_visibility]. *)
+        (* L4/5 ACL: gated and private rooms are invite-gated — require
+           identity_pk ∈ invited. public and unlisted rooms are open-join. A
+           brand-new room has no stored visibility yet (defaults to "public"
+           here), so the creator is always admitted and the room is then
+           created with [requested_visibility]. *)
         let visibility = R.room_visibility_of relay ~room_id in
         let pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
+        let open_join = visibility = "public" || visibility = "unlisted" in
         let admitted =
-          visibility <> "invite"
+          open_join
           || (pk_b64 <> "" && R.is_invited relay ~room_id ~identity_pk_b64:pk_b64)
         in
         if not admitted then
           respond_unauthorized (json_error_str relay_err_not_invited
-            (Printf.sprintf "room %S is invite-only and caller is not on the list" room_id))
+            (Printf.sprintf "room %S requires an invite and caller is not on the list" room_id))
         else
         let result = R.join_room relay ~visibility:requested_visibility ~alias ~room_id () in
         respond_ok (match result with
@@ -4243,7 +4255,7 @@ generateKeys();
     else match canonical_visibility visibility_raw with
     | None ->
       respond_bad_request (json_error_str err_bad_request
-        "visibility must be \"public\", \"private\", or \"invite_only\"")
+        "visibility must be \"public\", \"unlisted\", \"gated\", or \"private\"")
     | Some visibility ->
       match verify_room_op_proof relay
               ~sign_ctx:room_set_visibility_sign_ctx
