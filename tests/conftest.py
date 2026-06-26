@@ -24,7 +24,7 @@ from typing import Any, FrozenSet
 import pytest
 
 from tests.e2e.framework.artifacts import ArtifactCollector
-from tests.e2e.framework.client_adapters import CodexAdapter, CodexHeadlessAdapter, ClaudeAdapter, KimiAdapter, OpenCodeAdapter
+from tests.e2e.framework.client_adapters import CodexAdapter, CodexHeadlessAdapter, ClaudeAdapter, KimiAdapter, OpenCodeAdapter, PiAdapter
 from tests.e2e.framework.fake_pty_driver import FakePtyDriver
 from tests.e2e.framework.scenario import Scenario
 from tests.e2e.framework.tmux_driver import TmuxDriver
@@ -288,8 +288,38 @@ def scenario(request: pytest.FixtureRequest, tmp_path: Path) -> Scenario:
             "opencode": OpenCodeAdapter(Path.cwd()),
             "claude": ClaudeAdapter(Path.cwd()),
             "kimi": KimiAdapter(Path.cwd()),
+            "pi": PiAdapter(Path.cwd()),
         },
     )
     sc.refresh_capabilities()
     yield sc
     _cleanup_scenario_agents(sc)
+    _cleanup_canonical_broker(sc)
+
+
+def _cleanup_canonical_broker(sc: Scenario) -> None:
+    """Best-effort removal of the canonical per-repo broker the scenario used.
+
+    Scenario.broker_root() now resolves the canonical
+    $XDG_STATE_HOME/c2c/repos/<fp>/broker (outside tmp_path), so it is not
+    swept with the tmp workdir. The fingerprint is derived from the unique tmp
+    workdir, so this broker belongs solely to this test run — safe to delete.
+    Guard on the ".../c2c/repos/<fp>/broker" shape so we never rmtree anything
+    a live peer relies on.
+    """
+    try:
+        broker = sc.broker_root()
+    except Exception:
+        return
+    parts = broker.parts
+    if (
+        broker.name == "broker"
+        and len(parts) >= 4
+        and parts[-3] == "repos"
+        # XDG path nests under "c2c"; the $HOME fallback nests under ".c2c".
+        and parts[-4] in ("c2c", ".c2c")
+        and broker.exists()
+    ):
+        import shutil as _shutil
+
+        _shutil.rmtree(broker, ignore_errors=True)

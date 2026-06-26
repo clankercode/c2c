@@ -337,20 +337,26 @@ def test_scenario_send_dm_invokes_c2c_send_with_from_agent_and_records_timeline(
     sender = scenario.start_agent("dummy", name="dummy-a")
     recipient = scenario.start_agent("dummy", name="dummy-b")
     calls: list[tuple[list[str], Path]] = []
+    send_env: dict[str, str] = {}
 
     def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
         calls.append((cmd, kwargs["cwd"]))
-        stdout = ".git\n" if cmd[:3] == ["git", "rev-parse", "--git-common-dir"] else ""
-        return mock.Mock(stdout=stdout, stderr="", returncode=0)
+        if cmd[:2] == ["c2c", "send"]:
+            send_env.update(kwargs["env"])
+        return mock.Mock(stdout="", stderr="", returncode=0)
 
     monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
 
     scenario.send_dm(sender, recipient, "hello there")
 
+    # broker_root() consults git (no remote, no toplevel from the stub) then the
+    # send runs; the relay grant must be present for the --from impersonation.
     assert calls == [
-        (["git", "rev-parse", "--git-common-dir"], scenario.workdir),
+        (["git", "config", "--get", "remote.origin.url"], scenario.workdir),
+        (["git", "rev-parse", "--show-toplevel"], scenario.workdir),
         (["c2c", "send", "--from", "dummy-a", "dummy-b", "hello there"], scenario.workdir),
     ]
+    assert send_env.get("C2C_COORDINATOR") == "1"
     timeline = (scenario.artifacts.run_dir / "timeline.jsonl").read_text(encoding="utf-8")
     assert '"event": "dm.sent"' in timeline
     assert '"from_agent": "dummy-a"' in timeline
@@ -371,20 +377,26 @@ def test_scenario_send_dm_preserves_controller_side_send_when_from_agent_is_none
     scenario.artifacts.start_run()
     recipient = scenario.start_agent("dummy", name="dummy-b")
     calls: list[tuple[list[str], Path]] = []
+    send_env: dict[str, str] = {}
 
     def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
         calls.append((cmd, kwargs["cwd"]))
-        stdout = ".git\n" if cmd[:3] == ["git", "rev-parse", "--git-common-dir"] else ""
-        return mock.Mock(stdout=stdout, stderr="", returncode=0)
+        if cmd[:2] == ["c2c", "send"]:
+            send_env.update(kwargs["env"])
+        return mock.Mock(stdout="", stderr="", returncode=0)
 
     monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
+    monkeypatch.delenv("C2C_COORDINATOR", raising=False)
 
     scenario.send_dm(None, recipient, "controller message")
 
     assert calls == [
-        (["git", "rev-parse", "--git-common-dir"], scenario.workdir),
+        (["git", "config", "--get", "remote.origin.url"], scenario.workdir),
+        (["git", "rev-parse", "--show-toplevel"], scenario.workdir),
         (["c2c", "send", "dummy-b", "controller message"], scenario.workdir),
     ]
+    # No --from impersonation, so no coordinator relay grant is injected.
+    assert "C2C_COORDINATOR" not in send_env
     timeline = (scenario.artifacts.run_dir / "timeline.jsonl").read_text(encoding="utf-8")
     assert '"event": "dm.sent"' in timeline
     assert '"from_agent": null' in timeline
@@ -392,9 +404,11 @@ def test_scenario_send_dm_preserves_controller_side_send_when_from_agent_is_none
     assert '"text": "controller message"' in timeline
 
 
-def test_scenario_broker_root_resolves_git_common_dir_once(
+def test_scenario_broker_root_resolves_canonical_from_remote_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import hashlib
+
     scenario = Scenario(
         test_name="test_demo",
         workdir=tmp_path / "worktree",
@@ -406,17 +420,54 @@ def test_scenario_broker_root_resolves_git_common_dir_once(
 
     def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
         calls.append(cmd)
-        return mock.Mock(stdout="../.git-common\n", returncode=0)
+        if cmd[:3] == ["git", "config", "--get"]:
+            return mock.Mock(stdout="git@example.com:acme/c2c.git\n", returncode=0)
+        return mock.Mock(stdout="", returncode=0)
 
     monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
     first = scenario.broker_root()
     second = scenario.broker_root()
 
-    expected = (scenario.workdir / "../.git-common" / "c2c" / "mcp").resolve()
+    fp = hashlib.sha256(b"git@example.com:acme/c2c.git").hexdigest()[:12]
+    expected = tmp_path / "state" / "c2c" / "repos" / fp / "broker"
     assert first == expected
     assert second == expected
-    assert calls == [["git", "rev-parse", "--git-common-dir"]]
+    # remote.origin.url resolved the fingerprint; toplevel not needed, and the
+    # result is cached so git is only consulted on the first call.
+    assert calls == [["git", "config", "--get", "remote.origin.url"]]
+
+
+def test_scenario_broker_root_falls_back_to_toplevel_then_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "worktree",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+
+    top = "/tmp/some/repo/toplevel"
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        if cmd[:3] == ["git", "config", "--get"]:
+            return mock.Mock(stdout="\n", returncode=0)  # no remote
+        if cmd[:2] == ["git", "rev-parse"]:
+            return mock.Mock(stdout=top + "\n", returncode=0)
+        return mock.Mock(stdout="", returncode=0)
+
+    monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    fp = hashlib.sha256(top.encode()).hexdigest()[:12]
+    expected = tmp_path / "home" / ".c2c" / "repos" / fp / "broker"
+    assert scenario.broker_root() == expected
 
 
 def test_scenario_broker_inbox_contains_matches_nested_json_text(
@@ -500,6 +551,43 @@ def test_scenario_require_binary_raises_for_missing_binary(
 
     with pytest.raises(AssertionError, match="required binary missing: missing-binary"):
         scenario.require_binary("missing-binary")
+
+
+def _make_cleanup_scenario(tmp_path: Path, broker: Path) -> Scenario:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario._broker_root = broker
+    return scenario
+
+
+def test_cleanup_canonical_broker_removes_xdg_and_home_shapes(tmp_path: Path) -> None:
+    # XDG shape: .../c2c/repos/<fp>/broker ; HOME fallback: .../.c2c/repos/<fp>/broker
+    for nest in ("c2c", ".c2c"):
+        broker = tmp_path / nest / "repos" / "deadbeef0001" / "broker"
+        broker.mkdir(parents=True)
+        (broker / "registry.json").write_text("[]", encoding="utf-8")
+        scenario = _make_cleanup_scenario(tmp_path, broker)
+
+        conftest_module._cleanup_canonical_broker(scenario)
+
+        assert not broker.exists(), f"{nest} broker not cleaned up"
+
+
+def test_cleanup_canonical_broker_refuses_non_broker_shapes(tmp_path: Path) -> None:
+    # Anything not shaped like .../<c2c|.c2c>/repos/<fp>/broker must be left alone.
+    for rel in ("c2c/repos/fp/notbroker", "elsewhere/repos/fp/broker", "broker"):
+        target = tmp_path / rel
+        target.mkdir(parents=True)
+        scenario = _make_cleanup_scenario(tmp_path, target)
+
+        conftest_module._cleanup_canonical_broker(scenario)
+
+        assert target.exists(), f"{rel} was wrongly deleted"
 
 
 def test_cleanup_scenario_agents_continues_after_stop_failure(tmp_path: Path) -> None:
@@ -620,6 +708,56 @@ def test_tmux_driver_start_uses_new_session_and_returns_pane_handle(
     assert cmd[14:16] == ["bash", "-lc"]
     assert cmd[16] == f"cd {shlex.quote(str(tmp_path))} && bash -lc 'echo hi'"
     assert "env" not in kwargs or kwargs["env"].get("C2C_TEST_ENV") != "alpha"
+
+
+def test_tmux_driver_threads_socket_through_every_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append(cmd)
+        return mock.Mock(stdout="%7\n", returncode=0)
+
+    monkeypatch.setattr("tests.e2e.framework.tmux_driver.subprocess.run", fake_run)
+
+    driver = TmuxDriver(repo_root=tmp_path, socket="c2c-chess-e2e")
+    handle = TerminalHandle(backend="tmux", target="%7", process_pid=7)
+    driver.start(
+        TerminalStartSpec(command=["bash", "-lc", "echo hi"], cwd=tmp_path, env={}, title="t")
+    )
+    driver.capture(handle)
+    driver.is_alive(handle)
+    driver.stop(handle)
+    # send_key Enter must bypass the default-socket enter helper when isolated.
+    driver.send_key(handle, "Enter")
+
+    # Isolated server skips ~/.tmux.conf (-f /dev/null) so continuum can't
+    # auto-restore the operator's sessions onto our socket.
+    for cmd in calls:
+        assert cmd[:5] == ["tmux", "-L", "c2c-chess-e2e", "-f", "/dev/null"], cmd
+    # The Enter path used plain send-keys (not the repo helper script).
+    assert calls[-1] == [
+        "tmux", "-L", "c2c-chess-e2e", "-f", "/dev/null", "send-keys", "-t", "%7", "Enter",
+    ]
+
+
+def test_tmux_driver_default_socket_omits_dash_l(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> mock.Mock:
+        calls.append(cmd)
+        return mock.Mock(stdout="%1\n", returncode=0)
+
+    monkeypatch.setattr("tests.e2e.framework.tmux_driver.subprocess.run", fake_run)
+
+    driver = TmuxDriver(repo_root=tmp_path)  # no socket
+    driver.capture(TerminalHandle(backend="tmux", target="%1", process_pid=1))
+
+    assert calls[0][0] == "tmux"
+    assert "-L" not in calls[0]
 
 
 def test_tmux_driver_enter_uses_repo_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

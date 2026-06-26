@@ -10,13 +10,15 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.framework.client_adapters import compile_role
+from tests.e2e.framework.models import e2e_model
 from tests.e2e.framework.scenario import Scenario
 
 
 TMUX_BIN = shutil.which("tmux")
 OPENCODE_BIN = shutil.which("opencode")
 C2C_BIN = shutil.which("c2c")
-OPENCODE_TEST_MODEL = "minimax-coding-plan/MiniMax-M2.7-highspeed"
+# Overridable per run: C2C_E2E_OPENCODE_MODEL > C2C_E2E_MODEL > default (mimo-v2.5-pro).
+OPENCODE_TEST_MODEL = e2e_model("opencode")
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("C2C_TEST_OPENCODE_E2E") != "1"

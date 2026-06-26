@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -12,6 +13,7 @@ from tests.e2e.framework.capabilities import (
     CODEX_XML_FD,
     KIMI_WIRE,
     OPENCODE_PLUGIN,
+    PI_C2C,
 )
 from tests.e2e.framework.scenario import AgentConfig, Scenario, StartedAgent
 from tests.e2e.framework.terminal_driver import TerminalCapture, TerminalHandle
@@ -301,6 +303,101 @@ def test_kimi_adapter_uses_shared_wire_capability_name(
     adapter = KimiAdapter(tmp_path)
 
     assert adapter.probe_capabilities(None) == {KIMI_WIRE: True}
+
+
+def test_pi_adapter_builds_launch_command_with_model_and_hermetic_env(tmp_path: Path) -> None:
+    from tests.e2e.framework.client_adapters import PiAdapter
+
+    adapter = PiAdapter(tmp_path)
+    config = AgentConfig(
+        client="pi",
+        name="pi-a",
+        model="xiaomi-token-plan-sgp/mimo-v2.5-pro",
+    )
+    broker_root = tmp_path / "broker"
+    scenario = mock.Mock(workdir=tmp_path / "work", broker_root=lambda: broker_root)
+
+    launch = adapter.build_launch(scenario, config)
+
+    assert launch["command"] == ["pi", "--model", "xiaomi-token-plan-sgp/mimo-v2.5-pro"]
+    assert launch["cwd"] == scenario.workdir
+    assert launch["title"] == "pi-a"
+    env = launch["env"]
+    assert env["C2C_PI_ALIAS"] == "pi-a"
+    assert env["C2C_MCP_BROKER_ROOT"] == str(broker_root)
+    assert env["C2C_PI_CROSS_REPO"] == "0"
+    assert env["C2C_PI_RELAY"] == "0"
+
+
+def test_pi_adapter_launch_command_omits_model_when_unset(tmp_path: Path) -> None:
+    from tests.e2e.framework.client_adapters import PiAdapter
+
+    adapter = PiAdapter(tmp_path)
+    config = AgentConfig(client="pi", name="pi-a")
+    scenario = mock.Mock(workdir=tmp_path / "work", broker_root=lambda: tmp_path / "broker")
+
+    launch = adapter.build_launch(scenario, config)
+
+    assert launch["command"] == ["pi"]
+
+
+def test_pi_adapter_caller_env_overrides_hermetic_defaults(tmp_path: Path) -> None:
+    from tests.e2e.framework.client_adapters import PiAdapter
+
+    adapter = PiAdapter(tmp_path)
+    config = AgentConfig(
+        client="pi",
+        name="pi-a",
+        env={"C2C_PI_RELAY": "1", "C2C_MCP_BROKER_ROOT": "/custom/broker"},
+    )
+    scenario = mock.Mock(workdir=tmp_path / "work", broker_root=lambda: tmp_path / "broker")
+
+    env = adapter.build_launch(scenario, config)["env"]
+
+    assert env["C2C_PI_RELAY"] == "1"
+    assert env["C2C_MCP_BROKER_ROOT"] == "/custom/broker"
+
+
+def test_pi_adapter_reports_capability_from_pi_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.e2e.framework.client_adapters import PiAdapter
+
+    monkeypatch.setattr(
+        "tests.e2e.framework.client_adapters.shutil.which",
+        lambda name: "/usr/bin/pi" if name == "pi" else None,
+    )
+
+    adapter = PiAdapter(tmp_path)
+
+    assert adapter.probe_capabilities(None) == {PI_C2C: True}
+
+
+def test_pi_adapter_ready_requires_broker_registration(tmp_path: Path) -> None:
+    from tests.e2e.framework.client_adapters import PiAdapter
+
+    adapter = PiAdapter(tmp_path)
+    agent = _make_agent(client="pi", name="pi-a")
+    broker_root = tmp_path / "broker"
+    broker_root.mkdir(parents=True)
+    scenario = mock.Mock(
+        drivers={"tmux": _ReadyDriver(alive=True)},
+        broker_root=lambda: broker_root,
+    )
+
+    # No registry yet -> not ready.
+    assert adapter.is_ready(scenario, agent) is False
+
+    registry = broker_root / "registry.json"
+    registry.write_text(json.dumps([{"alias": "pi-a", "alive": False}]), encoding="utf-8")
+    assert adapter.is_ready(scenario, agent) is False
+
+    registry.write_text(json.dumps([{"alias": "pi-a", "alive": True}]), encoding="utf-8")
+    assert adapter.is_ready(scenario, agent) is True
+
+    # Dead driver short-circuits even when registered.
+    scenario.drivers["tmux"] = _ReadyDriver(alive=False)
+    assert adapter.is_ready(scenario, agent) is False
 
 
 def test_scenario_refresh_capabilities_merges_adapter_results(tmp_path: Path) -> None:
