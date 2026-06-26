@@ -107,6 +107,29 @@ Live validation so far:
   the user's tmux config? more boot time? a different model flag path?). The
   full game remains a manual exercise until opencode launch is reliable here.
 
+## Relay variants (added 2026-06-26)
+
+The local chess test routes via the local per-repo broker. Requested follow-on:
+relay-routed variants. Player-variant matrix requested: (a) controller-driven,
+(b) real pi vs opencode, (c) pi using ONLY its native `c2c_pi_*` tools.
+
+- **(a) Controller-driven chess over the public relay — DONE + LIVE-VALIDATED.**
+  `tests/test_c2c_chess_relay_e2e.py` (gated `C2C_TEST_RELAY_CHESS_E2E=1`).
+  Registers two aliases on the relay (`C2C_RELAY_URL`, default relay.c2c.im;
+  point at a local POW-off relay to avoid prod), plays a first-legal-move game
+  where every ply is a real `c2c relay dm send` (POW) → relay → `relay dm poll`
+  round-trip, asserting per-ply FEN-equality (the relay carried the move). Ran
+  10/10 plies through relay.c2c.im, boards synced, ~12s.
+- **(b) real pi vs opencode over relay — NOT BUILT.** Compounds the unresolved
+  live blockers: opencode managed-start (already failing locally) + both clients
+  autonomously sending/polling via relay. Deferred until the local agent game
+  works.
+- **(c) pi-native-tools-only over relay — NOT BUILT.** More tractable than (b)
+  (pi is reliable, opponent can be the controller), but still needs pi to
+  autonomously receive relay DMs into its transcript (C2C_PI_RELAY=1 watcher)
+  and reply via `c2c_pi_send`. Real flakiness risk; deferred as a focused
+  follow-up.
+
 ## Test plan
 - `c2c_chess.py` unit tests (deterministic, no agents) — full coverage of the
   CLI + state manager.
