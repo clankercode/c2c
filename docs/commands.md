@@ -437,7 +437,7 @@ repo root, local-only — gitignored per `.gitignore` #266). Entries are markdow
 `name`, `description`, `type`, `shared`, `shared_with`. Cross-agent
 reads require `shared: true` (global) **OR** the caller's alias listed
 in `shared_with: [alias1, alias2]` (targeted). See the design at
-[.collab/design/DRAFT-per-agent-memory.md](https://github.com/XertroV/c2c-msg/blob/master/.collab/design/DRAFT-per-agent-memory.md)
+[.collab/design/DRAFT-per-agent-memory.md](https://github.com/clankercode/c2c/blob/master/.collab/design/DRAFT-per-agent-memory.md)
 for the full model.
 
 There are two surfaces: MCP tools (in-session) and a CLI subcommand group
