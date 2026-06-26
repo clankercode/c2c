@@ -93,6 +93,33 @@ def _relay(*args: str) -> dict:
         return {"ok": False, "_raw": res.stdout, "_err": res.stderr}
 
 
+def _relay_ok(*args: str, attempts: int = 4, delay: float = 1.5) -> dict:
+    """Run a relay command, retrying transient failures (the prod relay edge
+    occasionally returns e.g. 'unknown endpoint' / rate-limits — the canonical
+    relay-smoke-test.sh wraps every call in `retry 3 1` for the same reason)."""
+    res: dict = {}
+    for attempt in range(attempts):
+        res = _relay(*args)
+        if res.get("ok") is True:
+            return res
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    return res
+
+
+def _host_id() -> str:
+    """Local opaque host hash (the relay 'machine id'), via `c2c host-id`.
+
+    Relay addresses are `<alias>@<host_id>` — recording the host_id makes it
+    visible WHICH machine a relayed peer is on. (Same-host sends go on the wire
+    as the bare alias because the relay rejects a full-address signer; see
+    .collab/findings/2026-06-26T12-15-00Z-relay-send-full-address-alias-signature-mismatch.md
+    — but the full address is the canonical identity, so we record it.)
+    """
+    res = subprocess.run(["c2c", "host-id"], capture_output=True, text=True, check=False)
+    return res.stdout.strip() or "unknown-host"
+
+
 def _fen(state_file: Path) -> str:
     out = _chess("board", str(state_file)).stdout
     for line in out.splitlines():
@@ -145,14 +172,18 @@ def test_chess_over_relay_round_trips_every_move(tmp_path: Path) -> None:
     - the game reaches a terminal result or the ply cap, with >0 plies played
     """
     suffix = f"{os.getpid()}-{int(MAX_PLIES)}"
+    host = _host_id()  # the relay "machine id" — addresses are <alias>@<host>
     white = f"chess-relay-white-{suffix}"
     black = f"chess-relay-black-{suffix}"
+
+    def addr(alias: str) -> str:
+        return f"{alias}@{host}"
     boards = {white: tmp_path / "white.chess.json", black: tmp_path / "black.chess.json"}
     for f in boards.values():
         assert _chess("new", str(f)).returncode == 0
 
-    assert _relay("register", "--alias", white).get("ok") is True, "white relay register failed"
-    assert _relay("register", "--alias", black).get("ok") is True, "black relay register failed"
+    assert _relay_ok("register", "--alias", white).get("ok") is True, "white relay register failed"
+    assert _relay_ok("register", "--alias", black).get("ok") is True, "black relay register failed"
     # Drain any stale inbox state so polls only see this game's moves.
     _relay("dm", "poll", "--alias", white)
     _relay("dm", "poll", "--alias", black)
@@ -169,7 +200,7 @@ def test_chess_over_relay_round_trips_every_move(tmp_path: Path) -> None:
         uci = legal[0]  # deterministic first-legal-move policy
         assert _chess("move", str(boards[mover]), uci).returncode == 0, f"{mover} could not play {uci}"
 
-        sent = _relay("dm", "send", other, f"MOVE {uci}", "--alias", mover)
+        sent = _relay_ok("dm", "send", other, f"MOVE {uci}", "--alias", mover)
         assert sent.get("ok") is True, f"relay send {mover}->{other} failed: {sent}"
 
         # Apply the move PARSED FROM THE RELAY PAYLOAD, not the local uci — so the
@@ -189,7 +220,8 @@ def test_chess_over_relay_round_trips_every_move(tmp_path: Path) -> None:
             f"board desync after relaying {uci}: "
             f"{mover}={_fen(boards[mover])} {other}={_fen(boards[other])}"
         )
-        transcript.append(f"{mover} -> {other}  MOVE {uci}")
+        # Record the FULL relay address (alias@host) so the machine id is visible.
+        transcript.append(f"{addr(mover)} -> {addr(other)}  MOVE {uci}")
         plies += 1
         mover, other = other, mover
 
@@ -199,6 +231,7 @@ def test_chess_over_relay_round_trips_every_move(tmp_path: Path) -> None:
     final = _status(boards[white])
     header = (
         f"c2c chess over relay {RELAY_URL}\n"
+        f"machine id (host): {host}\n"
         f"plies={plies} result={final.get('result')} "
         f"game_over={final.get('is_game_over')}\n" + "-" * 50 + "\n"
     )
