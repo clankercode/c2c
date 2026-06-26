@@ -200,6 +200,10 @@ def _record_messages(broker_root: Path, aliases: list[str]) -> str:
 
     transcript_lines: list[str] = []
     for frm, to, ts in _enqueue_order(broker_root):
+        # Positional FIFO match per (from,to): exact when every DM for the pair
+        # was delivered+archived. Under PARTIAL archival (a middle DM never
+        # drained) later bodies shift up by one — a debug-transcript artifact
+        # only, never the assertion. Good enough for a manual diagnostic.
         q = bodies.get((frm, to))
         body = q.popleft() if q else "(body not archived — undrained or ephemeral)"
         transcript_lines.append(f"{frm:>16} -> {to:<16} {body}")
@@ -334,17 +338,22 @@ def test_chess_pi_vs_opencode_to_result(request: pytest.FixtureRequest, tmp_path
         try:
             sc.wait_for(_terminal, timeout=TIMEOUT_S, interval=5.0)
         finally:
-            # Always snapshot the game, pass or fail.
-            for label, f in (("white", white_file), ("black", black_file)):
-                board = _chess("board", str(f))
-                sc.artifacts.write_text(f"{label}.board.txt", board.stdout + board.stderr)
-                if f.exists():
-                    sc.artifacts.write_text(f"{label}.state.json", f.read_text(encoding="utf-8"))
-            sc.artifacts.write_text("white.pane.txt", sc.capture(white))
-            sc.artifacts.write_text("black.pane.txt", sc.capture(black))
-            # Record the c2c message log (move DMs, disputes, etc.) per agent.
-            transcript = _record_messages(sc.broker_root(), [white_alias, black_alias, referee])
-            sc.artifacts.write_text("messages.transcript.txt", transcript)
+            # Snapshot the game, pass or fail. Artifact capture is strictly
+            # best-effort: a failure here (unwritable TMPDIR, dead pane, ...)
+            # must NEVER alter the test verdict, so swallow any exception.
+            try:
+                for label, f in (("white", white_file), ("black", black_file)):
+                    board = _chess("board", str(f))
+                    sc.artifacts.write_text(f"{label}.board.txt", board.stdout + board.stderr)
+                    if f.exists():
+                        sc.artifacts.write_text(f"{label}.state.json", f.read_text(encoding="utf-8"))
+                sc.artifacts.write_text("white.pane.txt", sc.capture(white))
+                sc.artifacts.write_text("black.pane.txt", sc.capture(black))
+                # Record the c2c message log (move DMs, disputes, etc.) per agent.
+                transcript = _record_messages(sc.broker_root(), [white_alias, black_alias, referee])
+                sc.artifacts.write_text("messages.transcript.txt", transcript)
+            except Exception as exc:  # noqa: BLE001 - artifacts are best-effort
+                sc.comment(f"artifact capture failed (non-fatal): {exc!r}")
 
         wst, bst = _game_status(white_file), _game_status(black_file)
         assert wst.get("is_game_over") or bst.get("is_game_over") or _terminal(), (
