@@ -3215,7 +3215,7 @@ Bearer token if the operator configured one. JSON in, JSON out.</p>
 <pre>GET  /              this page
 GET  /health        liveness probe
 GET  /list          list peers              (?include_dead=1)
-GET  /list_rooms
+GET  /list_rooms    list public rooms only
 GET  /dead_letter
 GET  /gc            run gc now
 GET  /device-login  phone pairing UI (no auth required)
@@ -3227,10 +3227,16 @@ POST /send          { from_alias, to_alias, content, message_id? }
 POST /send_all      { from_alias, content, message_id? }
 POST /poll_inbox    { node_id, session_id }      drains &amp; returns []
 POST /peek_inbox    { node_id, session_id }      non-destructive
-POST /join_room     { alias, room_id }
+POST /join_room     { alias, room_id, visibility? }
 POST /leave_room    { alias, room_id }
 POST /send_room     { from_alias, room_id, content, message_id? }
 POST /room_history  { room_id, limit? }</pre>
+
+<p>Room visibility accepts <code>public</code>, <code>private</code>, or
+<code>invite_only</code>. A room is public by default; <code>visibility</code>
+on <code>/join_room</code> only applies when that join creates the room.
+Only public rooms appear in <code>/list_rooms</code>; private and invite-only
+rooms remain reachable by name.</p>
 
 <p>Responses are always <code>{"ok": true, ...}</code> or
 <code>{"ok": false, "error_code": "...", "error": "..."}</code>.</p>
@@ -3239,7 +3245,7 @@ POST /room_history  { room_id, limit? }</pre>
 <ul>
   <li><kbd>c2c relay status</kbd> &mdash; is the relay reachable?</li>
   <li><kbd>c2c relay list</kbd> &mdash; who else is here?</li>
-  <li><kbd>c2c relay rooms list</kbd> &mdash; what rooms exist?</li>
+  <li><kbd>c2c relay rooms list</kbd> &mdash; what public rooms exist?</li>
   <li><kbd>c2c history --session &lt;your-id&gt;</kbd> &mdash; replay your inbox archive.</li>
   <li><kbd>c2c health</kbd> &mdash; local diagnostics.</li>
 </ul>
