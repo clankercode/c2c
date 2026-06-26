@@ -289,6 +289,74 @@ let test_with_outbox_lock_executes () =
       true (Sys.file_exists (Conn.outbox_lock_path dir))
   )
 
+(* --- B010: alert delivery injects c2c-system messages into local inboxes --- *)
+
+let read_inbox_messages root session_id =
+  let path = Conn.local_inbox_path root session_id in
+  match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+  | Some (`List items) -> items
+  | _ -> []
+
+let msg_field key json =
+  match Yojson.Safe.Util.member key json with `String s -> s | _ -> ""
+
+let contains_sub ~needle s =
+  let nl = String.length needle and sl = String.length s in
+  let rec go i = i + nl <= sl && (String.sub s i nl = needle || go (i + 1)) in
+  nl = 0 || go 0
+
+(* A dead-letter event must enqueue a c2c-system DM to the originating sender
+   (the concrete first instance of B010's relay-event passthrough). Exercised
+   end-to-end through the pure decider + the connector's file-IO injection. *)
+let test_dlq_injects_system_dm_to_sender () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    let regs = [
+      ("sess-alice", "alice", "claude");
+      ("sess-bob", "bob", "codex");   (* unrelated peer — must NOT get the DM *)
+    ] in
+    let dlqs = [
+      { C2c_relay_alert.dlq_sender = "alice"; dlq_to = "bob@host";
+        dlq_reason = "recipient_dead" } ] in
+    let emissions, _ =
+      C2c_relay_alert.step C2c_relay_alert.initial_state
+        { C2c_relay_alert.obs_difficulty = None; obs_rate_limited = false;
+          obs_pow_retry_failed = false; obs_pow_retry_sender = None;
+          obs_dlqs = dlqs } in
+    let delivered = Conn.deliver_alert_emissions dir regs emissions in
+    Alcotest.(check int) "one system message delivered" 1 delivered;
+    (* alice's inbox got exactly one c2c-system message about the DLQ *)
+    let alice_msgs = read_inbox_messages dir "sess-alice" in
+    Alcotest.(check int) "alice inbox has one message" 1 (List.length alice_msgs);
+    let m = List.hd alice_msgs in
+    Alcotest.(check string) "from c2c-system" "c2c-system" (msg_field "from_alias" m);
+    Alcotest.(check string) "to alice" "alice" (msg_field "to_alias" m);
+    let content = msg_field "content" m in
+    Alcotest.(check bool) "content tagged ERR" true
+      (contains_sub ~needle:"[c2c-relay ERR]" content);
+    Alcotest.(check bool) "content names recipient" true
+      (contains_sub ~needle:"bob@host" content);
+    (* bob (unrelated) must have no inbox messages *)
+    Alcotest.(check int) "bob inbox untouched" 0
+      (List.length (read_inbox_messages dir "sess-bob"))
+  )
+
+(* A broadcast emission (e.g. difficulty increase) must reach every session. *)
+let test_broadcast_reaches_all_sessions () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    let regs = [ ("sess-a", "alice", "claude"); ("sess-b", "bob", "codex") ] in
+    let emissions, _ =
+      C2c_relay_alert.step C2c_relay_alert.initial_state
+        { C2c_relay_alert.obs_difficulty = Some 4; obs_rate_limited = false;
+          obs_pow_retry_failed = false; obs_pow_retry_sender = None;
+          obs_dlqs = [] } in
+    let delivered = Conn.deliver_alert_emissions dir regs emissions in
+    Alcotest.(check int) "delivered to both sessions" 2 delivered;
+    Alcotest.(check int) "alice got it" 1 (List.length (read_inbox_messages dir "sess-a"));
+    Alcotest.(check int) "bob got it" 1 (List.length (read_inbox_messages dir "sess-b"))
+  )
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_relay_connector" [
@@ -330,5 +398,9 @@ let () =
       Alcotest.test_case "fresh entry has attempts=1, enqueued_at>0" `Quick test_outbox_new_fields;
       Alcotest.test_case "legacy entry defaults to now (not epoch)" `Quick test_outbox_backward_compat;
       Alcotest.test_case "enqueued_at parses Int variant" `Quick test_outbox_enqueued_at_int;
+    ];
+    "B010 alert delivery", [
+      Alcotest.test_case "DLQ injects c2c-system DM to sender" `Quick test_dlq_injects_system_dm_to_sender;
+      Alcotest.test_case "broadcast reaches all sessions" `Quick test_broadcast_reaches_all_sessions;
     ];
   ]
