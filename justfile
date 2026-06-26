@@ -486,3 +486,11 @@ gac MSG FILES:
 # Usage: just collab-commit "findings: describe what you found"
 collab-commit MSG:
     git add -f .collab/findings/ .collab/updates/ && git commit -m {{ quote(MSG) }}
+
+# Render the social-preview (Open Graph) card to docs/assets/og-image.png (1200x630).
+# Installs the tiny local render deps (playwright + sharp) on first run, then
+# screenshots docs/assets/og-image.html via headless chromium. Edit the HTML, re-run.
+og-image:
+    cd docs/assets && (test -d node_modules || npm install --no-audit --no-fund) && \
+        PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}" \
+        node render-og-image.mjs
