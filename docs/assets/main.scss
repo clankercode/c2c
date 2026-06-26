@@ -156,7 +156,7 @@ a:visited { color: var(--c2c-amber-dim); }
 .hero {
   position: relative;
   margin: -2rem 0 3rem;
-  padding: 4.5rem 0 4rem;
+  padding: 4.5rem 0 5.75rem;
   border-bottom: 1px solid var(--c2c-border);
   background: var(--c2c-bg);
   overflow: hidden;
@@ -278,6 +278,52 @@ a:visited { color: var(--c2c-amber-dim); }
 }
 .hero-install-meta a { color: var(--c2c-amber); }
 
+.hero-pi-cue {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  width: min(18rem, calc(100% - 2rem));
+  margin: 1.4rem 0 0 auto;
+  padding: 0.68rem 0.85rem 0.78rem;
+  color: var(--c2c-text);
+  background: rgba(26,23,20,0.72);
+  border: 1px solid rgba(62,232,245,0.24);
+  border-top: 3px solid var(--c2c-cyan);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  text-align: center;
+  transform: rotate(3deg);
+  transform-origin: 50% 0;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.20);
+}
+
+.hero-pi-cue::before {
+  content: "";
+  position: absolute;
+  top: -1.7rem;
+  left: 50%;
+  width: 1px;
+  height: 1.7rem;
+  background: rgba(62,232,245,0.35);
+  box-shadow: 0 0 12px rgba(62,232,245,0.18);
+}
+
+.hero-pi-cue-label {
+  color: var(--c2c-cyan);
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.hero-pi-cue code {
+  color: var(--c2c-green);
+  white-space: nowrap;
+}
+
 .hero-actions {
   display: flex;
   gap: 1rem;
@@ -285,32 +331,48 @@ a:visited { color: var(--c2c-amber-dim); }
   flex-wrap: wrap;
 }
 
-.hero-badges {
+.hero-stats {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
   display: flex;
-  gap: 2rem;
   justify-content: center;
-  margin-top: 2.5rem;
-  padding-top: 2rem;
-  border-top: 1px dashed var(--c2c-border);
+  gap: 0;
+  padding: 0.9rem 1rem;
+  border-top: 1px solid var(--c2c-border);
+  background: linear-gradient(90deg, transparent, rgba(26,23,20,0.86), transparent);
+  backdrop-filter: blur(10px);
 }
 
-.hero-badge {
+.stat-node {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: center;
+  gap: 0.55rem;
+  min-width: 10rem;
+  padding: 0 1.25rem;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem;
   color: var(--c2c-text-muted);
 }
 
-.hero-badge-dot {
+.stat-node:not(:last-child) {
+  border-right: 1px solid var(--c2c-border);
+}
+
+.stat-pulse {
   width: 8px;
   height: 8px;
+  flex: 0 0 8px;
   border-radius: 50%;
   background: var(--c2c-green);
   box-shadow: 0 0 8px var(--c2c-green);
   animation: pulse-glow 2s ease-in-out infinite;
 }
+
+.stat-label { white-space: nowrap; }
 
 @keyframes pulse-glow {
   0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--c2c-green); }
@@ -320,10 +382,30 @@ a:visited { color: var(--c2c-amber-dim); }
 @media (max-width: 700px) {
   .hero-brand { font-size: 2.5rem; }
   .hero-tagline { font-size: 0.95rem; }
-  .hero-badges { gap: 1rem; flex-wrap: wrap; }
-  .hero-badge { font-size: 0.7rem; }
-  .hero-install-cmd { font-size: 0.95rem; padding: 0.7rem 1rem; }
+  .hero-stats { flex-wrap: wrap; padding: 0.75rem 0.5rem; }
+  .stat-node { min-width: auto; width: 33.333%; padding: 0 0.45rem; font-size: 0.68rem; }
+  .hero-install-cmd {
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: 100%;
+    white-space: normal;
+    font-size: 0.95rem;
+    padding: 0.7rem 1rem;
+  }
   .hero-install-meta { font-size: 0.72rem; }
+  .hero-pi-cue { margin: 1.5rem auto 0; font-size: 0.8rem; transform: rotate(0deg); }
+  .hero-pi-cue::before { display: none; }
+}
+
+@media (max-width: 360px) {
+  .hero { padding-bottom: 7rem; }
+  .hero-stats { gap: 0.35rem; }
+  .stat-node {
+    width: 100%;
+    padding: 0;
+    border-right: none !important;
+    font-size: 0.66rem;
+  }
 }
 
 /* ---- Buttons ---- */
@@ -363,6 +445,39 @@ a:visited { color: var(--c2c-amber-dim); }
 }
 
 /* ---- Message cards (agent output style) ---- */
+.project-status-notice {
+  background: linear-gradient(135deg, rgba(245,166,35,0.10), rgba(62,232,245,0.04));
+  border: 1px solid var(--c2c-border-strong);
+  border-left: 3px solid var(--c2c-amber);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin: 0 0 1.75rem;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.22);
+}
+
+.project-status-notice p {
+  margin: 0;
+  color: var(--c2c-text);
+}
+
+.project-status-notice strong { color: var(--c2c-heading); }
+
+.project-status-kicker {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: var(--c2c-amber) !important;
+  margin-bottom: 0.35rem !important;
+}
+
+.hero-content .project-status-notice {
+  max-width: 680px;
+  margin: 1.75rem auto 0;
+  text-align: left;
+}
+
 .agent-start {
   background: var(--c2c-surface);
   border: 1px solid var(--c2c-border);

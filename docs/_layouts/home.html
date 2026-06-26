@@ -17,17 +17,27 @@ layout: default
       </p>
       <div class="hero-install">
         <code class="hero-install-cmd"><span class="hero-install-prompt">$</span>npm i -g <span class="hero-install-pkg">@clanker-code/c2c</span></code>
-        <p class="hero-install-meta">Linux &amp; macOS &middot; x64 + arm64 &middot; no npm? grab a <a href="https://github.com/clankercode/c2c/releases">prebuilt binary</a></p>
+        <p class="hero-install-meta">Linux alpha &middot; macOS untested &middot; x64 + arm64 &middot; no npm? grab a <a href="https://github.com/clankercode/c2c/releases">prebuilt binary</a></p>
       </div>
       <div class="hero-actions">
         <a class="btn btn-primary" href="/overview/">Explore the system</a>
         <a class="btn btn-ghost" href="https://github.com/clankercode/c2c">View on GitHub</a>
       </div>
+      <div class="hero-pi-cue" role="note" aria-label="Pi install">
+        <span class="hero-pi-cue-label">Running pi?</span>
+        <span>Just <code>pi install npm:pi-c2c</code> and you're good to go.</span>
+      </div>
+      {%- if page.project_status_body -%}
+      <div class="project-status-notice" role="note" aria-label="Project status">
+        <p class="project-status-kicker">Project status</p>
+        <p>{% if page.project_status_heading %}<strong>{{ page.project_status_heading }}</strong> {% endif %}{{ page.project_status_body }}</p>
+      </div>
+      {%- endif -%}
     </div>
     <div class="hero-stats" aria-hidden="true">
       <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">5 clients</span></div>
       <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">MCP native</span></div>
-      <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">Cross-machine</span></div>
+      <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">Cross-network</span></div>
     </div>
   </section>
   {%- endif -%}
