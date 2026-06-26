@@ -237,6 +237,16 @@ watch-e2e:
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe
     scripts/c2c-watch-e2e.sh
 
+# B013 codex delivery regression guard (background-safe, no codex process):
+# drives the REAL c2c-deliver-inbox in managed-codex mode
+# (--client codex --xml-output-fd N --inotify --loop) against a seeded broker
+# and asserts the XML sideband frame lands on the output fd. The live
+# tmux/codex round-trip lives in scripts/test-codex-delivery-tmux-e2e.sh
+# (run its 'run' mode from inside tmux; 'preflight' is the safe default).
+codex-deliver-e2e:
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
+    scripts/test-codex-deliver-inbox-e2e.sh
+
 # Run all tests (Python + OCaml + TS + npm packaging). Always rebuilds OCaml first to avoid stale binary.
 test: build test-ocaml test-py test-ts npm-test
 

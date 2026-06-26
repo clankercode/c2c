@@ -37,6 +37,11 @@
  )
 
 (test
+ (name test_c2c_delivery_mode)
+ (modules test_c2c_delivery_mode)
+ (libraries c2c_mcp alcotest))
+
+(test
  (name test_c2c_kimi_notifier)
  (modules test_c2c_kimi_notifier)
  (libraries c2c_mcp alcotest str unix))

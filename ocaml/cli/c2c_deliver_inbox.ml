@@ -542,9 +542,17 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
      exit 1);
   let session_id = Option.get session_id in
   register_self_if_requested ~broker_root:args.broker_root ~session_id args;
-  (* S4/S5: delivery path selection based on available fd *)
-  match args.pty_master_fd with
-  | Some fd ->
+  (* S4/S5/B013: delivery path selection. XML sideband (xml_output_fd) takes
+     precedence over --inotify so codex never silently falls into the
+     log-only run_inotify_loop. See select_delivery_mode for the rationale. *)
+  match
+    C2c_pty_inject.select_delivery_mode
+      ~pty_master_fd:args.pty_master_fd
+      ~xml_output_fd:args.xml_output_fd
+      ~use_inotify:args.use_inotify
+      ~client:args.client
+  with
+  | C2c_pty_inject.Mode_pty fd ->
       let master_fd : Unix.file_descr = Obj.magic fd in
       C2c_pty_inject.pty_deliver_loop_daemon
         ~master_fd
@@ -553,40 +561,34 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
         ~watched_pid
         ~poll_interval:args.interval
         ~max_iterations:args.max_iterations
-  | None ->
-      (* H3: inotify-based delivery when --inotify is set *)
-      (if args.use_inotify then
-         if args.client = "generic" then
-           run_inotify_drain_loop
-             ~broker_root:args.broker_root
-             ~session_id
-             ~client:args.client
-             ~watched_pid
-             ~poll_interval:args.interval
-             ~max_iterations:args.max_iterations
-             ~json:args.json
-             ~full_body:args.full_body
-         else
-           run_inotify_loop
-             ~broker_root:args.broker_root
-             ~session_id
-             ~client:args.client
-             ~watched_pid
-             ~poll_interval:args.interval
-             ~max_iterations:args.max_iterations
-       else
-         (* S5: XML sideband delivery via --xml-output-fd for Codex *)
-         match args.xml_output_fd with
-       | Some fd ->
-           let out_fd : Unix.file_descr = Obj.magic fd in
-           C2c_pty_inject.xml_deliver_loop_daemon
-             ~out_fd
-             ~broker_root:args.broker_root
-             ~session_id
-             ~watched_pid
-             ~poll_interval:args.interval
-             ~max_iterations:args.max_iterations
-        | None ->
+  | C2c_pty_inject.Mode_inotify_drain ->
+      run_inotify_drain_loop
+        ~broker_root:args.broker_root
+        ~session_id
+        ~client:args.client
+        ~watched_pid
+        ~poll_interval:args.interval
+        ~max_iterations:args.max_iterations
+        ~json:args.json
+        ~full_body:args.full_body
+  | C2c_pty_inject.Mode_inotify_print ->
+      run_inotify_loop
+        ~broker_root:args.broker_root
+        ~session_id
+        ~client:args.client
+        ~watched_pid
+        ~poll_interval:args.interval
+        ~max_iterations:args.max_iterations
+  | C2c_pty_inject.Mode_xml_fd fd ->
+      let out_fd : Unix.file_descr = Obj.magic fd in
+      C2c_pty_inject.xml_deliver_loop_daemon
+        ~out_fd
+        ~broker_root:args.broker_root
+        ~session_id
+        ~watched_pid
+        ~poll_interval:args.interval
+        ~max_iterations:args.max_iterations
+  | C2c_pty_inject.Mode_poll ->
             let iterations = ref 0 in
             let total_delivered = ref 0 in
             let max_iterations = args.max_iterations in
@@ -634,7 +636,7 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
             loop ();
             Printf.printf "[c2c-deliver-inbox] loop finished after %d iterations, %d total delivered\n%!"
               !iterations !total_delivered;
-            flush stdout)
+            flush stdout
 
 (* ---------------------------------------------------------------------------
  * CLI argument parsing

@@ -204,6 +204,23 @@ let should_start_codex_heartbeat ~(client : string) ~(deliver_started : bool) :
     bool =
   codex_heartbeat_enabled ~client && deliver_started
 
+(* B013: human-facing warning emitted when the deliver daemon fails to start
+   for a needs_deliver client (codex / codex-headless). Such a session
+   receives NO inbound c2c messages AND its 240s heartbeat is suppressed
+   (should_start_codex_heartbeat is gated on deliver_started), so it would
+   otherwise go dark *silently*. We surface this to the pane stderr/log so the
+   operator and agent notice the degraded state instead of wondering why
+   messages never arrive. Kept pure (returns the string) so it is unit-
+   testable; the call site eprintf's it. *)
+let deliver_start_failure_warning ~(name : string) ~(client : string) : string =
+  Printf.sprintf
+    "[c2c-start/%s] WARNING: deliver daemon failed to start for client=%s — \
+     inbound c2c delivery is DISABLED and the heartbeat is suppressed; this \
+     session will NOT auto-receive messages. Check that c2c-deliver-inbox is \
+     on PATH and that inotifywait + pipe permissions are available, then run \
+     `c2c restart %s`.\n"
+    name client name
+
 let parse_bool_like (s : string) : bool option =
   match String.lowercase_ascii (String.trim s) with
   | "true" | "1" | "yes" | "on" -> Some true
@@ -4955,7 +4972,11 @@ let run_outer_loop ~(name : string) ~(client : string)
                    | Some p ->
                        deliver_pid := Some p;
                        write_pid (deliver_pid_path name) p
-                   | None -> ();
+                   | None ->
+                       (* B013: surface the failure loudly instead of going
+                          dark silently (no delivery + suppressed heartbeat). *)
+                       Printf.eprintf "%s"
+                         (deliver_start_failure_warning ~name ~client);
                     match xml_output_fd with
                     | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
                     | None -> ()

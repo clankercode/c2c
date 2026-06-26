@@ -663,6 +663,12 @@ val should_start_codex_heartbeat : client:string -> deliver_started:bool -> bool
 (** Return whether [run_outer_loop] should start the heartbeat thread for this
     launch. Requires the regular Codex deliver daemon to be running. *)
 
+val deliver_start_failure_warning : name:string -> client:string -> string
+(** B013: human-facing warning text surfaced (eprintf'd) when the deliver
+    daemon fails to start for a needs_deliver client. Such a session gets no
+    inbound delivery and has its heartbeat suppressed, so the failure must not
+    be silent. Pure so it is unit-testable. *)
+
 val enqueue_codex_heartbeat : broker_root:string -> alias:string -> unit
 (** Enqueue one heartbeat message to [alias] through the broker inbox, using the
     same delivery path as regular inbound messages. *)

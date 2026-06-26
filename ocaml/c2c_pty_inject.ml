@@ -46,6 +46,51 @@ let pid_is_alive pid =
     with Unix.Unix_error (Unix.ESRCH, _, _) -> false
     | Unix.Unix_error (Unix.EPERM, _, _) -> true
 
+(* ---------------------------------------------------------------------------
+ * B013: delivery-mode selection
+ *
+ * Pure decision over which delivery loop the c2c-deliver-inbox daemon should
+ * run, given the fds/flags it was launched with. Kept here (library code, no
+ * .mli to maintain, co-located with the loops it selects between) so the
+ * dispatch *precedence* is unit-testable and documented.
+ *
+ * The precedence that matters:
+ *
+ *   XML sideband delivery (xml_output_fd) takes precedence over --inotify.
+ *
+ * Codex's entire managed delivery contract is the XML fd (codex reads frames
+ * via --xml-input-fd). When inotifywait is present on PATH, start_deliver_daemon
+ * (c2c_start.ml) auto-adds --inotify, so the codex deliver daemon receives BOTH
+ * --xml-output-fd AND --inotify. The old dispatch checked use_inotify first and
+ * routed non-generic clients to the log-only inotify path (which printed a
+ * preview to stdout = /dev/null in the daemon and NEVER wrote XML to the fd) —
+ * so codex silently went dark. Checking xml_output_fd before use_inotify fixes
+ * that without disturbing the generic/opencode inotify-drain path.
+ * --------------------------------------------------------------------------- *)
+
+type delivery_mode =
+  | Mode_pty of int            (* PTY master fd (S4) *)
+  | Mode_xml_fd of int         (* XML sideband to fd — codex managed path *)
+  | Mode_inotify_drain         (* generic client: event-driven destructive drain *)
+  | Mode_inotify_print         (* non-generic, non-xml, --inotify: log-only (manual/debug) *)
+  | Mode_poll                  (* generic/kimi polling loop *)
+
+let select_delivery_mode
+    ~(pty_master_fd : int option)
+    ~(xml_output_fd : int option)
+    ~(use_inotify : bool)
+    ~(client : string) : delivery_mode =
+  match pty_master_fd with
+  | Some fd -> Mode_pty fd
+  | None ->
+      (match xml_output_fd with
+       | Some fd -> Mode_xml_fd fd        (* precedence over --inotify *)
+       | None ->
+           if use_inotify then
+             if client = "generic" then Mode_inotify_drain
+             else Mode_inotify_print
+           else Mode_poll)
+
 (* pty_deliver_loop_daemon: daemon-mode PTY delivery loop.
    Polls the broker inbox every poll_interval seconds and injects messages
    via pty_inject on the given master_fd. Runs until watched_pid exits
