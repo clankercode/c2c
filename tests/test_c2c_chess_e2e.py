@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -41,7 +42,7 @@ C2C_BIN = shutil.which("c2c")
 _HAVE_CHESS = importlib.util.find_spec("chess") is not None
 
 CHESS_SOCKET = "c2c-chess-e2e"
-CHESS_CLI = Path.cwd() / "scripts" / "c2c_chess.py"
+CHESS_CLI = Path(__file__).resolve().parents[1] / "scripts" / "c2c_chess.py"
 TIMEOUT_S = float(os.environ.get("C2C_CHESS_TIMEOUT_S", "900"))
 
 pytestmark = pytest.mark.skipif(
@@ -102,8 +103,10 @@ def _registered(alias: str, scenario: Scenario) -> bool:
 
 
 def _chess(*args: str) -> subprocess.CompletedProcess:
+    # Use the SAME interpreter the gate probed for python-chess (sys.executable),
+    # not a bare `python3` that may resolve to a different env without chess.
     return subprocess.run(
-        ["python3", str(CHESS_CLI), *args],
+        [sys.executable, str(CHESS_CLI), *args],
         capture_output=True, text=True, check=False,
     )
 
@@ -233,18 +236,15 @@ def test_chess_pi_vs_opencode_to_result(request: pytest.FixtureRequest, tmp_path
             sc.broker_root())
 
         def _terminal() -> bool:
+            # The private state files are the only reliable terminal signal:
+            # scanning inboxes for "GAME OVER"/"STALEMATE-AGREED" would (a) match
+            # the kickoff's own protocol text and (b) race pi's inbox drain.
+            # Each agent's own board reflects checkmate/draw/agreement once it
+            # applies the deciding move or declares stalemate.
             for f in (white_file, black_file):
                 st = _game_status(f)
                 if st.get("is_game_over") or st.get("ended_by_agreement"):
                     return True
-            inbox_dir = sc.broker_root()
-            for marker in ("GAME OVER", "STALEMATE-AGREED"):
-                for box in inbox_dir.glob("*.inbox.json"):
-                    try:
-                        if marker in box.read_text(encoding="utf-8"):
-                            return True
-                    except OSError:
-                        pass
             return False
 
         try:
@@ -264,8 +264,16 @@ def test_chess_pi_vs_opencode_to_result(request: pytest.FixtureRequest, tmp_path
             f"game did not reach a terminal state; white={wst} black={bst}"
         )
     finally:
-        conftest_module._cleanup_scenario_agents(sc)
-        conftest_module._cleanup_canonical_broker(sc)
-        # Tear down the isolated tmux server; never touches the default socket.
-        subprocess.run(["tmux", "-L", CHESS_SOCKET, "kill-server"], check=False,
-                       capture_output=True, text=True)
+        # Tearing down the isolated tmux server is the most important step (it
+        # protects the operator's default socket), so it must run even if agent
+        # or broker cleanup raises. _cleanup_scenario_agents can raise on a
+        # flaky `c2c stop` — guard each step independently.
+        try:
+            conftest_module._cleanup_scenario_agents(sc)
+        finally:
+            try:
+                conftest_module._cleanup_canonical_broker(sc)
+            finally:
+                # Never touches the default socket (-L targets only this server).
+                subprocess.run(["tmux", "-L", CHESS_SOCKET, "kill-server"],
+                               check=False, capture_output=True, text=True)
