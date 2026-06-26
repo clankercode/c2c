@@ -15,6 +15,7 @@ from .capabilities import (
     GEMINI_MCP,
     KIMI_WIRE,
     OPENCODE_PLUGIN,
+    PI_C2C,
 )
 from .scenario import AgentConfig
 
@@ -207,10 +208,16 @@ class OpenCodeAdapter:
             command.append("--auto")
         if config.extra_args:
             command.extend(["--", *config.extra_args])
+        env = dict(config.env)
+        # The embedded opencode c2c plugin registers from the opencode PROCESS
+        # env, not opencode.json's mcp.environment (that only configures the MCP
+        # server subprocess). Without this it resolves the canonical XDG broker
+        # and registers where the test never looks. Pin it to the scenario broker.
+        env.setdefault("C2C_MCP_BROKER_ROOT", str(scenario.broker_root()))
         return {
             "command": command,
             "cwd": scenario.workdir,
-            "env": dict(config.env),
+            "env": env,
             "title": config.name,
         }
 
@@ -319,3 +326,75 @@ class GeminiAdapter:
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
         return {GEMINI_MCP: shutil.which("gemini") is not None}
+
+
+def _broker_registered_alive(broker_root: Path, alias: str) -> bool:
+    """Return True if *alias* is present and not dead in the broker registry."""
+    registry = broker_root / "registry.json"
+    try:
+        raw = registry.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        data = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return False
+    rows = data if isinstance(data, list) else data.get("registrations", [])
+    for row in rows:
+        if row.get("alias") == alias and row.get("alive") is not False:
+            return True
+    return False
+
+
+class PiAdapter:
+    """Live pi sessions made c2c peers via the pi-c2c extension.
+
+    Unlike claude/codex/opencode/kimi, pi is NOT a ``c2c start``-managed
+    instance — there is no instance dir or inner.pid. The pi-c2c extension
+    (assumed installed globally) registers the session as a c2c peer on
+    ``session_start`` by shelling out to the ``c2c`` CLI, reading
+    ``C2C_MCP_BROKER_ROOT`` from the environment to pick the broker. We launch
+    ``pi`` directly in the terminal and pin it to the scenario broker via env
+    so a controller-side ``c2c send`` lands in the same inbox the agent reads.
+
+    The launch env keeps the test hermetic: ``C2C_PI_CROSS_REPO=0`` and
+    ``C2C_PI_RELAY=0`` stop pi-c2c from also registering into the real
+    sessions broker / relay.
+    """
+
+    client_name = "pi"
+    default_backend = "tmux"
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+
+    def build_launch(self, scenario: Scenario, config: AgentConfig) -> dict[str, object]:
+        command = ["pi"]
+        if config.model:
+            command.extend(["--model", config.model])
+        if config.extra_args:
+            command.extend(config.extra_args)
+        env = dict(config.env)
+        env.setdefault("C2C_MCP_BROKER_ROOT", str(scenario.broker_root()))
+        env.setdefault("C2C_PI_ALIAS", config.name)
+        env.setdefault("C2C_PI_CROSS_REPO", "0")
+        env.setdefault("C2C_PI_RELAY", "0")
+        c2c_bin = shutil.which("c2c")
+        if c2c_bin:
+            env.setdefault("C2C_BIN", c2c_bin)
+        return {
+            "command": command,
+            "cwd": scenario.workdir,
+            "env": env,
+            "title": config.name,
+        }
+
+    def is_ready(self, scenario: Scenario, agent: StartedAgent) -> bool:
+        if not scenario.drivers[agent.backend].is_alive(agent.handle):
+            return False
+        # No inner.pid for pi — registration in the broker is the readiness
+        # signal that pi-c2c has finished its session_start handshake.
+        return _broker_registered_alive(scenario.broker_root(), agent.name)
+
+    def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
+        return {PI_C2C: shutil.which("pi") is not None}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -169,14 +170,28 @@ class Scenario:
         command.extend([to_agent.name, text])
         env = dict(os.environ)
         env["C2C_MCP_BROKER_ROOT"] = str(self.broker_root())
-        subprocess.run(
+        if from_agent is not None:
+            # The broker refuses `c2c send --from <alias>` from a process that
+            # isn't that alias's own session ("registered to a different
+            # session than yours"). The controller IS relaying on behalf of the
+            # agent, so take the sanctioned escape hatch instead of spoofing a
+            # session id. See CLAUDE.md: `C2C_COORDINATOR=1` bypasses the guard.
+            env["C2C_COORDINATOR"] = "1"
+        result = subprocess.run(
             command,
             cwd=self.workdir,
             env=env,
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            # Surface stderr — check=True would swallow it behind a bare
+            # CalledProcessError and make live failures undebuggable.
+            raise AssertionError(
+                f"send_dm failed (exit {result.returncode}): "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
         self.artifacts.append_event(
             "dm.sent",
             {
@@ -187,15 +202,46 @@ class Scenario:
         )
 
     def broker_root(self) -> Path:
+        # Resolve the CANONICAL per-repo broker, mirroring
+        # C2c_repo_fp.resolve_broker_root (OCaml, used by the c2c CLI + MCP
+        # server) and resolveBrokerRoot (opencode plugin TS). We deliberately do
+        # NOT invent a custom broker path: `c2c start` strips C2C_MCP_BROKER_ROOT
+        # from managed clients (opencode/codex/kimi/claude register to the
+        # canonical broker regardless of the env), and the CLI rejects the legacy
+        # ".git/c2c/mcp" path outright. The only broker every client AND the
+        # controller-side `c2c send` agree on is this canonical one.
+        #
+        #   <fp> = sha256(remote.origin.url)[:12], else sha256(git toplevel)[:12],
+        #          else "default"
+        #   root = $XDG_STATE_HOME/c2c/repos/<fp>/broker
+        #          else $HOME/.c2c/repos/<fp>/broker
+        #          else /tmp/c2c/repos/<fp>/broker
         if self._broker_root is None:
-            git_common = subprocess.run(
-                ["git", "rev-parse", "--git-common-dir"],
-                cwd=self.workdir,
-                check=True,
-                capture_output=True,
-                text=True,
+            fp = ""
+            remote = subprocess.run(
+                ["git", "config", "--get", "remote.origin.url"],
+                cwd=self.workdir, capture_output=True, text=True,
             ).stdout.strip()
-            self._broker_root = (self.workdir / git_common / "c2c" / "mcp").resolve()
+            if remote:
+                fp = hashlib.sha256(remote.encode("utf-8")).hexdigest()[:12]
+            if not fp:
+                toplevel = subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    cwd=self.workdir, capture_output=True, text=True,
+                ).stdout.strip()
+                if toplevel:
+                    fp = hashlib.sha256(toplevel.encode("utf-8")).hexdigest()[:12]
+            if not fp:
+                fp = "default"
+            xdg = os.environ.get("XDG_STATE_HOME", "").strip()
+            home = os.environ.get("HOME", "").strip()
+            if xdg:
+                base = Path(xdg)
+                self._broker_root = base / "c2c" / "repos" / fp / "broker"
+            elif home:
+                self._broker_root = Path(home) / ".c2c" / "repos" / fp / "broker"
+            else:
+                self._broker_root = Path("/tmp") / "c2c" / "repos" / fp / "broker"
         return self._broker_root
 
     def broker_inbox_contains(self, agent: StartedAgent, text: str) -> bool:
