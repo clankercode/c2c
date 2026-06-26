@@ -124,11 +124,18 @@ relay-routed variants. Player-variant matrix requested: (a) controller-driven,
   live blockers: opencode managed-start (already failing locally) + both clients
   autonomously sending/polling via relay. Deferred until the local agent game
   works.
-- **(c) pi-native-tools-only over relay — NOT BUILT.** More tractable than (b)
-  (pi is reliable, opponent can be the controller), but still needs pi to
-  autonomously receive relay DMs into its transcript (C2C_PI_RELAY=1 watcher)
-  and reply via `c2c_pi_send`. Real flakiness risk; deferred as a focused
-  follow-up.
+- **(c) pi-native-tools-only over relay — BLOCKED by a relay bug (found here).**
+  A live probe showed pi DOES receive relay DMs into its transcript (inbound
+  works), and pi DID try to reply via `c2c_pi_send` — but the relay rejects the
+  send: `verified signer "<name>" does not match body from_alias "<name>@<host>"`.
+  pi-c2c sends as its full relay address (`deriveRelayAlias` = `<name>@<host>`),
+  which the relay's signer check rejects on same-host (the only working relay
+  path). Decisively reproduced via the CLI. Finding:
+  `.collab/findings/2026-06-26T12-15-00Z-relay-send-full-address-alias-signature-mismatch.md`.
+  Fix is either a relay-side normalize (OCaml + prod deploy) or a pi-c2c change
+  (pass the bare alias for same-host). Variant C cannot pass until one lands.
+  (The machine-id-in-transcript request was delivered for variant (a): the
+  relay transcript now records full `<alias>@<host>` addresses.)
 
 ## Test plan
 - `c2c_chess.py` unit tests (deterministic, no agents) — full coverage of the
