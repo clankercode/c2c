@@ -553,6 +553,43 @@ def test_scenario_require_binary_raises_for_missing_binary(
         scenario.require_binary("missing-binary")
 
 
+def _make_cleanup_scenario(tmp_path: Path, broker: Path) -> Scenario:
+    scenario = Scenario(
+        test_name="test_demo",
+        workdir=tmp_path / "work",
+        artifacts=ArtifactCollector(tmp_path / "artifacts", "test_demo"),
+        drivers={"dummy": DummyDriver()},
+        adapters={"dummy": DummyAdapter()},
+    )
+    scenario._broker_root = broker
+    return scenario
+
+
+def test_cleanup_canonical_broker_removes_xdg_and_home_shapes(tmp_path: Path) -> None:
+    # XDG shape: .../c2c/repos/<fp>/broker ; HOME fallback: .../.c2c/repos/<fp>/broker
+    for nest in ("c2c", ".c2c"):
+        broker = tmp_path / nest / "repos" / "deadbeef0001" / "broker"
+        broker.mkdir(parents=True)
+        (broker / "registry.json").write_text("[]", encoding="utf-8")
+        scenario = _make_cleanup_scenario(tmp_path, broker)
+
+        conftest_module._cleanup_canonical_broker(scenario)
+
+        assert not broker.exists(), f"{nest} broker not cleaned up"
+
+
+def test_cleanup_canonical_broker_refuses_non_broker_shapes(tmp_path: Path) -> None:
+    # Anything not shaped like .../<c2c|.c2c>/repos/<fp>/broker must be left alone.
+    for rel in ("c2c/repos/fp/notbroker", "elsewhere/repos/fp/broker", "broker"):
+        target = tmp_path / rel
+        target.mkdir(parents=True)
+        scenario = _make_cleanup_scenario(tmp_path, target)
+
+        conftest_module._cleanup_canonical_broker(scenario)
+
+        assert target.exists(), f"{rel} was wrongly deleted"
+
+
 def test_cleanup_scenario_agents_continues_after_stop_failure(tmp_path: Path) -> None:
     failing_driver = FailingStopDriver()
     healthy_driver = DummyDriver()

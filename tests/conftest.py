@@ -316,7 +316,8 @@ def _cleanup_canonical_broker(sc: Scenario) -> None:
         broker.name == "broker"
         and len(parts) >= 4
         and parts[-3] == "repos"
-        and parts[-4] == "c2c"
+        # XDG path nests under "c2c"; the $HOME fallback nests under ".c2c".
+        and parts[-4] in ("c2c", ".c2c")
         and broker.exists()
     ):
         import shutil as _shutil
