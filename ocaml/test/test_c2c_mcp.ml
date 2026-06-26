@@ -5719,15 +5719,19 @@ let test_delete_room_legacy_mixed_case_creator () =
       let _ =
         C2c_mcp.Broker.leave_room broker ~room_id:"legacy-room" ~alias:"alice"
       in
-      (* Manually overwrite room meta to simulate legacy mixed-case storage. *)
+      (* Manually overwrite room meta to simulate legacy mixed-case storage.
+         The relay-style "invite" short form must not fall back to Public. *)
       let meta_path =
         Filename.concat dir
           (Filename.concat "rooms" (Filename.concat "legacy-room" "meta.json"))
       in
       let oc = open_out meta_path in
       output_string oc
-        "{\"visibility\":\"public\",\"invited_members\":[],\"created_by\":\"Alice\"}";
+        "{\"visibility\":\"invite\",\"invited_members\":[],\"created_by\":\"Alice\"}";
       close_out oc;
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"legacy-room" in
+      check bool "legacy invite short-form reads as invite_only" true
+        (match meta.visibility with Invite_only -> true | Public -> false | Private -> false);
       (* Caller "alice" must still be able to delete the legacy room. *)
       C2c_mcp.Broker.delete_room broker ~room_id:"legacy-room"
         ~caller_alias:"alice" ();
@@ -7945,7 +7949,7 @@ let test_send_room_invite_adds_to_invite_list () =
         ~from_alias:"alice" ~invitee_alias:"bob";
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
       check string "visibility" "public"
-        (match meta.visibility with Public -> "public" | Invite_only -> "invite_only");
+        (match meta.visibility with Public -> "public" | Private -> "private" | Invite_only -> "invite_only");
       check (list string) "invited_members" ["bob"] meta.invited_members)
 
 (* #433: send_room_invite must auto-DM the invitee with a
@@ -8036,7 +8040,7 @@ let test_set_room_visibility_changes_mode () =
         ~from_alias:"alice" ~visibility:C2c_mcp.Invite_only;
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
       check bool "visibility is invite_only" true
-        (match meta.visibility with Invite_only -> true | Public -> false))
+        (match meta.visibility with Invite_only -> true | Public -> false | Private -> false))
 
 let test_set_room_visibility_only_member_can_change () =
   with_temp_dir (fun dir ->
@@ -8063,7 +8067,7 @@ let test_create_public_room_with_auto_join () =
       check bool "auto_joined" true r.cr_auto_joined;
       check (list string) "members has creator" ["stanza-coder"] r.cr_members;
       check bool "visibility public" true
-        (match r.cr_visibility with Public -> true | Invite_only -> false);
+        (match r.cr_visibility with Public -> true | Invite_only -> false | Private -> false);
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
       check string "meta created_by persisted" "stanza-coder" meta.created_by;
       let members = C2c_mcp.Broker.read_room_members broker ~room_id:"design-syndicate" in
@@ -8080,7 +8084,7 @@ let test_create_invite_only_with_invited_members () =
           ~auto_join:true
       in
       check bool "visibility invite_only" true
-        (match r.cr_visibility with Invite_only -> true | Public -> false);
+        (match r.cr_visibility with Invite_only -> true | Public -> false | Private -> false);
       check (list string) "invited dedup" ["galaxy-coder"; "lyra-quill"] r.cr_invited_members;
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
       check (list string) "invited_members persisted" ["galaxy-coder"; "lyra-quill"]
@@ -8125,7 +8129,7 @@ let test_list_rooms_includes_visibility_and_invited_members () =
       check int "one room" 1 (List.length rooms);
       let room = List.hd rooms in
       check string "visibility public" "public"
-        (match room.ri_visibility with Public -> "public" | Invite_only -> "invite_only");
+        (match room.ri_visibility with Public -> "public" | Private -> "private" | Invite_only -> "invite_only");
       check (list string) "invited_members" ["bob"] room.ri_invited_members)
 
 let test_tools_call_send_room_invite_via_mcp () =
@@ -8211,7 +8215,85 @@ let test_tools_call_set_room_visibility_via_mcp () =
                check bool "set_room_visibility success" false is_error;
                let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
                 check bool "visibility is invite_only" true
-                  (match meta.visibility with Invite_only -> true | Public -> false)))
+                  (match meta.visibility with Invite_only -> true | Public -> false | Private -> false)))
+
+(* --- room visibility: private (unlisted + open join) --- *)
+
+let test_set_room_visibility_private_mode () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"hush"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"hush"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Private;
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"hush" in
+      check bool "visibility is private" true
+        (match meta.visibility with Private -> true | Public -> false | Invite_only -> false))
+
+(* End-to-end through MCP tools/call: a private room is hidden from
+   non-members in list_rooms but visible to members; a public room is
+   visible to everyone. The ACL filtering lives in
+   C2c_room_handlers.list_rooms, exercised here via handle_request. *)
+let test_mcp_list_rooms_private_hidden_from_nonmembers () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-z"
+        ~alias:"zoe" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"hush"
+                ~alias:"alice" ~session_id:"session-a");
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"townsquare"
+                ~alias:"alice" ~session_id:"session-a");
+      let call_as session name args =
+        Unix.putenv "C2C_MCP_SESSION_ID" session;
+        Fun.protect
+          ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+          (fun () ->
+             let request =
+               `Assoc
+                 [ ("jsonrpc", `String "2.0"); ("id", `Int 1)
+                 ; ("method", `String "tools/call")
+                 ; ( "params",
+                     `Assoc [ ("name", `String name); ("arguments", args) ] )
+                 ]
+             in
+             match Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request) with
+             | Some json -> json
+             | None -> fail "expected tools/call response")
+      in
+      let content_text json =
+        let open Yojson.Safe.Util in
+        json |> member "result" |> member "content" |> to_list |> List.hd
+        |> member "text" |> to_string
+      in
+      let contains hay needle =
+        let nl = String.length needle and hl = String.length hay in
+        let rec go i =
+          if i + nl > hl then false
+          else if String.sub hay i nl = needle then true
+          else go (i + 1)
+        in
+        go 0
+      in
+      (* alice makes hush private via MCP *)
+      let _ =
+        call_as "session-a" "set_room_visibility"
+          (`Assoc [ ("room_id", `String "hush"); ("visibility", `String "private") ])
+      in
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"hush" in
+      check bool "hush stored as private" true
+        (match meta.visibility with Private -> true | _ -> false);
+      (* alice is a member: sees both rooms *)
+      let alice_list = content_text (call_as "session-a" "list_rooms" (`Assoc [])) in
+      check bool "member sees private room hush" true (contains alice_list "hush");
+      check bool "member sees public room townsquare" true
+        (contains alice_list "townsquare");
+      (* zoe is not a member: private room is hidden, public room visible *)
+      let zoe_list = content_text (call_as "session-z" "list_rooms" (`Assoc [])) in
+      check bool "non-member does NOT see private hush" false (contains zoe_list "hush");
+      check bool "non-member sees public townsquare" true
+        (contains zoe_list "townsquare"))
 
 (* --- set_dnd string/bool parsing tests --- *)
 
@@ -13912,6 +13994,10 @@ let () =
              test_join_room_invite_only_accepts_invited
          ; test_case "set_room_visibility changes mode" `Quick
              test_set_room_visibility_changes_mode
+         ; test_case "set_room_visibility private mode" `Quick
+             test_set_room_visibility_private_mode
+         ; test_case "MCP list_rooms hides private from non-members" `Quick
+             test_mcp_list_rooms_private_hidden_from_nonmembers
          ; test_case "set_room_visibility only member can change" `Quick
              test_set_room_visibility_only_member_can_change
          ; test_case "create public room with auto-join (#394)" `Quick

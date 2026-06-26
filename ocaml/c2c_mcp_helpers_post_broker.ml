@@ -593,6 +593,7 @@ let room_info_json (r : Broker.room_info) =
     ; ("visibility",
         match r.ri_visibility with
         | Public -> `String "public"
+        | Private -> `String "private"
         | Invite_only -> `String "invite_only")
     ; ("invited_members", `List (List.map (fun a -> `String a) r.ri_invited_members))
     ]

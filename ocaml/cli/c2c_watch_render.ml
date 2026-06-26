@@ -543,6 +543,7 @@ let dms_footer : string =
 let room_vis_abbrev (v : C2c_mcp.room_visibility) : string =
   match v with
   | C2c_mcp.Public -> "pub"
+  | C2c_mcp.Private -> "prv"
   | C2c_mcp.Invite_only -> "inv"
 
 (* One left-pane room row (CONTENT only, exactly [w] display columns):
