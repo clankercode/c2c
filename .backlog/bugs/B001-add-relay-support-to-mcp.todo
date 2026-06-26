@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B001
+priority: high
+status: pending
+tags: []
+title: add relay support to mcp
+---
+
+add relay support to mcp

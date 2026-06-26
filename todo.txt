@@ -37,3 +37,4 @@ by deleting — git history keeps them if anyone needs to look back.
 
 - [x] **#627** — Docker liveness model doesn't detect dead sessions (lease-mtime vs /proc). FIXED by galaxy-coder (08b40923 — delete lease file on eviction). Filed 2026-05-02 by fern-coder, fixed 2026-05-02.
   Finding: `.collab/findings/2026-05-02T06-15-00Z-fern-coder-docker-lease-liveness.md`
+- [ ] add to incoming relay requests from other agents: metadata about PoW difficulty associated with the request (could add as response header, maybe? but need to handle it specifically then. wherever we inject it, it cant break encryption or signatures)

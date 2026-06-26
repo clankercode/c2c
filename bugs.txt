@@ -1,0 +1,53 @@
+
+## 2026-06-24 — pi-c2c direct send fails with relay signature_invalid for host-qualified from_alias
+
+### Summary
+From pi session alias `pi-8391d3`, direct c2c sends to a live subagent alias failed through the relay with `signature_invalid`. The relay verified signer `pi-8391d3`, but the message body used host-qualified `from_alias` `pi-8391d3@3d08761ae3f3`, and the relay rejected the mismatch.
+
+### Environment
+- Repo/session cwd: `/home/xertrov/src/autoplanet-harness`
+- pi-c2c version: `0.4.8`
+- c2c version: `0.8.6`
+- sender alias: `pi-8391d3`
+- sender session: `pi-019ef00a-8e32-7528-973f-6948eb7f457a`
+- relay host hash: `3d08761ae3f3`
+- sender relay address: `pi-8391d3@3d08761ae3f3`
+- target alias: `pi-8391d3-ad77e72`
+- target agent id in pi: `2acd8f6b-72f9-414`
+
+### Repro steps observed
+1. Confirmed sender registered and relay connected via `c2c_pi_whoami`, `c2c_pi_debug`, and `c2c_pi_local_info`.
+2. Confirmed target listed live via `c2c_pi_list`:
+   - `pi-8391d3-ad77e72`
+3. Tried direct send:
+   - `c2c_pi_send(target="pi-8391d3-ad77e72", body="...", nonurgent=true)`
+4. Tried direct send without `nonurgent`.
+5. Tried host-qualified target:
+   - `c2c_pi_send(target="pi-8391d3-ad77e72@3d08761ae3f3", body="...", nonurgent=true)`
+
+### Actual result
+All direct sends failed with:
+
+```json
+{
+  "ok": false,
+  "error_code": "signature_invalid",
+  "error": "verified signer \"pi-8391d3\" does not match body from_alias \"pi-8391d3@3d08761ae3f3\""
+}
+```
+
+### Expected result
+A sender registered as alias `pi-8391d3` with relay address `pi-8391d3@3d08761ae3f3` should be able to send to live peer `pi-8391d3-ad77e72`. Either:
+- the relay signature check should normalize/accept host-qualified aliases for the same verified base alias, or
+- the pi-c2c sender should set `from_alias` to the unqualified signed alias when signing as `pi-8391d3`.
+
+### Related observations
+- `c2c_pi_list` showed the peer as live, so discovery worked.
+- `c2c_pi_join_room(room="autoplanet")` also failed, but separately, with:
+  - `error: cannot determine alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.`
+- Running `c2c doctor` from `/home/xertrov/src/autoplanet-harness` failed with:
+  - `error: scripts/c2c-doctor.sh not found.`
+- Fallback `steer_subagent(agent_id="2acd8f6b-72f9-414", ...)` succeeded, so pi's direct subagent steering path was available.
+
+### Suspected cause
+The relay signs/verifies the base alias (`pi-8391d3`) while the outbound body contains the host-qualified relay address (`pi-8391d3@3d08761ae3f3`) as `from_alias`. This appears to be an alias normalization/signing mismatch in the relay send path.

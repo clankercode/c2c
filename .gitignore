@@ -37,3 +37,4 @@ docs/vendor/
 .opencode/package-lock.json
 .opencode/plugins/c2c.ts
 .c2c/roles/*.md
+.opencode/c2c-debug.log
