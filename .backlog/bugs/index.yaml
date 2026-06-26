@@ -7,3 +7,4 @@ bugs:
     - file: B006-add-c2c-agent-help-thing-comma.todo
     - file: B007-plugins-should-provide-a-c2c-h.todo
     - file: B008-claude-and-codex-plugins-as-be.todo
+    - file: B009-make-sure-we-have-integration.todo
