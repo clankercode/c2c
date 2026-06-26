@@ -290,7 +290,7 @@ let[@warning "-21"] test_relay_join_room_adds_member () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-  match Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"test-room" with
+  match Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"test-room" () with
   | `Ok -> ()
   | `Error (err, msg) -> fail_fmt "join_room failed: %s %s" err msg;
   let rooms = Relay.InMemoryRelay.list_rooms t in
@@ -303,8 +303,8 @@ let test_relay_leave_room_removes_member () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"test-room" in
-  let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"test-room" in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"test-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"test-room" () in
   let _ = Relay.InMemoryRelay.leave_room t ~alias:"alice" ~room_id:"test-room" in
   let rooms = Relay.InMemoryRelay.list_rooms t in
   let members = json_get_list (List.hd rooms) "members" in
@@ -316,9 +316,9 @@ let test_relay_send_room_delivers_to_all_except_sender () =
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n3" ~session_id:"s3" ~alias:"carol" () in
-  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"test-room" in
-  let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"test-room" in
-  let _ = Relay.InMemoryRelay.join_room t ~alias:"carol" ~room_id:"test-room" in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"test-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"test-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"carol" ~room_id:"test-room" () in
   match Relay.InMemoryRelay.send_room t ~from_alias:"alice" ~room_id:"test-room" ~content:"room msg" () with
   | `Ok (ts, delivered, skipped) ->
       if ts <= 0.0 then fail_fmt "ts should be positive";
@@ -344,15 +344,84 @@ let test_relay_list_rooms_shows_all_with_counts () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"room-1" in
-  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"room-2" in
-  let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"room-1" in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"room-1" () in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"room-2" () in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"room-1" () in
   let rooms = Relay.InMemoryRelay.list_rooms t in
   if List.length rooms <> 2 then fail_fmt "should have 2 rooms";
   let room1 = List.find (fun r -> json_get_string r "room_id" = "room-1") rooms in
   if json_get_int room1 "member_count" <> 2 then fail_fmt "room-1 should have 2 members";
   let room2 = List.find (fun r -> json_get_string r "room_id" = "room-2") rooms in
   if json_get_int room2 "member_count" <> 1 then fail_fmt "room-2 should have 1 member"
+
+(* ---- Room visibility: public / private / invite_only ---- *)
+
+let test_relay_canonical_visibility_normalizes () =
+  let chk input expected =
+    match Relay.canonical_visibility input with
+    | Some v when v = expected -> ()
+    | Some v -> fail_fmt "canonical_visibility %S => %S, expected %S" input v expected
+    | None -> fail_fmt "canonical_visibility %S => None, expected Some %S" input expected
+  in
+  chk "public" "public";
+  chk "private" "private";
+  chk "invite" "invite";
+  chk "invite_only" "invite";
+  chk "invite-only" "invite";
+  chk "  PUBLIC  " "public";
+  (match Relay.canonical_visibility "bogus" with
+   | None -> ()
+   | Some v -> fail_fmt "canonical_visibility \"bogus\" should be None, got %S" v)
+
+let room_ids rooms =
+  List.map (fun r -> json_get_string r "room_id") rooms
+
+let test_relay_list_rooms_omits_nonpublic () =
+  let t = make_test_relay () in
+  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  (* default (public), explicit private, explicit invite *)
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"pub-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"priv-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"invite" ~alias:"alice" ~room_id:"inv-room" () in
+  let listed = room_ids (Relay.InMemoryRelay.list_rooms t) in
+  if List.length listed <> 1 then fail_fmt "only the public room should be listed, got [%s]" (String.concat "; " listed);
+  if not (List.mem "pub-room" listed) then fail_fmt "pub-room should be listed";
+  if List.mem "priv-room" listed then fail_fmt "priv-room (private) must not be listed";
+  if List.mem "inv-room" listed then fail_fmt "inv-room (invite) must not be listed"
+
+let test_relay_join_visibility_set_on_create () =
+  let t = make_test_relay () in
+  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"rm" () in
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "private" then
+    fail_fmt "room created with --visibility private should be private";
+  (* default join leaves a fresh room public *)
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"rm2" () in
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm2" <> "public" then
+    fail_fmt "default room should be public"
+
+let test_relay_join_visibility_not_overridden_after_create () =
+  let t = make_test_relay () in
+  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"rm" () in
+  (* A later joiner passing a different visibility must NOT change the room. *)
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"public" ~alias:"bob" ~room_id:"rm" () in
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "private" then
+    fail_fmt "later joiner must not be able to flip visibility (expected still private)"
+
+let test_relay_set_visibility_unlists_and_relists () =
+  let t = make_test_relay () in
+  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"rm" () in
+  if not (List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
+    fail_fmt "public room should be listed initially";
+  Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"private";
+  if List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t)) then
+    fail_fmt "room should be hidden after set_room_visibility private";
+  Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"public";
+  if not (List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
+    fail_fmt "room should reappear after set_room_visibility public"
 
 (* ---- #330 V1: cross_host_not_implemented error-path seam tests ---- *)
 
@@ -532,6 +601,12 @@ let tests = [
   "relay send_room delivers", test_relay_send_room_delivers_to_all_except_sender;
   "relay gc removes expired", test_relay_gc_removes_expired_leases;
   "relay list_rooms with counts", test_relay_list_rooms_shows_all_with_counts;
+  (* room visibility: public / private / invite_only *)
+  "relay canonical_visibility normalizes", test_relay_canonical_visibility_normalizes;
+  "relay list_rooms omits non-public", test_relay_list_rooms_omits_nonpublic;
+  "relay join --visibility set on create", test_relay_join_visibility_set_on_create;
+  "relay join visibility not overridden after create", test_relay_join_visibility_not_overridden_after_create;
+  "relay set_room_visibility unlists/relists", test_relay_set_visibility_unlists_and_relists;
   (* #330 V1 cross_host_not_implemented error-path seam tests *)
   "cross_host bare alias works when self_host is set", test_cross_host_bare_alias_works_when_self_host_is_set;
   "cross_host alias@matching self_host accepted", test_cross_host_alias_matching_self_host_accepted;

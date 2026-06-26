@@ -76,6 +76,22 @@ let room_invite_sign_ctx = "c2c/v1/room-invite"
 let room_uninvite_sign_ctx = "c2c/v1/room-uninvite"
 let room_set_visibility_sign_ctx = "c2c/v1/room-set-visibility"
 
+(* Room visibility — three levels (relay-canonical wire values):
+     "public"  — listed in /list_rooms, anyone may join.
+     "private" — NOT listed, but anyone who knows the room id may join.
+     "invite"  — NOT listed, and join requires the caller's identity_pk to
+                 be on the room's invite list (ACL-gated).
+   [canonical_visibility] normalizes operator/CLI input to one of these,
+   accepting "invite_only"/"invite-only" as synonyms for "invite". Returns
+   [None] for unrecognized input so callers can reject it. Only "public"
+   rooms are returned by list_rooms; only "invite" rooms are join-gated. *)
+let canonical_visibility v =
+  match String.lowercase_ascii (String.trim v) with
+  | "public" -> Some "public"
+  | "private" -> Some "private"
+  | "invite" | "invite_only" | "invite-only" -> Some "invite"
+  | _ -> None
+
 (* S5a: Mobile pair token signing context *)
 let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"
 
@@ -495,7 +511,7 @@ module type RELAY = sig
   val poll_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t list
   val peek_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t list
   val send_all : t -> from_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float * string list * string list]
-  val join_room : t -> alias:string -> room_id:string -> [> `Ok | `Error of string * string]
+  val join_room : t -> ?visibility:string -> alias:string -> room_id:string -> unit -> [> `Ok | `Error of string * string]
   val leave_room : t -> alias:string -> room_id:string -> [> `Ok | `Error of string * string]
   val send_room : t -> from_alias:string -> room_id:string -> content:string -> ?message_id:string option -> ?envelope:Yojson.Safe.t -> unit -> [> `Ok of float * string list * string list]
   val room_history : t -> room_id:string -> ?limit:int -> Yojson.Safe.t list
@@ -1034,7 +1050,7 @@ module InMemoryRelay : RELAY = struct
   let add_dead_letter t msg =
     with_lock t (fun () -> Queue.add msg t.dead_letter)
 
-  let join_room t ~alias ~room_id =
+  let join_room t ?(visibility = "public") ~alias ~room_id () =
     with_lock t (fun () ->
       if not (Hashtbl.mem t.leases alias) then
         `Error (relay_err_unknown_alias, Printf.sprintf "alias %S is not registered" alias)
@@ -1042,6 +1058,11 @@ module InMemoryRelay : RELAY = struct
         let members = match Hashtbl.find_opt t.rooms room_id with
           | Some m -> m | None -> []
         in
+        (* Visibility is set only when the room is first created (this join is
+           creating it). Later joiners passing a visibility have no effect —
+           changes after creation go through the signed set_room_visibility op. *)
+        if not (Hashtbl.mem t.room_visibility room_id) then
+          Hashtbl.replace t.room_visibility room_id visibility;
         let already_member = List.mem alias members in
         let members' = if already_member then members else alias :: members in
         Hashtbl.replace t.rooms room_id members';
@@ -1253,11 +1274,18 @@ module InMemoryRelay : RELAY = struct
   let list_rooms t =
     with_lock t (fun () ->
       Hashtbl.fold (fun room_id members acc ->
-        `Assoc [
-          ("room_id", `String room_id);
-          ("member_count", `Int (List.length members));
-          ("members", `List (List.map (fun a -> `String a) members));
-        ] :: acc
+        (* Only public rooms appear in the directory; private/invite rooms
+           are reachable by id but never listed. Absent visibility (legacy
+           in-memory rooms) defaults to public. *)
+        let visibility = match Hashtbl.find_opt t.room_visibility room_id with
+          | Some v -> v | None -> "public" in
+        if visibility <> "public" then acc
+        else
+          `Assoc [
+            ("room_id", `String room_id);
+            ("member_count", `Int (List.length members));
+            ("members", `List (List.map (fun a -> `String a) members));
+          ] :: acc
       ) t.rooms []
     )
 
@@ -2142,11 +2170,15 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
       `Ok (now, List.rev !sent_to, List.map fst (List.rev !skipped))
     )
 
-  let join_room t ~alias ~room_id =
+  let join_room t ?(visibility = "public") ~alias ~room_id () =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let room_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO rooms (room_id) VALUES (?)" in
+      (* INSERT OR IGNORE: visibility is applied only on room creation; if the
+         room already exists, its stored visibility is preserved. Post-creation
+         changes go through the signed set_room_visibility op. *)
+      let room_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO rooms (room_id, visibility) VALUES (?, ?)" in
       Sqlite3.bind_text room_stmt 1 room_id |> ignore;
+      Sqlite3.bind_text room_stmt 2 visibility |> ignore;
       Sqlite3.step room_stmt |> ignore;
       let mem_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO room_members (room_id, alias) VALUES (?, ?)" in
       Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
@@ -2293,7 +2325,9 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let rooms = ref [] in
-      let stmt = Sqlite3.prepare conn "SELECT room_id FROM rooms" in
+      (* Only public rooms are listed; private/invite rooms stay reachable by
+         id but are omitted from the directory. *)
+      let stmt = Sqlite3.prepare conn "SELECT room_id FROM rooms WHERE visibility = 'public'" in
       let rec loop () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
@@ -4091,9 +4125,19 @@ generateKeys();
   let handle_join_room relay body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
+    (* Optional visibility — only applied if this join creates the room. *)
+    let requested_visibility =
+      match get_opt_string body "visibility" with
+      | None | Some "" -> Some "public"
+      | Some v -> canonical_visibility v
+    in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
-    else
+    else match requested_visibility with
+    | None ->
+      respond_bad_request (json_error_str err_bad_request
+        "visibility must be \"public\", \"private\", or \"invite_only\"")
+    | Some requested_visibility ->
       match verify_room_op_proof relay ~sign_ctx:room_join_sign_ctx
               ~room_id ~alias body with
       | Error (code, msg) ->
@@ -4102,7 +4146,10 @@ generateKeys();
         else
           respond_unauthorized (json_error_str code msg)
       | Ok () ->
-        (* L4/5 ACL: if room is invite-only, require identity_pk ∈ invited. *)
+        (* L4/5 ACL: if the EXISTING room is invite-only, require identity_pk ∈
+           invited. A brand-new room has no stored visibility yet (defaults to
+           "public" here), so the creator is always admitted and the room is
+           then created with [requested_visibility]. *)
         let visibility = R.room_visibility_of relay ~room_id in
         let pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
         let admitted =
@@ -4113,7 +4160,7 @@ generateKeys();
           respond_unauthorized (json_error_str relay_err_not_invited
             (Printf.sprintf "room %S is invite-only and caller is not on the list" room_id))
         else
-        let result = R.join_room relay ~alias ~room_id in
+        let result = R.join_room relay ~visibility:requested_visibility ~alias ~room_id () in
         respond_ok (match result with
           | `Ok -> json_of_room_join_result `Ok
           | `Error (code, msg) -> json_error code msg [])
@@ -4122,14 +4169,15 @@ generateKeys();
   let handle_set_room_visibility relay body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
-    let visibility = get_string body "visibility" in
-    if alias = "" || room_id = "" || visibility = "" then
+    let visibility_raw = get_string body "visibility" in
+    if alias = "" || room_id = "" || visibility_raw = "" then
       respond_bad_request (json_error_str err_bad_request
         "alias, room_id, and visibility are required")
-    else if visibility <> "public" && visibility <> "invite" then
+    else match canonical_visibility visibility_raw with
+    | None ->
       respond_bad_request (json_error_str err_bad_request
-        "visibility must be \"public\" or \"invite\"")
-    else
+        "visibility must be \"public\", \"private\", or \"invite_only\"")
+    | Some visibility ->
       match verify_room_op_proof relay
               ~sign_ctx:room_set_visibility_sign_ctx
               ~room_id ~alias body with
@@ -5325,8 +5373,8 @@ module Relay_client : sig
   val list_rooms : t -> Yojson.Safe.t Lwt.t
   val room_history :
     t -> room_id:string -> ?limit:int -> unit -> Yojson.Safe.t Lwt.t
-  val join_room : t -> alias:string -> room_id:string -> Yojson.Safe.t Lwt.t
-  val join_room_signed : t -> alias:string -> room_id:string
+  val join_room : t -> ?visibility:string -> alias:string -> room_id:string -> Yojson.Safe.t Lwt.t
+  val join_room_signed : t -> ?visibility:string -> alias:string -> room_id:string
     -> identity_pk:string -> ts:string -> nonce:string -> sig_:string
     -> Yojson.Safe.t Lwt.t
   val leave_room : t -> alias:string -> room_id:string -> Yojson.Safe.t Lwt.t
@@ -5344,7 +5392,9 @@ module Relay_client : sig
   val invite_room_signed : t -> alias:string -> room_id:string -> invitee_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val uninvite_room : t -> alias:string -> room_id:string -> invitee_pk:string -> Yojson.Safe.t Lwt.t
   val uninvite_room_signed : t -> alias:string -> room_id:string -> invitee_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
-  val set_room_visibility : t -> room_id:string -> visibility:string -> Yojson.Safe.t Lwt.t
+  val set_room_visibility : t -> alias:string -> room_id:string -> visibility:string -> Yojson.Safe.t Lwt.t
+  val set_room_visibility_signed : t -> alias:string -> room_id:string -> visibility:string
+    -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_prepare : t -> machine_ed25519_pubkey:string -> token:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_confirm : t -> token:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_revoke : t -> binding_id:string -> Yojson.Safe.t Lwt.t
@@ -5570,16 +5620,18 @@ end = struct
       ("limit", `Int limit);
     ])
 
-  let join_room t ~alias ~room_id =
+  let join_room t ?(visibility = "public") ~alias ~room_id =
     post t "/join_room" (`Assoc [
       ("alias", `String alias);
       ("room_id", `String room_id);
+      ("visibility", `String visibility);
     ])
 
-  let join_room_signed t ~alias ~room_id ~identity_pk ~ts ~nonce ~sig_ =
+  let join_room_signed t ?(visibility = "public") ~alias ~room_id ~identity_pk ~ts ~nonce ~sig_ =
     post t "/join_room" (`Assoc [
       ("alias", `String alias);
       ("room_id", `String room_id);
+      ("visibility", `String visibility);
       ("identity_pk", `String identity_pk);
       ("ts", `String ts);
       ("nonce", `String nonce);
@@ -5663,10 +5715,26 @@ end = struct
       ("sig", `String sig_);
     ])
 
-  let set_room_visibility t ~room_id ~visibility =
+  (* The relay's set_room_visibility handler requires [alias] (the caller must
+     be a room member) and, when C2C_REQUIRE_SIGNED_ROOM_OPS=1, a body-level
+     Ed25519 proof. Prefer [set_room_visibility_signed]; this unsigned form
+     still sends [alias] so it works on relays that don't require signing. *)
+  let set_room_visibility t ~alias ~room_id ~visibility =
     post t "/set_room_visibility" (`Assoc [
+      ("alias", `String alias);
       ("room_id", `String room_id);
       ("visibility", `String visibility);
+    ])
+
+  let set_room_visibility_signed t ~alias ~room_id ~visibility ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/set_room_visibility" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("visibility", `String visibility);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
     ])
 
   let mobile_pair_prepare t ~machine_ed25519_pubkey ~token =

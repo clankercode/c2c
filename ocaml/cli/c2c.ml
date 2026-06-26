@@ -4923,7 +4923,7 @@ let relay_rooms_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "invitee-pk" ] ~docv:"PK" ~doc:"Base64url invitee identity public key (required for invite/uninvite).")
   in
   let visibility =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "visibility" ] ~docv:"public|invite_only" ~doc:"Room visibility (required for set-visibility).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "visibility" ] ~docv:"public|private|invite_only" ~doc:"Room visibility: 'public' (listed + open join), 'private' (unlisted + open join), or 'invite_only' (unlisted + invite-gated join). Required for set-visibility; optional for join, where it applies only when the join creates the room.")
   in
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"Message body for 'send' (joined with spaces).")
@@ -4953,20 +4953,29 @@ let relay_rooms_cmd =
            exit 1
        | Some url, Some room_id, Some alias ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           (* --visibility is only meaningful for 'join', where it applies if
+              the join creates the room. 'leave' ignores it. *)
            let result =
              match Relay_identity.load () with
              | Ok id ->
                  let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias in
-                 let fn = if subcmd = "join" then Relay.Relay_client.join_room_signed
-                          else Relay.Relay_client.leave_room_signed in
-                 Lwt_main.run (fn client ~alias ~room_id
-                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
-                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
-                   ~sig_:p.Relay_signed_ops.sig_b64)
+                 if subcmd = "join" then
+                   Lwt_main.run (Relay.Relay_client.join_room_signed client
+                     ?visibility ~alias ~room_id
+                     ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                     ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                     ~sig_:p.Relay_signed_ops.sig_b64)
+                 else
+                   Lwt_main.run (Relay.Relay_client.leave_room_signed client
+                     ~alias ~room_id
+                     ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                     ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                     ~sig_:p.Relay_signed_ops.sig_b64)
              | Error _ ->
-                 let fn = if subcmd = "join" then Relay.Relay_client.join_room
-                          else Relay.Relay_client.leave_room in
-                 Lwt_main.run (fn client ~alias ~room_id)
+                 if subcmd = "join" then
+                   Lwt_main.run (Relay.Relay_client.join_room client ?visibility ~alias ~room_id)
+                 else
+                   Lwt_main.run (Relay.Relay_client.leave_room client ~alias ~room_id)
            in
            print_endline (Yojson.Safe.pretty_to_string result);
            (match result with
@@ -5113,20 +5122,37 @@ let relay_rooms_cmd =
                 (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
             | _ -> exit 1))
   | "set-visibility" ->
-      (match resolve_relay_url relay_url, room, visibility with
-       | None, _, _ ->
+      (match resolve_relay_url relay_url, room, alias, visibility with
+       | None, _, _, _ ->
            Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
-       | _, None, _ ->
+       | _, None, _, _ ->
            Printf.eprintf "error: --room required for 'rooms set-visibility'.\n%!";
            exit 1
-       | _, _, None ->
+       | _, _, None, _ ->
+           Printf.eprintf "error: --alias required for 'rooms set-visibility'.\n%!";
+           exit 1
+       | _, _, _, None ->
            Printf.eprintf "error: --visibility required for 'rooms set-visibility'.\n%!";
            exit 1
-       | Some url, Some room_id, Some visibility_val ->
+       | Some url, Some room_id, Some alias, Some visibility_val ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           let result = Lwt_main.run
-             (Relay.Relay_client.set_room_visibility client ~room_id ~visibility:visibility_val)
+           (* The relay requires the caller be a room member and (under
+              C2C_REQUIRE_SIGNED_ROOM_OPS) a signed proof — sign with the local
+              identity when available, falling back to the unsigned+alias form. *)
+           let result =
+             match Relay_identity.load () with
+             | Ok id ->
+                 let p = Relay_signed_ops.sign_room_op id
+                           ~ctx:Relay.room_set_visibility_sign_ctx ~room_id ~alias in
+                 Lwt_main.run (Relay.Relay_client.set_room_visibility_signed client
+                   ~alias ~room_id ~visibility:visibility_val
+                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                   ~sig_:p.Relay_signed_ops.sig_b64)
+             | Error _ ->
+                 Lwt_main.run (Relay.Relay_client.set_room_visibility client
+                   ~alias ~room_id ~visibility:visibility_val)
            in
            print_endline (Yojson.Safe.pretty_to_string result);
             (match result with

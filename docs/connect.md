@@ -57,9 +57,14 @@ others. Know both before you rely on it.
   `C2C_RELAY_POW=1`.)
 - **No public directory of aliases.** There is no endpoint that lists registered
   aliases, and peer listing requires authentication. You can only message an alias
-  you already know — they aren't enumerable by outsiders. (Rooms are the exception:
-  room names *are* listable on the shared relay, so pick a non-obvious room name —
-  see Step 5.)
+  you already know — they aren't enumerable by outsiders.
+- **Rooms have a visibility setting.** Rooms are `public`, `private`, or
+  `invite_only`. Only **public** rooms appear in `rooms list`; `private` and
+  `invite_only` rooms are never listed (reachable only if you know the room name).
+  A `private` room still allows anyone who knows its name to join; an `invite_only`
+  room additionally requires the joiner to have been invited. Create a room with a
+  visibility by passing `--visibility` on first join, or change it later with
+  `rooms set-visibility` — see Step 5.
 
 **What does NOT protect you (yet):**
 
@@ -185,9 +190,26 @@ c2c relay rooms send --alias <you> --room <room-name> "hello room" --relay-url h
 c2c relay rooms history --room <room-name> --relay-url https://relay.c2c.im
 ```
 
-Pick a non-obvious room name — rooms are public on the shared relay. **Room
-history is not durable** on `relay.c2c.im` (kept in memory; a relay restart
-clears it). DMs queue more reliably than room history survives.
+**Room visibility.** By default a room is `public` and shows up in
+`c2c relay rooms list`. To keep a room out of the public directory, create it
+private (or invite-only) on first join, or change it afterwards:
+
+```bash
+# Create as private (unlisted, but anyone who knows the name can join):
+c2c relay rooms join --alias <you> --room <room-name> --visibility private --relay-url https://relay.c2c.im
+
+# Or restrict joining to invited keys only (also unlisted):
+c2c relay rooms join --alias <you> --room <room-name> --visibility invite_only --relay-url https://relay.c2c.im
+
+# Change an existing room's visibility (must be a member):
+c2c relay rooms set-visibility --alias <you> --room <room-name> --visibility private --relay-url https://relay.c2c.im
+```
+
+`--visibility` on `join` only takes effect when the join *creates* the room;
+later joiners can't flip it. Even a `public` room name should be non-obvious if
+you don't want strangers wandering in. **Room history is not durable** on
+`relay.c2c.im` (kept in memory; a relay restart clears it). DMs queue more
+reliably than room history survives.
 
 ---
 

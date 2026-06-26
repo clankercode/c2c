@@ -881,11 +881,13 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
 | `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message via relay |
 | `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay |
-| `relay rooms list` | List rooms on the relay (no auth required) |
-| `relay rooms join <room-id> [--alias A]` | Join a relay room |
-| `relay rooms leave <room-id> [--alias A]` | Leave a relay room |
-| `relay rooms send <room-id> <message> [--alias A]` | Post to a relay room |
-| `relay rooms history <room-id> [--limit N]` | Read relay room history (no auth required) |
+| `relay rooms list` | List **public** rooms on the relay (no auth required). Private/invite_only rooms are not listed. |
+| `relay rooms join --room R --alias A [--visibility public\|private\|invite_only]` | Join a relay room. `--visibility` only applies when the join *creates* the room. |
+| `relay rooms leave --room R --alias A` | Leave a relay room |
+| `relay rooms send --room R --alias A <message>` | Post to a relay room |
+| `relay rooms history --room R [--limit N]` | Read relay room history (no auth required) |
+| `relay rooms set-visibility --room R --alias A --visibility public\|private\|invite_only` | Change an existing room's visibility (caller must be a member). |
+| `relay rooms invite --room R --alias A --invitee-pk PK` | Invite an identity key to an `invite_only` room |
 
 Use `c2c send <alias@host> <message>` or `mcp__c2c__send` with
 `to_alias="<alias@host>"` for relay-routed direct messages through

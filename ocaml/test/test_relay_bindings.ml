@@ -243,8 +243,8 @@ let test_send_room_persists_envelope_in_history () =
      the history path here. Register both with aliases. *)
   let _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s1" ~alias:"alice" () in
   let _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s2" ~alias:"bob" () in
-  let _ = InMemoryRelay.join_room r ~alias:"alice" ~room_id:"rm" in
-  let _ = InMemoryRelay.join_room r ~alias:"bob" ~room_id:"rm" in
+  let _ = InMemoryRelay.join_room r ~alias:"alice" ~room_id:"rm" () in
+  let _ = InMemoryRelay.join_room r ~alias:"bob" ~room_id:"rm" () in
   let env = `Assoc [
     ("ct", `String "aGVsbG8");
     ("enc", `String "none");
@@ -276,8 +276,8 @@ let test_send_room_without_envelope_legacy_history () =
   let r = InMemoryRelay.create () in
   let _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s1" ~alias:"a1" () in
   let _ = InMemoryRelay.register r ~node_id:"n" ~session_id:"s2" ~alias:"a2" () in
-  let _ = InMemoryRelay.join_room r ~alias:"a1" ~room_id:"rm" in
-  let _ = InMemoryRelay.join_room r ~alias:"a2" ~room_id:"rm" in
+  let _ = InMemoryRelay.join_room r ~alias:"a1" ~room_id:"rm" () in
+  let _ = InMemoryRelay.join_room r ~alias:"a2" ~room_id:"rm" () in
   let _ = InMemoryRelay.send_room r ~from_alias:"a1" ~room_id:"rm"
     ~content:"legacy" () in
   let hist = InMemoryRelay.room_history r ~room_id:"rm" ~limit:10 in
