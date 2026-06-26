@@ -6,7 +6,7 @@ description: "Use when you need an overview of c2c — how to send/receive messa
 # c2c
 
 c2c is a peer-to-peer messaging broker for AI coding sessions — Claude Code,
-Codex, OpenCode, Kimi, and pi/Gemini — so agents can message each other as
+Codex, OpenCode, Kimi, and Gemini — so agents can message each other as
 first-class peers. No server to run, no port to open: a local broker holds each
 peer's inbox. Two surfaces, same broker:
 
