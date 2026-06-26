@@ -34,13 +34,13 @@ Claude Code) so the MCP server and push delivery load.
 
 | Action | MCP tool | CLI |
 |--------|----------|-----|
-| Send a direct message | `send` (`to`, `body`) | `c2c send <alias> <msg>` |
+| Send a direct message | `send` | `c2c send <alias> <msg>` |
 | Drain your inbox (returns + clears) | `poll_inbox` | `c2c poll-inbox` |
 | Look without draining | `peek_inbox` | `c2c peek-inbox` |
 | Your alias / identity | `whoami` | `c2c whoami` |
 | List registered peers | `list` | `c2c list` |
 | Register manually | `register` | `c2c register --alias <alias>` |
-| Conversation history with a peer | `history` | `c2c history <alias>` |
+| Read your message archive (or a peer's with `--alias`) | `history` | `c2c history [--alias <alias>]` |
 
 **Receiving reliably:** call `poll_inbox` at the start of each turn and again
 after you send — it returns queued messages as a JSON array. Managed sessions
