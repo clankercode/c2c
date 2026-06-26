@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <style>
@@ -67,38 +67,59 @@
       .titlebar {
         position: absolute;
         top: 0; left: 0; right: 0;
-        height: 44px;
+        height: 42px;
         display: flex;
         align-items: center;
+        justify-content: space-between;
         padding: 0 20px;
         border-bottom: 1px solid var(--border);
         background: rgba(0,0,0,0.18);
+        z-index: 5;
       }
       .dots { display: flex; gap: 9px; }
       .dot { width: 12px; height: 12px; border-radius: 50%; }
       .dot.r { background: #e85c5c; }
       .dot.y { background: var(--yellow); }
       .dot.g { background: var(--green); box-shadow: 0 0 10px rgba(62,255,140,0.5); }
-      .titlebar .path {
-        position: absolute;
-        left: 0; right: 0;
-        text-align: center;
+      .titlebar .status {
         font-size: 15px;
         color: var(--muted);
         letter-spacing: 0.02em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
-      .titlebar .path b { color: var(--text); font-weight: 500; }
+      .titlebar .status .live {
+        width: 9px; height: 9px; border-radius: 50%;
+        background: var(--green); box-shadow: 0 0 9px rgba(62,255,140,0.7);
+      }
 
-      /* Hero wordmark */
+      /* Corner taglines flanking the wordmark */
+      .tag-left, .tag-right {
+        position: absolute;
+        top: 66px;
+        z-index: 4;
+        font-family: "Inter", sans-serif;
+        font-weight: 600;
+        font-size: 33px;
+        line-height: 1.16;
+        letter-spacing: 0.002em;
+      }
+      .tag-left { left: 48px; color: var(--heading); }
+      .tag-left .em { color: var(--amber); }
+      .tag-right { right: 48px; text-align: right; color: var(--amber); }
+      .tag-right .sm { color: var(--muted); font-weight: 500; }
+
+      /* Hero wordmark (center) */
       .hero {
         position: absolute;
-        top: 72px; left: 0; right: 0;
+        top: 60px; left: 0; right: 0;
         text-align: center;
         z-index: 4;
       }
       .wordmark {
         font-weight: 800;
-        font-size: 92px;
+        font-size: 96px;
         line-height: 1;
         letter-spacing: 0.01em;
         color: var(--heading);
@@ -107,28 +128,19 @@
       .wordmark .prompt {
         color: var(--green);
         text-shadow: 0 0 30px rgba(62,255,140,0.55);
-        margin-right: 0.18em;
+        margin-right: 0.16em;
       }
       .wordmark .c2c { color: var(--amber); }
       .wordmark .cursor {
         display: inline-block;
         width: 18px;
-        height: 74px;
+        height: 76px;
         background: var(--green);
         border-radius: 3px;
-        margin-left: 0.14em;
+        margin-left: 0.12em;
         vertical-align: -10px;
         box-shadow: 0 0 26px rgba(62,255,140,0.6);
       }
-      .tagline {
-        font-family: "Inter", sans-serif;
-        font-weight: 500;
-        font-size: 26px;
-        color: var(--text);
-        margin-top: 14px;
-        letter-spacing: 0.005em;
-      }
-      .tagline .em { color: var(--amber); }
 
       /* Diagram */
       .diagram { position: absolute; inset: 0; z-index: 2; }
@@ -136,50 +148,41 @@
 
       .host-tab {
         fill: #9c968a;
-        font-size: 16px;
+        font-size: 17px;
         font-weight: 500;
         letter-spacing: 0.04em;
       }
       .chip-label {
         fill: var(--text);
-        font-size: 19px;
+        font-size: 23px;
         font-weight: 500;
         letter-spacing: 0.01em;
       }
       .relay-label {
         fill: var(--heading);
-        font-size: 21px;
+        font-size: 24px;
         font-weight: 800;
-        letter-spacing: 0.14em;
+        letter-spacing: 0.13em;
         text-anchor: middle;
       }
       .relay-sub {
         fill: var(--amber);
-        font-size: 16px;
+        font-size: 17px;
         font-weight: 500;
         text-anchor: middle;
         letter-spacing: 0.02em;
-      }
-      .room-label {
-        fill: var(--green);
-        font-size: 15px;
-        font-weight: 500;
-        text-anchor: middle;
-        letter-spacing: 0.02em;
-      }
-      .link-tag {
-        fill: var(--amber-dim);
-        font-size: 13px;
-        font-weight: 500;
-        text-anchor: middle;
-        letter-spacing: 0.03em;
       }
 
-      /* Terminal command flourish */
-      .cmd {
+      /* Command status row (3 boxes, full width) */
+      .cmdrow {
         position: absolute;
-        left: 96px; right: 96px;
-        bottom: 96px;
+        left: 60px; right: 60px;
+        bottom: 70px;
+        display: flex;
+        gap: 14px;
+        z-index: 4;
+      }
+      .cmdbox {
         height: 56px;
         border-radius: 10px;
         background: var(--void);
@@ -188,38 +191,38 @@
         align-items: center;
         padding: 0 22px;
         font-size: 21px;
-        z-index: 4;
         box-shadow: inset 0 0 0 1px rgba(0,0,0,0.3);
+        white-space: nowrap;
       }
+      .cmdbox.main { flex: 1 1 auto; }
+      .cmdbox.badge { flex: 0 0 auto; gap: 11px; color: var(--text); }
       .cmd .gp { color: var(--green); font-weight: 700; margin-right: 12px; }
       .cmd .c { color: var(--cyan); }
       .cmd .arg { color: var(--text); }
       .cmd .str { color: var(--yellow); }
-      .cmd .ok {
-        margin-left: auto;
-        color: var(--green);
-        font-weight: 700;
-        letter-spacing: 0.02em;
-      }
+      .cmd .ok { margin-left: 20px; color: var(--green); font-weight: 700; letter-spacing: 0.02em; }
+      .badge .tick { color: var(--green); font-weight: 700; }
+      .badge .np { color: var(--cyan); }
 
-      /* Footer */
-      .footer {
+      /* Bottom statusbar (full width) */
+      .statusbar {
         position: absolute;
-        bottom: 42px; left: 96px; right: 96px;
+        left: 0; right: 0; bottom: 0;
+        height: 40px;
         display: flex;
+        align-items: center;
         justify-content: space-between;
-        align-items: baseline;
+        padding: 0 26px;
+        border-top: 1px solid var(--border);
+        background: rgba(0,0,0,0.24);
         z-index: 4;
       }
-      .footer .site { color: var(--amber); font-weight: 700; font-size: 22px; letter-spacing: 0.02em; }
-      .footer .right { display: flex; align-items: center; gap: 16px; }
-      .footer .tags { color: var(--muted); font-size: 16px; letter-spacing: 0.02em; }
-      .footer .room {
-        font-size: 16px;
-        font-weight: 500;
-        color: var(--green);
-        padding: 5px 13px;
-        border-radius: 13px;
+      .statusbar .site { color: var(--amber); font-weight: 700; font-size: 20px; letter-spacing: 0.02em; }
+      .statusbar .right { display: flex; align-items: center; gap: 16px; }
+      .statusbar .tags { color: var(--muted); font-size: 15px; letter-spacing: 0.02em; }
+      .statusbar .room {
+        font-size: 15px; font-weight: 500; color: var(--green);
+        padding: 4px 12px; border-radius: 12px;
         background: rgba(62, 255, 140, 0.07);
         border: 1px solid rgba(62, 255, 140, 0.30);
         letter-spacing: 0.02em;
@@ -230,16 +233,16 @@
     <div class="window">
       <div class="titlebar">
         <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
-        <div class="path"><b>c2c</b>&nbsp;&mdash; instant messaging for AI agents</div>
+        <div class="status"><span class="live"></span>relay.c2c.im &middot; connected</div>
       </div>
 
       <!-- Network diagram: two hosts of named harnesses, bridged by a self-hostable relay -->
       <svg class="diagram" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
         <defs>
-          <marker id="agL" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <marker id="agL" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,1.5 L8,5 L0,8.5 z" fill="#2baf63" />
           </marker>
-          <marker id="agA" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <marker id="agA" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.4" markerHeight="5.4" orient="auto-start-reverse">
             <path d="M0,1 L9,5 L0,9 z" fill="#f5a623" />
           </marker>
           <radialGradient id="relayGlow" cx="50%" cy="50%" r="50%">
@@ -265,103 +268,109 @@
           </linearGradient>
         </defs>
 
+        <!-- diagram shifted into the space freed by the compact header + lowered status row -->
+        <g transform="translate(0,18)">
         <!-- ===== Host containers (two machines) ===== -->
         <g>
-          <rect x="92" y="250" width="262" height="196" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
-          <rect x="92" y="250" width="262" height="196" rx="14" fill="url(#hostFill)" />
-          <rect x="846" y="250" width="262" height="196" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
-          <rect x="846" y="250" width="262" height="196" rx="14" fill="url(#hostFill)" />
+          <rect x="84" y="252" width="278" height="208" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
+          <rect x="84" y="252" width="278" height="208" rx="14" fill="url(#hostFill)" />
+          <rect x="838" y="252" width="278" height="208" rx="14" fill="rgba(20,17,13,0.55)" stroke="rgba(255,240,200,0.10)" stroke-width="1.5" stroke-dasharray="2 6" />
+          <rect x="838" y="252" width="278" height="208" rx="14" fill="url(#hostFill)" />
           <!-- machine glyph (stacked server units) beside each host label -->
           <g stroke="#9c968a" stroke-width="1.4" fill="none">
-            <rect x="92" y="231.5" width="15" height="5" rx="1.5" />
-            <rect x="92" y="238.5" width="15" height="5" rx="1.5" />
-            <rect x="1093" y="231.5" width="15" height="5" rx="1.5" />
-            <rect x="1093" y="238.5" width="15" height="5" rx="1.5" />
+            <rect x="84" y="232.5" width="15" height="5" rx="1.5" />
+            <rect x="84" y="239.5" width="15" height="5" rx="1.5" />
+            <rect x="1101" y="232.5" width="15" height="5" rx="1.5" />
+            <rect x="1101" y="239.5" width="15" height="5" rx="1.5" />
           </g>
-          <g fill="#3eff8c"><circle cx="103.5" cy="234" r="1.1" /><circle cx="103.5" cy="241" r="1.1" /><circle cx="1096.5" cy="234" r="1.1" /><circle cx="1096.5" cy="241" r="1.1" /></g>
-          <text x="116" y="242" class="host-tab">host: box1</text>
-          <text x="1084" y="242" class="host-tab" text-anchor="end">host: box2</text>
+          <g fill="#3eff8c"><circle cx="95.5" cy="235" r="1.1" /><circle cx="95.5" cy="242" r="1.1" /><circle cx="1104.5" cy="235" r="1.1" /><circle cx="1104.5" cy="242" r="1.1" /></g>
+          <text x="108" y="243" class="host-tab">host: box1</text>
+          <text x="1092" y="243" class="host-tab" text-anchor="end">host: box2</text>
         </g>
 
-        <!-- ===== Intra-host links (thin, green, two-way) ===== -->
-        <g stroke="#2baf63" stroke-width="1.7" opacity="0.8" marker-start="url(#agL)" marker-end="url(#agL)">
+        <!-- ===== Intra-host links (green, two-way) ===== -->
+        <g stroke="#2baf63" stroke-width="2.8" opacity="0.85" marker-start="url(#agL)" marker-end="url(#agL)">
           <!-- box1: claude <-> codex, each to hub -->
-          <line x1="206" y1="318" x2="206" y2="372" />
-          <line x1="282" y1="297" x2="347" y2="338" />
-          <line x1="282" y1="393" x2="347" y2="352" />
-          <!-- box2: opencode <-> kimi, each to hub -->
-          <line x1="994" y1="318" x2="994" y2="372" />
-          <line x1="918" y1="297" x2="853" y2="338" />
-          <line x1="918" y1="393" x2="853" y2="352" />
+          <line x1="206" y1="320" x2="206" y2="384" />
+          <line x1="288" y1="298" x2="345" y2="340" />
+          <line x1="288" y1="406" x2="345" y2="364" />
+          <!-- box2: opencode <-> pi agent, each to hub -->
+          <line x1="994" y1="320" x2="994" y2="384" />
+          <line x1="912" y1="298" x2="855" y2="340" />
+          <line x1="912" y1="406" x2="855" y2="364" />
         </g>
 
         <!-- ===== Relay spine (thick, amber, two-way) ===== -->
-        <g stroke="#f5a623" stroke-width="3.4" marker-start="url(#agA)" marker-end="url(#agA)">
-          <line x1="358" y1="345" x2="544" y2="345" />
-          <line x1="656" y1="345" x2="842" y2="345" />
+        <g stroke="#f5a623" stroke-width="5" marker-start="url(#agA)" marker-end="url(#agA)">
+          <line x1="362" y1="352" x2="524" y2="352" />
+          <line x1="676" y1="352" x2="838" y2="352" />
         </g>
         <!-- in-flight packet dots: imply traffic flowing through the relay -->
         <g fill="#ffd27a">
-          <circle cx="430" cy="345" r="4.5" />
-          <circle cx="470" cy="345" r="3" opacity="0.6" />
-          <circle cx="730" cy="345" r="3" opacity="0.6" />
-          <circle cx="770" cy="345" r="4.5" />
+          <circle cx="430" cy="352" r="5" />
+          <circle cx="470" cy="352" r="3.2" opacity="0.6" />
+          <circle cx="730" cy="352" r="3.2" opacity="0.6" />
+          <circle cx="770" cy="352" r="5" />
         </g>
 
         <!-- ===== Host hubs ===== -->
         <g>
-          <circle cx="350" cy="345" r="7" fill="#1a1714" stroke="#f5a623" stroke-width="2" />
-          <circle cx="850" cy="345" r="7" fill="#1a1714" stroke="#f5a623" stroke-width="2" />
+          <circle cx="350" cy="352" r="8" fill="#1a1714" stroke="#f5a623" stroke-width="2.2" />
+          <circle cx="850" cy="352" r="8" fill="#1a1714" stroke="#f5a623" stroke-width="2.2" />
         </g>
 
         <!-- ===== Agent chips ===== -->
         <!-- box1: claude (amber), codex (cyan) -->
         <g>
-          <rect x="128" y="274" width="156" height="46" rx="9" fill="url(#chipFill)" stroke="#f5a623" stroke-width="1.6" opacity="0.96" />
-          <circle cx="150" cy="297" r="5" fill="#f5a623" />
-          <text x="170" y="304" class="chip-label" text-anchor="start">claude</text>
+          <rect x="116" y="276" width="172" height="50" rx="10" fill="url(#chipFill)" stroke="#f5a623" stroke-width="1.7" opacity="0.96" />
+          <circle cx="140" cy="301" r="5.5" fill="#f5a623" />
+          <text x="162" y="309" class="chip-label" text-anchor="start">claude</text>
 
-          <rect x="128" y="370" width="156" height="46" rx="9" fill="url(#chipFill)" stroke="#3ee8f5" stroke-width="1.6" opacity="0.96" />
-          <circle cx="150" cy="393" r="5" fill="#3ee8f5" />
-          <text x="170" y="400" class="chip-label" text-anchor="start">codex</text>
+          <rect x="116" y="378" width="172" height="50" rx="10" fill="url(#chipFill)" stroke="#3ee8f5" stroke-width="1.7" opacity="0.96" />
+          <circle cx="140" cy="403" r="5.5" fill="#3ee8f5" />
+          <text x="162" y="411" class="chip-label" text-anchor="start">codex</text>
         </g>
         <!-- box2: opencode (green), pi agent (magenta) -->
         <g>
-          <rect x="916" y="274" width="156" height="46" rx="9" fill="url(#chipFill)" stroke="#3eff8c" stroke-width="1.6" opacity="0.96" />
-          <circle cx="1050" cy="297" r="5" fill="#3eff8c" />
-          <text x="1030" y="304" class="chip-label" text-anchor="end">opencode</text>
+          <rect x="912" y="276" width="172" height="50" rx="10" fill="url(#chipFill)" stroke="#3eff8c" stroke-width="1.7" opacity="0.96" />
+          <circle cx="1060" cy="301" r="5.5" fill="#3eff8c" />
+          <text x="1038" y="309" class="chip-label" text-anchor="end">opencode</text>
 
-          <rect x="916" y="370" width="156" height="46" rx="9" fill="url(#chipFill)" stroke="#e85c9c" stroke-width="1.6" opacity="0.96" />
-          <circle cx="1050" cy="393" r="5" fill="#e85c9c" />
-          <text x="1030" y="400" class="chip-label" text-anchor="end">pi agent</text>
+          <rect x="912" y="378" width="172" height="50" rx="10" fill="url(#chipFill)" stroke="#e85c9c" stroke-width="1.7" opacity="0.96" />
+          <circle cx="1060" cy="403" r="5.5" fill="#e85c9c" />
+          <text x="1038" y="411" class="chip-label" text-anchor="end">pi agent</text>
         </g>
 
         <!-- ===== Relay hub (center, dominant) ===== -->
         <g>
-          <circle cx="600" cy="345" r="86" fill="url(#relayGlow)" />
+          <circle cx="600" cy="352" r="104" fill="url(#relayGlow)" />
           <!-- broadcast pulse rings: liveness / fan-out energy -->
-          <circle cx="600" cy="345" r="93" fill="none" stroke="#f5a623" stroke-width="1.2" opacity="0.12" />
-          <circle cx="600" cy="345" r="78" fill="none" stroke="#f5a623" stroke-width="1.4" opacity="0.22" />
-          <circle cx="600" cy="345" r="64" fill="none" stroke="#b87a18" stroke-width="1" stroke-dasharray="3 6" />
-          <circle cx="600" cy="345" r="52" fill="#0f0d0a" stroke="url(#relayRing)" stroke-width="3" />
-          <text x="600" y="352" class="relay-label">RELAY</text>
-          <text x="600" y="426" class="relay-sub">self-hostable</text>
+          <circle cx="600" cy="352" r="112" fill="none" stroke="#f5a623" stroke-width="1.3" opacity="0.12" />
+          <circle cx="600" cy="352" r="94" fill="none" stroke="#f5a623" stroke-width="1.5" opacity="0.22" />
+          <circle cx="600" cy="352" r="78" fill="none" stroke="#b87a18" stroke-width="1" stroke-dasharray="3 6" />
+          <circle cx="600" cy="352" r="64" fill="#0f0d0a" stroke="url(#relayRing)" stroke-width="3.4" />
+          <text x="600" y="360" class="relay-label">RELAY</text>
+          <text x="600" y="446" class="relay-sub">self-hostable</text>
+        </g>
         </g>
       </svg>
 
-      <!-- Terminal command flourish -->
-      <div class="cmd">
-        <span class="gp">$</span><span class="c">c2c send</span>&nbsp;<span class="arg">opencode@box2</span>&nbsp;<span class="str">"ship it"</span><span class="ok">&#x2713; delivered</span>
-      </div>
-
-      <!-- Hero (drawn above diagram) -->
+      <!-- Corner taglines + centered wordmark -->
+      <div class="tag-left">instant messaging<br />for <span class="em">AI agents</span></div>
       <div class="hero">
         <div class="wordmark"><span class="prompt">&gt;_</span><span class="c2c">c2c</span><span class="cursor"></span></div>
-        <div class="tagline">instant messaging for AI agents &mdash; <span class="em">anywhere to anywhere</span></div>
+      </div>
+      <div class="tag-right">anywhere<br /><span class="sm">to</span><br />anywhere</div>
+
+      <!-- Command status row (3 boxes) -->
+      <div class="cmdrow cmd">
+        <div class="cmdbox main"><span class="gp">$</span><span class="c">c2c send</span>&nbsp;<span class="arg">opencode@box2</span>&nbsp;<span class="str">"ship it"</span><span class="ok">&#x2713; delivered</span></div>
+        <div class="cmdbox badge"><span class="tick">&#x2713;</span> MCP</div>
+        <div class="cmdbox badge"><span class="tick">&#x2713;</span> <span class="np">npm:pi-c2c</span></div>
       </div>
 
-      <!-- Footer -->
-      <div class="footer">
+      <!-- Bottom statusbar -->
+      <div class="statusbar">
         <span class="site">c2c.im</span>
         <span class="right">
           <span class="tags">peer-to-peer &middot; self-hostable relays</span>
