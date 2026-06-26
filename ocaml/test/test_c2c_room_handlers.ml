@@ -10,7 +10,9 @@
      limit         → Broker.int_opt_member → None if absent
      since         → Broker.float_opt_member → None if absent
      force         → Yojson.Safe.Util.member + bool match
-     visibility    → string_member → "invite_only" or other (handler maps to Public)
+     visibility    → string_member → "public"/"unlisted"/"gated"/"private"
+                     (legacy "invite"/"invite_only"/"invite-only" map to Private;
+                      unknown maps to Public)
      tag           → Yojson.Safe.Util.member + parse_send_tag
      invitee_alias → string_member → raises if missing
 
@@ -194,12 +196,26 @@ let test_visibility_public () =
   | `String s -> check string "visibility" "public" s
   | _ -> Alcotest.fail "expected `String \"public\""
 
-let test_visibility_unknown () =
+let test_visibility_private () =
   let args = `Assoc [("visibility", `String "private")] in
   let v = J.member "visibility" args in
   match v with
   | `String s -> check string "visibility" "private" s
   | _ -> Alcotest.fail "expected `String \"private\""
+
+let test_visibility_unlisted () =
+  let args = `Assoc [("visibility", `String "unlisted")] in
+  let v = J.member "visibility" args in
+  match v with
+  | `String s -> check string "visibility" "unlisted" s
+  | _ -> Alcotest.fail "expected `String \"unlisted\""
+
+let test_visibility_gated () =
+  let args = `Assoc [("visibility", `String "gated")] in
+  let v = J.member "visibility" args in
+  match v with
+  | `String s -> check string "visibility" "gated" s
+  | _ -> Alcotest.fail "expected `String \"gated\""
 
 (* ------------------------------------------------------------------------- *)
 (* prune_rooms / list_rooms / my_rooms: no required args                      *)
@@ -264,7 +280,9 @@ let room_handler_tests : unit test =
     (* visibility (set_room_visibility) *)
     "visibility invite_only"   , `Quick, test_visibility_invite_only;
     "visibility public"       , `Quick, test_visibility_public;
-    "visibility unknown"       , `Quick, test_visibility_unknown;
+    "visibility private"       , `Quick, test_visibility_private;
+    "visibility unlisted"      , `Quick, test_visibility_unlisted;
+    "visibility gated"         , `Quick, test_visibility_gated;
     (* misc *)
     "prune_rooms ignores args", `Quick, test_prune_rooms_no_args;
     "list_rooms no args"     , `Quick, test_list_rooms_no_args;

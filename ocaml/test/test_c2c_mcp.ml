@@ -5720,7 +5720,8 @@ let test_delete_room_legacy_mixed_case_creator () =
         C2c_mcp.Broker.leave_room broker ~room_id:"legacy-room" ~alias:"alice"
       in
       (* Manually overwrite room meta to simulate legacy mixed-case storage.
-         The relay-style "invite" short form must not fall back to Public. *)
+         The relay-style "invite" short form must map to the new Private
+         (unlisted + invite-gated) and must not fall back to Public. *)
       let meta_path =
         Filename.concat dir
           (Filename.concat "rooms" (Filename.concat "legacy-room" "meta.json"))
@@ -5730,8 +5731,8 @@ let test_delete_room_legacy_mixed_case_creator () =
         "{\"visibility\":\"invite\",\"invited_members\":[],\"created_by\":\"Alice\"}";
       close_out oc;
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"legacy-room" in
-      check bool "legacy invite short-form reads as invite_only" true
-        (match meta.visibility with Invite_only -> true | Public -> false | Private -> false);
+      check bool "legacy invite short-form reads as private" true
+        (match meta.visibility with Private -> true | Public -> false | Unlisted -> false | Gated -> false);
       (* Caller "alice" must still be able to delete the legacy room. *)
       C2c_mcp.Broker.delete_room broker ~room_id:"legacy-room"
         ~caller_alias:"alice" ();
@@ -7949,7 +7950,7 @@ let test_send_room_invite_adds_to_invite_list () =
         ~from_alias:"alice" ~invitee_alias:"bob";
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
       check string "visibility" "public"
-        (match meta.visibility with Public -> "public" | Private -> "private" | Invite_only -> "invite_only");
+        (match meta.visibility with Public -> "public" | Unlisted -> "unlisted" | Gated -> "gated" | Private -> "private");
       check (list string) "invited_members" ["bob"] meta.invited_members)
 
 (* #433: send_room_invite must auto-DM the invitee with a
@@ -8007,9 +8008,9 @@ let test_join_room_invite_only_rejects_uninvited () =
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
-        ~from_alias:"alice" ~visibility:C2c_mcp.Invite_only;
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
       check_raises "uninvited rejected"
-        (Invalid_argument "join_room rejected: room 'secret-club' is invite-only and 'bob' is not on the invite list")
+        (Invalid_argument "join_room rejected: room 'secret-club' requires an invite and 'bob' is not on the invite list")
         (fun () ->
            ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
              ~alias:"bob" ~session_id:"session-b")))
@@ -8022,7 +8023,7 @@ let test_join_room_invite_only_accepts_invited () =
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
-        ~from_alias:"alice" ~visibility:C2c_mcp.Invite_only;
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
       C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
         ~from_alias:"alice" ~invitee_alias:"bob";
       let members =
@@ -8037,10 +8038,10 @@ let test_set_room_visibility_changes_mode () =
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
-        ~from_alias:"alice" ~visibility:C2c_mcp.Invite_only;
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
-      check bool "visibility is invite_only" true
-        (match meta.visibility with Invite_only -> true | Public -> false | Private -> false))
+      check bool "visibility is gated" true
+        (match meta.visibility with Gated -> true | Public -> false | Unlisted -> false | Private -> false))
 
 let test_set_room_visibility_only_member_can_change () =
   with_temp_dir (fun dir ->
@@ -8051,7 +8052,7 @@ let test_set_room_visibility_only_member_can_change () =
         (Invalid_argument "set_room_visibility rejected: only room members can change visibility")
         (fun () ->
            C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
-             ~from_alias:"bob" ~visibility:C2c_mcp.Invite_only))
+             ~from_alias:"bob" ~visibility:C2c_mcp.Gated))
 
 (* #394: c2c rooms create — explicit room creation. *)
 let test_create_public_room_with_auto_join () =
@@ -8067,7 +8068,7 @@ let test_create_public_room_with_auto_join () =
       check bool "auto_joined" true r.cr_auto_joined;
       check (list string) "members has creator" ["stanza-coder"] r.cr_members;
       check bool "visibility public" true
-        (match r.cr_visibility with Public -> true | Invite_only -> false | Private -> false);
+        (match r.cr_visibility with Public -> true | Unlisted -> false | Gated -> false | Private -> false);
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
       check string "meta created_by persisted" "stanza-coder" meta.created_by;
       let members = C2c_mcp.Broker.read_room_members broker ~room_id:"design-syndicate" in
@@ -8079,12 +8080,12 @@ let test_create_invite_only_with_invited_members () =
       let r =
         C2c_mcp.Broker.create_room broker ~room_id:"design-syndicate"
           ~caller_alias:"stanza-coder" ~caller_session_id:"session-stanza"
-          ~visibility:C2c_mcp.Invite_only
+          ~visibility:C2c_mcp.Gated
           ~invited_members:["galaxy-coder"; "lyra-quill"; "galaxy-coder"]
           ~auto_join:true
       in
-      check bool "visibility invite_only" true
-        (match r.cr_visibility with Invite_only -> true | Public -> false | Private -> false);
+      check bool "visibility gated" true
+        (match r.cr_visibility with Gated -> true | Public -> false | Unlisted -> false | Private -> false);
       check (list string) "invited dedup" ["galaxy-coder"; "lyra-quill"] r.cr_invited_members;
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"design-syndicate" in
       check (list string) "invited_members persisted" ["galaxy-coder"; "lyra-quill"]
@@ -8129,7 +8130,7 @@ let test_list_rooms_includes_visibility_and_invited_members () =
       check int "one room" 1 (List.length rooms);
       let room = List.hd rooms in
       check string "visibility public" "public"
-        (match room.ri_visibility with Public -> "public" | Private -> "private" | Invite_only -> "invite_only");
+        (match room.ri_visibility with Public -> "public" | Unlisted -> "unlisted" | Gated -> "gated" | Private -> "private");
       check (list string) "invited_members" ["bob"] room.ri_invited_members)
 
 let test_tools_call_send_room_invite_via_mcp () =
@@ -8196,7 +8197,7 @@ let test_tools_call_set_room_visibility_via_mcp () =
                      ; ( "arguments",
                          `Assoc
                            [ ("room_id", `String "secret-club")
-                           ; ("visibility", `String "invite_only")
+                           ; ("visibility", `String "gated")
                            ] )
                      ] )
                ]
@@ -8214,21 +8215,21 @@ let test_tools_call_set_room_visibility_via_mcp () =
                in
                check bool "set_room_visibility success" false is_error;
                let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
-                check bool "visibility is invite_only" true
-                  (match meta.visibility with Invite_only -> true | Public -> false | Private -> false)))
+                check bool "visibility is gated" true
+                  (match meta.visibility with Gated -> true | Public -> false | Unlisted -> false | Private -> false)))
 
-(* --- room visibility: private (unlisted + open join) --- *)
+(* --- room visibility: unlisted (unlisted + open join + open read) --- *)
 
-let test_set_room_visibility_private_mode () =
+let test_set_room_visibility_unlisted_mode () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"hush"
                 ~alias:"alice" ~session_id:"session-a");
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"hush"
-        ~from_alias:"alice" ~visibility:C2c_mcp.Private;
+        ~from_alias:"alice" ~visibility:C2c_mcp.Unlisted;
       let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"hush" in
-      check bool "visibility is private" true
-        (match meta.visibility with Private -> true | Public -> false | Invite_only -> false))
+      check bool "visibility is unlisted" true
+        (match meta.visibility with Unlisted -> true | Public -> false | Gated -> false | Private -> false))
 
 (* End-to-end through MCP tools/call: a private room is hidden from
    non-members in list_rooms but visible to members; a public room is
@@ -8691,7 +8692,7 @@ let test_join_room_invite_only_rejects_uninvited_via_mcp () =
       ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
                 ~alias:"alice" ~session_id:"session-a");
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
-        ~from_alias:"alice" ~visibility:C2c_mcp.Invite_only;
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
       Unix.putenv "C2C_MCP_SESSION_ID" "session-b";
       Fun.protect
         ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
@@ -11568,7 +11569,7 @@ let test_room_history_invite_only_blocks_non_member () =
           ~alias:"creator" ~session_id:"sess-creator"
       in
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret"
-        ~from_alias:"creator" ~visibility:Invite_only;
+        ~from_alias:"creator" ~visibility:Private;
       let _ =
         C2c_mcp.Broker.send_room broker ~from_alias:"creator"
           ~room_id:"secret" ~content:"private chatter"
@@ -11596,7 +11597,7 @@ let test_room_history_invite_only_allows_member () =
           ~alias:"creator" ~session_id:"sess-creator"
       in
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret"
-        ~from_alias:"creator" ~visibility:Invite_only;
+        ~from_alias:"creator" ~visibility:Private;
       let _ =
         C2c_mcp.Broker.send_room broker ~from_alias:"creator"
           ~room_id:"secret" ~content:"insider chatter"
@@ -11661,7 +11662,7 @@ let test_list_rooms_filters_invite_only_for_non_members () =
           ~alias:"creator" ~session_id:"sess-creator"
       in
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"backroom"
-        ~from_alias:"creator" ~visibility:Invite_only;
+        ~from_alias:"creator" ~visibility:Private;
       let response =
         rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-outsider"
           ~tool_name:"list_rooms" ~arguments:(`Assoc [])
@@ -11693,7 +11694,7 @@ let test_list_rooms_redacts_invited_pre_join () =
           ~alias:"creator" ~session_id:"sess-creator"
       in
       C2c_mcp.Broker.set_room_visibility broker ~room_id:"club"
-        ~from_alias:"creator" ~visibility:Invite_only;
+        ~from_alias:"creator" ~visibility:Private;
       C2c_mcp.Broker.send_room_invite broker ~room_id:"club"
         ~from_alias:"creator" ~invitee_alias:"invitee";
       let response =
@@ -11721,6 +11722,130 @@ let test_list_rooms_redacts_invited_pre_join () =
                let invited = r |> member "invited_members" |> to_list in
                check int "invited_members redacted for invited-pre-join" 0
                  (List.length invited)))
+
+(* 4-level: gated room is LISTED to a non-member, but with the roster
+   redacted (room_id + member_count survive for discovery). *)
+let test_list_rooms_gated_listed_to_nonmember_roster_redacted () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-outsider"
+        ~alias:"outsider" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"clubhouse"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"clubhouse"
+        ~from_alias:"creator" ~visibility:Gated;
+      C2c_mcp.Broker.send_room_invite broker ~room_id:"clubhouse"
+        ~from_alias:"creator" ~invitee_alias:"someone-else";
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-outsider"
+          ~tool_name:"list_rooms" ~arguments:(`Assoc [])
+      in
+      match response with
+      | None -> fail "expected list_rooms response"
+      | Some json ->
+          let text = rooms_acl_extract_result_text json in
+          let arr = Yojson.Safe.from_string text |> Yojson.Safe.Util.to_list in
+          let club =
+            List.find_opt
+              (fun r -> Yojson.Safe.Util.(r |> member "room_id" |> to_string) = "clubhouse")
+              arr
+          in
+          (match club with
+           | None -> fail "gated room must be LISTED to non-members"
+           | Some r ->
+               let open Yojson.Safe.Util in
+               check int "gated roster redacted (members) for non-member" 0
+                 (List.length (r |> member "members" |> to_list));
+               check int "gated roster redacted (invited) for non-member" 0
+                 (List.length (r |> member "invited_members" |> to_list))))
+
+(* 4-level: gated room history is member-gated (blocked for non-member). *)
+let test_room_history_gated_blocks_non_member () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-outsider"
+        ~alias:"outsider" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"clubhouse"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"clubhouse"
+        ~from_alias:"creator" ~visibility:Gated;
+      let _ =
+        C2c_mcp.Broker.send_room broker ~from_alias:"creator"
+          ~room_id:"clubhouse" ~content:"members only"
+      in
+      let response =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-outsider"
+          ~tool_name:"room_history"
+          ~arguments:(`Assoc [ ("room_id", `String "clubhouse") ])
+      in
+      match response with
+      | None -> fail "expected room_history response"
+      | Some json ->
+          check bool "gated history blocked for non-member" true
+            (rooms_acl_is_error json))
+
+(* 4-level: unlisted room is hidden from a non-member's list_rooms, but a
+   non-member can JOIN it (open join) and read its history (open read). *)
+let test_unlisted_hidden_but_open_join_and_read () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sess-creator"
+        ~alias:"creator" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sess-rando"
+        ~alias:"rando" ~pid:None ~pid_start_time:None ();
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"backchannel"
+          ~alias:"creator" ~session_id:"sess-creator"
+      in
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"backchannel"
+        ~from_alias:"creator" ~visibility:Unlisted;
+      let _ =
+        C2c_mcp.Broker.send_room broker ~from_alias:"creator"
+          ~room_id:"backchannel" ~content:"quiet but open"
+      in
+      (* hidden from non-member list_rooms *)
+      let list_resp =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-rando"
+          ~tool_name:"list_rooms" ~arguments:(`Assoc [])
+      in
+      (match list_resp with
+       | None -> fail "expected list_rooms response"
+       | Some json ->
+           let arr =
+             Yojson.Safe.from_string (rooms_acl_extract_result_text json)
+             |> Yojson.Safe.Util.to_list
+           in
+           let ids =
+             List.map (fun r -> Yojson.Safe.Util.(r |> member "room_id" |> to_string)) arr
+           in
+           check bool "unlisted hidden from non-member list" false
+             (List.mem "backchannel" ids));
+      (* open read: non-member can read history before joining *)
+      let hist_resp =
+        rooms_acl_call_tool ~broker_root:dir ~session_id:"sess-rando"
+          ~tool_name:"room_history"
+          ~arguments:(`Assoc [ ("room_id", `String "backchannel") ])
+      in
+      (match hist_resp with
+       | None -> fail "expected room_history response"
+       | Some json ->
+           check bool "unlisted open read for non-member" false
+             (rooms_acl_is_error json));
+      (* open join: a non-member can join an unlisted room directly *)
+      let members =
+        C2c_mcp.Broker.join_room broker ~room_id:"backchannel"
+          ~alias:"rando" ~session_id:"sess-rando"
+      in
+      check bool "non-member joined unlisted room" true
+        (List.exists (fun (m : C2c_mcp.room_member) -> m.rm_alias = "rando") members))
 
 (* H3 — delete_room creator-auth *)
 
@@ -13994,8 +14119,8 @@ let () =
              test_join_room_invite_only_accepts_invited
          ; test_case "set_room_visibility changes mode" `Quick
              test_set_room_visibility_changes_mode
-         ; test_case "set_room_visibility private mode" `Quick
-             test_set_room_visibility_private_mode
+         ; test_case "set_room_visibility unlisted mode" `Quick
+             test_set_room_visibility_unlisted_mode
          ; test_case "MCP list_rooms hides private from non-members" `Quick
              test_mcp_list_rooms_private_hidden_from_nonmembers
          ; test_case "set_room_visibility only member can change" `Quick
@@ -14144,6 +14269,12 @@ let () =
                test_list_rooms_filters_invite_only_for_non_members
            ; test_case "H2 list_rooms redacts members for invited-pre-join" `Quick
                test_list_rooms_redacts_invited_pre_join
+           ; test_case "4-level gated listed to non-member, roster redacted" `Quick
+               test_list_rooms_gated_listed_to_nonmember_roster_redacted
+           ; test_case "4-level gated history blocks non-member" `Quick
+               test_room_history_gated_blocks_non_member
+           ; test_case "4-level unlisted hidden but open join + read" `Quick
+               test_unlisted_hidden_but_open_join_and_read
            ; test_case "H3 delete_room requires creator" `Quick
                test_delete_room_requires_creator
            ; test_case "H3 delete_room creator succeeds" `Quick

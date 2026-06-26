@@ -301,12 +301,12 @@ let room_public : C2c_watch_data.room_view =
           ~content:"build clean rc=0" ~ts:ts3 (* newest, at bottom *) ]
   }
 
-(* (ii) INVITE_ONLY EMPTY room (rv_history=[]) — the COMMON quiet case → the
+(* (ii) PRIVATE EMPTY room (rv_history=[]) — the COMMON quiet case → the
    detail pane must show "(no history)" explicitly, never an error. *)
 let room_empty : C2c_watch_data.room_view =
   { rv_info =
       mk_room_info ~room:"relay-debug" ~members:0 ~alive:0 ~dead:0 ~unknown:0
-        ~vis:C2c_mcp.Invite_only
+        ~vis:C2c_mcp.Private
   ; rv_history = []
   }
 

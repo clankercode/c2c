@@ -354,7 +354,7 @@ let test_relay_list_rooms_shows_all_with_counts () =
   let room2 = List.find (fun r -> json_get_string r "room_id" = "room-2") rooms in
   if json_get_int room2 "member_count" <> 1 then fail_fmt "room-2 should have 1 member"
 
-(* ---- Room visibility: public / private / invite_only ---- *)
+(* ---- Room visibility: public / unlisted / gated / private (4-level) ---- *)
 
 let test_relay_canonical_visibility_normalizes () =
   let chk input expected =
@@ -364,14 +364,26 @@ let test_relay_canonical_visibility_normalizes () =
     | None -> fail_fmt "canonical_visibility %S => None, expected Some %S" input expected
   in
   chk "public" "public";
+  chk "unlisted" "unlisted";
+  chk "gated" "gated";
   chk "private" "private";
-  chk "invite" "invite";
-  chk "invite_only" "invite";
-  chk "invite-only" "invite";
+  (* old invite* tokens are synonyms for the new "private" (unlisted+invite) *)
+  chk "invite" "private";
+  chk "invite_only" "private";
+  chk "invite-only" "private";
   chk "  PUBLIC  " "public";
+  chk "  Gated " "gated";
   (match Relay.canonical_visibility "bogus" with
    | None -> ()
    | Some v -> fail_fmt "canonical_visibility \"bogus\" should be None, got %S" v)
+
+(* Mirror of the relay HTTP join-admission gate (handle_join_room): public and
+   unlisted are open-join; gated and private require the caller to be on the
+   invite list. The backend [join_room] itself never gates — the gate lives in
+   the handler — so we exercise the gate's data-layer building blocks here. *)
+let relay_admitted ~visibility ~is_invited =
+  let open_join = visibility = "public" || visibility = "unlisted" in
+  open_join || is_invited
 
 let room_ids rooms =
   List.map (fun r -> json_get_string r "room_id") rooms
@@ -379,41 +391,80 @@ let room_ids rooms =
 let test_relay_list_rooms_omits_nonpublic () =
   let t = make_test_relay () in
   let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  (* default (public), explicit private, explicit invite *)
+  (* public (listed), gated (listed), unlisted (hidden), private (hidden) *)
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"pub-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"gated" ~alias:"alice" ~room_id:"gated-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"unlisted" ~alias:"alice" ~room_id:"unl-room" () in
   let _ = Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"priv-room" () in
-  let _ = Relay.InMemoryRelay.join_room t ~visibility:"invite_only" ~alias:"alice" ~room_id:"inv-room" () in
   let listed = room_ids (Relay.InMemoryRelay.list_rooms t) in
-  if List.length listed <> 1 then fail_fmt "only the public room should be listed, got [%s]" (String.concat "; " listed);
+  if List.length listed <> 2 then fail_fmt "only public + gated rooms should be listed, got [%s]" (String.concat "; " listed);
   if not (List.mem "pub-room" listed) then fail_fmt "pub-room should be listed";
+  if not (List.mem "gated-room" listed) then fail_fmt "gated-room should be listed";
+  if List.mem "unl-room" listed then fail_fmt "unl-room (unlisted) must not be listed";
   if List.mem "priv-room" listed then fail_fmt "priv-room (private) must not be listed";
-  if List.mem "inv-room" listed then fail_fmt "inv-room (invite) must not be listed";
-  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"inv-room" <> "invite" then
-    fail_fmt "invite_only should be stored as canonical invite"
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"priv-room" <> "private" then
+    fail_fmt "private should be stored as canonical private"
+
+(* New cell coverage (InMemory): gated is listed + join invite-gated; unlisted
+   is open-join but not listed; private is invite-gated + not listed. *)
+let test_relay_join_gating_inmemory () =
+  let t = make_test_relay () in
+  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" () in
+  (* gated room: listed, invite-gated join *)
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"gated" ~alias:"creator" ~room_id:"g" () in
+  if not (List.mem "g" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
+    fail_fmt "gated room must be listed";
+  let g_vis = Relay.InMemoryRelay.room_visibility_of t ~room_id:"g" in
+  if relay_admitted ~visibility:g_vis ~is_invited:(Relay.InMemoryRelay.is_invited t ~room_id:"g" ~identity_pk_b64:"pk_stranger") then
+    fail_fmt "gated: uninvited caller must be rejected";
+  Relay.InMemoryRelay.invite_to_room t ~room_id:"g" ~identity_pk_b64:"pk_friend";
+  if not (relay_admitted ~visibility:g_vis ~is_invited:(Relay.InMemoryRelay.is_invited t ~room_id:"g" ~identity_pk_b64:"pk_friend")) then
+    fail_fmt "gated: invited caller must be admitted";
+  (* unlisted room: open join, not listed *)
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"unlisted" ~alias:"creator" ~room_id:"u" () in
+  if List.mem "u" (room_ids (Relay.InMemoryRelay.list_rooms t)) then
+    fail_fmt "unlisted room must not be listed";
+  let u_vis = Relay.InMemoryRelay.room_visibility_of t ~room_id:"u" in
+  if not (relay_admitted ~visibility:u_vis ~is_invited:(Relay.InMemoryRelay.is_invited t ~room_id:"u" ~identity_pk_b64:"pk_stranger")) then
+    fail_fmt "unlisted: uninvited caller must be admitted (open join)";
+  (* private room: invite-gated, not listed *)
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"creator" ~room_id:"p" () in
+  if List.mem "p" (room_ids (Relay.InMemoryRelay.list_rooms t)) then
+    fail_fmt "private room must not be listed";
+  let p_vis = Relay.InMemoryRelay.room_visibility_of t ~room_id:"p" in
+  if relay_admitted ~visibility:p_vis ~is_invited:(Relay.InMemoryRelay.is_invited t ~room_id:"p" ~identity_pk_b64:"pk_stranger") then
+    fail_fmt "private: uninvited caller must be rejected";
+  Relay.InMemoryRelay.invite_to_room t ~room_id:"p" ~identity_pk_b64:"pk_friend";
+  if not (relay_admitted ~visibility:p_vis ~is_invited:(Relay.InMemoryRelay.is_invited t ~room_id:"p" ~identity_pk_b64:"pk_friend")) then
+    fail_fmt "private: invited caller must be admitted"
 
 let test_relay_join_visibility_set_on_create () =
   let t = make_test_relay () in
   let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let _ = Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"rm" () in
-  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "private" then
-    fail_fmt "room created with --visibility private should be private";
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"unlisted" ~alias:"alice" ~room_id:"rm" () in
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "unlisted" then
+    fail_fmt "room created with --visibility unlisted should be unlisted";
   (* default join leaves a fresh room public *)
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"rm2" () in
   if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm2" <> "public" then
     fail_fmt "default room should be public";
-  let _ = Relay.InMemoryRelay.join_room t ~visibility:"invite_only" ~alias:"alice" ~room_id:"rm3" () in
-  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm3" <> "invite" then
-    fail_fmt "room created with --visibility invite_only should store canonical invite"
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"gated" ~alias:"alice" ~room_id:"rm3" () in
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm3" <> "gated" then
+    fail_fmt "room created with --visibility gated should store gated";
+  (* old invite_only token maps to canonical private *)
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"invite_only" ~alias:"alice" ~room_id:"rm4" () in
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm4" <> "private" then
+    fail_fmt "room created with --visibility invite_only should store canonical private"
 
 let test_relay_join_visibility_not_overridden_after_create () =
   let t = make_test_relay () in
   let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-  let _ = Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"rm" () in
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"unlisted" ~alias:"alice" ~room_id:"rm" () in
   (* A later joiner passing a different visibility must NOT change the room. *)
   let _ = Relay.InMemoryRelay.join_room t ~visibility:"public" ~alias:"bob" ~room_id:"rm" () in
-  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "private" then
-    fail_fmt "later joiner must not be able to flip visibility (expected still private)"
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "unlisted" then
+    fail_fmt "later joiner must not be able to flip visibility (expected still unlisted)"
 
 let test_relay_set_visibility_unlists_and_relists () =
   let t = make_test_relay () in
@@ -421,14 +472,18 @@ let test_relay_set_visibility_unlists_and_relists () =
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"rm" () in
   if not (List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
     fail_fmt "public room should be listed initially";
+  Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"unlisted";
+  if List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t)) then
+    fail_fmt "room should be hidden after set_room_visibility unlisted";
+  (* gated re-lists the room (listed + invite-gated) *)
+  Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"gated";
+  if not (List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
+    fail_fmt "room should be listed again after set_room_visibility gated";
   Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"private";
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "private" then
+    fail_fmt "set_room_visibility private should store canonical private";
   if List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t)) then
     fail_fmt "room should be hidden after set_room_visibility private";
-  Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"invite_only";
-  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "invite" then
-    fail_fmt "set_room_visibility invite_only should store canonical invite";
-  if List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t)) then
-    fail_fmt "room should remain hidden after set_room_visibility invite_only";
   Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"public";
   if not (List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
     fail_fmt "room should reappear after set_room_visibility public"
@@ -444,37 +499,73 @@ let test_relay_sqlite_list_rooms_omits_nonpublic () =
   with_sqlite_relay_tempdir (fun t ->
     let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
     let _ = Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"pub-room" () in
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"gated" ~alias:"alice" ~room_id:"gated-room" () in
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"unlisted" ~alias:"alice" ~room_id:"unl-room" () in
     let _ = Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"priv-room" () in
-    let _ = Relay.SqliteRelay.join_room t ~visibility:"invite_only" ~alias:"alice" ~room_id:"inv-room" () in
     let listed = room_ids (Relay.SqliteRelay.list_rooms t) in
     if not (List.mem "pub-room" listed) then fail_fmt "sqlite: pub-room should be listed, got [%s]" (String.concat "; " listed);
+    if not (List.mem "gated-room" listed) then fail_fmt "sqlite: gated-room should be listed, got [%s]" (String.concat "; " listed);
+    if List.mem "unl-room" listed then fail_fmt "sqlite: unl-room (unlisted) must not be listed";
     if List.mem "priv-room" listed then fail_fmt "sqlite: priv-room (private) must not be listed";
-    if List.mem "inv-room" listed then fail_fmt "sqlite: inv-room (invite) must not be listed";
-    if Relay.SqliteRelay.room_visibility_of t ~room_id:"inv-room" <> "invite" then
-      fail_fmt "sqlite: invite_only should be stored as canonical invite")
+    if Relay.SqliteRelay.room_visibility_of t ~room_id:"priv-room" <> "private" then
+      fail_fmt "sqlite: private should be stored as canonical private")
+
+(* New cell coverage (Sqlite): gated listed + invite-gated; unlisted open-join
+   not listed; private invite-gated not listed. *)
+let test_relay_join_gating_sqlite () =
+  with_sqlite_relay_tempdir (fun t ->
+    let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" () in
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"gated" ~alias:"creator" ~room_id:"g" () in
+    if not (List.mem "g" (room_ids (Relay.SqliteRelay.list_rooms t))) then
+      fail_fmt "sqlite gated room must be listed";
+    let g_vis = Relay.SqliteRelay.room_visibility_of t ~room_id:"g" in
+    if relay_admitted ~visibility:g_vis ~is_invited:(Relay.SqliteRelay.is_invited t ~room_id:"g" ~identity_pk_b64:"pk_stranger") then
+      fail_fmt "sqlite gated: uninvited caller must be rejected";
+    Relay.SqliteRelay.invite_to_room t ~room_id:"g" ~identity_pk_b64:"pk_friend";
+    if not (relay_admitted ~visibility:g_vis ~is_invited:(Relay.SqliteRelay.is_invited t ~room_id:"g" ~identity_pk_b64:"pk_friend")) then
+      fail_fmt "sqlite gated: invited caller must be admitted";
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"unlisted" ~alias:"creator" ~room_id:"u" () in
+    if List.mem "u" (room_ids (Relay.SqliteRelay.list_rooms t)) then
+      fail_fmt "sqlite unlisted room must not be listed";
+    let u_vis = Relay.SqliteRelay.room_visibility_of t ~room_id:"u" in
+    if not (relay_admitted ~visibility:u_vis ~is_invited:(Relay.SqliteRelay.is_invited t ~room_id:"u" ~identity_pk_b64:"pk_stranger")) then
+      fail_fmt "sqlite unlisted: uninvited caller must be admitted (open join)";
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"creator" ~room_id:"p" () in
+    if List.mem "p" (room_ids (Relay.SqliteRelay.list_rooms t)) then
+      fail_fmt "sqlite private room must not be listed";
+    let p_vis = Relay.SqliteRelay.room_visibility_of t ~room_id:"p" in
+    if relay_admitted ~visibility:p_vis ~is_invited:(Relay.SqliteRelay.is_invited t ~room_id:"p" ~identity_pk_b64:"pk_stranger") then
+      fail_fmt "sqlite private: uninvited caller must be rejected";
+    Relay.SqliteRelay.invite_to_room t ~room_id:"p" ~identity_pk_b64:"pk_friend";
+    if not (relay_admitted ~visibility:p_vis ~is_invited:(Relay.SqliteRelay.is_invited t ~room_id:"p" ~identity_pk_b64:"pk_friend")) then
+      fail_fmt "sqlite private: invited caller must be admitted")
 
 let test_relay_sqlite_join_visibility_and_set () =
   with_sqlite_relay_tempdir (fun t ->
     let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
     let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-    let _ = Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"rm" () in
-    if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "private" then
-      fail_fmt "sqlite: room created with --visibility private should be private";
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"unlisted" ~alias:"alice" ~room_id:"rm" () in
+    if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "unlisted" then
+      fail_fmt "sqlite: room created with --visibility unlisted should be unlisted";
     (* a later joiner must not be able to flip visibility (INSERT OR IGNORE) *)
     let _ = Relay.SqliteRelay.join_room t ~visibility:"public" ~alias:"bob" ~room_id:"rm" () in
-    if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "private" then
+    if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "unlisted" then
       fail_fmt "sqlite: later joiner must not flip visibility";
     if List.mem "rm" (room_ids (Relay.SqliteRelay.list_rooms t)) then
-      fail_fmt "sqlite: private room must not be listed";
+      fail_fmt "sqlite: unlisted room must not be listed";
     (* set_room_visibility relists it *)
     Relay.SqliteRelay.set_room_visibility t ~room_id:"rm" ~visibility:"public";
     if not (List.mem "rm" (room_ids (Relay.SqliteRelay.list_rooms t))) then
       fail_fmt "sqlite: room should be listed after set_room_visibility public";
-    Relay.SqliteRelay.set_room_visibility t ~room_id:"rm" ~visibility:"invite_only";
-    if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "invite" then
-      fail_fmt "sqlite: set_room_visibility invite_only should store canonical invite";
+    (* gated is listed *)
+    Relay.SqliteRelay.set_room_visibility t ~room_id:"rm" ~visibility:"gated";
+    if not (List.mem "rm" (room_ids (Relay.SqliteRelay.list_rooms t))) then
+      fail_fmt "sqlite: gated room should be listed";
+    Relay.SqliteRelay.set_room_visibility t ~room_id:"rm" ~visibility:"private";
+    if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "private" then
+      fail_fmt "sqlite: set_room_visibility private should store canonical private";
     if List.mem "rm" (room_ids (Relay.SqliteRelay.list_rooms t)) then
-      fail_fmt "sqlite: room should be hidden after set_room_visibility invite_only");
+      fail_fmt "sqlite: room should be hidden after set_room_visibility private");
   let dir = Filename.temp_dir "c2c_relay_legacy_vis_test" "" in
   Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote dir)))
     (fun () ->
@@ -673,13 +764,15 @@ let tests = [
   "relay send_room delivers", test_relay_send_room_delivers_to_all_except_sender;
   "relay gc removes expired", test_relay_gc_removes_expired_leases;
   "relay list_rooms with counts", test_relay_list_rooms_shows_all_with_counts;
-  (* room visibility: public / private / invite_only *)
+  (* room visibility: public / unlisted / gated / private (4-level) *)
   "relay canonical_visibility normalizes", test_relay_canonical_visibility_normalizes;
   "relay list_rooms omits non-public", test_relay_list_rooms_omits_nonpublic;
+  "relay join gating (inmemory)", test_relay_join_gating_inmemory;
   "relay join --visibility set on create", test_relay_join_visibility_set_on_create;
   "relay join visibility not overridden after create", test_relay_join_visibility_not_overridden_after_create;
   "relay set_room_visibility unlists/relists", test_relay_set_visibility_unlists_and_relists;
   "relay sqlite list_rooms omits non-public", test_relay_sqlite_list_rooms_omits_nonpublic;
+  "relay sqlite join gating", test_relay_join_gating_sqlite;
   "relay sqlite join visibility + set", test_relay_sqlite_join_visibility_and_set;
   (* #330 V1 cross_host_not_implemented error-path seam tests *)
   "cross_host bare alias works when self_host is set", test_cross_host_bare_alias_works_when_self_host_is_set;

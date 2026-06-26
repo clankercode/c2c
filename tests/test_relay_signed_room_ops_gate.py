@@ -216,7 +216,8 @@ class SignedRoomOpHelper:
         set_room_visibility). The canonical blob inserts the (canonical)
         visibility value between alias and identity_pk — mirrors the OCaml
         relay_signed_ops.sign_room_op_with_visibility. [visibility] must be the
-        canonical value the server stores ("public" | "private" | "invite")."""
+        canonical value the server stores
+        ("public" | "unlisted" | "gated" | "private")."""
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         nonce = self._b64url_nopad_encode(os.urandom(16))
         blob = "\x1f".join([sign_ctx, room_id, self.alias, visibility,
@@ -340,24 +341,28 @@ class GateOffAcceptsUnsignedTests(unittest.TestCase):
 
 
 class SignedRoomVisibilityE2ETests(unittest.TestCase):
-    """E2e for the room-visibility feature on the signed path:
+    """E2e for the 4-level room-visibility feature on the signed path:
       - a signed join/set_room_visibility that carries a visibility value is
         accepted (visibility is covered by the Ed25519 proof — a forged value
         would fail verification), and
-      - GET /list_rooms returns only public rooms (private/invite hidden).
+      - GET /list_rooms returns public AND gated rooms (unlisted/private hidden),
+      - gated/private join is invite-gated (a non-invited second signed identity
+        is rejected) while unlisted/public join is open (a second identity joins).
 
-    Self-contained: generates its own client identity and registers the alias
-    unsigned; the first signed room op pins the key to the alias via TOFU. No
-    on-disk identity fixture needed, so this always runs.
+    Self-contained: generates its own client identities and registers the
+    aliases unsigned; the first signed room op pins the key to the alias via
+    TOFU. No on-disk identity fixture needed, so this always runs.
     """
 
     JOIN_CTX = "c2c/v1/room-join"
     SETVIS_CTX = "c2c/v1/room-set-visibility"
     ALIAS = "vis-e2e-alice"
+    ALIAS2 = "vis-e2e-bob"
 
     server: OCamlRelayServer
     client: RelayClient
     helper: SignedRoomOpHelper
+    helper2: SignedRoomOpHelper
 
     @classmethod
     def setUpClass(cls):
@@ -367,6 +372,9 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
         cls.client = RelayClient(cls.server.base_url, token=TOKEN)
         cls.helper = SignedRoomOpHelper(generate_identity(cls.ALIAS))
         cls.client.register("n-vis", "s-vis", cls.ALIAS)
+        # A second signed identity used to exercise the join-gate cells.
+        cls.helper2 = SignedRoomOpHelper(generate_identity(cls.ALIAS2))
+        cls.client.register("n-vis2", "s-vis2", cls.ALIAS2)
 
     @classmethod
     def tearDownClass(cls):
@@ -391,21 +399,77 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
         self.assertIn("vis-e2e-public", self._list_room_ids(),
                       "public room must appear in /list_rooms")
 
+    def test_signed_join_unlisted_not_listed(self):
+        r = self._signed_join("vis-e2e-unlisted", "unlisted")
+        self.assertTrue(r["ok"], f"signed join (unlisted) should be accepted: {r}")
+        self.assertNotIn("vis-e2e-unlisted", self._list_room_ids(),
+                         "unlisted room must NOT appear in /list_rooms")
+
+    def test_signed_join_gated_is_listed(self):
+        r = self._signed_join("vis-e2e-gated", "gated")
+        self.assertTrue(r["ok"], f"signed join (gated) should be accepted: {r}")
+        self.assertIn("vis-e2e-gated", self._list_room_ids(),
+                      "gated room must appear in /list_rooms")
+
     def test_signed_join_private_not_listed(self):
         r = self._signed_join("vis-e2e-private", "private")
         self.assertTrue(r["ok"], f"signed join (private) should be accepted: {r}")
         self.assertNotIn("vis-e2e-private", self._list_room_ids(),
                          "private room must NOT appear in /list_rooms")
 
+    def test_gated_listed_but_uninvited_second_identity_rejected(self):
+        # Creator opens a gated room: it IS listed for discovery...
+        r = self._signed_join("vis-e2e-gated-gate", "gated")
+        self.assertTrue(r["ok"], f"signed join (gated) should be accepted: {r}")
+        self.assertIn("vis-e2e-gated-gate", self._list_room_ids(),
+                      "gated room must be listed")
+        # ...but a second, non-invited signed identity is rejected from joining.
+        proof = self.helper2.sign_room_op(self.JOIN_CTX, "vis-e2e-gated-gate")
+        r2 = self.client.post("/join_room", {
+            "alias": self.ALIAS2, "room_id": "vis-e2e-gated-gate", **proof,
+        })
+        self.assertFalse(r2["ok"],
+                         f"uninvited join into a gated room must be rejected: {r2}")
+
+    def test_unlisted_not_listed_but_second_identity_joins_ok(self):
+        # Creator opens an unlisted room: NOT listed...
+        r = self._signed_join("vis-e2e-unlisted-open", "unlisted")
+        self.assertTrue(r["ok"], f"signed join (unlisted) should be accepted: {r}")
+        self.assertNotIn("vis-e2e-unlisted-open", self._list_room_ids(),
+                         "unlisted room must NOT be listed")
+        # ...but a second signed identity can still JOIN it (open join).
+        proof = self.helper2.sign_room_op(self.JOIN_CTX, "vis-e2e-unlisted-open")
+        r2 = self.client.post("/join_room", {
+            "alias": self.ALIAS2, "room_id": "vis-e2e-unlisted-open", **proof,
+        })
+        self.assertTrue(r2["ok"],
+                        f"open join into an unlisted room must be accepted: {r2}")
+
+    def test_signed_set_visibility_gated_stays_listed(self):
+        # Create as public (listed), then flip to gated — still listed.
+        r = self._signed_join("vis-e2e-flip-gated", "public")
+        self.assertTrue(r["ok"], f"signed join should be accepted: {r}")
+        self.assertIn("vis-e2e-flip-gated", self._list_room_ids())
+        proof = self.helper.sign_room_op_with_visibility(
+            self.SETVIS_CTX, "vis-e2e-flip-gated", "gated")
+        r2 = self.client.post("/set_room_visibility", {
+            "alias": self.ALIAS, "room_id": "vis-e2e-flip-gated",
+            "visibility": "gated", **proof,
+        })
+        self.assertTrue(r2["ok"],
+                        f"signed set_room_visibility should be accepted: {r2}")
+        self.assertIn("vis-e2e-flip-gated", self._list_room_ids(),
+                      "gated room must REMAIN listed after public→gated")
+
     def test_signed_set_visibility_hides_room(self):
-        # Create as public (listed), then flip to invite_only (hidden).
+        # Create as public (listed), then flip to private (hidden).
+        # The signed blob must carry the CANONICAL value the server stores;
+        # body sends "invite_only", server canonicalizes to "private".
         r = self._signed_join("vis-e2e-flip", "public")
         self.assertTrue(r["ok"], f"signed join should be accepted: {r}")
         self.assertIn("vis-e2e-flip", self._list_room_ids())
-        # The signed blob must carry the CANONICAL value the server stores;
-        # body sends "invite_only", server canonicalizes to "invite".
         proof = self.helper.sign_room_op_with_visibility(
-            self.SETVIS_CTX, "vis-e2e-flip", "invite")
+            self.SETVIS_CTX, "vis-e2e-flip", "private")
         r2 = self.client.post("/set_room_visibility", {
             "alias": self.ALIAS, "room_id": "vis-e2e-flip",
             "visibility": "invite_only", **proof,
@@ -413,7 +477,7 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
         self.assertTrue(r2["ok"],
                         f"signed set_room_visibility should be accepted: {r2}")
         self.assertNotIn("vis-e2e-flip", self._list_room_ids(),
-                         "room must be hidden from /list_rooms after going invite_only")
+                         "room must be hidden from /list_rooms after going private")
 
 
 if __name__ == "__main__":
