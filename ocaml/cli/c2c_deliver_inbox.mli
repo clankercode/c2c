@@ -29,6 +29,10 @@ type cli_args = {
   use_inotify : bool;          (* H3: inotifywait-based watcher *)
 }
 
+(* B013: the delivery-mode selector lives in [C2c_pty_inject]
+   ([select_delivery_mode]) — co-located with the delivery loops and in the
+   c2c_mcp library so it is unit-testable. *)
+
 (* PID file helpers — also used by c2c_start.ml for consistency *)
 val write_pidfile : string -> int -> unit
 val read_pidfile : string -> int option
