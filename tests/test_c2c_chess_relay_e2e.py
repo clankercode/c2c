@@ -78,7 +78,11 @@ def _chess(*args: str) -> subprocess.CompletedProcess:
 
 
 def _relay(*args: str) -> dict:
-    """Run `c2c relay <args> --relay-url URL --json` and return the parsed object."""
+    """Run `c2c relay <args> --relay-url URL` and return the parsed object.
+
+    `c2c relay` subcommands emit JSON by default — they do NOT accept a `--json`
+    flag (passing one errors), so we never add it.
+    """
     res = subprocess.run(
         ["c2c", "relay", *args, "--relay-url", RELAY_URL],
         capture_output=True, text=True, check=False,
@@ -110,16 +114,24 @@ def _status(state_file: Path) -> dict:
         return {}
 
 
-def _relay_recv(alias: str, expect: str, timeout: float = 30.0) -> bool:
-    """Poll the relay for `alias` until a message whose body == expect arrives."""
+def _relay_recv_move(alias: str, timeout: float = 30.0) -> str | None:
+    """Poll the relay for `alias` until a `MOVE <uci>` message arrives.
+
+    Returns the uci PARSED FROM THE RECEIVED RELAY PAYLOAD (not the locally-sent
+    value), so the caller can apply *that* move — making the downstream
+    FEN-equality check a genuine transport test (a corrupted body desyncs the
+    boards). The controller plays strictly serially and drains both inboxes
+    before play, so the only in-flight message is the move just sent.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         res = _relay("dm", "poll", "--alias", alias)
         for m in res.get("messages", []) or []:
-            if (m.get("content") or m.get("body") or "").strip() == expect:
-                return True
+            body = (m.get("content") or m.get("body") or "").strip()
+            if body.startswith("MOVE "):
+                return body.split(None, 1)[1].strip()
         time.sleep(1.0)
-    return False
+    return None
 
 
 def test_chess_over_relay_round_trips_every_move(tmp_path: Path) -> None:
@@ -160,14 +172,19 @@ def test_chess_over_relay_round_trips_every_move(tmp_path: Path) -> None:
         sent = _relay("dm", "send", other, f"MOVE {uci}", "--alias", mover)
         assert sent.get("ok") is True, f"relay send {mover}->{other} failed: {sent}"
 
-        assert _relay_recv(other, f"MOVE {uci}"), (
-            f"{other} did not receive '{uci}' over the relay within timeout"
+        # Apply the move PARSED FROM THE RELAY PAYLOAD, not the local uci — so the
+        # FEN check below genuinely tests transport integrity.
+        recv_uci = _relay_recv_move(other)
+        assert recv_uci is not None, (
+            f"{other} did not receive a move over the relay within timeout"
         )
-        assert _chess("move", str(boards[other]), uci).returncode == 0, (
-            f"{other} could not apply relayed move {uci}"
+        assert recv_uci == uci, f"relay corrupted the move: sent {uci!r}, received {recv_uci!r}"
+        assert _chess("move", str(boards[other]), recv_uci).returncode == 0, (
+            f"{other} could not apply relayed move {recv_uci}"
         )
 
-        # The relay carried the move intact iff both boards now agree.
+        # Independently load-bearing now: both boards agree iff the relay carried
+        # the exact move (mover applied `uci`, other applied the received move).
         assert _fen(boards[mover]) == _fen(boards[other]), (
             f"board desync after relaying {uci}: "
             f"{mover}={_fen(boards[mover])} {other}={_fen(boards[other])}"
