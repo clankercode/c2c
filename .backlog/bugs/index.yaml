@@ -9,3 +9,4 @@ bugs:
     - file: B008-claude-and-codex-plugins-as-be.todo
     - file: B009-make-sure-we-have-integration.todo
     - file: B010-when-difficulty-is-increasing.todo
+    - file: B011-claude-kickoff-wake-hygiene-dr.todo
