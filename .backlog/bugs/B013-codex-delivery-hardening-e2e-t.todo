@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-26T14:23:58Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-06-26T14:59:43Z"
 complexity: high
 depends_on: []
+duration_minutes: 35.763233860983334
 estimate_hours: 1
 id: B013
 priority: high
 started_at: "2026-06-26T14:23:58Z"
-status: in_progress
+status: done
 tags: []
 title: codex delivery hardening + e2e tmux delivery tests (managed path)
 ---
