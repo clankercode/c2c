@@ -42,6 +42,21 @@ let test_sign_leave_distinct_from_join () =
   Alcotest.(check bool) "leave sig rejected under join ctx" false
     (Relay_identity.verify ~pk:id.public_key ~msg:join_blob ~sig_)
 
+let test_sign_room_visibility_covers_visibility () =
+  let id = Relay_identity.generate () in
+  let proof = Relay_signed_ops.sign_room_op_with_visibility id
+    ~ctx:room_set_visibility_sign_ctx ~room_id:"lounge" ~alias:"alice"
+    ~visibility:"private" in
+  let sig_ = decode_exn proof.sig_b64 in
+  let private_blob = Relay_identity.canonical_msg ~ctx:room_set_visibility_sign_ctx
+    [ "lounge"; "alice"; "private"; proof.identity_pk_b64; proof.ts; proof.nonce ] in
+  let public_blob = Relay_identity.canonical_msg ~ctx:room_set_visibility_sign_ctx
+    [ "lounge"; "alice"; "public"; proof.identity_pk_b64; proof.ts; proof.nonce ] in
+  Alcotest.(check bool) "visibility proof verifies with signed visibility" true
+    (Relay_identity.verify ~pk:id.public_key ~msg:private_blob ~sig_);
+  Alcotest.(check bool) "visibility proof rejects tampered visibility" false
+    (Relay_identity.verify ~pk:id.public_key ~msg:public_blob ~sig_)
+
 let test_sign_send_envelope_accepted () =
   let id = Relay_identity.generate () in
   let env = Relay_signed_ops.sign_send_room id
@@ -95,6 +110,7 @@ let tests = [
   "rfc3339_shape",                `Quick, test_rfc3339_shape;
   "sign_join_accepted",           `Quick, test_sign_join_accepted_by_server_verify;
   "sign_leave_ctx_distinct",      `Quick, test_sign_leave_distinct_from_join;
+  "sign_room_visibility_covers_visibility", `Quick, test_sign_room_visibility_covers_visibility;
   "sign_send_envelope_accepted",  `Quick, test_sign_send_envelope_accepted;
   "verify_history_ok",            `Quick, test_verify_history_envelope_ok;
   "verify_history_content_mismatch", `Quick, test_verify_history_envelope_wrong_content;

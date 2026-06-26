@@ -63,6 +63,15 @@ let sign_room_op identity ~ctx ~room_id ~alias =
   let sig_ = Relay_identity.sign identity blob in
   { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
 
+let sign_room_op_with_visibility identity ~ctx ~room_id ~alias ~visibility =
+  let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
+  let ts = now_rfc3339_utc () in
+  let nonce = random_nonce_b64 () in
+  let blob = Relay_identity.canonical_msg ~ctx
+    [ room_id; alias; visibility; pk_b64; ts; nonce ] in
+  let sig_ = Relay_identity.sign identity blob in
+  { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
+
 let sign_send_room identity ~room_id ~from_alias ~content =
   let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
   let ct_bytes = content in

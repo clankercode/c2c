@@ -4928,6 +4928,11 @@ let relay_rooms_cmd =
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"Message body for 'send' (joined with spaces).")
   in
+  let canonical_visibility_for_sig v =
+    match Relay.canonical_visibility v with
+    | Some v -> v
+    | None -> v
+  in
   let+ subcmd = subcmd
   and+ relay_url = relay_url
   and+ token = token
@@ -4958,14 +4963,23 @@ let relay_rooms_cmd =
            let result =
              match Relay_identity.load () with
              | Ok id ->
-                 let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias in
                  if subcmd = "join" then
+                   let p =
+                     match visibility with
+                     | None ->
+                         Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias
+                     | Some visibility_val ->
+                         Relay_signed_ops.sign_room_op_with_visibility id
+                           ~ctx:sign_ctx ~room_id ~alias
+                           ~visibility:(canonical_visibility_for_sig visibility_val)
+                   in
                    Lwt_main.run (Relay.Relay_client.join_room_signed client
                      ?visibility ~alias ~room_id
                      ~identity_pk:p.Relay_signed_ops.identity_pk_b64
                      ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
                      ~sig_:p.Relay_signed_ops.sig_b64)
                  else
+                   let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias in
                    Lwt_main.run (Relay.Relay_client.leave_room_signed client
                      ~alias ~room_id
                      ~identity_pk:p.Relay_signed_ops.identity_pk_b64
@@ -5143,8 +5157,9 @@ let relay_rooms_cmd =
            let result =
              match Relay_identity.load () with
              | Ok id ->
-                 let p = Relay_signed_ops.sign_room_op id
-                           ~ctx:Relay.room_set_visibility_sign_ctx ~room_id ~alias in
+                 let p = Relay_signed_ops.sign_room_op_with_visibility id
+                           ~ctx:Relay.room_set_visibility_sign_ctx ~room_id ~alias
+                           ~visibility:(canonical_visibility_for_sig visibility_val) in
                  Lwt_main.run (Relay.Relay_client.set_room_visibility_signed client
                    ~alias ~room_id ~visibility:visibility_val
                    ~identity_pk:p.Relay_signed_ops.identity_pk_b64

@@ -23,8 +23,9 @@ val random_nonce_b64 : unit -> string
 
 (** [sign_room_op identity ~ctx ~room_id ~alias] produces a proof
     over the 5-field canonical blob used by /join_room and /leave_room
-    (and /invite_room, /uninvite_room, /set_room_visibility — they
-    share the same blob shape). Uses a fresh ts/nonce.
+    (and /invite_room, /uninvite_room). Uses a fresh ts/nonce.
+    Visibility-carrying joins and /set_room_visibility use
+    [sign_room_op_with_visibility] so the stored visibility is covered.
 
     [ctx] is one of [Relay.room_join_sign_ctx],
     [Relay.room_leave_sign_ctx], etc. *)
@@ -37,6 +38,13 @@ val sign_register :
 val sign_room_op :
   Relay_identity.t -> ctx:string -> room_id:string -> alias:string
   -> signed_proof
+
+(** [sign_room_op_with_visibility identity ~ctx ~room_id ~alias ~visibility]
+    signs the room operation shape used by visibility-carrying room ops:
+    room_id || alias || canonical_visibility || identity_pk || ts || nonce. *)
+val sign_room_op_with_visibility :
+  Relay_identity.t -> ctx:string -> room_id:string -> alias:string
+  -> visibility:string -> signed_proof
 
 (** [sign_send_room identity ~room_id ~from_alias ~content] produces
     a full §2 envelope for a v1 enc="none" room message:

@@ -382,12 +382,14 @@ let test_relay_list_rooms_omits_nonpublic () =
   (* default (public), explicit private, explicit invite *)
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"pub-room" () in
   let _ = Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"priv-room" () in
-  let _ = Relay.InMemoryRelay.join_room t ~visibility:"invite" ~alias:"alice" ~room_id:"inv-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"invite_only" ~alias:"alice" ~room_id:"inv-room" () in
   let listed = room_ids (Relay.InMemoryRelay.list_rooms t) in
   if List.length listed <> 1 then fail_fmt "only the public room should be listed, got [%s]" (String.concat "; " listed);
   if not (List.mem "pub-room" listed) then fail_fmt "pub-room should be listed";
   if List.mem "priv-room" listed then fail_fmt "priv-room (private) must not be listed";
-  if List.mem "inv-room" listed then fail_fmt "inv-room (invite) must not be listed"
+  if List.mem "inv-room" listed then fail_fmt "inv-room (invite) must not be listed";
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"inv-room" <> "invite" then
+    fail_fmt "invite_only should be stored as canonical invite"
 
 let test_relay_join_visibility_set_on_create () =
   let t = make_test_relay () in
@@ -398,7 +400,10 @@ let test_relay_join_visibility_set_on_create () =
   (* default join leaves a fresh room public *)
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"rm2" () in
   if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm2" <> "public" then
-    fail_fmt "default room should be public"
+    fail_fmt "default room should be public";
+  let _ = Relay.InMemoryRelay.join_room t ~visibility:"invite_only" ~alias:"alice" ~room_id:"rm3" () in
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm3" <> "invite" then
+    fail_fmt "room created with --visibility invite_only should store canonical invite"
 
 let test_relay_join_visibility_not_overridden_after_create () =
   let t = make_test_relay () in
@@ -419,6 +424,11 @@ let test_relay_set_visibility_unlists_and_relists () =
   Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"private";
   if List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t)) then
     fail_fmt "room should be hidden after set_room_visibility private";
+  Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"invite_only";
+  if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "invite" then
+    fail_fmt "set_room_visibility invite_only should store canonical invite";
+  if List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t)) then
+    fail_fmt "room should remain hidden after set_room_visibility invite_only";
   Relay.InMemoryRelay.set_room_visibility t ~room_id:"rm" ~visibility:"public";
   if not (List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
     fail_fmt "room should reappear after set_room_visibility public"
@@ -435,11 +445,13 @@ let test_relay_sqlite_list_rooms_omits_nonpublic () =
     let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
     let _ = Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"pub-room" () in
     let _ = Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"priv-room" () in
-    let _ = Relay.SqliteRelay.join_room t ~visibility:"invite" ~alias:"alice" ~room_id:"inv-room" () in
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"invite_only" ~alias:"alice" ~room_id:"inv-room" () in
     let listed = room_ids (Relay.SqliteRelay.list_rooms t) in
     if not (List.mem "pub-room" listed) then fail_fmt "sqlite: pub-room should be listed, got [%s]" (String.concat "; " listed);
     if List.mem "priv-room" listed then fail_fmt "sqlite: priv-room (private) must not be listed";
-    if List.mem "inv-room" listed then fail_fmt "sqlite: inv-room (invite) must not be listed")
+    if List.mem "inv-room" listed then fail_fmt "sqlite: inv-room (invite) must not be listed";
+    if Relay.SqliteRelay.room_visibility_of t ~room_id:"inv-room" <> "invite" then
+      fail_fmt "sqlite: invite_only should be stored as canonical invite")
 
 let test_relay_sqlite_join_visibility_and_set () =
   with_sqlite_relay_tempdir (fun t ->
@@ -457,7 +469,31 @@ let test_relay_sqlite_join_visibility_and_set () =
     (* set_room_visibility relists it *)
     Relay.SqliteRelay.set_room_visibility t ~room_id:"rm" ~visibility:"public";
     if not (List.mem "rm" (room_ids (Relay.SqliteRelay.list_rooms t))) then
-      fail_fmt "sqlite: room should be listed after set_room_visibility public")
+      fail_fmt "sqlite: room should be listed after set_room_visibility public";
+    Relay.SqliteRelay.set_room_visibility t ~room_id:"rm" ~visibility:"invite_only";
+    if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "invite" then
+      fail_fmt "sqlite: set_room_visibility invite_only should store canonical invite";
+    if List.mem "rm" (room_ids (Relay.SqliteRelay.list_rooms t)) then
+      fail_fmt "sqlite: room should be hidden after set_room_visibility invite_only");
+  let dir = Filename.temp_dir "c2c_relay_legacy_vis_test" "" in
+  Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote dir)))
+    (fun () ->
+      let db_path = Filename.concat dir "c2c_relay.db" in
+      let conn = Sqlite3.db_open db_path in
+      ignore (Sqlite3.exec conn "CREATE TABLE rooms (room_id TEXT PRIMARY KEY)");
+      ignore (Sqlite3.exec conn "INSERT INTO rooms (room_id) VALUES ('legacy-room')");
+      ignore (Sqlite3.db_close conn);
+      let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+      if Relay.SqliteRelay.room_visibility_of t ~room_id:"legacy-room" <> "public" then
+        fail_fmt "sqlite: legacy rooms should migrate with public visibility";
+      let listed = room_ids (Relay.SqliteRelay.list_rooms t) in
+      if not (List.mem "legacy-room" listed) then
+        fail_fmt "sqlite: legacy public room should be listed after migration";
+      let _ = Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"new-private" () in
+      if Relay.SqliteRelay.room_visibility_of t ~room_id:"new-private" <> "private" then
+        fail_fmt "sqlite: migrated db should support create-with-private visibility";
+      if List.mem "new-private" (room_ids (Relay.SqliteRelay.list_rooms t)) then
+        fail_fmt "sqlite: private room should not be listed after migration")
 
 (* ---- #330 V1: cross_host_not_implemented error-path seam tests ---- *)
 

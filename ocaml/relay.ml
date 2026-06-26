@@ -92,6 +92,16 @@ let canonical_visibility v =
   | "invite" | "invite_only" | "invite-only" -> Some "invite"
   | _ -> None
 
+let canonical_visibility_exn v =
+  match canonical_visibility v with
+  | Some v -> v
+  | None -> invalid_arg (Printf.sprintf "invalid room visibility %S" v)
+
+let canonical_visibility_or_raw v =
+  match canonical_visibility v with
+  | Some v -> v
+  | None -> v
+
 (* S5a: Mobile pair token signing context *)
 let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"
 
@@ -1051,6 +1061,7 @@ module InMemoryRelay : RELAY = struct
     with_lock t (fun () -> Queue.add msg t.dead_letter)
 
   let join_room t ?(visibility = "public") ~alias ~room_id () =
+    let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
       if not (Hashtbl.mem t.leases alias) then
         `Error (relay_err_unknown_alias, Printf.sprintf "alias %S is not registered" alias)
@@ -1160,7 +1171,7 @@ module InMemoryRelay : RELAY = struct
   let room_visibility_of t ~room_id =
     with_lock t (fun () ->
       match Hashtbl.find_opt t.room_visibility room_id with
-      | Some v -> v | None -> "public")
+      | Some v -> canonical_visibility_or_raw v | None -> "public")
 
   let room_invites_of t ~room_id =
     with_lock t (fun () ->
@@ -1174,6 +1185,7 @@ module InMemoryRelay : RELAY = struct
       | Some l -> List.mem identity_pk_b64 l)
 
   let set_room_visibility t ~room_id ~visibility =
+    let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
       Hashtbl.replace t.room_visibility room_id visibility)
 
@@ -1410,36 +1422,38 @@ module SqliteRelay : RELAY = struct
     peer_relays : (string, peer_relay_t) Hashtbl.t;
     (* #330 S2: this relay's own Ed25519 identity for signing forward requests *)
     identity : Relay_identity.t;
-  }
+	  }
 
-let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
-    let db_path = Filename.concat persist_dir "c2c_relay.db" in
-    let mutex = Mutex.create () in
-    let conn = Sqlite3.db_open db_path in
-    Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
-    Sqlite3.exec conn sqlite_ddl |> ignore;
+  let sqlite_table_has_column conn ~table ~column =
+    let info_stmt = Sqlite3.prepare conn (Printf.sprintf "PRAGMA table_info(%s)" table) in
+    let found = ref false in
+    let rec loop () =
+      let rc = Sqlite3.step info_stmt in
+      if rc = Sqlite3.Rc.ROW then begin
+        let col_name = Sqlite3.Data.to_string_exn (Sqlite3.column info_stmt 1) in
+        if col_name = column then found := true;
+        loop ()
+      end
+    in
+    (try loop () with _ -> ());
+    (try Sqlite3.finalize info_stmt |> ignore with _ -> ());
+    !found
+
+	let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
+	    let db_path = Filename.concat persist_dir "c2c_relay.db" in
+	    let mutex = Mutex.create () in
+	    let conn = Sqlite3.db_open db_path in
+	    Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
+	    Sqlite3.exec conn sqlite_ddl |> ignore;
     (* #586 (slice 1): migrate older databases to the opaque_host_id
        column. `CREATE TABLE IF NOT EXISTS` does not add new columns
        to an existing leases table, so we probe pragma_table_info and
        ALTER if the column is missing. Idempotent on fresh installs
        (the column is already declared in sqlite_ddl). *)
-    let has_opaque_host_id_column =
-      let info_stmt = Sqlite3.prepare conn "PRAGMA table_info(leases)" in
-      let found = ref false in
-      let rec loop () =
-        let rc = Sqlite3.step info_stmt in
-        if rc = Sqlite3.Rc.ROW then begin
-          let col_name = Sqlite3.Data.to_string_exn (Sqlite3.column info_stmt 1) in
-          if col_name = "opaque_host_id" then found := true;
-          loop ()
-        end
-      in
-      (try loop () with _ -> ());
-      (try Sqlite3.finalize info_stmt |> ignore with _ -> ());
-      !found
-    in
-    if not has_opaque_host_id_column then
-      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN opaque_host_id TEXT NOT NULL DEFAULT ''" |> ignore;
+	    if not (sqlite_table_has_column conn ~table:"leases" ~column:"opaque_host_id") then
+	      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN opaque_host_id TEXT NOT NULL DEFAULT ''" |> ignore;
+	    if not (sqlite_table_has_column conn ~table:"rooms" ~column:"visibility") then
+	      Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'" |> ignore;
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = if persist_dir = "" then None else Some (Filename.concat persist_dir "relay-server-identity.json") in
     let identity =
@@ -2171,6 +2185,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
     )
 
   let join_room t ?(visibility = "public") ~alias ~room_id () =
+    let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       (* INSERT OR IGNORE: visibility is applied only on room creation; if the
@@ -2418,7 +2433,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       let rc = Sqlite3.step stmt in
       if rc = Rc.ROW then
-        Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)
+        canonical_visibility_or_raw (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0))
       else "public"
     )
 
@@ -2452,6 +2467,7 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
     )
 
   let set_room_visibility t ~room_id ~visibility =
+    let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let stmt = Sqlite3.prepare conn "INSERT INTO rooms (room_id, visibility) VALUES (?, ?) ON CONFLICT(room_id) DO UPDATE SET visibility=excluded.visibility" in
@@ -4076,7 +4092,7 @@ generateKeys();
      Returns [Ok ()] when either (a) no proof fields are present (legacy
      path) or (b) all fields present and verify correctly. Returns
      [Error (code, msg)] for any partial/invalid/forged proof. *)
-  let verify_room_op_proof relay ~sign_ctx ~room_id ~alias body =
+  let verify_room_op_proof relay ?(extra_signed_fields = []) ~sign_ctx ~room_id ~alias body =
     let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
     let signature_b64 = get_opt_string body "sig" |> Option.value ~default:"" in
     let nonce_b64 = get_opt_string body "nonce" |> Option.value ~default:"" in
@@ -4130,10 +4146,11 @@ generateKeys();
                    Error (relay_err_alias_identity_mismatch,
                      "identity_pk does not match registered binding")
                  | _ ->
-                   let blob =
-                     Relay_identity.canonical_msg ~ctx:sign_ctx
-                       [ room_id; alias; identity_pk_b64; timestamp_str; nonce_b64 ]
-                   in
+	                   let blob =
+	                     Relay_identity.canonical_msg ~ctx:sign_ctx
+	                       ([ room_id; alias ] @ extra_signed_fields
+	                        @ [ identity_pk_b64; timestamp_str; nonce_b64 ])
+	                   in
                    if Relay_identity.verify ~pk:identity_pk ~msg:blob ~sig_ then
                      Ok ()
                    else
@@ -4144,8 +4161,9 @@ generateKeys();
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     (* Optional visibility — only applied if this join creates the room. *)
+    let visibility_raw = get_opt_string body "visibility" in
     let requested_visibility =
-      match get_opt_string body "visibility" with
+      match visibility_raw with
       | None | Some "" -> Some "public"
       | Some v -> canonical_visibility v
     in
@@ -4156,8 +4174,13 @@ generateKeys();
       respond_bad_request (json_error_str err_bad_request
         "visibility must be \"public\", \"private\", or \"invite_only\"")
     | Some requested_visibility ->
+      let extra_signed_fields =
+        match visibility_raw with
+        | Some v when String.trim v <> "" -> [ requested_visibility ]
+        | _ -> []
+      in
       match verify_room_op_proof relay ~sign_ctx:room_join_sign_ctx
-              ~room_id ~alias body with
+              ~extra_signed_fields ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
           respond_bad_request (json_error_str code msg)
@@ -4198,6 +4221,7 @@ generateKeys();
     | Some visibility ->
       match verify_room_op_proof relay
               ~sign_ctx:room_set_visibility_sign_ctx
+              ~extra_signed_fields:[ visibility ]
               ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -5638,23 +5662,33 @@ end = struct
       ("limit", `Int limit);
     ])
 
-  let join_room t ?(visibility = "public") ~alias ~room_id =
-    post t "/join_room" (`Assoc [
+  let join_room t ?visibility ~alias ~room_id =
+    let fields = [
       ("alias", `String alias);
       ("room_id", `String room_id);
-      ("visibility", `String visibility);
-    ])
+    ] in
+    let fields =
+      match visibility with
+      | None -> fields
+      | Some v -> ("visibility", `String v) :: fields
+    in
+    post t "/join_room" (`Assoc fields)
 
-  let join_room_signed t ?(visibility = "public") ~alias ~room_id ~identity_pk ~ts ~nonce ~sig_ =
-    post t "/join_room" (`Assoc [
+  let join_room_signed t ?visibility ~alias ~room_id ~identity_pk ~ts ~nonce ~sig_ =
+    let fields = [
       ("alias", `String alias);
       ("room_id", `String room_id);
-      ("visibility", `String visibility);
       ("identity_pk", `String identity_pk);
       ("ts", `String ts);
       ("nonce", `String nonce);
       ("sig", `String sig_);
-    ])
+    ] in
+    let fields =
+      match visibility with
+      | None -> fields
+      | Some v -> ("visibility", `String v) :: fields
+    in
+    post t "/join_room" (`Assoc fields)
 
   let leave_room t ~alias ~room_id =
     post t "/leave_room" (`Assoc [
