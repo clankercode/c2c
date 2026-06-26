@@ -75,8 +75,9 @@ c2c list-glyphs --compact  # single-line JSON (optional convenience; Yojson.Safe
 | arrow | incoming | `←` | `<-` | (dir color) | points at the receiver |
 | arrow | outgoing | `→` | `->` | (dir color) | points at the target |
 | route | local | `⌂` | `[local]` | success (green) | via your per-repo home broker (same repo+machine) |
-| route | sessions | `◎` | `[sessions]` | borderMuted (grey) | via the cross-repo sessions broker. ALSO the fallback when the route can't be told from the sender alias alone (bare alias, no `@<host>`) |
+| route | sessions | `◎` | `[sessions]` | borderMuted (grey) | via the cross-repo sessions broker (a *known* route) |
 | route | relay | `⇄` | `[relay]` | accent (cyan) | via the public/remote relay (cross-machine); relay aliases are full addresses `<name>@<hosthash>` |
+| route | **unknown** | `◌` | `[?]` | borderMuted (grey) | route could NOT be determined from the message alone (e.g. an inbound bare alias with no `@<host>` suffix). Distinct from `sessions`, which asserts the cross-repo broker. NEW glyph — see note below. |
 | liveness | alive | `●` | `o` | success | peer currently reachable |
 | liveness | dead | `○` | `o` | muted | registered but not currently reachable |
 | subagent | container | `⧓` | `o` | accent | leads a subagent-registration line |
@@ -107,9 +108,14 @@ c2c list-glyphs --compact  # single-line JSON (optional convenience; Yojson.Safe
   (`via` = relay|sessions|local) → exact glyph.
 - For an **incoming** message the client infers the route from the sender alias:
   a full address `<name>@<12-hex-hosthash>` ⇒ `relay` (`⇄`); otherwise it cannot
-  tell and **defaults to `sessions` (`◎`)**. (This is why a bare-aliased relay
-  send shows `▼◎`, not `▼⇄`.) Capture this in the `routes.sessions.description`
-  and a top-level `notes` string so consumers reproduce the same inference.
+  tell and should use the **`unknown` (`◌`)** route. (Historically pi-c2c
+  defaulted this case to `sessions`/`◎` — which is why a bare-aliased relay send
+  showed `▼◎` not `▼⇄`; the new `unknown` glyph disambiguates "couldn't tell"
+  from "actually via the sessions broker.") Capture this in the
+  `routes.unknown.description` and a top-level `notes` string so consumers
+  reproduce the inference. **pi-c2c `routeForAlias` follow-up:** switch its
+  bare-alias fallback from `sessions` → `unknown` (separate pi-c2c change, out of
+  scope for this c2c slice; flag it in the runbook).
 
 ## Implementation plan
 
@@ -154,9 +160,12 @@ c2c list-glyphs --compact  # single-line JSON (optional convenience; Yojson.Safe
   is done in the help-text layer via a `hidden_unless_dev` set + a new global
   `--dev` flag (mirroring the existing `--all` argv pre-scan), NOT via the tier
   filter.
-- **Exact values:** copied byte-for-byte from pi-c2c so the switch is visually
-  invisible; the route-inference nuance (bare alias ⇒ `◎` fallback, full
-  `@host` ⇒ `⇄`) is documented in the registry itself.
+- **Exact values:** the three existing routes + all direction/liveness/subagent
+  glyphs are copied byte-for-byte from pi-c2c so the switch is visually
+  invisible. **One additive change:** a NEW `unknown` route glyph `◌` (`[?]`,
+  grey) for "route could not be determined" — distinct from `sessions`/`◎`. The
+  inbound bare-alias case should map to `unknown`, not `sessions` (pi-c2c
+  `routeForAlias` follow-up, out of scope here).
 - **Deliverables:** `ocaml/glyphs.ml` (data+JSON), cmdliner wrapper, `--dev`
   flag + hidden set, Alcotest coverage (incl. always-runnable + help-hiding),
   and `.collab/runbooks/c2c-glyphs.md`.
