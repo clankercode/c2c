@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-26T14:28:15Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B014
 priority: high
-status: pending
+started_at: "2026-06-26T14:28:15Z"
+status: in_progress
 tags: []
 title: 'add to incoming relay requests from other agents: metadata about PoW difficulty associated with the request (could add as response header, maybe? but need to handle it specifically then. wherever we inject it, it cant break encryption or signatures)'
 ---
