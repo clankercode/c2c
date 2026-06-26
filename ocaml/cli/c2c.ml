@@ -341,6 +341,7 @@ let commands_by_safety_cmd =
     ("clear-compact", "Clear the compacting flag");
     ("open-pending-reply", "Open a pending permission reply slot");
     ("check-pending-reply", "Check if a permission reply is valid");
+    ("agent-help", "Show the MCP tool-call + CLI example for each capability");
   ] in
   let tier2 = [
     ("start", "Start a managed c2c instance");
@@ -12098,6 +12099,7 @@ let fast_path_commands () =
     ("clear-compact", "Clear the compacting flag");
     ("open-pending-reply", "Open a pending permission reply slot");
     ("check-pending-reply", "Check if a permission reply is valid");
+    ("agent-help", "Show the MCP tool-call + CLI example for each capability");
   ] in
   let tier2 = [
     ("start", "Start a managed c2c instance");
