@@ -8,3 +8,4 @@ bugs:
     - file: B007-plugins-should-provide-a-c2c-h.todo
     - file: B008-claude-and-codex-plugins-as-be.todo
     - file: B009-make-sure-we-have-integration.todo
+    - file: B010-when-difficulty-is-increasing.todo

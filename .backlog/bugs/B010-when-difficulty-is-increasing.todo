@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B010
+priority: high
+status: pending
+tags: []
+title: when difficulty is increasing from relayer due to msg volume, this must be shown to the agent. we need a general system for passing through alert/err/warn/info msgs from the relay to the agent (so they need to be delivered however the agent is recieving msgs).
+---
+
+when difficulty is increasing from relayer due to msg volume, this must be shown to the agent. we need a general system for passing through alert/err/warn/info msgs from the relay to the agent (so they need to be delivered however the agent is recieving msgs).
