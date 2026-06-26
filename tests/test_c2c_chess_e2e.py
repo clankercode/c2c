@@ -134,6 +134,90 @@ def _referee_dm(referee: str, session: str, to_alias: str, body: str, broker_roo
         raise AssertionError(f"referee DM to {to_alias} failed: {res.stderr.strip() or res.stdout.strip()}")
 
 
+def _alias_history(alias: str, broker_root: Path) -> list[dict]:
+    """Archived (delivered) messages this alias RECEIVED, newest-first per c2c."""
+    env = dict(os.environ)
+    env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+    res = subprocess.run(
+        ["c2c", "history", "--alias", alias, "--json", "--limit", "500"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    try:
+        rows = json.loads(res.stdout.strip() or "[]")
+        return rows if isinstance(rows, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def _enqueue_order(broker_root: Path) -> list[tuple[str, str, float]]:
+    """(from, to, ts) of every DM, in send order, from the broker log.
+
+    The archive (`c2c history`) only records drain time, so use broker.log's
+    dm_enqueue events for authoritative send ordering even when agents drain
+    their inboxes on different cadences.
+    """
+    log = broker_root / "broker.log"
+    out: list[tuple[str, str, float]] = []
+    try:
+        text = log.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("event") == "dm_enqueue" or ev.get("msg_type") == "enqueue_message":
+            frm, to = ev.get("from_alias"), ev.get("to_alias")
+            if frm and to:
+                out.append((frm, to, ev.get("ts", 0.0)))
+    return out
+
+
+def _record_messages(broker_root: Path, aliases: list[str]) -> str:
+    """Record each agent's c2c messages to artifacts + a stable temp dir.
+
+    Writes one file per alias (the messages it received) plus a combined
+    transcript of the whole game in broker send-order. Returns the transcript
+    text. The broker archive holds bodies even after agents drain their inbox,
+    so this survives pi's eager inbox drain.
+    """
+    from collections import deque
+
+    per_alias: dict[str, list[str]] = {}
+    # Per (from, to) FIFO of message bodies, taken from the recipient's archive
+    # (oldest-first), to be matched against the ordered enqueue events.
+    bodies: dict[tuple[str, str], deque] = {}
+    for alias in aliases:
+        rows = _alias_history(alias, broker_root)  # newest-first per c2c
+        per_alias[alias] = [
+            f"{r.get('from_alias', '?')} -> {r.get('to_alias', alias)}: {r.get('content', '')}"
+            for r in rows
+        ]
+        for r in reversed(rows):
+            key = (r.get("from_alias"), r.get("to_alias"))
+            bodies.setdefault(key, deque()).append(r.get("content", ""))
+
+    transcript_lines: list[str] = []
+    for frm, to, ts in _enqueue_order(broker_root):
+        q = bodies.get((frm, to))
+        body = q.popleft() if q else "(body not archived — undrained or ephemeral)"
+        transcript_lines.append(f"{frm:>16} -> {to:<16} {body}")
+
+    transcript = (
+        "c2c chess message transcript (broker send-order)\n"
+        + "-" * 60 + "\n"
+        + "\n".join(transcript_lines) + "\n"
+    )
+    # Also drop into a stable, inspectable temp dir.
+    tmp_dir = Path(os.environ.get("TMPDIR", "/tmp")) / f"c2c-chess-messages-{os.getpid()}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_dir / "transcript.txt").write_text(transcript, encoding="utf-8")
+    for alias, lines in per_alias.items():
+        (tmp_dir / f"{alias}.received.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return transcript
+
+
 def _game_status(state_file: Path) -> dict:
     if not state_file.exists():
         return {"is_game_over": False, "ended_by_agreement": False, "ply": 0, "result": "none"}
@@ -258,6 +342,9 @@ def test_chess_pi_vs_opencode_to_result(request: pytest.FixtureRequest, tmp_path
                     sc.artifacts.write_text(f"{label}.state.json", f.read_text(encoding="utf-8"))
             sc.artifacts.write_text("white.pane.txt", sc.capture(white))
             sc.artifacts.write_text("black.pane.txt", sc.capture(black))
+            # Record the c2c message log (move DMs, disputes, etc.) per agent.
+            transcript = _record_messages(sc.broker_root(), [white_alias, black_alias, referee])
+            sc.artifacts.write_text("messages.transcript.txt", transcript)
 
         wst, bst = _game_status(white_file), _game_status(black_file)
         assert wst.get("is_game_over") or bst.get("is_game_over") or _terminal(), (
