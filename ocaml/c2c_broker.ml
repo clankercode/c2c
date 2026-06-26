@@ -3334,7 +3334,7 @@ open C2c_mcp_helpers
 
   let room_visibility_of_json json =
     match json with
-    | `String "invite_only" -> Invite_only
+    | `String "invite_only" | `String "invite-only" | `String "invite" -> Invite_only
     | `String "private" -> Private
     | _ -> Public
 

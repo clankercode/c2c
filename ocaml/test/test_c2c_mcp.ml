@@ -5719,15 +5719,19 @@ let test_delete_room_legacy_mixed_case_creator () =
       let _ =
         C2c_mcp.Broker.leave_room broker ~room_id:"legacy-room" ~alias:"alice"
       in
-      (* Manually overwrite room meta to simulate legacy mixed-case storage. *)
+      (* Manually overwrite room meta to simulate legacy mixed-case storage.
+         The relay-style "invite" short form must not fall back to Public. *)
       let meta_path =
         Filename.concat dir
           (Filename.concat "rooms" (Filename.concat "legacy-room" "meta.json"))
       in
       let oc = open_out meta_path in
       output_string oc
-        "{\"visibility\":\"public\",\"invited_members\":[],\"created_by\":\"Alice\"}";
+        "{\"visibility\":\"invite\",\"invited_members\":[],\"created_by\":\"Alice\"}";
       close_out oc;
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"legacy-room" in
+      check bool "legacy invite short-form reads as invite_only" true
+        (match meta.visibility with Invite_only -> true | Public -> false | Private -> false);
       (* Caller "alice" must still be able to delete the legacy room. *)
       C2c_mcp.Broker.delete_room broker ~room_id:"legacy-room"
         ~caller_alias:"alice" ();

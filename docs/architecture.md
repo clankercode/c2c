@@ -92,10 +92,10 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 | `send_room`         | Broadcast to all room members; appends to room history                                   |
 | `room_history`      | Fetch the last N messages from a room's history                                          |
 | `my_rooms`          | List rooms this session belongs to                                                      |
-| `list_rooms`        | List all rooms with member counts                                                        |
+| `list_rooms`        | List discoverable rooms: public for everyone, private for members, invite-only for members/invited callers |
 | `prune_rooms`       | Evict dead members from all room member lists (safe while outer loops are running)        |
 | `send_room_invite`  | Invite an alias to a room (required for invite-only rooms)                                |
-| `set_room_visibility` | Change a room's visibility mode (public or invite_only)                                |
+| `set_room_visibility` | Change a room's visibility mode (`public`, `private`, or `invite_only`)                |
 
 ### Diagnostics
 
