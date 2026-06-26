@@ -11,3 +11,4 @@ bugs:
     - file: B010-when-difficulty-is-increasing.todo
     - file: B011-claude-kickoff-wake-hygiene-dr.todo
     - file: B012-tmux-autostart-self-healing-su.todo
+    - file: B013-codex-delivery-hardening-e2e-t.todo
