@@ -2335,7 +2335,16 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
           let mem_stmt = Sqlite3.prepare conn "SELECT COUNT(*) FROM room_members WHERE room_id = ?" in
           Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
           let rc2 = Sqlite3.step mem_stmt in
-          let member_count = if rc2 = Rc.ROW then int_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column mem_stmt 0)) else 0 in
+          (* The COUNT aggregate comes back as a sqlite INTEGER; [Data.to_string_exn]
+             raises DataTypeError on INT, so read the int directly (with a string
+             fallback for safety). *)
+          let member_count =
+            if rc2 = Rc.ROW then
+              (match Sqlite3.column mem_stmt 0 with
+               | Sqlite3.Data.INT n -> Int64.to_int n
+               | d -> (try int_of_string (Sqlite3.Data.to_string_exn d) with _ -> 0))
+            else 0
+          in
           let alias_stmt = Sqlite3.prepare conn "SELECT alias FROM room_members WHERE room_id = ?" in
           Sqlite3.bind_text alias_stmt 1 room_id |> ignore;
           let aliases = ref [] in
@@ -2370,7 +2379,16 @@ let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_rela
           let mem_stmt = Sqlite3.prepare conn "SELECT COUNT(*) FROM room_members WHERE room_id = ?" in
           Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
           let rc2 = Sqlite3.step mem_stmt in
-          let member_count = if rc2 = Rc.ROW then int_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column mem_stmt 0)) else 0 in
+          (* The COUNT aggregate comes back as a sqlite INTEGER; [Data.to_string_exn]
+             raises DataTypeError on INT, so read the int directly (with a string
+             fallback for safety). *)
+          let member_count =
+            if rc2 = Rc.ROW then
+              (match Sqlite3.column mem_stmt 0 with
+               | Sqlite3.Data.INT n -> Int64.to_int n
+               | d -> (try int_of_string (Sqlite3.Data.to_string_exn d) with _ -> 0))
+            else 0
+          in
           let alias_stmt = Sqlite3.prepare conn "SELECT alias FROM room_members WHERE room_id = ?" in
           Sqlite3.bind_text alias_stmt 1 room_id |> ignore;
           let aliases = ref [] in

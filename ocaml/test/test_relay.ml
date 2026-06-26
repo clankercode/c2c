@@ -423,6 +423,42 @@ let test_relay_set_visibility_unlists_and_relists () =
   if not (List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
     fail_fmt "room should reappear after set_room_visibility public"
 
+(* Same visibility behavior must hold on the SqliteRelay backend (AC: both
+   backends). Uses a temp-dir sqlite db, cleaned up after. *)
+let with_sqlite_relay_tempdir f =
+  let dir = Filename.temp_dir "c2c_relay_vis_test" "" in
+  Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote dir)))
+    (fun () -> f (Relay.SqliteRelay.create ~persist_dir:dir ()))
+
+let test_relay_sqlite_list_rooms_omits_nonpublic () =
+  with_sqlite_relay_tempdir (fun t ->
+    let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+    let _ = Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"pub-room" () in
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"priv-room" () in
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"invite" ~alias:"alice" ~room_id:"inv-room" () in
+    let listed = room_ids (Relay.SqliteRelay.list_rooms t) in
+    if not (List.mem "pub-room" listed) then fail_fmt "sqlite: pub-room should be listed, got [%s]" (String.concat "; " listed);
+    if List.mem "priv-room" listed then fail_fmt "sqlite: priv-room (private) must not be listed";
+    if List.mem "inv-room" listed then fail_fmt "sqlite: inv-room (invite) must not be listed")
+
+let test_relay_sqlite_join_visibility_and_set () =
+  with_sqlite_relay_tempdir (fun t ->
+    let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+    let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"rm" () in
+    if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "private" then
+      fail_fmt "sqlite: room created with --visibility private should be private";
+    (* a later joiner must not be able to flip visibility (INSERT OR IGNORE) *)
+    let _ = Relay.SqliteRelay.join_room t ~visibility:"public" ~alias:"bob" ~room_id:"rm" () in
+    if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "private" then
+      fail_fmt "sqlite: later joiner must not flip visibility";
+    if List.mem "rm" (room_ids (Relay.SqliteRelay.list_rooms t)) then
+      fail_fmt "sqlite: private room must not be listed";
+    (* set_room_visibility relists it *)
+    Relay.SqliteRelay.set_room_visibility t ~room_id:"rm" ~visibility:"public";
+    if not (List.mem "rm" (room_ids (Relay.SqliteRelay.list_rooms t))) then
+      fail_fmt "sqlite: room should be listed after set_room_visibility public")
+
 (* ---- #330 V1: cross_host_not_implemented error-path seam tests ---- *)
 
 (* Simulate the handle_send cross-host validation seam at InMemoryRelay level.
@@ -607,6 +643,8 @@ let tests = [
   "relay join --visibility set on create", test_relay_join_visibility_set_on_create;
   "relay join visibility not overridden after create", test_relay_join_visibility_not_overridden_after_create;
   "relay set_room_visibility unlists/relists", test_relay_set_visibility_unlists_and_relists;
+  "relay sqlite list_rooms omits non-public", test_relay_sqlite_list_rooms_omits_nonpublic;
+  "relay sqlite join visibility + set", test_relay_sqlite_join_visibility_and_set;
   (* #330 V1 cross_host_not_implemented error-path seam tests *)
   "cross_host bare alias works when self_host is set", test_cross_host_bare_alias_works_when_self_host_is_set;
   "cross_host alias@matching self_host accepted", test_cross_host_alias_matching_self_host_accepted;
