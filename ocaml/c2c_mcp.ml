@@ -85,7 +85,7 @@ let base_tool_definitions =
       ~required:["room_id"; "content"]
       ~properties:[ prop "room_id" "Target room."; prop "content" "Message body."; prop "alias" "Legacy fallback sender alias (deprecated)."; prop "tag" "Optional #392 visual indicator: \"fail\", \"blocking\", or \"urgent\". Recipients see the corresponding emoji+keyword prefix in their transcript. Unknown values rejected." ]
   ; tool_definition ~name:"list_rooms"
-      ~description:"List all persistent rooms with member counts and member aliases. Returns a JSON array of {room_id, member_count, members}."
+      ~description:"List discoverable persistent rooms with member counts and member aliases. Public rooms are visible to everyone; private rooms are visible only to members; invite_only rooms are visible to members and invited-but-not-yet-joined callers, with invited pre-join rows redacted. Returns a JSON array of {room_id, member_count, members, visibility, invited_members}."
       ~required:[]
       ~properties:[]
   ; tool_definition ~name:"my_rooms"
