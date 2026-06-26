@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B006
+priority: high
+status: pending
+tags: []
+title: 'add ''c2c agent-help [thing]'' command, too, for specifically agent related help like mentioning MCP tool calls and providing command line examples. Note: should probably have some kind of drift check for those cli examples or generate them or somethign so they stay up to date'
+---
+
+add 'c2c agent-help [thing]' command, too, for specifically agent related help like mentioning MCP tool calls and providing command line examples. Note: should probably have some kind of drift check for those cli examples or generate them or somethign so they stay up to date
