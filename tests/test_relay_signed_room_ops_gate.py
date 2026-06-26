@@ -31,7 +31,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-C2C = "/home/xertrov/.local/bin/c2c"
+C2C = os.environ.get("C2C_BIN", "/home/xertrov/.local/bin/c2c")
 TOKEN = "gate-test-token"
 ALICE_ALIAS = "gate-test-alice"
 ALICE_SESSION = "gate-test-s-alice"
@@ -148,6 +148,34 @@ def load_identity(path: str) -> dict:
         return json.load(f)
 
 
+def _b64url_nopad(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def generate_identity(alias: str) -> dict:
+    """Generate a fresh Ed25519 client identity in the {alias, identity_pk_b64,
+    secret_b64} shape SignedRoomOpHelper expects. Used so the signed-op e2e
+    tests can run without an on-disk identity fixture (the alias is pinned to
+    this key via TOFU on the first signed room op)."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    key = ed25519.Ed25519PrivateKey.generate()
+    seed = key.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    pub = key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return {
+        "alias": alias,
+        "identity_pk_b64": _b64url_nopad(pub),
+        "secret_b64": _b64url_nopad(seed),
+    }
+
+
 class SignedRoomOpHelper:
     """Builds canonical room-op proof blobs and signs them with a local identity.
 
@@ -178,6 +206,25 @@ class SignedRoomOpHelper:
         return {
             "identity_pk": self.identity_pk_b64,
             "sig": sig_b64,
+            "ts": ts,
+            "nonce": nonce,
+        }
+
+    def sign_room_op_with_visibility(self, sign_ctx: str, room_id: str,
+                                     visibility: str) -> dict:
+        """Proof for a visibility-carrying room op (join with visibility,
+        set_room_visibility). The canonical blob inserts the (canonical)
+        visibility value between alias and identity_pk — mirrors the OCaml
+        relay_signed_ops.sign_room_op_with_visibility. [visibility] must be the
+        canonical value the server stores ("public" | "private" | "invite")."""
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        nonce = self._b64url_nopad_encode(os.urandom(16))
+        blob = "\x1f".join([sign_ctx, room_id, self.alias, visibility,
+                            self.identity_pk_b64, ts, nonce])
+        sig = self._sign(blob)
+        return {
+            "identity_pk": self.identity_pk_b64,
+            "sig": self._b64url_nopad_encode(sig),
             "ts": ts,
             "nonce": nonce,
         }
@@ -290,6 +337,83 @@ class GateOffAcceptsUnsignedTests(unittest.TestCase):
         })
         self.assertTrue(r["ok"],
                         f"unsigned join_room should be accepted when gate is off: {r}")
+
+
+class SignedRoomVisibilityE2ETests(unittest.TestCase):
+    """E2e for the room-visibility feature on the signed path:
+      - a signed join/set_room_visibility that carries a visibility value is
+        accepted (visibility is covered by the Ed25519 proof — a forged value
+        would fail verification), and
+      - GET /list_rooms returns only public rooms (private/invite hidden).
+
+    Self-contained: generates its own client identity and registers the alias
+    unsigned; the first signed room op pins the key to the alias via TOFU. No
+    on-disk identity fixture needed, so this always runs.
+    """
+
+    JOIN_CTX = "c2c/v1/room-join"
+    SETVIS_CTX = "c2c/v1/room-set-visibility"
+    ALIAS = "vis-e2e-alice"
+
+    server: OCamlRelayServer
+    client: RelayClient
+    helper: SignedRoomOpHelper
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, require_signed=True,
+                                      port=TEST_PORT + 2)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        cls.helper = SignedRoomOpHelper(generate_identity(cls.ALIAS))
+        cls.client.register("n-vis", "s-vis", cls.ALIAS)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def _signed_join(self, room_id: str, visibility: str) -> dict:
+        proof = self.helper.sign_room_op_with_visibility(
+            self.JOIN_CTX, room_id, visibility)
+        return self.client.post("/join_room", {
+            "alias": self.ALIAS, "room_id": room_id,
+            "visibility": visibility, **proof,
+        })
+
+    def _list_room_ids(self) -> set:
+        r = self.client.get("/list_rooms")
+        self.assertTrue(r.get("ok"), f"list_rooms failed: {r}")
+        return {room["room_id"] for room in r.get("rooms", [])}
+
+    def test_signed_join_public_is_listed(self):
+        r = self._signed_join("vis-e2e-public", "public")
+        self.assertTrue(r["ok"], f"signed join (public) should be accepted: {r}")
+        self.assertIn("vis-e2e-public", self._list_room_ids(),
+                      "public room must appear in /list_rooms")
+
+    def test_signed_join_private_not_listed(self):
+        r = self._signed_join("vis-e2e-private", "private")
+        self.assertTrue(r["ok"], f"signed join (private) should be accepted: {r}")
+        self.assertNotIn("vis-e2e-private", self._list_room_ids(),
+                         "private room must NOT appear in /list_rooms")
+
+    def test_signed_set_visibility_hides_room(self):
+        # Create as public (listed), then flip to invite_only (hidden).
+        r = self._signed_join("vis-e2e-flip", "public")
+        self.assertTrue(r["ok"], f"signed join should be accepted: {r}")
+        self.assertIn("vis-e2e-flip", self._list_room_ids())
+        # The signed blob must carry the CANONICAL value the server stores;
+        # body sends "invite_only", server canonicalizes to "invite".
+        proof = self.helper.sign_room_op_with_visibility(
+            self.SETVIS_CTX, "vis-e2e-flip", "invite")
+        r2 = self.client.post("/set_room_visibility", {
+            "alias": self.ALIAS, "room_id": "vis-e2e-flip",
+            "visibility": "invite_only", **proof,
+        })
+        self.assertTrue(r2["ok"],
+                        f"signed set_room_visibility should be accepted: {r2}")
+        self.assertNotIn("vis-e2e-flip", self._list_room_ids(),
+                         "room must be hidden from /list_rooms after going invite_only")
 
 
 if __name__ == "__main__":
