@@ -1,0 +1,2175 @@
+/**
+ * c2c OpenCode Plugin — automatic broker message delivery.
+ *
+ * Watches the local c2c broker inbox and delivers inbound messages to the
+ * active OpenCode session via client.session.promptAsync so they appear as
+ * proper user turns (not pasted into the prompt buffer via PTY).
+ *
+ * Config (all optional, with sensible defaults):
+ *   C2C_MCP_SESSION_ID      — broker session ID to poll (required for delivery)
+ *   C2C_MCP_BROKER_ROOT     — broker root dir (default: auto-detect)
+ *   C2C_PLUGIN_POLL_INTERVAL_MS — safety-net poll interval in ms (default: 30000; primary wake is c2c monitor)
+ *   C2C_PLUGIN_DELIVER_ON_IDLE  — "1" = only deliver on session.idle (default: "0")
+ *   C2C_PERMISSION_SUPERVISOR   — alias to DM on permission.ask (default: "coordinator1")
+ *   C2C_PERMISSION_TIMEOUT_MS   — ms to await supervisor reply before auto-rejecting (default: 600000 = 10 min). On timeout the plugin auto-rejects via HTTP (fail-closed) and will notify any late-arriving reply that the request has already been rejected.
+ *
+ * Delivery strategy:
+ *   - Primary: poll on session.idle events (agent is between tool calls)
+ *   - Secondary: background interval poll so messages arrive even between idles
+ *
+ * The c2c CLI is used to drain inbox atomically (respects POSIX lockf).
+ *
+ * Installation: place in .opencode/plugins/c2c.ts under the target project.
+ * Also run: c2c install opencode  (writes env vars needed by the broker MCP tool)
+ */
+
+import type { Plugin } from "@opencode-ai/plugin";
+import type { Event, EventSessionIdle, EventSessionCreated, EventSessionCompacted, EventSessionStatus } from "@opencode-ai/sdk";
+import { spawn, execFileSync } from "child_process";
+import * as crypto from "crypto";
+import * as fs from "fs";
+import * as path from "path";
+
+// ---------------------------------------------------------------------------
+// Plugin version — bump on behavioral changes only (not comment fixes).
+// Semver: major.minor.patch. Breaking plugin/broker protocol → major++.
+// ---------------------------------------------------------------------------
+const PLUGIN_VERSION = "1.0.0";
+
+// ---------------------------------------------------------------------------
+// Sidecar config loader
+// ---------------------------------------------------------------------------
+
+/** Read c2c-plugin.json — per-instance path first, then project-level. */
+function loadSidecarConfig(): Record<string, unknown> {
+  // Per-instance path: written by c2c wrapper to isolate concurrent instances.
+  const instanceName = process.env.C2C_INSTANCE_NAME;
+  if (instanceName) {
+    try {
+      const perInstance = path.join(process.env.HOME ?? "/home", ".local", "share", "c2c", "instances", instanceName, "c2c-plugin.json");
+      const raw = fs.readFileSync(perInstance, "utf-8");
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch { /* fall through to project-level */ }
+  }
+  // Project-level fallback.
+  try {
+    const sidecar = path.join(process.cwd(), ".opencode", "c2c-plugin.json");
+    const raw = fs.readFileSync(sidecar, "utf-8");
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** Read .c2c/repo.json relative to the CWD, returning {} on miss. */
+function loadRepoConfig(): Record<string, unknown> {
+  try {
+    const repo = path.join(process.cwd(), ".c2c", "repo.json");
+    const raw = fs.readFileSync(repo, "utf-8");
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** Resolve supervisor aliases from env > sidecar > repo.json > default. */
+function resolvePermissionSupervisors(): string[] {
+  // C2C_PERMISSION_SUPERVISOR: single alias override (highest priority)
+  const envSingle = process.env.C2C_PERMISSION_SUPERVISOR;
+  if (envSingle) return [envSingle];
+  // C2C_SUPERVISORS: comma-separated list override
+  const envList = process.env.C2C_SUPERVISORS;
+  if (envList) return envList.split(",").map((s) => s.trim()).filter(Boolean);
+  // Sidecar: supervisors array (c2c init --supervisor writes here)
+  // Reload each time so config changes after startup are picked up.
+  const sidecar = loadSidecarConfig();
+  const sidecarSups = sidecar.supervisors;
+  if (Array.isArray(sidecarSups) && sidecarSups.length > 0) {
+    const names = sidecarSups.filter((s): s is string => typeof s === "string");
+    if (names.length > 0) return names;
+  }
+  // Repo config: supervisors array (c2c repo set supervisor writes here)
+  const repo = loadRepoConfig();
+  const repoSups = repo.supervisors ?? repo.permission_supervisors;
+  if (Array.isArray(repoSups) && repoSups.length > 0) {
+    const names = repoSups.filter((s): s is string => typeof s === "string");
+    if (names.length > 0) return names;
+  }
+  // Sidecar: permission_supervisor (legacy single value)
+  const sidecarLegacy = sidecar.permission_supervisor;
+  if (typeof sidecarLegacy === "string" && sidecarLegacy) return [sidecarLegacy];
+  // Default
+  return ["coordinator1"];
+}
+
+// ---------------------------------------------------------------------------
+// Permission summary (module-level for testability)
+// ---------------------------------------------------------------------------
+
+/**
+ * Produce a human-readable one-line summary of a permission request so
+ * supervisors can make an informed approve/reject decision.
+ *
+ * OpenCode Permission.Request schema fields:
+ *   permission  — string e.g. "bash", "edit", "fs", "network"
+ *   patterns    — string[] e.g. ["git diff", "git add -A"]
+ *   metadata    — record<string, any> e.g. {command: "git diff"}
+ *
+ * Priority for the action value:
+ *   metadata.command > metadata.input > patterns (joined) > permission
+ */
+export function summarizePermission(perm: Record<string, unknown>): string {
+  const permission = typeof perm.permission === "string" && perm.permission
+    ? perm.permission
+    : typeof perm.type === "string" && perm.type
+      ? perm.type
+      : "unknown";
+  const meta = (typeof perm.metadata === "object" && perm.metadata !== null)
+    ? (perm.metadata as Record<string, unknown>)
+    : {};
+
+  const rawPatterns = perm.patterns ?? (typeof perm.pattern === "string" ? [perm.pattern] : []);
+  const patternsStr: string = Array.isArray(rawPatterns)
+    ? (rawPatterns as string[]).join(" ")
+    : typeof rawPatterns === "string" ? rawPatterns : "";
+
+  const metaAction: string = [meta.command, meta.input, meta.cmd]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)[0] ?? "";
+
+  const action = metaAction || patternsStr;
+
+  switch (permission) {
+    case "bash":
+      return action ? `bash: \`${action}\`` : "bash: (unknown command)";
+    case "edit":
+    case "write":
+    case "fs":
+      return action ? `file: ${action}` : "file access (unknown path)";
+    case "network":
+      return action ? `network: ${action}` : "network access (unknown target)";
+    default:
+      return action ? `${permission}: ${action}` : permission;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin definition
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Pure parsing helpers (also exported for unit testing)
+// ---------------------------------------------------------------------------
+
+/** Extract a structured permission reply from message content, or null. */
+function extractPermissionReply(content: string): { permId: string; decision: string } | null {
+  const m = content.match(/\bpermission:([a-zA-Z0-9_-]+):(approve-once|approve-always|reject)\b/);
+  return m ? { permId: m[1], decision: m[2] } : null;
+}
+
+/** Extract a question reply: `question:<id>:answer:<text>` or `question:<id>:reject`. */
+function extractQuestionReply(content: string): { qId: string; answer: string | null; rejected: boolean } | null {
+  const rejectM = content.match(/\bquestion:([a-zA-Z0-9_-]+):reject\b/);
+  if (rejectM) return { qId: rejectM[1], answer: null, rejected: true };
+  const answerM = content.match(/\bquestion:([a-zA-Z0-9_-]+):answer:(.+)/s);
+  if (answerM) return { qId: answerM[1], answer: answerM[2].trim(), rejected: false };
+  return null;
+}
+
+const C2CDelivery: Plugin = async (ctx) => {
+  // #337: process-scoped flag prevents double-loading when both global and
+  // project-level plugins resolve to the same .ts file. The previous guard
+  // checked `thisPluginPath.includes("/.config/opencode/plugins/")` but Bun
+  // resolves symlinks in `import.meta.url` to realpath, so the substring
+  // match never triggered for either instance. globalThis lives one process
+  // up from the module loader, so a second loadExternal() in the same
+  // process sees the flag and returns immediately.
+  const g = globalThis as { __c2c_loaded?: boolean };
+  if (g.__c2c_loaded) {
+    return {}; // already loaded in this process — second instance is a no-op
+  }
+  g.__c2c_loaded = true;
+  const thisPluginPath = new URL(import.meta.url).pathname;
+
+  // Boot banner — log pid + sha256 prefix of this file so stale bun compile
+  // cache issues are instantly visible: if sha doesn't match `sha256sum c2c.ts`
+  // the running code is NOT the file on disk.
+  //
+  // Also rotates the log if it exceeds C2C_PLUGIN_DEBUG_MAX_LINES (default 500)
+  // so stale entries from dead sessions don't pile up and confuse future readers.
+  try {
+    const { createHash } = await import("crypto");
+    const src = fs.readFileSync(thisPluginPath, "utf-8");
+    const sha = createHash("sha256").update(src).digest("hex").slice(0, 8);
+    const ts = new Date().toISOString();
+    const logPath = path.join(process.cwd(), ".opencode", "c2c-debug.log");
+    const maxLines = parseInt(process.env.C2C_PLUGIN_DEBUG_MAX_LINES || "500", 10);
+    try {
+      if (fs.existsSync(logPath)) {
+        const lineCount = fs.readFileSync(logPath, "utf-8").split("\n").length;
+        if (lineCount > maxLines) {
+          const backup = logPath + ".1";
+          fs.renameSync(logPath, backup);
+          // Fresh log starts with a rotation notice so context is clear.
+          fs.writeFileSync(logPath,
+            `[${ts}] pid=${process.pid} --- log rotated (was ${lineCount} lines > ${maxLines}) prev: ${backup} ---\n`
+          );
+        }
+      }
+    } catch { /* rotation failure is non-fatal */ }
+    fs.appendFileSync(
+      logPath,
+      `[${ts}] pid=${process.pid} === c2c plugin boot sha=${sha} path=${thisPluginPath} ===\n`
+    );
+  } catch { /* non-fatal */ }
+
+  // --- Config (env vars > sidecar .opencode/c2c-plugin.json) ---
+  const sidecar = loadSidecarConfig();
+  const sessionId: string =
+    process.env.C2C_MCP_SESSION_ID || process.env.C2C_SESSION_ID || sidecar.session_id || "";
+  // [#497] Fail fast if all session ID sources are unset — empty string would
+  // silently break session routing, inbox delivery, and permission relay.
+  if (!sessionId) {
+    const hint = process.env.C2C_CLI_COMMAND ? ` or run '${process.env.C2C_CLI_COMMAND} install opencode'` : "";
+    throw new Error(
+      "c2c: C2C_MCP_SESSION_ID and C2C_SESSION_ID are both unset, and sidecar.session_id is absent or null.\n" +
+      "  Set C2C_MCP_SESSION_ID to a session ID, or re-run `c2c install opencode`\n" +
+      `  to populate the sidecar config.${hint}`
+    );
+  }
+  // [#496 Option A] Canonical broker-root resolver — mirrors C2c_repo_fp.resolve_broker_root
+  // in OCaml. C2C_MCP_BROKER_ROOT wins if set (explicit override). Otherwise derives
+  // from git remote fingerprint: $XDG_STATE_HOME/c2c/repos/<fp>/broker or
+  // $HOME/.c2c/repos/<fp>/broker. Never falls through to empty string.
+  function resolveBrokerRoot(): string {
+    const env = process.env.C2C_MCP_BROKER_ROOT?.trim();
+    if (env) {
+      return path.isAbsolute(env) ? env : path.resolve(process.cwd(), env);
+    }
+    let fp = "";
+    try {
+      const gitData = execFileSync("git", ["config", "--get", "remote.origin.url"],
+        { encoding: "utf-8", timeout: 3000 }).trim();
+      if (gitData) fp = crypto.createHash("sha256").update(gitData).digest("hex").slice(0, 12);
+    } catch { /* no remote.origin.url */ }
+    if (!fp) {
+      try {
+        const toplevel = execFileSync("git", ["rev-parse", "--show-toplevel"],
+          { encoding: "utf-8", timeout: 3000 }).trim();
+        if (toplevel) fp = crypto.createHash("sha256").update(toplevel).digest("hex").slice(0, 12);
+      } catch { /* not a git repo */ }
+    }
+    if (!fp) fp = "default";
+    const xdg = process.env.XDG_STATE_HOME?.trim();
+    if (xdg) return path.join(xdg, "c2c", "repos", fp, "broker");
+    const home = process.env.HOME?.trim();
+    if (home) return path.join(home, ".c2c", "repos", fp, "broker");
+    return path.join("/tmp", "c2c", "repos", fp, "broker");
+  }
+  const brokerRoot: string = resolveBrokerRoot();
+  const configuredOpenCodeSessionId: string =
+    process.env.C2C_OPENCODE_SESSION_ID || sidecar.opencode_session_id || "";
+  // Only values starting with "ses_" are real OpenCode session IDs. Instance
+  // aliases (e.g. "galaxy-coder") must be treated as unset for session adoption
+  // — the real ses_* will be adopted via session.created/bootstrapRootSession.
+  // See #295.
+  const realConfiguredOpenCodeSessionId: string =
+    configuredOpenCodeSessionId.startsWith("ses") ? configuredOpenCodeSessionId : "";
+  // Agent name set by `c2c start opencode --agent <name>`. When present, every
+  // promptAsync call passes body.agent so OpenCode preserves the session
+  // mode instead of resetting to the default agent. See #167 Thread B.
+  const configuredAgentName: string | null =
+    (process.env.C2C_AGENT_NAME?.trim() || (sidecar.agent_name as string | undefined)?.trim() || null) || null;
+  const c2cAlias: string =
+    (sidecar.alias as string | undefined) || sessionId || "";
+  const pollIntervalMs: number = parseInt(process.env.C2C_PLUGIN_POLL_INTERVAL_MS || "5000", 10);
+  const idleOnlyMode: boolean = (process.env.C2C_PLUGIN_DELIVER_ON_IDLE || "0") === "1";
+  const permissionSupervisors: string[] = resolvePermissionSupervisors();
+  const supervisorStrategy: string =
+    (sidecar.supervisor_strategy as string) ||
+    (loadRepoConfig().supervisor_strategy as string) ||
+    "first-alive";
+  let supervisorIndex = 0;
+
+  // Liveness cache: keyed by alias, expires after 30s
+  const livenessCache = new Map<string, { alive: boolean; lastSeenAge: number; cachedAt: number }>();
+  const livenessCacheTtlMs = 30_000;
+  const staleThresholdS = parseInt(process.env.C2C_SUPERVISOR_STALE_THRESHOLD_S || "300", 10);
+
+  async function querySupervisorLiveness(): Promise<Map<string, { alive: boolean; lastSeenAge: number }>> {
+    const now = Date.now();
+    // Return cache if fresh
+    const allCached = permissionSupervisors.every(alias => {
+      const entry = livenessCache.get(alias);
+      return entry && (now - entry.cachedAt) < livenessCacheTtlMs;
+    });
+    if (allCached) {
+      return new Map(permissionSupervisors.map(alias => {
+        const e = livenessCache.get(alias)!;
+        return [alias, { alive: e.alive, lastSeenAge: e.lastSeenAge }];
+      }));
+    }
+    try {
+      const raw = await runC2c(["list", "--json"]);
+      const parsed = JSON.parse(raw);
+      const sessions: any[] = Array.isArray(parsed) ? parsed : (parsed.sessions ?? parsed.registrations ?? []);
+      const result = new Map<string, { alive: boolean; lastSeenAge: number }>();
+      for (const alias of permissionSupervisors) {
+        const entry = sessions.find((s: any) => s.alias === alias || s.session_id === alias);
+        if (!entry) {
+          result.set(alias, { alive: false, lastSeenAge: Infinity });
+        } else {
+          const lastSeenAge = entry.last_seen ? now / 1000 - entry.last_seen : Infinity;
+          result.set(alias, { alive: entry.alive === true, lastSeenAge });
+        }
+        // Update cache
+        const liveness = result.get(alias)!;
+        livenessCache.set(alias, { ...liveness, cachedAt: now });
+      }
+      return result;
+    } catch {
+      // c2c list failed — assume all alive (graceful degradation)
+      return new Map(permissionSupervisors.map(alias => [alias, { alive: true, lastSeenAge: 0 }]));
+    }
+  }
+
+  /** Returns supervisor(s) to notify for this request, excluding self. */
+  const selectSupervisors = async (): Promise<string[]> => {
+    const myAlias = pluginState.c2c_alias;
+    const allSups = permissionSupervisors.filter(alias => alias !== myAlias);
+    if (allSups.length === 0) {
+      await log(`selectSupervisors: all supervisors filtered out (including self) — nothing to notify`);
+      return [];
+    }
+    if (supervisorStrategy === "broadcast") return allSups;
+    if (supervisorStrategy === "round-robin") {
+      return [allSups[supervisorIndex++ % allSups.length]];
+    }
+    // first-alive: query broker liveness, pick first live+fresh supervisor
+    const liveness = await querySupervisorLiveness();
+    const live = allSups.filter(alias => {
+      const s = liveness.get(alias);
+      return s && s.alive && s.lastSeenAge < staleThresholdS;
+    });
+    if (live.length > 0) return [live[0]];
+    // Fallback: broadcast to all (none are live/fresh)
+    await log(`supervisor liveness: no live supervisor — broadcasting to all ${allSups.length}`);
+    return allSups;
+  };
+  const permissionTimeoutMs: number = parseInt(
+    process.env.C2C_PERMISSION_TIMEOUT_MS || "600000", 10
+  );
+  const pluginStartTimeMs = Date.now();
+
+  // Track the active root session (set from session events)
+  // Only initialize from configuredOpenCodeSessionId if it looks like a real
+  // OpenCode session ID ("ses_*"). If it's an instance alias (e.g.
+  // "galaxy-coder"), leave activeSessionId null so session.created can adopt
+  // the real ses_* session. See #295.
+  let activeSessionId: string | null =
+    (realConfiguredOpenCodeSessionId || null);
+  let backgroundLoopStarted = false;
+  let pendingToastShown = false; // debounce the "messages waiting" toast
+
+  // [#494-G1] Cap on pendingPermissions: prevents unbounded Map growth.
+  // When a new entry would exceed this cap, the oldest (first-inserted) entry
+  // is evicted first. JavaScript Map maintains insertion order, so the first key
+  // is always the LRU entry.
+  const PENDING_PERMISSION_CAP = 20;
+
+  // Dedup window for permission notifications: track last 20 seen permission IDs.
+  const seenPermissionIds: string[] = [];
+  // Pending async permission approvals (v2): permId → {resolve, supervisors}.
+  // Security: supervisors list prevents alias-spoofing replies — only listed supervisors
+  // are trusted to send permission decisions for this permId.
+  //
+  // [#494-G1] GC coupling: when seenPermissionIds evicts an ID (LRU shift), the
+  // corresponding pendingPermissions entry must also be removed — otherwise the Map
+  // grows unbounded while seenPermissionIds stays bounded at 20.
+  const pendingPermissions = new Map<string, {
+    resolve: (reply: string) => void;
+    reject: (err: Error) => void;
+    supervisors: string[];
+  }>();
+
+  /** [#494-G1] Remove a permId from both seenPermissionIds and pendingPermissions.
+   *  Called when the seenPermissionIds LRU window evicts an entry, and when a
+   *  pending permission times out or is resolved. Keeps the two structures in sync. */
+  function removePendingPermission(permId: string): void {
+    // Remove from seenPermissionIds if present (indexOf is O(n) but n ≤ 20, negligible)
+    const idx = seenPermissionIds.indexOf(permId);
+    if (idx >= 0) seenPermissionIds.splice(idx, 1);
+    // Remove from pendingPermissions if present
+    pendingPermissions.delete(permId);
+  }
+  // Dedup window for question.asked events.
+  const seenQuestionIds: string[] = [];
+  // Pending question replies: questionId → resolve({answer, rejected}).
+  const pendingQuestions = new Map<string, (reply: {answer: string | null; rejected: boolean}) => void>();
+  // Permissions that already timed-out and were auto-rejected. Kept around so
+  // we can DM a "too late" notice to a supervisor whose reply arrives after
+  // the window closed. Map: permId → {sid, supervisors, timedOutAtMs}.
+  const timedOutPermissions = new Map<string, {
+    sid: string;
+    supervisors: string[];
+    timedOutAtMs: number;
+  }>();
+  // Cleanup window for timed-out entries; after this many ms we forget.
+  const timedOutMemoryMs: number = 30 * 60 * 1000; // 30 min
+
+  // --- Helpers ---
+
+  type TuiFocusType = "permission" | "question" | "prompt" | "menu" | "unknown";
+  type LastStep = {
+    event_type: string;
+    at: string;
+    details: Record<string, unknown> | null;
+  };
+  const RING_MAX = 120;
+  const RING_WINDOW_MS = 3600_000;
+  type IdleAccounting = {
+    prev_state: "active" | "idle" | null;
+    prev_ts_ms: number;
+    active_ms_lifetime: number;
+    idle_ms_lifetime: number;
+    ring: Array<{ ts_ms: number; new_state: "active" | "idle" }>;
+  };
+  let idleAccounting: IdleAccounting = {
+    prev_state: null,
+    prev_ts_ms: Date.now(),
+    active_ms_lifetime: 0,
+    idle_ms_lifetime: 0,
+    ring: [],
+  };
+  function computeActiveFractions(): { active_fraction_1h: number; active_fraction_lifetime: number } {
+    const now = Date.now();
+    let active_ms_ring = 0;
+    const cutoff = now - RING_WINDOW_MS;
+    const newRing: typeof idleAccounting.ring = [];
+    for (const entry of idleAccounting.ring) {
+      if (entry.ts_ms >= cutoff) {
+        newRing.push(entry);
+        active_ms_ring += entry.new_state === "active" ? 1000 : 0;
+      }
+    }
+    idleAccounting.ring = newRing;
+    let total_ring_ms = 0;
+    for (let i = 1; i < idleAccounting.ring.length; i++) {
+      const delta = idleAccounting.ring[i].ts_ms - idleAccounting.ring[i - 1].ts_ms;
+      total_ring_ms += idleAccounting.ring[i - 1].new_state === "active" ? delta : 0;
+    }
+    const active_fraction_1h = idleAccounting.ring.length >= 2
+      ? total_ring_ms / Math.min(now - idleAccounting.ring[0].ts_ms, RING_WINDOW_MS)
+      : idleAccounting.active_ms_lifetime / Math.max(idleAccounting.active_ms_lifetime + idleAccounting.idle_ms_lifetime, 1);
+    const total_lifetime = idleAccounting.active_ms_lifetime + idleAccounting.idle_ms_lifetime;
+    const active_fraction_lifetime = total_lifetime > 0 ? idleAccounting.active_ms_lifetime / total_lifetime : 0.5;
+    return {
+      active_fraction_1h: Math.max(0, Math.min(1, active_fraction_1h)),
+      active_fraction_lifetime: Math.max(0, Math.min(1, active_fraction_lifetime)),
+    };
+  }
+  function accountTransition(newState: "active" | "idle", ts_ms: number): void {
+    if (idleAccounting.prev_state === null) {
+      idleAccounting.prev_state = newState;
+      idleAccounting.prev_ts_ms = ts_ms;
+      return;
+    }
+    if (idleAccounting.prev_state === newState) return;
+    const delta_ms = ts_ms - idleAccounting.prev_ts_ms;
+    if (idleAccounting.prev_state === "active") {
+      idleAccounting.active_ms_lifetime += delta_ms;
+    } else {
+      idleAccounting.idle_ms_lifetime += delta_ms;
+    }
+    idleAccounting.ring.push({ ts_ms, new_state: newState });
+    if (idleAccounting.ring.length > RING_MAX) idleAccounting.ring.shift();
+    idleAccounting.prev_state = newState;
+    idleAccounting.prev_ts_ms = ts_ms;
+  }
+  type PluginState = {
+    c2c_session_id: string;
+    c2c_alias: string | null;
+    root_opencode_session_id: string | null;
+    opencode_pid: number;
+    plugin_started_at: string;
+    state_last_updated_at: string;
+    activity_sources: Record<string, {
+      source_type: string;
+      first_active_at: string;
+      last_active_at: string;
+      heartbeat_interval_ms?: number;
+    }>;
+    agent: {
+      is_idle: boolean | null;
+      active_fraction_1h: number;
+      active_fraction_lifetime: number;
+      turn_count: number;
+      step_count: number;
+      last_step: LastStep | null;
+      provider_id: string | null;
+      model_id: string | null;
+    };
+    tui_focus: {
+      ty: TuiFocusType;
+      details: Record<string, unknown> | null;
+    };
+    prompt: {
+      has_text: boolean | null;
+    };
+    pendingQuestion: {
+      id: string;
+      text: string;
+      header: string;
+      options: string[];
+    } | null;
+    context_usage: {
+      tokens_input: number;
+      tokens_output: number;
+      tokens_cache_read: number;
+      cost_usd: number;
+      completed_turns: number;
+    };
+  };
+  type StateSnapshotEnvelope = {
+    event: "state.snapshot";
+    ts: string;
+    state: PluginState;
+  };
+  type StatePatchEnvelope = {
+    event: "state.patch";
+    ts: string;
+    patch: Record<string, unknown>;
+  };
+
+  const pluginStartedAt = new Date(pluginStartTimeMs).toISOString();
+  const pluginState: PluginState = {
+    c2c_session_id: sessionId,
+    c2c_alias: typeof sidecar.alias === "string" && sidecar.alias.trim() ? sidecar.alias.trim() : null,
+    root_opencode_session_id: realConfiguredOpenCodeSessionId || null,
+    opencode_pid: process.pid,
+    plugin_started_at: pluginStartedAt,
+    state_last_updated_at: pluginStartedAt,
+    activity_sources: {
+      plugin: {
+        source_type: "plugin",
+        first_active_at: pluginStartedAt,
+        last_active_at: pluginStartedAt,
+        heartbeat_interval_ms: parseInt(process.env.C2C_PLUGIN_HEARTBEAT_INTERVAL_MS || "10000", 10),
+      },
+    },
+    agent: {
+      is_idle: null,
+      active_fraction_1h: 0.5,
+      active_fraction_lifetime: 0.5,
+      turn_count: 0,
+      step_count: 0,
+      last_step: null,
+      provider_id: null,
+      model_id: null,
+    },
+    tui_focus: {
+      ty: "unknown",
+      details: null,
+    },
+    prompt: {
+      has_text: null,
+    },
+    pendingQuestion: null,
+    context_usage: {
+      tokens_input: 0,
+      tokens_output: 0,
+      tokens_cache_read: 0,
+      cost_usd: 0,
+      completed_turns: 0,
+    },
+  };
+  let stateWriterProc: ReturnType<typeof spawn> | null = null;
+  let stateWriterAvailable = false;
+
+  function firstString(...values: unknown[]): string {
+    for (const value of values) {
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+  }
+
+  function detectPromptHasText(event: Event): boolean | null {
+    const props = (event as any).properties ?? {};
+    const candidates = [
+      props.text,
+      props.prompt,
+      props.input,
+      props.value,
+      props.query,
+      props.info?.text,
+      props.info?.prompt,
+      props.info?.input,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string") return candidate.trim().length > 0;
+    }
+    const parts = props.body?.parts ?? props.parts;
+    if (Array.isArray(parts)) {
+      const text = parts
+        .filter((part: any) => part?.type === "text" && typeof part?.text === "string")
+        .map((part: any) => part.text)
+        .join("\n")
+        .trim();
+      return text.length > 0;
+    }
+    if (event.type === "session.idle" || event.type === "session.created") return false;
+    return null;
+  }
+
+  function compactSessionDetails(sessionID: string | null): Record<string, unknown> | null {
+    return sessionID ? { session_id: sessionID } : null;
+  }
+
+  function compactPermissionDetails(event: Event): Record<string, unknown> | null {
+    const props = (event as any).properties ?? {};
+    const id = firstString(props.id, props.permissionID, props.permissionId) || null;
+    const permission = firstString(props.permission) || null;
+    const patterns = Array.isArray(props.patterns) ? props.patterns.join(" ") : null;
+    return { id, permission, patterns };
+  }
+
+  function makeLastStep(eventType: string, details: Record<string, unknown> | null): LastStep {
+    return {
+      event_type: eventType,
+      at: new Date().toISOString(),
+      details,
+    };
+  }
+
+  function cloneState(): PluginState {
+    return {
+      ...pluginState,
+      agent: {
+        ...pluginState.agent,
+        last_step: pluginState.agent.last_step
+          ? {
+              ...pluginState.agent.last_step,
+              details: pluginState.agent.last_step.details
+                ? { ...pluginState.agent.last_step.details }
+                : null,
+            }
+          : null,
+      },
+      tui_focus: {
+        ...pluginState.tui_focus,
+        details: pluginState.tui_focus.details ? { ...pluginState.tui_focus.details } : null,
+      },
+      prompt: {
+        ...pluginState.prompt,
+      },
+      activity_sources: Object.fromEntries(
+        Object.entries(pluginState.activity_sources).map(([name, source]) => [
+          name,
+          { ...source },
+        ]),
+      ),
+    };
+  }
+
+  function pluginHeartbeatIntervalMs(): number {
+    const value = parseInt(process.env.C2C_PLUGIN_HEARTBEAT_INTERVAL_MS || "10000", 10);
+    return Number.isFinite(value) && value > 0 ? value : 10_000;
+  }
+
+  function sourceActivityPatch(name: string, ts: string): Record<string, unknown> {
+    const existing = pluginState.activity_sources[name];
+    return {
+      activity_sources: {
+        [name]: {
+          source_type: existing?.source_type ?? name,
+          first_active_at: existing?.first_active_at ?? ts,
+          last_active_at: ts,
+          ...(existing?.heartbeat_interval_ms !== undefined
+            ? { heartbeat_interval_ms: existing.heartbeat_interval_ms }
+            : {}),
+        },
+      },
+    };
+  }
+
+  function touchActivitySource(
+    name: string,
+    ts: string,
+    overrides: { source_type?: string; heartbeat_interval_ms?: number } = {},
+  ): void {
+    const existing = pluginState.activity_sources[name];
+    pluginState.activity_sources[name] = {
+      source_type: overrides.source_type ?? existing?.source_type ?? name,
+      first_active_at: existing?.first_active_at ?? ts,
+      last_active_at: ts,
+      ...(overrides.heartbeat_interval_ms !== undefined
+        ? { heartbeat_interval_ms: overrides.heartbeat_interval_ms }
+        : existing?.heartbeat_interval_ms !== undefined
+          ? { heartbeat_interval_ms: existing.heartbeat_interval_ms }
+          : {}),
+    };
+  }
+
+  function writeStateLine(payload: StateSnapshotEnvelope | StatePatchEnvelope): void {
+    if (!stateWriterAvailable || !stateWriterProc?.stdin) return;
+    try {
+      stateWriterProc.stdin.write(JSON.stringify(payload) + "\n");
+    } catch {
+      stateWriterAvailable = false;
+      stateWriterProc = null;
+      setTimeout(() => void spawnStateWriter(), 10_000);
+    }
+  }
+
+  function writeStateSnapshot(): void {
+    const ts = new Date().toISOString();
+    pluginState.state_last_updated_at = ts;
+    touchActivitySource("plugin", ts, {
+      source_type: "plugin",
+      heartbeat_interval_ms: pluginHeartbeatIntervalMs(),
+    });
+    writeStateLine({ event: "state.snapshot", ts, state: cloneState() });
+  }
+
+  function writeStatePatch(patch: Record<string, unknown>): void {
+    const ts = new Date().toISOString();
+    writeStatePatchAt(ts, patch);
+  }
+
+  function writeStatePatchAt(ts: string, patch: Record<string, unknown>): void {
+    pluginState.state_last_updated_at = ts;
+    writeStateLine({
+      event: "state.patch",
+      ts,
+      patch: {
+        ...patch,
+        state_last_updated_at: ts,
+      },
+    });
+  }
+
+  function emitPluginHeartbeat(): void {
+    const ts = new Date().toISOString();
+    touchActivitySource("plugin", ts, {
+      source_type: "plugin",
+      heartbeat_interval_ms: pluginHeartbeatIntervalMs(),
+    });
+    writeStatePatchAt(ts, sourceActivityPatch("plugin", ts));
+  }
+
+  async function spawnStateWriter(): Promise<void> {
+    const command = process.env.C2C_CLI_COMMAND || "c2c";
+    try {
+      const proc = spawn(command, ["oc-plugin", "stream-write-statefile"], {
+        cwd: process.cwd(),
+        env: childProcessEnv(),
+        shell: false,
+      });
+      stateWriterProc = proc;
+      stateWriterAvailable = true;
+      proc.on("error", (err) => {
+        stateWriterAvailable = false;
+        stateWriterProc = null;
+        void log(`state writer error: ${err}`);
+      });
+      proc.on("close", (code) => {
+        stateWriterAvailable = false;
+        if (stateWriterProc === proc) {
+          stateWriterProc = null;
+          void log(`state writer exited: code=${code} — reconnecting in 10s`);
+          setTimeout(() => void spawnStateWriter(), 10_000);
+        }
+      });
+      writeStateSnapshot();
+    } catch {
+      stateWriterAvailable = false;
+      stateWriterProc = null;
+      await log("state writer spawn failed — reconnecting in 30s");
+      setTimeout(() => void spawnStateWriter(), 30_000);
+    }
+  }
+
+  function startStateHeartbeat(): void {
+    const intervalMs = pluginHeartbeatIntervalMs();
+    setInterval(() => {
+      emitPluginHeartbeat();
+    }, intervalMs);
+  }
+
+  /**
+   * Detect conflicting alive OpenCode instances. Throws FATAL if another
+   * c2c-managed OpenCode process (same broker) is alive and would compete
+   * for the same session pool — preventing the cross-contamination bug where
+   * bootstrapRootSession() adopts a peer's session.
+   * See finding: .collab/findings-archive/2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md
+   */
+  async function checkConflictingInstances(): Promise<void> {
+    const home = process.env.HOME || "";
+    const instancesDir = path.join(home, ".local", "share", "c2c", "instances");
+    let entries: string[];
+    try { entries = fs.readdirSync(instancesDir); } catch { return; }
+
+    for (const name of entries) {
+      if (name === sessionId) continue;
+      let theirState: any;
+      let theirConfig: any;
+      try {
+        const stateRaw = fs.readFileSync(path.join(instancesDir, name, "oc-plugin-state.json"), "utf-8");
+        const parsed = JSON.parse(stateRaw);
+        theirState = parsed.state ?? parsed;
+      } catch { continue; }
+      try {
+        theirConfig = JSON.parse(fs.readFileSync(path.join(instancesDir, name, "config.json"), "utf-8"));
+      } catch { theirConfig = {}; }
+
+      const theirPid: number | undefined = theirState.opencode_pid;
+      if (!theirPid) continue;
+      if (!fs.existsSync(`/proc/${theirPid}`)) continue; // dead process
+
+      const theirBrokerRoot: string = theirConfig.broker_root ?? theirState.broker_root ?? "";
+      if (brokerRoot && theirBrokerRoot && theirBrokerRoot !== brokerRoot) continue; // different project
+
+      const theirAlias: string = theirState.c2c_session_id ?? name;
+      const theirRootOcSession: string = theirState.root_opencode_session_id ?? "";
+
+      const conflict = Boolean(configuredOpenCodeSessionId && theirRootOcSession === configuredOpenCodeSessionId);
+
+      if (conflict) {
+        const msg = `FATAL: conflicting c2c opencode instance '${theirAlias}' (pid ${theirPid}) owns session ${theirRootOcSession || "unknown"}. Stop it first: c2c stop ${theirAlias}`;
+        await log(msg);
+        throw new Error(msg);
+      }
+    }
+  }
+
+  /** On resume (session.created missed), bootstrap root from HTTP session list. */
+  async function bootstrapRootSession(): Promise<void> {
+    if (pluginState.root_opencode_session_id) return;
+    try {
+      const result = await (ctx.client.session as any).list();
+      const sessions: any[] = Array.isArray(result?.data) ? result.data
+        : Array.isArray(result) ? result : [];
+      const roots = sessions
+        .filter((s: any) => !s.parentID && s.id)
+        .sort((a: any, b: any) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
+      const candidate = realConfiguredOpenCodeSessionId
+        ? roots.find((s: any) => s.id === realConfiguredOpenCodeSessionId)  // exact match only; no fallback to roots[0]
+        : (process.env.C2C_AUTO_KICKOFF === "1" ? undefined : roots[0]); // auto-kickoff: never adopt stale session, let session.create() fire
+      if (!candidate?.id) {
+        if (roots.length > 0) {
+          const skipped = roots.map((s: any) => s.id).join(", ");
+          const reason = realConfiguredOpenCodeSessionId ? "configured-id-mismatch" : "auto-kickoff";
+          await log(`SKIP-ADOPT: would have adopted [${skipped}]; reason=${reason}; see finding .collab/findings-archive/2026-04-21T09-00-00Z-coordinator1-oc-focus-test-session-cross-contamination.md`);
+        }
+        return;
+      }
+      pluginState.root_opencode_session_id = candidate.id;
+      if (!activeSessionId) activeSessionId = candidate.id;
+      await log(`bootstrapped root session from HTTP list: ${candidate.id}`);
+      writeStatePatch({ root_opencode_session_id: candidate.id });
+    } catch (err) {
+      await log(`bootstrapRootSession: non-fatal error: ${err}`);
+    }
+  }
+
+  function eventSessionId(event: Event): string | null {
+    const props = (event as any).properties ?? {};
+    const info = props.info ?? {};
+    return firstString(info.id, props.sessionID, props.sessionId, activeSessionId) || null;
+  }
+
+  function shouldAdoptRootFromIdle(event: Event): string | null {
+    if (pluginState.root_opencode_session_id) return null;
+    if (event.type !== "session.idle") return null;
+    const sessionID = eventSessionId(event);
+    if (!sessionID) return null;
+    if (realConfiguredOpenCodeSessionId && sessionID !== realConfiguredOpenCodeSessionId) return null;
+    return sessionID;
+  }
+
+  function belongsToTrackedRoot(event: Event): boolean {
+    const sessionID = eventSessionId(event);
+    if (!sessionID) return false;
+    return sessionID === pluginState.root_opencode_session_id;
+  }
+
+  function maybeTrackProviderAndModel(event: Event): void {
+    const props = (event as any).properties ?? {};
+    const info = props.info ?? {};
+    const provider = firstString(info.provider, props.provider) || null;
+    const model = firstString(info.model, props.model) || null;
+    if (provider) pluginState.agent.provider_id = provider;
+    if (model) pluginState.agent.model_id = model;
+  }
+
+  function applyRootSessionCreated(event: Event): void {
+    const info = (event as any).properties?.info;
+    if (!info?.id || info?.parentID) return;
+    if (realConfiguredOpenCodeSessionId && info.id !== realConfiguredOpenCodeSessionId) return;
+    // Reset kickoff flag so the new root session always receives the kickoff prompt.
+    // Without this, if a second root session is created mid-run (e.g. agent ran a
+    // command that triggered session.created), kickoffDelivered stays true and the
+    // new session starts blank — root cause of #58 TUI divergence.
+    kickoffDelivered = false;
+    pluginState.root_opencode_session_id = info.id;
+    const now = Date.now();
+    accountTransition("active", now);
+    const fractions = computeActiveFractions();
+    pluginState.agent.is_idle = false;
+    pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+    pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
+    pluginState.agent.step_count += 1;
+    pluginState.agent.last_step = makeLastStep("session.created", compactSessionDetails(info.id));
+    pluginState.tui_focus = { ty: "prompt", details: null };
+    pluginState.prompt.has_text = false;
+    writeStatePatch({
+      root_opencode_session_id: info.id,
+      agent: {
+        is_idle: false,
+        active_fraction_1h: pluginState.agent.active_fraction_1h,
+        active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
+        step_count: pluginState.agent.step_count,
+        last_step: pluginState.agent.last_step,
+      },
+      tui_focus: pluginState.tui_focus,
+      prompt: pluginState.prompt,
+    });
+    // Deliver kickoff prompt on session.created — this handles warm restarts
+    // where the kickoff file exists but session.idle may never fire (continuous
+    // activity). deliverKickoffPrompt guards against double-delivery via
+    // kickoffDelivered, so cold-boot path (which also calls it after
+    // coldBootDelayMs) is safe.
+    void (async () => {
+      const delayMs = parseInt(process.env.C2C_PLUGIN_COLD_BOOT_DELAY_MS || "1500", 10);
+      if (delayMs > 0) await new Promise<void>(resolve => setTimeout(resolve, delayMs));
+      await deliverKickoffPrompt(info.id);
+    })();
+  }
+
+  function applyIdleState(event: Event): void {
+    const adopted = shouldAdoptRootFromIdle(event);
+    if (adopted) pluginState.root_opencode_session_id = adopted;
+    if (!belongsToTrackedRoot(event)) return;
+
+    const sessionID = eventSessionId(event);
+    const now = Date.now();
+    accountTransition("idle", now);
+    const fractions = computeActiveFractions();
+    pluginState.agent.is_idle = true;
+    pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+    pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
+    pluginState.agent.turn_count += 1;
+    pluginState.agent.step_count += 1;
+    pluginState.agent.last_step = makeLastStep("session.idle", compactSessionDetails(sessionID));
+    pluginState.tui_focus = { ty: "prompt", details: null };
+    pluginState.prompt.has_text = false;
+    writeStatePatch({
+      root_opencode_session_id: pluginState.root_opencode_session_id,
+      agent: {
+        is_idle: true,
+        active_fraction_1h: pluginState.agent.active_fraction_1h,
+        active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
+        turn_count: pluginState.agent.turn_count,
+        step_count: pluginState.agent.step_count,
+        last_step: pluginState.agent.last_step,
+      },
+      tui_focus: pluginState.tui_focus,
+      prompt: pluginState.prompt,
+    });
+  }
+
+  function applyPermissionState(event: Event): void {
+    const props = (event as any).properties ?? {};
+    const sessionID = firstString(props.sessionID, props.sessionId, activeSessionId) || null;
+    if (!pluginState.root_opencode_session_id && sessionID && event.type === "permission.asked") {
+      if (!realConfiguredOpenCodeSessionId || realConfiguredOpenCodeSessionId === sessionID) {
+        pluginState.root_opencode_session_id = sessionID;
+      }
+    }
+    if (!sessionID || sessionID !== pluginState.root_opencode_session_id) return;
+
+    const now = Date.now();
+    accountTransition("active", now);
+    const fractions = computeActiveFractions();
+    pluginState.agent.is_idle = false;
+    pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+    pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
+    pluginState.agent.step_count += 1;
+    pluginState.agent.last_step = makeLastStep(event.type, compactPermissionDetails(event));
+    pluginState.tui_focus = {
+      ty: "permission",
+      details: compactPermissionDetails(event),
+    };
+    writeStatePatch({
+      root_opencode_session_id: pluginState.root_opencode_session_id,
+      agent: {
+        is_idle: false,
+        active_fraction_1h: pluginState.agent.active_fraction_1h,
+        active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
+        step_count: pluginState.agent.step_count,
+        last_step: pluginState.agent.last_step,
+      },
+      tui_focus: pluginState.tui_focus,
+      prompt: pluginState.prompt,
+    });
+  }
+
+  function updatePluginState(event: Event): void {
+    maybeTrackProviderAndModel(event);
+
+    if (event.type === "session.created") {
+      applyRootSessionCreated(event);
+      return;
+    }
+
+    if (event.type === "session.status") {
+      const props = (event as any).properties;
+      const status = props?.status;
+      const sessionID = props?.sessionID || activeSessionId || "";
+      if (!sessionID) return;
+      if (realConfiguredOpenCodeSessionId && sessionID !== realConfiguredOpenCodeSessionId) return;
+      if (status?.type === "busy") {
+        const now = Date.now();
+        accountTransition("active", now);
+        const fractions = computeActiveFractions();
+        pluginState.agent.is_idle = false;
+        pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+        pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
+        pluginState.agent.last_step = makeLastStep("session.status.busy", compactSessionDetails(sessionID));
+        writeStatePatch({
+          agent: {
+            is_idle: false,
+            active_fraction_1h: pluginState.agent.active_fraction_1h,
+            active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
+            last_step: pluginState.agent.last_step,
+          },
+        });
+      } else if (status?.type === "idle") {
+        const now = Date.now();
+        accountTransition("idle", now);
+        const fractions = computeActiveFractions();
+        pluginState.agent.is_idle = true;
+        pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+        pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
+        pluginState.agent.turn_count += 1;
+        pluginState.agent.step_count += 1;
+        pluginState.agent.last_step = makeLastStep("session.status.idle", compactSessionDetails(sessionID));
+        writeStatePatch({
+          agent: {
+            is_idle: true,
+            active_fraction_1h: pluginState.agent.active_fraction_1h,
+            active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
+            turn_count: pluginState.agent.turn_count,
+            step_count: pluginState.agent.step_count,
+            last_step: pluginState.agent.last_step,
+          },
+        });
+      }
+      return;
+    }
+
+    if (event.type === "session.idle") {
+      applyIdleState(event);
+      return;
+    }
+
+    if (event.type === "permission.asked" || event.type === "permission.updated") {
+      applyPermissionState(event);
+      return;
+    }
+
+    if (event.type === "message.part.updated") {
+      const part = (event as any).properties?.part;
+      if (part?.type === "step-start") {
+        const now = Date.now();
+        accountTransition("active", now);
+        const fractions = computeActiveFractions();
+        pluginState.agent.is_idle = false;
+        pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+        pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
+        pluginState.agent.step_count += 1;
+        pluginState.agent.last_step = makeLastStep("step.start", compactSessionDetails(part.sessionID));
+        writeStatePatch({
+          agent: {
+            is_idle: false,
+            active_fraction_1h: pluginState.agent.active_fraction_1h,
+            active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
+            step_count: pluginState.agent.step_count,
+            last_step: pluginState.agent.last_step,
+          },
+        });
+      } else if (part?.type === "step-finish") {
+        pluginState.agent.last_step = makeLastStep("step.finish", compactSessionDetails(part.sessionID));
+        writeStatePatch({
+          agent: {
+            step_count: pluginState.agent.step_count,
+            last_step: pluginState.agent.last_step,
+          },
+        });
+      } else if (part?.type === "tool") {
+        if (pluginState.agent.is_idle) {
+          const now = Date.now();
+          accountTransition("active", now);
+          const fractions = computeActiveFractions();
+          pluginState.agent.is_idle = false;
+          pluginState.agent.active_fraction_1h = fractions.active_fraction_1h;
+          pluginState.agent.active_fraction_lifetime = fractions.active_fraction_lifetime;
+          writeStatePatch({ agent: {
+            is_idle: false,
+            active_fraction_1h: pluginState.agent.active_fraction_1h,
+            active_fraction_lifetime: pluginState.agent.active_fraction_lifetime,
+          } });
+        }
+      }
+      return;
+    }
+
+    if (event.type === "message.updated") {
+      const info = (event as any).properties?.info;
+      if (info?.role === "assistant" && typeof info?.time?.completed === "number") {
+        const tokens = info.tokens ?? {};
+        const prev = pluginState.context_usage;
+        const next = {
+          tokens_input: prev.tokens_input + (tokens.input ?? 0),
+          tokens_output: prev.tokens_output + (tokens.output ?? 0),
+          tokens_cache_read: prev.tokens_cache_read + (tokens.cache?.read ?? 0),
+          cost_usd: prev.cost_usd + (typeof info.cost === "number" ? info.cost : 0),
+          completed_turns: prev.completed_turns + 1,
+        };
+        pluginState.context_usage = next;
+        writeStatePatch({ context_usage: next });
+      }
+      return;
+    }
+
+    const promptHasText = detectPromptHasText(event);
+    if (promptHasText !== null) pluginState.prompt.has_text = promptHasText;
+  }
+
+  // Debug log to disk — survives even if OpenCode log API is broken.
+  // On by default; silence with C2C_PLUGIN_DEBUG=0.
+  const pluginDebug = (process.env.C2C_PLUGIN_DEBUG || "1") !== "0";
+  const debugLogPath = path.join(process.cwd(), ".opencode", "c2c-debug.log");
+  const pluginPid = process.pid;
+
+  function debugLog(msg: string): void {
+    if (!pluginDebug) return;
+    try {
+      const ts = new Date().toISOString();
+      fs.appendFileSync(debugLogPath, `[${ts}] [pid=${pluginPid}] ${msg}\n`);
+    } catch { /* non-fatal */ }
+  }
+
+  // Structured rejection log: appends JSON events to ~/.local/share/c2c/plugin.log
+  // so operators can audit why permission replies were dropped.
+  const pluginLogPath = path.join(process.env.HOME ?? "/home", ".local", "share", "c2c", "plugin.log");
+  function rejectionLog(event: {
+    type: "permission_reply_dropped";
+    perm_id: string;
+    from_alias: string;
+    reason: "spoof_attempt" | "broker_validation_failed" | "not_pending" | "unknown";
+    detail?: string;
+    ts: string;
+  }): void {
+    try {
+      const entry = JSON.stringify(event) + "\n";
+      fs.appendFileSync(pluginLogPath, entry);
+    } catch { /* non-fatal */ }
+  }
+
+  async function log(msg: string): Promise<void> {
+    debugLog(msg);
+    try {
+      await ctx.client.app.log({
+        body: { service: "c2c", level: "debug", message: `c2c: ${msg}` },
+        url: "/log",
+      } as any);
+    } catch {
+      // logging failure is non-fatal
+    }
+  }
+
+  function childProcessEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    // Always use sessionId (instance name, e.g. "jungle-coder") for child processes,
+    // NOT the inherited C2C_MCP_SESSION_ID from the outer shell (which could be
+    // "coordinator1" or another instance's value). OpenCode compacts by spawning a
+    // fresh child process — if that child inherits the wrong C2C_MCP_SESSION_ID,
+    // the MCP server resolves the wrong session_id → alias and all send_room /
+    // send messages appear to come from the wrong agent.
+    // Strip any inherited value so we always set the authoritative one.
+    const effectiveSessionId = sessionId || activeSessionId || "";
+    if (effectiveSessionId) {
+      env.C2C_MCP_SESSION_ID = effectiveSessionId;
+      env.C2C_SESSION_ID = effectiveSessionId;
+    }
+    // Short-circuit inferred_client_type_from_env at c2c_mcp.ml:2505.
+    // Without this, if the outer shell has CLAUDE_SESSION_ID=coordinator1,
+    // inferred_client_type_from_env() returns "claude" and the fallback
+    // session_id key becomes CLAUDE_SESSION_ID instead of C2C_OPENCODE_SESSION_ID.
+    env.C2C_MCP_CLIENT_TYPE = "opencode";
+    const inheritedBrokerRoot = process.env.C2C_MCP_BROKER_ROOT || process.env.C2C_BROKER_ROOT || brokerRoot;
+    if (inheritedBrokerRoot) {
+      if (!env.C2C_MCP_BROKER_ROOT) env.C2C_MCP_BROKER_ROOT = inheritedBrokerRoot;
+      if (!env.C2C_BROKER_ROOT) env.C2C_BROKER_ROOT = inheritedBrokerRoot;
+    }
+    return env;
+  }
+
+  async function toast(msg: string, variant: "info" | "warning" | "error" = "info"): Promise<void> {
+    try {
+      await ctx.client.tui.showToast({
+        url: "/tui/show-toast",
+        body: { title: "c2c", message: msg, variant, duration: 3000 },
+      } as any);
+    } catch {
+      // toast failure is non-fatal
+    }
+  }
+
+  async function runC2c(args: string[]): Promise<string> {
+    const command = process.env.C2C_CLI_COMMAND || "c2c";
+    const timeoutMs = parseInt(process.env.C2C_PLUGIN_CLI_TIMEOUT_MS || "5000", 10);
+
+    return new Promise((resolve, reject) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+      const proc = spawn(command, args, {
+        cwd: process.cwd(),
+        env: childProcessEnv(),
+        shell: false,
+      });
+      const timer = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGTERM");
+      }, timeoutMs);
+
+      proc.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      proc.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      proc.on("error", (err) => {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        reject(err);
+      });
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        if (code === 0) {
+          resolve(stdout);
+          return;
+        }
+        const detail = stderr.trim() || `exit code ${code}`;
+        reject(new Error(timedOut ? `c2c poll timed out after ${timeoutMs}ms` : detail));
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Spool file — survives promptAsync failures so messages are not lost
+  // ---------------------------------------------------------------------------
+
+  type Msg = { from_alias: string; to_alias: string; content: string };
+  const spoolPath = path.join(process.cwd(), ".opencode", "c2c-plugin-spool.json");
+
+  function readSpool(): Msg[] {
+    try {
+      const raw = fs.readFileSync(spoolPath, "utf-8").trim();
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeSpool(msgs: Msg[]): void {
+    const spoolDir = path.dirname(spoolPath);
+    fs.mkdirSync(spoolDir, { recursive: true });
+    if (msgs.length === 0) {
+      try {
+        fs.unlinkSync(spoolPath);
+      } catch (err: any) {
+        if (err?.code !== "ENOENT") throw err;
+      }
+      return;
+    }
+
+    const tmpPath = `${spoolPath}.tmp-${process.pid}`;
+    try {
+      fs.writeFileSync(tmpPath, JSON.stringify(msgs), "utf-8");
+      fs.renameSync(tmpPath, spoolPath);
+    } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
+      throw err;
+    }
+  }
+
+  /** Extract Msg[] from the oc-plugin drain helper JSON envelope (or bare array). */
+  function parsePollResult(stdout: string): Msg[] {
+    if (!stdout) return [];
+    const parsed = JSON.parse(stdout);
+    // oc-plugin drain helper emits {"ok":true,"messages":[...]}.
+    // Bare arrays are accepted too for forward-compat.
+    const msgs: unknown = Array.isArray(parsed) ? parsed : (parsed as any).messages ?? [];
+    return Array.isArray(msgs) ? (msgs as Msg[]) : [];
+  }
+
+  /** Peek at inbox without draining — returns any permission reply for permId, or null.
+   *  Checks three sources in order:
+   *  1. Broker inbox (live)
+   *  2. Local plugin spool — drainInbox may have written here from a prior call
+   *  3. Broker OCaml spool — when the plugin runs from a different cwd than the
+   *     broker root, drainInbox writes to the local spool but the OCaml wire-bridge
+   *     also appends to $BROKER_ROOT/<sessionId>.spool.json; we check both to avoid
+   *     false timeouts when the reply landed in the broker's spool. */
+  async function peekInboxForPermission(permId: string): Promise<string | null> {
+    // 1. Broker inbox
+    try {
+      const stdout = (await runC2c([
+        "peek-inbox",
+        "--json",
+      ])).trim();
+      const parsed = JSON.parse(stdout);
+      const msgs: Msg[] = Array.isArray(parsed) ? parsed : (parsed as any).messages ?? [];
+      for (const msg of msgs) {
+        const reply = extractPermissionReply(msg.content);
+        if (reply && reply.permId === permId) {
+          return reply.decision;
+        }
+      }
+    } catch {
+      // fall through
+    }
+
+    // 2. Local plugin spool — drainInbox writes here; may contain replies written
+    //    before we got to poll.
+    const spooled = readSpool();
+    for (const msg of spooled) {
+      const reply = extractPermissionReply(msg.content);
+      if (reply && reply.permId === permId) {
+        return reply.decision;
+      }
+    }
+
+    // 3. Broker OCaml spool — the wire-bridge appends to
+    //    $BROKER_ROOT/<sessionId>.spool.json on every drain. When the plugin
+    //    is invoked from a project directory whose cwd differs from the broker
+    //    root, the local spool and broker spool diverge; we check both so a
+    //    reply in the broker spool doesn't falsely time out (#495).
+    try {
+      if (brokerRoot) {
+        const brokerSpoolPath = path.join(brokerRoot, `${sessionId}.spool.json`);
+        const raw = fs.readFileSync(brokerSpoolPath, "utf-8").trim();
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const brokerMsgs: Msg[] = Array.isArray(parsed) ? parsed : [];
+          for (const msg of brokerMsgs) {
+            const reply = extractPermissionReply(msg.content);
+            if (reply && reply.permId === permId) {
+              return reply.decision;
+            }
+          }
+        }
+      }
+    } catch {
+      // best-effort: spool may not exist or be readable
+    }
+
+    return null;
+  }
+
+  /** Stage pending messages into the durable OCaml-managed spool and return them. */
+  async function drainInbox(): Promise<Msg[]> {
+    try {
+      const stdout = (await runC2c([
+        "oc-plugin",
+        "drain-inbox-to-spool",
+        "--spool-path",
+        spoolPath,
+        "--json",
+      ])).trim();
+      const msgs = parsePollResult(stdout);
+      await log(`drainInbox: got ${msgs.length} message(s)`);
+      return msgs;
+    } catch (err) {
+      await log(`drainInbox error: ${err}`);
+      return [];
+    }
+  }
+
+  /** Extract a structured permission reply from message content, or null. */
+  /** Peek at inbox without draining — returns any question reply for qId, or null. */
+  async function peekInboxForQuestion(qId: string): Promise<{answer: string | null; rejected: boolean} | null> {
+    try {
+      const stdout = (await runC2c([
+        "peek-inbox",
+        "--json",
+      ])).trim();
+      const parsed = JSON.parse(stdout);
+      const msgs: Msg[] = Array.isArray(parsed) ? parsed : (parsed as any).messages ?? [];
+      for (const msg of msgs) {
+        const reply = extractQuestionReply(msg.content);
+        if (reply && reply.qId === qId) {
+          return { answer: reply.answer, rejected: reply.rejected };
+        }
+      }
+    } catch {
+      // ignore errors, will fall through to timeout
+    }
+    return null;
+  }
+
+  /** Await a supervisor question reply; resolves with answer text or null (rejected/timeout).
+   *  Polls inbox every 5s during the wait window as a fallback in case the reply arrives
+   *  between delivery ticks (when the normal intercept in deliverMessages would miss it). */
+  function waitForQuestionReply(qId: string, timeoutMs: number): Promise<{answer: string | null; rejected: boolean}> {
+    return new Promise((resolve) => {
+      pendingQuestions.set(qId, resolve);
+      const interval = 5000; // poll every 5s
+      let elapsed = 0;
+      const poll = async () => {
+        if (!pendingQuestions.has(qId)) return; // already resolved
+        const reply = await peekInboxForQuestion(qId);
+        if (reply && pendingQuestions.has(qId)) {
+          pendingQuestions.delete(qId);
+          resolve(reply);
+          return;
+        }
+        elapsed += interval;
+        if (elapsed < timeoutMs) {
+          setTimeout(poll, interval);
+        }
+      };
+      setTimeout(async () => {
+        if (pendingQuestions.has(qId)) {
+          pendingQuestions.delete(qId);
+          resolve({ answer: null, rejected: false }); // timeout → reject with no noise
+        }
+      }, timeoutMs);
+      setTimeout(poll, interval); // start polling
+    });
+  }
+
+  /** Await a supervisor permission reply; resolves with decision string or "timeout".
+   *  Security: supervisors list is verified on reply delivery — only listed supervisors
+   *  are trusted to send permission decisions for this permId. */
+  function waitForPermissionReply(permId: string, timeoutMs: number, supervisors: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+      // [#509] LRU eviction: if Map is at capacity, reject the oldest entry's
+      // promise immediately so the caller does not wait for a promise that will
+      // never resolve, then remove it to make room.
+      if (pendingPermissions.size >= PENDING_PERMISSION_CAP) {
+        const oldestKey = pendingPermissions.keys().next().value;
+        if (oldestKey) {
+          const evicted = pendingPermissions.get(oldestKey);
+          if (evicted) {
+            evicted.reject(Error("permission request evicted: concurrent permission limit reached"));
+          }
+          removePendingPermission(oldestKey);
+        }
+      }
+      pendingPermissions.set(permId, { resolve, reject, supervisors });
+      setTimeout(async () => {
+        if (!pendingPermissions.has(permId)) return;
+        const decision = await peekInboxForPermission(permId);
+        if (decision) {
+          removePendingPermission(permId);
+          resolve(decision);
+        } else {
+          removePendingPermission(permId);
+          resolve("timeout");
+        }
+      }, timeoutMs);
+    });
+  }
+
+  /** Format a single broker message as a c2c envelope for injection. */
+  function formatEnvelope(msg: Msg): string {
+    const from = msg.from_alias || "unknown";
+    const to = msg.to_alias || sessionId;
+    // Same reply-hint shape as c2c_mcp_helpers.format_reply_hint. The
+    // OpenCode plugin is LLM-visible (it injects into the agent's
+    // transcript via promptAsync), so the hint MUST be present —
+    // otherwise the agent may not realise it should reply via c2c_send.
+    //
+    // Pi-c2c (../pi-c2c) emits its own equivalent hint with the
+    // c2c_pi_send tool name. The two paths are parallel today
+    // (pi-c2c does not use the c2c CLI's wire bridge), so there is
+    // no duplication. If pi-c2c ever adopts the c2c CLI path, a
+    // dedup rule (skip if a <system-reminder> block is already in
+    // the body) would be needed.
+    const safeFrom = from.replace(/[`\\]/g, "\\$&");
+    const isRoom = /#[A-Za-z0-9_-]+/.test(to) && !/^[^#]*#[0-9a-f]{12}$/.test(to);
+    const hint = isRoom
+      ? `<system-reminder>
+You received a c2c room message from \`${safeFrom}\`.
+To reply to the room, call c2c_send_room(room_id="<room id>", content="<your reply>").
+If c2c_send_room is unavailable in this session, the MCP tool c2c_send_room works the same way (room_id="<room id>").
+Do NOT reply in plain text — the room will not see it.
+</system-reminder>`
+      : `<system-reminder>
+You received a c2c direct message from \`${safeFrom}\`.
+To reply, call c2c_send(to_alias="${safeFrom}", content="<your reply>").
+If c2c_send is unavailable in this session, the MCP tool c2c_send works the same way (to_alias="${safeFrom}").
+Do NOT reply in plain text — the peer will not see it.
+</system-reminder>`;
+    return `<c2c event="message" from="${from}" to="${to}" source="broker" reply_via="c2c_send" action_after="continue">\n${msg.content}\n</c2c>\n${hint}`;
+  }
+
+  /** Deliver drained messages to the active session via promptAsync. */
+  async function deliverMessages(targetSessionId: string): Promise<void> {
+    await log(`deliverMessages: targetSessionId=${JSON.stringify(targetSessionId)}`);
+
+    // Guard: skip promptAsync if activeSessionId is still the instance alias
+    // (sessionId), meaning session.created has not yet fired. Instance aliases
+    // work for broker inbox ops (resolve_session_id_for_inbox resolves them to
+    // real session IDs), but the OpenCode HTTP API rejects them with 404.
+    // This race occurs when a message arrives before session.created sets
+    // activeSessionId to the real session ID. The spool preserves messages.
+    // See #295.
+    if (activeSessionId === sessionId) {
+      const messages = await drainInbox();
+      if (messages.length > 0) {
+        await log(`deliverMessages: session not ready (activeSessionId="${activeSessionId}" === sessionId="${sessionId}"), spooled ${messages.length} message(s) for next cycle`);
+        writeSpool(messages);
+      } else {
+        await log(`deliverMessages: session not ready (activeSessionId="${activeSessionId}" === sessionId="${sessionId}"), no messages`);
+      }
+      return;
+    }
+
+    const messages = await drainInbox();
+    await log(`deliverMessages: pending=${messages.length}`);
+    if (messages.length === 0) return;
+
+    await log(`delivering ${messages.length} message(s) to session ${targetSessionId}`);
+
+    const failed: Msg[] = [];
+    for (const msg of messages) {
+      // Intercept structured permission replies before normal delivery.
+      // Always filter permission replies — they are handled by the permission system
+      // and should NEVER appear in chat, regardless of whether they were pending,
+      // timed-out, or resolved via peekInboxForPermission (item 18 race fix).
+      const permReply = extractPermissionReply(msg.content);
+      if (permReply) {
+        // Late reply: request already timed-out — NACK to supervisor.
+        if (timedOutPermissions.has(permReply.permId)) {
+          const entry = timedOutPermissions.get(permReply.permId)!;
+          const lateBySec = Math.round((Date.now() - entry.timedOutAtMs) / 1000);
+          const notice = `permission ${permReply.permId}: your reply \"${permReply.decision}\" arrived ${lateBySec}s after the timeout — request was already auto-rejected. Bump C2C_PERMISSION_TIMEOUT_MS on the requester to widen the window.`;
+          try {
+            await runC2c(["send", msg.from_alias || "coordinator1", notice]);
+            await log(`late permission reply → ${msg.from_alias}: ${permReply.permId} (${lateBySec}s late)`);
+          } catch (err) {
+            await log(`late permission reply DM error: ${err}`);
+          }
+        } else if (pendingPermissions.has(permReply.permId)) {
+          const { resolve, supervisors } = pendingPermissions.get(permReply.permId)!;
+          // M4: verify with broker before trusting the reply
+          let brokerValidationPassed: boolean | null = null;
+          try {
+            const brokerResult = await runC2c(["check-pending-reply", permReply.permId, msg.from_alias, "--json"]);
+            const parsed = JSON.parse(brokerResult);
+            if (parsed.valid === true) {
+              brokerValidationPassed = true;
+            } else if (parsed.valid === false) {
+              brokerValidationPassed = false;
+              await log(`M4: broker rejected reply for ${permReply.permId} from ${msg.from_alias}: ${parsed.error}`);
+              rejectionLog({ type: "permission_reply_dropped", perm_id: permReply.permId, from_alias: msg.from_alias, reason: "broker_validation_failed", detail: parsed.error ?? "unknown", ts: new Date().toISOString() });
+            }
+          } catch (err) {
+            await log(`M4: check-pending-reply error: ${err} — falling back to plugin-side check`);
+          }
+          // Security: verify reply comes from one of the supervisors we asked, not an imposter.
+          if (!supervisors.includes(msg.from_alias)) {
+            await log(`SECURITY: permission reply for ${permReply.permId} from ${msg.from_alias} not in supervisors [${supervisors.join(", ")}] — dropping spoof attempt?`);
+            rejectionLog({ type: "permission_reply_dropped", perm_id: permReply.permId, from_alias: msg.from_alias, reason: "spoof_attempt", detail: `expected one of [${supervisors.join(", ")}]`, ts: new Date().toISOString() });
+          }
+          else if (brokerValidationPassed === false) {
+            await log(`M4: broker validation failed for ${permReply.permId} — dropping reply`);
+          } else {
+            removePendingPermission(permReply.permId);
+            resolve(permReply.decision);
+            await log(`permission reply from ${msg.from_alias}: ${permReply.permId} → ${permReply.decision}`);
+          }
+        } else {
+          await log(`permission reply ${permReply.permId} skipped (not pending or already resolved)`);
+          rejectionLog({ type: "permission_reply_dropped", perm_id: permReply.permId, from_alias: msg.from_alias, reason: "not_pending", detail: "not found in pendingPermissions map", ts: new Date().toISOString() });
+        }
+        continue;
+      }
+      // Intercept question replies before normal delivery.
+      const qReply = extractQuestionReply(msg.content);
+      if (qReply && pendingQuestions.has(qReply.qId)) {
+        const resolve = pendingQuestions.get(qReply.qId)!;
+        pendingQuestions.delete(qReply.qId);
+        resolve({ answer: qReply.answer, rejected: qReply.rejected });
+        await log(`question reply from ${msg.from_alias}: ${qReply.qId} → ${qReply.rejected ? "reject" : `"${qReply.answer}"`}`);
+        continue;
+      }
+      const envelope = formatEnvelope(msg);
+      const callArgs = {
+        path: { id: targetSessionId },
+        body: {
+          // Pass agent name when known so OpenCode preserves the active
+          // session mode instead of resetting to default. See #167 Thread B.
+          ...(configuredAgentName ? { agent: configuredAgentName } : {}),
+          parts: [{ type: "text", text: envelope }],
+        },
+        url: "/session/{id}/prompt_async",
+      };
+      await log(`promptAsync CALL: path.id=${targetSessionId} agent=${configuredAgentName ?? "none"} body.text.slice(0,400)=${envelope.slice(0, 400)}`);
+      try {
+        const result = await (ctx.client.session as any).promptAsync(callArgs);
+        await log(`promptAsync RESULT: ${JSON.stringify(result).slice(0, 300)}`);
+        await log(`delivered from ${msg.from_alias}`);
+      } catch (err) {
+        await log(`promptAsync THREW: ${err}`);
+        // Keep in spool — will be retried on next delivery cycle.
+        failed.push(msg);
+        await toast(`c2c: delivery error from ${msg.from_alias}`, "error");
+      }
+    }
+    // Update spool atomically: keep failed messages, or clear on full success.
+    try {
+      writeSpool(failed);
+    } catch (err) {
+      await log(`writeSpool error: ${err}`);
+      await toast("c2c: failed to update retry spool", "error");
+    }
+    // Reset toast debounce so a future batch of messages shows a fresh toast.
+    if (failed.length === 0) pendingToastShown = false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Kickoff prompt — one-shot getting-started message written by c2c start --auto
+  // ---------------------------------------------------------------------------
+
+  // Per-instance kickoff path set by `c2c start` (#64). Falls back to shared path
+  // for manual installs that don't use c2c start.
+  const kickoffPromptPath =
+    process.env.C2C_KICKOFF_PROMPT_PATH ||
+    path.join(process.cwd(), ".opencode", "kickoff-prompt.txt");
+  const autoKickoff = (process.env.C2C_AUTO_KICKOFF || "0") !== "0";
+  let kickoffDelivered = false;
+
+  /** Deliver kickoff prompt file then delete it. No-op if absent or already delivered. */
+  async function deliverKickoffPrompt(targetSessionId: string): Promise<void> {
+    if (kickoffDelivered) return;
+    let text: string;
+    try {
+      text = fs.readFileSync(kickoffPromptPath, "utf-8").trim();
+    } catch {
+      kickoffDelivered = true; // file absent — mark done
+      return;
+    }
+    if (!text) { kickoffDelivered = true; return; }
+    await log(`kickoff: delivering prompt (${text.length} chars) to ${targetSessionId} agent=${configuredAgentName ?? "none"}`);
+    const callArgs = {
+      path: { id: targetSessionId },
+      body: {
+        // Pass agent name so the kickoff lands in the correct agent context
+        // and mode is not reset to default. See #167 Thread B.
+        ...(configuredAgentName ? { agent: configuredAgentName } : {}),
+        parts: [{ type: "text", text }],
+      },
+      url: "/session/{id}/prompt_async",
+    };
+    try {
+      await (ctx.client.session as any).promptAsync(callArgs);
+      kickoffDelivered = true;
+      await log("kickoff: delivered");
+      try { fs.unlinkSync(kickoffPromptPath); } catch { /* best-effort */ }
+    } catch (err) {
+      await log(`kickoff: promptAsync error: ${err}`);
+      // leave file in place and kickoffDelivered=false — retry on next idle
+    }
+  }
+
+  /** Try to deliver to the best-known session ID. */
+  async function tryDeliver(): Promise<void> {
+    const sid = activeSessionId;
+    await log(`tryDeliver: activeSessionId=${JSON.stringify(sid)}`);
+    if (!sid) {
+      // No session yet — wait for session.created event to set activeSessionId.
+      // Do NOT use session.list() fallback: it returns ALL historical sessions
+      // across all OpenCode instances and would deliver to the wrong session.
+      await log("tryDeliver: no session yet — waiting for session.created");
+      // If there are spooled messages, show a one-time toast so the user knows
+      // to type something to receive them (promptAsync requires an active session).
+      if (!pendingToastShown) {
+        const pending = readSpool();
+        if (pending.length > 0) {
+          pendingToastShown = true;
+          await toast(`${pending.length} c2c message(s) waiting — start a session to receive`, "info");
+        }
+      }
+      return;
+    }
+    await deliverMessages(sid);
+  }
+
+  function startBackgroundLoop(): void {
+    if (backgroundLoopStarted || idleOnlyMode) return;
+    backgroundLoopStarted = true;
+
+    // Debounce: skip tryDeliver if a delivery cycle is already in flight.
+    let deliveryInFlight = false;
+    const tick = async () => {
+      if (deliveryInFlight) return;
+      deliveryInFlight = true;
+      try { await tryDeliver(); } finally { deliveryInFlight = false; }
+    };
+
+    // Spawn `c2c monitor` and trigger delivery only on 📬 (inbox-write) events.
+    // 💬 (peer DM to others), 📤 (drain), 🗑️ (sweep) are noise — skip them.
+    let activeMonitorProc: ReturnType<typeof spawn> | null = null;
+    let monitorStopped = false;
+
+    function spawnMonitor(): void {
+      if (monitorStopped) return;
+      const command = process.env.C2C_CLI_COMMAND || "c2c";
+      const args = ["monitor"];
+      if (sessionId) args.push("--alias", sessionId);
+      const proc = spawn(command, args, { cwd: process.cwd(), env: childProcessEnv(), shell: false });
+      activeMonitorProc = proc;
+      let buf = "";
+      proc.stdout?.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (line && line.includes("📬")) tick().catch(() => {});
+        }
+      });
+      proc.on("close", () => {
+        if (activeMonitorProc === proc) activeMonitorProc = null;
+        if (!monitorStopped) {
+          void log("c2c monitor exited, restarting in 5s");
+          setTimeout(spawnMonitor, 5000);
+        }
+      });
+      proc.on("error", () => { if (!monitorStopped) setTimeout(spawnMonitor, 10_000); });
+    }
+
+    // Kill monitor on graceful exit so it doesn't outlive opencode.
+    process.on("exit", () => {
+      monitorStopped = true;
+      try { activeMonitorProc?.kill("SIGTERM"); } catch { /* ignore */ }
+    });
+
+    spawnMonitor();
+    void log(`c2c monitor spawned (alias=${sessionId})`);
+
+    // Safety net: poll once on startup and every pollIntervalMs in case monitor misses events
+    setTimeout(tick, 1000);
+    setInterval(tick, pollIntervalMs);
+  }
+
+  // --- Guard: no delivery without session ID ---
+  if (!sessionId) {
+    await log("C2C_MCP_SESSION_ID not set — message delivery disabled");
+    void toast("c2c plugin: set C2C_MCP_SESSION_ID to enable delivery", "warning");
+    return {};
+  }
+
+  // Introspect available API methods to diagnose promptAsync availability.
+  const sessionMethods = Object.keys(ctx.client.session as any).join(",");
+  const appMethods = Object.keys(ctx.client.app as any).join(",");
+  // Log a sha256 of the plugin file itself so stale bun JIT cache is immediately detectable.
+  const pluginFilePath = new URL(import.meta.url).pathname;
+  let pluginHash = "?";
+  try { pluginHash = crypto.createHash("sha256").update(fs.readFileSync(pluginFilePath)).digest("hex").slice(0, 12); } catch { /**/ }
+  await log(`plugin loaded (session=${sessionId}, interval=${pollIntervalMs}ms, idleOnly=${idleOnlyMode}, sha256=${pluginHash})`);
+  await log(`API introspect: session methods=[${sessionMethods}] app methods=[${appMethods}]`);
+  await spawnStateWriter();
+  startStateHeartbeat();
+  await checkConflictingInstances();
+  void bootstrapRootSession();
+  startBackgroundLoop();
+
+  // Auto-kickoff (#64): when C2C_AUTO_KICKOFF=1 and no session materializes
+  // within a grace window, proactively create a session via session.create()
+  // and deliver the kickoff prompt. Unblocks tmux-launched --auto flows where
+  // session.created never fires on its own.
+  if (process.env.C2C_AUTO_KICKOFF === "1") {
+    const graceMs = parseInt(process.env.C2C_AUTO_KICKOFF_GRACE_MS || "8000", 10);
+    setTimeout(async () => {
+      if (activeSessionId) {
+        await log(`auto-kickoff: session already adopted (${activeSessionId}), skip`);
+        return;
+      }
+      if (!fs.existsSync(kickoffPromptPath)) {
+        await log(`auto-kickoff: no kickoff-prompt.txt, skip`);
+        return;
+      }
+      try {
+        await log(`auto-kickoff: grace elapsed (${graceMs}ms), calling session.create`);
+        const res: any = await (ctx.client.session as any).create({ body: { title: "c2c kickoff" } });
+        const sid: string | undefined = res?.data?.id ?? res?.id;
+        if (!sid) { await log(`auto-kickoff: session.create returned no id: ${JSON.stringify(res).slice(0,200)}`); return; }
+        activeSessionId = sid;
+        pluginState.root_opencode_session_id = sid;
+        writeStatePatch({ root_opencode_session_id: sid });
+        await log(`auto-kickoff: created session ${sid} — delivering kickoff prompt`);
+        // Drive the TUI to focus the new session via the SDK client (not raw fetch).
+        // ctx.serverUrl returns a fallback port 4096 when the server-proxy hasn't
+        // set its URL in the plugin's closure — use ctx.client.tui.publish() instead,
+        // which uses the SDK's in-process transport and always reaches the right server.
+        // tui.session.select is valid at the HTTP level but not in the SDK union type,
+        // so we cast to any. See binary analysis finding 2026-04-21T19-24-00Z.
+        try {
+          const result = await (ctx.client.tui as any).publish({
+            body: { type: "tui.session.select", properties: { sessionID: sid } },
+          });
+          await log(`auto-kickoff: tui.session.select SDK publish ok: ${JSON.stringify(result?.data ?? result)}`);
+        } catch (err) {
+          await log(`auto-kickoff: tui.session.select SDK publish failed: ${err}`);
+        }
+        await deliverKickoffPrompt(sid);
+      } catch (err) {
+        await log(`auto-kickoff: error: ${err}`);
+      }
+    }, graceMs);
+  }
+
+  // --- Return hooks ---
+  return {
+    event: async ({ event }: { event: Event }) => {
+      // Log every event type for debugging (permission hook, delivery, etc.)
+      await log(`event: type=${event.type}`);
+      updatePluginState(event);
+      // Track root session ID from creation events — also trigger immediate delivery
+      // so queued messages arrive without waiting for the next background loop tick.
+      if (event.type === "session.created") {
+        const e = event as EventSessionCreated;
+        const info = (e as any).properties?.info;
+        if (info?.id && !info?.parentID) {
+    if (realConfiguredOpenCodeSessionId && info.id !== realConfiguredOpenCodeSessionId) return;
+          activeSessionId = info.id;
+          await log(`tracking root session: ${info.id} — triggering cold-boot delivery`);
+          // Persist the TUI-generated ses_* ID for the instance so that a
+          // subsequent `c2c start opencode -n <name>` can pass --session
+          // and resume this exact conversation instead of a fresh one.
+          // Guard: only capture on the FIRST root session of this plugin run
+          // (turn_count === 0). If turns have already happened, we have an
+          // established session — overwriting would clobber the real session ID
+          // with a mid-run spurious one (root cause of #58 TUI divergence).
+          const isFirstSession = pluginState.agent.turn_count === 0;
+          if (sessionId && info.id.startsWith("ses") && isFirstSession) {
+            try {
+              const instDir = path.join(
+                process.env.HOME || "",
+                ".local", "share", "c2c", "instances", sessionId
+              );
+              fs.mkdirSync(instDir, { recursive: true });
+              fs.writeFileSync(path.join(instDir, "opencode-session.txt"), info.id + "\n");
+              await log(`captured opencode session id → ${path.join(instDir, "opencode-session.txt")}`);
+            } catch (err) {
+              await log(`session id capture error: ${err}`);
+            }
+          } else if (sessionId && !isFirstSession) {
+            await log(`skipped opencode-session.txt overwrite for ${info.id} (turn_count=${pluginState.agent.turn_count} — real session already established)`);
+          }
+          // Delay before first promptAsync: calling it too soon after session.created
+          // can succeed silently but the session may not yet be ready to surface the
+          // message. Configurable via C2C_PLUGIN_COLD_BOOT_DELAY_MS (default 1500;
+          // set to 0 in tests to skip the delay).
+          const coldBootDelayMs = parseInt(process.env.C2C_PLUGIN_COLD_BOOT_DELAY_MS || "1500", 10);
+          if (coldBootDelayMs > 0) {
+            await new Promise<void>(resolve => setTimeout(resolve, coldBootDelayMs));
+          }
+          // Also deliver kickoff prompt — session.created does not call deliverKickoffPrompt
+          // (only session.idle does), so a session that never fires idle would miss the kickoff.
+          // Guard with autoKickoff to respect the c2c start --auto flag; without it, the kickoff
+          // file should not exist and deliverKickoffPrompt is a no-op anyway.
+          if (autoKickoff) await deliverKickoffPrompt(info.id);
+          // Exponential-backoff retry: if spool still has messages after first attempt,
+          // retry up to 3 more times (3s → 6s → 12s). Each attempt re-checks the spool
+          // so concurrent background-loop delivery won't double-deliver.
+          // Bug #5: single 3s retry wasn't enough for slow-initialising sessions.
+          void (async () => {
+            const maxRetries = 3;
+            for (let r = 1; r <= maxRetries; r++) {
+              // On first iteration always attempt delivery: drain the cold-boot spawn
+              // queue (readSpool is empty but spawn has queued entries). sessionIdle
+              // will later deliver the supervisor reply — this cold-boot drain must
+              // run first to consume the empty-messages drain entry, otherwise sessionIdle
+              // drains the wrong spawn entry. idleOnlyMode does NOT skip first delivery.
+              if (r === 1) {
+                // In idle-only mode, sessionIdle is the delivery trigger for normal messages,
+                // but the cold-boot drain must still run to consume the cold-boot queue entry
+                // so sessionIdle drains the supervisor-reply entry (not the cold-boot entry).
+                await deliverMessages(info.id).catch(() => {});
+              } else {
+                if (readSpool().length === 0) break;
+                const retryDelayMs = coldBootDelayMs > 0
+                  ? 3000 * Math.pow(2, r - 1)
+                  : coldBootDelayMs;
+                await log(`cold-boot: spool not empty after attempt ${r} — retrying in ${retryDelayMs}ms`);
+                await new Promise<void>(resolve => setTimeout(resolve, retryDelayMs));
+                if (!idleOnlyMode) await deliverMessages(info.id).catch(() => {});
+              }
+            }
+          })();
+        }
+        return;
+      }
+
+      // Permission flow (v2): opencode emits "permission.asked" via the SDK Event
+      // stream for every ask — both config-declared (e.g. `"permission": {"bash": "ask"}`)
+      // and runtime-declared. The `permission.ask` plugin hook in the Hooks interface
+      // is NOT wired in current opencode builds (binary has no literal "permission.ask"
+      // string — only "permission.asked"/"permission.replied" events). So we resolve
+      // the dialog by calling the HTTP API directly.
+      if (event.type === "permission.asked" || event.type === "permission.updated") {
+        const perm = (event as any).properties ?? {};
+        const permId: string = perm.id || "";
+        if (!permId) return;
+        if (seenPermissionIds.includes(permId)) return;
+        seenPermissionIds.push(permId);
+        if (seenPermissionIds.length > PENDING_PERMISSION_CAP) {
+          // [#494-G1] Evict the oldest seen ID from both structures together.
+          const evicted = seenPermissionIds.shift();
+          if (evicted) removePendingPermission(evicted);
+        }
+
+        const sid: string = perm.sessionID || activeSessionId || sessionId || "unknown";
+        const timeoutSec = Math.round(permissionTimeoutMs / 1000);
+        const summary = summarizePermission(perm as Record<string, unknown>);
+        const instanceName: string = process.env.C2C_INSTANCE_NAME || "";
+        const from = instanceName || c2cAlias || sid;
+        const msg = [
+          `PERMISSION REQUEST from ${from}:`,
+          `  action: ${summary}`,
+          `  id: ${permId}`,
+          `  session: ${sid}`,
+          `Reply within ${timeoutSec}s:`,
+          `  c2c send ${c2cAlias} "permission:${permId}:approve-once"`,
+          `  c2c send ${c2cAlias} "permission:${permId}:approve-always"`,
+          `  c2c send ${c2cAlias} "permission:${permId}:reject"`,
+          `(timeout → auto-reject; late replies will be NACK'd)`,
+        ].join("\n");
+
+        // Fire-and-forget: wait for a reply in the background and resolve via HTTP.
+        void (async () => {
+          const supervisors = await selectSupervisors();
+          // M2: open pending reply slot BEFORE sending permission requests
+          try {
+            await runC2c(["open-pending-reply", permId, "--kind", "permission", "--supervisors", supervisors.join(",")]);
+            await log(`M2: opened pending reply slot for ${permId}`);
+          } catch (err) {
+            await log(`M2: open-pending-reply error: ${err} — continuing without broker tracking`);
+          }
+          for (const supervisor of supervisors) {
+            try {
+              await runC2c(["send", supervisor, msg]);
+              await log(`permission DM sent to ${supervisor}: ${permId}`);
+            } catch (err) {
+              await log(`permission DM error (${supervisor}): ${err}`);
+            }
+          }
+          const minutes = Math.round(permissionTimeoutMs / 60000);
+          const who = supervisors.length === 1 ? supervisors[0] : `${supervisors.length} supervisors`;
+          void toast(`c2c · awaiting approval from ${who} (${minutes}m)`);
+          const reply = await waitForPermissionReply(permId, permissionTimeoutMs, supervisors);
+          const timedOut = reply === "timeout";
+          const response =
+            reply === "approve-once" ? "once" :
+            reply === "approve-always" ? "always" :
+            "reject"; // covers both explicit reject AND timeout (fail-closed)
+          if (timedOut) {
+            await log(`permission timeout (${timeoutSec}s): ${permId} — auto-rejecting`);
+            timedOutPermissions.set(permId, {
+              sid,
+              supervisors,
+              timedOutAtMs: Date.now(),
+            });
+            // Garbage-collect the entry later so the Map doesn't grow forever.
+            setTimeout(() => timedOutPermissions.delete(permId), timedOutMemoryMs);
+            // Notify every supervisor we asked, so the swarm knows the
+            // request expired without human input.
+            for (const supervisor of supervisors) {
+              try {
+                await runC2c(["send", supervisor,
+                  `permission ${permId} timed out after ${timeoutSec}s — auto-rejected. Reply with "permission:${permId}:approve-once" or similar to learn it arrived late.`]);
+              } catch { /* best-effort */ }
+            }
+            const mins = Math.round(permissionTimeoutMs / 60000);
+            void toast(`c2c · no reply in ${mins}m — auto-rejected`, "warning");
+          }
+          try {
+            await (ctx.client as any).postSessionIdPermissionsPermissionId({
+              path: { id: sid, permissionID: permId },
+              body: { response },
+            });
+            await log(`permission resolved via HTTP: ${permId} → ${response}${timedOut ? " (timeout)" : ""}`);
+            if (!timedOut) {
+              const by = supervisors.length === 1 ? ` by ${supervisors[0]}` : "";
+              const nice =
+                response === "once"   ? `approved once${by}` :
+                response === "always" ? `approved always${by}` :
+                                        `rejected${by}`;
+              void toast(`c2c · ${nice}`);
+            }
+          } catch (err) {
+            await log(`permission HTTP resolve error: ${permId} → ${response}: ${err}`);
+            void toast(`c2c · resolve failed — use TUI dialog`, "error");
+          }
+        })();
+        return;
+      }
+
+      // Question flow: opencode emits "question.asked" when the agent needs
+      // human input (clarification, multiple-choice, free text). We notify the
+      // supervisor via DM and forward their reply through the HTTP API.
+      if (event.type === "question.asked") {
+        const qProps = (event as any).properties ?? {};
+        const qId: string = qProps.id || "";
+        if (!qId || seenQuestionIds.includes(qId)) return;
+        seenQuestionIds.push(qId);
+        if (seenQuestionIds.length > 20) seenQuestionIds.shift();
+
+        const questions: Array<{question: string; header: string; options: Array<{value: string}>}> =
+          qProps.questions || [];
+        const sid: string = qProps.sessionID || activeSessionId || sessionId || "unknown";
+        const instanceName: string = process.env.C2C_INSTANCE_NAME || "";
+        const from = instanceName || c2cAlias || sid;
+        const timeoutSec = Math.round(permissionTimeoutMs / 1000); // reuses C2C_PERMISSION_TIMEOUT_MS
+
+        // Capture in statefile so observer pane shows pending question.
+        if (questions.length > 0) {
+          const first = questions[0];
+          pluginState.pendingQuestion = {
+            id: qId,
+            text: first.question || "",
+            header: first.header || "",
+            options: (first.options || []).map((o: any) => String(o.label || o.value || o)),
+          };
+          writeStateSnapshot();
+        }
+
+        // Collect per-question option labels for numeric-index resolution on reply.
+        const questionOpts: string[][] = [];
+        const lines = [`QUESTION REQUEST from ${from}:`];
+        for (let i = 0; i < questions.length; i++) {
+          const q = questions[i];
+          lines.push(`  Q${i + 1}: ${q.header || q.question}`);
+          if (q.question !== q.header) lines.push(`       ${q.question}`);
+          // Options use {label, description}; show numbered so supervisors can reply by index.
+          const opts: string[] = (q.options || []).map((o: any) => String(o.label || o.value || o));
+          questionOpts.push(opts);
+          if (opts.length > 0) {
+            opts.forEach((label, idx) => lines.push(`       ${idx + 1}. ${label}`));
+          }
+        }
+        lines.push(`  id: ${qId}`, `  session: ${sid}`);
+        lines.push(`Reply within ${timeoutSec}s:`);
+        lines.push(`  c2c send ${c2cAlias} "question:${qId}:answer:1"  (or label text, or free text)`);
+        lines.push(`  c2c send ${c2cAlias} "question:${qId}:reject"`);
+
+        void (async () => {
+          const supervisors = await selectSupervisors();
+          for (const supervisor of supervisors) {
+            try {
+              await runC2c(["send", supervisor, lines.join("\n")]);
+              await log(`question DM sent to ${supervisor}: ${qId}`);
+            } catch (err) {
+              await log(`question DM error (${supervisor}): ${err}`);
+            }
+          }
+          void toast(`c2c · question — awaiting human input`);
+          const reply = await waitForQuestionReply(qId, timeoutSec * 1000);
+          pluginState.pendingQuestion = null;
+          writeStateSnapshot();
+          // Resolve the supervisor's answer for each question.
+          // If the raw answer is a 1-based numeric index (e.g. "1", "2"), map it to
+          // the corresponding option label so the API receives the expected label string.
+          // Free-text answers and exact label matches pass through unchanged.
+          function resolveAnswer(raw: string, opts: string[]): string {
+            const n = parseInt(raw, 10);
+            if (!isNaN(n) && n >= 1 && n <= opts.length && String(n) === raw.trim()) {
+              return opts[n - 1];
+            }
+            return raw;
+          }
+          const answers: string[][] = questions.map((_, qi) =>
+            reply.answer !== null ? [resolveAnswer(reply.answer, questionOpts[qi] ?? [])] : []
+          );
+          try {
+            if (reply.rejected || reply.answer === null) {
+              await (ctx.client as any).question.reject({
+                path: { id: qId },
+              });
+              await log(`question rejected/timed-out: ${qId}`);
+              void toast(`c2c · question ${reply.rejected ? "rejected" : "timed out"}`, "warning");
+            } else {
+              await (ctx.client as any).question.reply({
+                path: { id: qId },
+                body: { answers },
+              });
+              await log(`question replied: ${qId} → "${reply.answer}"`);
+              void toast(`c2c · question answered`);
+            }
+          } catch (err) {
+            await log(`question API error: ${qId}: ${err}`);
+            void toast(`c2c · question reply failed — use TUI`, "error");
+          }
+        })();
+        return;
+      }
+
+      // Re-register + clear compacting flag when OpenCode finishes context compaction.
+      // After compaction OpenCode spawns a fresh child process that does NOT inherit
+      // C2C_MCP_SESSION_ID from the plugin — without re-registration the new process
+      // would use a fallback session_id (e.g. CLAUDE_SESSION_ID from a parent shell)
+      // and messages would be attributed to the wrong alias (e.g. coordinator1).
+      if (event.type === "session.compacted") {
+        const e = event as EventSessionCompacted;
+        const compactedSessionId: string = (e as any).properties?.sessionID || activeSessionId || "";
+        if (!compactedSessionId) return;
+        if (realConfiguredOpenCodeSessionId && compactedSessionId !== realConfiguredOpenCodeSessionId) return;
+        try {
+          // Re-register first so the new MCP server process has the correct alias
+          // bound to its session_id before any tool calls (including send_room).
+          await runC2c(["register", "--json"]);
+          await log(`session.compacted: re-registered after compaction for ${compactedSessionId}`);
+        } catch (err) {
+          await log(`session.compacted: register failed: ${err}`);
+        }
+        try {
+          await runC2c(["clear-compact"]);
+          await log(`session.compacted: cleared compacting flag for ${compactedSessionId}`);
+        } catch (err) {
+          await log(`session.compacted: clear-compact failed: ${err}`);
+        }
+        return;
+      }
+
+      // Deliver on session.idle — agent has just finished a turn and is ready
+      if (event.type === "session.idle") {
+        const e = event as EventSessionIdle;
+        const idleSessionId: string = (e as any).properties?.sessionID || activeSessionId || "";
+        if (!idleSessionId) return;
+        if (realConfiguredOpenCodeSessionId && idleSessionId !== realConfiguredOpenCodeSessionId) return;
+        // Only deliver for the root session (avoid interfering with sub-agents)
+        if (activeSessionId && idleSessionId !== activeSessionId) return;
+        activeSessionId = idleSessionId;
+        await deliverKickoffPrompt(idleSessionId);
+        await deliverMessages(idleSessionId);
+      }
+    },
+
+  };
+};
+
+export { extractQuestionReply, extractPermissionReply };
+
+export default C2CDelivery;
