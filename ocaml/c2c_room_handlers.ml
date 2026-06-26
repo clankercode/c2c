@@ -385,7 +385,7 @@ let set_room_visibility ~broker ~session_id_override ~arguments =
   let visibility_str = string_member "visibility" arguments in
   let visibility =
     match visibility_str with
-    | "invite_only" | "invite-only" -> Invite_only
+    | "invite_only" | "invite-only" | "invite" -> Invite_only
     | "private" -> Private
     | _ -> Public
   in

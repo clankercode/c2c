@@ -571,7 +571,7 @@ let rooms_visibility_cmd =
           let vis =
             match String.lowercase_ascii vis_str with
             | "public" -> Public
-            | "invite_only" | "invite-only" -> Invite_only
+            | "invite_only" | "invite-only" | "invite" -> Invite_only
             | "private" -> Private
             | _ ->
                 Printf.eprintf "error: unknown visibility '%s'. Use 'public', 'private', or 'invite_only'.\n%!" vis_str;
@@ -707,7 +707,7 @@ let rooms_create_cmd =
   let visibility =
     match String.lowercase_ascii vis_str with
     | "public" -> Public
-    | "invite_only" | "invite-only" -> Invite_only
+    | "invite_only" | "invite-only" | "invite" -> Invite_only
     | "private" -> Private
     | _ ->
         Printf.eprintf "error: unknown visibility '%s'. Use 'public', 'private', or 'invite_only'.\n%!" vis_str;
