@@ -6,6 +6,9 @@
 !.c2c/memory/.gitkeep
 .c2c/schedules/
 .c2c/roles/*.md
+# Live tmux-supervise manifest is host-specific; the committed template is
+# .c2c/supervise.example.toml.
+.c2c/supervise.toml
 
 node_modules/
 dist/

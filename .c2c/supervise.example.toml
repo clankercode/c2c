@@ -1,0 +1,38 @@
+# c2c tmux supervise manifest (example)
+#
+# Declarative self-healing supervisor for swarm agents. Copy this to
+# `.c2c/supervise.toml` (gitignored — host-specific) and edit, then run:
+#
+#     scripts/c2c_tmux.py supervise            # loop forever (run inside tmux)
+#     scripts/c2c_tmux.py supervise --once     # single tick (cron-friendly)
+#     scripts/c2c_tmux.py supervise --dry-run  # report decisions, launch nothing
+#
+# The supervisor polls broker liveness (`c2c list --json`) every
+# poll_interval_s and respawns any listed agent that is not alive, launching
+# `c2c start <client> -n <alias>` in a fresh detached tmux window. Respawns
+# are idempotent (a live agent is never relaunched) and exponentially backed
+# off to damp crash-loops. It must run INSIDE a tmux session to spawn windows.
+
+[supervisor]
+poll_interval_s = 15      # seconds between liveness polls
+backoff_base_s  = 30      # post-launch grace + first retry delay (seconds)
+backoff_max_s   = 300     # exponential-backoff ceiling (seconds)
+session         = ""      # optional tmux session to spawn windows in ("" = current)
+
+# One [[agent]] block per agent to keep alive.
+
+[[agent]]
+alias  = "coordinator1"
+client = "claude"
+role   = "coordinator"            # optional — pre-seeds .c2c/roles/<alias>.md
+cwd    = "/home/xertrov/src/c2c"  # optional — cd before `c2c start`
+
+[[agent]]
+alias  = "tundra-coder"
+client = "opencode"
+role   = "coder"
+
+[[agent]]
+alias  = "review-bot"
+client = "codex"
+extra  = ["--auto"]               # optional — extra args forwarded to `c2c start`

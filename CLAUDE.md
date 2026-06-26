@@ -73,7 +73,7 @@ Full verbatim framing lives in `.goal-loops/active-goal.md` under
 - **Testing against live agents: use tmux + `scripts/*`, not ad-hoc spawns.**
   Convenience c2c tmux script ./scripts/c2c_tmux.py — the canonical tmux
   swiss-army CLI for live-peer testing (subsumes the legacy `c2c-swarm.sh`):
-    usage: c2c_tmux [-h] {list,peek,peek-all,capture,send,send-raw,enter,keys,exec,follow,unfollow,grep,grep-echild,restart,layout,whoami,launch,wait-alive,stop} ..
+    usage: c2c_tmux [-h] {list,peek,peek-all,capture,send,send-raw,enter,keys,exec,follow,unfollow,grep,grep-echild,restart,layout,whoami,launch,wait-alive,stop,supervise} ..
   Live-peer tests (cross-client sends, wake paths, permission flows) must
   drive real sessions in tmux panes — `scripts/c2c_tmux.py` (it delegates to
   `scripts/c2c-tmux-enter.sh`, `scripts/c2c-tmux-exec.sh`, and
