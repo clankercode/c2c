@@ -105,10 +105,9 @@
         line-height: 1.1;
         letter-spacing: -0.005em;
       }
-      .tag-left { left: 28px; color: var(--heading); }
-      .tag-left .em { color: var(--amber); }
-      .tag-right { right: 28px; text-align: right; color: var(--amber); }
-      .tag-right .sm { color: var(--muted); font-weight: 500; }
+      .tag-left { left: 22px; color: var(--heading); }
+      .tag-right { right: 22px; text-align: right; color: var(--heading); }
+      .tag-left .em, .tag-right .em { color: var(--amber); }
 
       /* Hero wordmark (center) */
       .hero {
@@ -119,7 +118,7 @@
       }
       .wordmark {
         font-weight: 800;
-        font-size: 108px;
+        font-size: 104px;
         line-height: 1;
         letter-spacing: 0.01em;
         color: var(--heading);
@@ -133,13 +132,13 @@
       .wordmark .c2c { color: var(--amber); }
       .wordmark .cursor {
         display: inline-block;
-        width: 20px;
-        height: 86px;
+        width: 46px;
+        height: 13px;
         background: var(--green);
-        border-radius: 4px;
+        border-radius: 3px;
         margin-left: 0.1em;
-        vertical-align: -11px;
-        box-shadow: 0 0 30px rgba(62,255,140,0.6);
+        vertical-align: 0.06em;
+        box-shadow: 0 0 26px rgba(62,255,140,0.6);
       }
 
       /* Diagram */
@@ -211,7 +210,7 @@
       .cmd .c { color: var(--cyan); }
       .cmd .arg { color: var(--text); }
       .cmd .str { color: var(--yellow); }
-      .cmd .ok { margin-left: 20px; color: var(--green); font-weight: 700; letter-spacing: 0.02em; }
+      .cmd .ok { margin-left: auto; color: var(--green); font-weight: 700; letter-spacing: 0.02em; }
       .badge .tick { color: var(--green); font-weight: 700; }
       .badge .np { color: var(--cyan); }
 
@@ -385,7 +384,7 @@
       <div class="hero">
         <div class="wordmark"><span class="prompt">&gt;</span><span class="c2c">c2c</span><span class="cursor"></span></div>
       </div>
-      <div class="tag-right">from anywhere<br />to anywhere</div>
+      <div class="tag-right">from <span class="em">anywhere</span><br />to <span class="em">anywhere</span></div>
 
       <!-- Command status row (3 boxes) -->
       <div class="cmdrow cmd">
