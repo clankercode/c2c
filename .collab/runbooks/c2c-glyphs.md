@@ -102,9 +102,12 @@ is why a bare-aliased relay send showed `▼◎` not `▼⇄`. The NEW `unknown`
 glyph disambiguates "couldn't tell" from "actually via the sessions
 broker".
 
-## Follow-up — pi-c2c `routeForAlias`
+## pi-c2c `routeForAlias` — LANDED
 
-**Out of scope for this c2c slice; flagged here.** pi-c2c's `routeForAlias`
-should switch its bare-alias fallback from `sessions` → `unknown` (`◌`), so
-inbound bare-aliased messages render as `unknown` rather than asserting the
-cross-repo sessions broker. This is a separate pi-c2c change.
+pi-c2c's `routeForAlias` switches its bare-alias fallback from `sessions` →
+`unknown` (`◌`), so inbound bare-aliased messages render as `unknown` rather
+than asserting the cross-repo sessions broker. **Landed 2026-06-26** in pi-c2c
+commit `a484c42` (`feat(ui): add 'unknown' route glyph (◌) for undeterminable
+routes`) — `src/ui/compact-message.ts` `ROUTES.unknown = "◌"` + the
+`routeForAlias` fallback. The c2c `list-glyphs` registry remains the canonical
+source of truth; future clients should fetch it rather than hardcode.
