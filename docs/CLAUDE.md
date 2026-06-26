@@ -92,3 +92,4 @@ on a `docs/*.md` change.
 - Cross-link to runbook: peer-PASS includes a docs-up-to-date
   criterion. See `.collab/runbooks/git-workflow.md` §3 and the
   canonical `.collab/runbooks/documentation-hygiene.md`.
+- Do visual inspections of the site if you made any changes to it.
