@@ -3533,6 +3533,37 @@ let test_deliver_kickoff_unknown_client_returns_empty () =
   | Error msg ->
     fail ("crush should not Error: " ^ msg)
 
+(* B011: the claude onboarding preamble must NOT instruct the agent to arm a
+   heartbeat Monitor — managed sessions already get a native 4.1m wake.toml, so
+   a Monitor would double-wake. *)
+let test_claude_onboarding_preamble_has_no_heartbeat_monitor () =
+  let s = C2c_start.claude_onboarding_preamble ~name:"qa-agent" in
+  check bool "contains agent name" true (string_contains s "qa-agent");
+  check bool "no 'heartbeat 4.1m' Monitor-arming instruction" false
+    (string_contains s "heartbeat 4.1m");
+  check bool "no 'Arm a heartbeat Monitor' instruction" false
+    (string_contains s "Arm a heartbeat");
+  (* core onboarding steps preserved *)
+  check bool "step: whoami" true (string_contains s "whoami");
+  check bool "step: swarm-lounge" true (string_contains s "swarm-lounge");
+  check bool "step: poll_inbox" true (string_contains s "poll_inbox");
+  (* positive native-wake guidance present *)
+  check bool "step: verify schedule" true (string_contains s "c2c schedule list")
+
+let test_intro_on_no_role_excludes_raw_clients () =
+  (* Raw passthrough / bridge clients: no minimal intro. *)
+  check bool "pty excluded" false (C2c_start.intro_on_no_role "pty");
+  check bool "tmux excluded" false (C2c_start.intro_on_no_role "tmux");
+  check bool "relay-connect excluded" false
+    (C2c_start.intro_on_no_role "relay-connect");
+  (* Agent clients: a no-role start is never intro-less. *)
+  check bool "claude gets intro" true (C2c_start.intro_on_no_role "claude");
+  check bool "codex gets intro" true (C2c_start.intro_on_no_role "codex");
+  check bool "codex-headless gets intro" true
+    (C2c_start.intro_on_no_role "codex-headless");
+  check bool "kimi gets intro" true (C2c_start.intro_on_no_role "kimi");
+  check bool "opencode gets intro" true (C2c_start.intro_on_no_role "opencode")
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_start"
@@ -4057,5 +4088,11 @@ let () =
             `Quick, test_read_json_capped_malformed_returns_default )
         ; ( "missing_file_returns_default",
             `Quick, test_read_json_capped_missing_file_returns_default )
+        ] )
+    ; ( "claude_kickoff_wake_b011",
+        [ ( "onboarding_preamble_has_no_heartbeat_monitor",
+            `Quick, test_claude_onboarding_preamble_has_no_heartbeat_monitor )
+        ; ( "intro_on_no_role_excludes_raw_clients",
+            `Quick, test_intro_on_no_role_excludes_raw_clients )
         ] )
     ]
