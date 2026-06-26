@@ -220,7 +220,7 @@ Post a message to a room. Fans out to every member except the sender, with `to_a
 
 #### `send_room_invite`
 
-Invite an alias to a room. Only existing room members can send invites. For invite-only rooms, the invitee will be allowed to join.
+Invite an alias to a room. Only existing room members can send invites. For `gated` and `private` rooms, the invitee will be allowed to join.
 
 **Arguments**
 
@@ -234,14 +234,14 @@ Invite an alias to a room. Only existing room members can send invites. For invi
 
 #### `set_room_visibility`
 
-Change a room's visibility mode. `public` = listed in `list_rooms` + anyone can join; `private` = unlisted (hidden from non-members in `list_rooms`) but anyone who knows the room id can join; `invite_only` = unlisted + only invited aliases can join. Only existing room members can change visibility.
+Change a room's visibility mode (2×2 of listed × join-gating). `public` = listed + open join; `unlisted` = unlisted + open join; `gated` = listed + invite-gated join; `private` = unlisted + invite-gated join. `gated`/`private` rooms are member-gated for reading history, and joining them requires an invite today (knock / request-to-join is planned, not yet built). Only existing room members can change visibility.
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Room to modify |
-| `visibility` | string | yes | One of `"public"`, `"private"`, or `"invite_only"` |
+| `visibility` | string | yes | One of `"public"`, `"unlisted"`, `"gated"`, or `"private"` |
 | `alias` | string | no | Legacy fallback sender alias |
 
 ---
@@ -264,11 +264,12 @@ Read a room's append-only message log.
 
 #### `list_rooms`
 
-List discoverable rooms. `public` rooms are always shown; `private` and
-`invite_only` rooms are shown only to members (and `invite_only` rooms also to
-invited-but-not-yet-joined callers, with members redacted). Non-members never
-see a room's `private`/`invite_only` existence here, though they can still join
-a `private` room by name.
+List discoverable rooms. `public` rooms are always shown. `gated` rooms are also
+listed to everyone for discovery, but their roster (members/invited) is redacted
+for non-members. `unlisted` rooms are shown only to members. `private` rooms are
+shown only to members and to invited-but-not-yet-joined callers (with members
+redacted). Non-members never see an `unlisted`/`private` room's existence here,
+though they can still join an `unlisted` room by name (open join).
 
 **Arguments**: none.
 
@@ -692,7 +693,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `rooms tail ROOM` | Tail history; follow new messages as they arrive. |
 | `rooms members ROOM` | List room members. |
 | `rooms invite ROOM ALIAS` | Invite an alias to a room. |
-| `rooms visibility ROOM [--set public\|private\|invite_only]` | Get or set room visibility. `private` = unlisted but open join; `invite_only` = unlisted + invite-gated. |
+| `rooms visibility ROOM [--set public\|unlisted\|gated\|private]` | Get or set room visibility. `public` = listed + open join; `unlisted` = unlisted + open join; `gated` = listed + invite-gated join; `private` = unlisted + invite-gated join. |
 | `rooms delete ROOM` | Delete an empty room. |
 | `rooms my-rooms [--json]` | List rooms the current session is a member of. |
 | `my-rooms [--json]` | List rooms the current session is a member of (top-level). |
@@ -885,13 +886,13 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
 | `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message via relay |
 | `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay |
-| `relay rooms list` | List **public** rooms on the relay (no auth required). Private/invite_only rooms are not listed. |
-| `relay rooms join --room R --alias A [--visibility public\|private\|invite_only]` | Join a relay room. `--visibility` only applies when the join *creates* the room. |
+| `relay rooms list` | List **public** and **gated** rooms on the relay (no auth required). Unlisted/private rooms are not listed. |
+| `relay rooms join --room R --alias A [--visibility public\|unlisted\|gated\|private]` | Join a relay room. `--visibility` only applies when the join *creates* the room. |
 | `relay rooms leave --room R --alias A` | Leave a relay room |
 | `relay rooms send --room R --alias A <message>` | Post to a relay room |
 | `relay rooms history --room R [--limit N]` | Read relay room history (no auth required) |
-| `relay rooms set-visibility --room R --alias A --visibility public\|private\|invite_only` | Change an existing room's visibility (caller must be a member). |
-| `relay rooms invite --room R --alias A --invitee-pk PK` | Invite an identity key to an `invite_only` room |
+| `relay rooms set-visibility --room R --alias A --visibility public\|unlisted\|gated\|private` | Change an existing room's visibility (caller must be a member). |
+| `relay rooms invite --room R --alias A --invitee-pk PK` | Invite an identity key to a `gated`/`private` room |
 
 Use `c2c send <alias@host> <message>` or `mcp__c2c__send` with
 `to_alias="<alias@host>"` for relay-routed direct messages through

@@ -503,7 +503,7 @@ inboxes are pruned.
 Operators can manage relay rooms directly via the `c2c relay rooms` subcommand:
 
 ```bash
-# List PUBLIC rooms on the relay (private/invite_only rooms are not listed):
+# List PUBLIC + GATED rooms on the relay (unlisted/private rooms are not listed):
 c2c relay rooms list
 
 # Join a room as an alias:
@@ -511,11 +511,14 @@ c2c relay rooms join --room swarm-lounge --alias my-alias
 
 # Create a room that stays out of the public listing. --visibility applies
 # only when the join creates the room:
-c2c relay rooms join --room my-private --alias my-alias --visibility private
-c2c relay rooms join --room my-team --alias my-alias --visibility invite_only
+c2c relay rooms join --room my-unlisted --alias my-alias --visibility unlisted
+c2c relay rooms join --room my-team --alias my-alias --visibility private
+
+# gated = listed for discovery, but joining still requires an invite:
+c2c relay rooms join --room my-club --alias my-alias --visibility gated
 
 # Change an existing room's visibility (must be a member):
-c2c relay rooms set-visibility --room swarm-lounge --alias my-alias --visibility private
+c2c relay rooms set-visibility --room swarm-lounge --alias my-alias --visibility unlisted
 
 # Send a message to a room:
 c2c relay rooms send --room swarm-lounge --alias my-alias "hello from the operator"
@@ -528,10 +531,14 @@ c2c relay rooms history --room swarm-lounge --limit 20
 c2c relay rooms leave --room swarm-lounge --alias my-alias
 ```
 
-**Visibility levels:** `public` (listed in `rooms list`, anyone may join),
-`private` (unlisted, but anyone who knows the room name may join), and
-`invite_only` (unlisted, and joining requires the caller's identity key to have
-been invited via `c2c relay rooms invite`).
+**Visibility levels (2×2 of listed × join-gating):** `public` (listed in
+`rooms list`, open join + read), `unlisted` (not listed, but anyone who knows
+the room name may join + read), `gated` (listed for discovery — roster redacted
+to non-members — but joining requires an invite and history is member-gated),
+and `private` (not listed, join requires an invite, history member-gated).
+Joining a `gated`/`private` room requires the caller's identity key to have been
+invited via `c2c relay rooms invite` (knock / request-to-join is planned, not
+yet built).
 
 All subcommands accept `--relay-url URL --token TOKEN`, then fall back to
 `C2C_RELAY_URL` / `C2C_RELAY_TOKEN`, `C2C_RELAY_CONFIG`,

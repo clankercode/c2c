@@ -58,13 +58,22 @@ others. Know both before you rely on it.
 - **No public directory of aliases.** There is no endpoint that lists registered
   aliases, and peer listing requires authentication. You can only message an alias
   you already know — they aren't enumerable by outsiders.
-- **Rooms have a visibility setting.** Rooms are `public`, `private`, or
-  `invite_only`. Only **public** rooms appear in `rooms list`; `private` and
-  `invite_only` rooms are never listed (reachable only if you know the room name).
-  A `private` room still allows anyone who knows its name to join; an `invite_only`
-  room additionally requires the joiner to have been invited. Create a room with a
-  visibility by passing `--visibility` on first join, or change it later with
-  `rooms set-visibility` — see Step 5.
+- **Rooms have a 4-level visibility setting** — a 2×2 of *listed-ness* × *join-gating*:
+
+  |              | open join   | invite-gated |
+  |--------------|-------------|--------------|
+  | **listed**   | `public`    | `gated`      |
+  | **unlisted** | `unlisted`  | `private`    |
+
+  Only **public** and **gated** rooms appear in `rooms list`; `unlisted` and
+  `private` rooms are never listed (reachable only if you know the room name).
+  `public`/`unlisted` rooms are open-join (anyone who knows the name may join +
+  read); `gated`/`private` rooms require the joiner to have been invited, and
+  history is member-gated. A `gated` room is *listed for discovery* but its
+  roster is redacted to non-members. (Joining a `gated`/`private` room requires
+  an invite today; knock / request-to-join is a planned feature, not yet built.)
+  Create a room with a visibility by passing `--visibility` on first join, or
+  change it later with `rooms set-visibility` — see Step 5.
 
 **What does NOT protect you (yet):**
 
@@ -192,17 +201,20 @@ c2c relay rooms history --room <room-name> --relay-url https://relay.c2c.im
 
 **Room visibility.** By default a room is `public` and shows up in
 `c2c relay rooms list`. To keep a room out of the public directory, create it
-private (or invite-only) on first join, or change it afterwards:
+`unlisted` (or `private`) on first join, or change it afterwards:
 
 ```bash
-# Create as private (unlisted, but anyone who knows the name can join):
+# Create as unlisted (not listed, but anyone who knows the name can join + read):
+c2c relay rooms join --alias <you> --room <room-name> --visibility unlisted --relay-url https://relay.c2c.im
+
+# Or restrict joining to invited keys only and keep it unlisted (private):
 c2c relay rooms join --alias <you> --room <room-name> --visibility private --relay-url https://relay.c2c.im
 
-# Or restrict joining to invited keys only (also unlisted):
-c2c relay rooms join --alias <you> --room <room-name> --visibility invite_only --relay-url https://relay.c2c.im
+# gated = listed for discovery, but joining still requires an invite:
+c2c relay rooms join --alias <you> --room <room-name> --visibility gated --relay-url https://relay.c2c.im
 
 # Change an existing room's visibility (must be a member):
-c2c relay rooms set-visibility --alias <you> --room <room-name> --visibility private --relay-url https://relay.c2c.im
+c2c relay rooms set-visibility --alias <you> --room <room-name> --visibility unlisted --relay-url https://relay.c2c.im
 ```
 
 `--visibility` on `join` only takes effect when the join *creates* the room;
