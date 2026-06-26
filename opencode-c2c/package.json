@@ -1,8 +1,11 @@
 {
   "name": "opencode-c2c",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "0.1.0",
+  "description": "c2c OpenCode plugin — automatic broker message delivery.",
+  "main": "c2c.ts",
+  "files": [
+    "c2c.ts"
+  ],
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
