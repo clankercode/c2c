@@ -732,10 +732,14 @@ def test_tmux_driver_threads_socket_through_every_invocation(
     # send_key Enter must bypass the default-socket enter helper when isolated.
     driver.send_key(handle, "Enter")
 
+    # Isolated server skips ~/.tmux.conf (-f /dev/null) so continuum can't
+    # auto-restore the operator's sessions onto our socket.
     for cmd in calls:
-        assert cmd[:3] == ["tmux", "-L", "c2c-chess-e2e"], cmd
+        assert cmd[:5] == ["tmux", "-L", "c2c-chess-e2e", "-f", "/dev/null"], cmd
     # The Enter path used plain send-keys (not the repo helper script).
-    assert calls[-1] == ["tmux", "-L", "c2c-chess-e2e", "send-keys", "-t", "%7", "Enter"]
+    assert calls[-1] == [
+        "tmux", "-L", "c2c-chess-e2e", "-f", "/dev/null", "send-keys", "-t", "%7", "Enter",
+    ]
 
 
 def test_tmux_driver_default_socket_omits_dash_l(

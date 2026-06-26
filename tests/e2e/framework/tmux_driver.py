@@ -21,7 +21,11 @@ class TmuxDriver:
     def _tmux(self, *args: str) -> list[str]:
         base = ["tmux"]
         if self.socket:
-            base += ["-L", self.socket]
+            # `-f /dev/null` skips ~/.tmux.conf so the dedicated server starts
+            # CLEAN — no tmux-resurrect/continuum auto-restore cloning the
+            # operator's real sessions onto our socket (which both pollutes the
+            # server and hangs `new-session -d` while the restore runs).
+            base += ["-L", self.socket, "-f", "/dev/null"]
         return base + list(args)
 
     def start(self, spec: TerminalStartSpec) -> TerminalHandle:
