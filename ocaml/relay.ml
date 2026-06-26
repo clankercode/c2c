@@ -3669,6 +3669,19 @@ generateKeys();
          (Printf.sprintf "verified signer %S does not own session (%s, %s)"
             verified node_id session_id))
 
+  (* The body [from_alias] on send routes may carry an opaque host suffix
+     (`<name>@<host_id>`) for relay routing/display — clients like pi-c2c sign
+     and send under their full relay address. The verified Ed25519 signer is
+     bound to the bare [name], so compare against the name part when
+     [from_alias] is a well-formed `<name>@<host>` (or a bare valid name);
+     otherwise compare the whole string so a malformed claim still rejects.
+     The host suffix is opaque routing metadata and grants no privilege — the
+     name↔identity binding is what's enforced. *)
+  let from_alias_signer_name from_alias =
+    if C2c_name.is_valid_with_opaque_host_id from_alias
+    then fst (C2c_name.split_opaque_host_id from_alias)
+    else from_alias
+
   let handle_heartbeat relay ~verified_alias body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
@@ -3844,7 +3857,7 @@ generateKeys();
                           (Printf.sprintf "local forwarder error: %s" err))))
       else
       match verified_alias with
-      | Some v when v <> from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
+      | Some v when v <> from_alias_signer_name from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
       | _ ->
         let message_id = get_opt_string body "message_id" in
         let deliver_to_alias = if opaque_host_route then to_alias else stripped_to_alias in
@@ -3878,7 +3891,7 @@ generateKeys();
       respond_bad_request (json_error_str err_bad_request "from_alias and content are required")
     else
       match verified_alias with
-      | Some v when v <> from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
+      | Some v when v <> from_alias_signer_name from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
       | _ ->
         let message_id = get_opt_string body "message_id" in
         match R.send_all relay ~from_alias ~content ~message_id with
