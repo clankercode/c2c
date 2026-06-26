@@ -1,0 +1,18 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B004
+priority: medium
+status: pending
+tags:
+    - rooms
+    - relay
+    - visibility
+title: Knock / request-to-join for gated rooms
+---
+The 4-level room visibility model (public / unlisted / gated / private) names a 'gated' tier = LISTED + invite-gated: a room you can discover via list_rooms but cannot join without an invite. Without a knock / request-to-join flow, 'gated' is a dead-end teaser UX (you see it, can't join, can't ask).
+
+Build a knock mechanism so a non-member who finds a gated room can REQUEST to join: request enqueues to room admins/inviters, who can approve (= issue invite) or deny. Surfaces: relay signed op (knock_room), local broker, MCP tool, CLI (c2c rooms knock <room>), and a way for members to see/approve pending knocks.
+
+NOT building now — placeholder so 'gated' has a path to first-class UX. Until then 'gated' = discoverable but invite-only (invite must be issued out-of-band by a member).
