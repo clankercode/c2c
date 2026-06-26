@@ -57,6 +57,7 @@ let command_tier_map () : (string * safety) list =
   ; "status", Tier1
   ; "sessions", Tier1
   ; "commands", Tier1
+  ; "agent-help", Tier1   (* agent-oriented MCP+CLI example help — safe everywhere *)
   ; "monitor", Tier1      (* read-only inbox/archive event stream — required by agent recovery-snippet *)
   ; "skills", Tier1
   (* list-glyphs: read-only, side-effect-free glyph registry dump. Tier1 so

@@ -743,6 +743,13 @@ val handle_tool_call :
     detection. Use this in tests instead of [Broker.register] when testing S2/S3
     pubkey-handling logic. *)
 
+val base_tool_definitions : Yojson.Safe.t list
+(** The static MCP tool registry: one JSON [tool_definition] per tool
+    ({name, description, inputSchema{properties, required}}). Source of
+    truth for the served [tools/list] payload and for runtime-generated
+    agent help ([c2c agent-help]). Excludes the dev-build-only [debug]
+    tool (see [tool_definitions] for the build-gated full list). *)
+
 val base_tool_names : string list
 (** All base tool names as bare strings (e.g. ["register"; "list"; "send"; ...]).
     Single source of truth — derived from [base_tool_definitions]. *)
