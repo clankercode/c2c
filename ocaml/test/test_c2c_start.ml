@@ -533,6 +533,23 @@ let test_should_start_codex_heartbeat_requires_codex_deliver_daemon () =
     (C2c_start.should_start_codex_heartbeat ~client:"opencode"
        ~deliver_started:true)
 
+(* B013: when the deliver daemon fails to start, the failure must be surfaced
+   loudly (not silent) — the message names the client, the session, the
+   degraded state, and the recovery action. *)
+let test_deliver_start_failure_warning_is_loud_and_actionable () =
+  let w =
+    C2c_start.deliver_start_failure_warning ~name:"codex-amber-vale"
+      ~client:"codex"
+  in
+  check bool "names the session" true (string_contains w "codex-amber-vale");
+  check bool "names the client" true (string_contains w "client=codex");
+  check bool "flags it as a WARNING" true (string_contains w "WARNING");
+  check bool "states delivery is disabled" true (string_contains w "DISABLED");
+  check bool "mentions heartbeat suppression" true
+    (string_contains w "heartbeat is suppressed");
+  check bool "gives a recovery action" true
+    (string_contains w "c2c restart codex-amber-vale")
+
 let test_enqueue_codex_heartbeat_uses_broker_inbox_transport () =
   with_temp_dir @@ fun dir ->
   let broker = C2c_mcp.Broker.create ~root:dir in
@@ -3653,6 +3670,8 @@ let () =
             `Quick, test_codex_heartbeat_enabled_for_codex_family_only )
         ; ( "should_start_codex_heartbeat_requires_codex_deliver_daemon",
             `Quick, test_should_start_codex_heartbeat_requires_codex_deliver_daemon )
+        ; ( "deliver_start_failure_warning_is_loud_and_actionable",
+            `Quick, test_deliver_start_failure_warning_is_loud_and_actionable )
         ; ( "enqueue_codex_heartbeat_uses_broker_inbox_transport",
             `Quick, test_enqueue_codex_heartbeat_uses_broker_inbox_transport )
         ; ( "parse_heartbeat_duration_units",
