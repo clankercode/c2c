@@ -40,7 +40,14 @@ agent's system prompt verbatim.
 ---
 description: One-line summary. Shown in menus.
 role: subagent           # subagent | primary | all
-model: claude-sonnet-4-7 # optional; override per client
+model: claude-sonnet-4-7 # optional legacy/default model override
+pmodel: "anthropic:claude-sonnet-4-7" # optional provider:model override
+role_class: reviewer     # optional pmodel bucket / social room hint
+pronouns: they/them      # optional; rendered for clients that support it
+coordinator: false       # optional bool, used by role tooling
+include: [recovery]      # optional snippets from .c2c/role-snippets/
+compatible_clients: [opencode, claude, codex, kimi]
+required_capabilities: [opencode_plugin]
 c2c:
   alias: reviewer              # optional; defaults to filename
   auto_join_rooms: [swarm-lounge]
@@ -63,12 +70,18 @@ Fields are grouped by who consumes them:
 | Block                  | Consumer      | Purpose                              |
 |------------------------|---------------|--------------------------------------|
 | `description`, `role`  | Cross-client  | Common surface across all clients    |
-| `model`                | Cross-client  | Default model override (optional)    |
-| `c2c`                  | c2c launcher  | Broker alias, auto-join rooms        |
+| `model`, `pmodel`      | Cross-client  | Model overrides; `pmodel` uses provider:model syntax and wins over role-class defaults |
+| `role_class`           | c2c launcher  | Role category for pmodel lookup and role-class rooms |
+| `pronouns`             | Cross-client  | Optional display metadata for clients that support it |
+| `coordinator`          | c2c tooling   | Optional bool for coordinator-style roles |
+| `include`              | c2c compiler  | Snippet names loaded from `.c2c/role-snippets/` and prepended to the prompt body |
+| `compatible_clients`   | c2c compiler  | Restrict rendering/launch to the listed clients |
+| `required_capabilities`| c2c compiler  | Capabilities the launch path must provide |
+| `c2c`                  | c2c launcher  | Broker alias, auto-join rooms, heartbeat settings |
 | `opencode`             | OpenCode only | Theme, permission, model options     |
 | `claude`               | Claude Code   | Tools list, Claude-specific settings |
-| `codex`                | Codex         | (future) Codex-specific settings     |
-| `kimi`                 | Kimi          | (future) Kimi-specific settings      |
+| `codex`                | Codex         | Codex-specific settings              |
+| `kimi`                 | Kimi          | Kimi-specific settings               |
 
 **Do not put client-specific fields at the top level.** Unknown top-level
 keys get forwarded to the model as options (per OpenCode's doc), which can
@@ -112,8 +125,8 @@ OpenCode fork's theme key. See
 ### `c2c roles` subcommands
 
 ```bash
-c2c roles compile                     # compile all roles → default client (opencode)
-c2c roles compile --client all        # compile all roles → all supported clients
+c2c roles compile                     # compile all roles → all supported clients
+c2c roles compile --client all        # same explicit form
 c2c roles compile my-role --client claude  # compile one role for a specific client
 c2c roles compile --dry-run           # print rendered output without writing files
 c2c roles validate                    # check canonical role files for completeness
@@ -124,6 +137,8 @@ c2c roles validate                    # check canonical role files for completen
 ```bash
 c2c agent new my-role                # create a new role interactively
 c2c agent list                       # list all canonical roles
+c2c agent refine my-role             # launch the configured generation_client to refine a role
+c2c agent run my-role                # launch a short-lived ephemeral managed peer from a role file
 c2c agent delete my-role             # delete a canonical role
 c2c agent rename old-name new-name   # rename a role
 ```
