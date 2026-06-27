@@ -58,8 +58,8 @@ just post-initialize).
   "params": {
     "content": "message text from peer",
     "meta": {
-      "from_alias": "storm-ember",
-      "to_alias": "storm-storm"
+      "from": "storm-ember",
+      "to": "storm-storm"
     }
   }
 }
@@ -80,7 +80,8 @@ just post-initialize).
 | File | Role |
 |------|------|
 | `ocaml/c2c_mcp.ml` | `channel_notification` function, server capability declaration, initialize response |
-| `ocaml/server/c2c_mcp_server.ml` | `client_supports_claude_channel` detection, `channel_delivery_enabled()`, Lwt inbox watcher, auto-drain after initialize |
+| `ocaml/server/c2c_mcp_server_inner.ml` | Channel capability negotiation, `channel_delivery_enabled()`, Lwt inbox watcher, auto-drain after initialize |
+| `ocaml/server/c2c_mcp_server.ml` | Thin standalone binary entrypoint that calls the inner server implementation |
 | `ocaml/test/test_c2c_mcp.ml` | Unit test validating notification shape |
 | `docs/channel-notification-impl.md` | Implementation spec |
 
@@ -204,7 +205,7 @@ it as keyboard input.
 | Client | Supported | Mode | Notes |
 |--------|-----------|------|-------|
 | Claude Code | Deprecated | Full or sentinel | Legacy path. Superseded by PostToolUse hook. Still available via `claude_send_msg.py`. |
-| Codex | Yes (sentinel) | Notify-only | Managed harness starts `c2c_deliver_inbox.py --notify-only`. Sentinel triggers `poll_inbox`. |
+| Codex | Yes (sentinel) | Notify-only | Managed harness starts `c2c-deliver-inbox --notify-only` (OCaml binary; Python fallback only if missing). Sentinel triggers `poll_inbox`. |
 | Pi Agent | No | — | Uses `pi-c2c` (`fs.watch` + CLI drain + `pi.sendMessage`), not PTY injection. |
 | OpenCode | Fallback | Sentinel (slash-command) | Wake daemon injects `/mcp__c2c__poll_inbox`. Superseded by native TypeScript plugin. |
 | Kimi | No | — | Superseded by notification-store (`C2c_kimi_notifier`). |
@@ -228,8 +229,9 @@ it as keyboard input.
 - Writing to `/dev/pts/<N>` (slave side) is display output, not keyboard
   input -- Kimi and OpenCode require master-side injection.
 - Not cross-platform; Linux-only (`pidfd_getfd()`, `/proc` filesystem).
-- For Codex and Kimi, the injected text is a sentinel only -- the agent must
-  still call `poll_inbox` to get the actual message content.
+- For Codex notify-only delivery, the injected text is a sentinel only -- the
+  agent must still call `poll_inbox` to get the actual message content. Kimi no
+  longer uses this path; it uses notification-store delivery.
 
 ---
 
@@ -267,7 +269,7 @@ context refresh.
 | File | Role |
 |------|------|
 | `c2c_inject.py` | `inject_via_history()` function; constructs and appends transcript JSONL entry |
-| `send_to_session.py` | Standalone experimental script for direct history.jsonl injection |
+| `c2c_inject.py --method history` | Standalone experimental path for direct history.jsonl injection; older `send_to_session.py` references are from deprecated/scratch worktrees, not the current repo root. |
 
 #### Limitations
 
@@ -321,7 +323,7 @@ This is the universal baseline: every client that has MCP support can use
 | File | Role |
 |------|------|
 | `ocaml/c2c_mcp.ml` | `poll_inbox` and `peek_inbox` tool definitions; `drain_inbox`, `archive_messages` implementations |
-| `ocaml/server/c2c_mcp_server.ml` | MCP server main loop; routes `tools/call` for `poll_inbox` |
+| `ocaml/server/c2c_mcp_server_inner.ml` | MCP server main loop; routes `tools/call` for `poll_inbox` |
 | `ocaml/cli/c2c.ml` | `c2c poll-inbox` CLI command (non-MCP fallback) |
 
 #### Limitations

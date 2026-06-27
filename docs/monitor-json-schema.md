@@ -23,6 +23,19 @@ c2c monitor --archive --all --json         # archive mode (race-free with PostTo
 
 All events share a `event_type` discriminant field and a `monitor_ts` Unix timestamp (float seconds, 3dp).
 
+### `monitor.ready`
+
+Emitted once at startup in `--json` mode after the monitor has established its
+watch set (or after the startup wait times out). Consumers can wait for this
+event instead of sleeping before producing test traffic.
+
+```json
+{
+  "event_type": "monitor.ready",
+  "monitor_ts": "1745241234.500"
+}
+```
+
 ### `message`
 
 A new message was written to a broker inbox (live mode) or drained to the archive (archive mode).

@@ -4,34 +4,35 @@
 
 Restart managed agent sessions one at a time so they pick up new plugin/code without disrupting other agents or losing work. Each restart should be deliberate and verified before moving to the next.
 
-## Current Swarm State
+## Current Swarm State Snapshot
 
-Re-check this before EVERY restart — pane assignments shift after each restart.
+Re-check this before EVERY restart — pane assignments and PIDs shift after each
+restart. Treat the tables below as a template to fill in for the current upgrade,
+not as a persistent inventory.
 
 ```bash
 python3 scripts/c2c_tmux.py list
 tmux list-panes -t 0 -F '#{pane_index}: #{pane_current_command} (pid #{pane_pid})'
+c2c instances
 ```
 
-| Alias         | Tmux Pane | Pane PID | Client PID | Notes                    |
-|---------------|-----------|----------|------------|--------------------------|
-| galaxy-coder  | 0:1.1    | 3481674  | 2888002    | active, doing GUI work   |
-| jungle-coder  | 0:1.3    | 3480638  | 3018822    | restarted, session resumed but context may differ |
-| ceo (me)     | 0:1.5    | 1128517  | 2967087    | this session             |
+| Alias | Tmux Pane | Pane PID | Client PID | Notes |
+|---|---|---:|---:|---|
+| `<alias>` | `<window:pane>` | `<pid>` | `<pid>` | `<active / idle / safe-to-restart?>` |
 
 ## Unknown/Unmanaged Panes (DO NOT TOUCH without explicit confirmation)
 
-| Pane Index | PID    | Type  | Notes                                |
-|------------|--------|-------|--------------------------------------|
-| 2          | 3482110 | fish  | Old jungle-coder pane (detached)    |
-| 4          | 3480613 | codex | Codex session                       |
-| 6          | 3325285 | codex | Second codex / unknown               |
+| Pane Index | PID | Type | Notes |
+|---|---:|---|---|
+| `<pane>` | `<pid>` | `<command>` | `<why this pane is not managed by c2c>` |
 
 ## Upgrade Target
 
-All agents running OpenCode plugin (`c2c.ts`) need restart to pick up commit `a33c264`:
-- Permission timeout race fix (peek inbox before declaring timeout)
-- Permission response chat leak fix (filter all permission replies from promptAsync)
+Record the exact change being rolled out for this upgrade. Example targets:
+
+- OpenCode plugin changes embedded in the `c2c` binary.
+- MCP server changes requiring managed sessions to reconnect.
+- Hook/config changes installed by `c2c install <client>`.
 
 ## Prerequisites Before Any Restart
 
@@ -92,19 +93,21 @@ c2c list
 python3 scripts/c2c_tmux.py peek <alias>
 ```
 
-### Step 6: Restart the Agent — USE TMUX LAUNCH ONLY
+### Step 6: Restart the Agent — run `c2c start` inside tmux
+
+`c2c start <client>` is the canonical managed-session launcher. Do not run it
+as an ad-hoc background process from a non-interactive shell; use the tmux
+helper so the session has a real pane and reproducible logs.
 
 ```bash
-# MUST use c2c_tmux.py launch — never run `c2c start` directly from bash.
-# `c2c start` from bash does NOT register properly; the agent becomes a stray orphan.
-# NOTE: launch reuses idle panes — always use --new-window to avoid pane conflicts.
+# The helper creates/reuses a tmux pane and runs `c2c start opencode -n <alias>` there.
+# Use --new-window during upgrades to avoid pane-reuse conflicts.
 python3 scripts/c2c_tmux.py launch opencode -n <alias> --new-window
 ```
 
-**Session resume caveat**: `c2c_tmux.py launch` passes `--session` from `opencode-session.txt`,
-which should trigger OpenCode's resume. However, session context (conversation history) may not
-fully transfer — jungle-coder lost its conversation thread after a restart even with the same
-`ses_*` ID. Always verify the agent remembers what it was doing.
+**Session resume caveat**: `c2c start` may pass a saved `--session` value for
+clients with statefile support, but session context can still differ after a
+restart. Always verify the agent remembers what it was doing.
 
 ### Step 7: Wait for Re-registration
 
@@ -135,19 +138,19 @@ Wait ~30s for stability before restarting the next agent. Confirm swarm relay is
 
 ## Agent Restart Order
 
-1. ✅ **jungel-coder** (one-L, alias `jungel-coder`) — No restart needed; morning start already had a33c264
-2. ✅ **galaxy-coder** (window 2) — Restarted via `c2c_tmux.py launch --new-window`. Registered successfully.
-3. ✅ **ceo** (me) — Restarted by galaxy-coder (`c2c stop ceo && c2c_tmux.py launch opencode -n ceo --new-window`). Registered successfully.
-4. ❌ **jungle-coder** (two-Ls, instance `jungle-coder`) — MCP server registration bug. Root cause found: the one-L instance (jungel-coder) had `session_id=jungle-coder` which triggered the `hijack_guard` in `auto_register_startup`. The guard worked correctly. Fix: kill the one-L first before starting the two-L. NOT restarted.
+Create a fresh restart checklist for each upgrade. Keep it in the issue, PR, or
+handoff note rather than hard-coding one historical swarm's aliases here.
+
+1. `<alias-1>` — `<status / verification>`
+2. `<alias-2>` — `<status / verification>`
+3. `<alias-3>` — `<status / verification>`
 
 ## Safety Rules
 
 - **Never restart more than one agent at a time**
 - **Always confirm relay health between restarts** (`c2c doctor` or `curl https://relay.c2c.im/health`)
-- **DO NOT touch pane 2** (3482110) — old detached jungle-coder fish shell
-- **DO NOT touch pane 4** (3480613) — Codex session, not OpenCode
-- **DO NOT touch pane 6** (3325285) — unknown/second Codex
-- **Use `--new-window` when launching** — avoids pane-reuse bugs that orphan sessions
+- **DO NOT touch unknown panes** until you identify their owner and purpose
+- **Use `--new-window` when launching during upgrades** — avoids pane-reuse bugs that orphan sessions
 - **If relay goes down during restart, abort all remaining restarts**
 - **If an agent doesn't re-register within 60s, investigate before moving on**
 

@@ -28,17 +28,17 @@ All server-side components are implemented and working. The one remaining gap is
 |-----------|----------|--------|
 | `channel_notification` fn | `ocaml/c2c_mcp.ml` | Working. Formats correct JSON-RPC notification shape. |
 | Server capability declaration | `ocaml/c2c_mcp.ml` (`capabilities`) | Working. Server advertises `experimental.claude/channel: {}` in `initialize` response. |
-| `client_supports_claude_channel` | `ocaml/server/c2c_mcp_server.ml` | Working. Detects `experimental.claude/channel` in client's `initialize` params. |
+| Channel capability negotiation | `ocaml/server/c2c_mcp_server_inner.ml` via `C2c_capability.negotiated_in_initialize` | Working. Detects `experimental.claude/channel` in client's `initialize` params. |
 | `notifications/claude/channel` test | `ocaml/test/test_c2c_mcp.ml` | Passing. Validates notification shape. |
 | Server capability test | `ocaml/test/test_c2c_mcp.ml` | Passing. Verifies server declares `claude/channel` capability. |
-| Continuous inbox watcher (standalone) | `ocaml/server/c2c_mcp_server.ml` | Working. Polls inbox file every 1s and emits channel notifications for new messages. |
-| Auto-drain after each RPC (standalone) | `ocaml/server/c2c_mcp_server.ml` | Working. Drains inbox after each request when `C2C_MCP_AUTO_DRAIN_CHANNEL=1` and client is capable. |
+| Continuous inbox watcher (standalone) | `ocaml/server/c2c_mcp_server_inner.ml` | Working. Polls inbox file every 1s and emits channel notifications for new messages. |
+| Auto-drain after each RPC (standalone) | `ocaml/server/c2c_mcp_server_inner.ml` | Working. Drains inbox after each request when `C2C_MCP_AUTO_DRAIN_CHANNEL=1` and client is capable. |
 | Auto-drain after each RPC (serve cmd) | `ocaml/cli/c2c.ml` | Working. Same per-RPC drain logic in the `c2c serve` command. |
 | `c2c install claude` configuration | `ocaml/cli/c2c_setup.ml` | Working. Sets `C2C_MCP_CHANNEL_DELIVERY=1` in MCP server env. |
 
 ### Known Limitation
 
-**Claude Code does not declare `experimental.claude/channel` support.** The client's `initialize` request never includes this capability, so `client_supports_claude_channel` always returns `false`. This means the per-RPC auto-drain path (which gates on `channel_capable`) never fires in standard Claude Code sessions.
+**Claude Code does not declare `experimental.claude/channel` support.** The client's `initialize` request never includes this capability, so the negotiated capability set does not include `Claude_channel`. This means the per-RPC auto-drain path (which gates on that negotiated capability) never fires in standard Claude Code sessions.
 
 The continuous inbox watcher in the standalone server does not gate on client capability — it fires whenever `C2C_MCP_CHANNEL_DELIVERY` is enabled and a session ID is set, which is the default for `c2c install claude` sessions. However, in standard Claude Code (without `--dangerously-load-development-channels`) the emitted notifications are not surfaced in the chat UI. The PostToolUse hook remains the production delivery path for Claude Code; channel notifications stay dormant until Claude Code ships native channel support.
 
@@ -57,7 +57,7 @@ The standalone server is what `c2c install claude` configures. It has the contin
 
 ## Inbox Watcher Details
 
-The continuous inbox watcher (`start_inbox_watcher` in `ocaml/server/c2c_mcp_server.ml`) runs as an Lwt async task alongside the main RPC loop:
+The continuous inbox watcher (`start_inbox_watcher` in `ocaml/server/c2c_mcp_server_inner.ml`) runs as an Lwt async task alongside the main RPC loop:
 
 1. Polls the inbox file size every 1 second via `Unix.stat`.
 2. When file size increases beyond the last known size, drains the inbox and emits channel notifications.
@@ -71,7 +71,7 @@ The following items were originally tracked as "Required Changes" and have all b
 
 1. **Server capability declaration** — The `initialize` response now includes `"experimental": { "claude/channel": {} }` in capabilities (`ocaml/c2c_mcp.ml`, `capabilities`).
 
-2. **Channel delivery enabled by default** — `C2C_MCP_CHANNEL_DELIVERY` defaults to `true` in the standalone server (`ocaml/server/c2c_mcp_server.ml`). `c2c install claude` also explicitly sets `C2C_MCP_CHANNEL_DELIVERY=1` (`ocaml/cli/c2c_setup.ml`).
+2. **Channel delivery enabled by default** — `C2C_MCP_CHANNEL_DELIVERY` defaults to `true` in the standalone server implementation (`ocaml/server/c2c_mcp_server_inner.ml`). `c2c install claude` also explicitly sets `C2C_MCP_CHANNEL_DELIVERY=1` (`ocaml/cli/c2c_setup.ml`).
 
 3. **Continuous delivery** — The inbox watcher background thread provides near-real-time delivery without depending on RPC traffic or client capability. This is the primary delivery mechanism.
 
@@ -113,7 +113,8 @@ This matches what `channel_notification` in `ocaml/c2c_mcp.ml` produces.
 ## Related Files
 
 - `ocaml/c2c_mcp.ml` — `channel_notification`, `capabilities` with channel declaration, initialize handling
-- `ocaml/server/c2c_mcp_server.ml` — standalone server: inbox watcher, auto-drain, env defaults
+- `ocaml/server/c2c_mcp_server_inner.ml` — standalone server implementation: inbox watcher, auto-drain, env defaults
+- `ocaml/server/c2c_mcp_server.ml` — thin standalone binary entrypoint
 - `ocaml/cli/c2c.ml` — `c2c serve` command: auto-drain logic, defaults auto-drain to `false`
 - `ocaml/c2c_mcp.mli` — interface definition
 - `ocaml/test/test_c2c_mcp.ml` — channel notification test, capability test

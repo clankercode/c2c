@@ -83,10 +83,12 @@ docker compose \
 
 ## Test Inventory
 
-19 test files in `docker-tests/`. Classification from latest audit
-(`.collab/research/2026-05-03-docker-tests-audit.md`).
+21 `test_*.py` files exist in `docker-tests/`; 20 active, non-deprecated test
+files are documented below. Classification is based on the latest audit
+(`.collab/research/2026-05-03-docker-tests-audit.md`) plus the current file
+inventory.
 
-### Real Tests (16)
+### Real Tests (17)
 
 | Test File | Topology | What It Covers |
 |---|---|---|
@@ -94,6 +96,7 @@ docker compose \
 | `test_two_container_roundtrip.py` | `test.yml` + `two-container.yml` | Two containers register, DM each other bidirectionally. ~12 assertions (bidir DMs, concurrent registration). |
 | `test_four_client_mesh.py` | `test.yml` + `two-container.yml` + `4-client.yml` | Four-container mesh — all 6 ordered-pair DMs + concurrent registration. ~20+ assertions. |
 | `test_kimi_first_class_peer.py` | `test.yml` via `test-kimi` service | Kimi as first-class peer in sealed Docker environment. ~12 assertions (auth files, install, start, send). |
+| `test_claude_first_class_peer.py` | `docker-compose.test.yml` / sealed container | Claude as first-class peer in sealed Docker environment. Skips when the Claude binary is absent; otherwise verifies install/config and broker registration/DM behaviour. |
 | `test_kimi_opencode_cross_host.py` | `docker-compose.e2e-multi-agent.yml` | #674 — Kimi + OpenCode cross-host relay E2E. 8 tests total: 4 pass (registration, room join); 4 blocked on relay alias@host:port parsing bug (#686, fix pending deploy in `09b4d871`). Bidir DMs, room message delivery, echo roundtrip task. |
 | `test_relay_mesh_probe.py` | `docker-compose.2-relay-probe.yml` | #330 V3 — 2-relay mesh, cross-host dead-letter contract. ~9 assertions: SQLite dead_letter row counts, reason strings. |
 | `test_dead_letter_e2e.py` | None (host subprocess) | `c2c list --alive` filter correctness. ~12 assertions (alive:true exclusivity, alive ⊆ all). **Host subprocess — no compose needed.** |

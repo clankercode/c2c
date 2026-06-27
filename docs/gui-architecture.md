@@ -115,30 +115,36 @@ without CLI knowledge.
 
 ---
 
-## Directory Structure (proposed)
+## Directory Structure (current)
 
 ```
 gui/                         # Tauri + Vite project root
   src-tauri/
     src/
-      main.rs                # Tauri setup; spawns c2c monitor sidecar
-      commands.rs            # Tauri commands: send_dm, join_room, etc.
+      main.rs                # Tauri entrypoint
+      lib.rs                 # Tauri commands and subprocess/event plumbing
     tauri.conf.json
     Cargo.toml
   src/                       # React frontend
-    components/
-      EventFeed.tsx          # Virtualized NDJSON event stream
-      PeerList.tsx           # Sidebar: alive/dead peers
-      RoomPanel.tsx          # Room list + history
-      DmPane.tsx             # DM conversation view
-      HumanInput.tsx         # Message compose box
-    lib/
-      events.ts              # TypeScript types for monitor-json-schema events
-      broker.ts              # Wrappers: sendDm(), joinRoom(), listPeers()
     App.tsx
     main.tsx
-  package.json
-  vite.config.ts
+    EventFeed.tsx            # NDJSON monitor event stream
+    Sidebar.tsx              # peers / rooms / navigation sidebar
+    ComposeBar.tsx           # message compose box
+    ArchivePanel.tsx         # archive/history view
+    PermissionPanel.tsx      # permission-supervision UI
+    ToastContainer.tsx
+    WelcomeWizard.tsx        # under src/components/
+    types.ts
+    useDiscovery.ts
+    useHistory.ts
+    useOutbox.ts
+    usePermissions.ts
+    useSend.ts
+    useToast.ts
+    lib/utils.ts
+    test/*.test.ts[x]
+  e2e/                       # Playwright-style end-to-end
 ```
 
 ---
