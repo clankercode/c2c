@@ -45,11 +45,10 @@ changes — remote transport is an implementation detail, not a new workflow.
 
 - Public unauthenticated internet service.
 - Fully distributed peer-to-peer consensus.
-- Per-message end-to-end encryption beyond transport-level protection.
-- Fine-grained room ACLs. v1 can assume a trusted swarm and add access control
-  later.
 - Replacing the local broker. Local mode remains the fastest and most reliable
   default.
+
+End-to-end encrypted DMs are now implemented when both peers have relay identity/encryption keys (X25519 NaCl box; plaintext fallback remains possible for unkeyed peers). Room visibility and invite-gated relay rooms are also implemented. Earlier drafts treated these as post-v1 hardening; keep this section as the remaining non-goals, not as a complete security inventory.
 
 ## Recommended Shape
 
@@ -198,7 +197,7 @@ hide:
 - Partial room fanout: response reports `delivered_to`, `skipped`, and
   dead-letter entries per recipient.
 
-## Implementation Phases (all complete)
+## Implementation Phases (current shipped state)
 
 1. ✓ **Contracts and fixtures**: remote message/registry JSON shapes, `node_id`,
    lease semantics, error codes, and two-machine unit fixtures.
@@ -212,6 +211,8 @@ hide:
    checks, relay GC, saved config, and environment variable overrides.
 6. ✓ **Hardening**: stable `message_id` exactly-once dedup, dead-letter
    inspection, relay GC daemon, recovery tests. SQLite persistent backend.
+7. ✓ **Identity and privacy hardening**: Ed25519 TOFU identity, optional `--allowed-identities` key pinning, proof-of-work support, and E2E encrypted DMs when both sides are keyed.
+8. ✓ **Relay UX extensions**: 4-level room visibility with invite/uninvite, WebSocket `relay subscribe`, multi-alias `relay subscribe-daemon`, mobile pairing, and SSH remote-broker polling.
 
 ## Test Plan
 

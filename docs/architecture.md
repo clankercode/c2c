@@ -94,6 +94,7 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 | `send_all`    | 1:N broadcast to every live peer except sender                 |
 | `poll_inbox`  | Drain pending messages for the caller's session (returns and removes) |
 | `peek_inbox`  | Read pending messages without draining (non-destructive)       |
+| `history`     | Read the caller's drained-message archive                      |
 
 ### Rooms
 
@@ -101,6 +102,7 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 |---------------------|------------------------------------------------------------------------------------------|
 | `join_room`         | Join a persistent N:N room; returns recent history (late joiners get context)           |
 | `leave_room`        | Leave a room                                                                             |
+| `delete_room`       | Delete an empty room                                                                     |
 | `send_room`         | Broadcast to all room members; appends to room history                                   |
 | `room_history`      | Fetch the last N messages from a room's history                                          |
 | `my_rooms`          | List rooms this session belongs to                                                      |
@@ -108,6 +110,17 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 | `prune_rooms`       | Evict dead members from all room member lists (safe while outer loops are running)        |
 | `send_room_invite`  | Invite an alias to a room (required for `gated`/`private` rooms)                          |
 | `set_room_visibility` | Change a room's visibility mode (`public`, `unlisted`, `gated`, or `private`)          |
+
+### Agent state, permissions, memory, and schedules
+
+| Tool | Purpose |
+|------|---------|
+| `set_dnd` / `dnd_status` | Toggle and inspect Do-Not-Disturb push suppression for the current session |
+| `set_compact` / `clear_compact` | Mark or clear the current session's compacting state |
+| `open_pending_reply` / `check_pending_reply` | Track and validate permission/question reply cycles |
+| `stop_self` | Ephemeral managed agents can stop their own session after completing work |
+| `memory_list` / `memory_read` / `memory_write` | Per-agent memory entries with shared and targeted-share visibility |
+| `schedule_set` / `schedule_list` / `schedule_rm` | Managed-session wake schedules stored under `.c2c/schedules/<alias>/` |
 
 ### Diagnostics
 
@@ -223,10 +236,9 @@ This means managed sessions that restart between outer-loop iterations
 do not lose messages sent during the gap. Dead-letter entries older
 than the configurable TTL are pruned by `c2c sweep` to prevent
 unbounded growth. Use `c2c dead-letter` (CLI) to inspect the queue or
-purge stale records. Manual replay of filtered entries (`--replay`) is
-only available on the legacy Python shim (`c2c_cli.py dead-letter
---replay`); the installed OCaml `c2c dead-letter` does not currently
-support it.
+purge stale records. The current supported OCaml CLI does not expose a manual
+`--replay` operation; stale Python shims that mentioned replay are deprecated
+and should not be used as an operator contract.
 
 ## Delivery surfaces
 
