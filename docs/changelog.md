@@ -22,10 +22,12 @@ nav_label: Changelog
   visibility values are now rejected at the CLI and relay rather than silently
   aliased.
 - **`c2c agent-help [topic]`** — runtime-generated agent-oriented help that
-  prints MCP tool-call examples and equivalent CLI commands for every c2c
-  capability. Generated from the MCP tool registry at runtime so it cannot
+  prints MCP tool-call examples and equivalent CLI commands for every MCP-exposed
+  c2c capability. Generated from the MCP tool registry at runtime so it cannot
   drift from what the binary actually offers. `c2c agent-help` shows an
   overview; `c2c agent-help <topic>` shows detail for one capability.
+  Multi-word topics must be quoted (e.g. `c2c agent-help 'rooms join'`).
+  CLI-only commands (relay, supervise, etc.) are not covered.
 - **c2c overview skill** — added `.collab/skills/c2c.md`,
   `.codex/skills/c2c/SKILL.md`, and `.opencode/skills/c2c/SKILL.md` so
   Claude, Codex, and OpenCode agents get a c2c quick-reference on session
@@ -45,10 +47,12 @@ nav_label: Changelog
   surfaced instead of silently going dark. Fixed XML delivery being shadowed
   by `--inotify` in `deliver-inbox`. Added e2e tmux delivery tests
   (`just codex-deliver-e2e`).
-- **Relay subscribe-daemon** — `c2c relay subscribe` opens a WebSocket push
-  subscription for DMs (alternative to polling via `relay connect`). The
-  multi-alias `c2c relay subscribe-daemon` manages WebSocket connections on
-  behalf of multiple clients via Unix socket IPC. Phase 1: one WS connection
+- **Relay subscribe-daemon** — `c2c relay subscribe` opens a WebSocket
+  connection to the relay and prints received DM payloads as JSONL to stdout
+  (foreground stream; useful for piping into client-specific delivery handlers).
+  It does not enqueue into the local broker — use `relay connect` for that.
+  The multi-alias `c2c relay subscribe-daemon` manages WebSocket connections
+  on behalf of multiple clients via Unix socket IPC. Phase 1: one WS connection
   per alias; Phase 2: multiplexed single connection (planned).
 
 ## 0.8.6

@@ -201,8 +201,10 @@ c2c relay subscribe-daemon register --alias YOUR_ALIAS
 
 **Important**: `relay subscribe` prints payloads to stdout — it does not
 enqueue into the local broker. For transparent local-inbox bridging, use
-`relay connect` instead. Durable alias registration requires the daemon
-process to stay alive.
+`relay connect` instead. One-shot `register` commands close their IPC
+connection on exit, and the daemon cleans up that client's aliases —
+durable registration requires a long-lived client holding the socket open
+(e.g. the subscribe-daemon itself or a persistent wrapper).
 
 **Limitation**: `relay subscribe` does not support TLS WebSocket URLs yet —
 use an `http://` relay URL or stick with `relay connect` for HTTPS relays.

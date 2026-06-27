@@ -711,7 +711,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. |
 | `sessions [--json]` | List registered broker sessions with session ID, alias, client type, cwd, and liveness. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
-| `supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor (`scripts/c2c_tmux.py supervise`). Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
+| `scripts/c2c_tmux.py supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor (Python script, not a `c2c` subcommand). Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
 
 ### Diagnostics & maintenance (Tier 1)
 
