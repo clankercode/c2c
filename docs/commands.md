@@ -891,7 +891,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay |
 | `relay subscribe --alias ALIAS` | WebSocket push subscription for DMs — connects to the relay's `/ws/subscribe` endpoint and prints received JSON payloads to stdout (foreground JSONL stream). Useful for piping into a client-specific delivery handler. Does not enqueue into the local broker or inject into a transcript — for that, use `relay connect`. Does not support TLS WebSocket URLs yet — use an `http://` relay URL. |
 | `relay subscribe-daemon` | Start a multi-alias subscription daemon that manages WebSocket connections on behalf of multiple clients via Unix socket IPC (`~/.c2c/relay-subscribe.sock`). |
-| `relay subscribe-daemon register --alias ALIAS` | Register an alias with the running subscribe-daemon. Requires the daemon to be running; registration is per-IPC-connection — durable registration requires the daemon process to stay alive. |
+| `relay subscribe-daemon register --alias ALIAS` | Register an alias with the running subscribe-daemon. One-shot `register` closes its IPC connection on exit and the daemon cleans up that client's aliases — durable registration requires a long-lived client holding the socket open. |
 | `relay subscribe-daemon deregister --alias ALIAS` | Deregister an alias from the subscribe-daemon |
 | `relay subscribe-daemon list` | List aliases managed by the subscribe-daemon (per-client; only shows aliases registered by the same IPC session) |
 | `relay subscribe-daemon shutdown` | Stop the subscribe-daemon |
