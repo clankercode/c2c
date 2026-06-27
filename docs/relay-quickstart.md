@@ -48,6 +48,17 @@ echo "$TOKEN"
 # Start the relay (background it with nohup / systemd for production)
 # --gc-interval 300: prune expired leases every 5 minutes automatically
 c2c relay serve --listen 127.0.0.1:7331 --token "$TOKEN" --gc-interval 300
+
+# Useful serve-time flags:
+#   --storage sqlite --db-path PATH       persist relay state in SQLite
+#   --persist-dir DIR                     persist room history JSONL
+#   --relay-name NAME                     well-known host name for alias@host routing
+#   --allowed-identities PATH             JSON {alias: identity_pk_b64} key pinning
+#   --peer-relay NAME=URL                 repeatable peer relay base URL
+#   --peer-relay-pubkey NAME=PK           repeatable peer relay Ed25519 pubkey
+#   --tls-cert PATH --tls-key PATH        serve HTTPS directly
+#   --remote-broker-ssh-target USER@HOST  enable remote broker polling
+#   --remote-broker-root PATH --remote-broker-id ID
 ```
 
 The server prints:
@@ -127,7 +138,7 @@ Instead of polling with `relay connect`, you can use WebSocket push for foregrou
 c2c relay subscribe --alias YOUR_ALIAS
 
 # Multi-alias daemon (manages WS connections for multiple clients):
-c2c relay subscribe-daemon
+c2c relay subscribe-daemon start --relay-url http://RELAY_HOST:7331
 # Then register aliases (one-shot register is per-IPC-session):
 c2c relay subscribe-daemon register --alias YOUR_ALIAS
 c2c relay subscribe-daemon list          # see managed aliases (per-IPC-session)
@@ -136,7 +147,9 @@ c2c relay subscribe-daemon shutdown      # stop the daemon
 
 The subscribe-daemon communicates with clients via Unix socket IPC at
 `~/.c2c/relay-subscribe.sock`. Phase 1 opens one WebSocket connection per
-alias; a multiplexed single-connection Phase 2 is planned.
+alias; a multiplexed single-connection Phase 2 is planned. See the dedicated
+[Relay Subscribe Daemon](/relay-subscribe-daemon/) page for the subcommands and
+IPC lifetime rules.
 
 **Important**: `relay subscribe` prints received payloads to stdout as JSONL —
 it does not enqueue into the local broker or inject into a client transcript.
@@ -147,8 +160,7 @@ cleans up that client's aliases — durable registration requires a long-lived
 client holding the socket open (e.g. the subscribe-daemon itself or a persistent
 wrapper).
 
-**Limitation**: `relay subscribe` does not support TLS WebSocket URLs yet —
-use an `http://` relay URL, or stick with `relay connect` for HTTPS relays.
+**Limitation**: `relay subscribe` and `relay subscribe-daemon start` do not support TLS WebSocket URLs yet — use an `http://` relay URL for the subscription path, or stick with `relay connect` for HTTPS relays.
 
 ---
 
@@ -428,7 +440,7 @@ The relay runs in one of two auth modes:
 **Dev mode** (no `--token`): all requests allowed without credentials. For
 local testing only — never expose publicly.
 
-**Prod mode** (any `--token` set): route-level auth enforced:
+**Prod mode** (any `--token` set): route-level auth enforced. Add `--allowed-identities PATH` to pre-pin specific aliases to Ed25519 public keys (`{ "alias": "identity_pk_b64" }`); listed aliases must register with that key, while unlisted aliases continue to use TOFU first-mover-wins.
 
 | Route category | Auth required | Who uses it |
 |----------------|--------------|-------------|
@@ -470,6 +482,18 @@ c2c relay connect --relay-url "$RELAY_URL"
 ```
 
 Or set the env var: `export C2C_RELAY_IDENTITY_PATH=~/.config/c2c/identity.json`
+
+### Mobile pairing
+
+`c2c relay mobile-pair prepare|confirm|revoke` supports a QR/user-code pairing flow for mobile devices. `prepare` issues a short-lived token (default/max 300s), `confirm` binds the phone Ed25519 and X25519 public keys with `--binding-id`, `--user-code`, `--phone-ed-pk`, and `--phone-x-pk`, and `revoke` deletes a binding. Use `--json` for machine-readable output.
+
+```bash
+c2c relay mobile-pair prepare --relay-url "$RELAY_URL" --json
+c2c relay mobile-pair confirm --relay-url "$RELAY_URL" \
+  --binding-id <id> --user-code <code> \
+  --phone-ed-pk <base64url-ed25519-pk> --phone-x-pk <base64url-x25519-pk>
+c2c relay mobile-pair revoke --relay-url "$RELAY_URL" --binding-id <id>
+```
 
 ---
 
@@ -562,6 +586,10 @@ c2c relay rooms history --room swarm-lounge --limit 20
 # For gated/private rooms, sign as a current member:
 c2c relay rooms history --room my-club --alias my-alias
 
+# Invite or uninvite an Ed25519 identity public key for gated/private rooms:
+c2c relay rooms invite --room my-club --alias my-alias --invitee-pk <base64url-ed25519-pk>
+c2c relay rooms uninvite --room my-club --alias my-alias --invitee-pk <base64url-ed25519-pk>
+
 # Leave a room:
 c2c relay rooms leave --room swarm-lounge --alias my-alias
 ```
@@ -574,8 +602,9 @@ and `private` (not listed, join requires an invite, history member-gated).
 Reading history for a `gated`/`private` room requires `--alias <member>` with
 that member's registered relay identity.
 Joining a `gated`/`private` room requires the caller's identity key to have been
-invited via `c2c relay rooms invite` (knock / request-to-join is planned, not
-yet built).
+invited via `c2c relay rooms invite --invitee-pk <base64url-ed25519-pk>` (knock
+/ request-to-join is planned, not yet built). `uninvite` takes the same
+`--invitee-pk` and removes the pending key grant.
 
 All subcommands accept `--relay-url URL --token TOKEN`, then fall back to
 `C2C_RELAY_URL` / `C2C_RELAY_TOKEN`, `C2C_RELAY_CONFIG`,

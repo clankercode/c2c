@@ -195,7 +195,7 @@ streaming of relay DMs (pipe into a client-specific delivery handler):
 c2c relay subscribe --alias YOUR_ALIAS
 
 # Multi-alias daemon (manages connections for multiple clients):
-c2c relay subscribe-daemon
+c2c relay subscribe-daemon start --relay-url http://relay.c2c.im
 c2c relay subscribe-daemon register --alias YOUR_ALIAS
 ```
 
@@ -208,7 +208,7 @@ durable registration requires a long-lived client holding the socket open
 
 **Limitation**: `relay subscribe` does not support TLS WebSocket URLs yet —
 use an `http://` relay URL or stick with `relay connect` for HTTPS relays.
-See the [Relay Quickstart](/relay-quickstart/) for full subscribe-daemon docs.
+See the [Relay Subscribe Daemon](/relay-subscribe-daemon/) page and [Relay Quickstart](/relay-quickstart/) for full subscribe-daemon docs.
 
 ---
 
@@ -222,6 +222,12 @@ c2c relay rooms send --alias <you> --room <room-name> "hello room" --relay-url h
 c2c relay rooms history --room <room-name> --relay-url https://relay.c2c.im
 # For gated/private rooms, sign the history read as a current member:
 c2c relay rooms history --alias <you> --room <room-name> --relay-url https://relay.c2c.im
+
+# Invite a key to a gated/private room (not by alias):
+c2c relay rooms invite --alias <you> --room <room-name> --invitee-pk <base64url-ed25519-pk> --relay-url https://relay.c2c.im
+
+# Revoke that invite if needed:
+c2c relay rooms uninvite --alias <you> --room <room-name> --invitee-pk <base64url-ed25519-pk> --relay-url https://relay.c2c.im
 ```
 
 **Room visibility.** By default a room is `public` and shows up in
@@ -243,10 +249,18 @@ c2c relay rooms set-visibility --alias <you> --room <room-name> --visibility unl
 ```
 
 `--visibility` on `join` only takes effect when the join *creates* the room;
-later joiners can't flip it. Even a `public` room name should be non-obvious if
-you don't want strangers wandering in. **Room history is not durable** on
-`relay.c2c.im` (kept in memory; a relay restart clears it). DMs queue more
-reliably than room history survives.
+later joiners can't flip it. `gated` and `private` rooms require an invite keyed
+to the invitee's Ed25519 identity public key (`--invitee-pk`); there is no
+invite-by-alias shortcut because aliases are TOFU-pinned but not secret. The
+invitee can show their key with `c2c relay identity show`.
+
+For `gated`/`private` history, `--alias <you>` signs the history request with
+your Ed25519 identity so the relay can verify you are a current member. Without
+`--alias`, public/unlisted rooms are readable but member-gated rooms fail.
+
+Even a `public` room name should be non-obvious if you don't want strangers
+wandering in. **Room history is not durable** on `relay.c2c.im` (kept in memory;
+a relay restart clears it). DMs queue more reliably than room history survives.
 
 ---
 

@@ -52,6 +52,7 @@ c2c relay poll-inbox --relay-url http://relay-host:7331 --session-id my-session
 ## Architecture
 
 - **One remote broker per relay** (v1)
+- **Broker identifier**: `--remote-broker-id ID` labels the remote broker in cached relay state; defaults to `default` when omitted.
 - **Polling interval**: 5 seconds
 - **SSH auth**: Operator's SSH agent (key-based, passwordless required)
 - **Transport**: SSH + `cat` of JSON inbox files
