@@ -587,7 +587,7 @@ module InMemoryRelay : RELAY = struct
     dead_letter : Yojson.Safe.t Queue.t;
     rooms : (string, string list) Hashtbl.t;
     (* Layer 4 slice 5: per-room visibility and invited identity_pk list. *)
-    room_visibility : (string, string) Hashtbl.t;  (* "public" | "invite" *)
+    room_visibility : (string, string) Hashtbl.t;  (* "public" | "unlisted" | "gated" | "private" *)
     room_invites : (string, string list) Hashtbl.t; (* b64url-nopad pks *)
     (* L3/5: operator allowlist (alias → identity_pk b64url-nopad). If an
        alias is present here, registrations must match the pinned pk. *)

@@ -139,11 +139,20 @@ c2c/v1/room-join \x1f <room_id> \x1f <alias> \x1f <identity_pk_b64> \x1f <ts> \x
 
 Server behaviour:
 - Verifies sig against the registered `identity_pk` for `alias`.
-- If room visibility is `public` and has no `invited_members`
-  allowlist: admit.
-- If room has `invited_members`: admit only if
-  `identity_pk ∈ invited_members`.
+- Admission depends on the room's visibility level (§5):
+  - `public` / `unlisted` rooms are **open-join**: admit any
+    registered identity.
+  - `gated` / `private` rooms are **invite-gated**: admit only if
+    `identity_pk ∈ invited_members`, else reject with `not_invited`.
+- A brand-new room (no stored visibility yet) defaults to `public`,
+  so the creator's first join is admitted.
 - Idempotent: re-joining an already-joined room returns ok, no-op.
+
+(Relay code: `Relay.*.join_room` calls `canonical_visibility_exn`,
+then `open_join = visibility = "public" || visibility = "unlisted"`
+in the join-admission gate; gated/private require the caller's
+`identity_pk` on the invite list. Knock / request-to-join is planned,
+not built — gated/private rooms need an out-of-band invite today.)
 
 ### 4.2 Leave
 
@@ -156,7 +165,7 @@ Relay stores, per room:
 ```json
 {
   "room_id":       "swarm-lounge",
-  "visibility":    "public" | "invite",
+  "visibility":    "public" | "unlisted" | "gated" | "private",
   "invited_members": ["<identity_pk_b64>", "..."],
   "members": [
     { "alias": "planner1", "identity_pk": "<b64>", "joined_at": "..." }
@@ -177,26 +186,52 @@ Relay stores, per room:
 
 ## 5. ACLs and visibility
 
-Extends the existing `set_room_visibility` tool:
+Extends the existing `set_room_visibility` tool. Visibility is a 2×2 of
+(listed-ness × join-gating) with exactly **four** canonical tokens. The
+legacy `invite` / `invite_only` / `invite-only` tokens were **removed** —
+the relay's `canonical_visibility` (`ocaml/relay.ml`) accepts only the four
+below and rejects anything else with
+`visibility must be "public", "unlisted", "gated", or "private"`.
 
-| Visibility | Who can join                        | Who can read history           |
-|------------|-------------------------------------|--------------------------------|
-| `public`   | Anyone with a registered identity   | Any current member             |
-| `invite`   | Only identities in `invited_members`| Any current member             |
+| Visibility | Listed in `list_rooms`?              | Who can join                         | Who can read history            |
+|------------|--------------------------------------|--------------------------------------|---------------------------------|
+| `public`   | Yes                                  | Anyone with a registered identity    | Open — any reader               |
+| `unlisted` | No (reachable by id only)            | Anyone with a registered identity    | Open — any reader               |
+| `gated`    | Yes (roster redacted to non-members) | Only identities in `invited_members` | Members only                    |
+| `private`  | No (reachable by id only)            | Only identities in `invited_members` | Members only                    |
 
-- `public` rooms may still have an `invited_members` hint (soft
-  preference for bootstrapping); it does NOT gate joins.
-- History reads go through the same per-request auth header as any
-  other peer endpoint (Layer 3 §5). Relay checks the caller is a
-  current member before returning history.
-- Non-members who previously were members see nothing post-leave.
-  They retain their local archive of what they saw while in the room.
+- The two axes are independent: **listed-ness** controls whether the room
+  appears in the `list_rooms` directory; **join-gating** controls whether a
+  join needs an invite. `public`/`gated` are listed (`list_rooms` filter:
+  `WHERE visibility IN ('public','gated')`); `unlisted`/`private` are hidden
+  but still reachable by a known room id. `public`/`unlisted` are open-join;
+  `gated`/`private` are invite-gated.
+- For a `gated` room, a non-member sees the room in `list_rooms` but the
+  **roster is redacted** — only `room_id` + `member_count` are exposed, not
+  the member aliases/keys.
+- **Read-gate (`/room_history`):** `public` and `unlisted` rooms are
+  **open-read** — any caller may read history. `gated` and `private` rooms
+  are **member-gated** — the relay requires a verified member alias before
+  returning history (relay code:
+  `open_read = visibility = "public" || visibility = "unlisted"`). The
+  per-request auth header (Layer 3 §5) identifies the caller; for member-gated
+  rooms the relay checks the caller is a current member before returning
+  history.
+- A brand-new room with no stored visibility yet defaults to `public`
+  (open-join, open-read, listed).
+- `public`/`unlisted` rooms may still carry an `invited_members` hint (soft
+  preference for bootstrapping); it does NOT gate joins for those levels.
+- Non-members who previously were members see nothing post-leave from a
+  member-gated room. They retain their local archive of what they saw while
+  in the room.
+- gated/private rooms require an **out-of-band invite** to join today;
+  knock / request-to-join is planned, not built.
 
 Invite management (v1, minimal):
 - Room creator is added to `invited_members` on create.
 - `c2c relay rooms invite <room> <identity_pk|alias>` appends to the
   list, signed by an existing member. Server accepts invites from any
-  current member of `invite` rooms (no role hierarchy in v1).
+  current member of `gated`/`private` rooms (no role hierarchy in v1).
 - `c2c relay rooms uninvite <room> <identity_pk>` removes the entry.
   Does NOT evict existing members — just prevents re-join.
 
@@ -299,7 +334,7 @@ New error codes (returned as JSON `{ "error": "<code>", ... }`):
 |---------------------------|--------------------------------------------------|
 | `unsupported_enc`         | `enc` value not allowed (v1: only `"none"`)      |
 | `not_a_member`            | Caller isn't in the room's `members` list        |
-| `not_invited`             | `invite` room, caller isn't in `invited_members` |
+| `not_invited`             | `gated`/`private` room, caller isn't in `invited_members` |
 | `alias_identity_mismatch` | (reuse from L3) envelope `sender_pk` ≠ registered|
 | `room_not_found`          | Room doesn't exist                               |
 | `room_already_exists`     | Create-collision                                 |
@@ -318,7 +353,8 @@ OCaml (`ocaml/test/test_relay_rooms.ml`, new):
 3. `send_room` with tampered `ct` (SHA mismatch) → `bad_signature`.
 4. `send_room` with envelope re-signed by a different key bound to a
    different alias → `alias_identity_mismatch`.
-5. `join_room` to `invite` room without being on list → `not_invited`.
+5. `join_room` to a `gated`/`private` room without being on the invite
+   list → `not_invited`.
 6. `join_room` → `leave_room` → `send_room` → `not_a_member`.
 7. `room_history` with `after_seq` paginates correctly and never
    returns messages from a room the caller isn't in.
