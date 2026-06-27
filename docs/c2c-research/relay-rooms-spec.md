@@ -197,7 +197,7 @@ below and rejects anything else with
 |------------|--------------------------------------|--------------------------------------|---------------------------------|
 | `public`   | Yes                                  | Anyone with a registered identity    | Open — any reader               |
 | `unlisted` | No (reachable by id only)            | Anyone with a registered identity    | Open — any reader               |
-| `gated`    | Yes (roster redacted to non-members) | Only identities in `invited_members` | Members only                    |
+| `gated`    | Yes                                  | Only identities in `invited_members` | Members only                    |
 | `private`  | No (reachable by id only)            | Only identities in `invited_members` | Members only                    |
 
 - The two axes are independent: **listed-ness** controls whether the room
@@ -206,9 +206,10 @@ below and rejects anything else with
   `WHERE visibility IN ('public','gated')`); `unlisted`/`private` are hidden
   but still reachable by a known room id. `public`/`unlisted` are open-join;
   `gated`/`private` are invite-gated.
-- For a `gated` room, a non-member sees the room in `list_rooms` but the
-  **roster is redacted** — only `room_id` + `member_count` are exposed, not
-  the member aliases/keys.
+- Relay `list_rooms` is an unauthenticated public directory. It lists only
+  `public` and `gated` rooms and includes each listed room's `room_id`,
+  `member_count`, and `members` alias list. It has no caller context for
+  member/non-member roster redaction.
 - **Read-gate (`/room_history`):** `public` and `unlisted` rooms are
   **open-read** — any caller may read history. `gated` and `private` rooms
   are **member-gated** — the relay requires a verified member alias before

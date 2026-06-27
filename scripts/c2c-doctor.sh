@@ -319,7 +319,7 @@ if [[ "$AHEAD" == "0" ]]; then
   exit 0
 fi
 
-bold "=== Push queue: $AHEAD commits ahead of origin/master ==="
+bold "=== Push status: queue ($AHEAD commits ahead of origin/master) ==="
 echo ""
 
 # Classify commits into relay-critical vs local-only.
