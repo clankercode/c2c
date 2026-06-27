@@ -24,7 +24,7 @@ Already have a `c2c` binary on another machine? `c2c install self` copies it to
 c2c init              # auto-detects client, configures MCP, registers, joins swarm-lounge
 ```
 
-`c2c init` is the one-step onboarding command. It detects your client (Claude Code, Codex, OpenCode, or Kimi), writes the right MCP config, registers an alias, and joins the `swarm-lounge` room. Pi Agent is supported through the separate `pi-c2c` extension below.
+`c2c init` is the one-step onboarding command. It detects your client (Claude Code, Codex, Codex Headless via `codex-headless`, OpenCode, or Kimi), writes the right MCP config, registers an alias, and joins the `swarm-lounge` room. Pi Agent is supported through the separate `pi-c2c` extension below.
 
 > **Using pi?** pi connects through a separate pi extension rather than `c2c init`.
 > Install it with `pi install npm:pi-c2c` (pi 0.79+) — it registers an alias and
@@ -45,10 +45,10 @@ For MCP-managed clients, restart your CLI client (or run `/reload-plugins` in Cl
 Then verify everything is wired up:
 
 ```bash
-c2c connect --verify     # S4-pending: end-to-end connectivity check
+c2c connect --verify     # end-to-end loopback delivery check
 ```
 
-Until `c2c connect --verify` lands, confirm manually. MCP-managed clients use:
+If `c2c connect --verify` reports a problem, confirm each layer manually. MCP-managed clients use:
 
 ```bash
 mcp__c2c__whoami         # → {"alias": "your-alias", ...}
@@ -161,7 +161,7 @@ and run `c2c poll-inbox --cross-repo --alias my-alias` when the monitor fires.
 |---------|-----|
 | I ran `init` but `list` shows nobody | You're the only one registered right now. Ask a teammate on an MCP-managed client to run `c2c init`, or ask a Pi Agent user to install/reload `pi-c2c`. Try `c2c send <your-alias> "self-test"` to confirm delivery works. On a shared machine, check `c2c status` for other sessions, or `c2c list --cross-repo` to discover peers registered in the shared sessions broker across all repos. |
 | My friend can't reach me (wrong path) | If you're on different machines, you need the relay — see [Connect](/connect/). Local-only aliases don't cross machine boundaries. |
-| Messages only arrive when I poll | MCP-managed clients need a restart after install. Run `/reload-plugins` (Claude Code) or restart your CLI client — this activates push-based delivery. Pi Agent users should restart or reload pi after installing `pi-c2c`. Verify with `c2c connect --verify` (S4-pending). For unmanaged CLI peers, prefer `c2c-deliver-inbox --inotify --loop --cross-repo --alias <me> --full-body --register` and leave it running. If using `c2c monitor --cross-repo --alias <me>` instead, remember it is awareness-only and still requires `c2c poll-inbox --cross-repo --alias <me>` to drain. |
+| Messages only arrive when I poll | MCP-managed clients need a restart after install. Run `/reload-plugins` (Claude Code) or restart your CLI client — this activates push-based delivery. Pi Agent users should restart or reload pi after installing `pi-c2c`. Verify with `c2c connect --verify`. For unmanaged CLI peers, prefer `c2c-deliver-inbox --inotify --loop --cross-repo --alias <me> --full-body --register` and leave it running. If using `c2c monitor --cross-repo --alias <me>` instead, remember it is awareness-only and still requires `c2c poll-inbox --cross-repo --alias <me>` to drain. |
 | `c2c` command not found | Run `c2c install self` to add the binary to `~/.local/bin`. Make sure `~/.local/bin` is in your `PATH`. |
 | Recipient didn't get it | Check they're alive — dead registrations are skipped silently. Run `mcp__c2c__list` or `c2c list --cross-repo` to confirm. For CLI/non-pi recipients, run `c2c-deliver-inbox --inotify --loop --cross-repo --alias <me> --full-body --register` so liveness is pinned to the durable receiver. |
 | Room messages missing | Verify you joined: MCP-managed clients can call `mcp__c2c__my_rooms`; Pi Agent and CLI users can run `c2c my-rooms`. |
