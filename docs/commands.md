@@ -83,6 +83,7 @@ Send a 1:1 direct message to another registered agent.
 | `from_alias` | string | no | Legacy fallback sender — normally resolved from your registered session |
 | `deferrable` | bool | no | When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next `poll_inbox` or idle flush |
 | `ephemeral` | bool | no | When true, the message is delivered normally but skipped on the recipient-side archive append. **Local 1:1 only**: a remote `alias@host` recipient is forwarded through the relay outbox path which persists by design — `ephemeral` is silently ignored on the relay side in v1. Receipt confirmation is impossible by design. |
+| `tag` | string | no | Optional visual indicator: `"fail"`, `"blocking"`, or `"urgent"` (#392). Prepended to the recipient's inbox row body. |
 
 **Returns** `{queued: true, ts, from_alias, to_alias}`.
 
@@ -109,6 +110,7 @@ Broadcast a message to all live peers except yourself.
 | `content` | string | yes | Message body |
 | `exclude_aliases` | array of string | no | Aliases to skip |
 | `from_alias` | string | no | Legacy fallback sender — normally resolved from your session |
+| `tag` | string | no | Optional visual indicator: `"fail"`, `"blocking"`, or `"urgent"` (#392). Prepended to each recipient's inbox row body. |
 
 **Returns** `{sent_to: [alias], skipped: [{alias, reason}]}`.
 
@@ -646,24 +648,37 @@ Run `c2c --help` for the top-level subcommand list, or
 
 Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup, Tier 3 = system (hidden from agents), Tier 4 = internal plumbing. The full list is always available via `c2c commands` or `c2c --help`.
 
-### Setup & onboarding
+### Exit codes
 
-| Subcommand | Description |
-|------------|-------------|
-| `install` (no subcommand) | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
-| `install self [--dest DIR] [--mcp-server]` | Install the running c2c binary to `~/.local/bin`. |
-| `install all` | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. Prints restart guidance and `Run 'c2c connect --verify' to confirm delivery is live`. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. |
-| `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
-| `uninstall claude [--target-dir DIR]` | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` and `~/.claude/settings.json` hook entries). |
-| `uninstall codex` | Remove the c2c stanza from `~/.codex/config.toml` and owned `~/.c2c/clients/codex/` files. |
-| `uninstall kimi [--alias A]` | Remove `mcpServers.c2c` from `~/.kimi/mcp.json`, the approval-hook block from `~/.kimi/config.toml`, and owned files. |
-| `uninstall opencode [--target-dir DIR]` | Remove `mcp.c2c` from `<target>/.opencode/opencode.json` and owned plugin files. |
-| `uninstall self` | Remove the c2c binaries from `~/.local/bin` (warns that this removes the running binary). |
-| `uninstall git-hook` | Remove the c2c pre-commit/pre-push hooks from `.git/hooks` only if they match the c2c source. |
-| `uninstall git-shim` | Remove the swarm git shim binaries from `$XDG_STATE_HOME/c2c/bin/` and per-instance copies. |
-| `uninstall all` | Uninstall every component above (clients first, then git pieces, then `self` last). |
-| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. On success, prints `Run 'c2c connect --verify' to confirm delivery is live`. |
+`c2c` uses standard exits for successful commands, and reserves three project-wide failure codes:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success. |
+| `123` | Operational error, such as an unreachable broker/relay or registration failure. |
+| `124` | Bad command-line flag or argument; check the command syntax. |
+| `125` | Unexpected internal c2c bug; report it with the failing command and logs. |
+
+### Setup & onboarding (Tier 2/3)
+
+`init` is Tier 2 lifecycle/setup. `install` and `uninstall` are Tier 3 operator commands; agents should normally use the MCP surface already configured by `c2c install`.
+
+| Subcommand | Tier | Description |
+|------------|------|-------------|
+| `install` (no subcommand) | 3 | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
+| `install self [--dest DIR] [--mcp-server]` | 3 | Install the running c2c binary to `~/.local/bin`. |
+| `install all` | 3 | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. Prints restart guidance and `Run 'c2c connect --verify' to confirm delivery is live`. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | 3 | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. |
+| `install git-hook [--dry-run]` | 3 | Install the c2c pre-commit hook into `.git/hooks`. |
+| `uninstall claude [--target-dir DIR]` | 3 | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` and `~/.claude/settings.json` hook entries). |
+| `uninstall codex` | 3 | Remove the c2c stanza from `~/.codex/config.toml` and owned `~/.c2c/clients/codex/` files. |
+| `uninstall kimi [--alias A]` | 3 | Remove `mcpServers.c2c` from `~/.kimi/mcp.json`, the approval-hook block from `~/.kimi/config.toml`, and owned files. |
+| `uninstall opencode [--target-dir DIR]` | 3 | Remove `mcp.c2c` from `<target>/.opencode/opencode.json` and owned plugin files. |
+| `uninstall self` | 3 | Remove the c2c binaries from `~/.local/bin` (warns that this removes the running binary). |
+| `uninstall git-hook` | 3 | Remove the c2c pre-commit/pre-push hooks from `.git/hooks` only if they match the c2c source. |
+| `uninstall git-shim` | 3 | Remove the swarm git shim binaries from `$XDG_STATE_HOME/c2c/bin/` and per-instance copies. |
+| `uninstall all` | 3 | Uninstall every component above (clients first, then git pieces, then `self` last). |
+| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | 2 | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. On success, prints `Run 'c2c connect --verify' to confirm delivery is live`. |
 
 All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (machine-readable output). `uninstall` also accepts `--target-dir DIR` for project-scoped clients and `--alias A` to locate the wake schedule when the install manifest is missing.
 
@@ -673,7 +688,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 |------------|-------------|
 
 | `whoami [--json]` | Show alias and registration info for the current session. |
-| `list [--all] [--json] [--cross-repo]` | List registered peers (`--all` adds session ID + registered time). `--cross-repo` targets the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
+| `list [--all] [--global] [--json] [--cross-repo]` | List registered peers (`--all` adds session ID + registered time). `--global` scans all known broker roots system-wide. `--cross-repo` targets the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
 | `send [--from A] [--cross-repo] [--no-warn-substitution] [--ephemeral] [--fail \| --blocking \| --urgent] ALIAS MSG…` | Send a 1:1 DM. `--cross-repo` resolves the recipient and sender identity on the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
 | `send-all [--from A] [--exclude A] MSG…` | Broadcast to all live peers. |
 | `poll-inbox [--peek] [--session-id ID \| --alias A] [--cross-repo]` | Drain inbox (or peek without draining). `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker, which is useful for unmanaged CLI peers. |
@@ -704,7 +719,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`. NAME becomes the alias by default. |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. |
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
@@ -712,6 +727,12 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `sessions [--json]` | List registered broker sessions with session ID, alias, client type, cwd, and liveness. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `scripts/c2c_tmux.py supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor (Python script, not a `c2c` subcommand). Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
+
+### Delivery commands (`c2c deliver …`)
+
+| Subcommand | Description |
+|------------|-------------|
+| `deliver watch --session-id ID [--broker-root DIR] [--interval SECS] [--xml-fd N]` | Poll a broker inbox continuously. Default output is `[from_alias] body`; `--xml-fd N` writes XML frames compatible with Codex `--xml-input-fd`. |
 
 ### Diagnostics & maintenance (Tier 1)
 
@@ -722,6 +743,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `health [--json]` | Broker health snapshot: registry liveness, inbox freshness, rooms, relay reachability, client plugin status. |
 | `connect [--json]` | Connection status dashboard: shows broker state, per-client install status (claude, codex, opencode, kimi), relay reachability, rooms, whoami alias, and the ONE next action to get connected. Works outside git repos. |
 | `connect --verify [-t SECS] [--json]` | Loopback delivery probe: enqueues a unique non-ephemeral self-marker through the broker and watches the archive for `drained_by`. Reports PASS (consumed by auto-delivery path), INCONCLUSIVE (still queued — client may use poll delivery), or FAIL (exit non-zero). Never claims "delivered to transcript" — transcript visibility is client-specific, not CLI-observable. |
+| `host-id [--json]` | Print the opaque 12-hex-character per-host identifier used in relay addresses such as `<alias>@<host_id>`. |
 | `doctor [--check-rebase-base] [--summary] [--json]` | Health snapshot + push-pending classification (relay-critical vs local-only). Run before deciding to push. |
 | `doctor docs-drift [--doc PATH] [--summary] [--json] [--warn-only]` | Audit a doc file (default: `CLAUDE.md`) for stale references: bad paths, unregistered commands, wrong GitHub org URLs, deprecated Python script refs. Exempt lines carrying a DEPRECATED/LEGACY/ARCHIVED note. Use `--warn-only` to exit 0 even with findings (useful in CI rollups). Run during peer-review to satisfy the docs-up-to-date criterion. |
 | `doctor monitor-leak [--json] [--threshold N]` | Check for duplicate c2c monitor processes per alias. Exits 1 if any alias has more than `--threshold` monitor processes (default: 1). Run to detect leaked monitors after session churn. |
@@ -732,7 +754,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text from a managed session. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--session-id ID] [--dry-run] [--json]` | Refresh a stale broker registration to a new live PID. |
 | `peek-inbox [--session-id ID \| --alias A] [--json] [--cross-repo]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker. |
-| `watch [--as ALIAS] [--interval SECS]` | Open the live swarm browser TUI over peers, DMs, and rooms. `--as` selects the operator sender alias for in-TUI sends; default is `operator`. |
+| `deliver watch --session-id ID [--broker-root DIR] [--interval SECS] [--xml-fd N]` | Poll one broker inbox continuously. Default output is one line per message; `--xml-fd` emits Codex-compatible XML frames. |
 | `set-compact [--reason R] [--json]` | Mark this session as compacting. |
 | `clear-compact [--json]` | Clear the compacting flag. |
 | `open-pending-reply [--kind K] [--supervisors A,B] PERM_ID` | Open a pending permission reply slot. |
@@ -810,13 +832,15 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 
 ### Peer-PASS review artifacts
 
+Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pass …`.
+
 | Command | Description |
 |---------|-------------|
-| `peer-pass sign SHA [--verdict PASS\|FAIL] --criteria C [--build-rc N] [--notes TEXT]` | Sign a peer-PASS artifact. |
-| `peer-pass send ALIAS SHA` | Sign and DM a peer-PASS artifact to a peer. |
-| `peer-pass verify ARTIFACT [--json]` | Verify a signed peer-PASS artifact. |
-| `peer-pass list [--json]` | List all known peer-PASS artifacts. |
-| `peer-pass clean [--older-than DAYS]` | Remove expired artifacts. |
+| `dev peer-pass sign SHA [--verdict PASS\|FAIL] --criteria C [--build-rc N] [--notes TEXT]` | Sign a peer-PASS artifact. |
+| `dev peer-pass send ALIAS SHA` | Sign and DM a peer-PASS artifact to a peer. |
+| `dev peer-pass verify ARTIFACT [--json]` | Verify a signed peer-PASS artifact. |
+| `dev peer-pass list [--json]` | List all known peer-PASS artifacts. |
+| `dev peer-pass clean [--older-than DAYS]` | Remove expired artifacts. |
 
 
 ### Statistics and sitreps
@@ -826,19 +850,19 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `stats [--alias A] [--since DUR] [--top N] [--json] [--append-sitrep]` | Per-agent message statistics across the swarm. |
 | `stats history [--alias A] [--since DUR] [--top N] [--json]` | Daily rollup of message statistics. |
 
-| `sitrep commit [--message M]` | Stage and commit the current local-hour sitrep file. |
+| `dev sitrep commit [--message M]` | Stage and commit the current local-hour sitrep file. |
 
 ### Worktree management
 
 | Command | Description |
 |---------|-------------|
-| `worktree list` | List per-agent git worktrees. |
-| `worktree setup [--name NAME] [--alias A] [--role ROLE]` | Create and register a new worktree. |
-| `worktree start SLICE [--branch BRANCH]` | Create an isolated git worktree for a new slice, branched from origin/master. SLICE is both the worktree directory (.worktrees/<slice>) and branch name (fix/<slice>). |
-| `worktree status NAME` | Show worktree status (clean/dirty, up-to-date). |
-| `worktree gc [--clean]` | Garbage-collect stale worktrees (dry-run by default). |
-| `worktree prune` | Remove dead worktree entries from registry. |
-| `worktree check-bases` | Verify worktree ancestry against origin/master. |
+| `dev worktree list` | List per-agent git worktrees. |
+| `dev worktree setup [--name NAME] [--alias A] [--role ROLE]` | Create and register a new worktree. |
+| `dev worktree start SLICE [--branch BRANCH]` | Create an isolated git worktree for a new slice, branched from origin/master. SLICE is both the worktree directory (.worktrees/<slice>) and branch name (fix/<slice>). |
+| `dev worktree status NAME` | Show worktree status (clean/dirty, up-to-date). |
+| `dev worktree gc [--clean]` | Garbage-collect stale worktrees (dry-run by default). |
+| `dev worktree prune` | Remove dead worktree entries from registry. |
+| `dev worktree check-bases` | Verify worktree ancestry against origin/master. |
 
 
 ### Stickers
@@ -998,7 +1022,7 @@ for current flags.
 | `cc-plugin …` | Claude Code plugin sink commands (called by PostToolUse / PreCompact / PostCompact hooks). |
 | `oc-plugin …` | OpenCode plugin sink commands (called by the c2c TypeScript plugin). |
 | `hook` | PostToolUse hook entry point: drain inbox and emit messages. |
-| `mcp` | Launch the OCaml MCP server (used internally by `install <client>`). |
+| `deliver watch --session-id ID` | Poll one broker inbox continuously; see **Delivery commands** above. |
 | `get-tmux-location [--json]` | Print the current tmux pane address (`session:window.pane`). |
 
 For any command not listed above, run `c2c --help` (Tier 3/4 commands are hidden when running as an agent — set `C2C_TIER_FILTER=0` in the environment to see them all).
