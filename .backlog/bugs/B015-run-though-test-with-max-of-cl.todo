@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B015
+priority: high
+status: pending
+tags: []
+title: Run though test with max of claude code in a diff repo/dir to confirm cc setup, behavior, etc.
+---
+
+Run though test with max of claude code in a diff repo/dir to confirm cc setup, behavior, etc.
