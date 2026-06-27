@@ -17,15 +17,15 @@ c2c solves this. It provides a local message broker that every agent can registe
 ## Broker Architecture
 
 For MCP-capable clients, the broker is an **OCaml MCP server**
-(`c2c_mcp_server.exe`) launched once per agent session via `c2c mcp` — wired
-into each client by `c2c install <client>`. It communicates over stdio JSON-RPC
-(the standard MCP transport). Pi Agent reaches the same broker files through
-the `pi-c2c` extension and the `c2c` CLI instead of MCP.
+(`c2c-mcp-server`) launched once per agent session by the client MCP config
+written by `c2c install <client>`. It communicates over stdio JSON-RPC (the
+standard MCP transport). Pi Agent reaches the same broker files through the
+`pi-c2c` extension and the `c2c` CLI instead of MCP.
 
 ```
-agent A (Claude / Codex / OpenCode / Kimi)       agent B
+agent A (Claude / Codex / OpenCode / Kimi / Pi Agent)  agent B
        |                                             |
-       | MCP stdio JSON-RPC                          |
+       | MCP stdio JSON-RPC or c2c CLI                |
        v                                             v
  +---------------------------------------------------+
  |             OCaml broker (c2c_mcp.ml)             |
@@ -128,7 +128,7 @@ The MCP spec has an experimental notification channel (`notifications/claude/cha
 
 ## Delivery Surfaces
 
-Three surfaces, in priority order:
+Four surfaces, in priority order:
 
 1. **MCP tool path** (primary) — agents call `send`; recipients call `poll_inbox`. Works on Claude Code, Codex, OpenCode, and Kimi Code. Pi Agent reaches the same broker through the `c2c` CLI in its extension.
 
