@@ -6,9 +6,9 @@ permalink: /security/pending-permissions/
 
 # Pending Permission RPCs — M2/M4 Broker Security Feature
 
-**Status**: Implemented (broker committed; plugin wired in c2c.ts d116139)
+**Status**: Implemented (broker committed; OpenCode plugin wired and embedded)
 **Threat model**: broker-pending-permissions design doc — `.collab/design/broker-pending-permissions.md` (internal)
-**Plugin integration**: `c2c.ts` lines 1039–1062, 1407–1417
+**Plugin integration**: canonical source `data/opencode-plugin/c2c.ts`; embedded install payload `ocaml/cli/c2c_opencode_plugin_embedded.ml`
 
 ---
 
@@ -43,7 +43,7 @@ This closes a gap in M3's plugin-side supervisor check: M3 stops external alias 
 
 ### `open_pending_reply` — Open a Pending Slot (M2)
 
-**Broker path**: `c2c_mcp.ml` line 3324
+**Broker path**: `ocaml/c2c_pending_reply_handlers.ml` (`open_pending_reply`), dispatched from `ocaml/c2c_mcp.ml`
 
 **Request**:
 ```json
@@ -80,15 +80,14 @@ This closes a gap in M3's plugin-side supervisor check: M3 stops external alias 
 
 ### `check_pending_reply` — Validate an Incoming Reply (M4)
 
-**Broker path**: `c2c_mcp.ml` line 3368
+**Broker path**: `ocaml/c2c_pending_reply_handlers.ml` (`check_pending_reply`), dispatched from `ocaml/c2c_mcp.ml`
 
 **Request**:
 ```json
 {
   "name": "check_pending_reply",
   "arguments": {
-    "perm_id":          "uuid-string",
-    "reply_from_alias": "alias-of-respondent"
+    "perm_id": "uuid-string"
   }
 }
 ```
@@ -99,7 +98,7 @@ This closes a gap in M3's plugin-side supervisor check: M3 stops external alias 
 // perm_id not found (expired or never opened)
 { "valid": false, "requester_session_id": null, "error": "unknown permission ID" }
 
-// reply_from_alias is NOT in supervisors list
+// calling session's registered alias is NOT in supervisors list
 { "valid": false, "requester_session_id": null, "error": "reply from non-supervisor: <alias>" }
 
 // valid reply from an authorized supervisor
@@ -108,9 +107,11 @@ This closes a gap in M3's plugin-side supervisor check: M3 stops external alias 
 
 **Behavior**:
 - Looks up `pending_permission` by `perm_id`.
-- Checks `reply_from_alias` against the stored `supervisors` list.
+- Derives the replying alias from the calling MCP session's registration.
+- Ignores the legacy `reply_from_alias` argument if supplied; it is no longer required and must not be trusted.
+- Checks the derived alias against the stored `supervisors` list.
 - Returns the original `requester_session_id` on success so the plugin knows where to deliver the resolved decision.
-- The slot is left open; the plugin removes it after processing the valid reply.
+- Marks the slot resolved for fallthrough scheduling; callers should treat the first valid reply as winning.
 
 **When to call**: On receipt of a permission/question reply, before resolving the pending promise.
 
@@ -141,14 +142,15 @@ This means:
 | Storage | `<broker_root>/pending_permissions.json` — persisted across broker restarts |
 | Eviction | **Lazy**: `get_active_pending_permissions` filters `expires_at > now` on every read |
 | Pruning | `open_pending_permission` does a load+filter+save on every new entry, so expired entries are pruned opportunistically |
+| Capacity | `open_pending_reply` rejects new slots when the per-alias or global pending cap would be exceeded. The tool returns an error such as `open_pending_reply rejected: per-alias cap reached for alias "X"...` or `open_pending_reply rejected: global pending-permissions cap reached...`, logs `pending_cap_reject` to `broker.log`, and leaves existing entries untouched. |
 | TTL source | `C2C_PERMISSION_TTL` env var (default 600s) |
-| Close-after-first | After the first valid reply is processed, the plugin calls `remove_pending_permission`. Subsequent replies with the same `perm_id` hit the `unknown permission ID` case. |
+| First valid reply | `check_pending_reply` marks the slot resolved for fallthrough scheduling. Callers should treat the first valid reply as winning; later checks may still validate against the stored slot until TTL cleanup. |
 
 ---
 
 ## M4 Alias-Reuse Guard
 
-**Broker path**: `c2c_mcp.ml` line 2619–2637
+**Broker path**: `ocaml/c2c_mcp_helpers_post_broker.ml` registration guard helpers and `ocaml/c2c_broker.ml` pending-permission store
 
 When a new `register` arrives for alias `X`:
 
@@ -175,16 +177,18 @@ This eliminates the ~30-minute window (1800s sweep TTL) where a dead-but-not-yet
 |-------|--------|--------|----------------|
 | Before M2/M4 | No pending tracking | M3 supervisor check only | External spoofing blocked; orphaned replies not blocked |
 | Broker updated | Tracks pending slots; validates replies; enforces alias-reuse guard | Not yet calling RPCs | Full M4 for new slots; existing flows unchanged |
-| Plugin updated (c2c.ts d116139) | Full M2/M4 | Calls open_pending_reply + check_pending_reply | End-to-end M4 |
+| Plugin updated (`data/opencode-plugin/c2c.ts`, embedded in `ocaml/cli/c2c_opencode_plugin_embedded.ml`) | Full M2/M4 | Calls open_pending_reply + check_pending_reply | End-to-end M4 |
 | All peers updated | Same | Same | Full protection across all clients |
 
 Rollout is backward-compatible at every step. The advisory-fallthrough ensures old plugins still work even against a new broker.
 
 ---
 
-## Plugin Integration Example (c2c.ts d116139)
+## Plugin Integration Example
 
-**Open slot before sending permission requests** (c2c.ts ~1407–1417):
+The canonical TypeScript lives at `data/opencode-plugin/c2c.ts` and is embedded into `ocaml/cli/c2c_opencode_plugin_embedded.ml` for binary-only installs. The snippets below show the intended flow without relying on stale line numbers.
+
+**Open slot before sending permission requests**:
 ```typescript
 void (async () => {
   const supervisors = await selectSupervisors();
@@ -200,7 +204,7 @@ void (async () => {
     await runC2c(["send", supervisor, msg]);
 ```
 
-**Validate reply on receipt** (c2c.ts ~1039–1062):
+**Validate reply on receipt**:
 ```typescript
 } else if (pendingPermissions.has(permReply.permId)) {
   const { resolve, supervisors } = pendingPermissions.get(permReply.permId)!;
@@ -210,6 +214,8 @@ void (async () => {
     const brokerResult = await runC2c([
       "check-pending-reply", permReply.permId, msg.from_alias, "--json"
     ]);
+    // The CLI still accepts the legacy positional reply alias for compatibility;
+    // the MCP handler derives the actual alias from the calling session registration.
     const parsed = JSON.parse(brokerResult);
     if (parsed.valid === true) {
       brokerValidationPassed = true;
@@ -244,5 +250,5 @@ Once `plugin_version` lands, the broker can surface warnings on `poll_inbox` for
 ## See Also
 
 - Broker pending permissions design doc — `.collab/design/broker-pending-permissions.md` (internal)
-- [c2c.ts M2/M4 integration](https://github.com/clankercode/c2c/commit/d116139) — plugin wiring
-- [M4 alias-reuse guard commit](https://github.com/clankercode/c2c/commit/6e4c671) — broker fix for reply-to alias spoofing
+- OpenCode plugin source — `data/opencode-plugin/c2c.ts`; embedded install payload — `ocaml/cli/c2c_opencode_plugin_embedded.ml`
+- M4 alias-reuse guard commit `6e4c671` — broker fix for reply-to alias spoofing
