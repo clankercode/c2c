@@ -9,9 +9,16 @@
    On successful auth, the connection upgrades to WebSocket. The server pushes
    DM frames: {"op":"dm", "from":"...", "body":"...", "ts":...}
    
+   Phase 2: clients can dynamically add/remove aliases on an existing connection
+   by sending subscribe/unsubscribe frames with per-alias Ed25519 signatures.
+   This allows a single WS connection to serve multiple aliases without
+   re-establishing the connection or reinitializing other subscriptions.
+   
    Server pings every 30s; expects pong within 10s or drops connection. *)
 
 open Lwt.Infix
+
+module StringSet = Set.Make(String)
 
 (* Timestamp validation window: ±60s *)
 let auth_ts_window = 60.0
@@ -34,9 +41,9 @@ let b64url_decode s =
 let b64url_encode s =
   Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
-(* A subscriber connection *)
+(* A subscriber connection — supports multiple aliases (Phase 2) *)
 type subscriber = {
-  alias : string;
+  mutable aliases : StringSet.t;
   session : Relay_ws_frame.Session.t;
   mutable last_pong : float;
   mutable closed : bool;
@@ -93,6 +100,10 @@ end
 
 (* Global subscriber map *)
 let subscribers = SubscriberMap.create ()
+
+(* Parse JSON string, returning None on failure *)
+let json_of_string_opt s =
+  try Some (Yojson.Safe.from_string s) with _ -> None
 
 (* Auth result *)
 type auth_result =
@@ -208,65 +219,164 @@ let ping_loop sub =
   in
   loop ()
 
-(* Receive loop for a subscriber. Handles pong, close, and ignores other frames. *)
-let recv_loop sub =
+(* Process a subscribe/unsubscribe frame from the client.
+   Returns (added_aliases, removed_aliases, error_opt). *)
+let process_subscription_frame
+    ~(lookup_pk : alias:string -> string option)
+    (sub : subscriber)
+    (json : Yojson.Safe.t) : (string list * string list * string option) =
+  match json with
+  | `Assoc fields ->
+    let op = List.assoc_opt "op" fields in
+    (match op with
+     | Some (`String "subscribe") ->
+       (* Add aliases: {"op":"subscribe","aliases":["alias1"],"signatures":{"alias1":{"ts":"...","sig":"..."}}} *)
+       let aliases_json = List.assoc_opt "aliases" fields in
+       let sigs_json = List.assoc_opt "signatures" fields in
+       (match aliases_json, sigs_json with
+        | Some (`List alias_list), Some (`Assoc sig_map) ->
+          (* First pass: validate all aliases before mutating *)
+          let validated = ref [] in
+          let errors = ref [] in
+          List.iter (fun alias_json ->
+            match alias_json with
+            | `String alias ->
+              if StringSet.mem alias sub.aliases then ()
+              else begin
+                match List.assoc_opt alias sig_map with
+                | Some (`Assoc sig_fields) ->
+                  let get_str key = match List.assoc_opt key sig_fields with Some (`String s) -> s | _ -> "" in
+                  let ts_str = get_str "ts" in
+                  let sig_b64 = get_str "sig" in
+                  (match validate_subscribe_auth ~lookup_pk ~alias ~ts_str ~sig_b64 with
+                   | Auth_ok _ -> validated := alias :: !validated
+                   | Auth_error msg -> errors := Printf.sprintf "%s: %s" alias msg :: !errors)
+                | _ ->
+                  errors := Printf.sprintf "%s: missing signature" alias :: !errors
+              end
+            | _ -> ()) alias_list;
+          if !errors <> [] then
+            ([], [], Some (String.concat "; " !errors))
+          else begin
+            (* Second pass: apply all validated aliases *)
+            List.iter (fun alias ->
+              sub.aliases <- StringSet.add alias sub.aliases;
+              SubscriberMap.add subscribers ~alias sub) !validated;
+            (!validated, [], None)
+          end
+        | _ -> ([], [], Some "subscribe requires 'aliases' array and 'signatures' object"))
+     | Some (`String "unsubscribe") ->
+       (* Remove aliases: {"op":"unsubscribe","aliases":["alias1"]} *)
+       let aliases_json = List.assoc_opt "aliases" fields in
+       (match aliases_json with
+        | Some (`List alias_list) ->
+          let removed = ref [] in
+          List.iter (fun alias_json ->
+            match alias_json with
+            | `String alias ->
+              if StringSet.mem alias sub.aliases then begin
+                sub.aliases <- StringSet.remove alias sub.aliases;
+                SubscriberMap.remove subscribers ~alias sub;
+                removed := alias :: !removed
+              end
+            | _ -> ()) alias_list;
+          ([], !removed, None)
+        | _ -> ([], [], Some "unsubscribe requires 'aliases' array"))
+     | _ -> ([], [], None))
+  | _ -> ([], [], None)
+
+(* Receive loop for a subscriber. Handles pong, close, subscribe/unsubscribe. *)
+let recv_loop ~(lookup_pk : alias:string -> string option) (sub : subscriber) =
+  let send_json json =
+    if not sub.closed then
+      Lwt.catch
+        (fun () ->
+           Relay_ws_frame.Session.send_text sub.session (Yojson.Safe.to_string json))
+        (fun _ -> sub.closed <- true; Lwt.return_unit)
+    else
+      Lwt.return_unit
+  in
   let rec loop () =
     if sub.closed then Lwt.return_unit
-    else begin
+    else
       Lwt.catch
         (fun () ->
           Relay_ws_frame.Session.recv sub.session >>= function
           | None ->
-            (* EOF *)
             sub.closed <- true;
             Lwt.return_unit
           | Some `Ping ->
-            (* Client sent ping - Session.recv auto-sent pong. Just continue. *)
             loop ()
           | Some `Pong ->
-            (* Client responded to our ping - update last_pong for timeout check *)
             sub.last_pong <- Unix.gettimeofday ();
             loop ()
           | Some (`Close (_, _)) ->
             sub.closed <- true;
             Lwt.return_unit
-          | Some (`Text _) | Some (`Binary _) ->
-            (* Ignore client messages for now *)
+          | Some (`Text payload) ->
+            (* Phase 2: handle subscribe/unsubscribe frames *)
+            (match json_of_string_opt payload with
+             | Some json ->
+               let (added, removed, err) = process_subscription_frame ~lookup_pk sub json in
+               (match err with
+                | Some msg ->
+                  let resp = `Assoc [
+                    ("ok", `Bool false);
+                    ("error", `String msg);
+                  ] in
+                  send_json resp >>= fun () -> loop ()
+                | None ->
+                  let resp = `Assoc [
+                    ("ok", `Bool true);
+                    ("added", `List (List.map (fun a -> `String a) added));
+                    ("removed", `List (List.map (fun a -> `String a) removed));
+                  ] in
+                  send_json resp >>= fun () -> loop ())
+             | None -> loop ())
+          | Some (`Binary _) ->
             loop ())
         (fun _ ->
           sub.closed <- true;
           Lwt.return_unit)
-    end
   in
   loop ()
 
 (* Handle an upgraded WebSocket connection for subscription.
-   Called after HTTP upgrade is complete. *)
-let handle_subscriber ~alias ~fd =
+   Called after HTTP upgrade is complete.
+   ~aliases: initial set of aliases to subscribe (from HTTP headers)
+   ~lookup_pk: function to validate Ed25519 signatures for dynamic subscribe *)
+let handle_subscriber ~aliases ~fd ~lookup_pk =
   let session = Relay_ws_frame.Session.of_fd fd in
   let sub = {
-    alias;
+    aliases = StringSet.of_list aliases;
     session;
     last_pong = Unix.gettimeofday ();
     closed = false;
   } in
-  (* Register *)
-  SubscriberMap.add subscribers ~alias sub;
-  (* Cleanup on exit *)
+  (* Register for all initial aliases *)
+  List.iter (fun alias -> SubscriberMap.add subscribers ~alias sub) aliases;
+  (* Cleanup on exit — remove from all aliases *)
   let cleanup () =
     sub.closed <- true;
-    SubscriberMap.remove subscribers ~alias sub
+    StringSet.iter (fun alias -> SubscriberMap.remove subscribers ~alias sub) sub.aliases;
+    sub.aliases <- StringSet.empty;
+    (* Close the WS session/fd *)
+    Lwt.catch (fun () -> Relay_ws_frame.Session.close_with ~code:close_normal ~reason:"cleanup" () sub.session)
+      (fun _ -> Lwt.return_unit)
   in
-  (* Run ping and recv loops concurrently *)
   Lwt.finalize
     (fun () ->
       Lwt.pick [
         ping_loop sub;
-        recv_loop sub;
+        recv_loop ~lookup_pk sub;
       ])
     (fun () ->
       cleanup ();
       Lwt.return_unit)
+
+(* Backward-compatible: handle a single-alias subscriber (Phase 1 behavior) *)
+let handle_subscriber_single ~alias ~fd =
+  handle_subscriber ~aliases:[alias] ~fd ~lookup_pk:(fun ~alias:_ -> None)
 
 (* Build WS upgrade response headers *)
 let make_upgrade_response ws_key =
