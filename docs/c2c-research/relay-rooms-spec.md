@@ -489,3 +489,8 @@ after that.
   `(creator_pk, room_id_str)`, reserved relay names `@repo` (implicit
   default) / `@host` / `@here` / `@broadcast`. Per Max's decision + two
   addenda delivered via coordinator1.
+- 2026-06-27 — §5 updated to 4-level visibility (`public`/`unlisted`/`gated`/
+  `private`) replacing the prior `public`/`invite` model. §4.1 join admission
+  updated for open-join vs invite-gated. §7 table pipe escaped. History read
+  gating added (public/unlisted open-read, gated/private member-gated). Legacy
+  `invite`/`invite_only`/`invite-only` synonyms removed.

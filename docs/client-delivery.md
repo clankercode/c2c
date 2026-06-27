@@ -69,6 +69,11 @@ session will not see hook-delivered messages until it wakes; Monitor is the
 idle-session awareness path. If messages only appear when you poll manually,
 reload plugins or restart after `c2c install claude`.
 
+**B011 note**: Managed Claude sessions previously ran a duplicate heartbeat
+Monitor alongside the PostToolUse hook, doubling wake signals. The duplicate
+was removed — the always-on minimal intro is now the single session kickoff
+source.
+
 ### Non-Claude receiving
 
 - **Codex**: managed `c2c start codex` prefers the `--xml-input-fd` XML sideband,
@@ -108,6 +113,12 @@ calls `poll_inbox`. Session ID exported by `c2c start codex`. Restart via
 Headless mode available via `c2c start codex-headless` (uses
 `codex-turn-start-bridge` in XML mode).
 
+**B013 note**: Deliver-daemon start failures are now surfaced instead of
+silently going dark — if the daemon can't start, the managed session will
+report the error rather than appearing healthy with no delivery. Also fixed
+XML delivery being shadowed by `--inotify` in `deliver-inbox`. Run
+`just codex-deliver-e2e` to exercise the delivery regression guard.
+
 ## Pi Agent
 
 The external `pi-c2c` extension registers an alias via the `c2c` CLI, watches
@@ -135,3 +146,17 @@ injection. Alias auto-registered via `C2C_MCP_AUTO_REGISTER_ALIAS`. Restart via
 
 See [Client Feature Matrix](/clients/feature-matrix/) for the full delivery tier
 summary, cross-client DM matrix, per-client detailed breakdowns, and known footguns.
+
+---
+
+## Relay degrading-event passthrough (B010)
+
+Relay difficulty increases, PoW retry failures, dead-letter events, and
+rate-limit rejections are now surfaced to local agents as messages from the
+reserved `c2c-system` alias. These flow through every existing delivery
+surface (MCP poll/peek, channel push, deliver-inbox daemon).
+
+Severity levels: `INFO` (difficulty decrease / recovery), `WARN` (difficulty
+increase, rate-limit rejection), `ERR` (PoW retry failure, dead-letter /
+undeliverable). Events are edge-triggered — a sustained high-difficulty
+plateau does not re-alert every sync.

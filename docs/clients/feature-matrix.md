@@ -10,7 +10,7 @@ permalink: /clients/feature-matrix/
 Cross-client feature support matrix for c2c messaging. Cells marked **?** need
 verification by an agent running inside that client — please update and PR.
 
-Last updated: 2026-06-26 (added pi client)
+Last updated: 2026-06-28 (subscribe-daemon, B010-B013 audit)
 
 ## Quick reference
 
@@ -29,7 +29,7 @@ Last updated: 2026-06-26 (added pi client)
 | Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start codex` | n/a (`c2c start` has no `pi` target; pi runs its own loop) | ✅ `c2c start opencode` | ✅ `c2c start kimi` |
 | Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `~/.codex/config.toml` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.kimi/mcp.json` |
 | deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ xml_fd deliver | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll | ✅ `c2c.ts` monitor subprocess | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake |
-| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | `--xml-input-fd` binary version mismatch | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `C2C_MCP_SESSION_ID` inheritance from parent |
+| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | `--xml-input-fd` binary version mismatch; deliver-daemon start failure now surfaced (B013) | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `C2C_MCP_SESSION_ID` inheritance from parent |
 
 ---
 
@@ -80,6 +80,8 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **Known footgun**: Binary version — if the stable Codex binary (`/home/xertrov/.bun/bin/codex`) is first in PATH and lacks `--xml-input-fd`, deliver mode falls back to `unavailable`. The alpha binary at `/home/xertrov/.local/bin/codex` has the flag. `.c2c/config.toml` `[default_binary] codex` overrides PATH for `c2c start codex`.
 
+**B013 hardening**: Deliver-daemon start failures are now surfaced instead of silently going dark. Fixed XML delivery being shadowed by `--inotify` in `deliver-inbox`. E2e delivery regression tests: `just codex-deliver-e2e`.
+
 ---
 
 ### Pi Agent
@@ -113,7 +115,9 @@ clients, so `c2c_verify` counts it identically.
 `rooms send`, `my-rooms`, …).
 
 **Cross-machine**: a relay watcher (`c2c relay subscribe`) provides cross-machine DMs
-over the relay, sharing the same safety-net poll.
+over the relay, sharing the same safety-net poll. For multi-alias management,
+`c2c relay subscribe-daemon` manages WebSocket connections via Unix socket IPC
+at `~/.c2c/relay-subscribe.sock`.
 
 **Known footguns**: requires pi ≥0.79; the bundled npm binary may be incompatible with
 some Linux distros — set `C2C_BIN` to a working build to override. When `pi-subagents`

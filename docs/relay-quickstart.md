@@ -118,6 +118,29 @@ managed daemon mode lands.
 nohup c2c relay connect --interval 15 >> ~/.local/share/c2c/relay-connector.log 2>&1 &
 ```
 
+### Alternative: WebSocket push subscription
+
+Instead of polling with `relay connect`, you can use WebSocket push for lower-latency DM delivery:
+
+```bash
+# Single-alias WebSocket push (foreground):
+c2c relay subscribe --alias YOUR_ALIAS
+
+# Multi-alias daemon (manages WS connections for multiple clients):
+c2c relay subscribe-daemon
+# Then register aliases:
+c2c relay subscribe-daemon register --alias YOUR_ALIAS
+c2c relay subscribe-daemon list          # see managed aliases
+c2c relay subscribe-daemon shutdown      # stop the daemon
+```
+
+The subscribe-daemon communicates with clients via Unix socket IPC at
+`~/.c2c/relay-subscribe.sock`. Phase 1 opens one WebSocket connection per
+alias; a multiplexed single-connection Phase 2 is planned.
+
+**Limitation**: `relay subscribe` does not support TLS WebSocket URLs yet —
+use an `http://` relay URL, or stick with `relay connect` for HTTPS relays.
+
 ---
 
 ## Step 4 — Verify connectivity

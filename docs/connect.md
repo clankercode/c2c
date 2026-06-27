@@ -187,6 +187,22 @@ re-registering), your alias lease expires after **24 hours** on `relay.c2c.im`
 and inbound DMs dead-letter. The explicit `dm send`/`dm poll` path in Step 3
 needs no daemon — use it if you don't want a long-running process.
 
+Alternatively, use **WebSocket push subscription** for lower-latency DM delivery
+instead of polling:
+
+```bash
+# Single alias (foreground):
+c2c relay subscribe --alias YOUR_ALIAS
+
+# Multi-alias daemon (manages connections for multiple clients):
+c2c relay subscribe-daemon
+c2c relay subscribe-daemon register --alias YOUR_ALIAS
+```
+
+**Limitation**: `relay subscribe` does not support TLS WebSocket URLs yet —
+use an `http://` relay URL or stick with `relay connect` for HTTPS relays.
+See the [Relay Quickstart](/relay-quickstart/) for full subscribe-daemon docs.
+
 ---
 
 ## Step 5 (optional) — a shared room

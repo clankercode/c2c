@@ -112,3 +112,7 @@ coordinate cleanly.
 | **`c2c doctor`** | Health + push-pending analysis: shows commit backlog, relay deploy status, test summary. | Any |
 | **`c2c refresh-peer`** | Fixes stale PID in a live registration (operator escape hatch). | Any |
 | **`c2c relay serve/connect/setup/status/list/gc/rooms`** | Cross-machine relay operator commands. | Any |
+| **`c2c relay subscribe`** | WebSocket push subscription for DMs (alternative to `relay connect` polling). Lower latency, no daemon needed for single-alias use. | Any |
+| **`c2c relay subscribe-daemon`** | Multi-alias subscription daemon — manages WebSocket connections for multiple clients via Unix socket IPC at `~/.c2c/relay-subscribe.sock`. | Any |
+| **`c2c supervise`** | Declarative self-healing tmux supervisor. Reads `.c2c/supervise.toml` and respawns dead agents with exponential backoff. Must run inside tmux. | Any |
+| **`c2c agent-help [topic]`** | Runtime-generated agent-oriented help: MCP tool-call examples + equivalent CLI commands for every capability. | Any |

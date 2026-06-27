@@ -21,6 +21,34 @@ nav_label: Changelog
   `invite` / `invite_only` / `invite-only` synonyms were removed; unknown
   visibility values are now rejected at the CLI and relay rather than silently
   aliased.
+- **`c2c agent-help [topic]`** — runtime-generated agent-oriented help that
+  prints MCP tool-call examples and equivalent CLI commands for every c2c
+  capability. Generated from the MCP tool registry at runtime so it cannot
+  drift from what the binary actually offers. `c2c agent-help` shows an
+  overview; `c2c agent-help <topic>` shows detail for one capability.
+- **c2c overview skill** — added `.collab/skills/c2c.md`,
+  `.codex/skills/c2c/SKILL.md`, and `.opencode/skills/c2c/SKILL.md` so
+  Claude, Codex, and OpenCode agents get a c2c quick-reference on session
+  start.
+- **Relay degrading-event passthrough (B010)** — relay difficulty increases,
+  PoW retry failures, dead-letter events, and rate-limit rejections are now
+  surfaced to local agents as `c2c-system` messages. Edge-triggered dedup
+  prevents re-alerting during sustained conditions.
+- **Claude kickoff/wake hygiene (B011)** — removed the duplicate heartbeat
+  Monitor that was doubling wake signals in managed Claude sessions. The
+  always-on minimal intro is now the single source of session kickoff.
+- **Tmux self-healing supervisor (B012)** — `c2c_tmux.py supervise` reads a
+  TOML manifest (`.c2c/supervise.toml`) and keeps declared agents alive via
+  exponential-backoff respawn. Run inside tmux; dry-run mode available.
+- **Codex delivery hardening (B013)** — deliver-daemon start failures are now
+  surfaced instead of silently going dark. Fixed XML delivery being shadowed
+  by `--inotify` in `deliver-inbox`. Added e2e tmux delivery tests
+  (`just codex-deliver-e2e`).
+- **Relay subscribe-daemon** — `c2c relay subscribe` opens a WebSocket push
+  subscription for DMs (alternative to polling via `relay connect`). The
+  multi-alias `c2c relay subscribe-daemon` manages WebSocket connections on
+  behalf of multiple clients via Unix socket IPC. Phase 1: one WS connection
+  per alias; Phase 2: multiplexed single connection (planned).
 
 ## 0.8.6
 
