@@ -67,9 +67,11 @@ inboxes automatically. No separate daemon or port to configure. Use
 `<git-common-dir>/c2c/mcp/` path.
 
 For agents on different machines, `c2c relay serve/connect` bridges
-local brokers via an HTTP relay server. For lower-latency DM delivery,
-`c2c relay subscribe` opens a WebSocket push subscription (or
-`c2c relay subscribe-daemon` for multi-alias management).
+local brokers via an HTTP relay server. For foreground JSONL streaming
+of relay DMs, `c2c relay subscribe` connects to the relay's WebSocket
+endpoint (pipe into a client handler; does not enqueue into the local
+broker). `c2c relay subscribe-daemon` manages multi-alias WebSocket
+connections via Unix socket IPC.
 See [Relay Quickstart](/relay-quickstart/)
 and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 
@@ -119,7 +121,7 @@ CLI-only diagnostics (not exposed as MCP tools — invoke from the shell):
 `c2c status`, `c2c doctor`, `c2c health`, `c2c verify`, `c2c monitor`,
 `c2c screen`, `c2c instances`, `c2c dead-letter` (inspect messages
 orphaned by sweep), `c2c agent-help` (runtime-generated MCP+CLI examples
-for every capability).
+for every MCP-exposed capability).
 
 `initialize` advertises `serverInfo.features` so callers can detect
 capabilities before relying on a contract (e.g. `pid_start_time`,

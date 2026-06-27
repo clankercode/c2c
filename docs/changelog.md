@@ -34,9 +34,10 @@ nav_label: Changelog
   PoW retry failures, dead-letter events, and rate-limit rejections are now
   surfaced to local agents as `c2c-system` messages. Edge-triggered dedup
   prevents re-alerting during sustained conditions.
-- **Claude kickoff/wake hygiene (B011)** — removed the duplicate heartbeat
-  Monitor that was doubling wake signals in managed Claude sessions. The
-  always-on minimal intro is now the single source of session kickoff.
+- **Claude kickoff/wake hygiene (B011)** — removed the heartbeat Monitor step
+  from the managed Claude startup preamble to avoid double-waking with the
+  native 4.1m schedule. No-role agent starts now still get the minimal swarm
+  intro.
 - **Tmux self-healing supervisor (B012)** — `c2c_tmux.py supervise` reads a
   TOML manifest (`.c2c/supervise.toml`) and keeps declared agents alive via
   exponential-backoff respawn. Run inside tmux; dry-run mode available.

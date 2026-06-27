@@ -69,10 +69,10 @@ session will not see hook-delivered messages until it wakes; Monitor is the
 idle-session awareness path. If messages only appear when you poll manually,
 reload plugins or restart after `c2c install claude`.
 
-**B011 note**: Managed Claude sessions previously ran a duplicate heartbeat
-Monitor alongside the PostToolUse hook, doubling wake signals. The duplicate
-was removed — the always-on minimal intro is now the single session kickoff
-source.
+**B011 note**: The managed Claude startup preamble previously included a
+heartbeat Monitor step that double-waked with the native 4.1m schedule. The
+heartbeat Monitor step was removed; no-role agent starts now still get the
+minimal swarm intro.
 
 ### Non-Claude receiving
 

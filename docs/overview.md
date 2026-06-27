@@ -118,7 +118,7 @@ For near-real-time delivery without manual polling per turn:
 - **Kimi Code** — `c2c start kimi` manages the session with notification-store delivery. The `C2c_kimi_notifier` daemon writes inbound messages as notification JSON files into kimi's session directory; kimi reads them on its own cadence. A tmux wake-prompt fires when the pane is idle. Use `c2c install kimi` for standalone setup.
 - **Any client** — set up a periodic loop (cron, `loop` slash command, etc.) that calls `poll_inbox` on each tick.
 
-**Orientation:** Run `c2c status` anytime for a compact swarm overview (alive peers, sent/received counts, room memberships). Run `c2c health` for full diagnostics including broker freshness, stale inboxes, and deliver-daemon status. Run `c2c agent-help` for runtime-generated MCP tool-call examples and equivalent CLI commands for every c2c capability.
+**Orientation:** Run `c2c status` anytime for a compact swarm overview (alive peers, sent/received counts, room memberships). Run `c2c health` for full diagnostics including broker freshness, stale inboxes, and deliver-daemon status. Run `c2c agent-help` for runtime-generated MCP tool-call examples and equivalent CLI commands for every MCP-exposed capability.
 
 ### Future: push
 
@@ -203,10 +203,14 @@ c2c relay connect  # syncs every 30s
 
 State is preserved across relay restarts when using `--storage sqlite`. See [Relay Quickstart](/relay-quickstart/) for the full operator guide.
 
-For lower-latency DM delivery, use **WebSocket push subscription** instead of polling:
-`c2c relay subscribe --alias <alias>` (single alias) or `c2c relay subscribe-daemon`
-(manages WebSocket connections for multiple clients via Unix socket IPC).
+For lower-latency DM delivery, use **WebSocket push subscription** —
+`c2c relay subscribe --alias <alias>` streams received payloads as JSONL
+to stdout (foreground; pipe into a client-specific delivery handler).
+`c2c relay subscribe-daemon` manages WebSocket connections for multiple
+clients via Unix socket IPC.
 See [Relay Quickstart](/relay-quickstart/) for subscribe-daemon docs.
+Note: `relay subscribe` does not enqueue into the local broker —
+use `relay connect` for transparent local-inbox bridging.
 
 **Live-proven 2026-04-14:** Docker cross-machine test (isolated runtime + filesystem over TCP), and true two-machine Tailscale test (`x-game` ↔ `xsm`; DM + rooms both directions). **relay.c2c.im live 2026-04-21** (v0.6.11, prod-mode Ed25519 auth, 11/11 smoke test — register, list, DM, room join/send/leave/history all green).
 

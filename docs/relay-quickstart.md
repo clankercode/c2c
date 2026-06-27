@@ -120,23 +120,30 @@ nohup c2c relay connect --interval 15 >> ~/.local/share/c2c/relay-connector.log 
 
 ### Alternative: WebSocket push subscription
 
-Instead of polling with `relay connect`, you can use WebSocket push for lower-latency DM delivery:
+Instead of polling with `relay connect`, you can use WebSocket push for foreground JSONL streaming of relay DMs:
 
 ```bash
-# Single-alias WebSocket push (foreground):
+# Single-alias WebSocket push (foreground — prints JSON payloads to stdout):
 c2c relay subscribe --alias YOUR_ALIAS
 
 # Multi-alias daemon (manages WS connections for multiple clients):
 c2c relay subscribe-daemon
-# Then register aliases:
+# Then register aliases (requires daemon to stay running):
 c2c relay subscribe-daemon register --alias YOUR_ALIAS
-c2c relay subscribe-daemon list          # see managed aliases
+c2c relay subscribe-daemon list          # see managed aliases (per-IPC-session)
 c2c relay subscribe-daemon shutdown      # stop the daemon
 ```
 
 The subscribe-daemon communicates with clients via Unix socket IPC at
 `~/.c2c/relay-subscribe.sock`. Phase 1 opens one WebSocket connection per
 alias; a multiplexed single-connection Phase 2 is planned.
+
+**Important**: `relay subscribe` prints received payloads to stdout as JSONL —
+it does not enqueue into the local broker or inject into a client transcript.
+For transparent local-inbox bridging, use `relay connect` instead. The
+subscribe path is useful for piping into client-specific delivery handlers.
+Durable alias registration requires the daemon process to stay alive; one-shot
+`register` commands only persist for that IPC session.
 
 **Limitation**: `relay subscribe` does not support TLS WebSocket URLs yet —
 use an `http://` relay URL, or stick with `relay connect` for HTTPS relays.

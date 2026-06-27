@@ -711,13 +711,13 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. |
 | `sessions [--json]` | List registered broker sessions with session ID, alias, client type, cwd, and liveness. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
-| `supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor. Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
+| `supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor (`scripts/c2c_tmux.py supervise`). Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
 
 ### Diagnostics & maintenance (Tier 1)
 
 | Subcommand | Description |
 |------------|-------------|
-| `agent-help [TOPIC]` | Runtime-generated agent-oriented help. Prints MCP tool-call examples and equivalent CLI commands for every c2c capability. Without `TOPIC`, shows an overview of all capabilities; with a topic name (e.g. `send`, `poll-inbox`, `rooms join`), shows detail for that one capability. Topics are generated from the MCP tool registry at runtime. |
+| `agent-help [TOPIC]` | Runtime-generated agent-oriented help for every MCP-exposed c2c capability. Prints MCP tool-call examples and equivalent CLI commands. Without `TOPIC`, shows an overview of all capabilities; with a topic name (e.g. `send`, `poll-inbox`, `'rooms join'`), shows detail for that one capability. Multi-word topics must be quoted. Topics are generated from the MCP tool registry at runtime; CLI-only commands (relay, supervise, etc.) are not covered. |
 | `status [--min-messages N] [--json]` | Compact swarm overview: alive peers, sent/received counts, room memberships. |
 | `health [--json]` | Broker health snapshot: registry liveness, inbox freshness, rooms, relay reachability, client plugin status. |
 | `connect [--json]` | Connection status dashboard: shows broker state, per-client install status (claude, codex, opencode, kimi), relay reachability, rooms, whoami alias, and the ONE next action to get connected. Works outside git repos. |
@@ -889,11 +889,11 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
 | `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message via relay |
 | `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay |
-| `relay subscribe --alias ALIAS` | WebSocket push subscription for DMs (alternative to polling via `relay connect`). Connects to the relay's `/ws/subscribe` endpoint. Does not support TLS WebSocket URLs yet — use an `http://` relay URL. |
+| `relay subscribe --alias ALIAS` | WebSocket push subscription for DMs — connects to the relay's `/ws/subscribe` endpoint and prints received JSON payloads to stdout (foreground JSONL stream). Useful for piping into a client-specific delivery handler. Does not enqueue into the local broker or inject into a transcript — for that, use `relay connect`. Does not support TLS WebSocket URLs yet — use an `http://` relay URL. |
 | `relay subscribe-daemon` | Start a multi-alias subscription daemon that manages WebSocket connections on behalf of multiple clients via Unix socket IPC (`~/.c2c/relay-subscribe.sock`). |
-| `relay subscribe-daemon register --alias ALIAS` | Register an alias with the running subscribe-daemon |
+| `relay subscribe-daemon register --alias ALIAS` | Register an alias with the running subscribe-daemon. Requires the daemon to be running; registration is per-IPC-connection — durable registration requires the daemon process to stay alive. |
 | `relay subscribe-daemon deregister --alias ALIAS` | Deregister an alias from the subscribe-daemon |
-| `relay subscribe-daemon list` | List aliases managed by the subscribe-daemon |
+| `relay subscribe-daemon list` | List aliases managed by the subscribe-daemon (per-client; only shows aliases registered by the same IPC session) |
 | `relay subscribe-daemon shutdown` | Stop the subscribe-daemon |
 | `relay rooms list` | List **public** and **gated** rooms on the relay (no auth required). Unlisted/private rooms are not listed. |
 | `relay rooms join --room R --alias A [--visibility public\|unlisted\|gated\|private]` | Join a relay room. `--visibility` only applies when the join *creates* the room. |
