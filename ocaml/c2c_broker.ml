@@ -3335,10 +3335,16 @@ open C2c_mcp_helpers
 
   let room_visibility_of_json json =
     match json with
+    | `String "public" -> Public
     | `String "unlisted" -> Unlisted
     | `String "gated" -> Gated
     | `String "private" -> Private
-    | _ -> Public
+    (* Absent field (`Null): a legacy room from before visibility existed —
+       public by design. A PRESENT but unrecognized value (e.g. a legacy
+       "invite"/"invite_only" string) fails SAFE to Private rather than
+       silently exposing a previously-restricted room. *)
+    | `Null -> Public
+    | _ -> Private
 
   let room_meta_to_json { visibility; invited_members; created_by } =
     `Assoc

@@ -5739,6 +5739,28 @@ let test_delete_room_legacy_mixed_case_creator () =
       check int "legacy mixed-case room deleted"
         0 (List.length rooms))
 
+(* Fail-safe deserialization: a persisted visibility that is not one of the
+   four canonical tokens (e.g. the removed legacy "invite" string) reads back
+   as Private — restricted — never silently Public. *)
+let test_room_meta_unknown_visibility_reads_private () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let _ =
+        C2c_mcp.Broker.join_room broker ~room_id:"legacy-invite"
+          ~alias:"alice" ~session_id:"session-a"
+      in
+      let meta_path =
+        Filename.concat dir
+          (Filename.concat "rooms" (Filename.concat "legacy-invite" "meta.json"))
+      in
+      let oc = open_out meta_path in
+      output_string oc
+        "{\"visibility\":\"invite\",\"invited_members\":[],\"created_by\":\"alice\"}";
+      close_out oc;
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"legacy-invite" in
+      check bool "unknown 'invite' visibility fails safe to Private" true
+        (match meta.visibility with Private -> true | Public -> false | Unlisted -> false | Gated -> false))
+
 let test_send_room_appends_history_and_fans_out () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -8216,6 +8238,53 @@ let test_tools_call_set_room_visibility_via_mcp () =
                let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
                 check bool "visibility is gated" true
                   (match meta.visibility with Gated -> true | Public -> false | Unlisted -> false | Private -> false)))
+
+(* Fail-safe: an unknown visibility token is REJECTED via MCP (matching the
+   CLI and relay) rather than silently defaulting to Public. The room's
+   visibility is left unchanged. *)
+let test_tools_call_set_room_visibility_unknown_rejected () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 303)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "set_room_visibility")
+                     ; ( "arguments",
+                         `Assoc
+                           [ ("room_id", `String "secret-club")
+                           ; ("visibility", `String "invite")
+                           ] )
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "unknown visibility rejected" true is_error;
+               (* room visibility unchanged: still the join-time default public *)
+               let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
+               check bool "visibility unchanged (public)" true
+                 (match meta.visibility with Public -> true | Unlisted -> false | Gated -> false | Private -> false)))
 
 (* --- room visibility: unlisted (unlisted + open join + open read) --- *)
 
@@ -14002,6 +14071,8 @@ let () =
              test_delete_room_creator_check_case_insensitive
          ; test_case "delete_room legacy mixed-case created_by" `Quick
              test_delete_room_legacy_mixed_case_creator
+         ; test_case "room meta unknown visibility reads private (fail-safe)" `Quick
+             test_room_meta_unknown_visibility_reads_private
          ; test_case "send_room appends history and fans out" `Quick
              test_send_room_appends_history_and_fans_out
          ; test_case "send_room skips sender inbox" `Quick
@@ -14138,6 +14209,8 @@ let () =
              test_tools_call_send_room_invite_via_mcp
          ; test_case "tools/call set_room_visibility via MCP" `Quick
              test_tools_call_set_room_visibility_via_mcp
+         ; test_case "tools/call set_room_visibility unknown rejected" `Quick
+             test_tools_call_set_room_visibility_unknown_rejected
           ; test_case "join_room invite_only rejects uninvited via MCP" `Quick
               test_join_room_invite_only_rejects_uninvited_via_mcp
           ; test_case "open_pending_reply via MCP" `Quick

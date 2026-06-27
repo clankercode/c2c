@@ -393,13 +393,25 @@ let send_room_invite ~broker ~session_id_override ~arguments =
 let set_room_visibility ~broker ~session_id_override ~arguments =
   let room_id = string_member "room_id" arguments in
   let visibility_str = string_member "visibility" arguments in
-  let visibility =
-    match visibility_str with
-    | "unlisted" -> Unlisted
-    | "gated" -> Gated
-    | "private" -> Private
-    | _ -> Public
-  in
+  match
+    (match visibility_str with
+     | "public" -> Some Public
+     | "unlisted" -> Some Unlisted
+     | "gated" -> Some Gated
+     | "private" -> Some Private
+     | _ -> None)
+  with
+  | None ->
+      (* Reject unknown tokens (matching the CLI and relay) rather than
+         silently defaulting to Public — a silent default could turn an
+         intended-restricted room public. *)
+      Lwt.return
+        (tool_err
+           (Printf.sprintf
+              "set_room_visibility rejected: unknown visibility '%s'. Use 'public', \
+               'unlisted', 'gated', or 'private'."
+              visibility_str))
+  | Some visibility ->
   (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
    | None -> Lwt.return (missing_sender_alias_result "set_room_visibility")
    | Some from_alias ->
