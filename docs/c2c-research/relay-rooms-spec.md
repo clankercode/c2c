@@ -312,7 +312,7 @@ New/updated commands under `c2c relay rooms`:
 | Command                                 | Behaviour                                         |
 |-----------------------------------------|---------------------------------------------------|
 | `create <room> [--visibility V]`        | Create + auto-invite self                         |
-| `invite <room> <alias|identity_pk>`     | Append to `invited_members`                       |
+| `invite <room> <alias\|identity_pk>`    | Append to `invited_members`                       |
 | `uninvite <room> <identity_pk>`         | Remove from `invited_members`                     |
 | `members <room>`                        | List current members with fingerprints            |
 | `join <room> --alias A`                 | Signed join (§4.1); replaces existing local verb  |
