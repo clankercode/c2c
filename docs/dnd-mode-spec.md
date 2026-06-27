@@ -16,7 +16,7 @@ Two knobs on the same push-gate:
 Both paths converge in the broker: if either condition is true, the
 inbox write happens but the push paths (PostToolUse hook, opencode
 plugin promptAsync, codex PTY sentinel, channel notification) skip
-the emit. Deferred messages remain queued until the recipient explicitly polls or a delivery path performs an idle flush.
+the emit. Deferred messages remain queued until the recipient explicitly polls or another explicit drain reads them.
 
 ## Motivation
 
@@ -42,6 +42,8 @@ Persisted in `registry.json`, per registration:
 ```json
 { "dnd": true, "dnd_since": 1776746000.0, "dnd_until": 1776749600.0 }
 ```
+
+Broker process restarts reload this persisted registration state; any transient in-memory delivery/drain state is reset on restart.
 
 Cleared when:
 
@@ -100,8 +102,7 @@ sees the accumulated room traffic on next poll.
 
 ## Relation to other features
 
-- Complements `c2c doctor` and statefile: statefile provides the idle
-  signal; DND consumes it.
+- Complements `c2c doctor` and statefile visibility: peer status can surface DND, but DND does not consume idle signals or support idle expiry.
 - Feeds into the GUI (`docs/gui-architecture.md`): peer cards
   should render a DND badge.
 
@@ -121,7 +122,7 @@ this; the recipient can't possibly know per-message without reading
 every incoming push.
 
 So: let the sender mark a message as `deferrable` — "queue now,
-flush on idle." Good candidates: "task #N done", docs-only commits,
+read on explicit poll." Good candidates: "task #N done", docs-only commits,
 heartbeats, non-urgent nudges.
 
 ## Surface
@@ -141,7 +142,7 @@ The `send` response includes `deferrable: true` when set so the sender's log is 
 2. Push paths (PostToolUse hook, opencode plugin promptAsync, codex
    PTY sentinel, channel notification) check the envelope: if
    `deferrable` is true, skip the push. The message stays queued.
-3. Delivery push paths skip deferrable rows; explicit `poll_inbox` returns them identically to any other queued message. Implemented idle flush paths may surface them later, but callers should not rely on a separate acknowledgement.
+3. Delivery push drains skip deferrable rows; explicit `poll_inbox` returns them identically to any other queued message.
 4. `poll_inbox` returns deferred messages identically to any other.
 5. Room fan-out is currently non-deferrable at the public MCP surface; if a future room API exposes the flag, each recipient's copy should carry it.
 

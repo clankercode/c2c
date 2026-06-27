@@ -728,6 +728,12 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `scripts/c2c_tmux.py supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor (Python script, not a `c2c` subcommand). Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
 
+### Operator TUI (`c2c watch`)
+
+| Subcommand | Description |
+|------------|-------------|
+| `watch [--as ALIAS] [--interval FLOAT]` | Top-level full-screen operator TUI over the c2c broker: live peers, DMs, rooms, and in-process send/room-post compose. Distinct from `c2c deliver watch`, which is an inbox delivery watcher. |
+
 ### Delivery commands (`c2c deliver …`)
 
 | Subcommand | Description |
@@ -896,6 +902,7 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay-pins list\|show\|pin\|unpin [--json]` | Inspect and manage broker TOFU pins (`relay_pins.json`). |
 | `sweep [--json]` | Remove dead registrations and orphan inboxes (rescues content to dead-letter). |
 | `sweep-dryrun [--json]` | Read-only preview of what `sweep` would drop. Safe during active swarm. |
+| `watch [--as ALIAS] [--interval FLOAT]` | Top-level full-screen operator TUI over the broker (peers, DMs, rooms, compose/send). This is not the delivery watcher; use `c2c deliver watch` for inbox delivery polling. |
 | `migrate-broker [--from PATH] [--to PATH] [--dry-run] [--json]` | Migrate broker data from the legacy `<git-common-dir>/c2c/mcp` path to the new per-repo path (`$HOME/.c2c/repos/<fp>/broker`). Use `--dry-run` first. |
 
 ### Configuration & per-repo
