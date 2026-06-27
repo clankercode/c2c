@@ -5179,7 +5179,9 @@ generateKeys();
                      ~result:"upgraded" ();
                    Lwt.async (fun () ->
                      Lwt.catch
-                       (fun () -> Relay_ws_server.handle_subscriber ~alias:validated_alias ~fd:fd_dup_lwt)
+                       (fun () ->
+                          let lookup_pk_for_sub ~alias = R.identity_pk_of relay ~alias in
+                          Relay_ws_server.handle_subscriber ~aliases:[validated_alias] ~fd:fd_dup_lwt ~lookup_pk:lookup_pk_for_sub)
                        (fun _ -> Lwt.return_unit));
                    respond_ok (`Assoc ["ok", `Bool true; "msg", `String "ws_subscribe_session_started"])))
          | _ ->

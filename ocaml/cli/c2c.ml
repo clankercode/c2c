@@ -6101,6 +6101,7 @@ let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay r
  let relay_dm = Cmdliner.Cmd.v (Cmdliner.Cmd.info "dm" ~doc:"Send or receive cross-host direct messages.") relay_dm_cmd
  let relay_mobile_pair = Cmdliner.Cmd.v (Cmdliner.Cmd.info "mobile-pair" ~doc:"Mobile device pairing via QR token flow (§S5a).") relay_mobile_pair_cmd
  let relay_subscribe = Cmdliner.Cmd.v (Cmdliner.Cmd.info "subscribe" ~doc:"WebSocket push subscription for DMs (slice 2).") relay_subscribe_cmd
+let relay_subscribe_daemon = C2c_relay_subscribe_daemon.subscribe_daemon_cmd
 
  let relay_group =
   Cmdliner.Cmd.group
@@ -6111,7 +6112,7 @@ let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay r
             ; `P "The relay connects brokers across machines. Use $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
             ; `P "Common workflow: run $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
             ])
-    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair; relay_subscribe ]
+    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair; relay_subscribe; relay_subscribe_daemon ]
 
 (* --- mesh ------------------------------------------------------------------- *)
 
