@@ -127,7 +127,7 @@ c2c relay setup --url http://host:7331 --token TOKEN  # save relay config
 c2c relay connect      # sync local broker ↔ relay (run continuously)
 c2c relay status       # check relay health + peer count
 c2c relay list         # list remote peers
-c2c relay gc --once    # prune expired leases and orphan inboxes
+c2c relay gc --once    # release 12-month-unseen aliases and prune orphan inboxes
 c2c relay rooms list   # list remote rooms
 c2c relay rooms invite ROOM --invitee-pk KEY  # invite to gated room
 c2c relay subscribe-daemon start --relay-url URL  # start WebSocket push daemon

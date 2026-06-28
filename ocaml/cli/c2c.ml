@@ -4943,7 +4943,7 @@ let relay_list_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let dead =
-    Cmdliner.Arg.(value & flag & info [ "dead" ] ~doc:"Include dead sessions.")
+    Cmdliner.Arg.(value & flag & info [ "dead" ] ~doc:"Include reserved offline aliases.")
   in
   let+ relay_url = relay_url
   and+ token = token
@@ -6124,7 +6124,7 @@ let mesh_status_cmd =
   in
   let include_dead =
     Arg.(value & flag & info ["include-dead"; "a"]
-           ~doc:"Include expired/dead sessions in the peer list.")
+           ~doc:"Include reserved offline aliases in the peer list.")
   in
   let json_flag =
     Arg.(value & flag & info ["json"]
@@ -6266,16 +6266,16 @@ let mesh_status_cmd =
       let total_rooms = List.length rooms in
       Printf.printf "c2c mesh status — relay=%s\n\n" url;
       let dead_count = List.length dead_peers in
-      let dead_suffix = if dead_count > 0 then Printf.sprintf ", %d dead" dead_count else "" in
+      let dead_suffix = if dead_count > 0 then Printf.sprintf ", %d reserved offline" dead_count else "" in
       let hint_suffix =
-        if dead_count > 0 && not include_dead then "; use --include-dead to show dead"
-        else if dead_count = 0 && include_dead then "; (no dead peers)"
+        if dead_count > 0 && not include_dead then "; use --include-dead to show reserved offline aliases"
+        else if dead_count = 0 && include_dead then "; (no reserved offline aliases)"
         else ""
       in
       Printf.printf "Peers (%d alive%s%s):\n"
         (List.length alive_peers) dead_suffix hint_suffix;
       if not include_dead && dead_peers <> [] then
-        Printf.printf "  (omitting %d dead sessions; use --include-dead to show)\n"
+        Printf.printf "  (omitting %d reserved offline aliases; use --include-dead to show)\n"
           (List.length dead_peers);
       Printf.printf "  %-18s %-14s %-10s %-22s %-6s  %s\n"
         "ALIAS" "SESSION_ID" "TYPE" "LAST_SEEN" "TTL" "STATUS";

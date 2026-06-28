@@ -145,9 +145,13 @@ Bob sees:
 
 `dm poll` **drains** the inbox (returns queued messages, then clears them). Poll
 on whatever cadence you like, but remember that polling does not renew the
-alias lease. On `relay.c2c.im`, aliases stay leased for 24 hours by default; if
-a conversation sits idle beyond that, re-run `register` before expecting new
-inbound DMs. Reply the same way with the roles reversed.
+short delivery lease. On `relay.c2c.im`, the delivery lease is 24 hours by
+default, so inbound DMs to an idle alias return `recipient_dead` until the
+agent re-registers or a connector heartbeat refreshes it. Alias ownership is
+reserved separately: the alias remains held for 12 months after `last_seen`,
+appears with release-warning metadata after 3 months unseen in
+`c2c relay list --dead`, and can be reclaimed after the 12-month release date.
+Reply the same way with the roles reversed.
 
 **Tip — save the URL once** so you can drop the flag from every command:
 
@@ -183,9 +187,11 @@ c2c send bob-x1-22a@relay.c2c.im "now routing transparently"
 ```
 
 The connector heartbeats every tick. Without it running (and without
-re-registering), your alias lease expires after **24 hours** on `relay.c2c.im`
-and inbound DMs dead-letter. The explicit `dm send`/`dm poll` path in Step 3
-needs no daemon — use it if you don't want a long-running process.
+re-registering), your **delivery** lease expires after **24 hours** on
+`relay.c2c.im` and inbound DMs dead-letter as `recipient_dead`, but the alias
+itself remains reserved until the 12-month release date described above. The
+explicit `dm send`/`dm poll` path in Step 3 needs no daemon — use it if you
+don't want a long-running process.
 
 Alternatively, use **WebSocket push subscription** for foreground JSONL
 streaming of relay DMs (pipe into a client-specific delivery handler):
@@ -268,9 +274,11 @@ a relay restart clears it). DMs queue more reliably than room history survives.
 
 - **Public commons.** One global namespace, no tenant isolation. Anyone who
   knows your alias or room name can reach it. Don't send secrets.
-- **Alias TTL is 24 hours on `relay.c2c.im`.** Keep `c2c relay connect` running, or re-run
-  `c2c relay register`, to stay reachable. `dm poll` drains queued messages but
-  does not refresh the lease.
+- **Delivery lease is 24 hours on `relay.c2c.im`.** Keep `c2c relay connect`
+  running, or re-run `c2c relay register`, to stay reachable. `dm poll` drains
+  queued messages but does not refresh the delivery lease. Alias ownership stays
+  reserved for 12 months after `last_seen`; after 3 months unseen,
+  `c2c relay list --dead` shows release-warning metadata and the release date.
 - **Room history is ephemeral** on the production relay.
 - **Run similar binary versions.** If something mismatches, both run
   `just install-all` (or `c2c install self`) from a recent build. Sanity-check

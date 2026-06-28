@@ -18,6 +18,23 @@ let json_get_int json key =
        | _ -> fail_fmt "json_get_int: key %S not found or not int" key)
   | _ -> fail_fmt "json_get_int: expected Assoc for key %S" key
 
+let json_get_float json key =
+  match json with
+  | `Assoc fields ->
+      (match List.assoc_opt key fields with
+       | Some (`Float f) -> f
+       | Some (`Int i) -> float_of_int i
+       | _ -> fail_fmt "json_get_float: key %S not found or not number" key)
+  | _ -> fail_fmt "json_get_float: expected Assoc for key %S" key
+
+let json_get_bool json key =
+  match json with
+  | `Assoc fields ->
+      (match List.assoc_opt key fields with
+       | Some (`Bool b) -> b
+       | _ -> fail_fmt "json_get_bool: key %S not found or not bool" key)
+  | _ -> fail_fmt "json_get_bool: expected Assoc for key %S" key
+
 let json_get_list json key =
   match json with
   | `Assoc fields ->
@@ -50,6 +67,76 @@ let test_lease_touch_updates_last_seen () =
   Relay.RegistrationLease.touch lease;
   let last_seen = Yojson.Safe.Util.(Relay.RegistrationLease.to_json lease |> member "last_seen" |> to_float) in
   if last_seen <= before then fail_fmt "last_seen should be updated"
+
+let test_alias_retention_policy_boundaries () =
+  let now = 1_000_000_000.0 in
+  let fresh_last_seen = now -. 60.0 in
+  if Relay.alias_release_warning ~now ~last_seen:fresh_last_seen then
+    fail_fmt "fresh alias should not warn";
+  if Relay.alias_released ~now ~last_seen:fresh_last_seen then
+    fail_fmt "fresh alias should not be released";
+  let warning_last_seen = now -. Relay.alias_warning_after_s -. 1.0 in
+  if not (Relay.alias_release_warning ~now ~last_seen:warning_last_seen) then
+    fail_fmt "alias should warn after 3 months unseen";
+  if Relay.alias_released ~now ~last_seen:warning_last_seen then
+    fail_fmt "warning alias should still be reserved";
+  let released_last_seen = now -. Relay.alias_release_after_s -. 1.0 in
+  if not (Relay.alias_released ~now ~last_seen:released_last_seen) then
+    fail_fmt "alias should release after 12 months unseen"
+
+let test_relay_released_alias_hides_identity_before_gc () =
+  let t = Relay.InMemoryRelay.create () in
+  let identity_pk = "alice-identity-pk" in
+  let enc_pubkey = "alice-enc-pk" in
+  let sig_b64 = "alice-sig" in
+  let (status, lease) =
+    Relay.InMemoryRelay.register t
+      ~node_id:"n1" ~session_id:"s1" ~alias:"alice"
+      ~identity_pk ~enc_pubkey ~signed_at:123.0 ~sig_b64 ()
+  in
+  if status <> "ok" then fail_fmt "inmemory: setup register failed: %s" status;
+  let (_bob_status, _) = Relay.InMemoryRelay.register t ~node_id:"n-bob" ~session_id:"s-bob" ~alias:"bob" () in
+  let (_carol_status, carol_lease) =
+    Relay.InMemoryRelay.register t ~node_id:"n-carol" ~session_id:"s-carol" ~alias:"carol" ()
+  in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"retention-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"retention-room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"carol" ~room_id:"retention-room" () in
+  if Relay.InMemoryRelay.identity_pk_of t ~alias:"alice" <> Some identity_pk then
+    fail_fmt "inmemory: setup identity lookup should succeed before release";
+  if not (Relay.InMemoryRelay.is_room_member_alias t ~room_id:"retention-room" ~alias:"alice") then
+    fail_fmt "inmemory: setup room membership should be visible before release";
+  Relay.RegistrationLease.set_last_seen lease
+    (Unix.gettimeofday () -. Relay.alias_release_after_s -. 60.0);
+  if Relay.InMemoryRelay.identity_pk_of t ~alias:"alice" <> None then
+    fail_fmt "inmemory: released alias should hide identity_pk before gc";
+  if Relay.InMemoryRelay.alias_of_identity_pk t ~identity_pk <> None then
+    fail_fmt "inmemory: released alias should not reverse-map identity_pk before gc";
+  if Relay.InMemoryRelay.alias_of_session t ~node_id:"n1" ~session_id:"s1" <> None then
+    fail_fmt "inmemory: released alias should not map session before gc";
+  if Relay.InMemoryRelay.enc_pubkey_of t ~alias:"alice" <> None then
+    fail_fmt "inmemory: released alias should hide enc_pubkey before gc";
+  if Relay.InMemoryRelay.signed_at_of t ~alias:"alice" <> None then
+    fail_fmt "inmemory: released alias should hide signed_at before gc";
+  if Relay.InMemoryRelay.sig_b64_of t ~alias:"alice" <> None then
+    fail_fmt "inmemory: released alias should hide sig before gc";
+  if Relay.InMemoryRelay.is_room_member_alias t ~room_id:"retention-room" ~alias:"alice" then
+    fail_fmt "inmemory: released alias should not authorize as room member before gc";
+  (match Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"retention-room" () with
+   | `Error (err, _) when err = Relay.relay_err_unknown_alias -> ()
+   | `Error (err, _) -> fail_fmt "inmemory: released alias join should be unknown_alias, got %s" err
+   | `Ok -> fail_fmt "inmemory: released alias should not rejoin before gc");
+  Relay.RegistrationLease.set_last_seen carol_lease
+    (Unix.gettimeofday () -. Relay.alias_release_after_s -. 60.0);
+  (match Relay.InMemoryRelay.send_room t ~from_alias:"carol" ~room_id:"retention-room" ~content:"after release" () with
+   | `Error (err, _) when err = Relay.relay_err_unknown_alias -> ()
+   | `Error (err, _) -> fail_fmt "inmemory: released alias send_room should be unknown_alias, got %s" err
+   | `Ok _ -> fail_fmt "inmemory: released alias should not send_room before gc");
+  let (hb_status, _) = Relay.InMemoryRelay.heartbeat t ~node_id:"n1" ~session_id:"s1" in
+  if hb_status <> Relay.relay_err_unknown_alias then
+    fail_fmt "inmemory: heartbeat should not revive released alias, got %s" hb_status;
+  if Relay.InMemoryRelay.identity_pk_of t ~alias:"alice" <> None then
+    fail_fmt "inmemory: heartbeat must not restore released identity"
 
 (* ---- InMemoryRelay tests ---- *)
 
@@ -327,17 +414,21 @@ let test_relay_send_room_delivers_to_all_except_sender () =
       if List.length skipped <> 0 then fail_fmt "no skipped"
   | _ -> fail_fmt "expected Ok"
 
-let test_relay_gc_removes_expired_leases () =
+let test_relay_gc_preserves_reserved_expired_leases () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ~ttl:0.01 () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" ~ttl:300.0 () in
   Unix.sleep 1;
+  let (status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n3" ~session_id:"s3" ~alias:"alice" () in
+  if status <> Relay.relay_err_alias_conflict then
+    fail_fmt "expired delivery lease should remain alias-reserved, got %s" status;
   match Relay.InMemoryRelay.gc t with
-  | `Ok (expired, pruned) ->
-      if List.length expired <> 1 then fail_fmt "should have 1 expired";
-      if List.hd expired <> "alice" then fail_fmt "alice should be expired";
+  | `Ok (released, _pruned) ->
+      if released <> [] then fail_fmt "recently seen alias should not be released by gc";
+      let alive_peers = Relay.InMemoryRelay.list_peers ~include_dead:false t in
+      if List.length alive_peers <> 1 then fail_fmt "only bob should be alive";
       let peers = Relay.InMemoryRelay.list_peers ~include_dead:true t in
-      if List.length peers <> 1 then fail_fmt "only bob should remain"
+      if List.length peers <> 2 then fail_fmt "alice should remain visible with --dead while reserved"
   | _ -> fail_fmt "gc should return Ok"
 
 let test_relay_list_rooms_shows_all_with_counts () =
@@ -498,6 +589,153 @@ let with_sqlite_relay_tempdir f =
   Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote dir)))
     (fun () -> f (Relay.SqliteRelay.create ~persist_dir:dir ()))
 
+let with_sqlite_relay_and_dir f =
+  let dir = Filename.temp_dir "c2c_relay_alias_retention_test" "" in
+  Fun.protect ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote dir)))
+    (fun () -> f dir (Relay.SqliteRelay.create ~persist_dir:dir ()))
+
+let sqlite_set_last_seen dir alias last_seen =
+  let db_path = Filename.concat dir "c2c_relay.db" in
+  let conn = Sqlite3.db_open db_path in
+  let stmt = Sqlite3.prepare conn "UPDATE leases SET last_seen = ?, ttl = 1 WHERE alias = ?" in
+  Sqlite3.bind_double stmt 1 last_seen |> ignore;
+  Sqlite3.bind_text stmt 2 alias |> ignore;
+  Sqlite3.step stmt |> ignore;
+  Sqlite3.finalize stmt |> ignore;
+  Sqlite3.db_close conn |> ignore
+
+let test_relay_sqlite_alias_retention_warns_and_releases () =
+  with_sqlite_relay_and_dir (fun dir t ->
+    let identity_pk = "alice-identity-pk" in
+    let enc_pubkey = "alice-enc-pk" in
+    let sig_b64 = "alice-sig" in
+    let (_status, _lease) =
+      Relay.SqliteRelay.register t
+        ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ~ttl:1.0
+        ~identity_pk ~enc_pubkey ~signed_at:123.0 ~sig_b64 ()
+    in
+    let (_status, _lease) =
+      Relay.SqliteRelay.register t ~node_id:"n-bob" ~session_id:"s-bob" ~alias:"bob" ()
+    in
+    let (_status, _lease) =
+      Relay.SqliteRelay.register t ~node_id:"n-carol" ~session_id:"s-carol" ~alias:"carol" ()
+    in
+    let _ = Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"retention-room" () in
+    let _ = Relay.SqliteRelay.join_room t ~alias:"bob" ~room_id:"retention-room" () in
+    let _ = Relay.SqliteRelay.join_room t ~alias:"carol" ~room_id:"retention-room" () in
+    (match Relay.SqliteRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"queued-before-release" ~message_id:None with
+     | `Ok _ -> ()
+     | _ -> fail_fmt "sqlite: setup send to alice should queue before release");
+    let warning_last_seen = Unix.gettimeofday () -. Relay.alias_warning_after_s -. 60.0 in
+    sqlite_set_last_seen dir "alice" warning_last_seen;
+    let peers = Relay.SqliteRelay.list_peers t ~include_dead:true in
+    let alice =
+      match List.find_opt (fun lease -> Relay.RegistrationLease.alias lease = "alice") peers with
+      | Some lease -> Relay.RegistrationLease.to_json lease
+      | None -> fail_fmt "sqlite: reserved stale alias should remain listed with --dead"
+    in
+    if not (json_get_bool alice "alias_release_warning") then
+      fail_fmt "sqlite: stale reserved alias should carry warning metadata";
+    let last_seen = json_get_float alice "last_seen" in
+    if abs_float (last_seen -. warning_last_seen) > 5.0 then
+      fail_fmt "sqlite: list_peers should preserve stored last_seen, got %.0f expected %.0f"
+        last_seen warning_last_seen;
+    let release_at = json_get_float alice "alias_release_at" in
+    if release_at <= Unix.gettimeofday () then
+      fail_fmt "sqlite: warning alias release date should be in the future";
+    if Relay.SqliteRelay.identity_pk_of t ~alias:"alice" <> Some identity_pk then
+      fail_fmt "sqlite: warning-phase reserved alias should keep identity lookup";
+    if Relay.SqliteRelay.alias_of_identity_pk t ~identity_pk <> Some "alice" then
+      fail_fmt "sqlite: warning-phase reserved alias should reverse-map identity";
+    if Relay.SqliteRelay.alias_of_session t ~node_id:"n1" ~session_id:"s1" <> Some "alice" then
+      fail_fmt "sqlite: warning-phase reserved alias should map session";
+    (match Relay.SqliteRelay.send_room t ~from_alias:"bob" ~room_id:"retention-room" ~content:"ping" () with
+     | `Ok (_ts, delivered, skipped) ->
+         if List.mem "alice" delivered then
+           fail_fmt "sqlite: expired delivery lease must not receive room fanout";
+         if not (List.mem "alice" skipped) then
+           fail_fmt "sqlite: expired delivery lease should be reported skipped"
+     | _ -> fail_fmt "sqlite: send_room should return Ok");
+    let (status, _lease) =
+      Relay.SqliteRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"alice" ()
+    in
+    if status <> Relay.relay_err_alias_conflict then
+      fail_fmt "sqlite: warned alias should remain reserved, got %s" status;
+    sqlite_set_last_seen dir "alice" (Unix.gettimeofday () -. Relay.alias_release_after_s -. 60.0);
+    if Relay.SqliteRelay.identity_pk_of t ~alias:"alice" <> None then
+      fail_fmt "sqlite: released alias should hide identity_pk before gc";
+    if Relay.SqliteRelay.alias_of_identity_pk t ~identity_pk <> None then
+      fail_fmt "sqlite: released alias should not reverse-map identity_pk before gc";
+    if Relay.SqliteRelay.alias_of_session t ~node_id:"n1" ~session_id:"s1" <> None then
+      fail_fmt "sqlite: released alias should not map session before gc";
+    if Relay.SqliteRelay.enc_pubkey_of t ~alias:"alice" <> None then
+      fail_fmt "sqlite: released alias should hide enc_pubkey before gc";
+    if Relay.SqliteRelay.signed_at_of t ~alias:"alice" <> None then
+      fail_fmt "sqlite: released alias should hide signed_at before gc";
+    if Relay.SqliteRelay.sig_b64_of t ~alias:"alice" <> None then
+      fail_fmt "sqlite: released alias should hide sig before gc";
+    if Relay.SqliteRelay.is_room_member_alias t ~room_id:"retention-room" ~alias:"alice" then
+      fail_fmt "sqlite: released alias should not authorize as room member before gc";
+    (match Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"retention-room" () with
+     | `Error (err, _) when err = Relay.relay_err_unknown_alias -> ()
+     | `Error (err, _) -> fail_fmt "sqlite: released alias join should be unknown_alias, got %s" err
+     | `Ok -> fail_fmt "sqlite: released alias should not rejoin before gc");
+    sqlite_set_last_seen dir "carol" (Unix.gettimeofday () -. Relay.alias_release_after_s -. 60.0);
+    (match Relay.SqliteRelay.send_room t ~from_alias:"carol" ~room_id:"retention-room" ~content:"after release" () with
+     | `Error (err, _) when err = Relay.relay_err_unknown_alias -> ()
+     | `Error (err, _) -> fail_fmt "sqlite: released alias send_room should be unknown_alias, got %s" err
+     | `Ok _ -> fail_fmt "sqlite: released alias should not send_room before gc");
+    let (hb_status, _) = Relay.SqliteRelay.heartbeat t ~node_id:"n1" ~session_id:"s1" in
+    if hb_status <> Relay.relay_err_unknown_alias then
+      fail_fmt "sqlite: heartbeat should not revive released alias, got %s" hb_status;
+    if Relay.SqliteRelay.identity_pk_of t ~alias:"alice" <> None then
+      fail_fmt "sqlite: heartbeat must not restore released identity";
+    (match Relay.SqliteRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"after release" ~message_id:None with
+     | `Error (err, _) ->
+         if err <> Relay.relay_err_unknown_alias then
+           fail_fmt "sqlite: direct send to released alias should be unknown_alias, got %s" err
+     | _ -> fail_fmt "sqlite: direct send to released alias should fail before gc");
+    let (status, lease) =
+      Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ()
+    in
+    if status <> "ok" then fail_fmt "sqlite: released alias should be reclaimable before gc, got %s" status;
+    if Relay.RegistrationLease.node_id lease <> "n1" then
+      fail_fmt "sqlite: released alias should be reclaimed by requested node before gc";
+    let old_inbox = Relay.SqliteRelay.poll_inbox t ~node_id:"n1" ~session_id:"s1" in
+    if old_inbox <> [] then
+      fail_fmt "sqlite: reclaim-before-gc must not expose old released-alias inbox content";
+    let rooms_after_reclaim = Relay.SqliteRelay.list_rooms t in
+    let room_after_reclaim =
+      match List.find_opt (fun r -> json_get_string r "room_id" = "retention-room") rooms_after_reclaim with
+      | Some r -> r
+      | None -> fail_fmt "sqlite: retention room should still exist after reclaiming alice"
+    in
+    let members_after_reclaim = json_get_list room_after_reclaim "members" in
+    if List.exists (fun m -> Yojson.Safe.Util.to_string m = "alice") members_after_reclaim then
+      fail_fmt "sqlite: reclaim-before-gc must not inherit released alias room membership";
+    let _ = Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"retention-room" () in
+    sqlite_set_last_seen dir "alice" (Unix.gettimeofday () -. Relay.alias_release_after_s -. 60.0);
+    (match Relay.SqliteRelay.gc t with
+     | `Ok (released, _pruned) ->
+         if not (List.mem "alice" released) then
+           fail_fmt "sqlite: gc should release 12-month-stale alias"
+     | _ -> fail_fmt "sqlite: gc should return Ok");
+    let rooms = Relay.SqliteRelay.list_rooms t in
+    let room =
+      match List.find_opt (fun r -> json_get_string r "room_id" = "retention-room") rooms with
+      | Some r -> r
+      | None -> fail_fmt "sqlite: retention room should still exist after releasing alice"
+    in
+    let members = json_get_list room "members" in
+    if List.exists (fun m -> Yojson.Safe.Util.to_string m = "alice") members then
+      fail_fmt "sqlite: released alias should be removed from room membership";
+    let (status, lease) =
+      Relay.SqliteRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"alice" ()
+    in
+    if status <> "ok" then fail_fmt "sqlite: released alias should be reclaimable, got %s" status;
+    if Relay.RegistrationLease.node_id lease <> "n2" then
+      fail_fmt "sqlite: released alias should move to new node")
+
 let test_relay_sqlite_list_rooms_omits_nonpublic () =
   with_sqlite_relay_tempdir (fun t ->
     let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
@@ -583,7 +821,10 @@ let test_relay_sqlite_join_visibility_and_set () =
       let listed = room_ids (Relay.SqliteRelay.list_rooms t) in
       if not (List.mem "legacy-room" listed) then
         fail_fmt "sqlite: legacy public room should be listed after migration";
-      let _ = Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"new-private" () in
+      let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+      (match Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"new-private" () with
+       | `Ok -> ()
+       | `Error (err, msg) -> fail_fmt "sqlite: migrated db join failed: %s %s" err msg);
       if Relay.SqliteRelay.room_visibility_of t ~room_id:"new-private" <> "private" then
         fail_fmt "sqlite: migrated db should support create-with-private visibility";
       if List.mem "new-private" (room_ids (Relay.SqliteRelay.list_rooms t)) then
@@ -765,7 +1006,9 @@ let tests = [
   "relay join_room adds member", test_relay_join_room_adds_member;
   "relay leave_room removes member", test_relay_leave_room_removes_member;
   "relay send_room delivers", test_relay_send_room_delivers_to_all_except_sender;
-  "relay gc removes expired", test_relay_gc_removes_expired_leases;
+  "alias retention policy boundaries", test_alias_retention_policy_boundaries;
+  "relay released alias hides identity before gc", test_relay_released_alias_hides_identity_before_gc;
+  "relay gc preserves reserved expired", test_relay_gc_preserves_reserved_expired_leases;
   "relay list_rooms with counts", test_relay_list_rooms_shows_all_with_counts;
   (* room visibility: public / unlisted / gated / private (4-level) *)
   "relay canonical_visibility normalizes", test_relay_canonical_visibility_normalizes;
@@ -777,6 +1020,7 @@ let tests = [
   "relay sqlite list_rooms omits non-public", test_relay_sqlite_list_rooms_omits_nonpublic;
   "relay sqlite join gating", test_relay_join_gating_sqlite;
   "relay sqlite join visibility + set", test_relay_sqlite_join_visibility_and_set;
+  "relay sqlite alias retention warns and releases", test_relay_sqlite_alias_retention_warns_and_releases;
   (* #330 V1 cross_host_not_implemented error-path seam tests *)
   "cross_host bare alias works when self_host is set", test_cross_host_bare_alias_works_when_self_host_is_set;
   "cross_host alias@matching self_host accepted", test_cross_host_alias_matching_self_host_accepted;

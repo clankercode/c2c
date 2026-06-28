@@ -913,8 +913,8 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay connect [--relay-url URL] [--token T] [--token-file PATH] [--interval N] [--once]` | Bridge local broker to remote relay. Falls back to env vars and saved `relay.json` config. |
 | `relay setup [--url URL] [--token T] [--token-file PATH] [--show]` | Save relay config to disk |
 | `relay status` | Show relay server health and peer count |
-| `relay list [--dead] [--json]` | List peers registered on the relay |
-| `relay gc [--once] [--interval N] [--verbose] [--json]` | Prune expired leases and orphan inboxes on the relay |
+| `relay list [--dead] [--json]` | List peers registered on the relay. With `--dead`, includes reserved offline aliases plus `alias_release_warning` / `alias_release_at` metadata. |
+| `relay gc [--once] [--interval N] [--verbose] [--json]` | Release aliases unseen for 12 months and prune orphan inboxes on the relay |
 | `relay identity init [--path PATH]` | Generate Ed25519 identity keypair for prod-mode auth |
 | `relay identity show` | Display current identity fingerprint and metadata |
 | `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
@@ -1004,8 +1004,8 @@ and sends a tmux wake-prompt when the pane is idle. See
 | `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay. |
 | `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk. |
 | `relay status [--relay-url URL] [--token T]` | Show relay server health. |
-| `relay list [--dead] [--relay-url URL] [--token T] [--json]` | List peers registered on the relay. |
-| `relay gc [--once] [--interval N] [--verbose] [--json]` | Prune expired leases and orphan inboxes on the relay. |
+| `relay list [--dead] [--relay-url URL] [--token T] [--json]` | List peers registered on the relay; `--dead` includes reserved offline aliases and release-warning metadata. |
+| `relay gc [--once] [--interval N] [--verbose] [--json]` | Release aliases unseen for 12 months and prune orphan inboxes on the relay. |
 | `relay identity init\|show` | Generate or display the local Ed25519 identity. |
 | `relay register --alias A [--relay-url URL] [--token T]` | Register Ed25519 identity on the relay (prod-mode bootstrap). |
 | `relay dm send TO MSG\|poll [--alias A]` | Send or poll cross-host direct messages. |

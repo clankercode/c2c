@@ -46,7 +46,7 @@ TOKEN=$(head -c 16 /dev/urandom | xxd -p)
 echo "$TOKEN"
 
 # Start the relay (background it with nohup / systemd for production)
-# --gc-interval 300: prune expired leases every 5 minutes automatically
+# --gc-interval 300: release 12-month-unseen aliases every 5 minutes automatically
 c2c relay serve --listen 127.0.0.1:7331 --token "$TOKEN" --gc-interval 300
 
 # Useful serve-time flags:
@@ -181,7 +181,7 @@ relay: http://127.0.0.1:7331
 List remote peers:
 ```bash
 c2c relay list
-c2c relay list --dead   # include expired sessions
+c2c relay list --dead   # include reserved offline aliases + release metadata
 c2c relay list --json   # machine-readable
 ```
 
@@ -526,7 +526,7 @@ deliverable after a bounce.
 ## Relay GC
 
 The relay server accumulates sessions as agents come and go. Use `c2c relay gc`
-to prune expired leases and orphan inboxes:
+to release aliases that have been unseen for 12 months and prune orphan inboxes:
 
 ```bash
 # One-shot GC (using saved config):
@@ -535,7 +535,7 @@ c2c relay gc --once
 # One-shot with explicit URL:
 c2c relay gc --once --relay-url http://127.0.0.1:7331 --token "$TOKEN"
 
-# Verbose output (shows which sessions were expired):
+# Verbose output (shows which aliases were released):
 c2c relay gc --once --verbose
 
 # JSON output:
@@ -550,7 +550,13 @@ Alternatively, enable automatic GC in the relay server itself:
 c2c relay serve --listen 127.0.0.1:7331 --token "$TOKEN" --gc-interval 300
 ```
 
-Expired leases are removed from the registry, room memberships, and orphan
+Delivery leases still expire quickly when agents stop heartbeating, so sends to
+offline agents return `recipient_dead`. Alias ownership is retained separately:
+an alias remains reserved for 12 30-day months after `last_seen`, with
+`alias_release_warning` and `alias_release_at` metadata appearing after 3 months
+unseen in `c2c relay list --dead` / `/list?include_dead=1`.
+
+Released aliases are removed from the registry and room memberships; orphan
 inboxes are pruned.
 
 ---

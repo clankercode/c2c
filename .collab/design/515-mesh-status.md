@@ -26,7 +26,7 @@ c2c mesh status [--relay-url URL] [--include-dead] [--json]
 | Flag | Description |
 |------|-------------|
 | `--relay-url URL` | Relay HTTP URL (default: C2C_RELAY_URL env var) |
-| `--include-dead`  | Include expired/dead sessions in output |
+| `--include-dead`  | Include reserved offline relay aliases in output |
 | `--json`          | Output raw JSON instead of human-readable table |
 
 ### Exit codes

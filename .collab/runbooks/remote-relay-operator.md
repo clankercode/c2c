@@ -362,8 +362,8 @@ When the relay connector's outbox retry system decides a message can no longer b
 
 | Reason code | Meaning | What to do |
 |---|---|---|
-| `unknown_alias` | Recipient alias has never registered on this relay | Verify the recipient alias; check for a typo (e.g. `coordinator1` vs `coordinator-1`). |
-| `recipient_dead` | Recipient was registered but lease expired (no heartbeat > TTL) | The recipient may have been offline for > TTL. If they come back online, they will re-register and future messages will deliver. |
+| `unknown_alias` | Recipient alias has never registered on this relay, or its alias reservation was released after 12 months unseen | Verify the recipient alias; check for a typo (e.g. `coordinator1` vs `coordinator-1`). |
+| `recipient_dead` | Recipient alias is still reserved, but its delivery lease expired (no heartbeat > TTL) | The recipient may have been offline for > TTL. If they come back online before the 12-month alias release date, they will re-register and future messages will deliver. Check `c2c relay list --dead` for `alias_release_warning` / `alias_release_at` metadata. |
 | `max_attempts` | Relay returned a permanent error after 60 retry attempts | Same as `unknown_alias` — permanent delivery failure. Check relay health and recipient status. |
 | `max_age` | Entry exceeded 1-hour age limit without delivery | The relay was unavailable for > 1 hour. If the relay is healthy, retry the message manually. |
 

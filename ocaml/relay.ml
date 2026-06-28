@@ -39,6 +39,19 @@ let effective_lease_ttl ~client_ttl =
   else if client_ttl > max_lease_ttl then max_lease_ttl
   else client_ttl
 
+(* Alias ownership outlives active delivery leases. Delivery TTLs stay short so
+   sends fail fast for offline agents, but an alias remains reserved for 12
+   30-day months after the last heartbeat/register. After 3 months unseen, list
+   responses include warning metadata with the eventual release timestamp. *)
+let alias_month_s = 30.0 *. 86400.0
+let alias_warning_after_s = 3.0 *. alias_month_s
+let alias_release_after_s = 12.0 *. alias_month_s
+let alias_release_at ~last_seen = last_seen +. alias_release_after_s
+let alias_warning_since ~last_seen = last_seen +. alias_warning_after_s
+let alias_released ~now ~last_seen = alias_release_at ~last_seen <= now
+let alias_release_warning ~now ~last_seen =
+  now >= alias_warning_since ~last_seen && not (alias_released ~now ~last_seen)
+
 (* Layer 4 room ops (spec §4.1/§4.2): use the register ts window + nonce TTL. *)
 let room_join_sign_ctx = "c2c/v1/room-join"
 let room_leave_sign_ctx = "c2c/v1/room-leave"
@@ -176,9 +189,10 @@ let b64url_nopad_encode s =
 
 module RegistrationLease : sig
   type t
-  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> ?opaque_host_id:string option -> unit -> t
+  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?registered_at:float -> ?last_seen:float -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> ?opaque_host_id:string option -> unit -> t
   val is_alive : t -> bool
   val touch : t -> unit
+  val set_last_seen : t -> float -> unit
   val to_json : t -> Yojson.Safe.t
   val node_id : t -> string
   val session_id : t -> string
@@ -188,6 +202,7 @@ module RegistrationLease : sig
   val signed_at : t -> float
   val sig_b64 : t -> string
   val registered_at : t -> float
+  val last_seen : t -> float
   val opaque_host_id : t -> string option
 end = struct
   type t = {
@@ -211,8 +226,11 @@ end = struct
         consumers (no field in JSON) continue to work unchanged. *)
   }
 
-  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id : string option = None) () =
-    { node_id; session_id; alias; client_type; registered_at = Unix.gettimeofday (); last_seen = Unix.gettimeofday (); ttl; identity_pk; enc_pubkey; signed_at; sig_b64; opaque_host_id }
+  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?registered_at ?last_seen ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id : string option = None) () =
+    let now = Unix.gettimeofday () in
+    let registered_at = Option.value registered_at ~default:now in
+    let last_seen = Option.value last_seen ~default:now in
+    { node_id; session_id; alias; client_type; registered_at; last_seen; ttl; identity_pk; enc_pubkey; signed_at; sig_b64; opaque_host_id }
 
   let is_alive t =
     let now = Unix.gettimeofday () in
@@ -221,7 +239,11 @@ end = struct
   let touch t =
     t.last_seen <- Unix.gettimeofday ()
 
+  let set_last_seen t last_seen =
+    t.last_seen <- last_seen
+
   let to_json t =
+    let now = Unix.gettimeofday () in
     let base = [
       ("node_id", `String t.node_id);
       ("session_id", `String t.session_id);
@@ -231,6 +253,10 @@ end = struct
       ("last_seen", `Float t.last_seen);
       ("ttl", `Float t.ttl);
       ("alive", `Bool (is_alive t));
+      ("alias_reserved", `Bool (not (alias_released ~now ~last_seen:t.last_seen)));
+      ("alias_warning_since", `Float (alias_warning_since ~last_seen:t.last_seen));
+      ("alias_release_at", `Float (alias_release_at ~last_seen:t.last_seen));
+      ("alias_release_warning", `Bool (alias_release_warning ~now ~last_seen:t.last_seen));
     ] in
     let base =
       if t.identity_pk = "" then base
@@ -263,6 +289,7 @@ end = struct
   let signed_at t = t.signed_at
   let sig_b64 t = t.sig_b64
   let registered_at t = t.registered_at
+  let last_seen t = t.last_seen
   let opaque_host_id t = t.opaque_host_id
 end
 
@@ -529,7 +556,7 @@ module type RELAY = sig
   val send_all : t -> from_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float * string list * string list]
   val join_room : t -> ?visibility:string -> alias:string -> room_id:string -> unit -> [> `Ok | `Error of string * string]
   val leave_room : t -> alias:string -> room_id:string -> [> `Ok | `Error of string * string]
-  val send_room : t -> from_alias:string -> room_id:string -> content:string -> ?message_id:string option -> ?envelope:Yojson.Safe.t -> unit -> [> `Ok of float * string list * string list]
+  val send_room : t -> from_alias:string -> room_id:string -> content:string -> ?message_id:string option -> ?envelope:Yojson.Safe.t -> unit -> [> `Ok of float * string list * string list | `Error of string * string]
   val room_history : t -> room_id:string -> ?limit:int -> Yojson.Safe.t list
   val gc : t -> [> `Ok of string list * int]
   val dead_letter : t -> Yojson.Safe.t list
@@ -726,6 +753,18 @@ module InMemoryRelay : RELAY = struct
   let set_inbox t key msgs =
     Hashtbl.replace t.inboxes key msgs
 
+  let release_alias t alias =
+    (match Hashtbl.find_opt t.leases alias with
+     | Some lease ->
+       Hashtbl.remove t.inboxes
+         (inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease))
+     | None -> ());
+    Hashtbl.remove t.leases alias;
+    Hashtbl.remove t.bindings alias;
+    Hashtbl.iter (fun room_id members ->
+      Hashtbl.replace t.rooms room_id (List.filter ((<>) alias) members)
+    ) t.rooms
+
   let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id : string option = None) () =
     with_lock t (fun () ->
       if not (C2c_name.is_valid_with_opaque_host_id alias) then
@@ -751,6 +790,11 @@ module InMemoryRelay : RELAY = struct
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
         ("alias_not_allowed", dummy)
       | `Unlisted | `Allowed ->
+      let now = Unix.gettimeofday () in
+      (match Hashtbl.find_opt t.leases alias with
+       | Some ex when alias_released ~now ~last_seen:(RegistrationLease.last_seen ex) ->
+         release_alias t alias
+       | _ -> ());
       let binding_state =
         if identity_pk = "" then `NoNewPk
         else
@@ -766,8 +810,9 @@ module InMemoryRelay : RELAY = struct
       | _ ->
         let existing = Hashtbl.find_opt t.leases alias in
         (match existing with
-         | Some ex when RegistrationLease.is_alive ex
-                     && RegistrationLease.node_id ex <> node_id ->
+         | Some ex when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen ex))
+                     && RegistrationLease.node_id ex <> node_id
+                     && not (identity_pk <> "" && RegistrationLease.identity_pk ex = identity_pk) ->
            (relay_err_alias_conflict, ex)
          | _ ->
            let old_inbox_msgs, conflict =
@@ -801,23 +846,37 @@ module InMemoryRelay : RELAY = struct
 
   let identity_pk_of t ~alias =
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
-    with_lock t (fun () -> Hashtbl.find_opt t.bindings alias)
+    with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
+      match Hashtbl.find_opt t.leases alias, Hashtbl.find_opt t.bindings alias with
+      | Some lease, Some pk
+        when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
+        Some pk
+      | _ -> None)
 
   let alias_of_identity_pk t ~identity_pk =
     with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
       let result = ref None in
       Hashtbl.iter (fun alias pk ->
-        if pk = identity_pk then result := Some alias
+        match Hashtbl.find_opt t.leases alias with
+        | Some lease
+          when pk = identity_pk
+               && not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
+          result := Some alias
+        | _ -> ()
       ) t.bindings;
       !result
     )
 
   let alias_of_session t ~node_id ~session_id =
     with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
       let result = ref None in
       Hashtbl.iter (fun alias lease ->
         if RegistrationLease.node_id lease = node_id &&
-           RegistrationLease.session_id lease = session_id then
+           RegistrationLease.session_id lease = session_id &&
+           not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) then
           result := Some alias
       ) t.leases;
       !result
@@ -897,11 +956,13 @@ module InMemoryRelay : RELAY = struct
 
   let enc_pubkey_of t ~alias =
     with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
       match Hashtbl.find_opt t.leases alias with
-      | Some lease ->
+      | Some lease when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
         let ek = RegistrationLease.enc_pubkey lease in
         if ek = "" then None else Some ek
       | None -> None
+      | Some _ -> None
     )
 
   let registered_at_of t ~alias =
@@ -913,20 +974,24 @@ module InMemoryRelay : RELAY = struct
 
   let signed_at_of t ~alias =
     with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
       match Hashtbl.find_opt t.leases alias with
-      | Some lease ->
+      | Some lease when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
         let sa = RegistrationLease.signed_at lease in
         if sa = 0.0 then None else Some sa
       | None -> None
+      | Some _ -> None
     )
 
   let sig_b64_of t ~alias =
     with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
       match Hashtbl.find_opt t.leases alias with
-      | Some lease ->
+      | Some lease when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
         let sb = RegistrationLease.sig_b64 lease in
         if sb = "" then None else Some sb
       | None -> None
+      | Some _ -> None
     )
 
   let set_allowed_identity t ~alias ~identity_pk_b64 =
@@ -967,25 +1032,34 @@ module InMemoryRelay : RELAY = struct
 
   let heartbeat t ~node_id ~session_id =
     with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
       let found = ref None in
-      Hashtbl.iter (fun _alias lease ->
+      Hashtbl.iter (fun alias lease ->
         if RegistrationLease.node_id lease = node_id
            && RegistrationLease.session_id lease = session_id then
-          found := Some lease
+          found := Some (alias, lease)
       ) t.leases;
       match !found with
       | None ->
          let dummy_lease = RegistrationLease.make ~node_id ~session_id ~alias:"_error" () in
          (relay_err_unknown_alias, dummy_lease)
-      | Some lease ->
+      | Some (alias, lease) when alias_released ~now ~last_seen:(RegistrationLease.last_seen lease) ->
+         release_alias t alias;
+         let dummy_lease = RegistrationLease.make ~node_id ~session_id ~alias:"_error" () in
+         (relay_err_unknown_alias, dummy_lease)
+      | Some (_alias, lease) ->
          RegistrationLease.touch lease;
          ("ok", lease)
     )
 
   let list_peers t ?(include_dead = false) =
     with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
       Hashtbl.fold (fun _ lease acc ->
-        if include_dead || RegistrationLease.is_alive lease then
+        let last_seen = RegistrationLease.last_seen lease in
+        if not (alias_released ~now ~last_seen)
+           && (include_dead || RegistrationLease.is_alive lease)
+        then
           lease :: acc
         else acc
       ) t.leases []
@@ -993,10 +1067,12 @@ module InMemoryRelay : RELAY = struct
 
   let alias_of_session t ~node_id ~session_id =
     with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
       let found = ref None in
       Hashtbl.iter (fun alias lease ->
         if RegistrationLease.node_id lease = node_id
-           && RegistrationLease.session_id lease = session_id then
+           && RegistrationLease.session_id lease = session_id
+           && not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) then
           found := Some alias
       ) t.leases;
       !found
@@ -1014,6 +1090,14 @@ module InMemoryRelay : RELAY = struct
       let recipient = Hashtbl.find_opt t.leases bare_to_alias in
       match recipient with
       | None ->
+        let dl = `Assoc [
+          ("ts", `Float ts); ("message_id", `String msg_id);
+          ("from_alias", `String from_alias); ("to_alias", `String to_alias);
+          ("content", `String content); ("reason", `String "unknown_alias");
+        ] in
+        Queue.add dl t.dead_letter;
+        `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
+      | Some lease when alias_released ~now:ts ~last_seen:(RegistrationLease.last_seen lease) ->
         let dl = `Assoc [
           ("ts", `Float ts); ("message_id", `String msg_id);
           ("from_alias", `String from_alias); ("to_alias", `String to_alias);
@@ -1069,9 +1153,14 @@ module InMemoryRelay : RELAY = struct
   let join_room t ?(visibility = "public") ~alias ~room_id () =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
-      if not (Hashtbl.mem t.leases alias) then
+      let now = Unix.gettimeofday () in
+      match Hashtbl.find_opt t.leases alias with
+      | None ->
         `Error (relay_err_unknown_alias, Printf.sprintf "alias %S is not registered" alias)
-      else begin
+      | Some lease when alias_released ~now ~last_seen:(RegistrationLease.last_seen lease) ->
+        release_alias t alias;
+        `Error (relay_err_unknown_alias, Printf.sprintf "alias %S is not registered" alias)
+      | Some _lease ->
         let members = match Hashtbl.find_opt t.rooms room_id with
           | Some m -> m | None -> []
         in
@@ -1122,7 +1211,6 @@ module InMemoryRelay : RELAY = struct
           ) members'
         end;
         `Ok
-      end
     )
 
   let leave_room t ~alias ~room_id =
@@ -1212,16 +1300,35 @@ module InMemoryRelay : RELAY = struct
 
   let is_room_member_alias t ~room_id ~alias =
     with_lock t (fun () ->
-      match Hashtbl.find_opt t.rooms room_id with
-      | None -> false | Some m -> List.mem alias m)
+      let now = Unix.gettimeofday () in
+      match Hashtbl.find_opt t.leases alias, Hashtbl.find_opt t.rooms room_id with
+      | Some lease, Some members
+        when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
+        List.mem alias members
+      | _ -> false)
 
   let send_room t ~from_alias ~room_id ~content ?(message_id = None) ?envelope () =
     with_lock t (fun () ->
       let msg_id = match message_id with Some id -> id | None -> generate_uuid () in
       let ts = Unix.gettimeofday () in
+      let sender_active =
+        match Hashtbl.find_opt t.leases from_alias with
+        | Some lease when not (alias_released ~now:ts ~last_seen:(RegistrationLease.last_seen lease)) -> true
+        | Some lease ->
+          if alias_released ~now:ts ~last_seen:(RegistrationLease.last_seen lease) then
+            release_alias t from_alias;
+          false
+        | None -> false
+      in
+      if not sender_active then
+        `Error (relay_err_unknown_alias, Printf.sprintf "alias %S is not registered" from_alias)
+      else
       let members = match Hashtbl.find_opt t.rooms room_id with
         | Some m -> m | None -> []
       in
+      if not (List.mem from_alias members) then
+        `Error (relay_err_not_a_member, Printf.sprintf "alias %S is not a member of room %S" from_alias room_id)
+      else
       if members = [] then `Ok (ts, [], [])
       else begin
         let delivered_to = ref [] in
@@ -1332,15 +1439,14 @@ module InMemoryRelay : RELAY = struct
   let gc t =
     with_lock t (fun () ->
       let expired = ref [] in
+      let now = Unix.gettimeofday () in
       Hashtbl.iter (fun alias lease ->
-        if not (RegistrationLease.is_alive lease) then
+        let last_seen = RegistrationLease.last_seen lease in
+        if alias_released ~now ~last_seen then
           expired := alias :: !expired
       ) t.leases;
       List.iter (fun alias ->
-        Hashtbl.remove t.leases alias;
-        Hashtbl.iter (fun _room_id members ->
-          Hashtbl.replace t.rooms _room_id (List.filter ((<>) alias) members)
-        ) t.rooms
+        release_alias t alias
       ) !expired;
       let live_keys = ref [] in
       Hashtbl.iter (fun _ lease ->
@@ -1503,6 +1609,8 @@ module SqliteRelay : RELAY = struct
          ~session_id
          ~alias
          ~client_type
+         ~registered_at
+         ~last_seen
          ~ttl
          ~identity_pk
          ~enc_pubkey
@@ -1522,6 +1630,29 @@ module SqliteRelay : RELAY = struct
     with _ -> false
 
   let row_to_string_opt = function Some s -> s | None -> ""
+  let data_to_float_default col =
+    match Sqlite3.Data.to_float col with
+    | Some f -> f
+    | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+
+  let release_alias conn alias =
+    let old_key_stmt = Sqlite3.prepare conn "SELECT node_id, session_id FROM leases WHERE alias = ?" in
+    Sqlite3.bind_text old_key_stmt 1 alias |> ignore;
+    (match Sqlite3.step old_key_stmt with
+     | Rc.ROW ->
+       let node_id = Sqlite3.Data.to_string_exn (Sqlite3.column old_key_stmt 0) in
+       let session_id = Sqlite3.Data.to_string_exn (Sqlite3.column old_key_stmt 1) in
+       let del_inbox = Sqlite3.prepare conn "DELETE FROM inboxes WHERE node_id = ? AND session_id = ?" in
+       Sqlite3.bind_text del_inbox 1 node_id |> ignore;
+       Sqlite3.bind_text del_inbox 2 session_id |> ignore;
+       Sqlite3.step del_inbox |> ignore
+     | _ -> ());
+    let del = Sqlite3.prepare conn "DELETE FROM leases WHERE alias = ?" in
+    Sqlite3.bind_text del 1 alias |> ignore;
+    Sqlite3.step del |> ignore;
+    let del_member = Sqlite3.prepare conn "DELETE FROM room_members WHERE alias = ?" in
+    Sqlite3.bind_text del_member 1 alias |> ignore;
+    Sqlite3.step del_member |> ignore
 
   let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(ttl=default_lease_ttl) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") ?(opaque_host_id : string option = None) () =
     with_lock t (fun () ->
@@ -1555,33 +1686,55 @@ module SqliteRelay : RELAY = struct
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
         ("alias_not_allowed", dummy)
       | `Unlisted | `Allowed ->
-        let has_row = exec_prepared conn "SELECT node_id, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" [`Text alias] in
+        let has_row = exec_prepared conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" [`Text alias] in
         let conflict_lease = ref None in
         let existing_pk = ref "" in
         if has_row then (
-          let stmt = prepare conn "SELECT node_id, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" in
+          let stmt = prepare conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" in
           bind_text stmt 1 alias |> ignore;
           let rec check_existing () =
             let rc = step stmt in
             if rc = ROW then (
               let row_node_id = Data.to_string_exn (column stmt 0) in
-              let row_last_seen =
-                let col = column stmt 1 in
-                match Data.to_float col with
-                | Some f -> f
-                | None -> float_of_string (Data.to_string_exn col)
-              in
-              let row_ttl =
+              let row_session_id = Data.to_string_exn (column stmt 1) in
+              let row_registered_at =
                 let col = column stmt 2 in
                 match Data.to_float col with
                 | Some f -> f
                 | None -> float_of_string (Data.to_string_exn col)
               in
-              let row_pk = Data.to_string_exn (column stmt 3) in
-              existing_pk := row_pk;
-              let alive = (row_last_seen +. row_ttl) >= now in
-              if alive && row_node_id <> node_id then (
-                conflict_lease := Some (RegistrationLease.make ~node_id:row_node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ())
+              let row_last_seen =
+                let col = column stmt 3 in
+                match Data.to_float col with
+                | Some f -> f
+                | None -> float_of_string (Data.to_string_exn col)
+              in
+              let row_ttl =
+                let col = column stmt 4 in
+                match Data.to_float col with
+                | Some f -> f
+                | None -> float_of_string (Data.to_string_exn col)
+              in
+              let row_pk = Data.to_string_exn (column stmt 5) in
+              let released = alias_released ~now ~last_seen:row_last_seen in
+              if released then release_alias conn alias
+              else existing_pk := row_pk;
+              let same_identity = identity_pk <> "" && row_pk = identity_pk in
+              if (not released) && row_node_id <> node_id && not same_identity then (
+                conflict_lease := Some (
+                  RegistrationLease.make
+                    ~node_id:row_node_id
+                    ~session_id:row_session_id
+                    ~alias
+                    ~client_type
+                    ~registered_at:row_registered_at
+                    ~last_seen:row_last_seen
+                    ~ttl:row_ttl
+                    ~identity_pk:row_pk
+                    ~enc_pubkey
+                    ~signed_at
+                    ~sig_b64
+                    ())
               ) else
                 check_existing ()
             ) else if rc <> DONE then
@@ -1609,6 +1762,7 @@ module SqliteRelay : RELAY = struct
               | `Preserve -> !existing_pk
               | `Matches -> identity_pk
               | `NoPkNoBinding -> ""
+              | `Mismatch -> assert false
             in
             let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=excluded.opaque_host_id" in
             bind_text stmt 1 alias |> ignore;
@@ -1635,34 +1789,37 @@ module SqliteRelay : RELAY = struct
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let has_row = exec_prepared conn "SELECT identity_pk FROM leases WHERE alias = ?" [`Text alias] in
-      if not has_row then None
-      else
-        let stmt = prepare conn "SELECT identity_pk FROM leases WHERE alias = ?" in
-        bind_text stmt 1 alias |> ignore;
-        let rc = step stmt in
-        if rc = Rc.ROW then
+      let stmt = prepare conn "SELECT identity_pk, last_seen FROM leases WHERE alias = ?" in
+      bind_text stmt 1 alias |> ignore;
+      let result =
+        if step stmt = Rc.ROW then
           let pk = Data.to_string_exn (column stmt 0) in
-          if pk = "" then None else Some pk
+          let last_seen = data_to_float_default (column stmt 1) in
+          if pk = "" || alias_released ~now:(Unix.gettimeofday ()) ~last_seen then None else Some pk
         else None
+      in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      result
     )
 
   let alias_of_identity_pk t ~identity_pk =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let has_row = exec_prepared conn "SELECT alias FROM leases WHERE identity_pk = ?" [`Text identity_pk] in
-      if not has_row then None
-      else
-        let stmt = prepare conn "SELECT alias FROM leases WHERE identity_pk = ?" in
-        bind_text stmt 1 identity_pk |> ignore;
-        let rc = step stmt in
-        let result = if rc = Rc.ROW then
+      let stmt = prepare conn "SELECT alias, last_seen FROM leases WHERE identity_pk = ?" in
+      bind_text stmt 1 identity_pk |> ignore;
+      let now = Unix.gettimeofday () in
+      let rec loop () =
+        match step stmt with
+        | Rc.ROW ->
           let alias = Data.to_string_exn (column stmt 0) in
-          if alias = "" then None else Some alias
-        else None
-        in
-        (try Sqlite3.finalize stmt |> ignore with _ -> ());
-        result
+          let last_seen = data_to_float_default (column stmt 1) in
+          if alias <> "" && not (alias_released ~now ~last_seen) then Some alias
+          else loop ()
+        | _ -> None
+      in
+      let result = loop () in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      result
     )
 
   let query_messages_since t ~alias ~since_ts =
@@ -1710,28 +1867,33 @@ module SqliteRelay : RELAY = struct
     )
 
   let enc_pubkey_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let has_row = exec_prepared conn "SELECT enc_pubkey FROM leases WHERE alias = ?" [`Text alias] in
-      if not has_row then None
-      else
-        let stmt = prepare conn "SELECT enc_pubkey FROM leases WHERE alias = ?" in
-        bind_text stmt 1 alias |> ignore;
-        let rc = step stmt in
-        if rc = Rc.ROW then
+      let stmt = prepare conn "SELECT enc_pubkey, last_seen FROM leases WHERE alias = ?" in
+      bind_text stmt 1 alias |> ignore;
+      let result =
+        if step stmt = Rc.ROW then
           let ek = Data.to_string_exn (column stmt 0) in
-          if ek = "" then None else Some ek
+          let last_seen = data_to_float_default (column stmt 1) in
+          if ek = "" || alias_released ~now:(Unix.gettimeofday ()) ~last_seen then None else Some ek
         else None
+      in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      result
     )
 
   let alias_of_session t ~node_id ~session_id =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let stmt = prepare conn "SELECT alias FROM leases WHERE node_id = ? AND session_id = ? LIMIT 1" in
+      let stmt = prepare conn "SELECT alias, last_seen FROM leases WHERE node_id = ? AND session_id = ? LIMIT 1" in
       bind_text stmt 1 node_id |> ignore;
       bind_text stmt 2 session_id |> ignore;
       let result =
-        if step stmt = Rc.ROW then Some (Data.to_string_exn (column stmt 0))
+        if step stmt = Rc.ROW then
+          let alias = Data.to_string_exn (column stmt 0) in
+          let last_seen = data_to_float_default (column stmt 1) in
+          if alias_released ~now:(Unix.gettimeofday ()) ~last_seen then None else Some alias
         else None
       in
       (try Sqlite3.finalize stmt |> ignore with _ -> ());
@@ -1739,34 +1901,37 @@ module SqliteRelay : RELAY = struct
     )
 
   let signed_at_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let has_row = exec_prepared conn "SELECT signed_at FROM leases WHERE alias = ?" [`Text alias] in
-      if not has_row then None
-      else
-        let stmt = prepare conn "SELECT signed_at FROM leases WHERE alias = ?" in
-        bind_text stmt 1 alias |> ignore;
-        let rc = step stmt in
-        if rc = Rc.ROW then
-          let sa = Data.to_string_exn (column stmt 0) in
-          let sa_float = float_of_string sa in
-          if sa_float = 0.0 then None else Some sa_float
+      let stmt = prepare conn "SELECT signed_at, last_seen FROM leases WHERE alias = ?" in
+      bind_text stmt 1 alias |> ignore;
+      let result =
+        if step stmt = Rc.ROW then
+          let sa_float = data_to_float_default (column stmt 0) in
+          let last_seen = data_to_float_default (column stmt 1) in
+          if sa_float = 0.0 || alias_released ~now:(Unix.gettimeofday ()) ~last_seen then None else Some sa_float
         else None
+      in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      result
     )
 
   let sig_b64_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let has_row = exec_prepared conn "SELECT sig_b64 FROM leases WHERE alias = ?" [`Text alias] in
-      if not has_row then None
-      else
-        let stmt = prepare conn "SELECT sig_b64 FROM leases WHERE alias = ?" in
-        bind_text stmt 1 alias |> ignore;
-        let rc = step stmt in
-        if rc = Rc.ROW then
+      let stmt = prepare conn "SELECT sig_b64, last_seen FROM leases WHERE alias = ?" in
+      bind_text stmt 1 alias |> ignore;
+      let result =
+        if step stmt = Rc.ROW then
           let sb = Data.to_string_exn (column stmt 0) in
-          if sb = "" then None else Some sb
+          let last_seen = data_to_float_default (column stmt 1) in
+          if sb = "" || alias_released ~now:(Unix.gettimeofday ()) ~last_seen then None else Some sb
         else None
+      in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      result
     )
 
   let set_allowed_identity t ~alias ~identity_pk_b64 =
@@ -1901,7 +2066,19 @@ module SqliteRelay : RELAY = struct
           let identity_pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 7) in
           let opaque_host_id_raw = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 8) in
           let opaque_host_id = if opaque_host_id_raw = "" then None else Some opaque_host_id_raw in
-          let lease = RegistrationLease.make ~node_id:node_id' ~session_id:session_id' ~alias ~client_type ~ttl ~identity_pk ~opaque_host_id:opaque_host_id () in
+          let lease =
+            RegistrationLease.make
+              ~node_id:node_id'
+              ~session_id:session_id'
+              ~alias
+              ~client_type
+              ~registered_at
+              ~last_seen
+              ~ttl
+              ~identity_pk
+              ~opaque_host_id:opaque_host_id
+              ()
+          in
           found_lease := Some lease;
           find_lease ()
         ) else if rc <> Rc.DONE then
@@ -1912,11 +2089,16 @@ module SqliteRelay : RELAY = struct
       | None ->
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias:"_error" () in
         (relay_err_unknown_alias, dummy)
+      | Some lease when alias_released ~now ~last_seen:(RegistrationLease.last_seen lease) ->
+        release_alias conn (RegistrationLease.alias lease);
+        let dummy = RegistrationLease.make ~node_id ~session_id ~alias:"_error" () in
+        (relay_err_unknown_alias, dummy)
       | Some lease ->
         let up_stmt = Sqlite3.prepare conn "UPDATE leases SET last_seen = ? WHERE alias = ?" in
         Sqlite3.bind_double up_stmt 1 now |> ignore;
         Sqlite3.bind_text up_stmt 2 (RegistrationLease.alias lease) |> ignore;
         Sqlite3.step up_stmt |> ignore;
+        RegistrationLease.touch lease;
         ("ok", lease)
     )
 
@@ -1954,9 +2136,23 @@ module SqliteRelay : RELAY = struct
           let identity_pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 7) in
           let opaque_host_id_raw = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 8) in
           let opaque_host_id = if opaque_host_id_raw = "" then None else Some opaque_host_id_raw in
-          let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~opaque_host_id:opaque_host_id () in
+          let lease =
+            RegistrationLease.make
+              ~node_id
+              ~session_id
+              ~alias
+              ~client_type
+              ~registered_at
+              ~last_seen
+              ~ttl
+              ~identity_pk
+              ~opaque_host_id:opaque_host_id
+              ()
+          in
           let alive = (last_seen +. ttl) >= now in
-          if include_dead || alive then leases := lease :: !leases;
+          if not (alias_released ~now ~last_seen)
+             && (include_dead || alive)
+          then leases := lease :: !leases;
           loop ()
         ) else if rc <> Rc.DONE then
           failwith ("list_peers step failed: " ^ Rc.to_string rc)
@@ -1985,16 +2181,14 @@ module SqliteRelay : RELAY = struct
             | Some f -> f
             | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2))
           in
-          if (last_seen +. ttl) < now then expired_aliases := alias :: !expired_aliases;
+          if alias_released ~now ~last_seen then expired_aliases := alias :: !expired_aliases;
           collect_expired ()
         ) else if rc <> Rc.DONE then
           failwith ("gc collect step failed: " ^ Rc.to_string rc)
       in
       collect_expired ();
       List.iter (fun alias ->
-        let del = Sqlite3.prepare conn "DELETE FROM leases WHERE alias = ?" in
-        Sqlite3.bind_text del 1 alias |> ignore;
-        Sqlite3.step del |> ignore
+        release_alias conn alias
       ) !expired_aliases;
       let live_stmt = Sqlite3.prepare conn "SELECT node_id, session_id FROM leases" in
       let live_keys = ref [] in
@@ -2058,7 +2252,9 @@ module SqliteRelay : RELAY = struct
             | Some f -> f
             | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2))
           in
-          if (last_seen +. ttl) < ts then
+          if alias_released ~now:ts ~last_seen then
+            `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
+          else if (last_seen +. ttl) < ts then
             `Error (relay_err_recipient_dead, Printf.sprintf "alias %S is registered but lease has expired" to_alias)
           else
             let recv_stmt = Sqlite3.prepare conn "SELECT node_id, session_id FROM leases WHERE alias = ?" in
@@ -2194,6 +2390,20 @@ module SqliteRelay : RELAY = struct
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
+      let lease_stmt = Sqlite3.prepare conn "SELECT last_seen FROM leases WHERE alias = ? LIMIT 1" in
+      Sqlite3.bind_text lease_stmt 1 alias |> ignore;
+      let active_alias =
+        match Sqlite3.step lease_stmt with
+        | Rc.ROW ->
+          let last_seen = data_to_float_default (Sqlite3.column lease_stmt 0) in
+          not (alias_released ~now:(Unix.gettimeofday ()) ~last_seen)
+        | _ -> false
+      in
+      (try Sqlite3.finalize lease_stmt |> ignore with _ -> ());
+      if not active_alias then (
+        release_alias conn alias;
+        `Error (relay_err_unknown_alias, Printf.sprintf "alias %S is not registered" alias)
+      ) else (
       (* INSERT OR IGNORE: visibility is applied only on room creation; if the
          room already exists, its stored visibility is preserved. Post-creation
          changes go through the signed set_room_visibility op. *)
@@ -2206,6 +2416,7 @@ module SqliteRelay : RELAY = struct
       Sqlite3.bind_text mem_stmt 2 alias |> ignore;
       Sqlite3.step mem_stmt |> ignore;
       `Ok
+      )
     )
 
   let leave_room t ~alias ~room_id =
@@ -2223,6 +2434,28 @@ module SqliteRelay : RELAY = struct
       let conn = Sqlite3.db_open t.db_path in
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let ts = Unix.gettimeofday () in
+      let sender_stmt = Sqlite3.prepare conn "SELECT last_seen FROM leases WHERE alias = ? LIMIT 1" in
+      Sqlite3.bind_text sender_stmt 1 from_alias |> ignore;
+      let sender_active =
+        match Sqlite3.step sender_stmt with
+        | Rc.ROW ->
+          let last_seen = data_to_float_default (Sqlite3.column sender_stmt 0) in
+          not (alias_released ~now:ts ~last_seen)
+        | _ -> false
+      in
+      (try Sqlite3.finalize sender_stmt |> ignore with _ -> ());
+      if not sender_active then (
+        release_alias conn from_alias;
+        `Error (relay_err_unknown_alias, Printf.sprintf "alias %S is not registered" from_alias)
+      ) else
+      let member_stmt = Sqlite3.prepare conn "SELECT 1 FROM room_members WHERE room_id = ? AND alias = ? LIMIT 1" in
+      Sqlite3.bind_text member_stmt 1 room_id |> ignore;
+      Sqlite3.bind_text member_stmt 2 from_alias |> ignore;
+      let sender_member = Sqlite3.step member_stmt = Rc.ROW in
+      (try Sqlite3.finalize member_stmt |> ignore with _ -> ());
+      if not sender_member then
+        `Error (relay_err_not_a_member, Printf.sprintf "alias %S is not a member of room %S" from_alias room_id)
+      else
       let delivered_to = ref [] in
       let skipped = ref [] in
       let stmt = Sqlite3.prepare conn "SELECT alias FROM room_members WHERE room_id = ? AND alias != ?" in
@@ -2246,25 +2479,43 @@ module SqliteRelay : RELAY = struct
       Sqlite3.bind_double hist_stmt 5 ts |> ignore;
       Sqlite3.step hist_stmt |> ignore;
       List.iter (fun to_alias ->
-        let node_stmt = Sqlite3.prepare conn "SELECT node_id, session_id FROM leases WHERE alias = ?" in
+        let node_stmt = Sqlite3.prepare conn "SELECT node_id, session_id, last_seen, ttl FROM leases WHERE alias = ?" in
         Sqlite3.bind_text node_stmt 1 to_alias |> ignore;
         let rc = Sqlite3.step node_stmt in
         if rc = Rc.ROW then
           let node_id = Sqlite3.Data.to_string_exn (Sqlite3.column node_stmt 0) in
           let session_id = Sqlite3.Data.to_string_exn (Sqlite3.column node_stmt 1) in
-          let inbox_stmt = Sqlite3.prepare conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts) VALUES (?, ?, ?, ?, ?, ?, ?)" in
-          Sqlite3.bind_text inbox_stmt 1 node_id |> ignore;
-          Sqlite3.bind_text inbox_stmt 2 session_id |> ignore;
-          Sqlite3.bind_text inbox_stmt 3 msg_id |> ignore;
-          Sqlite3.bind_text inbox_stmt 4 from_alias |> ignore;
-          Sqlite3.bind_text inbox_stmt 5 (to_alias ^ "#" ^ room_id) |> ignore;
-          Sqlite3.bind_text inbox_stmt 6 content |> ignore;
-          Sqlite3.bind_double inbox_stmt 7 ts |> ignore;
-          Sqlite3.step inbox_stmt |> ignore
+          let last_seen =
+            let col = Sqlite3.column node_stmt 2 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
+          let ttl =
+            let col = Sqlite3.column node_stmt 3 in
+            match Sqlite3.Data.to_float col with
+            | Some f -> f
+            | None -> float_of_string (Sqlite3.Data.to_string_exn col)
+          in
+          if last_seen +. ttl >= ts then (
+            let inbox_stmt = Sqlite3.prepare conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts) VALUES (?, ?, ?, ?, ?, ?, ?)" in
+            Sqlite3.bind_text inbox_stmt 1 node_id |> ignore;
+            Sqlite3.bind_text inbox_stmt 2 session_id |> ignore;
+            Sqlite3.bind_text inbox_stmt 3 msg_id |> ignore;
+            Sqlite3.bind_text inbox_stmt 4 from_alias |> ignore;
+            Sqlite3.bind_text inbox_stmt 5 (to_alias ^ "#" ^ room_id) |> ignore;
+            Sqlite3.bind_text inbox_stmt 6 content |> ignore;
+            Sqlite3.bind_double inbox_stmt 7 ts |> ignore;
+            Sqlite3.step inbox_stmt |> ignore
+          ) else
+            skipped := to_alias :: !skipped
         else
           skipped := to_alias :: !skipped
       ) !delivered_to;
-      `Ok (ts, List.rev !delivered_to, List.rev !skipped)
+      let delivered =
+        List.filter (fun alias -> not (List.mem alias !skipped)) !delivered_to
+      in
+      `Ok (ts, List.rev delivered, List.rev !skipped)
     )
 
   let room_history t ~room_id ?(limit=50) =
@@ -2503,11 +2754,22 @@ module SqliteRelay : RELAY = struct
   let is_room_member_alias t ~room_id ~alias =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let stmt = Sqlite3.prepare conn "SELECT 1 FROM room_members WHERE room_id = ? AND alias = ?" in
+      let stmt = Sqlite3.prepare conn
+        "SELECT leases.last_seen \
+         FROM room_members JOIN leases ON leases.alias = room_members.alias \
+         WHERE room_members.room_id = ? AND room_members.alias = ? LIMIT 1"
+      in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 alias |> ignore;
-      let rc = Sqlite3.step stmt in
-      rc = Rc.ROW
+      let result =
+        match Sqlite3.step stmt with
+        | Rc.ROW ->
+          let last_seen = data_to_float_default (Sqlite3.column stmt 0) in
+          not (alias_released ~now:(Unix.gettimeofday ()) ~last_seen)
+        | _ -> false
+      in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      result
     )
 
   (* S5a: Pairing token management — delegates to module-level SQL helpers *)
@@ -4434,6 +4696,11 @@ generateKeys();
         in
         match R.send_room relay ~from_alias ~room_id ~content
                 ~message_id ?envelope () with
+        | `Error (code, msg) ->
+          if code = relay_err_unknown_alias then
+            respond_not_found (json_error_str code msg)
+          else
+            respond_unauthorized (json_error_str code msg)
         | `Ok (ts, delivered, skipped) ->
           List.iter (fun to_alias ->
             match R.identity_pk_of relay ~alias:to_alias with

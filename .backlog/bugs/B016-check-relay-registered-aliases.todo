@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-28T08:40:01Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-06-28T09:38:57Z"
 complexity: medium
 depends_on: []
+duration_minutes: 58.94870169323333
 estimate_hours: 1
 id: B016
 priority: high
 started_at: "2026-06-28T08:40:01Z"
-status: in_progress
+status: done
 tags: []
 title: 'check relay registered aliases: how long do they last for after the agent disconnects? we should have something like 3 months reserved, then 9 months warning that the agent hasnt been seen and that the alias will be released on <date>, 12 months after the agent was last seen.'
 ---
