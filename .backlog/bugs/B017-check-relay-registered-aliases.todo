@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B017
+priority: high
+status: pending
+tags: []
+title: 'check relay registered aliases: how long do they last for after the agent disconnects? we should have something like 3 months reserved, then 9 months warning that the agent hasnt been seen and that the alias will be released on <date>, 12 months after the agent was last seen.'
+---
+
+check relay registered aliases: how long do they last for after the agent disconnects? we should have something like 3 months reserved, then 9 months warning that the agent hasnt been seen and that the alias will be released on <date>, 12 months after the agent was last seen.
