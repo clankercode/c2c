@@ -16,30 +16,33 @@ fi
 CC_PROFILE=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 SL_OUT_DIR="$CC_PROFILE/sl_out"
 
-if [ -n "$session_id" ]; then
-  input_file="$SL_OUT_DIR/$session_id/input.json"
+data=""
+if [ -n "$session_id" ] && [ -f "$SL_OUT_DIR/$session_id/input.json" ]; then
+  # Authoritative: the requested session's own snapshot (statusline / piped use).
+  data=$(cat "$SL_OUT_DIR/$session_id/input.json")
 else
-  input_file="$SL_OUT_DIR/last.json"
+  # Standalone: rate limits are account-global, so pick the FRESHEST snapshot across
+  # recently-active sessions rather than trusting last.json (which can hold a stale,
+  # idle session's expired window). Freshness = max(five_hour.resets_at, then
+  # used_percentage): within a window resets_at is fixed and usage only grows; on
+  # rollover resets_at jumps forward. Only scan files touched in the last 6h (>5h window).
+  best_key=""
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    d=$(tail -1 "$f" 2>/dev/null) || continue
+    fh=$(printf '%s' "$d" | jq -r '.rate_limits.five_hour.resets_at // empty') || continue
+    [ -n "$fh" ] || continue
+    used=$(printf '%s' "$d" | jq -r '(.rate_limits.five_hour.used_percentage // 0) | floor') || used=0
+    key=$(printf '%015d%03d' "$fh" "$used")
+    if [ -z "$best_key" ] || [[ "$key" > "$best_key" ]]; then
+      best_key="$key"; data="$d"
+    fi
+  done < <(find "$SL_OUT_DIR" -maxdepth 2 -name input.json -mmin -360 2>/dev/null
+           [ -f "$SL_OUT_DIR/last.json" ] && echo "$SL_OUT_DIR/last.json")
 fi
-
-# If session-specific file missing, fall back to last.json for standalone use
-if [ ! -f "$input_file" ]; then
-  input_file="$SL_OUT_DIR/last.json"
-fi
-
-if [ ! -f "$input_file" ]; then
-  echo "N/A: no statusline data found"
-  exit 0
-fi
-
-data=$(if [ "$input_file" = "$SL_OUT_DIR/last.json" ]; then
-  tail -1 "$input_file" 2>/dev/null
-else
-  cat "$input_file"
-fi)
 
 if [ -z "$data" ]; then
-  echo "N/A: no data in statusline file"
+  echo "N/A: no statusline data found"
   exit 0
 fi
 
