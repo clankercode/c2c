@@ -14,3 +14,4 @@ bugs:
     - file: B013-codex-delivery-hardening-e2e-t.todo
     - file: B014-add-to-incoming-relay-requests.todo
     - file: B015-run-though-test-with-max-of-cl.todo
+    - file: B016-check-relay-registered-aliases.todo
