@@ -15,3 +15,4 @@ bugs:
     - file: B014-add-to-incoming-relay-requests.todo
     - file: B015-run-though-test-with-max-of-cl.todo
     - file: B016-check-relay-registered-aliases.todo
+    - file: B017-c2c-poll-inbox-crashes-on-read.todo

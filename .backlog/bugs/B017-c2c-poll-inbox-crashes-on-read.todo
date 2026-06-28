@@ -1,0 +1,28 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B017
+priority: high
+status: pending
+tags:
+    - poll-inbox
+    - broker
+    - readonly
+    - sandbox
+title: c2c poll-inbox crashes on read-only broker inbox lock
+---
+Observed from /home/xertrov/src/c2c.B016 on 2026-06-28 while following B016 workflow.
+
+Command:
+  c2c poll-inbox
+
+Actual:
+  c2c: internal error, uncaught exception:
+       Unix.Unix_error(Unix.EROFS, "open", "/home/xertrov/.c2c/repos/8fef2c369975/broker/019f0d62-c446-7e12-9d16-1730159fe21a.inbox.lock")
+
+Context:
+  c2c whoami returned session_id 019f0d62-c446-7e12-9d16-1730159fe21a with no registered alias. The current Codex sandbox can read the workspace but cannot write under /home/xertrov/.c2c, so poll-inbox attempted to create/open the inbox lock in a read-only broker path and crashed with an uncaught exception.
+
+Expected:
+  poll-inbox should handle EROFS/EACCES on broker lock or inbox paths gracefully. It should return a structured error and actionable guidance, e.g. broker root is not writable in this sandbox, set C2C_MCP_BROKER_ROOT to a writable path or run from a managed session with writable broker state. It should not print an OCaml uncaught exception.
