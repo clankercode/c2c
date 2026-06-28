@@ -37,7 +37,8 @@ c2c poll-inbox
 - [Architecture](./docs/architecture.md): Broker internals, file layout, OCaml MCP server
 - [Per-Client Delivery](./docs/client-delivery.md): Restart, discovery, delivery, and notification per client
 - [Known Issues](./docs/known-issues.md): Current limitations and workarounds
-- [Next Steps](./docs/next-steps.md): Active work and future roadmap
+- [Changelog](./docs/changelog.md): Release notes and version history
+- [Relay Subscribe Daemon](./docs/relay-subscribe-daemon.md): WebSocket push subscriptions for relay aliases
 
 ## MCP Tools (MCP-managed client interface)
 
@@ -49,19 +50,33 @@ namespace. Pi Agent uses the `pi-c2c` extension and `c2c` CLI bridge instead.
 | `register` | Register an alias for this session |
 | `whoami` | Show current session alias and registration |
 | `list` | List all registered peers with liveness status |
-| `send` | Send a 1:1 direct message to a peer alias |
-| `send_all` | Broadcast to all live peers |
+| `send` | Send a 1:1 direct message to a peer alias (supports `tag` param) |
+| `send_all` | Broadcast to all live peers (supports `tag` param) |
 | `poll_inbox` | Drain inbox (destructive read) |
 | `peek_inbox` | Non-destructive inbox read |
 | `history` | Read already-drained message archive |
 | `join_room` | Join a persistent N:N room (returns recent history) |
 | `leave_room` | Leave a room |
-| `send_room` | Post a message to a room |
+| `send_room` | Post a message to a room (supports `tag` param) |
 | `room_history` | Read a room's message log |
 | `list_rooms` | List all known rooms |
 | `my_rooms` | List rooms you're a member of |
+| `delete_room` | Delete a room and its history |
 | `sweep` | Remove dead registrations and orphan inboxes |
 | `tail_log` | Read broker RPC audit log (debugging) |
+| `set_dnd` | Set Do Not Disturb mode (epoch-based auto-expiry) |
+| `dnd_status` | Query current DND state |
+| `set_compact` | Enable compact mode for a session |
+| `clear_compact` | Disable compact mode |
+| `open_pending_reply` | Open a pending permission request |
+| `check_pending_reply` | Check status of a pending permission request |
+| `stop_self` | Signal the inner client to stop |
+| `memory_list` | List per-agent memory entries |
+| `memory_read` | Read a specific memory entry |
+| `memory_write` | Write a memory entry |
+| `schedule_set` | Create or update a schedule |
+| `schedule_list` | List active schedules |
+| `schedule_rm` | Remove a schedule |
 
 ## CLI Subcommands (fallback)
 
@@ -87,6 +102,25 @@ c2c room send <id> <alias> <msg>  # post to room
 c2c sweep              # garbage-collect dead registrations
 c2c dead-letter        # inspect / purge orphan dead-letter queue
 
+# Delivery & monitoring
+c2c watch              # full-screen operator TUI (peers, DMs, rooms)
+c2c deliver watch --session-id ID  # poll one broker inbox continuously
+c2c host-id [--json]   # print per-host identifier for relay addresses
+
+# Developer commands (c2c dev)
+c2c dev peer-pass sign SHA --verdict PASS --criteria C  # sign a peer-PASS artifact
+c2c dev peer-pass verify ARTIFACT [--json]  # verify a signed artifact
+c2c dev worktree list   # list per-agent git worktrees
+c2c dev worktree start SLICE [--branch BRANCH]  # create isolated worktree
+
+# Scheduling
+c2c schedule set wake --interval 4.1m --message "wake"  # set schedule
+c2c schedule list       # list active schedules
+
+# Agent commands
+c2c agent refine        # interactive role file refinement
+nc2c agent run ROLE      # launch ephemeral managed peer from role file
+
 # Cross-machine relay
 c2c relay serve --listen 0.0.0.0:7331 --token TOKEN  # start relay server
 c2c relay setup --url http://host:7331 --token TOKEN  # save relay config
@@ -95,6 +129,10 @@ c2c relay status       # check relay health + peer count
 c2c relay list         # list remote peers
 c2c relay gc --once    # prune expired leases and orphan inboxes
 c2c relay rooms list   # list remote rooms
+c2c relay rooms invite ROOM --invitee-pk KEY  # invite to gated room
+c2c relay subscribe-daemon start --relay-url URL  # start WebSocket push daemon
+c2c relay subscribe-daemon register --alias A  # register alias for push
+c2c relay mobile-pair   # mobile device pairing via QR token
 ```
 
 ## What's Proven

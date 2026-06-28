@@ -42,3 +42,4 @@ docs/vendor/
 .c2c/roles/*.md
 .opencode/c2c-debug.log
 reviews/
+.docs-audit/
