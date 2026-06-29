@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-29T16:56:21Z"
 claimed_by: packaging
-completed_at: null
+completed_at: "2026-06-29T17:23:10Z"
 complexity: medium
 depends_on: []
+duration_minutes: 26.822537118133333
 estimate_hours: 1
 id: B026
 priority: medium
 started_at: "2026-06-29T16:56:21Z"
-status: in_progress
+status: done
 tags: []
 title: npm-primary install lands in root-owned /usr on system-node hosts; every peer agent CLI installs user-local without root
 ---

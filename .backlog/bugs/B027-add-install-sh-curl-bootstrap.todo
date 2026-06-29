@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-29T16:56:21Z"
 claimed_by: packaging
-completed_at: null
+completed_at: "2026-06-29T17:23:10Z"
 complexity: medium
 depends_on: []
+duration_minutes: 26.82255397235
 estimate_hours: 1
 id: B027
 priority: medium
 started_at: "2026-06-29T16:56:21Z"
-status: in_progress
+status: done
 tags: []
 title: Add install.sh curl-bootstrap to the website build; detect existing c2c and delegate to c2c self-update
 ---
