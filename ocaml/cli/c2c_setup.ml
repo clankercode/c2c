@@ -1597,7 +1597,7 @@ let ensure_default_wake_schedule ~quiet ~dry_run ~output_mode ~alias =
       | Json -> print_json (`Assoc [ ("schedule", `String (if dry_run then "would_create" else "created")); ("name", `String "wake"); ("interval_s", `Int 246) ])
   end
 
-let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
+let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ?(skip_summary=false) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   (* Gemini is deprecated — refuse immediately before any setup work. *)
   if client = "gemini" then begin
@@ -1667,7 +1667,8 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
   let artifacts = result.artifacts @ [ schedule_artifact alias_val ] in
   if not dry_run then
     write_manifest_best_effort ~component:client ~alias:(Some alias_val) ~target_dir artifacts;
-  print_install_summary ~output_mode ~dry_run ~component:client { result with artifacts }
+  if not skip_summary then
+    print_install_summary ~output_mode ~dry_run ~component:client { result with artifacts }
 
 (* --- install: detection + TUI --------------------------------------------- *)
 

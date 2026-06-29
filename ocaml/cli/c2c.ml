@@ -5982,12 +5982,12 @@ let relay_identity_init_cmd =
   if (not force) && Sys.file_exists target then begin
     if json then
       print_endline (Printf.sprintf
-        {|{"ok":false,"error":"identity exists","path":%S,"hint":"pass --force to overwrite"}|}
+        {|{"ok":true,"exists":true,"path":%S,"hint":"pass --force to overwrite"}|}
         target)
     else
       Printf.eprintf
-        "error: %s already exists. Pass --force to overwrite.\n%!" target;
-    exit 1
+        "identity already exists at %s (use --force to overwrite)\n%!" target;
+    exit 0
   end;
   let id = Relay_identity.generate ~alias_hint () in
   match Relay_identity.save ~path:target id with
@@ -7348,31 +7348,8 @@ let init_cmd =
     | None -> detect_client ()
   in
 
-  let setup_result =
-    if no_setup then `Skipped
-    else match client_resolved with
-      | None ->
-          (match output_mode with
-           | Human ->
-               Printf.printf "No client detected. Specify one with --client:\n";
-               Printf.printf "  c2c init --client claude\n";
-               Printf.printf "  c2c init --client codex\n";
-               Printf.printf "  c2c init --client opencode\n";
-               Printf.printf "  c2c init --client kimi\n"
-           | Json -> ());
-          `No_client
-      | Some client ->
-          (try
-             C2c_setup.do_install_client ~output_mode ~dry_run:false ~client ~alias_opt ~no_nonce ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ();
-             `Ok (C2c_setup.canonical_install_client client)
-           with e -> `Error (Printexc.to_string e))
-  in
-
-  let session_id =
-    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-    | Some s when String.trim s <> "" -> s
-    | _ -> C2c_setup.generate_session_id ()
-  in
+  (* Resolve alias ONCE before do_install_client so both the .mcp.json env
+     (C2C_MCP_AUTO_REGISTER_ALIAS) and Broker.register use the same alias. *)
   let alias =
     match alias_opt with
     | Some a -> a
@@ -7399,6 +7376,33 @@ let init_cmd =
         let a = loop () in
         Printf.eprintf "[c2c register] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
         a
+  in
+
+  let alias_for_install = Some alias in
+  let setup_result =
+    if no_setup then `Skipped
+    else match client_resolved with
+      | None ->
+          (match output_mode with
+           | Human ->
+               Printf.printf "No client detected. Specify one with --client:\n";
+               Printf.printf "  c2c init --client claude\n";
+               Printf.printf "  c2c init --client codex\n";
+               Printf.printf "  c2c init --client opencode\n";
+               Printf.printf "  c2c init --client kimi\n"
+           | Json -> ());
+          `No_client
+      | Some client ->
+          (try
+             C2c_setup.do_install_client ~output_mode ~dry_run:false ~client ~alias_opt:alias_for_install ~no_nonce ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ~skip_summary:true ();
+             `Ok (C2c_setup.canonical_install_client client)
+           with e -> `Error (Printexc.to_string e))
+  in
+
+  let session_id =
+    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    | Some s when String.trim s <> "" -> s
+    | _ -> C2c_setup.generate_session_id ()
   in
   (* Ensure Ed25519 identity exists — idempotent, safe to run always. *)
   let identity_init_rc =
@@ -7490,7 +7494,7 @@ let init_cmd =
            let oc = open_out config_path in
            Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
              output_string oc (Yojson.Safe.pretty_to_string (`Assoc merged)));
-           Printf.printf "  relay:     saved config\n";
+           (match output_mode with Human -> Printf.printf "  relay:     saved config\n" | Json -> Printf.eprintf "  relay:     saved config\n%!");
            (* Register with relay. *)
            (match Relay_identity.load () with
             | Ok id ->
@@ -7507,9 +7511,9 @@ let init_cmd =
                 (match result with
                  | `Assoc fields ->
                      (match List.assoc_opt "ok" fields with
-                      | Some (`Bool true) -> Printf.printf "  relay:     registered %s\n" alias
-                      | _ -> Printf.printf "  relay:     registration returned non-ok\n")
-                 | _ -> Printf.printf "  relay:     unexpected response\n")
+                      | Some (`Bool true) -> Printf.eprintf "  relay:     registered %s\n%!" alias
+                      | _ -> Printf.eprintf "  relay:     registration returned non-ok\n%!")
+                 | _ -> Printf.eprintf "  relay:     unexpected response\n%!")
             | Error _ ->
                 (* Unauthenticated registration. *)
                 let client = Relay.Relay_client.make rurl in
@@ -7520,9 +7524,9 @@ let init_cmd =
                 (match result with
                  | `Assoc fields ->
                      (match List.assoc_opt "ok" fields with
-                      | Some (`Bool true) -> Printf.printf "  relay:     registered %s (unauthenticated)\n" alias
-                      | _ -> Printf.printf "  relay:     registration returned non-ok\n")
-                 | _ -> Printf.printf "  relay:     unexpected response\n"));
+                      | Some (`Bool true) -> Printf.eprintf "  relay:     registered %s (unauthenticated)\n%!" alias
+                      | _ -> Printf.eprintf "  relay:     registration returned non-ok\n%!")
+                 | _ -> Printf.eprintf "  relay:     unexpected response\n%!"));
            `Ok rurl
          with e -> `Error (Printexc.to_string e))
   in
