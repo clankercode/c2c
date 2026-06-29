@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B027
+priority: medium
+status: pending
+tags: []
+title: Add install.sh curl-bootstrap to the website build; detect existing c2c and delegate to c2c self-update
+---
+c2c.im/install.sh currently 404s. Ship a POSIX-sh bootstrap so curl -fsSL https://c2c.im/install.sh | sh does a no-root install. Must be idempotent and double as the upgrade path: if c2c is already on PATH, call c2c self-update instead of blindly reinstalling. Best practices: no root ever (install to ~/.local/bin), detect existing install, resolve OS/arch from GitHub releases, integrity verification (sha256 + signature), robust shell (set -eu, https-only), PATH hygiene, share asset-resolution logic with c2c self-update. Related: B026, B023, c2c self-update enhancement.

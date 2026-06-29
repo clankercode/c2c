@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B027
+priority: medium
+status: pending
+tags: []
+title: Add c2c self-update command (in-place upgrade of the running binary)
+---
+No self-update/update/upgrade command exists today. install.sh needs this to delegate upgrades to. Should fetch latest release, verify it, and atomically replace the running binary at its resolved path. Best practices: c2c self-update as canonical with update/upgrade aliases, update binary at resolved path (readlink -f argv0), atomic rename (download to temp in same dir, verify, chmod, rename over old path), verify sha256 + signature, refuse-and-advise on system paths (/usr), support channels/pins (--version, --check), clear exit semantics (--json, distinct already-latest vs updated messages), session safety (warn if updating supervisor of managed session). Related: install.sh enhancement, B026, B025.
