@@ -170,17 +170,17 @@ codegen-role-templates:
 # concurrent builds while leaving cross-worktree builds parallel.
 build: codegen-role-designer codegen-opencode-plugin
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Build the OCaml CLI binary only (fast, for iterative CLI work)
 build-cli: codegen-role-designer codegen-opencode-plugin
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build MCP server + hooks only (fast, for server/hook work)
 build-server: codegen-role-designer codegen-opencode-plugin
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Alias for build-all (back-compat)
 build-all: build
@@ -373,6 +373,7 @@ install-hook:
       scripts/c2c-install-guard.sh; \
       rm -f ~/.local/bin/c2c-inbox-hook-ocaml; \
       cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml; \
+      cp _build/default/ocaml/tools/c2c_stop_hook.exe ~/.local/bin/c2c-stop-hook-ocaml; \
       scripts/c2c-install-stamp.sh; \
     '
 
@@ -380,7 +381,7 @@ install-hook:
 # Build all first, then copy all; avoids half-updated state on build failure.
 # Git hooks are opt-in via `just install-git-hooks`.
 install-all: codegen-role-designer codegen-opencode-plugin
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/server/c2c_mcp_server_inner_bin.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/server/c2c_mcp_server_inner_bin.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
     # Guard + atomic install + stamp under a single flock so concurrent
     # `just bi` runs from different worktrees can't race past the guard
     # then clobber each other. See scripts/c2c-install-guard.sh (#302).
@@ -389,7 +390,7 @@ install-all: codegen-role-designer codegen-opencode-plugin
       set -euo pipefail; \
       scripts/c2c-install-guard.sh; \
       scripts/c2c-install-live-holders.sh; \
-      rm -f ~/.local/bin/c2c ~/.local/bin/c2c-mcp-server ~/.local/bin/c2c-mcp-inner ~/.local/bin/c2c-inbox-hook-ocaml ~/.local/bin/c2c-cold-boot-hook ~/.local/bin/c2c-post-compact-hook ~/.local/bin/cc-quota ~/.local/bin/c2c-deliver-inbox; \
+      rm -f ~/.local/bin/c2c ~/.local/bin/c2c-mcp-server ~/.local/bin/c2c-mcp-inner ~/.local/bin/c2c-inbox-hook-ocaml ~/.local/bin/c2c-stop-hook-ocaml ~/.local/bin/c2c-cold-boot-hook ~/.local/bin/c2c-post-compact-hook ~/.local/bin/cc-quota ~/.local/bin/c2c-deliver-inbox; \
       cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c; \
       cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server; \
       cp _build/default/ocaml/server/c2c_mcp_server_inner_bin.exe ~/.local/bin/c2c-mcp-inner; \
