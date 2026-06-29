@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-29T17:31:04Z"
 claimed_by: pi-dc2147
-completed_at: null
+completed_at: "2026-06-29T18:10:33Z"
 complexity: medium
 depends_on: []
+duration_minutes: 39.4935812427
 estimate_hours: 1
 id: B040
 priority: medium
 started_at: "2026-06-29T17:31:04Z"
-status: in_progress
+status: done
 tags: []
 title: 'Cross-broker send is a 7-step gauntlet: --root unsupported on send/register, confusing errors; only coordinator-override worked'
 ---

@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-29T17:29:24Z"
 claimed_by: pi-dc2147
-completed_at: null
+completed_at: "2026-06-29T18:10:33Z"
 complexity: medium
 depends_on: []
+duration_minutes: 41.160236572033334
 estimate_hours: 1
 id: B039
 priority: medium
 started_at: "2026-06-29T17:29:24Z"
-status: in_progress
+status: done
 tags: []
 title: Same-box send should auto-route to the recipient's broker; plain send only checks the caller's repo broker and rejects 'not registered'
 ---
