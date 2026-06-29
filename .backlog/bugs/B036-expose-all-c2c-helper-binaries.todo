@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T16:56:21Z"
+claimed_by: hooks-bin
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B036
 priority: medium
-status: pending
+started_at: "2026-06-29T16:56:21Z"
+status: in_progress
 tags: []
 title: Expose all c2c helper binaries as c2c <subcommand> (e.g. c2c hook stop) with client autodetect
 ---

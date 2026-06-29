@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T16:56:21Z"
+claimed_by: hooks-bin
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B035
 priority: high
-status: pending
+started_at: "2026-06-29T16:56:21Z"
+status: in_progress
 tags: []
 title: Stop hook installed but its binary c2c-stop-hook-ocaml is missing -> text-turn delivery silently no-ops
 ---
