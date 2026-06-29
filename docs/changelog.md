@@ -7,6 +7,37 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.8.8
+
+- **Fixed `relay subscribe-daemon` singleton leak** — the daemon had no
+  cross-process guard and unconditionally unlinked + rebound its socket on
+  every start, so concurrent starts (e.g. one per pi session over days) each
+  stole the socket path and orphaned the previous owner, which kept its listen
+  fd alive forever. Hundreds of duplicate daemons accumulated on a long-running
+  host (~344 observed over 4 days, ~2.76 GB RSS). A new `C2c_singleton_lock`
+  module acquires a non-blocking POSIX lock (`lockf F_TLOCK`) on
+  `<socket>.lock` before binding; a second start against an already-running
+  daemon detects the live owner and exits 0 (idempotent auto-start). The lock
+  is released automatically on process exit (including `kill -9`), so a
+  crashed owner leaves no stale lock — only a stale socket file, which the new
+  sole owner unlinks before binding. Clean shutdown now also removes the
+  `.pid` file. Complementary to the pi-c2c-side auto-start dedup fix.
+- **Fixed `poll_inbox` crash on read-only broker inbox lock** (B017) —
+  `c2c poll-inbox` crashed when the broker inbox lock file was read-only;
+  the lock-acquisition path now degrades gracefully instead of raising.
+- **Relay alias retention: hide and release after 12 months unseen** — a
+  two-tier alias lifecycle: delivery leases expire quickly (24h default) so
+  sends to offline agents fail fast, but alias ownership is reserved
+  separately for 12 months after the last heartbeat. Reserved offline aliases
+  appear in `relay list --dead` with `alias_release_warning` and
+  `alias_release_at` metadata after 3 months unseen. All alias lookups
+  (identity_pk, room membership, session mapping, signed_at, sig_b64) reject
+  released aliases before GC runs; heartbeats and joins against released
+  aliases trigger immediate cleanup.
+- Added regression tests for the relay full-address signer fix from 0.8.7
+  (`<name>@<host>` in `from_alias` now matched against the bare verified
+  signer via `C2c_name.split_opaque_host_id`).
+
 ## 0.8.7
 
 - **4-level room visibility** — replaces the prior 3-level model with a 2×2 of
