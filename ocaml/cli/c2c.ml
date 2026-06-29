@@ -7478,8 +7478,13 @@ let init_cmd =
     | _ -> C2c_setup.generate_session_id ()
   in
   (* Ensure Ed25519 identity exists — idempotent, safe to run always. *)
+  (* Identity init is a pure side-effect from init's perspective: init only
+     consumes the exit code and emits its own consolidated output (Human or
+     Json). Mute BOTH streams of the child — on a fresh host the child prints
+     "identity written to ..." to STDOUT, which would otherwise corrupt the
+     single-JSON-document guarantee of `c2c init --json` (B025). *)
   let identity_init_rc =
-    Sys.command (Printf.sprintf "%s relay identity init 2>/dev/null"
+    Sys.command (Printf.sprintf "%s relay identity init >/dev/null 2>&1"
       (Filename.quote (current_c2c_command ())))
   in
   if identity_init_rc <> 0 then
