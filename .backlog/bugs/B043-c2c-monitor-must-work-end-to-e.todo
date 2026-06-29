@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B043
+priority: high
+status: pending
+tags: []
+title: 'c2c monitor must work end-to-end for a registered Claude agent: bare command, full-body delivery, inbox drain, zero flags'
+---
+The single most important receive-path UX: a registered Claude agent should start receiving by literally running c2c monitor (bare) inside Claude Code Monitor tool. Today it needs --alias (subprocess lacks env), --root (auto-resolve fails outside git repo), --archive (to not race drain hook), --full-body (else 80-char snippet). Acceptance: bare c2c monitor auto-resolves alias+broker from config; delivers every message in full; drains/acks inbox so no re-delivery or hook race; coalesces bursts; robust when cwd not git repo; survives broker restarts; respects per-alias lockfile; works for plain registered CLI agent (no MCP needed). Repro: registered Claude agent runs Monitor(c2c monitor) bare -> fails without flags. Related: B034, B035, B038, B039.
