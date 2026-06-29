@@ -38,3 +38,4 @@ bugs:
     - file: B039-same-box-send-should-auto-rout.todo
     - file: B040-cross-broker-send-is-a-7-step.todo
     - file: B041-single-source-of-truth-for-ref.todo
+    - file: B042-spawned-subagent-with-global-c.todo

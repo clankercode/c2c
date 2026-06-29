@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B042
+priority: medium
+status: pending
+tags: []
+title: Spawned subagent with global c2c hooks spams coordinator with repeated idle_notifications; no clean way to quiet or stop it
+---
+When c2c hooks are in user-global Claude settings, a subagent spawned via Agent tool inherits them, auto-registers in c2c, and emits idle_notifications routed to the coordinator every turn after completing its task. Observed 4+ pings from 'c2c-docs-investigator' after delivering final report. Plain-text stand-down message did NOT stop them. No TaskStop/TaskList entry, not a managed instance so c2c stop doesn't apply. Expected: subagents don't auto-register unless opted in; OR idle notifications stop on task completion / stand-down; OR there's a c2c command to quiet/deregister a spawned peer. Best practices: default subagents to non-registering, make completed agents stop heartbeating, provide c2c quiet/deregister, scope hooks to no-op in subagent contexts. Repro: with global c2c hooks, spawn Agent subagent, observe repeated idle_notifications after completion. Related: B035, B039.
