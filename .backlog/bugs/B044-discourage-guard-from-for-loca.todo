@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-29T17:31:04Z"
 claimed_by: pi-dc2147
-completed_at: null
+completed_at: "2026-06-29T18:25:28Z"
 complexity: medium
 depends_on: []
+duration_minutes: 54.40890332998333
 estimate_hours: 1
 id: B044
 priority: medium
 started_at: "2026-06-29T17:31:04Z"
-status: in_progress
+status: done
 tags: []
 title: 'Discourage/guard --from for local sends: it records a sender that often can''t receive replies'
 ---
