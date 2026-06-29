@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B021
+priority: low
+status: pending
+tags: []
+title: '''doctor'' listed under TIER 1 SAFE but hard-fails outside the c2c source repo'
+---
+c2c --help classifies doctor as Tier 1 safe, but running it errors: must run from inside the c2c git repo. It's effectively a dev-only command mis-tiered as agent-safe. Either make doctor work for end-user installs, or move it out of the Tier-1 list. Repro: cd /tmp && c2c doctor

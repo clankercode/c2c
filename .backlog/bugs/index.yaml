@@ -18,3 +18,8 @@ bugs:
     - file: B017-c2c-poll-inbox-crashes-on-read.todo
     - file: B018-website-should-have-links-to-l.todo
     - file: B019-test-placeholder.todo
+    - file: B020-misleading-relay-identity-init.todo
+    - file: B020-init-generates-two-different-a.todo
+    - file: B021-doctor-listed-under-tier-1-saf.todo
+    - file: B022-read-only-commands-spew-fatal.todo
+    - file: B023-c2c-im-leads-with-npm-i-g-as-p.todo

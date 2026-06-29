@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B023
+priority: low
+status: pending
+tags: []
+title: c2c.im leads with npm i -g as primary method; fails on default /usr prefix and collides with standalone binary
+---
+Docs primary method npm i -g @clanker-code/c2c failed: (1) EACCES creating /usr/lib/node_modules (npm prefix=/usr, needs sudo/user-prefix); (2) after retry with --prefix ~/.local, EEXIST because a standalone c2c binary already lived at ~/.local/bin/c2c. Docs should note the prefix/sudo requirement; npm vs standalone-binary path collision should be handled or documented.

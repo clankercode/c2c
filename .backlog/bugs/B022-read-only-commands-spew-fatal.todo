@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B022
+priority: low
+status: pending
+tags: []
+title: 'Read-only commands spew ''fatal: not a git repository'' to stderr when run outside a repo'
+---
+c2c whoami, c2c status, c2c doctor all print fatal: not a git repository even though they don't need to be in a repo. whoami/status still work; output is just noisy. Repro: cd /tmp && c2c status
