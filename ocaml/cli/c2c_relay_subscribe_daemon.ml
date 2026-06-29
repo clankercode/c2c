@@ -153,6 +153,11 @@ type daemon_state = {
   mutable shutdown_requested : bool;
   mutable listen_sock : Lwt_unix.file_descr option;
   mutable shutdown_waker : unit Lwt.u option;
+  (* bugs.txt 2026-06-29: singleton guard. Held open for the daemon's whole
+     lifetime; closing it (or process exit) releases the cross-process lock
+     so the next start can acquire it. [None] only if the guard was bypassed
+     (e.g. legacy/debug path) — the normal path always sets it. *)
+  mutable lock_fd : Unix.file_descr option;
   socket_path : string;
   identity : Relay_identity.t;
   relay_host : string;
@@ -501,6 +506,14 @@ let cleanup_daemon (state : daemon_state) =
    | Some sock -> Lwt.async (fun () -> Lwt.catch (fun () -> Lwt_unix.close sock) (fun _ -> Lwt.return_unit))
    | None -> ());
   (try Unix.unlink state.socket_path with _ -> ());
+  (* Remove the pidfile we wrote at startup so callers that probe for a live
+     daemon (e.g. pi-c2c DaemonClient.isDaemonRunning) see us as gone. *)
+  (try Unix.unlink (state.socket_path ^ ".pid") with _ -> ());
+  (* Release the singleton lock. The OS also releases it on process exit, but
+     closing explicitly keeps the fd table tidy on clean shutdown. *)
+  (match state.lock_fd with
+   | Some fd -> state.lock_fd <- None; C2c_singleton_lock.release fd
+   | None -> ());
   Printf.eprintf "[subscribe-daemon] shutdown complete\n%!"
 
 (* === CLI Commands === *)
@@ -552,7 +565,8 @@ let start_daemon_cmd =
     Printf.eprintf "[subscribe-daemon] starting (relay=%s:%d socket=%s)\n%!" host port socket_path;
     let state = {
       clients = []; shutdown_requested = false; listen_sock = None;
-      shutdown_waker = None; socket_path; identity; relay_host = host; relay_port = port;
+      shutdown_waker = None; lock_fd = None;
+      socket_path; identity; relay_host = host; relay_port = port;
     } in
     let handle_signal _sig =
       state.shutdown_requested <- true;
@@ -562,6 +576,19 @@ let start_daemon_cmd =
     Sys.set_signal Sys.sigterm (Sys.Signal_handle handle_signal);
     Sys.set_signal Sys.sigint (Sys.Signal_handle handle_signal);
     (try Unix.mkdir (Filename.dirname socket_path) 0o755 with _ -> ());
+    (* bugs.txt 2026-06-29: singleton guard. Acquire a cross-process lock on
+       <socket>.lock BEFORE binding the socket. A second start against an
+       already-running daemon gets [Already_running] and exits 0 (idempotent
+       auto-start) instead of unlinking the socket path and orphaning the
+       live owner (which had piled up 344 duplicate daemons). The lock is a
+       POSIX lockf released automatically on process exit, so a crashed
+       owner leaves no stale lock — only a stale socket file, which we unlink
+       below before binding because we are now provably the sole owner. *)
+    (match C2c_singleton_lock.try_acquire ~path:socket_path with
+     | Already_running ->
+       Printf.eprintf "[subscribe-daemon] already running on %s; exiting\n%!" socket_path;
+       exit 0
+     | Acquired fd -> state.lock_fd <- Some fd);
     let pid_file = socket_path ^ ".pid" in
     let oc = open_out pid_file in
     Printf.fprintf oc "%d\n" (Unix.getpid ());
