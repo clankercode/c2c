@@ -143,9 +143,13 @@ let validate_from_override broker ~caller_session_id ~from_alias =
         exit 1
       end else begin
         Printf.eprintf
-          "refusing to send as '%s': alias is not registered. \
-           Only your own alias or C2C_COORDINATOR=1 is permitted.\n%!"
-          from_alias;
+          "refusing to send as '%s': alias is not registered in this broker.\n\
+           - Anti-impersonation: the broker only allows sending as a registered alias\n\
+           to prevent one agent from spoofing another's identity.\n\
+           - To send as this alias: register it first with `c2c register --alias %s`,\n\
+           or set C2C_MCP_SESSION_ID to the session that owns it.\n\
+           - To relay on behalf of another agent: set C2C_COORDINATOR=1.\n%!"
+          from_alias from_alias;
         exit 1
       end
     end
@@ -178,23 +182,40 @@ let resolve_alias ?(override : string option = None) broker =
               if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] from_sid=%s -> alias=%s\n%!" sid r.alias;
               r.alias
           | None -> (
-              (* Session not registered; fall back to env_auto_alias for
-                 non-MCP callers or dynamically-registered sessions. *)
+              (* Session not registered in this broker; fall back to
+                 env_auto_alias for non-MCP callers. *)
               match env_auto_alias () with
               | Some a ->
                   if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] sid=%s not registered, fallback=%s\n%!" sid a;
                   a
               | None ->
-                  Printf.eprintf "error: session %s is not registered and no alias is set.\n%!" sid;
-                  exit 1))
+                  if is_coordinator () then (
+                    (* B040: C2C_COORDINATOR=1 without --from: self-resolve from
+                       env_auto_alias or default to "coordinator" instead of failing. *)
+                    let fallback = Option.value (env_auto_alias ()) ~default:"coordinator" in
+                    if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] coordinator self-resolve to %s\n%!" fallback;
+                    fallback
+                  ) else (
+                    (* B040: Session not registered here — common when --root
+                       targets a different broker. Use the session_id itself as
+                       the sender label rather than failing hard. *)
+                    if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] sid=%s not registered in target broker, using sid as sender label\n%!" sid;
+                    sid
+                  )))
       | None -> (
           match env_auto_alias () with
           | Some a ->
               if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] from_env_auto_alias=%s\n%!" a;
               a
           | None ->
-              Printf.eprintf "error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
-              exit 1)
+              if is_coordinator () then (
+                (* B040: C2C_COORDINATOR=1 without session or alias: use "coordinator" *)
+                if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] coordinator fallback to 'coordinator'\n%!";
+                "coordinator"
+              ) else begin
+                Printf.eprintf "error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
+                exit 1
+              end)
 
 let resolve_session_id () =
   match env_session_id () with
@@ -451,6 +472,69 @@ let commands_by_safety =
        ~man:[ `P "Useful for auditing which commands are safe to run inside an agent session." ])
     commands_by_safety_cmd
 
+(* --- cross-broker alias resolution --------------------------------------- *)
+
+(** Scan all known broker roots (per-repo + sessions broker) to find which
+    broker(s) contain a registration matching [alias] (case-insensitive).
+    Returns [(broker_root, registration)] pairs. Excludes [exclude_root]
+    (the primary broker that was already checked).
+    Also scans C2C_BROKER_SCAN_DIRS (colon-separated extra broker root dirs). *)
+let find_alias_in_all_broots ~exclude_root alias =
+  let target = String.lowercase_ascii alias in
+  let seen = Hashtbl.create 8 in
+  let results = ref [] in
+  let scan_root root =
+    if root = exclude_root then ()
+    else if Hashtbl.mem seen root then ()
+    else begin
+      Hashtbl.add seen root ();
+      try
+        let broker = C2c_mcp.Broker.create ~root in
+        let regs = C2c_mcp.Broker.list_registrations broker in
+        let matches =
+          List.filter
+            (fun (r : C2c_mcp.registration) ->
+              String.lowercase_ascii r.alias = target)
+            regs
+        in
+        List.iter (fun r -> results := (root, r) :: !results) matches
+      with _ -> ()  (* skip brokers we can't read *)
+    end
+  in
+  (* Scan the cross-repo sessions broker *)
+  (try scan_root (Repo_fp.resolve_sessions_broker_root ()) with _ -> ());
+  (* Scan per-repo brokers under ~/.c2c/repos/*/broker and XDG *)
+  (try
+     List.iter (fun (_fp, root) -> scan_root root)
+       (C2c_repo_fp.list_all_broker_roots ())
+   with _ -> ());
+  (* Scan C2C_BROKER_SCAN_DIRS env (colon-separated extra broker root paths) *)
+  (match Sys.getenv_opt "C2C_BROKER_SCAN_DIRS" with
+   | Some dirs when String.trim dirs <> "" ->
+       String.split_on_char ':' (String.trim dirs)
+       |> List.iter (fun d -> let d = String.trim d in if d <> "" then scan_root d)
+   | _ -> ());
+  (* Also scan sibling broker dirs: if primary broker is under a repos/ layout,
+     scan siblings. If it's an arbitrary path, scan its parent for subdirs
+     containing registry.json — this handles temp broker dirs in tests. *)
+  (try
+     let parent = Filename.dirname exclude_root in
+     if Sys.file_exists parent && Sys.is_directory parent then
+       Array.iter (fun entry ->
+         let candidate = Filename.concat parent entry in
+         if candidate <> exclude_root
+            && Sys.is_directory candidate
+            && Sys.file_exists (Filename.concat candidate "registry.json")
+         then scan_root candidate
+       ) (Sys.readdir parent)
+   with _ -> ());
+  List.rev !results
+
+(** Same as above but also check the sessions broker root explicitly
+    (it may already be in the list but this ensures coverage). *)
+let find_alias_in_all_brokers ~primary_root alias =
+  find_alias_in_all_broots ~exclude_root:primary_root alias
+
 (* --- subcommand: send ----------------------------------------------------- *)
 
 let send_cmd =
@@ -490,6 +574,10 @@ let send_cmd =
     Cmdliner.Arg.(value & flag & info [ "urgent" ]
       ~doc:"Mark as an URGENT message. Prepends '⚠️ URGENT: ' to the body. Use for time-sensitive but not-fully-blocking attention asks. Mutex with --fail and --blocking.")
   in
+  let broker_root_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
+           ~doc:"Broker root dir (default: auto-resolve via env/git). Overrides --cross-repo.")
+  in
   let+ json = json_flag
   and+ args = args
   and+ session_target = session_target
@@ -499,9 +587,10 @@ let send_cmd =
   and+ fail = fail_flag
   and+ blocking = blocking_flag
   and+ urgent = urgent_flag
-  and+ cross_repo = cross_repo_flag in
+  and+ cross_repo = cross_repo_flag
+  and+ broker_root_opt = broker_root_opt in
   mcp_nudge_if_needed ~cmd:"send";
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
   let target, content =
     match session_target, args with
     | Some sid, tokens ->
@@ -572,6 +661,10 @@ let send_cmd =
   let output_mode = if json then Json else Human in
   (try
      let ts = Unix.gettimeofday () in
+     let primary_root =
+       try C2c_mcp.Broker.root broker
+       with _ -> "<unknown>"
+     in
      let compacting_warning, json_target_fields, human_target =
        match target with
        | `Alias to_alias ->
@@ -581,9 +674,43 @@ let send_cmd =
            );
            if debug_enabled then Printf.eprintf "[DEBUG send_cmd] calling enqueue_message from=%s to=%s\n%!" from_alias to_alias;
            flush stderr;
-           C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
-           if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
-           flush stderr;
+           (* B039: try primary broker first, then cross-broker fallback *)
+           (try
+              C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
+              if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
+              flush stderr
+            with Invalid_argument _msg
+              when not (String.contains to_alias '@') ->
+              (* Primary broker doesn't have this alias — scan other brokers *)
+              let matches = find_alias_in_all_brokers ~primary_root to_alias in
+              match matches with
+              | (alt_root, _reg) :: _ ->
+                  (* Found in another broker — route there *)
+                  if debug_enabled then Printf.eprintf
+                    "[DEBUG send_cmd] cross-broker routing: %s found in %s\n%!" to_alias alt_root;
+                  let alt_broker = C2c_mcp.Broker.create ~root:alt_root in
+                  C2c_mcp.Broker.enqueue_message alt_broker
+                    ~from_alias ~to_alias ~content ~ephemeral ();
+                  if debug_enabled then Printf.eprintf "[DEBUG send_cmd] cross-broker enqueue_message returned\n%!"
+              | [] ->
+                  (* Not found anywhere — provide actionable error *)
+                  let is_room =
+                    (try
+                       let rooms = C2c_mcp.Broker.list_rooms broker in
+                       List.exists (fun r -> r.C2c_mcp.Broker.ri_room_id = to_alias) rooms
+                     with _ -> false)
+                  in
+                  if is_room then begin
+                    Printf.eprintf "error: '%s' is a room, not a peer alias.\n" to_alias;
+                    Printf.eprintf "hint:  use `c2c room send %s <message>` to send to a room.\n%!" to_alias
+                  end else begin
+                    Printf.eprintf "error: alias '%s' is not registered.\n" to_alias;
+                    Printf.eprintf "  Checked broker: %s\n" primary_root;
+                    Printf.eprintf "  hint: the peer may be in another broker. Same-box sends auto-route,\n";
+                    Printf.eprintf "  or pass --root <broker-root> to target a specific broker.\n";
+                    Printf.eprintf "  Use `c2c list --global` to see all registered peers.\n%!"
+                  end;
+                  exit 1);
            let compacting_warning =
              let regs = C2c_mcp.Broker.list_registrations broker in
              match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = to_alias) regs with
@@ -626,22 +753,8 @@ let send_cmd =
          (match compacting_warning with Some w -> Printf.printf " [%s]" w | None -> ());
          print_newline ()
    with Invalid_argument msg ->
-     (* If the target looks like a room name, give a helpful redirect hint. *)
-     let is_room =
-       match target with
-       | `Session _ -> false
-       | `Alias to_alias ->
-           (try
-              let rooms = C2c_mcp.Broker.list_rooms broker in
-              List.exists (fun r -> r.C2c_mcp.Broker.ri_room_id = to_alias) rooms
-            with _ -> false)
-     in
-     if is_room then begin
-       let to_alias = match target with `Alias a -> a | `Session s -> s in
-       Printf.eprintf "error: '%s' is a room, not a peer alias.\n" to_alias;
-       Printf.eprintf "hint:  use `c2c room send %s <message>` to send to a room.\n%!" to_alias
-     end else
-       Printf.eprintf "error: %s\n%!" msg;
+     (* Catch-all for errors from Session sends or other paths. *)
+     Printf.eprintf "error: %s\n%!" msg;
      exit 1)
 
 (* --- subcommand: list ----------------------------------------------------- *)
@@ -3259,12 +3372,17 @@ let register_cmd =
   let no_metadata =
     Cmdliner.Arg.(value & flag & info [ "no-metadata" ] ~doc:"Opt out of metadata exposure/federation (cwd, canonical alias). Does NOT affect cwd capture, which is required for the worktree-mismatch guard.")
   in
+  let broker_root_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
+           ~doc:"Broker root dir (default: auto-resolve via env/git). Overrides --cross-repo.")
+  in
   let+ json = json_flag
   and+ alias_opt = alias
   and+ session_id_opt = session_id_opt
   and+ no_metadata = no_metadata
-  and+ cross_repo = cross_repo_flag in
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
+  and+ cross_repo = cross_repo_flag
+  and+ broker_root_opt = broker_root_opt in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
   let alias, alias_from_auto_gen =
     match alias_opt with
     | Some a -> (a, false)
