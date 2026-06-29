@@ -3482,6 +3482,36 @@ let register_cmd =
   | Human ->
       Printf.printf "registered %s (session %s)\n" alias session_id
 
+(* --- subcommand: deregister ---------------------------------------------- *)
+
+let deregister_cmd =
+  let alias_arg =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ALIAS" ~doc:"Alias to deregister.")
+  in
+  let broker_root_opt =
+    Cmdliner.Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
+           ~doc:"Broker root dir (default: auto-resolve via env/git). Overrides --cross-repo.")
+  in
+  let+ json = json_flag
+  and+ alias = alias_arg
+  and+ cross_repo = cross_repo_flag
+  and+ broker_root_opt = broker_root_opt in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
+  match C2c_mcp.Broker.deregister broker ~alias with
+  | None ->
+      Printf.eprintf "error: no registration found for alias '%s'\n%!" alias;
+      exit 1
+  | Some reg ->
+      if json then
+        print_json
+          (`Assoc
+            [ ("alias", `String reg.alias)
+            ; ("session_id", `String reg.session_id)
+            ; ("deregistered", `Bool true)
+            ])
+      else
+        Printf.printf "deregistered %s (session %s)\n" reg.alias reg.session_id
+
 (* --- subcommand: get-tmux-location ---------------------------------------- *)
 
 let get_tmux_location_cmd =
@@ -7381,6 +7411,7 @@ let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived in
 let health = Cmdliner.Cmd.v (Cmdliner.Cmd.info "health" ~doc:"Show broker health diagnostics.") health_cmd
 let connect = Cmdliner.Cmd.v (Cmdliner.Cmd.info "connect" ~doc:"Connection status dashboard and delivery verification.") connect_cmd
 let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
+let deregister = Cmdliner.Cmd.v (Cmdliner.Cmd.info "deregister" ~doc:"Remove a registration from the broker.") deregister_cmd
 let tail_log = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail-log" ~doc:"Show recent broker RPC log entries.") tail_log_cmd
 let server_info = Cmdliner.Cmd.v (Cmdliner.Cmd.info "server-info" ~doc:"Show c2c client version and feature flags.") server_info_cmd
 let my_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "my-rooms" ~doc:"List rooms you are a member of.") my_rooms_cmd
@@ -13094,7 +13125,7 @@ let () =
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
-    ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; host_id; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
+    ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; host_id; git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; self_update; update_alias; upgrade_alias; C2c_uninstall.uninstall_subcmd; completion_cmd; list_glyphs
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances_deprecated; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in

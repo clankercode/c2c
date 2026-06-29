@@ -99,6 +99,14 @@ let env_nonempty name =
   | Some s when String.trim s <> "" -> Some (String.trim s)
   | _ -> None
 
+(* B042: detect subagent/silent context. When C2C_NO_AUTO_REGISTER=1 is set,
+   the session is a spawned subagent that should not auto-register or drain
+   inbox messages. Hooks should exit early when this returns true. *)
+let is_subagent_quiet () =
+  match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
+  | Some v when String.trim v = "1" -> true
+  | _ -> false
+
 let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 

@@ -2979,6 +2979,26 @@ open C2c_mcp_helpers
         && is_test_pattern reg.alias)
         regs)
 
+  (** [deregister t ~alias] — remove a registration by alias.
+      Returns [Some reg] if found and removed, [None] if no registration
+      matches (dead or alive). Uses the same registry lock + save as sweep. *)
+  let deregister t ~alias =
+    with_registry_lock t (fun () ->
+      let regs = load_registrations t in
+      let target = alias_casefold alias in
+      match List.find_opt
+              (fun reg -> alias_casefold reg.alias = target)
+              regs with
+      | None -> None
+      | Some found ->
+          let remaining =
+            List.filter
+              (fun reg -> alias_casefold reg.alias <> target)
+              regs
+          in
+          save_registrations t remaining;
+          Some found)
+
   (* Scan dead-letter.jsonl for records belonging to this session and return
      them for redelivery, removing matched records from the file.
      Called on re-registration so a session that was swept between outer-loop
