@@ -119,7 +119,7 @@ c2c schedule list       # list active schedules
 
 # Agent commands
 c2c agent refine        # interactive role file refinement
-nc2c agent run ROLE      # launch ephemeral managed peer from role file
+c2c agent run ROLE      # launch ephemeral managed peer from role file
 
 # Cross-machine relay
 c2c relay serve --listen 0.0.0.0:7331 --token TOKEN  # start relay server
