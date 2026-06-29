@@ -7558,6 +7558,14 @@ let init_cmd =
     Arg.(value & flag & info ["require-easy"]
            ~doc:"Fail if the auto-generated alias is not from the easy pool. Implies --easy-pool. Use when the agent must have a human-readable alias.")
   in
+  let with_mcp_flag =
+    Arg.(value & flag & info ["with-mcp"]
+           ~doc:"Install MCP server config (.mcp.json) for the detected client. Off by default — CLI is the primary usage path.")
+  in
+  let hooks_flag =
+    Arg.(value & flag & info ["hooks"]
+           ~doc:"Install client hooks (e.g. Claude PostToolUse nudge). Implies --with-mcp. Off by default.")
+  in
   let+ json = json_flag
   and+ client_opt = client_opt
   and+ alias_opt = alias_opt_arg
@@ -7568,7 +7576,9 @@ let init_cmd =
   and+ relay_url = relay_url_arg
   and+ easy_pool = easy_pool_flag
   and+ require_easy = require_easy_flag
-  and+ no_nonce = no_nonce_flag in
+  and+ no_nonce = no_nonce_flag
+  and+ with_mcp = with_mcp_flag
+  and+ hooks = hooks_flag in
   let output_mode = if json then Json else Human in
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
@@ -7610,8 +7620,10 @@ let init_cmd =
   in
 
   let alias_for_install = Some alias in
+  let do_mcp_setup = with_mcp || hooks in
   let setup_result =
     if no_setup then `Skipped
+    else if not do_mcp_setup then `Cli_only
     else match client_resolved with
       | None ->
           (match output_mode with
@@ -7625,10 +7637,15 @@ let init_cmd =
           `No_client
       | Some client ->
           (try
-             C2c_setup.do_install_client ~output_mode ~dry_run:false ~client ~alias_opt:alias_for_install ~no_nonce ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ~skip_summary:true ();
+             C2c_setup.do_install_client ~output_mode ~dry_run:false ~client ~alias_opt:alias_for_install ~no_nonce ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ~skip_summary:true ~skip_hooks:(not hooks) ();
              `Ok (C2c_setup.canonical_install_client client)
            with e -> `Error (Printexc.to_string e))
   in
+  (* Ensure wake schedule exists even for CLI-only path *)
+  (match setup_result with
+   | `Cli_only ->
+       C2c_setup.ensure_default_wake_schedule ~quiet:(output_mode = Json) ~dry_run:false ~output_mode ~alias
+   | _ -> ());
 
   let session_id =
     match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
@@ -7772,6 +7789,7 @@ let init_cmd =
        let setup_json = match setup_result with
          | `Ok c -> `String (Printf.sprintf "configured %s" c)
          | `Skipped -> `String "skipped"
+         | `Cli_only -> `String "cli-only (no MCP)"
          | `No_client -> `String "no client detected"
          | `Error e -> `String (Printf.sprintf "error: %s" e)
        in
@@ -7792,6 +7810,29 @@ let init_cmd =
           | `Skipped -> `Null
           | `Error e -> `Assoc [("ok", `Bool false); ("error", `String e)]
         in
+        let room_id_str = match room_result with `Joined r -> r | _ -> room in
+        let onboarding_lines =
+          let is_claude = match client_resolved with Some "claude" -> true | _ -> false in
+          [ Printf.sprintf "Start receiving: run c2c monitor"
+          ; Printf.sprintf "Send:    c2c send <alias> <msg>    (e.g. c2c send %s \"hello\")" alias
+          ; "Check:   c2c poll-inbox"
+          ; Printf.sprintf "Room:    c2c send-room %s <msg>" room_id_str
+          ] @
+          (if is_claude then
+            [ "Monitor: add to Claude Code Monitor tool for auto-delivery" ]
+          else []) @
+          (if not do_mcp_setup then
+            [ "MCP is optional; the CLI + Monitor work immediately with zero reload. Pass --with-mcp to enable MCP tools."
+            ]
+          else [])
+        in
+        let onboarding_json = `Assoc
+          [ ("alias", `String alias)
+          ; ("room", `String room_id_str)
+          ; ("cli_first", `Bool (not do_mcp_setup))
+          ; ("lines", `List (List.map (fun s -> `String s) onboarding_lines))
+          ]
+        in
         print_json (`Assoc
           [ ("ok", `Bool true)
           ; ("session_id", `String session_id)
@@ -7801,6 +7842,7 @@ let init_cmd =
           ; ("room", room_json)
           ; ("supervisor", supervisor_json)
           ; ("relay", relay_json)
+          ; ("onboarding", onboarding_json)
          ])
    | Human ->
        Printf.printf "\nc2c init complete!\n";
@@ -7810,33 +7852,39 @@ let init_cmd =
        (match setup_result with
         | `Ok c -> Printf.printf "  setup:    %s configured\n" c
         | `Skipped -> ()
+        | `Cli_only -> Printf.printf "  setup:    CLI-only (no MCP wiring)\n"
         | `No_client -> Printf.printf "  setup:    skipped (no client detected)\n"
         | `Error e -> Printf.printf "  setup:    error — %s\n" e);
        (match room_result with
         | `Joined r -> Printf.printf "  room:     joined #%s\n" r
         | `Skipped -> ()
         | `Error e -> Printf.printf "  room:     error joining — %s\n" e);
-         (match supervisor_result with
-          | `Set (aliases, strat) ->
-              Printf.printf "  supervisor: %s%s\n" (String.concat ", " aliases)
-                (match strat with Some s -> Printf.sprintf " (strategy: %s)" s | None -> "")
-          | `Skipped -> ()
-          | `Error e -> Printf.printf "  supervisor: error — %s\n" e);
-
-         (match relay_result with
-          | `Ok rurl ->
-              Printf.printf "\nRelay attached. Start the connector with:\n";
-              Printf.printf "  c2c relay connect --relay-url %s\n" rurl
-          | `Skipped -> ()
-          | `Error e -> Printf.printf "  relay:     error — %s\n" e);
-
-          Printf.printf "\nYou're ready! Try:\n";
-        Printf.printf "  c2c list              — see peers\n";
-        Printf.printf "  c2c send ALIAS MSG    — send a message\n";
-        Printf.printf "  c2c poll-inbox        — check your inbox\n";
-        Printf.printf "  c2c send-room %s MSG  — chat in the room\n" room;
-        Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
-        Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n")
+       (match supervisor_result with
+        | `Set (aliases, strat) ->
+            Printf.printf "  supervisor: %s%s\n" (String.concat ", " aliases)
+              (match strat with Some s -> Printf.sprintf " (strategy: %s)" s | None -> "")
+        | `Skipped -> ()
+        | `Error e -> Printf.printf "  supervisor: error — %s\n" e);
+       (match relay_result with
+        | `Ok rurl ->
+            Printf.printf "\nRelay attached. Start the connector with:\n";
+            Printf.printf "  c2c relay connect --relay-url %s\n" rurl
+        | `Skipped -> ()
+        | `Error e -> Printf.printf "  relay:     error — %s\n" e);
+       Printf.printf "\n";
+       Printf.printf "  AGENT ONBOARDING\n";
+       Printf.printf "  ----------------\n";
+       Printf.printf "  Start receiving: run c2c monitor\n";
+       Printf.printf "  Send:    c2c send <alias> <msg>    (e.g. c2c send %s \"hello\")\n" alias;
+       Printf.printf "  Check:   c2c poll-inbox\n";
+       Printf.printf "  Room:    c2c send-room %s <msg>\n" room;
+       (match client_resolved with
+        | Some "claude" ->
+            Printf.printf "  Monitor: add to Claude Code Monitor tool for auto-delivery\n"
+        | _ -> ());
+       if not do_mcp_setup then
+         Printf.printf "  MCP is optional; the CLI + Monitor work immediately with zero reload.\n  Pass --with-mcp to enable MCP tools.\n"
+)
 
 let completion_cmd =
   let shell_arg =
