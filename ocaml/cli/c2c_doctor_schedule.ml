@@ -115,7 +115,7 @@ let pp_human r =
       Printf.printf "Summary: %d schedule(s), %d enabled\n" r.total r.enabled_count
   end
 
-let pp_json r =
+let to_json r =
   let schedule_to_json s =
     let base = [
       ("file", `String s.file_name);
@@ -128,7 +128,7 @@ let pp_json r =
     let base = match s.reason with Some r -> base @ [("reason", `String r)] | None -> base in
     `Assoc base
   in
-  let json = `Assoc [
+  `Assoc [
     ("alias", `String r.alias);
     ("schedules_dir", `String r.schedules_dir);
     ("schedules_dir_exists", `Bool r.dir_exists);
@@ -136,8 +136,9 @@ let pp_json r =
     ("total", `Int r.total);
     ("enabled_count", `Int r.enabled_count);
     ("parseable_count", `Int r.parseable_count);
-  ] in
-  print_endline (Yojson.Safe.to_string json)
+  ]
+
+let pp_json r = print_endline (Yojson.Safe.to_string (to_json r))
 
 let pp_compact r =
   if not r.dir_exists || r.schedules = [] then

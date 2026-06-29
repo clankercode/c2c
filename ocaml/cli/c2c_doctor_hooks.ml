@@ -194,7 +194,7 @@ let pp_human r =
     Printf.printf "\n"
   end
 
-let pp_json r =
+let to_json r =
   let dangling_to_json d =
     `Assoc [
       ("config_file", `String d.config_file);
@@ -210,13 +210,14 @@ let pp_json r =
       ("skipped", `Int d.skipped)
     ]
   in
-  let json = `Assoc [
+  `Assoc [
     ("dirs", `List (List.map dir_to_json r.dirs));
     ("total_referenced", `Int r.total_referenced);
     ("total_dangling", `Int r.total_dangling);
     ("total_skipped", `Int r.total_skipped)
-  ] in
-  print_endline (Yojson.Safe.to_string json)
+  ]
+
+let pp_json r = print_endline (Yojson.Safe.to_string (to_json r))
 
 let pp_compact r =
   if r.total_referenced = 0 then
