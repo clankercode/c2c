@@ -963,13 +963,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --git-common-dir 2>/dev/null | xa
 
 # Prefer the installed OCaml hook because it can read Claude's stdin
 # session_id, drain the global sessions broker, and merge cold-boot context.
-# Fall back to the dev-tree exe, then to legacy `c2c hook` for older installs.
+# Fall back to the dev-tree exe, then to `c2c hook post-tool` (unified subcommand).
 if command -v c2c-inbox-hook-ocaml >/dev/null 2>&1; then
     C2C_REPO_ROOT="$REPO_ROOT" c2c-inbox-hook-ocaml
 elif [ -x "$REPO_ROOT/_build/default/ocaml/tools/c2c_inbox_hook.exe" ]; then
     C2C_REPO_ROOT="$REPO_ROOT" "$REPO_ROOT/_build/default/ocaml/tools/c2c_inbox_hook.exe"
 elif command -v c2c >/dev/null 2>&1; then
-    c2c hook
+    c2c hook post-tool
 else
     # Neither binary found: sleep to avoid fast-exit ECHILD race, then exit.
     sleep 0.05
@@ -1001,14 +1001,18 @@ let claude_stop_hook_script = {|
 SCRIPT_DIR="$(dirname "$0")"
 REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null || echo "$SCRIPT_DIR")"
 
-# Prefer the installed OCaml stop hook. Fall back to dev-tree exe.
-# If neither found, exit silently (no delivery, no blocking).
+# Prefer the installed OCaml stop hook. Fall back to dev-tree exe, then to
+# `c2c hook stop` (the unified subcommand). If none found, warn loudly and
+# exit — a wired hook with no binary means delivery is silently broken.
 if command -v c2c-stop-hook-ocaml >/dev/null 2>&1; then
     C2C_REPO_ROOT="$REPO_ROOT" c2c-stop-hook-ocaml
 elif [ -x "$REPO_ROOT/_build/default/ocaml/tools/c2c_stop_hook.exe" ]; then
     C2C_REPO_ROOT="$REPO_ROOT" "$REPO_ROOT/_build/default/ocaml/tools/c2c_stop_hook.exe"
+elif command -v c2c >/dev/null 2>&1; then
+    c2c hook stop
 else
-    # Neither binary found: exit silently (no blocking, no ECHILD risk).
+    echo "[c2c] WARNING: stop hook binary not found (c2c-stop-hook-ocaml, c2c_stop_hook.exe, or c2c hook stop)." >&2
+    echo "[c2c] Text-only-turn delivery is broken. Run: just install-all" >&2
     exit 0
 fi
 |}
@@ -1151,7 +1155,7 @@ let which_binary name =
 
    The PostToolUse hook script + settings.json registration always go to
    `~/.claude/` — those are user-global Claude features, not project-scoped. *)
-let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir ~alias_from_auto_gen =
+let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir ~alias_from_auto_gen ~skip_hooks =
   let claude_dir = resolve_claude_dir () in
   let project_dir =
     match project_dir with Some d -> d | None -> Sys.getcwd ()
@@ -1199,12 +1203,15 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
   (try mkdir_p dry_run (Filename.dirname mcp_config_path)
    with Unix.Unix_error _ -> ());
   json_write_file_or_dryrun dry_run mcp_config_path config;
-  let settings_path = Filename.concat claude_dir "settings.json" in
-   let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
-   let stop_hook_script = Filename.concat claude_dir "hooks" // "c2c-stop-deliver.sh" in
-   let script_changed = ref false in
-   let stop_script_changed = ref false in
-   (* Install PostToolUse hook script *)
+  let hook_status, stop_hook_status, preauth_status, hook_artifacts, hook_extra_json =
+    if skip_hooks then ("skipped", "skipped", "skipped", [], [])
+    else
+    let settings_path = Filename.concat claude_dir "settings.json" in
+    let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
+    let stop_hook_script = Filename.concat claude_dir "hooks" // "c2c-stop-deliver.sh" in
+    let script_changed = ref false in
+    let stop_script_changed = ref false in
+    (* Install PostToolUse hook script *)
    (try
       let dir = Filename.dirname hook_script in
       if not (Sys.file_exists dir) then mkdir_p dry_run dir;
@@ -1414,37 +1421,79 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     end
   end;
   let preauth_status =
-    if not (Sys.file_exists preauth_hook_script) then "hook script not installed (run `c2c install kimi` first)"
+    (if not (Sys.file_exists preauth_hook_script) then "hook script not installed (run `c2c install kimi` first)"
     else if !preauth_hook_registered then "already registered"
-    else "registered"
+    else "registered")
   in
   if !settings_changed || !preauth_settings_changed then json_write_file_or_dryrun dry_run settings_path !settings_ref;
   let hook_status =
-    if !hook_registered && not !settings_changed && not !script_changed then "already registered"
+    (if !hook_registered && not !settings_changed && not !script_changed then "already registered"
     else if !hook_registered && !script_changed && not !settings_changed then "script updated"
     else if !hook_registered then "matcher upgraded"
-    else "registered"
+    else "registered")
   in
   let stop_hook_status =
-    if !hook_registered && not !settings_changed && not !script_changed && not !stop_script_changed then "already registered"
+    (if !hook_registered && not !settings_changed && not !script_changed && not !stop_script_changed then "already registered"
     else if !stop_script_changed && not !settings_changed then "script updated"
-    else "registered"
+    else "registered")
+  in
+  (* B035 post-install check: verify hook binaries are reachable. Warn loudly
+     when hooks are registered but the backing binary is absent — silent
+     no-op delivery is the exact failure mode B035 fixes. *)
+  if not dry_run then begin
+    let hook_binaries =
+      [ ("c2c-inbox-hook-ocaml", "ocaml/tools/c2c_inbox_hook.exe")
+      ; ("c2c-stop-hook-ocaml", "ocaml/tools/c2c_stop_hook.exe")
+      ]
+    in
+    List.iter (fun (bin_name, build_rel) ->
+      let on_path = match which_binary bin_name with Some _ -> true | None -> false in
+      let build_exists =
+        let cwd = Sys.getcwd () in
+        Sys.file_exists (Filename.concat (Filename.concat (Filename.concat cwd "_build") "default") build_rel)
+      in
+      let c2c_subcmd_ok =
+        (match which_binary "c2c" with
+         | Some _ -> (match bin_name with
+           | "c2c-stop-hook-ocaml" -> true
+           | "c2c-inbox-hook-ocaml" -> true
+           | _ -> false)
+         | None -> false)
+      in
+      if not on_path && not build_exists && not c2c_subcmd_ok then
+        (match output_mode with
+         | Human ->
+             Printf.eprintf "[c2c WARNING] Hook binary %s is not installed and no fallback found.\n%!" bin_name;
+             Printf.eprintf "  Hook scripts will silently no-op. Fix: just install-all\n%!"
+         | Json ->
+             Printf.eprintf "{\"warning\": \"hook binary %s not found\"}\n%!" bin_name)
+    ) hook_binaries
+  end;
+  (hook_status, stop_hook_status, preauth_status,
+   [ C2c_install_manifest.shared_key ~path:mcp_config_path ~key:"mcpServers.c2c" ~format:"json"
+   ; C2c_install_manifest.owned_file hook_script
+   ; C2c_install_manifest.owned_file stop_hook_script
+   ],
+   [ ("client", `String "claude")
+   ; ("alias", `String alias_val)
+   ; ("broker_root", `String root)
+   ; ("config", `String mcp_config_path)
+   ; ("scope", `String (if global then "global" else "project"))
+   ; ("hook_status", `String hook_status)
+   ; ("stop_hook_status", `String stop_hook_status)
+   ; ("preauth_hook_status", `String preauth_status)
+   ])
   in
   { artifacts =
       [ C2c_install_manifest.shared_key ~path:mcp_config_path ~key:"mcpServers.c2c" ~format:"json"
-      ; C2c_install_manifest.owned_file hook_script
-      ; C2c_install_manifest.owned_file stop_hook_script
-      ]
+      ] @ hook_artifacts
   ; extra_json =
       [ ("client", `String "claude")
       ; ("alias", `String alias_val)
       ; ("broker_root", `String root)
       ; ("config", `String mcp_config_path)
       ; ("scope", `String (if global then "global" else "project"))
-      ; ("hook_status", `String hook_status)
-      ; ("stop_hook_status", `String stop_hook_status)
-      ; ("preauth_hook_status", `String preauth_status)
-      ]
+      ] @ hook_extra_json
   }
 
 (* --- install: crush (JSON) --- *)
@@ -1597,7 +1646,7 @@ let ensure_default_wake_schedule ~quiet ~dry_run ~output_mode ~alias =
       | Json -> print_json (`Assoc [ ("schedule", `String (if dry_run then "would_create" else "created")); ("name", `String "wake"); ("interval_s", `Int 246) ])
   end
 
-let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
+let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ?(skip_summary=false) ?(skip_hooks=false) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   (* Gemini is deprecated — refuse immediately before any setup work. *)
   if client = "gemini" then begin
@@ -1631,17 +1680,10 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
         Printf.eprintf "[c2c setup] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
         a
   in
-  (* Write default-alias config so bare `c2c monitor` can resolve alias *)
-  if not dry_run then
-    (try
-       let config_dir = (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".config" // "c2c" in
-       C2c_mcp.mkdir_p config_dir;
-       ignore (C2c_io.write_file_atomic (config_dir // "default-alias") (alias_val ^ "\n"))
-     with _ -> ());  (* best-effort, non-fatal *)
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
   let result =
     match client with
-    | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt ~alias_from_auto_gen
+    | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt ~alias_from_auto_gen ~skip_hooks
     | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~deliver_watch ~alias_from_auto_gen
     | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen ~force ()
     | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ~force ~deliver_watch ()
@@ -1674,7 +1716,8 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
   let artifacts = result.artifacts @ [ schedule_artifact alias_val ] in
   if not dry_run then
     write_manifest_best_effort ~component:client ~alias:(Some alias_val) ~target_dir artifacts;
-  print_install_summary ~output_mode ~dry_run ~component:client { result with artifacts }
+  if not skip_summary then
+    print_install_summary ~output_mode ~dry_run ~component:client { result with artifacts }
 
 (* --- install: detection + TUI --------------------------------------------- *)
 
@@ -1893,8 +1936,6 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
     ) do_clients;
     Printf.printf "\nDone.\n";
     Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
-    Printf.printf "  Monitor — receive: run \"c2c monitor\" in the Claude Code Monitor tool\n";
-    Printf.printf "            (auto-resolves your alias + broker; zero flags).\n";
     Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n";
     (* Polish: hint about faster message delivery if inotifywait is available *)
     let inotify_available =
