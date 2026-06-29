@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B046
+priority: medium
+status: pending
+tags: []
+title: init does not reuse existing registered alias across repeated runs (B037 follow-up)
+---
+B037 made init re-runnable with no errors/warnings, but the alias is not stable: running 'c2c init' twice with the SAME C2C_MCP_SESSION_ID generates two DIFFERENT random aliases (e.g. claude-helio-jori-6f57 then claude-sola-aalto-4khl). For a true re-runnable per-session bootstrap, init should look up the existing registration for the session_id in the broker and REUSE that alias when --alias is not given, instead of generating a new one. Repro: C2C_MCP_BROKER_ROOT=$(mktemp -d) C2C_MCP_SESSION_ID=X c2c init --client claude (twice); compare the alias: lines. Related: B024, B037, B020.
