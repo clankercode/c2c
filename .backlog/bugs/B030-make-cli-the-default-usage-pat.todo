@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-29T17:29:24Z"
 claimed_by: pi-dc2147
-completed_at: null
+completed_at: "2026-06-29T18:55:57Z"
 complexity: medium
 depends_on: []
+duration_minutes: 86.55376780733333
 estimate_hours: 1
 id: B030
 priority: medium
 started_at: "2026-06-29T17:29:24Z"
-status: in_progress
+status: done
 tags: []
 title: Make CLI the default usage path for Claude; show Claude-specific setup at an opportune moment (MCP optional, not required)
 ---
