@@ -43,3 +43,4 @@ docs/vendor/
 .opencode/c2c-debug.log
 reviews/
 .docs-audit/
+.mcp.json
