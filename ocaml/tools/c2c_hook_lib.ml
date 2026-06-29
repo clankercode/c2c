@@ -4,6 +4,90 @@
  * Factored to avoid duplication and ensure consistent session_id parsing.
  *)
 
+let env_nonempty name =
+  match Sys.getenv_opt name with
+  | Some s when String.trim s <> "" -> Some (String.trim s)
+  | _ -> None
+
+(* Nudge state for PostToolUse hook debounce logic.
+   Persisted to a per-session JSON file in the broker root.
+   Format: { "last_nudge_ts": float, "first_waiting_ts": float }
+   Both timestamps are Unix epoch seconds. *)
+type nudge_state =
+  { last_nudge_ts : float
+  ; first_waiting_ts : float
+  }
+
+let default_nudge_state =
+  { last_nudge_ts = 0.0
+  ; first_waiting_ts = 0.0
+  }
+
+(* Get the path to the nudge state file for a session.
+   Location: <broker_root>/<session_id>.nudge.state.json
+   Falls back to a temp dir if broker_root is empty. *)
+let nudge_state_path ~broker_root ~session_id =
+  let root =
+    if broker_root <> "" then broker_root
+    else
+      (* Check C2C_SESSIONS_BROKER_ROOT first (for testing) *)
+      match env_nonempty "C2C_SESSIONS_BROKER_ROOT" with
+      | Some root -> root
+      | None ->
+          (* Fallback to home directory *)
+          let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
+          Filename.concat home ".local/share/c2c"
+  in
+  Filename.concat root (session_id ^ ".nudge.state.json")
+
+(* Read nudge state from file. Returns default state if file doesn't exist or is invalid. *)
+let read_nudge_state ~broker_root ~session_id =
+  let path = nudge_state_path ~broker_root ~session_id in
+  try
+    let ic = open_in path in
+    let content = In_channel.input_all ic in
+    close_in ic;
+    match Yojson.Safe.from_string (String.trim content) with
+    | `Assoc fields ->
+        let last_nudge_ts =
+          match List.assoc_opt "last_nudge_ts" fields with
+          | Some (`Float f) -> f
+          | Some (`Int n) -> float_of_int n
+          | _ -> 0.0
+        in
+        let first_waiting_ts =
+          match List.assoc_opt "first_waiting_ts" fields with
+          | Some (`Float f) -> f
+          | Some (`Int n) -> float_of_int n
+          | _ -> 0.0
+        in
+        { last_nudge_ts; first_waiting_ts }
+    | _ -> default_nudge_state
+  with _ -> default_nudge_state
+
+(* Write nudge state to file atomically (temp + rename).
+   Non-fatal on any error. *)
+let write_nudge_state ~broker_root ~session_id state =
+  let path = nudge_state_path ~broker_root ~session_id in
+  try
+    (* Ensure the directory exists *)
+    let dir = Filename.dirname path in
+    C2c_mcp.mkdir_p ~mode:0o700 dir;
+    let json : Yojson.Safe.t =
+      `Assoc
+        [ ("last_nudge_ts", `Float state.last_nudge_ts)
+        ; ("first_waiting_ts", `Float state.first_waiting_ts)
+        ]
+    in
+    let payload = Yojson.Safe.to_string json in
+    let tmp = path ^ ".tmp" in
+    let oc = open_out tmp in
+    output_string oc payload;
+    output_char oc '\n';
+    close_out oc;
+    Unix.rename tmp path
+  with _ -> ()
+
 let max_stdin_scan_bytes = 64 * 1024
 
 let extract_json_string_field_prefix ~field raw =
@@ -94,11 +178,6 @@ let read_stdin_session_id () =
   in
   try loop max_stdin_scan_bytes with _ -> None
 
-let env_nonempty name =
-  match Sys.getenv_opt name with
-  | Some s when String.trim s <> "" -> Some (String.trim s)
-  | _ -> None
-
 (* B042: detect subagent/silent context. When C2C_NO_AUTO_REGISTER=1 is set,
    the session is a spawned subagent that should not auto-register or drain
    inbox messages. Hooks should exit early when this returns true. *)
@@ -106,7 +185,6 @@ let is_subagent_quiet () =
   match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
   | Some v when String.trim v = "1" -> true
   | _ -> false
-
 let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 
@@ -130,6 +208,31 @@ let drain_global_messages ~session_id =
     let broker = C2c_mcp.Broker.create ~root in
     C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
   else []
+
+(* Check if there are messages waiting in the inbox without draining.
+   Returns the count of messages waiting. *)
+let count_waiting_messages ~broker_root ~session_id =
+  let count_repo () =
+    match broker_root with
+    | "" -> 0
+    | root ->
+        let broker = C2c_mcp.Broker.create ~root in
+        let messages = C2c_mcp.Broker.read_inbox broker ~session_id in
+        List.length messages
+  in
+  let count_global () =
+    let root = C2c_repo_fp.resolve_sessions_broker_root () in
+    if global_inbox_exists ~root ~session_id then
+      let broker = C2c_mcp.Broker.create ~root in
+      let messages = C2c_mcp.Broker.read_inbox broker ~session_id in
+      List.length messages
+    else 0
+  in
+  count_repo () + count_global ()
+
+(* Format a nudge line for the agent. Short and non-disruptive. *)
+let format_nudge_line ~count =
+  Printf.sprintf "c2c: %d message(s) waiting (drain via c2c poll-inbox or wait for turn end)" count
 
 (* Resolve session_id from stdin JSON payload, falling back to env var.
    Returns:
