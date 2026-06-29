@@ -148,27 +148,45 @@ let find_real_git () =
   in
   search dirs
 
-let git_first_line args =
+let git_first_line ?(suppress_stderr = false) args =
   if not (check_and_record_git_spawn ()) then None
   else
     let git_path = find_real_git () in
-    let argv = Array.of_list (git_path :: args) in
-    match Unix.open_process_args_in git_path argv with
-    | ic ->
-        let line =
-          try
-            let l = input_line ic in
-            ignore (Unix.close_process_in ic);
-            String.trim l
-          with End_of_file ->
-            ignore (Unix.close_process_in ic);
-            ""
-        in
-        if line = "" then None else Some line
-    | exception _ -> None
+    let result =
+      if suppress_stderr then
+        (* Shell invocation with stderr suppression. Safe because all
+           callers pass hardcoded git subcommands, never user input. *)
+        let cmd = String.concat " " (List.map Filename.quote (git_path :: args)) ^ " 2>/dev/null" in
+        match Unix.open_process_in cmd with
+        | ic ->
+            (try
+               let l = input_line ic in
+               ignore (Unix.close_process_in ic);
+               Some (String.trim l)
+             with End_of_file ->
+               ignore (Unix.close_process_in ic);
+               None)
+        | exception _ -> None
+      else
+        let argv = Array.of_list (git_path :: args) in
+        match Unix.open_process_args_in git_path argv with
+        | ic ->
+            let line =
+              try
+                let l = input_line ic in
+                ignore (Unix.close_process_in ic);
+                String.trim l
+              with End_of_file ->
+                ignore (Unix.close_process_in ic);
+                ""
+            in
+            if line = "" then None else Some line
+        | exception _ -> None
+    in
+    result
 
 let git_common_dir () =
-  match git_first_line [ "rev-parse"; "--git-common-dir" ] with
+  match git_first_line ~suppress_stderr:true [ "rev-parse"; "--git-common-dir" ] with
   | Some line when Sys.is_directory line -> Some line
   | _ -> None
 
@@ -178,7 +196,7 @@ let git_common_dir_parent () =
   | None -> None
 
 let git_repo_toplevel () =
-  match git_first_line [ "rev-parse"; "--show-toplevel" ] with
+  match git_first_line ~suppress_stderr:true [ "rev-parse"; "--show-toplevel" ] with
   | Some line when Sys.is_directory line -> Some line
   | _ -> None
 
@@ -203,23 +221,39 @@ let git_commit_author_name sha =
 
 (** Multi-line variant of [git_first_line] — returns all stdout lines
     (trimmed; empty lines dropped). *)
-let git_all_lines args =
+let git_all_lines ?(suppress_stderr = false) args =
   if not (check_and_record_git_spawn ()) then []
   else
     let git_path = find_real_git () in
-    let argv = Array.of_list (git_path :: args) in
-    match Unix.open_process_args_in git_path argv with
-    | ic ->
-        let lines = ref [] in
-        (try
-           while true do
-             lines := input_line ic :: !lines
-           done
-         with End_of_file -> ());
-        ignore (Unix.close_process_in ic);
-        let raw = List.rev_map String.trim !lines in
-        List.filter (fun s -> s <> "") raw
-    | exception _ -> []
+    let lines =
+      if suppress_stderr then
+        let cmd = String.concat " " (List.map Filename.quote (git_path :: args)) ^ " 2>/dev/null" in
+        match Unix.open_process_in cmd with
+        | ic ->
+            let lines = ref [] in
+            (try
+               while true do
+                 lines := input_line ic :: !lines
+               done
+             with End_of_file -> ());
+            ignore (Unix.close_process_in ic);
+            List.rev_map String.trim !lines
+        | exception _ -> []
+      else
+        let argv = Array.of_list (git_path :: args) in
+        match Unix.open_process_args_in git_path argv with
+        | ic ->
+            let lines = ref [] in
+            (try
+               while true do
+                 lines := input_line ic :: !lines
+               done
+             with End_of_file -> ());
+            ignore (Unix.close_process_in ic);
+            List.rev_map String.trim !lines
+        | exception _ -> []
+    in
+    List.filter (fun s -> s <> "") lines
 
 (** Extract the email from a [Co-authored-by:] trailer value of the form
     ["Name <email>"]. Returns the trimmed email, or [None] if no

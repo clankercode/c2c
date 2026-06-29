@@ -13,7 +13,7 @@ let ( // ) = Filename.concat
     to force recomputation with a different git state. *)
 let repo_fingerprint_uncached () =
   let data =
-    match Git_helpers.git_first_line ["config"; "--get"; "remote.origin.url"] with
+    match Git_helpers.git_first_line ~suppress_stderr:true ["config"; "--get"; "remote.origin.url"] with
     | Some url when url <> "" -> url
     | _ ->
         (match Git_helpers.git_repo_toplevel () with

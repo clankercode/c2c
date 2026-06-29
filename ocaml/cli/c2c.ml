@@ -1210,38 +1210,52 @@ let poll_inbox_cmd =
   (match session_id_opt, alias_opt with
    | Some _, Some _ -> Printf.eprintf "error: --session-id and --alias are mutually exclusive.\n%!"; exit 1
    | _ -> ());
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
-  let session_id = match session_id_opt with
-    | Some sid -> sid
-    | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
-  in
-  let messages =
-    if peek then
-      C2c_mcp.Broker.read_inbox broker ~session_id
-    else
-      C2c_mcp.Broker.drain_inbox ~drained_by:"cli_poll" broker ~session_id
-  in
-  let output_mode = if json then Json else Human in
-  match output_mode with
-  | Json ->
-      print_json
-        (`List
-          (List.map
-             (fun (m : C2c_mcp.message) ->
-               `Assoc
-                 [ ("from_alias", `String m.from_alias)
-                 ; ("to_alias", `String m.to_alias)
-                 ; ("content", `String m.content)
-                 ; ("ts", `Float m.ts)
-                 ])
-             messages))
-  | Human ->
-      if messages = [] then
-        Printf.printf "(no messages)\n"
+  (try
+    let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
+    let session_id = match session_id_opt with
+      | Some sid -> sid
+      | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
+    in
+    let messages =
+      if peek then
+        C2c_mcp.Broker.read_inbox broker ~session_id
       else
-        List.iter
-          (fun (m : C2c_mcp.message) -> Printf.printf "[%s] %s\n" m.from_alias m.content)
-          messages
+        C2c_mcp.Broker.drain_inbox ~drained_by:"cli_poll" broker ~session_id
+    in
+    let output_mode = if json then Json else Human in
+    match output_mode with
+    | Json ->
+        print_json
+          (`List
+            (List.map
+               (fun (m : C2c_mcp.message) ->
+                 `Assoc
+                   [ ("from_alias", `String m.from_alias)
+                   ; ("to_alias", `String m.to_alias)
+                   ; ("content", `String m.content)
+                   ; ("ts", `Float m.ts)
+                   ])
+               messages))
+    | Human ->
+        if messages = [] then
+          Printf.printf "(no messages)\n"
+        else
+          List.iter
+            (fun (m : C2c_mcp.message) -> Printf.printf "[%s] %s\n" m.from_alias m.content)
+            messages
+  with
+  | Unix.Unix_error (code, fn, path) when code = Unix.EROFS || code = Unix.EACCES ->
+      let msg = Printf.sprintf
+        "broker root is not writable in this sandbox (path: %s, error: %s). \
+         Set C2C_MCP_BROKER_ROOT to a writable path or run from a managed session."
+        path (Unix.error_message code)
+      in
+      if json then
+        print_json (`Assoc [ ("error", `String msg); ("code", `String (match code with Unix.EROFS -> "EROFS" | Unix.EACCES -> "EACCES" | _ -> "unknown")) ])
+      else
+        Printf.eprintf "error: %s\n%!" msg;
+      exit 1
+  )
 
 (* --- subcommand: send-all ------------------------------------------------- *)
 
@@ -8451,8 +8465,25 @@ let doctor_cmd =
                 |> (if json then fun l -> "--json" :: l else Fun.id) in
     match git_repo_toplevel () with
     | None ->
-        Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
-        exit 1
+        (* Outside a c2c git repo: run what we can without repo context *)
+        Printf.printf "c2c doctor (degraded — not in c2c git repo)\n\n";
+        Printf.printf "  broker root: %s\n" (C2c_utils.resolve_broker_root ());
+        (match C2c_utils.alias_from_env_only () with
+         | Some a -> Printf.printf "  alias: %s\n" a
+         | None -> Printf.printf "  alias: (not set — C2C_MCP_AUTO_REGISTER_ALIAS not found)\n");
+        Printf.printf "\n";
+        (* Schedule check — works without repo *)
+        (match C2c_utils.alias_from_env_only () with
+         | Some alias ->
+             let r = C2c_doctor_schedule.scan_schedules_dir alias in
+             C2c_doctor_schedule.pp_human r
+         | None ->
+             Printf.printf "=== Schedule check ===\n\nSkipped (no alias set).\n\n");
+        (* Hooks check — works without repo *)
+        let hooks_r = C2c_doctor_hooks.check () in
+        C2c_doctor_hooks.pp_human hooks_r;
+        Printf.printf "\nNote: repo-specific checks (push-pending, worktree status, binary staleness, docs drift)\n";
+        Printf.printf "are skipped outside the c2c source repo. Run 'c2c doctor' from within the repo for full output.\n";
     | Some toplevel ->
         let script = toplevel // "scripts" // "c2c-doctor.sh" in
         if not (Sys.file_exists script) then begin
