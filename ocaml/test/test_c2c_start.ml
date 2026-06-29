@@ -3048,6 +3048,139 @@ let test_clean_stale_protected_named_aliases () =
     check bool "random-zombie removed on disk"
       false (List.mem "random-zombie" entries))
 
+(* --- B031: c2c instances gc — TTL-based instance reaping ------------------ *)
+
+(* Build a fixture with instances at different ages. Each entry is
+   (name, alive, created_at_unix). If created_at_unix is Some ts, the
+   config.json includes "created_at": <ts>. *)
+let build_gc_instances_fixture entries dir =
+  let live_pid = Unix.getpid () in
+  let dead_pid =
+    let rec find_dead p =
+      if p <= 1 then 1
+      else
+        match Unix.kill p 0 with
+        | () -> find_dead (p - 1)
+        | exception Unix.Unix_error _ -> p
+    in
+    find_dead 999_999
+  in
+  List.iter (fun (name, alive, created_at_opt) ->
+    let inst_dir = Filename.concat dir name in
+    Unix.mkdir inst_dir 0o755;
+    let config_json =
+      match created_at_opt with
+      | Some ts ->
+          Printf.sprintf {json|{"client":"opencode","name":"%s","created_at":%.1f}|json}
+            name ts
+      | None ->
+          Printf.sprintf {json|{"client":"opencode","name":"%s"}|json} name
+    in
+    write_file (Filename.concat inst_dir "config.json") config_json;
+    write_file (Filename.concat inst_dir "outer.pid")
+      (string_of_int (if alive then live_pid else dead_pid))
+  ) entries
+
+let run_gc_and_capture_stdout ~instances_dir ~extra_args =
+  let bin = built_c2c_binary () in
+  if not (Sys.file_exists bin) then
+    Alcotest.failf "expected built CLI at %s — run `dune build` first" bin;
+  let stdout_path = Filename.temp_file "c2c-gc-stdout" ".txt" in
+  let stderr_path = Filename.temp_file "c2c-gc-stderr" ".txt" in
+  let cmd =
+    Printf.sprintf
+      "C2C_INSTANCES_DIR=%s %s dev instances gc %s > %s 2> %s"
+      (Filename.quote instances_dir)
+      (Filename.quote bin)
+      extra_args
+      (Filename.quote stdout_path)
+      (Filename.quote stderr_path)
+  in
+  let rc = Sys.command cmd in
+  let stdout = read_all_file stdout_path in
+  let _stderr = read_all_file stderr_path in
+  (try Sys.remove stdout_path with _ -> ());
+  (try Sys.remove stderr_path with _ -> ());
+  (rc, stdout)
+
+let test_gc_dry_run_reports_candidates () =
+  with_temp_dir (fun dir ->
+    let old_ts = Unix.gettimeofday () -. (3.0 *. 86400.0) in (* 3 days ago *)
+    let recent_ts = Unix.gettimeofday () -. 3600.0 in (* 1 hour ago *)
+    build_gc_instances_fixture
+      [ ("alive-one", true, Some old_ts)
+      ; ("old-stopped", false, Some old_ts)
+      ; ("recent-stopped", false, Some recent_ts)
+      ] dir;
+    let (rc, stdout) = run_gc_and_capture_stdout
+      ~instances_dir:dir ~extra_args:"--dry-run --force" in
+    check int "gc --dry-run exits 0" 0 rc;
+    (* Output should mention 24h threshold and show old-stopped as a candidate *)
+    check bool "output contains 'Stopped instances'"
+      true (try ignore (Str.search_forward (Str.regexp_string "Stopped instances") stdout 0); true
+            with Not_found -> false);
+    check bool "output contains old-stopped"
+      true (try ignore (Str.search_forward (Str.regexp_string "old-stopped") stdout 0); true
+            with Not_found -> false);
+    check bool "output mentions dry-run"
+      true (try ignore (Str.search_forward (Str.regexp_string "dry-run") stdout 0); true
+            with Not_found -> false);
+    (* All 3 instance dirs still on disk -- dry-run removes nothing *)
+    check int "all 3 instances still present (dry-run)"
+      3 (List.length (dir_entries dir)))
+
+let test_gc_removes_old_stopped () =
+  with_temp_dir (fun dir ->
+    let old_ts = Unix.gettimeofday () -. (3.0 *. 86400.0) in
+    let recent_ts = Unix.gettimeofday () -. 3600.0 in
+    build_gc_instances_fixture
+      [ ("alive-one", true, Some old_ts)
+      ; ("old-stopped", false, Some old_ts)
+      ; ("recent-stopped", false, Some recent_ts)
+      ] dir;
+    let (rc, stdout) = run_gc_and_capture_stdout
+      ~instances_dir:dir ~extra_args:"--force" in
+    check int "gc exits 0" 0 rc;
+    check bool "mentions removed"
+      true (try let _ = String.index (String.lowercase_ascii stdout) 'r' in true
+            with Not_found -> false);
+    let entries = dir_entries dir in
+    (* old-stopped should be removed; alive-one and recent-stopped preserved *)
+    check bool "old-stopped removed on disk"
+      false (List.mem "old-stopped" entries);
+    check bool "alive-one preserved on disk"
+      true (List.mem "alive-one" entries);
+    check bool "recent-stopped preserved on disk"
+      true (List.mem "recent-stopped" entries))
+
+let test_gc_preserves_recent_stopped () =
+  with_temp_dir (fun dir ->
+    let recent_ts = Unix.gettimeofday () -. 3600.0 in (* 1 hour ago *)
+    build_gc_instances_fixture
+      [ ("recent-1", false, Some recent_ts)
+      ; ("recent-2", false, Some recent_ts)
+      ] dir;
+    let (rc, _stdout) = run_gc_and_capture_stdout
+      ~instances_dir:dir ~extra_args:"--force" in
+    check int "gc exits 0" 0 rc;
+    let entries = dir_entries dir in
+    check int "both recent instances preserved" 2 (List.length entries);
+    check bool "recent-1 preserved" true (List.mem "recent-1" entries);
+    check bool "recent-2 preserved" true (List.mem "recent-2" entries))
+
+let test_gc_max_age_override () =
+  with_temp_dir (fun dir ->
+    let two_hours_ago = Unix.gettimeofday () -. (2.0 *. 3600.0) in
+    build_gc_instances_fixture
+      [ ("two-hours-old", false, Some two_hours_ago)
+      ] dir;
+    (* With --max-age 1, the 2h-old instance should be caught *)
+    let (rc, _stdout) = run_gc_and_capture_stdout
+      ~instances_dir:dir ~extra_args:"--force --max-age 1" in
+    check int "gc --max-age 1 exits 0" 0 rc;
+    let entries = dir_entries dir in
+    check int "two-hours-old removed" 0 (List.length entries))
+
 (* #406b: Gemini adapter — build_start_args resume + model behavior. *)
 
 let test_prepare_launch_args_gemini_fresh_session () =
@@ -4077,6 +4210,16 @@ let () =
             `Quick, test_clean_stale_removes_zombies_only )
         ; ( "test_clean_stale_protected_named_aliases",
             `Quick, test_clean_stale_protected_named_aliases )
+        ] )
+    ; ( "instances_gc_b031",
+        [ ( "test_gc_dry_run_reports_candidates",
+            `Quick, test_gc_dry_run_reports_candidates )
+        ; ( "test_gc_removes_old_stopped",
+            `Quick, test_gc_removes_old_stopped )
+        ; ( "test_gc_preserves_recent_stopped",
+            `Quick, test_gc_preserves_recent_stopped )
+        ; ( "test_gc_max_age_override",
+            `Quick, test_gc_max_age_override )
         ] )
     ; ( "git_shim_swarm_install_462",
         [ ( "swarm_shim_install_path_uses_override",
