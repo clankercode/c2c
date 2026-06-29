@@ -36,3 +36,4 @@ bugs:
     - file: B037-make-c2c-init-a-safe-re-runnab.todo
     - file: B038-layer-delivery-monitor-as-prim.todo
     - file: B039-same-box-send-should-auto-rout.todo
+    - file: B040-cross-broker-send-is-a-7-step.todo

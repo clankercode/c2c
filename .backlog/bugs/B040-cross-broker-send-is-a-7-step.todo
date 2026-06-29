@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B040
+priority: medium
+status: pending
+tags: []
+title: 'Cross-broker send is a 7-step gauntlet: --root unsupported on send/register, confusing errors; only coordinator-override worked'
+---
+Sending one message to a same-box peer in another repo broker required 7 steps: plain send -> alias not registered; send --root -> unknown option (flag exists on list/monitor/poll-inbox but NOT send/register); C2C_MCP_BROKER_ROOT register -> no session ID; register --session-id -> blocked alias (anti-impersonation but opaque); send --from -> refusing, alias not registered; C2C_COORDINATOR=1 send -> cannot determine alias; C2C_COORDINATOR=1 send --from coordinator -> OK. Expected: same-box send auto-routes (ref B039). Failing that: accept --root uniformly, make errors actionable, clarify blocked alias, coordinator override self-resolves sender label. Best practices: uniform scope flags on all broker commands, actionable errors naming where alias was found, explain blocked alias reason, coordinator override should not need --from. Repro: from default-broker session, message a peer in another local broker. Related: B039, B034.
