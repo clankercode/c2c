@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B035
+priority: high
+status: pending
+tags: []
+title: Stop hook installed but its binary c2c-stop-hook-ocaml is missing -> text-turn delivery silently no-ops
+---
+init wires a Stop hook whose script execs c2c-stop-hook-ocaml, but that binary is NOT installed on PATH (only c2c, c2c-mcp-server, and c2c-inbox-hook-ocaml are). It exists only as source in ocaml/tools/c2c_stop_hook.ml and worktree _build dirs. So c2c-stop-deliver.sh hits its else exit 0 branch and delivers nothing on text-only turns. Unlike the inbox script (which falls back to c2c hook), the Stop script has NO fallback. Impact: Stop-hook delivery surfaces queued messages on idle/text-only turns -- with it dead, Claude only receives messages piggybacked on tool-using turns via PostToolUse. Expected: install/init installs c2c-stop-hook-ocaml alongside c2c-inbox-hook-ocaml; Stop script gets graceful fallback; post-install check fails loudly if a wired hook binary is absent. Repro: after c2c init on Claude, command -v c2c-stop-hook-ocaml -> not found. Related: B024, monitor onboarding, init idempotency.
