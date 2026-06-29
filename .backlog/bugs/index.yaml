@@ -16,3 +16,4 @@ bugs:
     - file: B015-run-though-test-with-max-of-cl.todo
     - file: B016-check-relay-registered-aliases.todo
     - file: B017-c2c-poll-inbox-crashes-on-read.todo
+    - file: B018-website-should-have-links-to-l.todo

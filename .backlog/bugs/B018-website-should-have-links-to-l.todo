@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B018
+priority: high
+status: pending
+tags: []
+title: website should have links to llms.txt in head. check llms.txt spec (search online) and see if there's a right way to do this. we want to embed instrucitons for agents that don't disrupt the visual flow but also aren't like hidden prompt injections, just reasonable docs links. Additionally, we should have like llms-claude-install.txt and llms-pi-install.txt etc.
+---
+
+website should have links to llms.txt in head. check llms.txt spec (search online) and see if there's a right way to do this. we want to embed instrucitons for agents that don't disrupt the visual flow but also aren't like hidden prompt injections, just reasonable docs links. Additionally, we should have like llms-claude-install.txt and llms-pi-install.txt etc.
