@@ -2899,6 +2899,23 @@ let status_cmd =
     && List.for_all (fun (_, _, _, gm, _) -> gm) alive_peers
   in
   let managed_instances = read_managed_instances () in
+  (* B031: filter old stopped instances (>24h) from default status view *)
+  let stopped_ttl_s = 24.0 *. 3600.0 in
+  let (visible_instances, hidden_stopped_count) =
+    let is_old_stopped (i : managed_instance_view) =
+      i.mi_status <> "running"
+      && (match i.mi_created_at with
+          | Some created_at -> (now -. created_at) > stopped_ttl_s
+          | None ->
+              (* Fall back to dir mtime *)
+              let inst_path = C2c_start.instances_dir // i.mi_name in
+              try (now -. (Unix.stat inst_path).Unix.st_mtime) > stopped_ttl_s
+              with _ -> false)
+    in
+    let visible = List.filter (fun i -> not (is_old_stopped i)) managed_instances in
+    let hidden = List.length managed_instances - List.length visible in
+    (visible, hidden)
+  in
 
   let output_mode = if json then Json else Human in
   match output_mode with
@@ -2943,7 +2960,8 @@ let status_cmd =
                          ; ("delivery_mode", `String inst.mi_delivery_mode)
                          ; ("pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
                          ])
-                    managed_instances) )
+                    visible_instances) )
+           ; ("stopped_hidden", `Int hidden_stopped_count)
            ; ("rooms", `List (List.map room_json rooms))
            ; ("overall_goal_met", `Bool overall_goal_met)
            ])
@@ -2986,8 +3004,10 @@ let status_cmd =
            in
            Printf.printf "  %-20s %-10s %-12s %s%s\n" inst.mi_name
              inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str)
-        managed_instances;
-      if managed_instances = [] then Printf.printf "  (none)\n";
+        visible_instances;
+      if visible_instances = [] then Printf.printf "  (none)\n";
+      if hidden_stopped_count > 0 then
+        Printf.printf "  (%d stopped instance(s) hidden; use 'c2c dev instances --all' or 'c2c dev instances gc')\n" hidden_stopped_count;
       Printf.printf "  Run 'c2c dev instances' for full detail (includes created_at, tmux, cwd, role).\n";
       Printf.printf "\nOverall goal_met: %s\n"
         (if overall_goal_met then "YES" else "NO")
@@ -8378,11 +8398,104 @@ let clean_stale_subcmd = Cmdliner.Cmd.v
            or matching ephemeral test-name patterns). Use --dry-run to preview.")
   clean_stale_cmd
 
+(* --- subcommand: instances gc (B031) -------------------------------------- *)
+
+let instances_gc_cmd =
+  let max_age_hours =
+    Cmdliner.Arg.(
+      value
+      & opt int 24
+      & info [ "max-age" ] ~docv:"HOURS"
+          ~doc:"Remove stopped instances older than HOURS (default: 24).")
+  in
+  let dry_run =
+    Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ]
+      ~doc:"List candidates and their age; remove nothing.")
+  in
+  let force =
+    Cmdliner.Arg.(value & flag & info [ "force"; "f" ]
+      ~doc:"Skip confirmation prompt.")
+  in
+  let+ max_age_hours = max_age_hours
+  and+ dry_run = dry_run
+  and+ force = force in
+  if max_age_hours < 0 then (
+    Printf.eprintf "error: --max-age must be >= 0\n%!";
+    exit 1);
+  let instances_dir = instances_dir () in
+  let now = Unix.gettimeofday () in
+  let max_age_s = float_of_int max_age_hours *. 3600.0 in
+  let all_instances = read_managed_instances () in
+  (* Classify: stopped instances past the max-age threshold *)
+  let candidates =
+    List.filter_map (fun (inst : managed_instance_view) ->
+      if inst.mi_status = "running" then None
+      else
+        (* Determine age: prefer created_at, fall back to dir mtime *)
+        let age_s =
+          match inst.mi_created_at with
+          | Some created_at -> now -. created_at
+          | None ->
+              (* Fall back to dir mtime *)
+              let inst_path = instances_dir // inst.mi_name in
+              try
+                let st = Unix.stat inst_path in
+                now -. st.Unix.st_mtime
+              with _ -> 0.0
+        in
+        if age_s > max_age_s then
+          Some (inst, age_s)
+        else None
+    ) all_instances
+  in
+  let total_candidates = List.length candidates in
+  if total_candidates = 0 then (
+    Printf.printf "No stopped instances older than %dh found.\n" max_age_hours;
+    exit 0);
+  Printf.printf "Stopped instances older than %dh:\n\n" max_age_hours;
+  List.iter (fun ((inst : managed_instance_view), age_s) ->
+    let age_h = age_s /. 3600.0 in
+    Printf.printf "  %-30s %-10s stopped %s ago\n"
+      inst.mi_name inst.mi_client
+      (if age_h < 48.0 then Printf.sprintf "%.0fh" age_h
+       else Printf.sprintf "%.0fd" (age_h /. 24.0))
+  ) candidates;
+  Printf.printf "\n%d instance(s) to remove.\n" total_candidates;
+  if dry_run then (
+    Printf.printf "(dry-run — no changes made)\n";
+    exit 0);
+  (* Safety confirmation *)
+  if not force then begin
+    Printf.printf "Remove these instance directories? [y/N] %!";
+    let answer = try input_line stdin with End_of_file -> "" in
+    if String.lowercase_ascii (String.trim answer) <> "y" then (
+      Printf.printf "Aborted.\n";
+      exit 0)
+  end;
+  let removed =
+    List.filter_map (fun ((inst : managed_instance_view), _age) ->
+      let path = instances_dir // inst.mi_name in
+      if Sys.file_exists path then begin
+        (try rm_rf path with _ -> ());
+        if not (Sys.file_exists path) then Some inst.mi_name
+        else None
+      end else Some inst.mi_name
+    ) candidates
+  in
+  Printf.printf "Removed %d instance(s).\n" (List.length removed);
+  exit 0
+
+let instances_gc_subcmd = Cmdliner.Cmd.v
+  (Cmdliner.Cmd.info "gc"
+     ~doc:"Remove stopped instances older than a threshold (default: 24h). \
+           Use --dry-run to preview; --force to skip confirmation.")
+  instances_gc_cmd
+
 let instances = Cmdliner.Cmd.group
   (Cmdliner.Cmd.info "instances"
      ~doc:"List managed c2c instances (alive-only by default; --all for full archive).")
   ~default:instances_cmd
-  [ clean_stale_subcmd ]
+  [ clean_stale_subcmd; instances_gc_subcmd ]
 
 (* --- subcommand: diag ----------------------------------------------------- *)
 
@@ -8458,9 +8571,10 @@ let dev_instances_cmd = instances_cmd
 
 (* dev_status_cmd: REMOVED — consolidated into dev_instances_cmd (2026-05-06) *)
 let dev_instances_sub =
-  Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances"
-    ~doc:"List managed c2c instances (operator view).")
-    dev_instances_cmd
+  Cmdliner.Cmd.group (Cmdliner.Cmd.info "instances"
+    ~doc:"List managed c2c instances (operator view; subcommands: clean-stale, gc).")
+    ~default:dev_instances_cmd
+    [ clean_stale_subcmd; instances_gc_subcmd ]
 
 (* dev_group is defined later, after all subcommands it contains *)
 
@@ -12784,7 +12898,7 @@ let instances_deprecated =
     (Cmdliner.Cmd.info "instances"
        ~doc:"[DEPRECATED: use c2c dev instances]")
     ~default:instances_deprecated_term
-    [ clean_stale_subcmd ]
+    [ clean_stale_subcmd; instances_gc_subcmd ]
 
 let () =
   try_fast_path ();
