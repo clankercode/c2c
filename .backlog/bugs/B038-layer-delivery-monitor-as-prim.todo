@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B038
+priority: medium
+status: pending
+tags: []
+title: 'Layer delivery: Monitor as primary + hooks as backstop; PostToolUse injects mid-work only as awareness nudge'
+---
+PostToolUse context injection can land mid-task (between calls in a tool group) rather than at clean turn boundary -- disruptive and unpredictable. Monitor is better (boundary-independent, low-latency) but for reliable delivery want Monitor + hooks together. Best practices: Monitor via Claude Monitor tool = PRIMARY notifier; Stop hook (turn boundary) = place to INJECT queued messages (natural interrupt point, requires fixing B035); PostToolUse = lightweight awareness nudge only (e.g. N messages waiting), debounced/coalesced, NOT full mid-group context dump; debounce bursts; at least two independent paths (Monitor + Stop-hook) so single failure never drops message. Related: B035, B034.
