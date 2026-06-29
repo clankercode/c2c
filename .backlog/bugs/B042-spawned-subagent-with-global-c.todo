@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T17:31:04Z"
+claimed_by: pi-dc2147
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B042
 priority: medium
-status: pending
+started_at: "2026-06-29T17:31:04Z"
+status: in_progress
 tags: []
 title: Spawned subagent with global c2c hooks spams coordinator with repeated idle_notifications; no clean way to quiet or stop it
 ---

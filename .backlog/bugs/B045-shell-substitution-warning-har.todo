@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T17:31:04Z"
+claimed_by: pi-dc2147
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B045
 priority: high
-status: pending
+started_at: "2026-06-29T17:31:04Z"
+status: in_progress
 tags: []
 title: Shell-substitution warning HARD-FAILS sends via pi extension/relay (exit 1) and false-positives on ordinary technical prose
 ---

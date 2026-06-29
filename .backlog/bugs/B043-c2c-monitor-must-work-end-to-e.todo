@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T17:31:04Z"
+claimed_by: pi-dc2147
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B043
 priority: high
-status: pending
+started_at: "2026-06-29T17:31:04Z"
+status: in_progress
 tags: []
 title: 'c2c monitor must work end-to-end for a registered Claude agent: bare command, full-body delivery, inbox drain, zero flags'
 ---
