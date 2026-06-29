@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B037
+priority: medium
+status: pending
+tags: []
+title: Make c2c init a safe, re-runnable per-session bootstrap that EMITS agent onboarding instructions and ensures the single c2c skill is installed
+---
+Today c2c init configures MCP+hooks+register+join but isn't idempotent (fails on existing identity), emits no agent-facing 'how to come online' guidance, and installs no skill. Goal: agent can run c2c init at start of any session to (re)bring c2c online and get guided. Best practices: idempotent + re-runnable (detect existing config, treat as no-op), ensure-skill step (install OR update single skill named c2c -> /c2c slash command), emit AGENT ONBOARDING block (alias+rooms, paste-ready Monitor command, 2-line CLI cheatsheet, MCP-is-optional note), print next concrete action first (start Monitor), --json output clean, per-client guidance. Related: B033, B034, B032, B030.
