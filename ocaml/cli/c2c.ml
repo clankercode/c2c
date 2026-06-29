@@ -12708,6 +12708,6 @@ let () =
                 ; `P "c2c uses standard exit codes:"
                 ; `Noblank; `P "123 — operational error (e.g., relay unreachable, broker unreachable, or registration failed)"
                 ; `Noblank; `P "124 — bad command-line flag or argument — check your syntax"
-                ; `Noblank; `P "125 — bug in c2c — please report at https://github.com/anomalyco/c2c/issues"
+                ; `Noblank; `P "125 — bug in c2c — please report at https://github.com/clankercode/c2c/issues"
                 ] @ tier_grouped_man))
              visible_cmds))
