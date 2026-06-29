@@ -8465,8 +8465,25 @@ let doctor_cmd =
                 |> (if json then fun l -> "--json" :: l else Fun.id) in
     match git_repo_toplevel () with
     | None ->
-        Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
-        exit 1
+        (* Outside a c2c git repo: run what we can without repo context *)
+        Printf.printf "c2c doctor (degraded — not in c2c git repo)\n\n";
+        Printf.printf "  broker root: %s\n" (C2c_utils.resolve_broker_root ());
+        (match C2c_utils.alias_from_env_only () with
+         | Some a -> Printf.printf "  alias: %s\n" a
+         | None -> Printf.printf "  alias: (not set — C2C_MCP_AUTO_REGISTER_ALIAS not found)\n");
+        Printf.printf "\n";
+        (* Schedule check — works without repo *)
+        (match C2c_utils.alias_from_env_only () with
+         | Some alias ->
+             let r = C2c_doctor_schedule.scan_schedules_dir alias in
+             C2c_doctor_schedule.pp_human r
+         | None ->
+             Printf.printf "=== Schedule check ===\n\nSkipped (no alias set).\n\n");
+        (* Hooks check — works without repo *)
+        let hooks_r = C2c_doctor_hooks.check () in
+        C2c_doctor_hooks.pp_human hooks_r;
+        Printf.printf "\nNote: repo-specific checks (push-pending, worktree status, binary staleness, docs drift)\n";
+        Printf.printf "are skipped outside the c2c source repo. Run 'c2c doctor' from within the repo for full output.\n";
     | Some toplevel ->
         let script = toplevel // "scripts" // "c2c-doctor.sh" in
         if not (Sys.file_exists script) then begin
