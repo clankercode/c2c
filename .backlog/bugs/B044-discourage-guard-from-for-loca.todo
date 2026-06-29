@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B044
+priority: medium
+status: pending
+tags: []
+title: 'Discourage/guard --from for local sends: it records a sender that often can''t receive replies'
+---
+Using --from (e.g. --from coordinator or any alias that isn't the caller's own replyable identity) produces SEND-ONLY messages. Observed: sent to pi-1bdd96/pi-dc2147 with --from coordinator; when they tried to reply, c2c returned unknown_alias for 'coordinator' AND for real alias 'claude-starling-tala-j5xb' (local-only, not on relay). Replies bounce regardless of which --from is used. --from is an operator/impersonation feature gated to own-alias or C2C_COORDINATOR=1 that is a footgun for ordinary messaging. Expected: default sender = caller's own registered alias; warn/discourage --from for local sends with 'recipient will NOT be able to reply' caveat; prefer auto-resolving caller alias over requiring --from under coordinator mode. Best practices: warn on --from not-self, make reply-ability part of send, auto-resolve sender. Repro: C2C_COORDINATOR=1 c2c send <peer> hi --from coordinator -> recipient cannot reply. Related: B039, B040, B042.
