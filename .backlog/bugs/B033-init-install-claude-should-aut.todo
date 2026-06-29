@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B033
+priority: medium
+status: pending
+tags: []
+title: init/install-claude should auto-install a /c2c skill (+ a short intro skill); a skill exists in-repo but is never installed for Claude
+---
+A good c2c skill lives in the repo (.collab/skills/c2c.md) but c2c install claude only writes MCP server + hooks -- no skill is copied into Claude skills dir. Freshly-installed Claude user has no /c2c slash command. Also existing skill leads with MCP tools (wrong emphasis for Claude where zero-reload CLI + Monitor works immediately). Best practices: install /c2c skill into active Claude skills dir, provide short intro skill, re-orient to lead with CLI send/list/rooms + Monitor tool receive, skill must be re-runnable/updatable, keep it as index pointing at c2c <cmd> --help. Related: CLI-default onboarding, monitor onboarding.
