@@ -17,9 +17,7 @@ bugs:
     - file: B016-check-relay-registered-aliases.todo
     - file: B017-c2c-poll-inbox-crashes-on-read.todo
     - file: B018-website-should-have-links-to-l.todo
-    - file: B019-test-placeholder.todo
     - file: B020-misleading-relay-identity-init.todo
-    - file: B020-init-generates-two-different-a.todo
     - file: B021-doctor-listed-under-tier-1-saf.todo
     - file: B022-read-only-commands-spew-fatal.todo
     - file: B023-c2c-im-leads-with-npm-i-g-as-p.todo
@@ -31,8 +29,9 @@ bugs:
     - file: B029-wrong-github-issues-url-in-hel.todo
     - file: B030-make-cli-the-default-usage-pat.todo
     - file: B031-managed-instances-from-e2e-int.todo
-    - file: B032-init-install-claude-should-aut.todo
-    - file: B032-surface-a-paste-ready-c2c-moni.todo
     - file: B033-init-install-claude-should-aut.todo
     - file: B034-surface-a-paste-ready-c2c-moni.todo
     - file: B035-stop-hook-installed-but-its-bi.todo
+    - file: B036-expose-all-c2c-helper-binaries.todo
+    - file: B037-make-c2c-init-a-safe-re-runnab.todo
+    - file: B038-layer-delivery-monitor-as-prim.todo
