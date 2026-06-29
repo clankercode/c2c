@@ -23,3 +23,5 @@ bugs:
     - file: B021-doctor-listed-under-tier-1-saf.todo
     - file: B022-read-only-commands-spew-fatal.todo
     - file: B023-c2c-im-leads-with-npm-i-g-as-p.todo
+    - file: B024-init-generates-two-different-a.todo
+    - file: B025-c2c-init-json-emits-non-json-h.todo

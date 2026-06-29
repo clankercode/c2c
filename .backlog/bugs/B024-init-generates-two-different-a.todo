@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B024
+priority: medium
+status: pending
+tags: []
+title: init generates two different aliases for one session (MCP auto-register vs register step)
+---
+After init, .mcp.json env has C2C_MCP_AUTO_REGISTER_ALIAS=one alias, but init's register step picked a different one (what whoami reports). Once the MCP server loads it will auto-register the other alias, so live identity won't match what init reported. Single consistent alias needed. Repro: c2c init --client claude (without --alias); compare .mcp.json env vs c2c whoami

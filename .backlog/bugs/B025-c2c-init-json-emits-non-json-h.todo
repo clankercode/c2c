@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B025
+priority: high
+status: pending
+tags: []
+title: 'c2c init --json emits non-JSON: human log lines + two concatenated JSON objects on stdout'
+---
+Ran c2c init --client claude --json. stdout contained human lines like [c2c register] no --alias given and warning: relay identity init failed interleaved with TWO separate JSON objects. Not parseable as a single JSON document. With --json, stdout should be exactly one valid JSON document; diagnostics/log lines go to stderr. Repro: c2c init --client claude --json
