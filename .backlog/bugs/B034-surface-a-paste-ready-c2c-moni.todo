@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-29T17:29:24Z"
 claimed_by: pi-dc2147
-completed_at: null
+completed_at: "2026-06-29T23:28:37Z"
 complexity: medium
 depends_on: []
+duration_minutes: 359.2179216629
 estimate_hours: 1
 id: B034
 priority: medium
 started_at: "2026-06-29T17:29:24Z"
-status: in_progress
+status: done
 tags: []
 title: Surface a paste-ready c2c monitor invocation for Claude Monitor tool; make alias + broker-root auto-resolve so zero flags needed
 ---
