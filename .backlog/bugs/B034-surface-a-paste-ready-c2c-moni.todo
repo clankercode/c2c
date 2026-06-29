@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B034
+priority: medium
+status: pending
+tags: []
+title: Surface a paste-ready c2c monitor invocation for Claude Monitor tool; make alias + broker-root auto-resolve so zero flags needed
+---
+c2c monitor is designed for Claude Code Monitor tool (inotify, one line per message) and is the ideal zero-reload receive path. But correct invocation isn't discoverable: Monitor subprocess won't have C2C_MCP_SESSION_ID so must pass --alias; --root auto-resolves via env/git which FAILS when cwd isn't a git repo. Best practices: make c2c monitor auto-resolve registered alias and broker-root from config, have init/install print a copy-paste Monitor command, recommend --archive and --full-body, don't depend on git for broker-root resolution, document per-alias lockfile behaviour. Related: no-claude-skill bug, CLI-default onboarding.
