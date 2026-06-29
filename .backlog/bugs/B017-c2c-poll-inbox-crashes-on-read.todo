@@ -1,15 +1,15 @@
 ---
+claimed_at: "2026-06-29T16:56:21Z"
+claimed_by: cli-robust
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B017
 priority: high
-status: pending
-tags:
-    - poll-inbox
-    - broker
-    - readonly
-    - sandbox
+started_at: "2026-06-29T16:56:21Z"
+status: in_progress
+tags: []
 title: c2c poll-inbox crashes on read-only broker inbox lock
 ---
 Observed from /home/xertrov/src/c2c.B016 on 2026-06-28 while following B016 workflow.

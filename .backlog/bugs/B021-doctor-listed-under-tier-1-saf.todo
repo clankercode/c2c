@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T16:56:21Z"
+claimed_by: cli-robust
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B021
 priority: low
-status: pending
+started_at: "2026-06-29T16:56:21Z"
+status: in_progress
 tags: []
 title: '''doctor'' listed under TIER 1 SAFE but hard-fails outside the c2c source repo'
 ---
