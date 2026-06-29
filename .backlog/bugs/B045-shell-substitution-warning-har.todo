@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B045
+priority: high
+status: pending
+tags: []
+title: Shell-substitution warning HARD-FAILS sends via pi extension/relay (exit 1) and false-positives on ordinary technical prose
+---
+Message body containing $(...) or backticks trips 'message body appears to contain shell substitution pattern; re-send with --no-warn-substitution'. Handling is INCONSISTENT and partly fatal: local binary PRINTS warning but still sends (observed 'ok' twice despite warning); but via pi_send extension/relay path it HARD-FAILS with exit 1 and message is dropped (orchestrator pi-dc2147 hit this replying). The heuristic false-positives constantly -- agents routinely discuss $(...) and code in messages. Expected: heuristic warning must NEVER hard-fail a send; body is data, never eval'd by shell, so shell-substitution scanning shouldn't apply; if kept, stderr-only and non-fatal everywhere; unify binary vs pi_send/relay handling. Best practices: remove or downgrade substitution guard, make stderr-only non-fatal, unify paths. Repro: send message with $(...) or backtick via pi_send extension -> exit 1. Related: B044.

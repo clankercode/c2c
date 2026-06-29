@@ -41,3 +41,4 @@ bugs:
     - file: B042-spawned-subagent-with-global-c.todo
     - file: B043-c2c-monitor-must-work-end-to-e.todo
     - file: B044-discourage-guard-from-for-loca.todo
+    - file: B045-shell-substitution-warning-har.todo
