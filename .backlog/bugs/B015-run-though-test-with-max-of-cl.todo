@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T16:27:09Z"
+claimed_by: max
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B015
 priority: high
-status: pending
+started_at: "2026-06-29T16:27:09Z"
+status: in_progress
 tags: []
 title: Run though test with max of claude code in a diff repo/dir to confirm cc setup, behavior, etc.
 ---
