@@ -7678,6 +7678,80 @@ let init =
             ])
     init_cmd
 
+let self_update_cmd =
+  let check_only =
+    Cmdliner.Arg.(
+      value & flag & info [ "check" ]
+        ~doc:"Report latest available vs current version without modifying anything.")
+  in
+  let pinned_version =
+    Cmdliner.Arg.(
+      value & opt (some string) None
+        & info [ "target" ] ~docv:"VERSION"
+            ~doc:"Pin to a specific release tag (e.g. 0.8.8 or v0.8.8).")
+  in
+  let json_output =
+    Cmdliner.Arg.(
+      value & flag & info [ "json" ]
+        ~doc:"Output a single valid JSON document on stdout; diagnostics to stderr.")
+  in
+  let verify_sig =
+    Cmdliner.Arg.(
+      value & flag & info [ "verify-sig" ]
+        ~doc:"Verify release signature if available. (TODO: not yet implemented — prints a note.)")
+  in
+  let open Cmdliner.Term in
+  let+ check_only = check_only
+  and+ pinned_version = pinned_version
+  and+ json_output = json_output
+  and+ verify_sig = verify_sig in
+  let result = C2c_self_update.run_self_update ~check_only ~pinned_version ~json_output ~verify_sig in
+  match result with
+  | C2c_self_update.Updated _ -> ()
+  | Already_latest -> ()
+  | Check_only _ -> ()
+  | Update_error _ -> exit 1
+
+let self_update =
+  let info = Cmdliner.Cmd.info "self-update"
+    ~doc:"Update the running c2c binary to the latest (or pinned) release."
+    ~man:
+      [ `S "DESCRIPTION"
+      ; `P "$(b,c2c self-update) downloads the latest release from GitHub, verifies the \
+            SHA-256 checksum, and atomically replaces the running binary."
+      ; `P "Asset naming convention (shared with install.sh): \
+            $(b,c2c-<version>-<os>-<arch>.tar.gz) where os ∈ {linux, darwin}, arch ∈ {x64, arm64}."
+      ; `P "Refuses to touch system paths (/usr, /usr/local, /bin). Advises using a \
+            package manager or the curl bootstrap at https://c2c.im/install.sh."
+      ; `P "Exit codes: 0 = updated or check-only OK; 1 = error; the JSON output \
+            distinguishes $(b,already_latest) vs $(b,updated) vs $(b,error)."
+      ; `S "SECURITY"
+      ; `P "SHA-256 checksum verification is always performed against the published \
+            SHA256SUMS file. Signature verification (cosign/sigstore) is a TODO — \
+            when $(b,--verify-sig) is passed, a note is printed."
+      ; `S "EXAMPLES"
+      ; `P "$(b,c2c self-update)  — update to latest release"
+      ; `P "$(b,c2c self-update --check)  — report latest vs current without modifying"
+      ; `P "$(b,c2c self-update --check --json)  — machine-readable check"
+      ; `P "$(b,c2c self-update --target 0.8.5)  — pin to a specific version"
+      ; `P "$(b,c2c self-update --json)  — update with JSON output"
+      ]
+  in
+  Cmdliner.Cmd.v info self_update_cmd
+
+(* Aliases for self-update *)
+let update_alias =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "update"
+       ~doc:"Alias for self-update.")
+    self_update_cmd
+
+let upgrade_alias =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "upgrade"
+       ~doc:"Alias for self-update.")
+    self_update_cmd
+
 let install =
   let info = Cmdliner.Cmd.info "install"
     ~doc:"Install c2c — binary and/or client integrations."
@@ -12062,7 +12136,7 @@ let commands_man is_agent =
          $(b,open-pending-reply), $(b,check-pending-reply), \
          $(b,instances), $(b,doctor), $(b,rooms), $(b,monitor), $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (safe with care) =="
-    ; `P "$(b,start), $(b,stop), $(b,restart), $(b,reset-thread), $(b,init), $(b,install), \
+    ; `P "$(b,start), $(b,stop), $(b,restart), $(b,reset-thread), $(b,init), $(b,install), $(b,self-update), \
          $(b,agent), $(b,roles), $(b,compile), $(b,roles-validate), \
           $(b,config), $(b,config-show), $(b,generation-client), \
          $(b,repo)"
@@ -12229,6 +12303,7 @@ let fast_path_commands () =
     ("diag", "Show diagnostic info for a managed instance");
     ("gui", "Launch the c2c TUI");
     ("install", "Install c2c + client integrations");
+    ("self-update", "Update the running c2c binary to the latest release");
     ("init", "Generate a new Ed25519 identity keypair");
     ("hook", "PostToolUse hook: drain inbox and emit messages");
 
@@ -12687,7 +12762,7 @@ let () =
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
     ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; host_id; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
-    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; C2c_uninstall.uninstall_subcmd; completion_cmd; list_glyphs
+    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; self_update; update_alias; upgrade_alias; C2c_uninstall.uninstall_subcmd; completion_cmd; list_glyphs
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances_deprecated; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
@@ -12708,6 +12783,6 @@ let () =
                 ; `P "c2c uses standard exit codes:"
                 ; `Noblank; `P "123 — operational error (e.g., relay unreachable, broker unreachable, or registration failed)"
                 ; `Noblank; `P "124 — bad command-line flag or argument — check your syntax"
-                ; `Noblank; `P "125 — bug in c2c — please report at https://github.com/anomalyco/c2c/issues"
+                ; `Noblank; `P "125 — bug in c2c — please report at https://github.com/clankercode/c2c/issues"
                 ] @ tier_grouped_man))
              visible_cmds))

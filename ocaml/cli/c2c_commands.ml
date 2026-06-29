@@ -89,6 +89,7 @@ let command_tier_map () : (string * safety) list =
    ; "watch", Tier3   (* full-screen interactive operator TUI — agent-hidden *)
    ; "setcap", Tier3
    ; "install", Tier2
+   ; "self-update", Tier2
     ; "gui", Tier1
    ; "diag", Tier1
    ; "dev", Tier2
