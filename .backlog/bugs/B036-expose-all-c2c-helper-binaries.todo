@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B036
+priority: medium
+status: pending
+tags: []
+title: Expose all c2c helper binaries as c2c <subcommand> (e.g. c2c hook stop) with client autodetect
+---
+Helper executables are separate binaries invoked directly by hook scripts: c2c-inbox-hook-ocaml, c2c-stop-hook-ocaml (missing!), c2c-mcp-server, plus many c2c-* scripts. c2c hook exists but is PostToolUse-only; there is NO c2c hook stop. Because scripts call standalone binaries rather than the single c2c, a forgotten/unbuilt binary silently breaks delivery (see B035). Unify: every helper reachable via the one always-installed c2c binary as a subcommand. Best practices: single binary surface (c2c hook post-tool, c2c hook stop, c2c mcp-server), client autodetect from env, hook scripts shrink to one-line wrappers, graceful no-op when not in session, --json output clean (ref B025). Related: B035, B025.
