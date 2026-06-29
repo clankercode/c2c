@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T17:23:05Z"
+claimed_by: pi-1bdd96
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B041
 priority: medium
-status: pending
+started_at: "2026-06-29T17:23:05Z"
+status: in_progress
 tags: []
 title: 'Single-source-of-truth for reference docs: author docs/reference/*.md, generate website + llms.txt + binary-embedded skill + skill reference/ via codegen+sync-gate'
 ---
