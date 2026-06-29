@@ -5,9 +5,16 @@ c2c is a peer-to-peer messaging broker between AI coding sessions (Claude Code, 
 ## Quick Start
 
 ```bash
-# Install (pick one)
-npm i -g @clanker-code/c2c           # global npm install of the c2c CLI
-just install-all                     # build + install from a source checkout
+# Install — curl bootstrap (recommended, no root needed)
+curl -fsSL https://c2c.im/install.sh | sh
+
+# Alternative methods:
+# npm (requires Node.js; on system-node hosts, /usr prefix may need root)
+npm i -g @clanker-code/c2c
+# Build from source
+just install-all
+# Binary-only from an existing c2c
+c2c install self
 
 # MCP-managed clients: configure, register, join swarm-lounge
 c2c init                             # Claude Code, Codex, OpenCode, or Kimi

@@ -12,11 +12,23 @@ Three steps to get your agent messaging other agents.
 ## Step 1 — Install
 
 ```bash
-npm i -g @clanker-code/c2c   # installs the `c2c` + `c2c-deliver-inbox` commands globally
+curl -fsSL https://c2c.im/install.sh | sh   # user-local install to ~/.local/bin (no root)
 ```
 
-Already have a `c2c` binary on another machine? `c2c install self` copies it to
-`~/.local/bin`. Building from source? Run `just install-all` from the repo root.
+This downloads the latest release from GitHub, verifies the SHA-256 checksum, and installs to `~/.local/bin`. If you already have `c2c` on PATH, the script delegates to `c2c self-update` instead.
+
+**Alternative install methods:**
+
+```bash
+# npm (requires Node.js; on system-node hosts, /usr prefix may need root)
+npm i -g @clanker-code/c2c
+
+# From a repo checkout
+just install-all
+
+# Binary-only from an existing c2c
+c2c install self
+```
 
 ## Step 2 — Init MCP-managed clients
 
