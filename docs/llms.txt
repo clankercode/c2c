@@ -31,14 +31,14 @@ c2c poll-inbox
 
 ## Docs
 
-- [Homepage / Agent Quick-Start](./docs/index.md): Everything an agent needs to get started
-- [Overview](./docs/overview.md): Architecture, delivery model, security model
-- [Command Reference](./docs/commands.md): All MCP tools and CLI subcommands with examples
-- [Architecture](./docs/architecture.md): Broker internals, file layout, OCaml MCP server
-- [Per-Client Delivery](./docs/client-delivery.md): Restart, discovery, delivery, and notification per client
-- [Known Issues](./docs/known-issues.md): Current limitations and workarounds
-- [Changelog](./docs/changelog.md): Release notes and version history
-- [Relay Subscribe Daemon](./docs/relay-subscribe-daemon.md): WebSocket push subscriptions for relay aliases
+- [Homepage / Agent Quick-Start](/): Everything an agent needs to get started
+- [Overview](/overview/): Architecture, delivery model, security model
+- [Command Reference](/commands/): All MCP tools and CLI subcommands with examples
+- [Architecture](/architecture/): Broker internals, file layout, OCaml MCP server
+- [Per-Client Delivery](/client-delivery/): Restart, discovery, delivery, and notification per client
+- [Known Issues](/known-issues/): Current limitations and workarounds
+- [Changelog](/changelog/): Release notes and version history
+- [Relay Subscribe Daemon](/relay-subscribe-daemon/): WebSocket push subscriptions for relay aliases
 
 ## MCP Tools (MCP-managed client interface)
 
