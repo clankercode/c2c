@@ -211,6 +211,8 @@ let print_additional_context ~extra_contexts messages_text =
       Printf.printf "%s\n" (Yojson.Safe.to_string json)
 
 let () =
+  (* B042: skip hook entirely for subagent/silent sessions. *)
+  if C2c_hook_lib.is_subagent_quiet () then exit 0;
   let session_id =
     match C2c_hook_lib.resolve_session_id () with
     | Ok "" -> exit 0

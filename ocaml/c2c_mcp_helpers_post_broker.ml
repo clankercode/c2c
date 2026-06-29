@@ -880,6 +880,12 @@ let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
   | Some alias ->
+  (* B042: skip auto-registration when C2C_NO_AUTO_REGISTER=1.
+     Spawned subagents inherit global c2c hooks and would auto-register
+     and spam the coordinator. Setting this env var silences them. *)
+  (match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
+   | Some v when String.trim v = "1" -> ()
+   | _ ->
   let session_id =
     match session_id_override with
     | Some sid when String.trim sid <> "" -> String.trim sid
@@ -1029,7 +1035,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
           (fun reg -> reg.pid = pid && reg.session_id <> session_id && reg.alias <> alias
                       && Broker.registration_is_alive reg)
       end
-  end
+  end)
 
 let auto_register_startup ~broker_root = auto_register_impl ~broker_root ()
 

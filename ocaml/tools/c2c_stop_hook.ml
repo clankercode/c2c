@@ -19,6 +19,8 @@
  *)
 
 let () =
+  (* B042: skip hook entirely for subagent/silent sessions. *)
+  if C2c_hook_lib.is_subagent_quiet () then exit 0;
   let session_id =
     match C2c_hook_lib.resolve_session_id () with
     | Ok sid -> sid

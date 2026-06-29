@@ -50,6 +50,7 @@ let command_tier_map () : (string * safety) list =
    ; "my-rooms", Tier1
    ; "deliver", Tier1
   ; "register", Tier1
+  ; "deregister", Tier1
   ; "refresh-peer", Tier1
   ; "instances", Tier1
   ; "doctor", Tier1
