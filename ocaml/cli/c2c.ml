@@ -143,13 +143,9 @@ let validate_from_override broker ~caller_session_id ~from_alias =
         exit 1
       end else begin
         Printf.eprintf
-          "refusing to send as '%s': alias is not registered in this broker.\n\
-           - Anti-impersonation: the broker only allows sending as a registered alias\n\
-           to prevent one agent from spoofing another's identity.\n\
-           - To send as this alias: register it first with `c2c register --alias %s`,\n\
-           or set C2C_MCP_SESSION_ID to the session that owns it.\n\
-           - To relay on behalf of another agent: set C2C_COORDINATOR=1.\n%!"
-          from_alias from_alias;
+          "refusing to send as '%s': alias is not registered. \
+           Only your own alias or C2C_COORDINATOR=1 is permitted.\n%!"
+          from_alias;
         exit 1
       end
     end
@@ -182,40 +178,23 @@ let resolve_alias ?(override : string option = None) broker =
               if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] from_sid=%s -> alias=%s\n%!" sid r.alias;
               r.alias
           | None -> (
-              (* Session not registered in this broker; fall back to
-                 env_auto_alias for non-MCP callers. *)
+              (* Session not registered; fall back to env_auto_alias for
+                 non-MCP callers or dynamically-registered sessions. *)
               match env_auto_alias () with
               | Some a ->
                   if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] sid=%s not registered, fallback=%s\n%!" sid a;
                   a
               | None ->
-                  if is_coordinator () then (
-                    (* B040: C2C_COORDINATOR=1 without --from: self-resolve from
-                       env_auto_alias or default to "coordinator" instead of failing. *)
-                    let fallback = Option.value (env_auto_alias ()) ~default:"coordinator" in
-                    if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] coordinator self-resolve to %s\n%!" fallback;
-                    fallback
-                  ) else (
-                    (* B040: Session not registered here — common when --root
-                       targets a different broker. Use the session_id itself as
-                       the sender label rather than failing hard. *)
-                    if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] sid=%s not registered in target broker, using sid as sender label\n%!" sid;
-                    sid
-                  )))
+                  Printf.eprintf "error: session %s is not registered and no alias is set.\n%!" sid;
+                  exit 1))
       | None -> (
           match env_auto_alias () with
           | Some a ->
               if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] from_env_auto_alias=%s\n%!" a;
               a
           | None ->
-              if is_coordinator () then (
-                (* B040: C2C_COORDINATOR=1 without session or alias: use "coordinator" *)
-                if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] coordinator fallback to 'coordinator'\n%!";
-                "coordinator"
-              ) else begin
-                Printf.eprintf "error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
-                exit 1
-              end)
+              Printf.eprintf "error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
+              exit 1)
 
 let resolve_session_id () =
   match env_session_id () with
@@ -439,7 +418,7 @@ let commands_by_safety_cmd =
     ("install", "Install c2c + client integrations");
     ("uninstall", "Remove c2c + client integrations");
     ("init", "Generate a new Ed25519 identity keypair");
-    ("hook", "Hook subcommands: post-tool (PostToolUse) + stop (text-only turn delivery)");
+    ("hook", "PostToolUse hook: drain inbox and emit messages");
 
   ] in
   let tier4 = [
@@ -471,69 +450,6 @@ let commands_by_safety =
        ~doc:"List all c2c commands grouped by safety tier."
        ~man:[ `P "Useful for auditing which commands are safe to run inside an agent session." ])
     commands_by_safety_cmd
-
-(* --- cross-broker alias resolution --------------------------------------- *)
-
-(** Scan all known broker roots (per-repo + sessions broker) to find which
-    broker(s) contain a registration matching [alias] (case-insensitive).
-    Returns [(broker_root, registration)] pairs. Excludes [exclude_root]
-    (the primary broker that was already checked).
-    Also scans C2C_BROKER_SCAN_DIRS (colon-separated extra broker root dirs). *)
-let find_alias_in_all_broots ~exclude_root alias =
-  let target = String.lowercase_ascii alias in
-  let seen = Hashtbl.create 8 in
-  let results = ref [] in
-  let scan_root root =
-    if root = exclude_root then ()
-    else if Hashtbl.mem seen root then ()
-    else begin
-      Hashtbl.add seen root ();
-      try
-        let broker = C2c_mcp.Broker.create ~root in
-        let regs = C2c_mcp.Broker.list_registrations broker in
-        let matches =
-          List.filter
-            (fun (r : C2c_mcp.registration) ->
-              String.lowercase_ascii r.alias = target)
-            regs
-        in
-        List.iter (fun r -> results := (root, r) :: !results) matches
-      with _ -> ()  (* skip brokers we can't read *)
-    end
-  in
-  (* Scan the cross-repo sessions broker *)
-  (try scan_root (Repo_fp.resolve_sessions_broker_root ()) with _ -> ());
-  (* Scan per-repo brokers under ~/.c2c/repos/*/broker and XDG *)
-  (try
-     List.iter (fun (_fp, root) -> scan_root root)
-       (C2c_repo_fp.list_all_broker_roots ())
-   with _ -> ());
-  (* Scan C2C_BROKER_SCAN_DIRS env (colon-separated extra broker root paths) *)
-  (match Sys.getenv_opt "C2C_BROKER_SCAN_DIRS" with
-   | Some dirs when String.trim dirs <> "" ->
-       String.split_on_char ':' (String.trim dirs)
-       |> List.iter (fun d -> let d = String.trim d in if d <> "" then scan_root d)
-   | _ -> ());
-  (* Also scan sibling broker dirs: if primary broker is under a repos/ layout,
-     scan siblings. If it's an arbitrary path, scan its parent for subdirs
-     containing registry.json — this handles temp broker dirs in tests. *)
-  (try
-     let parent = Filename.dirname exclude_root in
-     if Sys.file_exists parent && Sys.is_directory parent then
-       Array.iter (fun entry ->
-         let candidate = Filename.concat parent entry in
-         if candidate <> exclude_root
-            && Sys.is_directory candidate
-            && Sys.file_exists (Filename.concat candidate "registry.json")
-         then scan_root candidate
-       ) (Sys.readdir parent)
-   with _ -> ());
-  List.rev !results
-
-(** Same as above but also check the sessions broker root explicitly
-    (it may already be in the list but this ensures coverage). *)
-let find_alias_in_all_brokers ~primary_root alias =
-  find_alias_in_all_broots ~exclude_root:primary_root alias
 
 (* --- subcommand: send ----------------------------------------------------- *)
 
@@ -574,10 +490,6 @@ let send_cmd =
     Cmdliner.Arg.(value & flag & info [ "urgent" ]
       ~doc:"Mark as an URGENT message. Prepends '⚠️ URGENT: ' to the body. Use for time-sensitive but not-fully-blocking attention asks. Mutex with --fail and --blocking.")
   in
-  let broker_root_opt =
-    Cmdliner.Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
-           ~doc:"Broker root dir (default: auto-resolve via env/git). Overrides --cross-repo.")
-  in
   let+ json = json_flag
   and+ args = args
   and+ session_target = session_target
@@ -587,10 +499,9 @@ let send_cmd =
   and+ fail = fail_flag
   and+ blocking = blocking_flag
   and+ urgent = urgent_flag
-  and+ cross_repo = cross_repo_flag
-  and+ broker_root_opt = broker_root_opt in
+  and+ cross_repo = cross_repo_flag in
   mcp_nudge_if_needed ~cmd:"send";
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
   let target, content =
     match session_target, args with
     | Some sid, tokens ->
@@ -630,36 +541,6 @@ let send_cmd =
                    | None -> Option.value (env_auto_alias ()) ~default:"c2c-cli")
               | None -> Option.value (env_auto_alias ()) ~default:"c2c-cli"))
   in
-  (* B044: Warn when --from aliases a different identity than the caller's own.
-     The recipient cannot reply to a sender that isn't the caller's registered
-     alias — this is an operator/impersonation footgun. Non-fatal: the send
-     still goes through since --from is intentional for operator use. *)
-  let () =
-    match from_override with
-    | Some override_str when String.trim override_str <> "" ->
-        let override_cf =
-          C2c_mcp.Broker.alias_casefold (String.trim override_str)
-        in
-        let own_alias_opt =
-          match env_session_id () with
-          | Some sid ->
-              let regs = C2c_mcp.Broker.list_registrations broker in
-              (match List.find_opt
-                       (fun (r : C2c_mcp.registration) -> r.session_id = sid)
-                       regs
-               with Some r -> Some r.alias | None -> None)
-          | None -> None
-        in
-        (match own_alias_opt with
-         | Some own when
-             C2c_mcp.Broker.alias_casefold own <> override_cf ->
-             Printf.eprintf
-               "warning: --from %s is not your own alias (%s); \
-                the recipient will NOT be able to reply to this sender.\n%!"
-               (String.trim override_str) own
-         | _ -> ())
-    | _ -> ()
-  in
   (* #392: enforce mutual exclusion + apply body prefix. *)
   let tag_count =
     (if fail then 1 else 0) + (if blocking then 1 else 0) + (if urgent then 1 else 0)
@@ -677,22 +558,20 @@ let send_cmd =
     else None
   in
   let content = (C2c_mcp.tag_to_body_prefix tag_str) ^ content in
-  (* B045: Stderr-only informational hint for human operators.
-     Body is data, never shell-eval'd — this never blocks or fails a send.
-     --no-warn-substitution suppresses even this hint. *)
+  (* Class E: warn when message body looks like an un-expanded shell
+     substitution pattern that the shell failed to expand. *)
   let _ =
     if (not no_warn_substitution) && likes_shell_substitution content
     then Printf.eprintf
-      "hint: message body contains $(...) or backticks (sent as-is).\n%!"
-    else ()
+      "warning: message body appears to contain a shell substitution pattern \
+       (e.g. $(...) or `...`).\n\
+       If this was intended literally, re-send with --no-warn-substitution.\n\
+       To avoid this, quote the pattern: '$(date)' or escape the $.\n%!"
+  else ()
   in
   let output_mode = if json then Json else Human in
   (try
      let ts = Unix.gettimeofday () in
-     let primary_root =
-       try C2c_mcp.Broker.root broker
-       with _ -> "<unknown>"
-     in
      let compacting_warning, json_target_fields, human_target =
        match target with
        | `Alias to_alias ->
@@ -702,43 +581,9 @@ let send_cmd =
            );
            if debug_enabled then Printf.eprintf "[DEBUG send_cmd] calling enqueue_message from=%s to=%s\n%!" from_alias to_alias;
            flush stderr;
-           (* B039: try primary broker first, then cross-broker fallback *)
-           (try
-              C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
-              if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
-              flush stderr
-            with Invalid_argument _msg
-              when not (String.contains to_alias '@') ->
-              (* Primary broker doesn't have this alias — scan other brokers *)
-              let matches = find_alias_in_all_brokers ~primary_root to_alias in
-              match matches with
-              | (alt_root, _reg) :: _ ->
-                  (* Found in another broker — route there *)
-                  if debug_enabled then Printf.eprintf
-                    "[DEBUG send_cmd] cross-broker routing: %s found in %s\n%!" to_alias alt_root;
-                  let alt_broker = C2c_mcp.Broker.create ~root:alt_root in
-                  C2c_mcp.Broker.enqueue_message alt_broker
-                    ~from_alias ~to_alias ~content ~ephemeral ();
-                  if debug_enabled then Printf.eprintf "[DEBUG send_cmd] cross-broker enqueue_message returned\n%!"
-              | [] ->
-                  (* Not found anywhere — provide actionable error *)
-                  let is_room =
-                    (try
-                       let rooms = C2c_mcp.Broker.list_rooms broker in
-                       List.exists (fun r -> r.C2c_mcp.Broker.ri_room_id = to_alias) rooms
-                     with _ -> false)
-                  in
-                  if is_room then begin
-                    Printf.eprintf "error: '%s' is a room, not a peer alias.\n" to_alias;
-                    Printf.eprintf "hint:  use `c2c room send %s <message>` to send to a room.\n%!" to_alias
-                  end else begin
-                    Printf.eprintf "error: alias '%s' is not registered.\n" to_alias;
-                    Printf.eprintf "  Checked broker: %s\n" primary_root;
-                    Printf.eprintf "  hint: the peer may be in another broker. Same-box sends auto-route,\n";
-                    Printf.eprintf "  or pass --root <broker-root> to target a specific broker.\n";
-                    Printf.eprintf "  Use `c2c list --global` to see all registered peers.\n%!"
-                  end;
-                  exit 1);
+           C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
+           if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
+           flush stderr;
            let compacting_warning =
              let regs = C2c_mcp.Broker.list_registrations broker in
              match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = to_alias) regs with
@@ -781,8 +626,22 @@ let send_cmd =
          (match compacting_warning with Some w -> Printf.printf " [%s]" w | None -> ());
          print_newline ()
    with Invalid_argument msg ->
-     (* Catch-all for errors from Session sends or other paths. *)
-     Printf.eprintf "error: %s\n%!" msg;
+     (* If the target looks like a room name, give a helpful redirect hint. *)
+     let is_room =
+       match target with
+       | `Session _ -> false
+       | `Alias to_alias ->
+           (try
+              let rooms = C2c_mcp.Broker.list_rooms broker in
+              List.exists (fun r -> r.C2c_mcp.Broker.ri_room_id = to_alias) rooms
+            with _ -> false)
+     in
+     if is_room then begin
+       let to_alias = match target with `Alias a -> a | `Session s -> s in
+       Printf.eprintf "error: '%s' is a room, not a peer alias.\n" to_alias;
+       Printf.eprintf "hint:  use `c2c room send %s <message>` to send to a room.\n%!" to_alias
+     end else
+       Printf.eprintf "error: %s\n%!" msg;
      exit 1)
 
 (* --- subcommand: list ----------------------------------------------------- *)
@@ -1351,52 +1210,38 @@ let poll_inbox_cmd =
   (match session_id_opt, alias_opt with
    | Some _, Some _ -> Printf.eprintf "error: --session-id and --alias are mutually exclusive.\n%!"; exit 1
    | _ -> ());
-  (try
-    let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
-    let session_id = match session_id_opt with
-      | Some sid -> sid
-      | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
-    in
-    let messages =
-      if peek then
-        C2c_mcp.Broker.read_inbox broker ~session_id
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
+  let session_id = match session_id_opt with
+    | Some sid -> sid
+    | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
+  in
+  let messages =
+    if peek then
+      C2c_mcp.Broker.read_inbox broker ~session_id
+    else
+      C2c_mcp.Broker.drain_inbox ~drained_by:"cli_poll" broker ~session_id
+  in
+  let output_mode = if json then Json else Human in
+  match output_mode with
+  | Json ->
+      print_json
+        (`List
+          (List.map
+             (fun (m : C2c_mcp.message) ->
+               `Assoc
+                 [ ("from_alias", `String m.from_alias)
+                 ; ("to_alias", `String m.to_alias)
+                 ; ("content", `String m.content)
+                 ; ("ts", `Float m.ts)
+                 ])
+             messages))
+  | Human ->
+      if messages = [] then
+        Printf.printf "(no messages)\n"
       else
-        C2c_mcp.Broker.drain_inbox ~drained_by:"cli_poll" broker ~session_id
-    in
-    let output_mode = if json then Json else Human in
-    match output_mode with
-    | Json ->
-        print_json
-          (`List
-            (List.map
-               (fun (m : C2c_mcp.message) ->
-                 `Assoc
-                   [ ("from_alias", `String m.from_alias)
-                   ; ("to_alias", `String m.to_alias)
-                   ; ("content", `String m.content)
-                   ; ("ts", `Float m.ts)
-                   ])
-               messages))
-    | Human ->
-        if messages = [] then
-          Printf.printf "(no messages)\n"
-        else
-          List.iter
-            (fun (m : C2c_mcp.message) -> Printf.printf "[%s] %s\n" m.from_alias m.content)
-            messages
-  with
-  | Unix.Unix_error (code, fn, path) when code = Unix.EROFS || code = Unix.EACCES ->
-      let msg = Printf.sprintf
-        "broker root is not writable in this sandbox (path: %s, error: %s). \
-         Set C2C_MCP_BROKER_ROOT to a writable path or run from a managed session."
-        path (Unix.error_message code)
-      in
-      if json then
-        print_json (`Assoc [ ("error", `String msg); ("code", `String (match code with Unix.EROFS -> "EROFS" | Unix.EACCES -> "EACCES" | _ -> "unknown")) ])
-      else
-        Printf.eprintf "error: %s\n%!" msg;
-      exit 1
-  )
+        List.iter
+          (fun (m : C2c_mcp.message) -> Printf.printf "[%s] %s\n" m.from_alias m.content)
+          messages
 
 (* --- subcommand: send-all ------------------------------------------------- *)
 
@@ -3040,23 +2885,6 @@ let status_cmd =
     && List.for_all (fun (_, _, _, gm, _) -> gm) alive_peers
   in
   let managed_instances = read_managed_instances () in
-  (* B031: filter old stopped instances (>24h) from default status view *)
-  let stopped_ttl_s = 24.0 *. 3600.0 in
-  let (visible_instances, hidden_stopped_count) =
-    let is_old_stopped (i : managed_instance_view) =
-      i.mi_status <> "running"
-      && (match i.mi_created_at with
-          | Some created_at -> (now -. created_at) > stopped_ttl_s
-          | None ->
-              (* Fall back to dir mtime *)
-              let inst_path = C2c_start.instances_dir // i.mi_name in
-              try (now -. (Unix.stat inst_path).Unix.st_mtime) > stopped_ttl_s
-              with _ -> false)
-    in
-    let visible = List.filter (fun i -> not (is_old_stopped i)) managed_instances in
-    let hidden = List.length managed_instances - List.length visible in
-    (visible, hidden)
-  in
 
   let output_mode = if json then Json else Human in
   match output_mode with
@@ -3101,8 +2929,7 @@ let status_cmd =
                          ; ("delivery_mode", `String inst.mi_delivery_mode)
                          ; ("pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
                          ])
-                    visible_instances) )
-           ; ("stopped_hidden", `Int hidden_stopped_count)
+                    managed_instances) )
            ; ("rooms", `List (List.map room_json rooms))
            ; ("overall_goal_met", `Bool overall_goal_met)
            ])
@@ -3145,10 +2972,8 @@ let status_cmd =
            in
            Printf.printf "  %-20s %-10s %-12s %s%s\n" inst.mi_name
              inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str)
-        visible_instances;
-      if visible_instances = [] then Printf.printf "  (none)\n";
-      if hidden_stopped_count > 0 then
-        Printf.printf "  (%d stopped instance(s) hidden; use 'c2c dev instances --all' or 'c2c dev instances gc')\n" hidden_stopped_count;
+        managed_instances;
+      if managed_instances = [] then Printf.printf "  (none)\n";
       Printf.printf "  Run 'c2c dev instances' for full detail (includes created_at, tmux, cwd, role).\n";
       Printf.printf "\nOverall goal_met: %s\n"
         (if overall_goal_met then "YES" else "NO")
@@ -3434,17 +3259,12 @@ let register_cmd =
   let no_metadata =
     Cmdliner.Arg.(value & flag & info [ "no-metadata" ] ~doc:"Opt out of metadata exposure/federation (cwd, canonical alias). Does NOT affect cwd capture, which is required for the worktree-mismatch guard.")
   in
-  let broker_root_opt =
-    Cmdliner.Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
-           ~doc:"Broker root dir (default: auto-resolve via env/git). Overrides --cross-repo.")
-  in
   let+ json = json_flag
   and+ alias_opt = alias
   and+ session_id_opt = session_id_opt
   and+ no_metadata = no_metadata
-  and+ cross_repo = cross_repo_flag
-  and+ broker_root_opt = broker_root_opt in
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
+  and+ cross_repo = cross_repo_flag in
+  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
   let alias, alias_from_auto_gen =
     match alias_opt with
     | Some a -> (a, false)
@@ -3509,36 +3329,6 @@ let register_cmd =
           ])
   | Human ->
       Printf.printf "registered %s (session %s)\n" alias session_id
-
-(* --- subcommand: deregister ---------------------------------------------- *)
-
-let deregister_cmd =
-  let alias_arg =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ALIAS" ~doc:"Alias to deregister.")
-  in
-  let broker_root_opt =
-    Cmdliner.Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
-           ~doc:"Broker root dir (default: auto-resolve via env/git). Overrides --cross-repo.")
-  in
-  let+ json = json_flag
-  and+ alias = alias_arg
-  and+ cross_repo = cross_repo_flag
-  and+ broker_root_opt = broker_root_opt in
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
-  match C2c_mcp.Broker.deregister broker ~alias with
-  | None ->
-      Printf.eprintf "error: no registration found for alias '%s'\n%!" alias;
-      exit 1
-  | Some reg ->
-      if json then
-        print_json
-          (`Assoc
-            [ ("alias", `String reg.alias)
-            ; ("session_id", `String reg.session_id)
-            ; ("deregistered", `Bool true)
-            ])
-      else
-        Printf.printf "deregistered %s (session %s)\n" reg.alias reg.session_id
 
 (* --- subcommand: get-tmux-location ---------------------------------------- *)
 
@@ -3914,7 +3704,11 @@ let monitor_cmd =
   in
   let full_body_flag =
     Arg.(value & flag & info ["full-body";"body"]
-           ~doc:"Emit full message content instead of an 80-char subject snippet.")
+           ~doc:"Emit full message content. This is now the default; use $(b,--snippet) for the old 80-char preview.")
+  in
+  let snippet_flag =
+    Arg.(value & flag & info ["snippet"]
+           ~doc:"Emit an 80-char subject snippet instead of the full body (legacy default).")
   in
   let from_opt =
     Arg.(value & opt (some string) None & info ["from"] ~docv:"ALIAS"
@@ -3926,9 +3720,14 @@ let monitor_cmd =
   in
   let archive_flag =
     Arg.(value & flag & info ["archive"]
-           ~doc:"Watch append-only archive (archive/*.jsonl) instead of live inboxes. \
-                 Avoids the race where the PostToolUse hook drains the inbox before \
-                 the monitor can peek. Every drained message is recorded here.")
+           ~doc:"Watch append-only archive (archive/*.jsonl). This is now the default; \
+                 use $(b,--live) for the old inbox-watching mode.")
+  in
+  let live_flag =
+    Arg.(value & flag & info ["live"]
+           ~doc:"Watch live inboxes (*.inbox.json) instead of the archive. \
+                 Subject to the race where the drain hook clears the inbox \
+                 before the monitor reads it. Legacy behaviour.")
   in
   let include_self_flag =
     Arg.(value & flag & info ["include-self"]
@@ -3945,7 +3744,11 @@ let monitor_cmd =
                  still-alive holder.")
   in
   let cross_repo = cross_repo_flag in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self force cross_repo ->
+  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force cross_repo ->
+    (* Resolve effective flags: --archive and --full-body are now defaults.
+       --live reverts to inbox watching; --snippet reverts to 80-char preview. *)
+    let full_body = full_body || not snippet in  (* full_body unless --snippet *)
+    let archive = archive || not live in  (* archive unless --live *)
     let broker_root =
       (* #518: treat empty-string env/arg as "unset" — same shape as #496/#497.
          C2C_MCP_BROKER_ROOT='' should fall through to resolve_broker_root ()
@@ -3962,14 +3765,47 @@ let monitor_cmd =
           else (match C2c_utils.trimmed_env_value "C2C_MCP_BROKER_ROOT" with
                 | Some r -> r
                 | None -> (try resolve_broker_root () with _ ->
-                    Printf.eprintf "c2c monitor: cannot resolve broker root \
-                      (set C2C_MCP_BROKER_ROOT or run from inside the repo)\n%!";
+                    Printf.eprintf "c2c monitor: cannot resolve broker root. \
+                      Set C2C_MCP_BROKER_ROOT explicitly.\n%!";
                     exit 1))
     in
     let my_alias =
       match alias_arg with
       | Some a -> Some a
-      | None -> Sys.getenv_opt "C2C_MCP_SESSION_ID"
+      | None ->
+          (* Resolution chain for bare `c2c monitor` (no --alias):
+             1. C2C_MCP_AUTO_REGISTER_ALIAS (explicit alias env var)
+             2. Config file ~/.config/c2c/default-alias (written by init/install)
+             3. C2C_MCP_SESSION_ID (proxy — works when session_id = alias)
+             4. Scan broker registrations for a single alive registration *)
+          match C2c_utils.alias_from_env_only () with
+          | Some _ as a -> a
+          | None ->
+              let config_alias () =
+                let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+                let path = home // ".config" // "c2c" // "default-alias" in
+                let s = C2c_io.read_file_opt path in
+                let s = String.trim s in
+                if s <> "" then Some s else None
+              in
+              match config_alias () with
+              | Some _ as a -> a
+              | None ->
+                  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+                  | Some _ as a -> a
+                  | None ->
+                      (* Last resort: scan broker for exactly one alive registration *)
+                      try
+                        let regs = C2c_mcp.Broker.list_registrations
+                          (C2c_mcp.Broker.create ~root:broker_root) in
+                        let alive = List.filter
+                          (fun (r : C2c_mcp.registration) ->
+                            C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive)
+                          regs in
+                        (match alive with
+                         | [r] -> Some r.alias  (* unambiguous *)
+                         | _ -> None)
+                      with _ -> None
     in
     (* #354: per-alias monitor lockfile guard.
        Prevents fork-bomb accumulation when `c2c monitor --alias <a>` is launched
@@ -4516,8 +4352,8 @@ let monitor_cmd =
         )
       done with End_of_file -> ())
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
-    $ full_body_flag $ from_opt $ json_flag $ archive_flag $ include_self_flag
-    $ force_flag $ cross_repo
+    $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag
+    $ include_self_flag $ force_flag $ cross_repo
 
 let monitor =
   Cmdliner.Cmd.v
@@ -4537,15 +4373,17 @@ let monitor =
             ; `P "ICON: 📬 = addressed to you, 💬 = peer traffic (--all), \
                   📤 = drain (--drains), 🗑️ = sweep (--sweeps)"
             ; `S "EXAMPLES"
-            ; `P "$(b,c2c monitor)  — watch your own inbox (default)"
+            ; `P "$(b,c2c monitor)  — watch your inbox (auto-resolves alias + broker; zero flags)"
             ; `P "$(b,c2c monitor --all)  — broad swarm monitor"
             ; `P "$(b,c2c monitor --all --drains --sweeps)  — everything"
             ; `P "$(b,c2c monitor --from coder1)  — only messages from coder1"
-            ; `P "$(b,c2c monitor --full-body)  — include complete message body"
+            ; `P "$(b,c2c monitor --snippet)  — 80-char preview instead of full body"
+            ; `P "$(b,c2c monitor --live)  — watch live inboxes (legacy; subject to drain race)"
             ; `P "$(b,c2c monitor --json)  — JSON output for programmatic parsing"
-            ; `P "$(b,c2c monitor --archive --all)  — watch append-only archive; \
-                  no race with PostToolUse hook drains. Recommended for Claude Code."
-            ; `P "In Claude Code: Monitor({command: \"c2c monitor --archive --all\", persistent: true})"
+            ; `P "In Claude Code: Monitor({command: \"c2c monitor\", persistent: true})"
+            ; `P "Per-alias lockfile: only one monitor per alias runs at a time (#354). \
+                  A second invocation refuses unless $(b,--force) is given. \
+                  Stale locks (dead holder PID) are reclaimed automatically."
             ])
     monitor_cmd
 
@@ -4561,7 +4399,7 @@ let sleep_to_min_runtime start_time =
   let sleep_s = max 0.0 ((min_hook_runtime_ms -. elapsed_ms) /. 1000.0) in
   if sleep_s > 0.0 then Unix.sleepf sleep_s
 
-let hook_post_tool_cmd =
+let hook_cmd =
   (* No arguments - reads env vars C2C_MCP_SESSION_ID and C2C_MCP_BROKER_ROOT *)
   let open Cmdliner.Term in
   const (fun () ->
@@ -4604,6 +4442,11 @@ let hook_post_tool_cmd =
          in
          List.iter
            (fun (m : C2c_mcp.message) ->
+              (* Centralized via C2c_mcp.format_c2c_envelope (#392b
+                 convergence) so #392 tag attrs and xml-escaping stay
+                 consistent across all envelope-emitting surfaces
+                 this PostToolUse hook,
+                 tools/c2c_inbox_hook.ml). *)
               let tag = C2c_mcp.extract_tag_from_content m.content in
               let role = lookup_role m.from_alias in
                let envelope =
@@ -4638,51 +4481,7 @@ let hook_post_tool_cmd =
       sleep_to_min_runtime start_time;
       exit 1) $ const ()
 
-let hook_post_tool = Cmdliner.Cmd.v (Cmdliner.Cmd.info "post-tool" ~doc:"PostToolUse hook: drain inbox and emit messages.") hook_post_tool_cmd
-
-(* --- subcommand: hook stop (Stop hook for text-only turn delivery) --- *)
-
-let hook_stop_cmd =
-  let open Cmdliner.Term in
-  const (fun () ->
-    (* Uses C2c_hook_lib for shared stdin-parsing + drain logic, matching
-       the standalone c2c_stop_hook.exe behaviour exactly. *)
-    let session_id =
-      match C2c_hook_lib.resolve_session_id () with
-      | Ok sid -> sid
-      | Error _ -> exit 0
-    in
-    let broker_root =
-      Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
-    in
-    if session_id = "" then exit 0;
-    try
-      let repo_broker, messages, _alias =
-        C2c_hook_lib.drain_all_messages ~session_id ~broker_root
-      in
-      if messages = [] then exit 0;
-      let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
-      let json : Yojson.Safe.t =
-        `Assoc
-          [ ("decision", `String "block")
-          ; ("reason", `String messages_text)
-          ]
-      in
-      Printf.printf "%s\n" (Yojson.Safe.to_string json);
-      exit 0
-    with e ->
-      prerr_endline (Printexc.to_string e);
-      exit 1) $ const ()
-
-let hook_stop = Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop" ~doc:"Stop hook: deliver queued messages on text-only turns (blocks stop to inject messages).") hook_stop_cmd
-
-let hook =
-  let info = Cmdliner.Cmd.info "hook"
-    ~doc:"Hook subcommands for Claude Code integration. Use 'post-tool' for PostToolUse (drain inbox) and 'stop' for Stop (text-only turn delivery)."
-  in
-  (* Default to post-tool for backward compat: `c2c hook` (no subcommand) behaves
-     as the PostToolUse hook, same as before the hook group refactor. *)
-  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop ]
+let hook = Cmdliner.Cmd.v (Cmdliner.Cmd.info "hook" ~doc:"PostToolUse hook: drain inbox and emit messages.") hook_cmd
 
 (* --- relay subcommands (shell-out to Python) -------------------------------- *)
 
@@ -5572,8 +5371,13 @@ let relay_dm_cmd =
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"For send: <to-alias> <message...>; for send-all: <message...>")
   in
+  let no_warn_substitution =
+    Cmdliner.Arg.(value & flag & info [ "no-warn-substitution" ]
+      ~doc:"Suppress the shell-substitution warning.")
+  in
   let+ subcmd = subcmd and+ relay_url = relay_url and+ token = token
-  and+ alias = alias and+ words = words in
+  and+ alias = alias and+ words = words
+  and+ no_warn_substitution = no_warn_substitution in
   match resolve_relay_url relay_url with
   | None ->
       Printf.eprintf "%s%!" relay_url_required_error;
@@ -5594,9 +5398,17 @@ let relay_dm_cmd =
                       exit 1
                 in
                 let content = String.concat " " msg_words in
-                (* B045: Substitution check removed from relay/programmatic paths.
-                   Body is data, never eval'd by a shell. The local CLI retains
-                   a stderr-only informational hint for human operators. *)
+                (* Class E: warn when message body looks like an un-expanded shell
+                   substitution pattern that the shell failed to expand. *)
+                let _ =
+                  if (not no_warn_substitution) && likes_shell_substitution content
+                  then Printf.eprintf
+                    "warning: message body appears to contain a shell substitution pattern \
+                     (e.g. $(...) or `...`).\n\
+                     If this was intended literally, re-send with --no-warn-substitution.\n\
+                     To avoid this, quote the pattern: '$(date)' or escape the $.\n%!"
+                  else ()
+                in
                 let body_str = Yojson.Safe.to_string (`Assoc [
                   ("from_alias", `String from_alias);
                   ("to_alias", `String to_alias);
@@ -5663,8 +5475,14 @@ let relay_dm_cmd =
                       exit 1
                 in
                 let content = String.concat " " msg_words in
-                (* B045: Substitution check removed from relay/programmatic paths.
-                   Body is data, never eval'd by a shell. *)
+                let _ =
+                  if (not no_warn_substitution) && likes_shell_substitution content
+                  then Printf.eprintf
+                    "warning: message body appears to contain a shell substitution pattern \
+                     (e.g. $(...) or `...`).\n\
+                     If this was intended literally, re-send with --no-warn-substitution.\n%!"
+                  else ()
+                in
                 let body = `Assoc [
                   ("from_alias", `String from_alias);
                   ("content", `String content);
@@ -6212,12 +6030,12 @@ let relay_identity_init_cmd =
   if (not force) && Sys.file_exists target then begin
     if json then
       print_endline (Printf.sprintf
-        {|{"ok":true,"exists":true,"path":%S,"hint":"pass --force to overwrite"}|}
+        {|{"ok":false,"error":"identity exists","path":%S,"hint":"pass --force to overwrite"}|}
         target)
     else
       Printf.eprintf
-        "identity already exists at %s (use --force to overwrite)\n%!" target;
-    exit 0
+        "error: %s already exists. Pass --force to overwrite.\n%!" target;
+    exit 1
   end;
   let id = Relay_identity.generate ~alias_hint () in
   match Relay_identity.save ~path:target id with
@@ -7420,7 +7238,6 @@ let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived in
 let health = Cmdliner.Cmd.v (Cmdliner.Cmd.info "health" ~doc:"Show broker health diagnostics.") health_cmd
 let connect = Cmdliner.Cmd.v (Cmdliner.Cmd.info "connect" ~doc:"Connection status dashboard and delivery verification.") connect_cmd
 let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
-let deregister = Cmdliner.Cmd.v (Cmdliner.Cmd.info "deregister" ~doc:"Remove a registration from the broker.") deregister_cmd
 let tail_log = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail-log" ~doc:"Show recent broker RPC log entries.") tail_log_cmd
 let server_info = Cmdliner.Cmd.v (Cmdliner.Cmd.info "server-info" ~doc:"Show c2c client version and feature flags.") server_info_cmd
 let my_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "my-rooms" ~doc:"List rooms you are a member of.") my_rooms_cmd
@@ -7558,14 +7375,6 @@ let init_cmd =
     Arg.(value & flag & info ["require-easy"]
            ~doc:"Fail if the auto-generated alias is not from the easy pool. Implies --easy-pool. Use when the agent must have a human-readable alias.")
   in
-  let with_mcp_flag =
-    Arg.(value & flag & info ["with-mcp"]
-           ~doc:"Install MCP server config (.mcp.json) for the detected client. Off by default — CLI is the primary usage path.")
-  in
-  let hooks_flag =
-    Arg.(value & flag & info ["hooks"]
-           ~doc:"Install client hooks (e.g. Claude PostToolUse nudge). Implies --with-mcp. Off by default.")
-  in
   let+ json = json_flag
   and+ client_opt = client_opt
   and+ alias_opt = alias_opt_arg
@@ -7576,9 +7385,7 @@ let init_cmd =
   and+ relay_url = relay_url_arg
   and+ easy_pool = easy_pool_flag
   and+ require_easy = require_easy_flag
-  and+ no_nonce = no_nonce_flag
-  and+ with_mcp = with_mcp_flag
-  and+ hooks = hooks_flag in
+  and+ no_nonce = no_nonce_flag in
   let output_mode = if json then Json else Human in
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
@@ -7589,8 +7396,31 @@ let init_cmd =
     | None -> detect_client ()
   in
 
-  (* Resolve alias ONCE before do_install_client so both the .mcp.json env
-     (C2C_MCP_AUTO_REGISTER_ALIAS) and Broker.register use the same alias. *)
+  let setup_result =
+    if no_setup then `Skipped
+    else match client_resolved with
+      | None ->
+          (match output_mode with
+           | Human ->
+               Printf.printf "No client detected. Specify one with --client:\n";
+               Printf.printf "  c2c init --client claude\n";
+               Printf.printf "  c2c init --client codex\n";
+               Printf.printf "  c2c init --client opencode\n";
+               Printf.printf "  c2c init --client kimi\n"
+           | Json -> ());
+          `No_client
+      | Some client ->
+          (try
+             C2c_setup.do_install_client ~output_mode ~dry_run:false ~client ~alias_opt ~no_nonce ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ();
+             `Ok (C2c_setup.canonical_install_client client)
+           with e -> `Error (Printexc.to_string e))
+  in
+
+  let session_id =
+    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    | Some s when String.trim s <> "" -> s
+    | _ -> C2c_setup.generate_session_id ()
+  in
   let alias =
     match alias_opt with
     | Some a -> a
@@ -7618,48 +7448,9 @@ let init_cmd =
         Printf.eprintf "[c2c register] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
         a
   in
-
-  let alias_for_install = Some alias in
-  let do_mcp_setup = with_mcp || hooks in
-  let setup_result =
-    if no_setup then `Skipped
-    else if not do_mcp_setup then `Cli_only
-    else match client_resolved with
-      | None ->
-          (match output_mode with
-           | Human ->
-               Printf.printf "No client detected. Specify one with --client:\n";
-               Printf.printf "  c2c init --client claude\n";
-               Printf.printf "  c2c init --client codex\n";
-               Printf.printf "  c2c init --client opencode\n";
-               Printf.printf "  c2c init --client kimi\n"
-           | Json -> ());
-          `No_client
-      | Some client ->
-          (try
-             C2c_setup.do_install_client ~output_mode ~dry_run:false ~client ~alias_opt:alias_for_install ~no_nonce ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ~skip_summary:true ~skip_hooks:(not hooks) ();
-             `Ok (C2c_setup.canonical_install_client client)
-           with e -> `Error (Printexc.to_string e))
-  in
-  (* Ensure wake schedule exists even for CLI-only path *)
-  (match setup_result with
-   | `Cli_only ->
-       C2c_setup.ensure_default_wake_schedule ~quiet:(output_mode = Json) ~dry_run:false ~output_mode ~alias
-   | _ -> ());
-
-  let session_id =
-    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-    | Some s when String.trim s <> "" -> s
-    | _ -> C2c_setup.generate_session_id ()
-  in
   (* Ensure Ed25519 identity exists — idempotent, safe to run always. *)
-  (* Identity init is a pure side-effect from init's perspective: init only
-     consumes the exit code and emits its own consolidated output (Human or
-     Json). Mute BOTH streams of the child — on a fresh host the child prints
-     "identity written to ..." to STDOUT, which would otherwise corrupt the
-     single-JSON-document guarantee of `c2c init --json` (B025). *)
   let identity_init_rc =
-    Sys.command (Printf.sprintf "%s relay identity init >/dev/null 2>&1"
+    Sys.command (Printf.sprintf "%s relay identity init 2>/dev/null"
       (Filename.quote (current_c2c_command ())))
   in
   if identity_init_rc <> 0 then
@@ -7675,6 +7466,14 @@ let init_cmd =
       else
         Printf.eprintf "error: %s\n%!" msg);
      exit 1);
+
+  (* Write default-alias config so bare `c2c monitor` can resolve alias
+     without env vars or --alias flag. *)
+  (try
+     let config_dir = (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".config" // "c2c" in
+     C2c_mcp.mkdir_p config_dir;
+     ignore (C2c_io.write_file_atomic (config_dir // "default-alias") (alias ^ "\n"))
+   with _ -> ());  (* best-effort, non-fatal *)
 
   let room_result =
     if String.trim room = "" then `Skipped
@@ -7747,7 +7546,7 @@ let init_cmd =
            let oc = open_out config_path in
            Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
              output_string oc (Yojson.Safe.pretty_to_string (`Assoc merged)));
-           (match output_mode with Human -> Printf.printf "  relay:     saved config\n" | Json -> Printf.eprintf "  relay:     saved config\n%!");
+           Printf.printf "  relay:     saved config\n";
            (* Register with relay. *)
            (match Relay_identity.load () with
             | Ok id ->
@@ -7764,9 +7563,9 @@ let init_cmd =
                 (match result with
                  | `Assoc fields ->
                      (match List.assoc_opt "ok" fields with
-                      | Some (`Bool true) -> Printf.eprintf "  relay:     registered %s\n%!" alias
-                      | _ -> Printf.eprintf "  relay:     registration returned non-ok\n%!")
-                 | _ -> Printf.eprintf "  relay:     unexpected response\n%!")
+                      | Some (`Bool true) -> Printf.printf "  relay:     registered %s\n" alias
+                      | _ -> Printf.printf "  relay:     registration returned non-ok\n")
+                 | _ -> Printf.printf "  relay:     unexpected response\n")
             | Error _ ->
                 (* Unauthenticated registration. *)
                 let client = Relay.Relay_client.make rurl in
@@ -7777,9 +7576,9 @@ let init_cmd =
                 (match result with
                  | `Assoc fields ->
                      (match List.assoc_opt "ok" fields with
-                      | Some (`Bool true) -> Printf.eprintf "  relay:     registered %s (unauthenticated)\n%!" alias
-                      | _ -> Printf.eprintf "  relay:     registration returned non-ok\n%!")
-                 | _ -> Printf.eprintf "  relay:     unexpected response\n%!"));
+                      | Some (`Bool true) -> Printf.printf "  relay:     registered %s (unauthenticated)\n" alias
+                      | _ -> Printf.printf "  relay:     registration returned non-ok\n")
+                 | _ -> Printf.printf "  relay:     unexpected response\n"));
            `Ok rurl
          with e -> `Error (Printexc.to_string e))
   in
@@ -7789,7 +7588,6 @@ let init_cmd =
        let setup_json = match setup_result with
          | `Ok c -> `String (Printf.sprintf "configured %s" c)
          | `Skipped -> `String "skipped"
-         | `Cli_only -> `String "cli-only (no MCP)"
          | `No_client -> `String "no client detected"
          | `Error e -> `String (Printf.sprintf "error: %s" e)
        in
@@ -7810,29 +7608,6 @@ let init_cmd =
           | `Skipped -> `Null
           | `Error e -> `Assoc [("ok", `Bool false); ("error", `String e)]
         in
-        let room_id_str = match room_result with `Joined r -> r | _ -> room in
-        let onboarding_lines =
-          let is_claude = match client_resolved with Some "claude" -> true | _ -> false in
-          [ Printf.sprintf "Start receiving: run c2c monitor"
-          ; Printf.sprintf "Send:    c2c send <alias> <msg>    (e.g. c2c send %s \"hello\")" alias
-          ; "Check:   c2c poll-inbox"
-          ; Printf.sprintf "Room:    c2c send-room %s <msg>" room_id_str
-          ] @
-          (if is_claude then
-            [ "Monitor: add to Claude Code Monitor tool for auto-delivery" ]
-          else []) @
-          (if not do_mcp_setup then
-            [ "MCP is optional; the CLI + Monitor work immediately with zero reload. Pass --with-mcp to enable MCP tools."
-            ]
-          else [])
-        in
-        let onboarding_json = `Assoc
-          [ ("alias", `String alias)
-          ; ("room", `String room_id_str)
-          ; ("cli_first", `Bool (not do_mcp_setup))
-          ; ("lines", `List (List.map (fun s -> `String s) onboarding_lines))
-          ]
-        in
         print_json (`Assoc
           [ ("ok", `Bool true)
           ; ("session_id", `String session_id)
@@ -7842,7 +7617,6 @@ let init_cmd =
           ; ("room", room_json)
           ; ("supervisor", supervisor_json)
           ; ("relay", relay_json)
-          ; ("onboarding", onboarding_json)
          ])
    | Human ->
        Printf.printf "\nc2c init complete!\n";
@@ -7852,39 +7626,34 @@ let init_cmd =
        (match setup_result with
         | `Ok c -> Printf.printf "  setup:    %s configured\n" c
         | `Skipped -> ()
-        | `Cli_only -> Printf.printf "  setup:    CLI-only (no MCP wiring)\n"
         | `No_client -> Printf.printf "  setup:    skipped (no client detected)\n"
         | `Error e -> Printf.printf "  setup:    error — %s\n" e);
        (match room_result with
         | `Joined r -> Printf.printf "  room:     joined #%s\n" r
         | `Skipped -> ()
         | `Error e -> Printf.printf "  room:     error joining — %s\n" e);
-       (match supervisor_result with
-        | `Set (aliases, strat) ->
-            Printf.printf "  supervisor: %s%s\n" (String.concat ", " aliases)
-              (match strat with Some s -> Printf.sprintf " (strategy: %s)" s | None -> "")
-        | `Skipped -> ()
-        | `Error e -> Printf.printf "  supervisor: error — %s\n" e);
-       (match relay_result with
-        | `Ok rurl ->
-            Printf.printf "\nRelay attached. Start the connector with:\n";
-            Printf.printf "  c2c relay connect --relay-url %s\n" rurl
-        | `Skipped -> ()
-        | `Error e -> Printf.printf "  relay:     error — %s\n" e);
-       Printf.printf "\n";
-       Printf.printf "  AGENT ONBOARDING\n";
-       Printf.printf "  ----------------\n";
-       Printf.printf "  Start receiving: run c2c monitor\n";
-       Printf.printf "  Send:    c2c send <alias> <msg>    (e.g. c2c send %s \"hello\")\n" alias;
-       Printf.printf "  Check:   c2c poll-inbox\n";
-       Printf.printf "  Room:    c2c send-room %s <msg>\n" room;
-       (match client_resolved with
-        | Some "claude" ->
-            Printf.printf "  Monitor: add to Claude Code Monitor tool for auto-delivery\n"
-        | _ -> ());
-       if not do_mcp_setup then
-         Printf.printf "  MCP is optional; the CLI + Monitor work immediately with zero reload.\n  Pass --with-mcp to enable MCP tools.\n"
-)
+         (match supervisor_result with
+          | `Set (aliases, strat) ->
+              Printf.printf "  supervisor: %s%s\n" (String.concat ", " aliases)
+                (match strat with Some s -> Printf.sprintf " (strategy: %s)" s | None -> "")
+          | `Skipped -> ()
+          | `Error e -> Printf.printf "  supervisor: error — %s\n" e);
+
+         (match relay_result with
+          | `Ok rurl ->
+              Printf.printf "\nRelay attached. Start the connector with:\n";
+              Printf.printf "  c2c relay connect --relay-url %s\n" rurl
+          | `Skipped -> ()
+          | `Error e -> Printf.printf "  relay:     error — %s\n" e);
+
+          Printf.printf "\nYou're ready! Try:\n";
+        Printf.printf "  c2c list              — see peers\n";
+        Printf.printf "  c2c send ALIAS MSG    — send a message\n";
+        Printf.printf "  c2c poll-inbox        — check your inbox\n";
+        Printf.printf "  c2c send-room %s MSG  — chat in the room\n" room;
+        Printf.printf "  c2c monitor           — watch for incoming messages (auto-resolves alias)\n";
+        Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
+        Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n")
 
 let completion_cmd =
   let shell_arg =
@@ -7965,80 +7734,6 @@ let init =
             ; `P "$(b,c2c init --supervisor coordinator1,planner1 --supervisor-strategy round-robin)  — multi-supervisor"
             ])
     init_cmd
-
-let self_update_cmd =
-  let check_only =
-    Cmdliner.Arg.(
-      value & flag & info [ "check" ]
-        ~doc:"Report latest available vs current version without modifying anything.")
-  in
-  let pinned_version =
-    Cmdliner.Arg.(
-      value & opt (some string) None
-        & info [ "target" ] ~docv:"VERSION"
-            ~doc:"Pin to a specific release tag (e.g. 0.8.8 or v0.8.8).")
-  in
-  let json_output =
-    Cmdliner.Arg.(
-      value & flag & info [ "json" ]
-        ~doc:"Output a single valid JSON document on stdout; diagnostics to stderr.")
-  in
-  let verify_sig =
-    Cmdliner.Arg.(
-      value & flag & info [ "verify-sig" ]
-        ~doc:"Verify release signature if available. (TODO: not yet implemented — prints a note.)")
-  in
-  let open Cmdliner.Term in
-  let+ check_only = check_only
-  and+ pinned_version = pinned_version
-  and+ json_output = json_output
-  and+ verify_sig = verify_sig in
-  let result = C2c_self_update.run_self_update ~check_only ~pinned_version ~json_output ~verify_sig in
-  match result with
-  | C2c_self_update.Updated _ -> ()
-  | Already_latest -> ()
-  | Check_only _ -> ()
-  | Update_error _ -> exit 1
-
-let self_update =
-  let info = Cmdliner.Cmd.info "self-update"
-    ~doc:"Update the running c2c binary to the latest (or pinned) release."
-    ~man:
-      [ `S "DESCRIPTION"
-      ; `P "$(b,c2c self-update) downloads the latest release from GitHub, verifies the \
-            SHA-256 checksum, and atomically replaces the running binary."
-      ; `P "Asset naming convention (shared with install.sh): \
-            $(b,c2c-<version>-<os>-<arch>.tar.gz) where os ∈ {linux, darwin}, arch ∈ {x64, arm64}."
-      ; `P "Refuses to touch system paths (/usr, /usr/local, /bin). Advises using a \
-            package manager or the curl bootstrap at https://c2c.im/install.sh."
-      ; `P "Exit codes: 0 = updated or check-only OK; 1 = error; the JSON output \
-            distinguishes $(b,already_latest) vs $(b,updated) vs $(b,error)."
-      ; `S "SECURITY"
-      ; `P "SHA-256 checksum verification is always performed against the published \
-            SHA256SUMS file. Signature verification (cosign/sigstore) is a TODO — \
-            when $(b,--verify-sig) is passed, a note is printed."
-      ; `S "EXAMPLES"
-      ; `P "$(b,c2c self-update)  — update to latest release"
-      ; `P "$(b,c2c self-update --check)  — report latest vs current without modifying"
-      ; `P "$(b,c2c self-update --check --json)  — machine-readable check"
-      ; `P "$(b,c2c self-update --target 0.8.5)  — pin to a specific version"
-      ; `P "$(b,c2c self-update --json)  — update with JSON output"
-      ]
-  in
-  Cmdliner.Cmd.v info self_update_cmd
-
-(* Aliases for self-update *)
-let update_alias =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "update"
-       ~doc:"Alias for self-update.")
-    self_update_cmd
-
-let upgrade_alias =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "upgrade"
-       ~doc:"Alias for self-update.")
-    self_update_cmd
 
 let install =
   let info = Cmdliner.Cmd.info "install"
@@ -8648,104 +8343,11 @@ let clean_stale_subcmd = Cmdliner.Cmd.v
            or matching ephemeral test-name patterns). Use --dry-run to preview.")
   clean_stale_cmd
 
-(* --- subcommand: instances gc (B031) -------------------------------------- *)
-
-let instances_gc_cmd =
-  let max_age_hours =
-    Cmdliner.Arg.(
-      value
-      & opt int 24
-      & info [ "max-age" ] ~docv:"HOURS"
-          ~doc:"Remove stopped instances older than HOURS (default: 24).")
-  in
-  let dry_run =
-    Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ]
-      ~doc:"List candidates and their age; remove nothing.")
-  in
-  let force =
-    Cmdliner.Arg.(value & flag & info [ "force"; "f" ]
-      ~doc:"Skip confirmation prompt.")
-  in
-  let+ max_age_hours = max_age_hours
-  and+ dry_run = dry_run
-  and+ force = force in
-  if max_age_hours < 0 then (
-    Printf.eprintf "error: --max-age must be >= 0\n%!";
-    exit 1);
-  let instances_dir = instances_dir () in
-  let now = Unix.gettimeofday () in
-  let max_age_s = float_of_int max_age_hours *. 3600.0 in
-  let all_instances = read_managed_instances () in
-  (* Classify: stopped instances past the max-age threshold *)
-  let candidates =
-    List.filter_map (fun (inst : managed_instance_view) ->
-      if inst.mi_status = "running" then None
-      else
-        (* Determine age: prefer created_at, fall back to dir mtime *)
-        let age_s =
-          match inst.mi_created_at with
-          | Some created_at -> now -. created_at
-          | None ->
-              (* Fall back to dir mtime *)
-              let inst_path = instances_dir // inst.mi_name in
-              try
-                let st = Unix.stat inst_path in
-                now -. st.Unix.st_mtime
-              with _ -> 0.0
-        in
-        if age_s > max_age_s then
-          Some (inst, age_s)
-        else None
-    ) all_instances
-  in
-  let total_candidates = List.length candidates in
-  if total_candidates = 0 then (
-    Printf.printf "No stopped instances older than %dh found.\n" max_age_hours;
-    exit 0);
-  Printf.printf "Stopped instances older than %dh:\n\n" max_age_hours;
-  List.iter (fun ((inst : managed_instance_view), age_s) ->
-    let age_h = age_s /. 3600.0 in
-    Printf.printf "  %-30s %-10s stopped %s ago\n"
-      inst.mi_name inst.mi_client
-      (if age_h < 48.0 then Printf.sprintf "%.0fh" age_h
-       else Printf.sprintf "%.0fd" (age_h /. 24.0))
-  ) candidates;
-  Printf.printf "\n%d instance(s) to remove.\n" total_candidates;
-  if dry_run then (
-    Printf.printf "(dry-run — no changes made)\n";
-    exit 0);
-  (* Safety confirmation *)
-  if not force then begin
-    Printf.printf "Remove these instance directories? [y/N] %!";
-    let answer = try input_line stdin with End_of_file -> "" in
-    if String.lowercase_ascii (String.trim answer) <> "y" then (
-      Printf.printf "Aborted.\n";
-      exit 0)
-  end;
-  let removed =
-    List.filter_map (fun ((inst : managed_instance_view), _age) ->
-      let path = instances_dir // inst.mi_name in
-      if Sys.file_exists path then begin
-        (try rm_rf path with _ -> ());
-        if not (Sys.file_exists path) then Some inst.mi_name
-        else None
-      end else Some inst.mi_name
-    ) candidates
-  in
-  Printf.printf "Removed %d instance(s).\n" (List.length removed);
-  exit 0
-
-let instances_gc_subcmd = Cmdliner.Cmd.v
-  (Cmdliner.Cmd.info "gc"
-     ~doc:"Remove stopped instances older than a threshold (default: 24h). \
-           Use --dry-run to preview; --force to skip confirmation.")
-  instances_gc_cmd
-
 let instances = Cmdliner.Cmd.group
   (Cmdliner.Cmd.info "instances"
      ~doc:"List managed c2c instances (alive-only by default; --all for full archive).")
   ~default:instances_cmd
-  [ clean_stale_subcmd; instances_gc_subcmd ]
+  [ clean_stale_subcmd ]
 
 (* --- subcommand: diag ----------------------------------------------------- *)
 
@@ -8821,10 +8423,9 @@ let dev_instances_cmd = instances_cmd
 
 (* dev_status_cmd: REMOVED — consolidated into dev_instances_cmd (2026-05-06) *)
 let dev_instances_sub =
-  Cmdliner.Cmd.group (Cmdliner.Cmd.info "instances"
-    ~doc:"List managed c2c instances (operator view; subcommands: clean-stale, gc).")
-    ~default:dev_instances_cmd
-    [ clean_stale_subcmd; instances_gc_subcmd ]
+  Cmdliner.Cmd.v (Cmdliner.Cmd.info "instances"
+    ~doc:"List managed c2c instances (operator view).")
+    dev_instances_cmd
 
 (* dev_group is defined later, after all subcommands it contains *)
 
@@ -8907,47 +8508,8 @@ let doctor_cmd =
                 |> (if json then fun l -> "--json" :: l else Fun.id) in
     match git_repo_toplevel () with
     | None ->
-        (* Outside a c2c git repo: run what we can without repo context.
-           Honor --json: emit a single valid JSON document describing the
-           sub-checks that work without a repo (B021). *)
-        let broker_root_str = C2c_utils.resolve_broker_root () in
-        let alias_opt = C2c_utils.alias_from_env_only () in
-        let sched_r =
-          match alias_opt with
-          | Some alias -> Some (C2c_doctor_schedule.scan_schedules_dir alias)
-          | None -> None
-        in
-        let hooks_r = C2c_doctor_hooks.check () in
-        if json then begin
-          print_json
-            (`Assoc [
-              ("degraded", `Bool true);
-              ("reason", `String "not in c2c git repo");
-              ("broker_root", `String broker_root_str);
-              ("alias", match alias_opt with Some a -> `String a | None -> `Null);
-              ("schedules",
-                (match sched_r with
-                 | Some r -> C2c_doctor_schedule.to_json r
-                 | None -> `Null));
-              ("hooks", C2c_doctor_hooks.to_json hooks_r);
-            ])
-        end else begin
-          Printf.printf "c2c doctor (degraded — not in c2c git repo)\n\n";
-          Printf.printf "  broker root: %s\n" broker_root_str;
-          (match alias_opt with
-           | Some a -> Printf.printf "  alias: %s\n" a
-           | None -> Printf.printf "  alias: (not set — C2C_MCP_AUTO_REGISTER_ALIAS not found)\n");
-          Printf.printf "\n";
-          (* Schedule check — works without repo *)
-          (match sched_r with
-           | Some r -> C2c_doctor_schedule.pp_human r
-           | None ->
-               Printf.printf "=== Schedule check ===\n\nSkipped (no alias set).\n\n");
-          (* Hooks check — works without repo *)
-          C2c_doctor_hooks.pp_human hooks_r;
-          Printf.printf "\nNote: repo-specific checks (push-pending, worktree status, binary staleness, docs drift)\n";
-          Printf.printf "are skipped outside the c2c source repo. Run 'c2c doctor' from within the repo for full output.\n"
-        end;
+        Printf.eprintf "error: must run from inside the c2c git repo.\n%!";
+        exit 1
     | Some toplevel ->
         let script = toplevel // "scripts" // "c2c-doctor.sh" in
         if not (Sys.file_exists script) then begin
@@ -12557,7 +12119,7 @@ let commands_man is_agent =
          $(b,open-pending-reply), $(b,check-pending-reply), \
          $(b,instances), $(b,doctor), $(b,rooms), $(b,monitor), $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (safe with care) =="
-    ; `P "$(b,start), $(b,stop), $(b,restart), $(b,reset-thread), $(b,init), $(b,install), $(b,self-update), \
+    ; `P "$(b,start), $(b,stop), $(b,restart), $(b,reset-thread), $(b,init), $(b,install), \
          $(b,agent), $(b,roles), $(b,compile), $(b,roles-validate), \
           $(b,config), $(b,config-show), $(b,generation-client), \
          $(b,repo)"
@@ -12724,9 +12286,8 @@ let fast_path_commands () =
     ("diag", "Show diagnostic info for a managed instance");
     ("gui", "Launch the c2c TUI");
     ("install", "Install c2c + client integrations");
-    ("self-update", "Update the running c2c binary to the latest release");
     ("init", "Generate a new Ed25519 identity keypair");
-    ("hook", "Hook subcommands: post-tool (PostToolUse) + stop (text-only turn delivery)");
+    ("hook", "PostToolUse hook: drain inbox and emit messages");
 
   ] in
   let tier4 = [
@@ -13170,7 +12731,7 @@ let instances_deprecated =
     (Cmdliner.Cmd.info "instances"
        ~doc:"[DEPRECATED: use c2c dev instances]")
     ~default:instances_deprecated_term
-    [ clean_stale_subcmd; instances_gc_subcmd ]
+    [ clean_stale_subcmd ]
 
 let () =
   try_fast_path ();
@@ -13182,8 +12743,8 @@ let () =
   let tier_grouped_man = commands_man is_agent in
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; await_reply; approval_reply; authorize; approval_pending_write; approval_list; approval_show; approval_gc; resolve_authorizer; send_all; sweep; registry_prune
-    ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; host_id; git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
-    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; self_update; update_alias; upgrade_alias; C2c_uninstall.uninstall_subcmd; completion_cmd; list_glyphs
+    ; sweep_dryrun; migrate_broker; history; health; connect; setcap; status; verify; host_id; git; register; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
+    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; init; install; C2c_uninstall.uninstall_subcmd; completion_cmd; list_glyphs
     ; serve; mcp; start; C2c_agent.agent_group; config_group; C2c_agent.roles_group; gui; stop; restart; reset_thread; restart_self_deprecated; instances_deprecated; diag_deprecated; dev_group; doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; monitor; hook; inject_deprecated; repo_group; screen; statefile_top; debug_group; oc_plugin_group; cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
@@ -13204,6 +12765,6 @@ let () =
                 ; `P "c2c uses standard exit codes:"
                 ; `Noblank; `P "123 — operational error (e.g., relay unreachable, broker unreachable, or registration failed)"
                 ; `Noblank; `P "124 — bad command-line flag or argument — check your syntax"
-                ; `Noblank; `P "125 — bug in c2c — please report at https://github.com/clankercode/c2c/issues"
+                ; `Noblank; `P "125 — bug in c2c — please report at https://github.com/anomalyco/c2c/issues"
                 ] @ tier_grouped_man))
              visible_cmds))
