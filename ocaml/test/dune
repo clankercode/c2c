@@ -184,6 +184,12 @@
  (deps %{exe:../tools/c2c_inbox_hook.exe}))
 
 (test
+ (name test_nudge_debounce)
+ (modules test_nudge_debounce)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps %{exe:../tools/c2c_inbox_hook.exe} %{exe:../tools/c2c_stop_hook.exe}))
+
+(test
  (name test_c2c_relay_connector)
  (modules test_c2c_relay_connector)
  (libraries c2c_mcp alcotest yojson unix))

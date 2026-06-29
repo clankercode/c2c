@@ -210,6 +210,20 @@ let print_additional_context ~extra_contexts messages_text =
       in
       Printf.printf "%s\n" (Yojson.Safe.to_string json)
 
+(* Print a nudge line as a short awareness message. *)
+let print_nudge ~count =
+  let nudge_text = C2c_hook_lib.format_nudge_line ~count in
+  let json : Yojson.Safe.t =
+    `Assoc
+      [ ( "hookSpecificOutput"
+        , `Assoc
+            [ ("hookEventName", `String "PostToolUse")
+            ; ("additionalContext", `String nudge_text)
+            ] )
+      ]
+  in
+  Printf.printf "%s\n" (Yojson.Safe.to_string json)
+
 let () =
   let session_id =
     match C2c_hook_lib.resolve_session_id () with
@@ -225,29 +239,82 @@ let () =
   (* PPID is the Claude Code process that spawned this hook *)
   let client_pid = Unix.getppid () in
 
+  (* Check if full inject mode is enabled (opt-in for old behavior) *)
+  let full_inject_mode =
+    match C2c_hook_lib.env_nonempty "C2C_POST_TOOL_FULL_INJECT" with
+    | Some v ->
+        let v = String.trim (String.lowercase_ascii v) in
+        v = "1" || v = "true" || v = "yes" || v = "on"
+    | None -> false
+  in
+
   try
-    let repo_broker, messages, alias =
-      C2c_hook_lib.drain_all_messages ~session_id ~broker_root
-    in
+    if full_inject_mode then begin
+      (* Old behavior: drain and emit full messages *)
+      let repo_broker, messages, alias =
+        C2c_hook_lib.drain_all_messages ~session_id ~broker_root
+      in
 
-    (* Write statefile with current state (non-fatal) *)
-    if broker_root <> "" then write_statefile ~session_id ~alias ~client_pid ~now;
+      (* Write statefile with current state (non-fatal) *)
+      if broker_root <> "" then write_statefile ~session_id ~alias ~client_pid ~now;
 
-    (* Format messages as c2c envelope text *)
-    let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
+      (* Format messages as c2c envelope text *)
+      let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
 
-    (* Cold-boot context (once per session) *)
-    let extra_contexts =
-      match broker_root with
-      | "" -> []
-      | root ->
-          (match C2c_cold_boot_context.context_for_session
-                   ~broker_root:root ~session_id
-           with
-           | Some context -> [ context ]
-           | None -> [])
-    in
-    print_additional_context ~extra_contexts messages_text;
+      (* Cold-boot context (once per session) *)
+      let extra_contexts =
+        match broker_root with
+        | "" -> []
+        | root ->
+            (match C2c_cold_boot_context.context_for_session
+                     ~broker_root:root ~session_id
+             with
+             | Some context -> [ context ]
+             | None -> [])
+      in
+      print_additional_context ~extra_contexts messages_text
+    end else begin
+      (* New behavior: debounced nudge logic *)
+      let now_ts = Unix.gettimeofday () in
+      let nudge_state = C2c_hook_lib.read_nudge_state ~broker_root ~session_id in
+      let waiting_count = C2c_hook_lib.count_waiting_messages ~broker_root ~session_id in
+
+      if waiting_count = 0 then begin
+        (* No messages waiting: reset nudge state *)
+        C2c_hook_lib.write_nudge_state ~broker_root ~session_id
+          C2c_hook_lib.default_nudge_state;
+        (* Write statefile with current state (non-fatal) *)
+        let alias = "" in
+        if broker_root <> "" then write_statefile ~session_id ~alias ~client_pid ~now
+      end else begin
+        (* Messages are waiting: check debounce rules *)
+        let time_since_last_nudge = now_ts -. nudge_state.last_nudge_ts in
+        let time_since_first_waiting = now_ts -. nudge_state.first_waiting_ts in
+        let should_nudge =
+          waiting_count >= 1
+          && time_since_last_nudge >= 60.0
+          && time_since_first_waiting >= 60.0
+        in
+
+        if should_nudge then begin
+          (* Emit nudge and update state *)
+          print_nudge ~count:waiting_count;
+          C2c_hook_lib.write_nudge_state ~broker_root ~session_id
+            { last_nudge_ts = now_ts
+            ; first_waiting_ts = now_ts
+            }
+        end else begin
+          (* Update first_waiting_ts if this is the first time we see waiting messages *)
+          let new_state =
+            if nudge_state.first_waiting_ts = 0.0 then
+              { nudge_state with first_waiting_ts = now_ts }
+            else
+              nudge_state
+          in
+          C2c_hook_lib.write_nudge_state ~broker_root ~session_id new_state
+        end
+      end
+    end;
 
     (* Deliberately no min-runtime sleep: P0 removes the ECHILD-race floor.
        Restore a small runtime floor here if Claude hook reaping regresses. *)
