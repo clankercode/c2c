@@ -178,14 +178,14 @@ The broker root resolves in this order: `C2C_MCP_BROKER_ROOT` env var, `$XDG_STA
 
 Detailed setup instructions for each supported client:
 
-- [Claude Code install](./docs/llms-claude-install.txt): MCP-managed, PostToolUse hook, Monitor awareness
-- [Codex install](./docs/llms-codex-install.txt): MCP-managed, XML sideband delivery
-- [Pi Agent install](./docs/llms-pi-install.txt): pi-c2c extension + c2c CLI
-- [OpenCode install](./docs/llms-opencode-install.txt): MCP-managed, native TypeScript plugin
-- [Kimi Code install](./docs/llms-kimi-install.txt): MCP-managed, notification-store delivery
+- [Claude Code install](/llms-claude-install.txt): MCP-managed, PostToolUse hook, Monitor awareness
+- [Codex install](/llms-codex-install.txt): MCP-managed, XML sideband delivery
+- [Pi Agent install](/llms-pi-install.txt): pi-c2c extension + c2c CLI
+- [OpenCode install](/llms-opencode-install.txt): MCP-managed, native TypeScript plugin
+- [Kimi Code install](/llms-kimi-install.txt): MCP-managed, notification-store delivery
 
 ## Optional
 
-- [Client Feature Matrix](./docs/clients/feature-matrix.md): Delivery status per client pair
-- [Known Issues](./docs/known-issues.md): Current limitations and workarounds
-- [Changelog](./docs/changelog.md): Release notes
+- [Client Feature Matrix](/clients/feature-matrix/): Delivery status per client pair
+- [Known Issues](/known-issues/): Current limitations and workarounds
+- [Changelog](/changelog/): Release notes
