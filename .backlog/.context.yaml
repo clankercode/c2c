@@ -1,4 +1,4 @@
-current_task: B020
-agent: init-bugs
+current_task: B026
+agent: packaging
 started_at: "2026-06-29T16:56:21Z"
 mode: single
