@@ -204,23 +204,6 @@ let test_enabled_grace_register_succeeds_without_pow () =
       Alcotest.(check int) "still in grace" 0
         (header_difficulty (require_pow_header result))))
 
-let warm_actor_past_grace ~base_url ~identity ~alias =
-  let rec loop n =
-    if n <= 0 then Lwt.return_unit
-    else
-      let body =
-        register_body
-          ~node_id:"node-warm"
-          ~session_id:(Printf.sprintf "session-warm-%d" n)
-          ~alias ~identity ~relay_url:base_url ()
-      in
-      post_register ~base_url body >>= fun result ->
-      Alcotest.(check int) "warm register status" 200
-        (Cohttp.Code.code_of_status result.status);
-      loop (n - 1)
-  in
-  loop 3
-
 let required_pow_fields result =
   let required = json_member "required" result.json in
   ( json_int "difficulty" required,
@@ -235,6 +218,45 @@ let mint_required_pow ~actor_id ~difficulty ~epoch ~server_nonce =
   match Pow.mint ~challenge ~difficulty with
   | None -> Alcotest.fail "Pow.mint failed at relay-required difficulty"
   | Some pow_nonce -> pow_nonce
+
+(* Warm the actor past the PoW grace window by registering other sessions
+   under the same alias+identity. Each successful register records route cost
+   (10); once accumulated cost crosses grace (20) the relay demands PoW, which
+   we mint and retry — the whole point is to push the actor past grace, so the
+   register that crosses the boundary legitimately demands a proof and must
+   mint through it rather than fail. Callers that then assert the NEXT register
+   is pow_required rely on the actor being genuinely warm. *)
+let warm_actor_past_grace ~base_url ~(identity : Relay_identity.t) ~alias =
+  let actor_id = b64url identity.public_key in
+  let rec loop n =
+    if n <= 0 then Lwt.return_unit
+    else begin
+      let session_id = Printf.sprintf "session-warm-%d" n in
+      let post ?(pow_nonce=None) ?(epoch=None) ?(server_nonce=None) () =
+        let body =
+          register_body ?pow_nonce ?pow_epoch:epoch ?pow_server_nonce:server_nonce
+            ~node_id:"node-warm" ~session_id ~alias ~identity ~relay_url:base_url ()
+        in
+        post_register ~base_url body
+      in
+      post () >>= fun result ->
+      (match Cohttp.Code.code_of_status result.status with
+       | 200 -> Lwt.return_unit
+       | 429 when json_string "error_code" result.json = "pow_required" ->
+         let difficulty, epoch, server_nonce = required_pow_fields result in
+         let pow_nonce = mint_required_pow ~actor_id ~difficulty ~epoch ~server_nonce in
+         post ~pow_nonce:(Some pow_nonce) ~epoch:(Some epoch) ~server_nonce:(Some server_nonce) () >>= fun retry ->
+         Alcotest.(check int) "warm register (pow retry) status" 200
+           (Cohttp.Code.code_of_status retry.status);
+         Lwt.return_unit
+       | _ ->
+         Alcotest.(check int) "warm register status" 200
+           (Cohttp.Code.code_of_status result.status);
+         Lwt.return_unit) >>= fun () ->
+      loop (n - 1)
+    end
+  in
+  loop 3
 
 (* Mint a nonce whose SHA-256 has leading-zero-bits in [min_difficulty,
    below_difficulty): valid at the lower bar, stale at the higher one. This
@@ -413,9 +435,14 @@ let test_lease_refresh_is_pow_free () =
       post_register ~base_url first_body >>= fun first ->
       Alcotest.(check int) "first register ok" 200
         (Cohttp.Code.code_of_status first.status);
-      (* 2. Warm the SAME actor past grace with other sessions: a *new*
-         register would now demand PoW. *)
-      warm_actor_past_grace ~base_url ~identity ~alias >>= fun () ->
+      (* 2. Warm the SAME actor (identity) past grace using a DIFFERENT alias.
+         PoW cost accumulates per-actor (the Ed25519 identity), not per-alias,
+         so warming under a throwaway alias pushes this actor past grace
+         WITHOUT rebinding the original `alias` lease — which the relay does
+         on a same-identity re-register (it replaces the alias's lease). Keeping
+         the original (node,session) lease intact is what lets step 3 be
+         recognized as a lease refresh. *)
+      warm_actor_past_grace ~base_url ~identity ~alias:(alias ^ "-warmer") >>= fun () ->
       (* 3. Re-register the SAME (node, session, alias) = a lease refresh.
          Must succeed without a PoW challenge despite the warm actor, and
          advertise D=0 (refresh neither charges cost nor escalates). *)
