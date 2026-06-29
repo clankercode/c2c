@@ -35,3 +35,4 @@ bugs:
     - file: B036-expose-all-c2c-helper-binaries.todo
     - file: B037-make-c2c-init-a-safe-re-runnab.todo
     - file: B038-layer-delivery-monitor-as-prim.todo
+    - file: B039-same-box-send-should-auto-rout.todo

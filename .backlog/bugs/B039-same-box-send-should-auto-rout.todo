@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B039
+priority: medium
+status: pending
+tags: []
+title: Same-box send should auto-route to the recipient's broker; plain send only checks the caller's repo broker and rejects 'not registered'
+---
+One machine hosts many per-repo brokers. c2c list --global scans ALL known broker roots and found an alias in another repo's broker, but c2c send <alias> <msg> from the default broker failed with 'alias is not registered; message not queued'. Asymmetry: discovery is global, delivery is local. Workaround is manual --root <recipient-broker>. Expected: on same host, c2c send auto-resolves alias across known broker roots and routes automatically. Best practices: maintain local alias->broker index, prefer alive on multiple matches, improve failure message to name where alias was found and suggest fix, consider single default same-host broker. Repro: from default-broker session, c2c send <alias-in-another-broker> hi -> alias not registered. Related: B034 (--root when cwd not git repo), B024.
