@@ -1210,38 +1210,52 @@ let poll_inbox_cmd =
   (match session_id_opt, alias_opt with
    | Some _, Some _ -> Printf.eprintf "error: --session-id and --alias are mutually exclusive.\n%!"; exit 1
    | _ -> ());
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
-  let session_id = match session_id_opt with
-    | Some sid -> sid
-    | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
-  in
-  let messages =
-    if peek then
-      C2c_mcp.Broker.read_inbox broker ~session_id
-    else
-      C2c_mcp.Broker.drain_inbox ~drained_by:"cli_poll" broker ~session_id
-  in
-  let output_mode = if json then Json else Human in
-  match output_mode with
-  | Json ->
-      print_json
-        (`List
-          (List.map
-             (fun (m : C2c_mcp.message) ->
-               `Assoc
-                 [ ("from_alias", `String m.from_alias)
-                 ; ("to_alias", `String m.to_alias)
-                 ; ("content", `String m.content)
-                 ; ("ts", `Float m.ts)
-                 ])
-             messages))
-  | Human ->
-      if messages = [] then
-        Printf.printf "(no messages)\n"
+  (try
+    let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
+    let session_id = match session_id_opt with
+      | Some sid -> sid
+      | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
+    in
+    let messages =
+      if peek then
+        C2c_mcp.Broker.read_inbox broker ~session_id
       else
-        List.iter
-          (fun (m : C2c_mcp.message) -> Printf.printf "[%s] %s\n" m.from_alias m.content)
-          messages
+        C2c_mcp.Broker.drain_inbox ~drained_by:"cli_poll" broker ~session_id
+    in
+    let output_mode = if json then Json else Human in
+    match output_mode with
+    | Json ->
+        print_json
+          (`List
+            (List.map
+               (fun (m : C2c_mcp.message) ->
+                 `Assoc
+                   [ ("from_alias", `String m.from_alias)
+                   ; ("to_alias", `String m.to_alias)
+                   ; ("content", `String m.content)
+                   ; ("ts", `Float m.ts)
+                   ])
+               messages))
+    | Human ->
+        if messages = [] then
+          Printf.printf "(no messages)\n"
+        else
+          List.iter
+            (fun (m : C2c_mcp.message) -> Printf.printf "[%s] %s\n" m.from_alias m.content)
+            messages
+  with
+  | Unix.Unix_error (code, fn, path) when code = Unix.EROFS || code = Unix.EACCES ->
+      let msg = Printf.sprintf
+        "broker root is not writable in this sandbox (path: %s, error: %s). \
+         Set C2C_MCP_BROKER_ROOT to a writable path or run from a managed session."
+        path (Unix.error_message code)
+      in
+      if json then
+        print_json (`Assoc [ ("error", `String msg); ("code", `String (match code with Unix.EROFS -> "EROFS" | Unix.EACCES -> "EACCES" | _ -> "unknown")) ])
+      else
+        Printf.eprintf "error: %s\n%!" msg;
+      exit 1
+  )
 
 (* --- subcommand: send-all ------------------------------------------------- *)
 
