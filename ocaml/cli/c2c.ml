@@ -8819,25 +8819,47 @@ let doctor_cmd =
                 |> (if json then fun l -> "--json" :: l else Fun.id) in
     match git_repo_toplevel () with
     | None ->
-        (* Outside a c2c git repo: run what we can without repo context *)
-        Printf.printf "c2c doctor (degraded — not in c2c git repo)\n\n";
-        Printf.printf "  broker root: %s\n" (C2c_utils.resolve_broker_root ());
-        (match C2c_utils.alias_from_env_only () with
-         | Some a -> Printf.printf "  alias: %s\n" a
-         | None -> Printf.printf "  alias: (not set — C2C_MCP_AUTO_REGISTER_ALIAS not found)\n");
-        Printf.printf "\n";
-        (* Schedule check — works without repo *)
-        (match C2c_utils.alias_from_env_only () with
-         | Some alias ->
-             let r = C2c_doctor_schedule.scan_schedules_dir alias in
-             C2c_doctor_schedule.pp_human r
-         | None ->
-             Printf.printf "=== Schedule check ===\n\nSkipped (no alias set).\n\n");
-        (* Hooks check — works without repo *)
+        (* Outside a c2c git repo: run what we can without repo context.
+           Honor --json: emit a single valid JSON document describing the
+           sub-checks that work without a repo (B021). *)
+        let broker_root_str = C2c_utils.resolve_broker_root () in
+        let alias_opt = C2c_utils.alias_from_env_only () in
+        let sched_r =
+          match alias_opt with
+          | Some alias -> Some (C2c_doctor_schedule.scan_schedules_dir alias)
+          | None -> None
+        in
         let hooks_r = C2c_doctor_hooks.check () in
-        C2c_doctor_hooks.pp_human hooks_r;
-        Printf.printf "\nNote: repo-specific checks (push-pending, worktree status, binary staleness, docs drift)\n";
-        Printf.printf "are skipped outside the c2c source repo. Run 'c2c doctor' from within the repo for full output.\n";
+        if json then begin
+          print_json
+            (`Assoc [
+              ("degraded", `Bool true);
+              ("reason", `String "not in c2c git repo");
+              ("broker_root", `String broker_root_str);
+              ("alias", match alias_opt with Some a -> `String a | None -> `Null);
+              ("schedules",
+                (match sched_r with
+                 | Some r -> C2c_doctor_schedule.to_json r
+                 | None -> `Null));
+              ("hooks", C2c_doctor_hooks.to_json hooks_r);
+            ])
+        end else begin
+          Printf.printf "c2c doctor (degraded — not in c2c git repo)\n\n";
+          Printf.printf "  broker root: %s\n" broker_root_str;
+          (match alias_opt with
+           | Some a -> Printf.printf "  alias: %s\n" a
+           | None -> Printf.printf "  alias: (not set — C2C_MCP_AUTO_REGISTER_ALIAS not found)\n");
+          Printf.printf "\n";
+          (* Schedule check — works without repo *)
+          (match sched_r with
+           | Some r -> C2c_doctor_schedule.pp_human r
+           | None ->
+               Printf.printf "=== Schedule check ===\n\nSkipped (no alias set).\n\n");
+          (* Hooks check — works without repo *)
+          C2c_doctor_hooks.pp_human hooks_r;
+          Printf.printf "\nNote: repo-specific checks (push-pending, worktree status, binary staleness, docs drift)\n";
+          Printf.printf "are skipped outside the c2c source repo. Run 'c2c doctor' from within the repo for full output.\n"
+        end;
     | Some toplevel ->
         let script = toplevel // "scripts" // "c2c-doctor.sh" in
         if not (Sys.file_exists script) then begin
