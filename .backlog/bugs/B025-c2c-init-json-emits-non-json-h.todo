@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T16:56:21Z"
+claimed_by: init-bugs
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B025
 priority: high
-status: pending
+started_at: "2026-06-29T16:56:21Z"
+status: in_progress
 tags: []
 title: 'c2c init --json emits non-JSON: human log lines + two concatenated JSON objects on stdout'
 ---
