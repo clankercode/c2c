@@ -1,4 +1,4 @@
-current_task: B035
-agent: hooks-bin
+current_task: B031
+agent: instances-gc
 started_at: "2026-06-29T16:56:21Z"
 mode: single
