@@ -630,6 +630,36 @@ let send_cmd =
                    | None -> Option.value (env_auto_alias ()) ~default:"c2c-cli")
               | None -> Option.value (env_auto_alias ()) ~default:"c2c-cli"))
   in
+  (* B044: Warn when --from aliases a different identity than the caller's own.
+     The recipient cannot reply to a sender that isn't the caller's registered
+     alias — this is an operator/impersonation footgun. Non-fatal: the send
+     still goes through since --from is intentional for operator use. *)
+  let () =
+    match from_override with
+    | Some override_str when String.trim override_str <> "" ->
+        let override_cf =
+          C2c_mcp.Broker.alias_casefold (String.trim override_str)
+        in
+        let own_alias_opt =
+          match env_session_id () with
+          | Some sid ->
+              let regs = C2c_mcp.Broker.list_registrations broker in
+              (match List.find_opt
+                       (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+                       regs
+               with Some r -> Some r.alias | None -> None)
+          | None -> None
+        in
+        (match own_alias_opt with
+         | Some own when
+             C2c_mcp.Broker.alias_casefold own <> override_cf ->
+             Printf.eprintf
+               "warning: --from %s is not your own alias (%s); \
+                the recipient will NOT be able to reply to this sender.\n%!"
+               (String.trim override_str) own
+         | _ -> ())
+    | _ -> ()
+  in
   (* #392: enforce mutual exclusion + apply body prefix. *)
   let tag_count =
     (if fail then 1 else 0) + (if blocking then 1 else 0) + (if urgent then 1 else 0)
@@ -647,16 +677,14 @@ let send_cmd =
     else None
   in
   let content = (C2c_mcp.tag_to_body_prefix tag_str) ^ content in
-  (* Class E: warn when message body looks like an un-expanded shell
-     substitution pattern that the shell failed to expand. *)
+  (* B045: Stderr-only informational hint for human operators.
+     Body is data, never shell-eval'd — this never blocks or fails a send.
+     --no-warn-substitution suppresses even this hint. *)
   let _ =
     if (not no_warn_substitution) && likes_shell_substitution content
     then Printf.eprintf
-      "warning: message body appears to contain a shell substitution pattern \
-       (e.g. $(...) or `...`).\n\
-       If this was intended literally, re-send with --no-warn-substitution.\n\
-       To avoid this, quote the pattern: '$(date)' or escape the $.\n%!"
-  else ()
+      "hint: message body contains $(...) or backticks (sent as-is).\n%!"
+    else ()
   in
   let output_mode = if json then Json else Human in
   (try
@@ -5514,13 +5542,8 @@ let relay_dm_cmd =
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"For send: <to-alias> <message...>; for send-all: <message...>")
   in
-  let no_warn_substitution =
-    Cmdliner.Arg.(value & flag & info [ "no-warn-substitution" ]
-      ~doc:"Suppress the shell-substitution warning.")
-  in
   let+ subcmd = subcmd and+ relay_url = relay_url and+ token = token
-  and+ alias = alias and+ words = words
-  and+ no_warn_substitution = no_warn_substitution in
+  and+ alias = alias and+ words = words in
   match resolve_relay_url relay_url with
   | None ->
       Printf.eprintf "%s%!" relay_url_required_error;
@@ -5541,17 +5564,9 @@ let relay_dm_cmd =
                       exit 1
                 in
                 let content = String.concat " " msg_words in
-                (* Class E: warn when message body looks like an un-expanded shell
-                   substitution pattern that the shell failed to expand. *)
-                let _ =
-                  if (not no_warn_substitution) && likes_shell_substitution content
-                  then Printf.eprintf
-                    "warning: message body appears to contain a shell substitution pattern \
-                     (e.g. $(...) or `...`).\n\
-                     If this was intended literally, re-send with --no-warn-substitution.\n\
-                     To avoid this, quote the pattern: '$(date)' or escape the $.\n%!"
-                  else ()
-                in
+                (* B045: Substitution check removed from relay/programmatic paths.
+                   Body is data, never eval'd by a shell. The local CLI retains
+                   a stderr-only informational hint for human operators. *)
                 let body_str = Yojson.Safe.to_string (`Assoc [
                   ("from_alias", `String from_alias);
                   ("to_alias", `String to_alias);
@@ -5618,14 +5633,8 @@ let relay_dm_cmd =
                       exit 1
                 in
                 let content = String.concat " " msg_words in
-                let _ =
-                  if (not no_warn_substitution) && likes_shell_substitution content
-                  then Printf.eprintf
-                    "warning: message body appears to contain a shell substitution pattern \
-                     (e.g. $(...) or `...`).\n\
-                     If this was intended literally, re-send with --no-warn-substitution.\n%!"
-                  else ()
-                in
+                (* B045: Substitution check removed from relay/programmatic paths.
+                   Body is data, never eval'd by a shell. *)
                 let body = `Assoc [
                   ("from_alias", `String from_alias);
                   ("content", `String content);

@@ -148,15 +148,12 @@ let rooms_send_cmd =
   let broker = Broker.create ~root:(resolve_broker_root ()) in
   let from_alias = resolve_alias_with_broker ?override:from_override broker in
   let content = String.concat " " message in
-  (* Class E: warn when message body looks like an un-expanded shell
-     substitution pattern that the shell failed to expand. *)
+  (* B045: Stderr-only informational hint for human operators.
+     Body is data, never shell-eval'd — this never blocks or fails a send. *)
   let _ =
     if (not no_warn_substitution) && likes_shell_substitution content
     then Printf.eprintf
-      "warning: message body appears to contain a shell substitution pattern \
-       (e.g. $(...) or `...`).\n\
-       If this was intended literally, re-send with --no-warn-substitution.\n\
-       To avoid this, quote the pattern: '$(date)' or escape the $.\n%!"
+      "hint: message body contains $(...) or backticks (sent as-is).\n%!"
     else ()
   in
   let output_mode = if json then Json else Human in
