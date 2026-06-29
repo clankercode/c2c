@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-29T16:56:21Z"
 claimed_by: cli-robust
-completed_at: null
+completed_at: "2026-06-29T17:16:11Z"
 complexity: medium
 depends_on: []
+duration_minutes: 19.844434637366668
 estimate_hours: 1
 id: B022
 priority: low
 started_at: "2026-06-29T16:56:21Z"
-status: in_progress
+status: done
 tags: []
 title: 'Read-only commands spew ''fatal: not a git repository'' to stderr when run outside a repo'
 ---
