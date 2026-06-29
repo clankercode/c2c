@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B032
+priority: medium
+status: pending
+tags: []
+title: init should not fail (or warn) when a valid relay identity already exists -- treat as no-op success
+---
+c2c init unconditionally tries to CREATE a relay identity and reports rc=1 'relay identity init failed' when ~/.config/c2c/identity.json already exists. The existing identity is a valid ed25519 key and relay status is ok:true. init must be idempotent: if a valid identity exists, treat as success/no-op (only --force regenerates). Same idempotency for every resource init touches (hooks, MCP, room join). Repro: c2c init on a host that already has identity.json. Related: B020.

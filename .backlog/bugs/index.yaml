@@ -25,3 +25,14 @@ bugs:
     - file: B023-c2c-im-leads-with-npm-i-g-as-p.todo
     - file: B024-init-generates-two-different-a.todo
     - file: B025-c2c-init-json-emits-non-json-h.todo
+    - file: B026-npm-primary-install-lands-in-r.todo
+    - file: B027-add-install-sh-curl-bootstrap.todo
+    - file: B028-add-c2c-self-update-command-in.todo
+    - file: B029-wrong-github-issues-url-in-hel.todo
+    - file: B030-make-cli-the-default-usage-pat.todo
+    - file: B031-managed-instances-from-e2e-int.todo
+    - file: B032-init-install-claude-should-aut.todo
+    - file: B032-surface-a-paste-ready-c2c-moni.todo
+    - file: B033-init-install-claude-should-aut.todo
+    - file: B034-surface-a-paste-ready-c2c-moni.todo
+    - file: B035-stop-hook-installed-but-its-bi.todo

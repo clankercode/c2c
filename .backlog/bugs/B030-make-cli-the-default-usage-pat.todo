@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B030
+priority: medium
+status: pending
+tags: []
+title: Make CLI the default usage path for Claude; show Claude-specific setup at an opportune moment (MCP optional, not required)
+---
+First-run UX pushes the MCP path, which requires a client reload and isn't needed for core actions. CLI (c2c send/list/rooms/...) works instantly with zero reload. Recommend: default path = CLI documented as primary; MCP is opt-in with clear reload instructions; per-client onboarding with Claude-tailored next steps and copy-paste CLI examples; surface guidance at opportune moments (after install, first message). Related: B025 (--json), MCP reload friction.

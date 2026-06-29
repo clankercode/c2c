@@ -1,10 +1,13 @@
 ---
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B023
 priority: low
-status: pending
+reason: Superseded by B026
+started_at: null
+status: cancelled
 tags: []
 title: c2c.im leads with npm i -g as primary method; fails on default /usr prefix and collides with standalone binary
 ---

@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B029
+priority: low
+status: pending
+tags: []
+title: 'Wrong GitHub issues URL in help/man output: points to anomalyco/c2c (should be clankercode/c2c)'
+---
+c2c --help EXIT CODES section says 'please report at https://github.com/anomalyco/c2c/issues'. The correct repo is github.com/clankercode/c2c. npm scope @clanker-code/c2c is correct; anomalyco appears to be a stale/old org name leaking into user-facing output. Repro: c2c --help | grep github.com

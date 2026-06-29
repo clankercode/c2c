@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B026
+priority: medium
+status: pending
+tags: []
+title: npm-primary install lands in root-owned /usr on system-node hosts; every peer agent CLI installs user-local without root
+---
+c2c.im leads with npm i -g @clanker-code/c2c as primary. On a host where node is distro-packaged (/usr/bin/node), npm prefix is /usr, so npm i -g fails with EACCES. ALL other agent CLIs install user-local without root -- codex/opencode via bun, pi via pnpm, kimi via uv, claude via its own installer. c2c already supports user-local via c2c install self -> ~/.local/bin, but there is NO curl bootstrap (c2c.im/install.sh -> 404; no curl|sh documented), which is the canonical no-root pattern used by uv/rustup/bun/deno/starship/ollama. Expected: default install is user-local, provide curl -fsSL https://c2c.im/install.sh | sh that drops standalone binary into ~/.local/bin. Demote npm i -g from primary or note the /usr-prefix caveat. Supersedes B023 (earlier low-sev docs/packaging note).

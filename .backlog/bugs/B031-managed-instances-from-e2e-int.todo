@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B031
+priority: low
+status: pending
+tags: []
+title: Managed instances from e2e/integration tests are never cleaned up; no GC/TTL for stopped instances
+---
+c2c dev instances --all shows 14 stopped managed instances lingering: 13x opencode (oc-agent/oc-sender/oc-receiver, status plugin_stale_no_fallback) created 3d ago from e2e test fixtures, plus 1 claude 'opus1' created 63d ago. None alive, none reaped. They clutter c2c status. Expected: e2e tests tear down their instances; stopped instances get TTL/GC or are hidden from default status (shown only via --all). Repro: c2c dev instances --all

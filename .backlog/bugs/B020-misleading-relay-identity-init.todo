@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B020
+priority: medium
+status: pending
+tags: []
+title: Misleading 'relay identity init failed (rc=1)' warning when identity already exists
+---
+init printed `relay identity init failed (rc=1). Relay features may not work.` Manual retry of `c2c relay identity init` revealed the real cause: identity.json already exists, pass --force to overwrite. Relay is actually fine; init treats 'already present' as failure. Should report success/no-op instead. Repro: c2c init on a host that already has ~/.config/c2c/identity.json
