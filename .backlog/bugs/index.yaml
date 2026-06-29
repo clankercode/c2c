@@ -37,3 +37,4 @@ bugs:
     - file: B038-layer-delivery-monitor-as-prim.todo
     - file: B039-same-box-send-should-auto-rout.todo
     - file: B040-cross-broker-send-is-a-7-step.todo
+    - file: B041-single-source-of-truth-for-ref.todo

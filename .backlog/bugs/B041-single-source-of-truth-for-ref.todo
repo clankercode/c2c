@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B041
+priority: medium
+status: pending
+tags: []
+title: 'Single-source-of-truth for reference docs: author docs/reference/*.md, generate website + llms.txt + binary-embedded skill + skill reference/ via codegen+sync-gate'
+---
+Website = Jekyll over docs/ (commands.md hand-mirrors --help); llms.txt hand-written; canonical skill in .collab/skills/c2c.md synced by just sync-skills, but .opencode/ and .codex/ are hand-duplicated with no enforcement. NO skill embedded in or installed by the binary (c2c install writes MCP+hooks only, ref B033/B037). Relay-room permissions, identifiers, and scope triad have no public doc home. Recommendation (Option A): (1) Author docs/reference/*.md per topic -> Jekyll auto-publishes. (2) codegen-skill-reference copies curated docs -> .collab/skills/c2c/reference/; extend sync-skills to fan to .opencode + .codex with sync-gate test. (3) codegen-c2c-skill embeds skill + reference into OCaml assoc-list (like role_templates_embedded.ml), gate with test, wire into install/init -> closes B033/B037. (4) codegen-llms = templated preamble + auto link-list from front-matter. Umbrella just docs; c2c doctor docs-drift as backstop. Embedding mechanism already proven for opencode-plugin/role-designer/role-templates. Open decisions: client-agnostic vs per-client templated skill, 3 missing topics (relay-room perms, identifiers, scope triad), commands.md drift. Related: B033, B037, B030, B037.
