@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-29T17:29:24Z"
 claimed_by: pi-dc2147
-completed_at: null
+completed_at: "2026-06-29T18:50:07Z"
 complexity: medium
 depends_on: []
+duration_minutes: 80.72197229791666
 estimate_hours: 1
 id: B038
 priority: medium
 started_at: "2026-06-29T17:29:24Z"
-status: in_progress
+status: done
 tags: []
 title: 'Layer delivery: Monitor as primary + hooks as backstop; PostToolUse injects mid-work only as awareness nudge'
 ---
