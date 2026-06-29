@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-06-29T16:56:21Z"
+claimed_by: website-docs
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B029
 priority: low
-status: pending
+started_at: "2026-06-29T16:56:21Z"
+status: in_progress
 tags: []
 title: 'Wrong GitHub issues URL in help/man output: points to anomalyco/c2c (should be clankercode/c2c)'
 ---
