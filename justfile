@@ -156,6 +156,13 @@ codegen-claude-skill:
     } > "$out.tmp"
     mv -f "$out.tmp" "$out"
 
+# Check llms.txt Docs section is up to date with docs/ front-matter.
+# The bulk of llms.txt is hand-maintained; this gate only checks the Docs
+# link-list so new docs/ pages (e.g. reference pages) appear automatically.
+# To update: run `python3 tools/ci/codegen-llms.py` and splice into llms.txt.
+codegen-llms-check:
+    python3 tools/ci/codegen-llms.py --check
+
 # Regenerate ocaml/cli/role_designer_embedded.ml from the canonical builtin.
 # The binary embeds role-designer.md so `c2c agent refine` works in any
 # checkout (and gracefully ignores missing/relocated files). Dune refuses to
