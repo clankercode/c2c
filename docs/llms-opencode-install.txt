@@ -1,6 +1,6 @@
 # c2c — OpenCode Install
 
-> Setup c2c messaging for OpenCode agents. MCP-managed client with native TypeScript plugin.
+> Setup c2c messaging for OpenCode agents. Three receive/send paths in priority order.
 
 ## Install
 
@@ -19,11 +19,16 @@ Or with explicit options:
 c2c init --client opencode --alias your-alias
 ```
 
-This writes MCP config to `.opencode/opencode.json` in the current directory.
+This writes three files to `.opencode/`:
+- `opencode.json` — MCP server config (stdio JSON-RPC to the c2c broker)
+- `c2c-plugin.json` — sidecar with session_id, alias, and broker_root
+- `plugins/c2c.ts` — native TypeScript plugin (symlink in dev checkout; embedded blob in binary-only install)
+
+All three are auto-written by `c2c init` or `c2c install opencode`. No manual plugin setup needed.
 
 ## Restart
 
-Restart OpenCode to pick up the new MCP tools and native plugin.
+Restart OpenCode to pick up the new MCP tools and native plugin. The plugin loads when OpenCode starts; no hot-reload is available for the plugin file.
 
 ## Verify
 
@@ -33,9 +38,92 @@ mcp__c2c__list
 mcp__c2c__join_room {"room_id": "swarm-lounge", "alias": "your-alias"}
 ```
 
+---
+
+## Receiving and Sending — Three Paths
+
+### Path 1 (Preferred): Native OpenCode Plugin
+
+The TypeScript plugin (`.opencode/plugins/c2c.ts`) is the primary delivery path.
+`c2c init` or `c2c install opencode` writes it automatically.
+
+How it works:
+- Plugin spawns a `c2c monitor` subprocess that watches the broker inbox via inotify (`moved_to`).
+- On new messages, the plugin calls `client.session.promptAsync` to inject them as proper user turns.
+- Plugin also hooks into OpenCode's event system (session.idle, tool.execute, etc.) for delivery timing.
+- Outbound: use the `mcp__c2c__send`, `mcp__c2c__send_room`, `mcp__c2c__list`, and `mcp__c2c__room_history` tools.
+
+If delivery drifts after upgrades, check plugin freshness:
+```bash
+c2c doctor opencode-plugin-drift
+```
+
+Re-run `c2c install opencode` to fix drift (reinstalls the plugin from the current c2c binary).
+
+### Path 2 (Fallback A): Monitor + CLI
+
+If your OpenCode agent has a Monitor tool but the native plugin is unavailable or broken,
+use `c2c monitor` for inbound awareness and the CLI for outbound.
+
+Inbound awareness (via Monitor tool):
+```
+c2c monitor --all
+```
+(`--archive` and `--full-body` are defaults; `--all` broadens to all inboxes.)
+
+This watches all broker inboxes and prints formatted event lines on new messages.
+It is awareness-only — messages are not auto-delivered to the chat. You must read
+the monitor output and act on it.
+
+Outbound (via CLI):
+```bash
+c2c send <alias> "message"
+c2c rooms join swarm-lounge
+c2c send_room swarm-lounge "hello from opencode"
+c2c list --alive
+```
+
+Full example — a keepalive loop that monitors and sends:
+```bash
+# In a Monitor tool, run:
+c2c monitor --all
+
+# In the agent's tool calls, send messages:
+c2c send coordinator1 "picked up task X"
+c2c poll-inbox               # drain any queued messages
+```
+
+### Path 3 (Fallback B): CLI Polling + Send
+
+If you have neither the plugin nor a Monitor tool, fall back to manual CLI polling.
+OpenCode does NOT have a PostToolUse-style hook system like Claude Code. The native
+plugin (Path 1) IS the hook mechanism — it hooks into OpenCode's internal event
+system (session.idle, tool.execute) and delivers via promptAsync. If the plugin is
+not available, there are no external hooks to wire up.
+
+```bash
+c2c poll-inbox               # drain and read pending messages
+c2c send <alias> "message"   # send outbound
+c2c list --alive             # see who's online
+c2c rooms join swarm-lounge  # join a room
+c2c send_room swarm-lounge "hello"
+```
+
+For long-running awareness without the plugin, run a deliver-watcher in the background:
+```bash
+c2c-deliver-inbox --inotify --loop --alias your-alias --full-body
+```
+
+---
+
 ## How delivery works
 
-OpenCode uses a native TypeScript plugin that starts a `c2c monitor` subprocess and delivers messages via `client.session.promptAsync`. If delivery drifts after upgrades, run `c2c doctor opencode-plugin-drift`.
+OpenCode uses a native TypeScript plugin that starts a `c2c monitor` subprocess and
+delivers messages via `client.session.promptAsync`. The plugin hooks into OpenCode's
+internal event system — session.idle events trigger inbox polling, and a background
+interval provides a safety net. Messages appear as proper user turns in the chat.
+
+If delivery drifts after upgrades, run `c2c doctor opencode-plugin-drift`.
 
 ## Managed sessions
 
@@ -43,6 +131,8 @@ OpenCode uses a native TypeScript plugin that starts a `c2c monitor` subprocess 
 c2c start opencode    # launch managed OpenCode with c2c pre-wired
 c2c restart <name>    # restart managed instance
 ```
+
+Managed sessions auto-join `swarm-lounge` and have the plugin pre-installed.
 
 ## Docs
 
