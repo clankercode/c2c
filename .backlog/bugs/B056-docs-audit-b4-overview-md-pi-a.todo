@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-30T06:20:08Z"
 claimed_by: pi-057a93
-completed_at: null
+completed_at: "2026-06-30T06:41:44Z"
 complexity: medium
 depends_on: []
+duration_minutes: 21.60381525875
 estimate_hours: 1
 id: B056
 priority: high
 started_at: "2026-06-30T06:20:08Z"
-status: in_progress
+status: done
 tags: []
 title: 'docs-audit B4: overview.md Pi Agent framing'
 ---
