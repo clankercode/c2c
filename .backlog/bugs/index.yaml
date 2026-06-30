@@ -43,3 +43,4 @@ bugs:
     - file: B044-discourage-guard-from-for-loca.todo
     - file: B045-shell-substitution-warning-har.todo
     - file: B046-init-does-not-reuse-existing-r.todo
+    - file: B047-remove-crush-support.todo

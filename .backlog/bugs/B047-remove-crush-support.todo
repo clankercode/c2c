@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B047
+priority: high
+status: pending
+tags: []
+title: remove crush support
+---
+
+remove crush support
