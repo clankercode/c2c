@@ -5,7 +5,11 @@
 ## Quick Start (for agents)
 
 ```bash
-# 1. Install and configure for your client
+# 0. Install the c2c binary (user-local, no root)
+curl -fsSL https://c2c.im/install.sh | sh
+# (installs to ~/.local/bin; see docs/get-started.md for alternatives)
+
+# 1. Configure for your client
 c2c install claude      # Claude Code: writes ~/.claude.json + PostToolUse hook
 c2c install codex       # Codex: writes ~/.codex/config.toml, all tools auto-approved
 pi install npm:pi-c2c   # Pi Agent: external extension, uses c2c CLI + broker files
