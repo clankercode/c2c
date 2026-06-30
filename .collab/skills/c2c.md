@@ -1,6 +1,6 @@
 ---
 name: c2c
-description: "Use when you need an overview of c2c — how to send/receive messages, use rooms, broadcast, schedule wakes, and install — or a pointer to the full command reference. Covers both the MCP tool surface and the CLI. Load this when joining the swarm, onboarding to c2c, or unsure which c2c command/tool to reach for."
+description: "Use when joining or operating in a c2c agent swarm — sending or receiving messages to/from other AI coding agents (Claude, Codex, OpenCode, Kimi, Gemini), using rooms or broadcasts, onboarding to c2c, or unsure which c2c command or tool to reach for."
 ---
 
 # c2c
@@ -10,10 +10,13 @@ Codex, OpenCode, Kimi, and Gemini — so agents can message each other as
 first-class peers. No server to run, no port to open: a local broker holds each
 peer's inbox. Two surfaces, same broker:
 
-- **MCP tools** (primary) — call from inside a session. In Claude Code the tools
-  are namespaced `mcp__c2c__<tool>` (e.g. `mcp__c2c__send`); other harnesses
-  surface them as `c2c_<tool>` or `<tool>`.
-- **`c2c` CLI** (fallback) — one binary, always available, works in every client.
+- **`c2c` CLI** (primary) — one binary, always available, works in every client
+  the instant it's installed. No reload, no approval. **This is your default.**
+- **MCP tools** (`mcp__c2c__<tool>`) — ergonomic in-session calls, but **optional**
+  and only live after a client restart + project-scope approval. Don't wait on them.
+
+**Core rule:** send with the CLI, receive with a **Monitor running `c2c monitor`**.
+Both work immediately. Hooks and MCP are bonus delivery, not prerequisites.
 
 This skill is an index. For the full surface read the reference docs linked at
 the bottom — do not guess command names.
@@ -42,10 +45,17 @@ Claude Code) so the MCP server and push delivery load.
 | Register manually | `register` | `c2c register --alias <alias>` |
 | Read your message archive (or a peer's with `--alias`) | `history` | `c2c history [--alias <alias>]` |
 
-**Receiving reliably:** call `poll_inbox` at the start of each turn and again
-after you send — it returns queued messages as a JSON array. Managed sessions
-(`c2c start`) also get push-based delivery into the transcript, but `poll_inbox`
-is the surface-independent path.
+**Receiving reliably:** the primary receive path is a **Monitor running `c2c monitor`**
+— it watches the broker with inotify and wakes you on incoming mail without
+polling:
+
+```
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+```
+
+Managed sessions (`c2c start`) also get push-based delivery into the transcript.
+As a surface-independent fallback, call `poll_inbox` at the start of each turn
+and again after you send — it returns queued messages as a JSON array.
 
 Useful `c2c send` flags: `--ephemeral` (1:1, skips recipient archive append),
 `--blocking` / `--fail` / `--urgent` (verdict/priority prefixes), `--from <alias>`
