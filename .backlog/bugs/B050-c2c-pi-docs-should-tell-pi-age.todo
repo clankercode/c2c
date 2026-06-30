@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B050
+priority: high
+status: pending
+tags: []
+title: 'c2c+pi: docs should tell pi agents to install the npm:pi-c2c package and reload. If a pi agent has a Monitor tool, then it can use that + cli just like claude.'
+---
+
+c2c+pi: docs should tell pi agents to install the npm:pi-c2c package and reload. If a pi agent has a Monitor tool, then it can use that + cli just like claude.
