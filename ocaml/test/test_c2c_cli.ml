@@ -2294,6 +2294,43 @@ let test_init_rejects_banned_alias () =
       check bool "error mentions blocked" true
         (string_contains content "blocked"))
 
+(* B046: init should reuse existing alias for the same session_id *)
+let test_init_reuses_alias_for_same_session_id () =
+  with_temp_dir (fun dir ->
+      let session_id = "test-sess-b046" in
+      (* Run 1: should generate a new alias *)
+      let args = Printf.sprintf "--client codex --no-nonce" in
+      let cmd1 =
+        Printf.sprintf "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s > /tmp/c2c-b046-r1.out 2>&1"
+          (Filename.quote dir) (Filename.quote session_id)
+          (c2c_cmd (Printf.sprintf "c2c init --no-setup %s" args))
+      in
+      let rc1 = Sys.command cmd1 in
+      let content1 = read_file "/tmp/c2c-b046-r1.out" in
+      check int "init run 1 exits 0" 0 rc1;
+      let alias1 = match extract_alias_line content1 with
+        | Some a -> a
+        | None -> fail "no alias line in init run 1 output"
+      in
+      (* Run 2: should reuse the same alias *)
+      let cmd2 =
+        Printf.sprintf "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s > /tmp/c2c-b046-r2.out 2>&1"
+          (Filename.quote dir) (Filename.quote session_id)
+          (c2c_cmd (Printf.sprintf "c2c init --no-setup %s" args))
+      in
+      let rc2 = Sys.command cmd2 in
+      let content2 = read_file "/tmp/c2c-b046-r2.out" in
+      check int "init run 2 exits 0" 0 rc2;
+      let alias2 = match extract_alias_line content2 with
+        | Some a -> a
+        | None -> fail "no alias line in init run 2 output"
+      in
+      (* Assert aliases are identical — the core B046 invariant *)
+      check string "alias stable across re-runs" alias1 alias2;
+      (* Cleanup temp files *)
+      (try Sys.remove "/tmp/c2c-b046-r1.out" with _ -> ());
+      (try Sys.remove "/tmp/c2c-b046-r2.out" with _ -> ()))
+
 let run_capture command =
   let tmpfile = Filename.temp_file "c2c-cli-capture" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
@@ -2622,5 +2659,6 @@ let () =
         ; ( "init --no-nonce yields bare alias", `Quick, test_init_no_nonce_yields_bare )
         ; ( "init --alias foo is not nonce'd", `Quick, test_init_explicit_alias_not_nonced )
         ; ( "init --alias codex is rejected", `Quick, test_init_rejects_banned_alias )
+        ; ( "init reuses alias for same session_id", `Quick, test_init_reuses_alias_for_same_session_id )
         ] )
     ]

@@ -7633,34 +7633,58 @@ let init_cmd =
     | None -> detect_client ()
   in
 
+  (* B046: Resolve session_id BEFORE alias so we can look up existing
+     registrations and reuse the alias when --alias is not given. *)
+  let session_id =
+    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    | Some s when String.trim s <> "" -> s
+    | _ -> C2c_setup.generate_session_id ()
+  in
+
   (* Resolve alias ONCE before do_install_client so both the .mcp.json env
-     (C2C_MCP_AUTO_REGISTER_ALIAS) and Broker.register use the same alias. *)
+     (C2C_MCP_AUTO_REGISTER_ALIAS) and Broker.register use the same alias.
+     B046: when --alias is not given, check for an existing registration
+     with the same session_id and reuse its alias for stable re-runs. *)
   let alias =
     match alias_opt with
     | Some a -> a
     | None ->
-        let use_easy = easy_pool || require_easy in
-        (* Generate a BARE candidate first; the nonce is appended AFTER
-           the require-easy pool check to avoid an infinite loop
-           (#B-require-easy blocker). *)
-        let base_gen_fn = if use_easy then C2c_setup.generate_alias_easy ~no_nonce:true else begin
-          match client_resolved with
-          | Some c -> fun () -> C2c_setup.default_alias_for_client ~no_nonce:true c
-          | None -> fun () -> C2c_setup.generate_alias ~no_nonce:true ()
-        end in
-        let rec loop () =
-          let bare = base_gen_fn () in
-          if require_easy then
-            let w1, w2 = match String.split_on_char '-' bare with [w1; w2] -> (w1, w2) | _ -> ("", "") in
-            let easy = C2c_alias_words.easy_pool in
-            let is_easy w = Array.exists (fun e -> e = w) easy in
-            if is_easy w1 && is_easy w2 then C2c_nonce.append_nonce ~no_nonce bare else loop ()
-          else
-            C2c_nonce.append_nonce ~no_nonce bare
+        (* B046: check if session_id already has a registration; reuse alias *)
+        let existing_alias_opt =
+          try
+            let regs = C2c_mcp.Broker.list_registrations broker in
+            match List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = session_id) regs with
+            | Some reg -> Some reg.alias
+            | None -> None
+          with _ -> None
         in
-        let a = loop () in
-        Printf.eprintf "[c2c register] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
-        a
+        match existing_alias_opt with
+        | Some existing_alias ->
+            Printf.eprintf "[c2c register] reusing existing alias=%s for session_id=%s\n%!" existing_alias session_id;
+            existing_alias
+        | None ->
+            let use_easy = easy_pool || require_easy in
+            (* Generate a BARE candidate first; the nonce is appended AFTER
+               the require-easy pool check to avoid an infinite loop
+               (#B-require-easy blocker). *)
+            let base_gen_fn = if use_easy then C2c_setup.generate_alias_easy ~no_nonce:true else begin
+              match client_resolved with
+              | Some c -> fun () -> C2c_setup.default_alias_for_client ~no_nonce:true c
+              | None -> fun () -> C2c_setup.generate_alias ~no_nonce:true ()
+            end in
+            let rec loop () =
+              let bare = base_gen_fn () in
+              if require_easy then
+                let w1, w2 = match String.split_on_char '-' bare with [w1; w2] -> (w1, w2) | _ -> ("", "") in
+                let easy = C2c_alias_words.easy_pool in
+                let is_easy w = Array.exists (fun e -> e = w) easy in
+                if is_easy w1 && is_easy w2 then C2c_nonce.append_nonce ~no_nonce bare else loop ()
+              else
+                C2c_nonce.append_nonce ~no_nonce bare
+            in
+            let a = loop () in
+            Printf.eprintf "[c2c register] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
+            a
   in
 
   let alias_for_install = Some alias in
@@ -7690,12 +7714,6 @@ let init_cmd =
    | `Cli_only ->
        C2c_setup.ensure_default_wake_schedule ~quiet:(output_mode = Json) ~dry_run:false ~output_mode ~alias
    | _ -> ());
-
-  let session_id =
-    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-    | Some s when String.trim s <> "" -> s
-    | _ -> C2c_setup.generate_session_id ()
-  in
   (* Ensure Ed25519 identity exists — idempotent, safe to run always. *)
   (* Identity init is a pure side-effect from init's perspective: init only
      consumes the exit code and emits its own consolidated output (Human or
