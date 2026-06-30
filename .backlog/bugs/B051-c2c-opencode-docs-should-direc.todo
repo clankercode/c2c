@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-30T04:30:13Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-06-30T07:03:04Z"
 complexity: medium
 depends_on: []
+duration_minutes: 152.86507595651668
 estimate_hours: 1
 id: B051
 priority: high
 started_at: "2026-06-30T04:30:13Z"
-status: in_progress
+status: done
 tags: []
 title: 'c2c+opencode: docs should direct opencode agents to install the plugin (which c2c cli will auto-install). In lieu of that, if the opencode agent has a monitor tool they can use that + cli like claude. If they do not, hooks for message deliver + cli for sending is an options and hooks should (I think) load live for opencode agents.'
 ---

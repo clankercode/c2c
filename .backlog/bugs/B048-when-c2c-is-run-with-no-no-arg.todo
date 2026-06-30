@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-30T04:30:13Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-06-30T07:03:04Z"
 complexity: medium
 depends_on: []
+duration_minutes: 152.86495153438332
 estimate_hours: 1
 id: B048
 priority: high
 started_at: "2026-06-30T04:30:13Z"
-status: in_progress
+status: done
 tags: []
 title: when c2c is run with no no args, it lists claude,codex,opencode,kimi,crush; we should remove crush and fully deprecate it, and we should add pi (see pi.dev). Pi is already supported but not listed in that cli output. Note that pi agents should install and use the npm:pi-c2c package. We should update the c2c cli output to remove mentions of crush (and gemini if there are any of those). Where pi is not mentioned amongst a list of clients, we should add it.
 ---

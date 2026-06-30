@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-30T04:30:13Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-06-30T07:03:04Z"
 complexity: medium
 depends_on: []
+duration_minutes: 152.86491740283333
 estimate_hours: 1
 id: B033
 priority: medium
 started_at: "2026-06-30T04:30:13Z"
-status: in_progress
+status: done
 tags: []
 title: init/install-claude should auto-install a /c2c skill (+ a short intro skill); a skill exists in-repo but is never installed for Claude
 ---
