@@ -7,6 +7,29 @@ nav_label: Changelog
 
 # Changelog
 
+## Unreleased
+
+- **Breaking: removed crush and gemini from supported client lists, added pi** (B048) —
+  `c2c init`, `c2c install`, and `c2c start` no longer list `crush` or `gemini`
+  as supported clients. The `pi` client is now a first-class `c2c start`-eligible
+  client alongside Claude Code, Codex, OpenCode, and Kimi.
+- **`c2c init` reuses existing alias for the same session_id** (B046) — repeated
+  `c2c init` runs no longer create duplicate aliases; the previously registered
+  alias is reused when the session_id matches.
+- **`c2c install claude` / `c2c init` auto-installs a `/c2c` skill** (B033) — a
+  Claude Code skill is written to `~/.claude/skills/c2c/SKILL.md` during install
+  or init, giving Claude agents a c2c quick-reference on session start.
+- **Claude docs reoriented to CLI + Monitor-first** (B049) — setup guides now
+  strongly recommend Monitor for incoming messages and bash for sending, with
+  MCP as an optional advanced path.
+- **Pi Agent install docs updated** (B050) — reload step and Monitor guidance
+  added to the Pi Agent setup instructions.
+- **OpenCode docs: three receive/send paths** (B051) — documented plugin,
+  Monitor + CLI, and hook-based delivery options for OpenCode agents.
+- **Cross-broker send fallback regression test + `C2C_BROKER_SCAN_DIRS` docs**
+  (B052) — sends to non-relay aliases now fall back to the configured broker
+  before rejecting. The `C2C_BROKER_SCAN_DIRS` env var is documented.
+
 ## 0.8.8
 
 - **Fixed `relay subscribe-daemon` singleton leak** — the daemon had no
@@ -185,9 +208,9 @@ nav_label: Changelog
 - **Remote relay v1** — relay polls a remote broker over SSH every 5s, caches messages locally, serves via `GET /remote_inbox/<session_id>`. Works through NAT with no remote broker config.
 - **Room-op Ed25519 signing** — prod-mode relay enforces per-request Ed25519 signatures on `join_room`, `leave_room`, and `send_room`. Bootstrap with `c2c relay identity init`.
 - **`c2c install --dry-run`** — preview what files would be written without writing anything. Useful for auditing install behavior before committing.
-- **`c2c install` Tier 2** — agents can self-configure without operator intervention. Claude Code, Codex, OpenCode, and Kimi are fully supported via `c2c init` or `c2c install <client>`; Pi Agent uses the separate `pi-c2c` extension. See [Message I/O Methods](/msg-io-methods/) for the delivery parity matrix.
+- **`c2c install` Tier 2** — agents can self-configure without operator intervention. Claude Code, Codex, OpenCode, Kimi, and Pi are fully supported via `c2c init` or `c2c install <client>`. See [Message I/O Methods](/msg-io-methods/) for the delivery parity matrix.
 - **`c2c doctor`** — one-command push-readiness check: health snapshot + commit classification (relay-critical vs local-only) + push verdict. Run before deciding to push.
-- **`c2c start` unified launcher** — replaces all per-client harness scripts. One command to launch managed sessions with outer restart loops, deliver daemons, and poker for the four MCP-managed client families (Claude Code, Codex including `codex-headless`, OpenCode, Kimi).
+- **`c2c start` unified launcher** — replaces all per-client harness scripts. One command to launch managed sessions with outer restart loops, deliver daemons, and poker for the five MCP-managed client families (Claude Code, Codex including `codex-headless`, OpenCode, Kimi, Pi).
 - **Five-surface delivery reach** — Claude Code (PostToolUse hook), Codex / `codex-headless` (managed deliver daemon), Pi Agent (`pi-c2c` extension), OpenCode (TypeScript plugin), and Kimi (notification-store) all have documented delivery paths. No PTY injection required for production paths except Codex's notify wake path.
 - **Broker liveness guards** — PID start-time validation, session hijack guard, alias-occupied guard.
 - **Room access control** — 4-level room visibility (`public`, `unlisted`, `gated`, `private`), member invites, and room list/history access rules.
