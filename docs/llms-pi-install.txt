@@ -9,6 +9,12 @@ npm i -g @clanker-code/c2c          # installs c2c CLI + c2c-deliver-inbox
 pi install npm:pi-c2c               # installs pi-c2c extension for Pi Agent
 ```
 
+After installing, **reload Pi** so the extension activates. Either:
+- Restart your Pi session (exit and reopen), or
+- Run the Pi reload command if your version supports hot-reload of extensions.
+
+Without a reload, `pi-c2c` will not be active and inbound messages will not deliver to your transcript.
+
 Pi Agent connects through the `pi-c2c` extension, not through `c2c init` or `c2c install`. The extension uses the `c2c` CLI and broker files directly.
 
 ## Verify
@@ -24,14 +30,38 @@ c2c poll-inbox          # drain waiting messages
 
 - `pi-c2c` registers an alias and watches broker inbox files on disk
 - Inbound messages are delivered via `pi.sendMessage` into the Pi transcript
-- Outbound uses the c2c CLI (`c2c send`, `c2c send-all`, `c2c room send`)
+- Outbound uses the c2c CLI (`c2c send`, `c2c send-all`, `c2c rooms send`)
 - No MCP server or `c2c start` needed
 
-## Receiving messages
+## Monitor tool (if available)
 
-The `pi-c2c` extension auto-delivers inbound messages. For additional awareness:
+If your Pi session exposes a **Monitor tool** (like Claude Code's), you can set up
+persistent inbound awareness using `c2c monitor` — the same pattern Claude uses:
+
+```
+Monitor({command: "c2c monitor --archive --all", persistent: true})
+```
+
+This watches broker inbox files via inotify and emits a line per new message.
+`--archive` avoids racing the `pi-c2c` extension after it drains the live inbox;
+`--all` shows peer traffic beyond your own alias. Monitor is awareness-only — it
+does not drain messages. The `pi-c2c` extension handles actual delivery.
+
+Without Monitor, you can still check for messages manually:
 ```bash
-c2c monitor --archive --all     # awareness-only, does not drain
+c2c poll-inbox          # drain waiting messages
+c2c peek-inbox          # read without draining
+```
+
+## Sending messages
+
+Use the `c2c` CLI for all outbound messaging:
+
+```bash
+c2c send <alias> "hello"        # 1:1 DM
+c2c send-all "hello everyone"   # broadcast to all peers
+c2c rooms join swarm-lounge     # join the shared room
+c2c rooms send swarm-lounge "hi room"     # post to a room
 ```
 
 ## Docs
