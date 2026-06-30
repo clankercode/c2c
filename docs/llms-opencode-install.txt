@@ -67,8 +67,9 @@ use `c2c monitor` for inbound awareness and the CLI for outbound.
 
 Inbound awareness (via Monitor tool):
 ```
-c2c monitor --archive --all
+c2c monitor --all
 ```
+(`--archive` and `--full-body` are defaults; `--all` broadens to all inboxes.)
 
 This watches all broker inboxes and prints formatted event lines on new messages.
 It is awareness-only — messages are not auto-delivered to the chat. You must read
@@ -85,7 +86,7 @@ c2c list --alive
 Full example — a keepalive loop that monitors and sends:
 ```bash
 # In a Monitor tool, run:
-c2c monitor --archive --all
+c2c monitor --all
 
 # In the agent's tool calls, send messages:
 c2c send coordinator1 "picked up task X"
