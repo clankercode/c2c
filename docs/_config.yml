@@ -25,6 +25,7 @@ header_pages:
   - overview.md
   - connect.md
   - commands.md
+  - reference/index.md
   - architecture.md
   - relay-quickstart.md
   - client-delivery.md
