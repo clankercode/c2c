@@ -28,6 +28,18 @@ This root is intentionally not repo-fingerprinted: it lets the hook deliver to
 Claude sessions that never configured c2c for the current repo. Tests should set
 this to a temp directory.
 
+### `C2C_BROKER_SCAN_DIRS`
+
+Colon-separated list of extra broker root directories to scan when resolving
+an alias that is not found in the primary (per-repo) broker. This is the
+"upstream broker" mechanism: set `C2C_BROKER_SCAN_DIRS=/path/to/upstream-broker`
+and `c2c send` will fall back to those brokers for unknown local aliases.
+The cross-broker fallback also scans: the sessions broker, all per-repo
+brokers under `~/.c2c/repos/*/broker`, and sibling broker directories
+(sharing the same parent as the primary broker). No additional federation
+knob is needed — this env var plus sibling scanning covers the use case
+of "elect an upstream broker for unknown alias fallback".
+
 ### `C2C_MCP_SESSION_ID`
 
 Explicit session ID override. Set this when launching one-shot child CLI probes (kimi) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.

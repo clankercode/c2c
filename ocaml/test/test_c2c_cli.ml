@@ -448,6 +448,70 @@ let test_send_unknown_alias_routes_to_relay_outbox () =
           check bool "output reports unregistered alias" true
             (string_contains content "not registered")))
 
+(* B052: cross-broker send fallback — alias registered only in sibling
+   broker is found and the message is routed there. *)
+let test_send_cross_broker_fallback () =
+  with_temp_dir (fun parent_dir ->
+      (* Create two broker roots as siblings under parent_dir *)
+      let primary_dir = Filename.concat parent_dir "primary-broker" in
+      let alt_dir = Filename.concat parent_dir "alt-broker" in
+      Unix.mkdir primary_dir 0o755;
+      Unix.mkdir alt_dir 0o755;
+      (* Register "sender" on primary broker so from_alias resolves *)
+      let primary_broker = C2c_mcp.Broker.create ~root:primary_dir in
+      C2c_mcp.Broker.register primary_broker
+        ~session_id:"primary-sid" ~alias:"sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      (* Register "recipient" ONLY on alt broker *)
+      let alt_broker = C2c_mcp.Broker.create ~root:alt_dir in
+      C2c_mcp.Broker.register alt_broker
+        ~session_id:"alt-sid" ~alias:"recipient"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      (* Send from primary broker to "recipient" — should fall back to alt *)
+      let outfile = Filename.temp_file "c2c-xbroker" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=primary-sid \
+             %s send --from sender --json recipient 'cross-broker hello' > %s 2>&1"
+            (Filename.quote primary_dir)
+            c2c_binary
+            (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int (Printf.sprintf "cross-broker send exits 0 (output: %s)" content) 0 rc;
+          check bool "send reports queued" true
+            (string_contains content "queued");
+          (* Verify the message landed in the alt broker's inbox *)
+          let drained = C2c_mcp.Broker.drain_inbox
+            ~drained_by:"b052-test" alt_broker ~session_id:"alt-sid" in
+          check int "alt broker inbox has 1 message" 1 (List.length drained);
+          let msg = List.hd drained in
+          check string "message content" "cross-broker hello" msg.content;
+          check string "from_alias" "sender" msg.from_alias))
+
+(* B052: error message when alias not found anywhere mentions scanned brokers *)
+let test_send_not_found_error_mentions_scanned_brokers () =
+  with_temp_dir (fun dir ->
+      let outfile = Filename.temp_file "c2c-send-err" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=cli-test-err \
+             %s > %s 2>&1"
+            (Filename.quote dir)
+            (c2c_cmd "c2c send nobody-xyz 'hello'")
+            outfile
+          in
+          let rc = Sys.command cmd in
+          check bool "send to nonexistent alias exits non-zero" true (rc <> 0);
+          let content = read_file outfile in
+          check bool "error mentions primary broker" true
+            (string_contains content "Primary broker");
+          check bool "error mentions sessions broker scan" true
+            (string_contains content "sessions broker")))
+
 (* ------------------------------------------------------------------------- *)
 (* c2c whoami — verify alias display                                        *)
 (* ------------------------------------------------------------------------- *)
@@ -2387,6 +2451,8 @@ let () =
     ; ( "send",
         [ ( "send missing args exits non-zero", `Quick, test_send_missing_args_exits_nonzero )
         ; ( "send unknown alias routes to relay outbox", `Quick, test_send_unknown_alias_routes_to_relay_outbox )
+        ; ( "send cross-broker fallback routes to sibling broker", `Quick, test_send_cross_broker_fallback )
+        ; ( "send not-found error mentions scanned brokers", `Quick, test_send_not_found_error_mentions_scanned_brokers )
         ] )
     ; ( "whoami",
         [ ( "whoami exits 0", `Quick, test_whoami_exits_zero )
