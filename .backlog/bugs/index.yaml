@@ -58,3 +58,4 @@ bugs:
     - file: B059-docs-audit-b7-changelog-md-b04.todo
     - file: B060-docs-audit-b8-changelog-drift.todo
     - file: B061-ctrl-z-on-pi-kills-c2c-exe-chi.todo
+    - file: B062-error-message-cannot-determine.todo

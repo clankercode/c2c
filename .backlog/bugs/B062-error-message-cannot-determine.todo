@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B062
+priority: low
+status: pending
+tags: []
+title: Error message 'cannot determine your alias' should suggest c2c register and other actionable next steps
+---
+The error 'error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.' is not user-actionable. A new user won't know what those env vars mean or how to set them. It should suggest the obvious fix: run 'c2c register' to get an alias, or 'c2c init' for full setup. Could also mention 'c2c whoami' to check current state. Env vars are the implementation detail, not the user-facing solution. Repro: run 'c2c send <alias> hi' from a session that hasn't registered.
