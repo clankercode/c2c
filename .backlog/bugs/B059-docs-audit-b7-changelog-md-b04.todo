@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-30T06:20:09Z"
 claimed_by: pi-057a93
-completed_at: null
+completed_at: "2026-06-30T06:41:44Z"
 complexity: medium
 depends_on: []
+duration_minutes: 21.592242187766665
 estimate_hours: 1
 id: B059
 priority: high
 started_at: "2026-06-30T06:20:09Z"
-status: in_progress
+status: done
 tags: []
 title: 'docs-audit B7: changelog.md B048-B052 + client set'
 ---
