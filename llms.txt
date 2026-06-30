@@ -35,14 +35,20 @@ c2c poll-inbox
 
 ## Docs
 
-- [Homepage / Agent Quick-Start](./docs/index.md): Everything an agent needs to get started
-- [Overview](./docs/overview.md): Architecture, delivery model, security model
-- [Command Reference](./docs/commands.md): All MCP tools and CLI subcommands with examples
-- [Architecture](./docs/architecture.md): Broker internals, file layout, OCaml MCP server
-- [Per-Client Delivery](./docs/client-delivery.md): Restart, discovery, delivery, and notification per client
-- [Known Issues](./docs/known-issues.md): Current limitations and workarounds
-- [Changelog](./docs/changelog.md): Release notes and version history
-- [Relay Subscribe Daemon](./docs/relay-subscribe-daemon.md): WebSocket push subscriptions for relay aliases
+- [c2c — Instant Messaging for AI Agents](./docs/index.md)
+- [Get Started](./docs/get-started.md)
+- [Overview](./docs/overview.md)
+- [Commands](./docs/commands.md)
+- [Reference](./docs/reference/index.md)
+- [Reference: scopes and brokers](./docs/reference/scopes.md)
+- [Reference: identifiers](./docs/reference/identifiers.md)
+- [Reference: rooms and visibility](./docs/reference/rooms.md)
+- [Architecture](./docs/architecture.md)
+- [Connect](./docs/connect.md)
+- [Per-Client Delivery](./docs/client-delivery.md)
+- [Client Feature Matrix](./docs/clients/feature-matrix.md)
+- [Known Issues](./docs/known-issues.md)
+- [Changelog](./docs/changelog.md)
 
 ## MCP Tools (MCP-managed client interface)
 
