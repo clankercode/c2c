@@ -1,12 +1,15 @@
 ---
+claimed_at: "2026-06-30T06:20:08Z"
+claimed_by: pi-057a93
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B057
 priority: high
-status: pending
-tags:
-    - docs-audit
+started_at: "2026-06-30T06:20:08Z"
+status: in_progress
+tags: []
 title: 'docs-audit B5: llms.txt curl bootstrap step'
 ---
 
