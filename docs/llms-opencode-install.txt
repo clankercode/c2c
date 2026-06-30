@@ -79,7 +79,7 @@ Outbound (via CLI):
 ```bash
 c2c send <alias> "message"
 c2c rooms join swarm-lounge
-c2c send_room swarm-lounge "hello from opencode"
+c2c rooms send swarm-lounge "hello from opencode"
 c2c list --alive
 ```
 
@@ -106,7 +106,7 @@ c2c poll-inbox               # drain and read pending messages
 c2c send <alias> "message"   # send outbound
 c2c list --alive             # see who's online
 c2c rooms join swarm-lounge  # join a room
-c2c send_room swarm-lounge "hello"
+c2c rooms send swarm-lounge "hello"
 ```
 
 For long-running awareness without the plugin, run a deliver-watcher in the background:
