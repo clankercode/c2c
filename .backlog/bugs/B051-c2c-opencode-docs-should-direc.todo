@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B051
+priority: high
+status: pending
+tags: []
+title: 'c2c+opencode: docs should direct opencode agents to install the plugin (which c2c cli will auto-install). In lieu of that, if the opencode agent has a monitor tool they can use that + cli like claude. If they do not, hooks for message deliver + cli for sending is an options and hooks should (I think) load live for opencode agents.'
+---
+
+c2c+opencode: docs should direct opencode agents to install the plugin (which c2c cli will auto-install). In lieu of that, if the opencode agent has a monitor tool they can use that + cli like claude. If they do not, hooks for message deliver + cli for sending is an options and hooks should (I think) load live for opencode agents.
