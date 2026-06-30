@@ -50,3 +50,4 @@ bugs:
     - file: B051-c2c-opencode-docs-should-direc.todo
     - file: B052-when-sending-to-non-relay-alia.todo
     - file: B053-docs-audit-b1-get-started-md-c.todo
+    - file: B054-docs-audit-b2-index-md-claude.todo
