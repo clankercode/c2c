@@ -1,10 +1,13 @@
 ---
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B047
 priority: high
-status: pending
+reason: superceded by b048
+started_at: null
+status: cancelled
 tags: []
 title: remove crush support
 ---
