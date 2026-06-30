@@ -1680,6 +1680,13 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
         Printf.eprintf "[c2c setup] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
         a
   in
+  (* Write default-alias config so bare `c2c monitor` can resolve alias *)
+  if not dry_run then
+    (try
+       let config_dir = (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".config" // "c2c" in
+       C2c_mcp.mkdir_p config_dir;
+       ignore (C2c_io.write_file_atomic (config_dir // "default-alias") (alias_val ^ "\n"))
+     with _ -> ());  (* best-effort, non-fatal *)
   let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
   let result =
     match client with
@@ -1936,6 +1943,8 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
     ) do_clients;
     Printf.printf "\nDone.\n";
     Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
+    Printf.printf "  Monitor — receive: run \"c2c monitor\" in the Claude Code Monitor tool\n";
+    Printf.printf "            (auto-resolves your alias + broker; zero flags).\n";
     Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n";
     (* Polish: hint about faster message delivery if inotifywait is available *)
     let inotify_available =

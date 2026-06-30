@@ -3914,7 +3914,11 @@ let monitor_cmd =
   in
   let full_body_flag =
     Arg.(value & flag & info ["full-body";"body"]
-           ~doc:"Emit full message content instead of an 80-char subject snippet.")
+           ~doc:"Emit full message content. This is now the default; use $(b,--snippet) for the old 80-char preview.")
+  in
+  let snippet_flag =
+    Arg.(value & flag & info ["snippet"]
+           ~doc:"Emit an 80-char subject snippet instead of the full body (legacy default).")
   in
   let from_opt =
     Arg.(value & opt (some string) None & info ["from"] ~docv:"ALIAS"
@@ -3926,9 +3930,13 @@ let monitor_cmd =
   in
   let archive_flag =
     Arg.(value & flag & info ["archive"]
-           ~doc:"Watch append-only archive (archive/*.jsonl) instead of live inboxes. \
-                 Avoids the race where the PostToolUse hook drains the inbox before \
-                 the monitor can peek. Every drained message is recorded here.")
+           ~doc:"Watch append-only archive (archive/*.jsonl). This is now the default; use $(b,--live) for the old inbox-watching mode.")
+  in
+  let live_flag =
+    Arg.(value & flag & info ["live"]
+           ~doc:"Watch live inboxes (*.inbox.json) instead of the archive. \
+                 Subject to the race where the drain hook clears the inbox \
+                 before the monitor reads it. Legacy behaviour.")
   in
   let include_self_flag =
     Arg.(value & flag & info ["include-self"]
@@ -3945,7 +3953,11 @@ let monitor_cmd =
                  still-alive holder.")
   in
   let cross_repo = cross_repo_flag in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body from_filter json archive include_self force cross_repo ->
+  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force cross_repo ->
+    (* Resolve effective flags: --archive and --full-body are now defaults.
+       --live reverts to inbox watching; --snippet reverts to 80-char preview. *)
+    let full_body = full_body || not snippet in  (* full_body unless --snippet *)
+    let archive = archive || not live in  (* archive unless --live *)
     let broker_root =
       (* #518: treat empty-string env/arg as "unset" — same shape as #496/#497.
          C2C_MCP_BROKER_ROOT='' should fall through to resolve_broker_root ()
@@ -3969,7 +3981,39 @@ let monitor_cmd =
     let my_alias =
       match alias_arg with
       | Some a -> Some a
-      | None -> Sys.getenv_opt "C2C_MCP_SESSION_ID"
+      | None ->
+          (* Resolution chain for bare `c2c monitor` (no --alias):
+             1. C2C_MCP_AUTO_REGISTER_ALIAS (explicit alias env var)
+             2. Config file ~/.config/c2c/default-alias (written by init/install)
+             3. C2C_MCP_SESSION_ID (proxy — works when session_id = alias)
+             4. Scan broker registrations for a single alive registration *)
+          match C2c_utils.alias_from_env_only () with
+          | Some _ as a -> a
+          | None ->
+              let config_alias () =
+                let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+                let path = home // ".config" // "c2c" // "default-alias" in
+                let s = C2c_io.read_file_opt path in
+                let s = String.trim s in
+                if s <> "" then Some s else None
+              in
+              match config_alias () with
+              | Some _ as a -> a
+              | None ->
+                  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+                  | Some _ as a -> a
+                  | None ->
+                      try
+                        let regs = C2c_mcp.Broker.list_registrations
+                          (C2c_mcp.Broker.create ~root:broker_root) in
+                        let alive = List.filter
+                          (fun (r : C2c_mcp.registration) ->
+                            C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive)
+                          regs in
+                        (match alive with
+                         | [r] -> Some r.alias
+                         | _ -> None)
+                      with _ -> None
     in
     (* #354: per-alias monitor lockfile guard.
        Prevents fork-bomb accumulation when `c2c monitor --alias <a>` is launched
@@ -4516,7 +4560,7 @@ let monitor_cmd =
         )
       done with End_of_file -> ())
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
-    $ full_body_flag $ from_opt $ json_flag $ archive_flag $ include_self_flag
+    $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
     $ force_flag $ cross_repo
 
 let monitor =
@@ -4537,15 +4581,15 @@ let monitor =
             ; `P "ICON: 📬 = addressed to you, 💬 = peer traffic (--all), \
                   📤 = drain (--drains), 🗑️ = sweep (--sweeps)"
             ; `S "EXAMPLES"
-            ; `P "$(b,c2c monitor)  — watch your own inbox (default)"
+            ; `P "$(b,c2c monitor)  — zero-flag form: auto-resolves alias + broker, watches archive with full body. Recommended."
             ; `P "$(b,c2c monitor --all)  — broad swarm monitor"
             ; `P "$(b,c2c monitor --all --drains --sweeps)  — everything"
             ; `P "$(b,c2c monitor --from coder1)  — only messages from coder1"
-            ; `P "$(b,c2c monitor --full-body)  — include complete message body"
+            ; `P "$(b,c2c monitor --snippet)  — 80-char subject preview (legacy)"
+            ; `P "$(b,c2c monitor --live)  — watch live inboxes instead of archive (legacy)"
             ; `P "$(b,c2c monitor --json)  — JSON output for programmatic parsing"
-            ; `P "$(b,c2c monitor --archive --all)  — watch append-only archive; \
-                  no race with PostToolUse hook drains. Recommended for Claude Code."
-            ; `P "In Claude Code: Monitor({command: \"c2c monitor --archive --all\", persistent: true})"
+            ; `P "In Claude Code: Monitor({command: \"c2c monitor\", persistent: true})"
+            ; `P "Per-alias lockfile prevents duplicate monitors; use $(b,--force) to displace a live holder."
             ])
     monitor_cmd
 
@@ -7676,6 +7720,14 @@ let init_cmd =
         Printf.eprintf "error: %s\n%!" msg);
      exit 1);
 
+  (* Write default-alias config so bare `c2c monitor` can resolve alias
+     without env vars or --alias flag. *)
+  (try
+     let config_dir = (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".config" // "c2c" in
+     C2c_mcp.mkdir_p config_dir;
+     ignore (C2c_io.write_file_atomic (config_dir // "default-alias") (alias ^ "\n"))
+   with _ -> ());  (* best-effort, non-fatal *)
+
   let room_result =
     if String.trim room = "" then `Skipped
     else
@@ -7878,6 +7930,7 @@ let init_cmd =
        Printf.printf "  Send:    c2c send <alias> <msg>    (e.g. c2c send %s \"hello\")\n" alias;
        Printf.printf "  Check:   c2c poll-inbox\n";
        Printf.printf "  Room:    c2c send-room %s <msg>\n" room;
+       Printf.printf "  c2c monitor           — watch for incoming messages (auto-resolves alias)\n";
        (match client_resolved with
         | Some "claude" ->
             Printf.printf "  Monitor: add to Claude Code Monitor tool for auto-delivery\n"
