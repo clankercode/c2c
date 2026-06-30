@@ -368,6 +368,7 @@ let recompute_claude_artifacts ~target_dir =
   let settings = claude_dir // "settings.json" in
   let hook_script = claude_dir // "hooks" // "c2c-inbox-check.sh" in
   let stop_hook_script = claude_dir // "hooks" // "c2c-stop-deliver.sh" in
+  let skill_path = claude_dir // "skills" // "c2c" // "SKILL.md" in
   let shared =
     (if Sys.file_exists project_mcp then
        [ C2c_install_manifest.shared_key ~path:project_mcp ~key:"mcpServers.c2c" ~format:"json" ]
@@ -379,6 +380,7 @@ let recompute_claude_artifacts ~target_dir =
   let owned =
     [ C2c_install_manifest.owned_file hook_script
     ; C2c_install_manifest.owned_file stop_hook_script
+    ; C2c_install_manifest.owned_file skill_path
     ]
   in
   (shared, owned, Some settings)

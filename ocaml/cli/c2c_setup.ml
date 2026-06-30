@@ -1484,15 +1484,39 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
    ; ("preauth_hook_status", `String preauth_status)
    ])
   in
+  (* B033: Install /c2c skill into Claude skills directory. *)
+  let skill_dir = claude_dir // "skills" // "c2c" in
+  let skill_path = skill_dir // "SKILL.md" in
+  let skill_artifact =
+    try
+      mkdir_p dry_run skill_dir;
+      let content = C2c_claude_skill_embedded.content in
+      if dry_run then
+        Printf.printf "[DRY-RUN] would write c2c skill to %s\n%!" skill_path
+      else begin
+        let oc = open_out_bin (skill_path ^ ".tmp") in
+        Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc content);
+        Unix.rename (skill_path ^ ".tmp") skill_path
+      end;
+      Some (C2c_install_manifest.owned_file skill_path)
+    with e ->
+      (match output_mode with
+       | Human ->
+           Printf.eprintf "[c2c WARNING] Could not write c2c skill to %s: %s\n%!"
+             skill_path (Printexc.to_string e)
+       | Json -> ());
+      None
+  in
   { artifacts =
       [ C2c_install_manifest.shared_key ~path:mcp_config_path ~key:"mcpServers.c2c" ~format:"json"
-      ] @ hook_artifacts
+      ] @ hook_artifacts @ (match skill_artifact with Some a -> [a] | None -> [])
   ; extra_json =
       [ ("client", `String "claude")
       ; ("alias", `String alias_val)
       ; ("broker_root", `String root)
       ; ("config", `String mcp_config_path)
       ; ("scope", `String (if global then "global" else "project"))
+      ; ("skill", `String skill_path)
       ] @ hook_extra_json
   }
 
