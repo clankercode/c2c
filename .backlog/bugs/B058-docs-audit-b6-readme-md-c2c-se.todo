@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-30T06:20:09Z"
 claimed_by: pi-057a93
-completed_at: null
+completed_at: "2026-06-30T06:41:44Z"
 complexity: medium
 depends_on: []
+duration_minutes: 21.590207348583334
 estimate_hours: 1
 id: B058
 priority: high
 started_at: "2026-06-30T06:20:09Z"
-status: in_progress
+status: done
 tags: []
 title: 'docs-audit B6: README.md c2c self-update mention'
 ---
