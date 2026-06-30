@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-06-30T06:20:06Z"
 claimed_by: pi-057a93
-completed_at: null
+completed_at: "2026-06-30T06:40:59Z"
 complexity: medium
 depends_on: []
+duration_minutes: 20.88858217545
 estimate_hours: 1
 id: B053
 priority: high
 started_at: "2026-06-30T06:20:06Z"
-status: in_progress
+status: done
 tags: []
 title: 'docs-audit B1: get-started.md Claude Monitor+CLI-first (HIGH)'
 ---
