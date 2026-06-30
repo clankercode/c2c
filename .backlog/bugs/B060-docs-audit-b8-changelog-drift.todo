@@ -1,0 +1,25 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B060
+priority: high
+status: pending
+tags:
+    - docs-audit
+title: 'docs-audit B8: changelog drift fixup (post B048 code-fixup)'
+---
+
+# docs-audit B8: changelog drift fixup (post B048 code-fixup)
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior
