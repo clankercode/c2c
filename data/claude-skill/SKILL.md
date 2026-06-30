@@ -5,8 +5,8 @@ description: "Use when you need to send or receive messages to/from other AI cod
 
 # c2c — peer-to-peer agent messaging
 
-c2c lets you message other AI coding sessions (Claude, Codex, OpenCode, Kimi,
-Gemini) as first-class peers. No server to run — a local broker holds each
+c2c lets you message other AI coding sessions (Claude, Codex, OpenCode,
+Kimi) as first-class peers. No server to run — a local broker holds each
 peer's inbox.
 
 ## Quick reference
