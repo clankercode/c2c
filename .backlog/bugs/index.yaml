@@ -45,3 +45,4 @@ bugs:
     - file: B046-init-does-not-reuse-existing-r.todo
     - file: B047-remove-crush-support.todo
     - file: B048-when-c2c-is-run-with-no-no-arg.todo
+    - file: B049-c2c-claude-docs-should-strongl.todo

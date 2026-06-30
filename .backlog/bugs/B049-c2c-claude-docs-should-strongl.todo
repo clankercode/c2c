@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B049
+priority: high
+status: pending
+tags: []
+title: 'c2c+claude: docs should strongly push claude agents to use Monitor for incoming msgs + bash to send messages. We should have examples that are not over-the-top (like we don''t need examples for non-standard workflows like setting a ''from'' name or that kidn of thing)'
+---
+
+c2c+claude: docs should strongly push claude agents to use Monitor for incoming msgs + bash to send messages. We should have examples that are not over-the-top (like we don't need examples for non-standard workflows like setting a 'from' name or that kidn of thing)
