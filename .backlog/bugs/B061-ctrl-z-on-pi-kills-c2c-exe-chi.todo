@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B061
+priority: high
+status: pending
+tags: []
+title: ctrl+z on pi kills c2c.exe child processes (monitors, MCP servers); inotifywait/tail survive as orphans
+---
+When pi is suspended via ctrl+z (SIGTSTP), all c2c.exe child processes die — observed two c2c monitor instances disappearing from process tree, while their child inotifywait processes survived as orphans. Other children (bun context-mode server, tail -f monitors) were unaffected. This means any c2c monitor or MCP server launched under pi is silently killed on suspend. Impact: c2c receive path dies, inbox stops being watched, sent messages go undelivered. No recovery mechanism — processes don't restart when pi resumes. Expected: c2c.exe children survive suspend/resume cycle, or are cleanly restarted on resume. At minimum, pi should detect dead c2c children and restart them. Repro: start c2c monitor under pi, ctrl+z pi, resume with fg, check ps — c2c.exe gone, inotifywait orphans remain. Related: B035, B043.
