@@ -49,3 +49,4 @@ bugs:
     - file: B050-c2c-pi-docs-should-tell-pi-age.todo
     - file: B051-c2c-opencode-docs-should-direc.todo
     - file: B052-when-sending-to-non-relay-alia.todo
+    - file: B053-docs-audit-b1-get-started-md-c.todo
