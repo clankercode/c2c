@@ -1618,14 +1618,18 @@ let canonical_install_client client =
   | "codex-headless" -> "codex"
   | other -> other
 
-let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "pi" ]
-let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi" ]
+(* pi is NOT here: pi agents use the npm:pi-c2c extension, not `c2c install`.
+   pi is shown in the landing page via a synthetic entry (print_enriched_landing). *)
+let known_clients = [ "claude"; "codex"; "opencode"; "kimi" ]
+(* crush + gemini remain recognized subcommands so they route to the
+   deprecation guard (helpful banner) instead of a generic unknown-command error. *)
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush"; "gemini" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
 let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
-let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "pi" ]
-let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "pi"; "tmux"; "pty"; "relay-connect" ]
+let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "crush" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
 let deliver_watch_clients = [ "codex"; "codex-headless"; "opencode"; "kimi" ]

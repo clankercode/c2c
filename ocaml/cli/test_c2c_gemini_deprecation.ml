@@ -37,15 +37,15 @@ let test_gemini_not_in_init_configurable () =
     false (List.mem "gemini" C2c_setup.init_configurable_clients)
 
 (* ------------------------------------------------------------------ *)
-(* Test 3: install_subcommand_clients no longer has gemini             *)
-(* (gemini removed as part of full deprecation — B048)                  *)
+(* Test 3: install_subcommand_clients still has gemini for routing     *)
+(* (gemini is refused by the deprecation guard in do_install_client)   *)
 (* ------------------------------------------------------------------ *)
 
-let test_gemini_not_in_install_subcommand () =
-  (* gemini removed from install_subcommand_clients — `c2c install gemini`
-     is now an unknown subcommand (Cmdliner error). *)
-  Alcotest.(check bool) "gemini not in install_subcommand_clients"
-    false (List.mem "gemini" C2c_setup.install_subcommand_clients)
+let test_gemini_in_install_subcommand_for_routing () =
+  (* gemini must remain in install_subcommand_clients so Cmdliner recognizes
+     the subcommand and routes it to the deprecation guard. *)
+  Alcotest.(check bool) "gemini in install_subcommand_clients for routing"
+    true (List.mem "gemini" C2c_setup.install_subcommand_clients)
 
 (* ------------------------------------------------------------------ *)
 (* Test 4: init_configurable_client_list has the four clients          *)
@@ -65,10 +65,10 @@ let test_init_hint_has_four_clients () =
 (* (refused by deprecation guard, not by "unknown client" error)       *)
 (* ------------------------------------------------------------------ *)
 
-let test_install_error_list_no_gemini () =
+let test_install_error_list_has_gemini_for_routing () =
   let list = C2c_setup.install_client_error_list in
-  Alcotest.(check bool) "gemini not in install error list"
-    false (contains_substring ~haystack:list ~needle:"gemini")
+  Alcotest.(check bool) "gemini in install error list for routing"
+    true (contains_substring ~haystack:list ~needle:"gemini")
 
 (* ------------------------------------------------------------------ *)
 (* Test 6: c2c install gemini exits non-zero (subprocess)              *)
@@ -125,12 +125,12 @@ let () =
             test_gemini_not_in_known_clients
         ; Alcotest.test_case "gemini absent from init_configurable_clients" `Quick
             test_gemini_not_in_init_configurable
-        ; Alcotest.test_case "gemini not in install_subcommand" `Quick
-            test_gemini_not_in_install_subcommand
+        ; Alcotest.test_case "gemini in install_subcommand for routing" `Quick
+            test_gemini_in_install_subcommand_for_routing
         ; Alcotest.test_case "init hint has four clients, no gemini" `Quick
             test_init_hint_has_four_clients
-        ; Alcotest.test_case "install error list no gemini" `Quick
-            test_install_error_list_no_gemini
+        ; Alcotest.test_case "install error list has gemini for routing" `Quick
+            test_install_error_list_has_gemini_for_routing
         ] )
     ; ("gemini-install-refuses",
         [ Alcotest.test_case "c2c install gemini exits non-zero" `Quick

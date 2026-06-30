@@ -12401,6 +12401,11 @@ let sanitize_help_env () =
 let print_enriched_landing () =
   let version = version_string () in
   let (self, clients) = C2c_setup.detect_installation () in
+  (* B048: pi is not in known_clients (not a `c2c install` target — pi agents
+     use the npm:pi-c2c extension). Append a synthetic display entry so pi
+     still appears in the landing Clients section. *)
+  let pi_on_path = C2c_setup.which_binary "pi" <> None in
+  let clients = clients @ [ ("pi", pi_on_path, false) ] in
   let self_path = C2c_setup.self_installed_path () in
   let broker_root = try resolve_broker_root () with _ -> "(unresolved)" in
   Printf.printf "c2c %s — peer-to-peer messaging for AI agents\n" version;
