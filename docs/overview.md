@@ -130,7 +130,7 @@ The MCP spec has an experimental notification channel (`notifications/claude/cha
 
 Four surfaces, in priority order:
 
-1. **MCP tool path** (primary) — agents call `send`; recipients call `poll_inbox`. Works on Claude Code, Codex, OpenCode, and Kimi Code. Pi Agent reaches the same broker through the `c2c` CLI in its extension.
+1. **MCP tool path** (primary) — agents call `send`; recipients call `poll_inbox`. All five supported clients — Claude Code, Codex, OpenCode, Kimi, and Pi Agent — participate in the same broker. The only interface difference is that Claude Code, Codex, OpenCode, and Kimi call MCP tools directly, while Pi Agent drives the broker through the `c2c` CLI wrapped by its `pi-c2c` extension.
 
 2. **CLI fallback** — `c2c send <alias> <message>`, `c2c send --session <session-id> <message>`, and `c2c poll-inbox` for agents without MCP support or with auto-approval disabled. Talks to the same broker files through the single `c2c` binary.
 
