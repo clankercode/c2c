@@ -88,6 +88,15 @@ let install_claude_cmd ~exe ~broker_root ~alias =
     (Filename.quote broker_root)
     (Filename.quote alias)
 
+(* B033 follow-up: `c2c init --client claude` on the DEFAULT CLI-only path
+   (--with-mcp/--hooks off) must still write the /c2c skill. *)
+let init_claude_cli_only_cmd ~exe ~broker_root ~session_id =
+  Printf.sprintf
+    "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s init --client claude --no-nonce --json"
+    (Filename.quote broker_root)
+    (Filename.quote session_id)
+    (Filename.quote exe)
+
 let test_sync_gate_embedded_equals_data_file () =
   let data_path = (repo_root ()) // "data" // "claude-skill" // "SKILL.md" in
   let data_content = read_file data_path in
@@ -150,6 +159,29 @@ let test_install_claude_skill_is_idempotent () =
             check string "skill content unchanged after re-install"
               first_content second_content)))))
 
+let test_init_claude_cli_only_writes_skill () =
+  with_tmp_dir (fun home ->
+    with_tmp_dir (fun target ->
+      with_tmp_dir (fun invocation_cwd ->
+        let bin_dir = home // "bin" in
+        Unix.mkdir bin_dir 0o700;
+        (* dummy c2c-mcp-server so resolve_mcp_server_paths would succeed if reached *)
+        let dummy_server = bin_dir // "c2c-mcp-server" in
+        write_file dummy_server "#!/bin/sh\nexit 0\n";
+        Unix.chmod dummy_server 0o755;
+        let exe = c2c_exe_path () in
+        with_install_env ~home ~bin_dir (fun () ->
+          with_cwd invocation_cwd (fun () ->
+            let broker_root = target // "broker" in
+            let cmd = init_claude_cli_only_cmd ~exe ~broker_root ~session_id:"skill-cli-only-test" in
+            let rc = Sys.command cmd in
+            check int "c2c init --client claude (CLI-only) exits 0" 0 rc;
+            let skill_path = home // ".claude" // "skills" // "c2c" // "SKILL.md" in
+            check bool "skill file was written on CLI-only init" true (Sys.file_exists skill_path);
+            let installed = read_file skill_path in
+            check string "installed skill equals embedded content"
+              C2c_claude_skill_embedded.content installed)))))
+
 let test_skill_leads_with_cli_not_mcp () =
   (* Verify the skill content starts with CLI commands, not MCP tools *)
   let content = C2c_claude_skill_embedded.content in
@@ -198,6 +230,7 @@ let () =
     ; ( "install_writes_skill",
         [ test_case "install_claude_writes_skill" `Quick test_install_claude_writes_skill
         ; test_case "install_claude_skill_is_idempotent" `Quick test_install_claude_skill_is_idempotent
+        ; test_case "init_claude_cli_only_writes_skill" `Quick test_init_claude_cli_only_writes_skill
         ] )
     ; ( "content_quality",
         [ test_case "skill_leads_with_cli_not_mcp" `Quick test_skill_leads_with_cli_not_mcp

@@ -7709,10 +7709,17 @@ let init_cmd =
              `Ok (C2c_setup.canonical_install_client client)
            with e -> `Error (Printexc.to_string e))
   in
-  (* Ensure wake schedule exists even for CLI-only path *)
+  (* Ensure wake schedule exists even for CLI-only path.
+     B033: also write the /c2c skill on the CLI-only path when the client is
+     claude — the skill is a static CLI+Monitor reference with no MCP dep, so
+     plain `c2c init` (default, --with-mcp/--hooks off) must still install it. *)
   (match setup_result with
    | `Cli_only ->
-       C2c_setup.ensure_default_wake_schedule ~quiet:(output_mode = Json) ~dry_run:false ~output_mode ~alias
+       C2c_setup.ensure_default_wake_schedule ~quiet:(output_mode = Json) ~dry_run:false ~output_mode ~alias;
+       (match client_resolved with
+        | Some c when C2c_setup.canonical_install_client c = "claude" ->
+            ignore (C2c_setup.write_claude_skill ~output_mode ~dry_run:false ())
+        | _ -> ())
    | _ -> ());
   (* Ensure Ed25519 identity exists — idempotent, safe to run always. *)
   (* Identity init is a pure side-effect from init's perspective: init only
