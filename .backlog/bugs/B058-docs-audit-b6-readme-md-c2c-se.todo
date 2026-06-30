@@ -1,0 +1,25 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B058
+priority: high
+status: pending
+tags:
+    - docs-audit
+title: 'docs-audit B6: README.md c2c self-update mention'
+---
+
+# docs-audit B6: README.md c2c self-update mention
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior
