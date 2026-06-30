@@ -181,7 +181,7 @@ let codex_heartbeat_interval_s = 240.0
 let codex_heartbeat_content = default_managed_heartbeat_content
 
 let default_heartbeat_clients =
-  [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
+  [ "claude"; "codex"; "opencode"; "kimi"; "pi" ]
 
 let builtin_managed_heartbeat =
   { heartbeat_name = "default"
@@ -5328,7 +5328,7 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
      Printf.eprintf
        "%s[DEPRECATED]%s crush is no longer a first-class c2c client.\n\
         \  `c2c start crush` is no longer available.\n\
-        \  For new agents use: claude | codex | opencode | kimi\n\n%!"
+        \  For new agents use: claude | codex | opencode | kimi | pi\n\n%!"
        yellow reset;
      exit 1);
   if not (Stdlib.Hashtbl.mem clients client) then

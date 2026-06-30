@@ -1537,7 +1537,7 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_wat
        let yellow = if use_color then "\027[1;33m" else "" in
        let reset = if use_color then "\027[0m" else "" in
        Printf.eprintf "%s[DEPRECATED]%s Crush is no longer a first-class c2c client.\n%!" yellow reset;
-       Printf.eprintf "  `c2c start crush` refuses (exit 1). For new agents use: claude | codex | opencode | kimi\n%!"
+       Printf.eprintf "  `c2c start crush` refuses (exit 1). For new agents use: claude | codex | opencode | kimi | pi\n%!"
    | Json -> ());
   let home = Sys.getenv "HOME" in
   let client_dir = home // ".c2c" // "clients" // "crush" in
@@ -1594,17 +1594,17 @@ let canonical_install_client client =
   | "codex-headless" -> "codex"
   | other -> other
 
-let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "crush" ]
-let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush"; "gemini" ]
+let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "pi" ]
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
 let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
-let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "crush" ]
-let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
+let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "pi" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "pi"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
-let deliver_watch_clients = [ "codex"; "codex-headless"; "opencode"; "kimi"; "crush" ]
+let deliver_watch_clients = [ "codex"; "codex-headless"; "opencode"; "kimi" ]
 let is_deliver_watch_client client = List.mem client deliver_watch_clients
 
 let ensure_default_wake_schedule ~quiet ~dry_run ~output_mode ~alias =
@@ -1663,7 +1663,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
          let yellow = if use_color then "\027[1;33m" else "" in
          let reset = if use_color then "\027[0m" else "" in
          Printf.eprintf "%s[DEPRECATED]%s Gemini is no longer a supported c2c client.\n%!" yellow reset;
-         Printf.eprintf "  `c2c install gemini` refuses (exit 1). For new agents use: claude | codex | opencode | kimi\n%!");
+         Printf.eprintf "  `c2c install gemini` refuses (exit 1). For new agents use: claude | codex | opencode | kimi | pi\n%!");
     exit 1
   end;
   let root =
@@ -2017,7 +2017,7 @@ let install_client_subcmd client =
   let no_deliver_watch =
     let doc =
       if is_deliver_watch_client client then
-        "Disable auto-deliver-watch for this client (enabled by default for non-MCP clients: codex, opencode, kimi, crush)."
+        "Disable auto-deliver-watch for this client (enabled by default for non-MCP clients: codex, opencode, kimi)."
       else
         "Has no effect for this client."
     in

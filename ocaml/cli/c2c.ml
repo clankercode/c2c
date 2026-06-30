@@ -733,10 +733,10 @@ let send_cmd =
                     Printf.eprintf "hint:  use `c2c room send %s <message>` to send to a room.\n%!" to_alias
                   end else begin
                     Printf.eprintf "error: alias '%s' is not registered.\n" to_alias;
-                    Printf.eprintf "  Checked broker: %s\n" primary_root;
-                    Printf.eprintf "  hint: the peer may be in another broker. Same-box sends auto-route,\n";
-                    Printf.eprintf "  or pass --root <broker-root> to target a specific broker.\n";
-                    Printf.eprintf "  Use `c2c list --global` to see all registered peers.\n%!"
+                    Printf.eprintf "  Primary broker: %s\n" primary_root;
+                    Printf.eprintf "  Also scanned: sessions broker, per-repo brokers, C2C_BROKER_SCAN_DIRS, sibling dirs.\n";
+                    Printf.eprintf "  hint: pass --root <broker-root> to target a specific broker,\n";
+                    Printf.eprintf "  or use `c2c list --global` to see all registered peers across brokers.\n%!"
                   end;
                   exit 1);
            let compacting_warning =
@@ -12446,16 +12446,20 @@ let print_enriched_landing () =
   Printf.printf "\nClients\n";
   List.iter (fun (c, on_path, configured) ->
     let status =
-      match on_path, configured with
-      | false, _ -> "not on PATH"
-      | true, true -> "configured (c2c MCP ready)"
-      | true, false -> "on PATH, not configured — run 'c2c install' to set up"
+      if c = "pi" then
+        if on_path then "on PATH — uses npm:pi-c2c (see pi.dev)"
+        else "not on PATH — see pi.dev"
+      else
+        match on_path, configured with
+        | false, _ -> "not on PATH"
+        | true, true -> "configured (c2c MCP ready)"
+        | true, false -> "on PATH, not configured — run 'c2c install' to set up"
     in
     Printf.printf "  %-10s %s\n" c status
   ) clients;
   let missing_clients =
     List.filter_map (fun (c, on_path, configured) ->
-      if on_path && not configured then Some c else None) clients
+      if c <> "pi" && on_path && not configured then Some c else None) clients
   in
   let suggestions =
     let buf = Buffer.create 256 in
