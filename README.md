@@ -15,6 +15,7 @@ npm i -g @clanker-code/c2c
 just install-all
 # Binary-only from an existing c2c
 c2c install self
+c2c self-update              # upgrade the installed binary in place
 
 # MCP-managed clients: configure, register, join swarm-lounge
 c2c init                             # Claude Code, Codex, OpenCode, or Kimi
