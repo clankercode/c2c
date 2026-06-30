@@ -31,31 +31,70 @@ setup-ocaml:
     eval "$(opam env --switch=c2c --set-switch)"
     just install-deps
 
-# Sync `.collab/skills/<name>.md` → `.claude/skills/<name>/SKILL.md` (#427).
-# `.collab/skills/` is the tracked canonical home; `.claude/skills/` is the
-# project-local copy that Claude Code loads as a Skill (gitignored). When
-# the canonical changes, run `just sync-skills` to refresh the local copy.
-# Idempotent; safe to run repeatedly. Codex skills (`~/.codex/skills/`) live
-# outside the repo and are operator-managed.
+# Sync `.collab/skills/<name>.md` → the project-local skill dirs that each
+# client loads (.claude/skills, .opencode/skills, .codex/skills). `.collab/skills/`
+# is the tracked canonical home; the per-client copies are gitignored project-local
+# caches. When the canonical changes, run `just sync-skills` to refresh all copies.
+# Idempotent; safe to run repeatedly. `just sync-skills-check` is the CI gate that
+# fails if any copy has drifted from canonical (kills the silent N-copy drift).
 sync-skills:
     #!/usr/bin/env bash
     set -euo pipefail
     src_dir=.collab/skills
-    dst_dir=.claude/skills
-    mkdir -p "$dst_dir"
+    dst_dirs=".claude/skills .opencode/skills .codex/skills"
     found=0
     for src in "$src_dir"/*.md; do
         [ -f "$src" ] || continue
         name=$(basename "$src" .md)
-        mkdir -p "$dst_dir/$name"
-        cp -f "$src" "$dst_dir/$name/SKILL.md"
-        echo "synced: $src → $dst_dir/$name/SKILL.md"
         found=$((found + 1))
+        for dst_dir in $dst_dirs; do
+            dst="$dst_dir/$name/SKILL.md"
+            # Symlinks already track the canonical — skip (can't drift).
+            if [ -L "$dst" ]; then
+                echo "skip (symlink): $dst"
+                continue
+            fi
+            mkdir -p "$dst_dir/$name"
+            cp -f "$src" "$dst"
+            echo "synced: $src → $dst"
+        done
     done
     if [ "$found" = "0" ]; then
         echo "no skills found under $src_dir/" >&2
         exit 1
     fi
+
+# Sync-gate: fail if any per-client skill copy has drifted from the canonical
+# `.collab/skills/` source. Run this in CI to enforce single-source-of-truth.
+sync-skills-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src_dir=.collab/skills
+    dst_dirs=".claude/skills .opencode/skills .codex/skills"
+    drift=0
+    for src in "$src_dir"/*.md; do
+        [ -f "$src" ] || continue
+        name=$(basename "$src" .md)
+        for dst_dir in $dst_dirs; do
+            dst="$dst_dir/$name/SKILL.md"
+            # Symlinks track the canonical by definition — always in sync.
+            if [ -L "$dst" ]; then
+                continue
+            fi
+            if [ ! -f "$dst" ]; then
+                echo "DRIFT: $dst missing (run 'just sync-skills')" >&2
+                drift=1
+            elif ! diff -q "$src" "$dst" >/dev/null 2>&1; then
+                echo "DRIFT: $dst differs from $src (run 'just sync-skills')" >&2
+                drift=1
+            fi
+        done
+    done
+    if [ "$drift" != "0" ]; then
+        echo "sync-skills-check FAILED: skill copies have drifted from canonical" >&2
+        exit 1
+    fi
+    echo "sync-skills-check OK: all skill copies match canonical"
 
 # Regenerate ocaml/cli/c2c_opencode_plugin_embedded.ml from the canonical
 # TypeScript plugin. The binary embeds the plugin so `c2c install opencode`
