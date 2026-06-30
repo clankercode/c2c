@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B052
+priority: high
+status: pending
+tags: []
+title: When sending to non-relay aliases, try the configured broker first and then try the sessions broker. or maybe we should configure brokers so that they can elect an upstream broker too, and then they can fall back to it on unknown alises and forward if the alias is found on the upstream broker. Something like that.
+---
+
+When sending to non-relay aliases, try the configured broker first and then try the sessions broker. or maybe we should configure brokers so that they can elect an upstream broker too, and then they can fall back to it on unknown alises and forward if the alias is found on the upstream broker. Something like that.

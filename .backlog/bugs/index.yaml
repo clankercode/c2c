@@ -48,3 +48,4 @@ bugs:
     - file: B049-c2c-claude-docs-should-strongl.todo
     - file: B050-c2c-pi-docs-should-tell-pi-age.todo
     - file: B051-c2c-opencode-docs-should-direc.todo
+    - file: B052-when-sending-to-non-relay-alia.todo
