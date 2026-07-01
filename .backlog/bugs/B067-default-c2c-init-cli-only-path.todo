@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-01T07:36:31Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-01T08:00:16Z"
 complexity: medium
 depends_on: []
+duration_minutes: 23.763386641666667
 estimate_hours: 1
 id: B067
 priority: medium
 started_at: "2026-07-01T07:36:31Z"
-status: in_progress
+status: done
 tags: []
 title: Default c2c init (CLI-only path) does NOT write the /c2c skill — only the MCP/hooks path does
 ---
