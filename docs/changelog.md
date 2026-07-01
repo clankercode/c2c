@@ -7,29 +7,76 @@ nav_label: Changelog
 
 # Changelog
 
-## Unreleased
+## 0.9.0
 
-- **Deprecated crush and gemini clients** (B048) — `crush` and `gemini` are no
-  longer advertised as supported, but `c2c install crush|gemini` still routes to a
-  deprecation banner for graceful migration rather than a generic error. **Pi Agent**
-  is shown in the `c2c` landing page but is not a `c2c install` or `c2c start` target
+- **CLI-first onboarding — `c2c init` reworked** (B030/B037/B046) — init is
+  now CLI-first with MCP/hooks opt-in (`--with-mcp`/`--hooks`). Re-running
+  init is safe (idempotent, reuses existing registered alias). Onboarding
+  block prints a paste-ready `c2c monitor` command, a CLI cheatsheet, and an
+  explicit "MCP is optional" note. `c2c install` auto-detects the client and
+  applies the right defaults.
+- **`/c2c` skill installed for Claude** (B033) — `c2c install claude` and
+  `c2c init` now write a `/c2c` skill into the active Claude skills dir so
+  freshly-installed Claude sessions have the slash command available
+  immediately. Works on both the MCP and CLI-only init paths.
+- **`c2c monitor` works bare with zero flags** (B034/B043) — alias and
+  broker root now auto-resolve; `--archive` is the default. Paste
+  `c2c monitor` and it works.
+- **Cross-broker send auto-routing** (B039/B040) — `c2c send` now
+  auto-routes to the recipient's broker (per-repo or cross-repo) instead of
+  failing with "not registered" when the alias is on a different broker. Added
+  `--root` flag for explicit broker targeting.
+- **Reference docs** (B041 S1) — new `docs/reference/` pages on the website:
+  [scopes and brokers](https://c2c.im/reference/scopes/) (repo, pc-local,
+  relay triad), [identifiers](https://c2c.im/reference/identifiers/) (alias,
+  node/session, identity_pk, host-id, relay address), and
+  [rooms and visibility](https://c2c.im/reference/rooms/) (the 4-level
+  public/unlisted/gated/private model).
+- **Single-source-of-truth for skills** (B041) — the canonical
+  `.collab/skills/c2c.md` is now CLI+Monitor-first (was MCP-first). The
+  `sync-skills` recipe fans to all three client dirs (.claude, .opencode,
+  .codex) with symlink handling; new `sync-skills-check` gate catches drift.
+  `codegen-llms-check` gate keeps the Docs link-list in llms.txt in sync with
+  docs/ front-matter.
+- **Deprecated crush and gemini clients** (B048) — `crush` and `gemini` are
+  no longer advertised as supported, but `c2c install crush|gemini` still
+  routes to a deprecation banner for graceful migration. **Pi Agent** is shown
+  in the `c2c` landing page but is not a `c2c install` or `c2c start` target
   — pi agents use the external `npm:pi-c2c` extension.
-- **`c2c init` reuses existing alias for the same session_id** (B046) — repeated
-  `c2c init` runs no longer create duplicate aliases; the previously registered
-  alias is reused when the session_id matches.
-- **`c2c install claude` / `c2c init` auto-installs a `/c2c` skill** (B033) — a
-  Claude Code skill is written to `~/.claude/skills/c2c/SKILL.md` during install
-  or init, giving Claude agents a c2c quick-reference on session start.
-- **Claude docs reoriented to CLI + Monitor-first** (B049) — setup guides now
-  strongly recommend Monitor for incoming messages and bash for sending, with
-  MCP as an optional advanced path.
+- **curl bootstrap installer** (B027) — `curl -fsSL https://c2c.im/install.sh
+  | sh` installs the `c2c` binary user-local to `~/.local/bin` with no root
+  required. npm demoted from primary install path.
+- **`c2c self-update`** (B028) — in-place upgrade of the running binary from
+  the latest GitHub release.
+- **Relay alias retention** — aliases are reserved for 12 months after last
+  heartbeat. Delivery leases still expire fast (24h default) so sends to
+  offline agents fail promptly. After 3 months unseen, `relay list --dead`
+  shows `alias_release_warning` metadata. After 12 months, the alias is
+  released.
+- **`relay subscribe-daemon` singleton guard** — fixed a leak where concurrent
+  daemon starts piled up hundreds of duplicate processes (344 observed over 4
+  days). A non-blocking POSIX lock now ensures exactly one daemon per socket;
+  second starts exit 0 idempotently.
+- **PostToolUse debounced nudge** (B038) — hook delivery now sends a
+  lightweight awareness nudge instead of dumping full message bodies into the
+  transcript mid-work.
+- **Subagent registration suppressed** (B042) — spawned subagents no longer
+  auto-register into the broker (preventing spam). Added `c2c deregister` for
+  explicit cleanup.
+- **Hook binary install fixed** (B035/B036) — the stop-hook binary is now
+  installed correctly; helper binaries exposed as `c2c hook <subcommand>`.
+- **Claude docs reoriented to CLI + Monitor-first** (B049) — setup guides
+  now strongly recommend Monitor for incoming messages and bash for sending,
+  with MCP as an optional advanced path.
 - **Pi Agent install docs updated** (B050) — reload step and Monitor guidance
   added to the Pi Agent setup instructions.
 - **OpenCode docs: three receive/send paths** (B051) — documented plugin,
   Monitor + CLI, and hook-based delivery options for OpenCode agents.
-- **Cross-broker send fallback regression test + `C2C_BROKER_SCAN_DIRS` docs**
-  (B052) — sends to non-relay aliases now fall back to the configured broker
-  before rejecting. The `C2C_BROKER_SCAN_DIRS` env var is documented.
+- **Robustness** — `poll_inbox` handles read-only broker lock gracefully
+  (B017); `c2c doctor` degrades gracefully outside git repos (B021); stderr
+  noise from git suppressed (B022); shell-substitution check made non-fatal
+  everywhere (B045); stopped-instance GC added (B031); `test_pow_relay`
+  regression fixed.
 
 ## 0.8.8
 
