@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-07-01T07:36:31Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B064
 priority: high
-status: pending
+started_at: "2026-07-01T07:36:31Z"
+status: in_progress
 tags: []
 title: 'Two DIVERGENT skill sources: data/claude-skill/SKILL.md (embedded by install) vs .collab/skills/c2c.md (synced/served) — B041 single-source not achieved'
 ---

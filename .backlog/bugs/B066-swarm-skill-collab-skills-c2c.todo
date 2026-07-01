@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-07-01T07:36:31Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B066
 priority: medium
-status: pending
+started_at: "2026-07-01T07:36:31Z"
+status: in_progress
 tags: []
 title: 'Swarm skill .collab/skills/c2c.md: CLI-first lead updated but body still MCP-first (tables, Habits, restart framing)'
 ---

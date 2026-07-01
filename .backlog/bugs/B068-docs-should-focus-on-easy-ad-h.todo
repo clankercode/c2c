@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-07-01T07:36:31Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B068
 priority: medium
-status: pending
+started_at: "2026-07-01T07:36:31Z"
+status: in_progress
 tags: []
 title: Docs should focus on easy ad-hoc use, not heavily expose the full c2c swarm/infrastructure
 ---
