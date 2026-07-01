@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B066
+priority: medium
+status: pending
+tags: []
+title: 'Swarm skill .collab/skills/c2c.md: CLI-first lead updated but body still MCP-first (tables, Habits, restart framing)'
+---
+B049 updated the lead ('CLI primary', 'MCP optional, don't wait', 'receive with Monitor') but NOT the body, which now contradicts: every command table lists MCP-tool column BEFORE CLI column (lines 38,66,76,93); Habits line 123 'Prefer MCP tools inside a session; fall back to CLI'; lines 124-125 'restart... push delivery, far more reliable than manual polling'; line 33 'restart the client so the MCP server and push delivery load' (hooks actually load live, no restart). Agent reading the whole skill gets mixed signals. Expected: body matches lead — CLI column first, Habits lead with CLI+Monitor, drop/soften restart-for-push framing. Related: B049, B064.
