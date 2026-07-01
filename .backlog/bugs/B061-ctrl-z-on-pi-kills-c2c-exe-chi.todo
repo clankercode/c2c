@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-01T05:33:00Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-01T05:50:40Z"
 complexity: medium
 depends_on: []
+duration_minutes: 17.67665641365
 estimate_hours: 1
 id: B061
 priority: high
 started_at: "2026-07-01T05:33:00Z"
-status: in_progress
+status: done
 tags: []
 title: ctrl+z on pi kills c2c.exe child processes (monitors, MCP servers); inotifywait/tail survive as orphans
 ---
