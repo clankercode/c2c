@@ -23,7 +23,8 @@
 (test
  (name test_c2c_onboarding)
  (modules test_c2c_onboarding)
- (libraries c2c_mcp alcotest yojson unix))
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps c2c.exe))
 
 (test
  (name test_c2c_list_glyphs)

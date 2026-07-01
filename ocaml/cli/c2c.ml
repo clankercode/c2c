@@ -213,7 +213,13 @@ let resolve_alias ?(override : string option = None) broker =
                 if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] coordinator fallback to 'coordinator'\n%!";
                 "coordinator"
               ) else begin
-                Printf.eprintf "error: cannot determine your alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
+                Printf.eprintf
+                  "error: cannot determine your alias.\n\
+                   Try one of these fixes:\n\
+                     c2c init\n\
+                     c2c register --alias <your-alias> --session-id <session-id>\n\
+                     c2c whoami\n\
+                   Advanced: set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
                 exit 1
               end)
 

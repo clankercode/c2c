@@ -194,7 +194,8 @@ let test_hook_reads_stdin_session_and_drains_global_inbox () =
         let cmd =
           Printf.sprintf
             "printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
-             C2C_MCP_BROKER_ROOT C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
+             C2C_MCP_BROKER_ROOT C2C_POST_TOOL_FULL_INJECT=1 \
+             C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
             (Filename.quote stdin_payload) (Filename.quote dir)
             (Filename.quote built_inbox_hook) (Filename.quote out)
             (Filename.quote err)
@@ -284,6 +285,7 @@ let test_hook_extracts_session_from_truncated_large_payload () =
         let cmd =
           Printf.sprintf
             "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+             C2C_POST_TOOL_FULL_INJECT=1 \
              C2C_SESSIONS_BROKER_ROOT=%s %s < %s > %s 2> %s"
             (Filename.quote dir) (Filename.quote built_inbox_hook)
             (Filename.quote input) (Filename.quote out) (Filename.quote err)
@@ -328,7 +330,8 @@ let test_hook_merges_message_and_cold_boot_context () =
           let cmd =
             Printf.sprintf
               "printf %%s %s | env C2C_MCP_SESSION_ID=%s \
-               C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
+               C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s \
+               C2C_POST_TOOL_FULL_INJECT=1 %s > %s 2> %s"
               (Filename.quote stdin_payload) (Filename.quote sid)
               (Filename.quote repo_dir) (Filename.quote global_dir)
               (Filename.quote built_inbox_hook) (Filename.quote out)
