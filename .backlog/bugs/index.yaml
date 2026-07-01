@@ -60,3 +60,4 @@ bugs:
     - file: B061-ctrl-z-on-pi-kills-c2c-exe-chi.todo
     - file: B062-error-message-cannot-determine.todo
     - file: B063-c2c-skills-serve-c2c-skill-men.todo
+    - file: B064-two-divergent-skill-sources-da.todo
