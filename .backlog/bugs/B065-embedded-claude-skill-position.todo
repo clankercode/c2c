@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-01T07:36:31Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-01T08:00:16Z"
 complexity: medium
 depends_on: []
+duration_minutes: 23.760626177983333
 estimate_hours: 1
 id: B065
 priority: high
 started_at: "2026-07-01T07:36:31Z"
-status: in_progress
+status: done
 tags: []
 title: Embedded Claude skill positions Monitor as secondary awareness sidecar, not primary receive path
 ---
