@@ -1,14 +1,15 @@
 ---
+claimed_at: "2026-07-01T09:11:31Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B004
 priority: medium
-status: pending
-tags:
-    - rooms
-    - relay
-    - visibility
+started_at: "2026-07-01T09:11:31Z"
+status: in_progress
+tags: []
 title: Knock / request-to-join for gated rooms
 ---
 The 4-level room visibility model (public / unlisted / gated / private) names a 'gated' tier = LISTED + invite-gated: a room you can discover via list_rooms but cannot join without an invite. Without a knock / request-to-join flow, 'gated' is a dead-end teaser UX (you see it, can't join, can't ask).
