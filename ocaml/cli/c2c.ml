@@ -4254,28 +4254,54 @@ let monitor_cmd =
     (* Belt-and-braces startup orphan check: if the parent already died before
        we enter the inotify loop, exit immediately rather than loop forever. *)
     (if Unix.getppid () = 1 then exit 0);
-    let cmd =
+    let inotify_args =
       if archive then
         (* Archive: flat dir, original space-delimited format. *)
-        Printf.sprintf
-          "inotifywait -m -e close_write,modify,delete,moved_to --format '%%e %%f' %s"
-          (Filename.quote watch_dir)
+        [ "-m"; "-e"; "close_write,modify,delete,moved_to";
+          "--format"; "%e %f"; watch_dir ]
       else
         (* Live: recursive so rooms/<id>/members.json is caught.
            Tab-delimited with %w%f = full path avoids space-in-path ambiguity.
            No -q: we read stderr to detect "Watches established." and emit a
            monitor.ready event so tests/callers don't need a fixed sleep. *)
-        Printf.sprintf
-          "inotifywait -m -r -e close_write,modify,delete,moved_to --format '%%e\t%%w%%f' %s"
-          (Filename.quote watch_dir)
+        [ "-m"; "-r"; "-e"; "close_write,modify,delete,moved_to";
+          "--format"; "%e\t%w%f"; watch_dir ]
     in
-    let (ic, _oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
+    let current_watcher : C2c_monitor_watcher.t option ref = ref None in
+    let cleanup_current_watcher () =
+      match !current_watcher with
+      | None -> ()
+      | Some watcher ->
+          current_watcher := None;
+          C2c_monitor_watcher.terminate watcher
+    in
+    let stop_and_exit signum =
+      cleanup_current_watcher ();
+      exit (128 + signum)
+    in
+    let rec suspend_self signum =
+      cleanup_current_watcher ();
+      Sys.set_signal signum Sys.Signal_default;
+      (try Unix.kill (Unix.getpid ()) signum with _ -> ());
+      Sys.set_signal signum (Sys.Signal_handle suspend_self)
+    in
+    List.iter
+      (fun signum -> Sys.set_signal signum (Sys.Signal_handle stop_and_exit))
+      [ Sys.sigterm; Sys.sigint; Sys.sighup; Sys.sigquit ];
+    Sys.set_signal Sys.sigtstp (Sys.Signal_handle suspend_self);
+    at_exit cleanup_current_watcher;
+    let rec run_watcher () =
+    let watcher = C2c_monitor_watcher.start ~program:"inotifywait" ~args:inotify_args in
+    current_watcher := Some watcher;
+    let ic = watcher.stdout_ic in
+    let err_ic = watcher.stderr_ic in
     (* Drain inotifywait stderr in a background thread; set a flag once we see
        "Watches established." so the main thread knows inotifywait is armed.
        This replaces the fixed sleep in callers (tests, plugin) with a
        deterministic signal, preventing the race where events are triggered
        before inotifywait finishes setting up watches. *)
     let ready_flag = Atomic.make false in
+    let stderr_done = Atomic.make false in
     let str_contains haystack needle =
       let hl = String.length haystack and nl = String.length needle in
       if nl = 0 then true
@@ -4296,22 +4322,29 @@ let monitor_cmd =
         if str_contains line "watches established" then
           Atomic.set ready_flag true
       done with End_of_file | Sys_error _ -> ());
-      (* Signal on EOF too so main thread never waits forever. *)
-      Atomic.set ready_flag true
+      (* Wake the main thread on EOF too so it never waits forever. *)
+      Atomic.set stderr_done true
     ) () in
     (* Poll ready_flag up to 10s with 50ms sleeps — no timed Condition needed. *)
     let deadline = Unix.gettimeofday () +. 10.0 in
-    while not (Atomic.get ready_flag) && Unix.gettimeofday () < deadline do
+    while (not (Atomic.get ready_flag)) && (not (Atomic.get stderr_done))
+          && Unix.gettimeofday () < deadline do
       Thread.delay 0.05
     done;
-    if json then begin
+    let ready_to_report = Atomic.get ready_flag || not (Atomic.get stderr_done) in
+    if json && ready_to_report then begin
       let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
       print_string (Yojson.Safe.to_string
         (`Assoc [ "event_type", `String "monitor.ready"
                 ; "monitor_ts", `String ts ]));
       print_newline ()
     end;
-    Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
+    let unexpected_eof =
+      Fun.protect
+        ~finally:(fun () ->
+          C2c_monitor_watcher.terminate watcher;
+          current_watcher := None)
+        (fun () ->
       try while true do
         (* If our parent died (reparented to init/PID 1), we are an orphan —
            exit rather than accumulate as a zombie monitor process. *)
@@ -4558,7 +4591,15 @@ let monitor_cmd =
              end
          | _ -> ()
         )
-      done with End_of_file -> ())
+      done; false with End_of_file | Sys_error _ -> true)
+    in
+    if unexpected_eof then begin
+      Printf.eprintf "c2c monitor: inotifywait exited unexpectedly; restarting watcher\n%!";
+      C2c_monitor_watcher.sleep_seconds 0.5;
+      run_watcher ()
+    end
+    in
+    run_watcher ()
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
     $ force_flag $ cross_repo
