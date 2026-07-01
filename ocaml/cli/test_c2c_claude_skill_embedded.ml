@@ -1,9 +1,11 @@
-(* Tests for B033: the Claude skill is embedded in the c2c binary.
+(* Tests for B033/B064-B067: the c2c skill is embedded in the c2c binary.
 
    - Sync gate: the committed embedded blob must equal the canonical markdown
-     source in data/claude-skill/SKILL.md byte-for-byte.
+     source in .collab/skills/c2c.md byte-for-byte.
    - Binary-only install: `c2c install claude` writes the embedded skill when
-     the repo data/ file is not present. *)
+     the repo skill source is not present.
+   - Content gate: the skill stays CLI+Monitor-first and does not drift back
+     to MCP-first guidance. *)
 
 open Alcotest
 
@@ -20,11 +22,11 @@ let write_file path contents =
   Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc contents)
 
 let rec find_repo_root cwd =
-  let candidate = cwd // "data" // "claude-skill" // "SKILL.md" in
+  let candidate = cwd // ".collab" // "skills" // "c2c.md" in
   if Sys.file_exists candidate then cwd
   else
     let parent = Filename.dirname cwd in
-    if parent = cwd then failwith "cannot find repo root (data/claude-skill/SKILL.md missing)"
+    if parent = cwd then failwith "cannot find repo root (.collab/skills/c2c.md missing)"
     else find_repo_root parent
 
 let repo_root () = find_repo_root (Sys.getcwd ())
@@ -33,7 +35,18 @@ let c2c_exe_path () =
   let cwd = Sys.getcwd () in
   let local = cwd // "c2c.exe" in
   if Sys.file_exists local then local
-  else (repo_root ()) // "_build" // "default" // "ocaml" // "cli" // "c2c.exe"
+  else
+    let root = repo_root () in
+    let exe = root // "_build" // "default" // "ocaml" // "cli" // "c2c.exe" in
+    if not (Sys.file_exists exe) then begin
+      let cmd =
+        Printf.sprintf "opam exec -- dune build --root %s -j 2 ./ocaml/cli/c2c.exe"
+          (Filename.quote root)
+      in
+      let rc = Sys.command cmd in
+      check int "build c2c.exe prerequisite" 0 rc
+    end;
+    exe
 
 let with_tmp_dir f =
   let dir = Filename.temp_file "c2c-skill-test-" "" in
@@ -97,18 +110,19 @@ let init_claude_cli_only_cmd ~exe ~broker_root ~session_id =
     (Filename.quote session_id)
     (Filename.quote exe)
 
-let test_sync_gate_embedded_equals_data_file () =
-  let data_path = (repo_root ()) // "data" // "claude-skill" // "SKILL.md" in
-  let data_content = read_file data_path in
-  check string "embedded content equals data/claude-skill/SKILL.md"
-    data_content C2c_claude_skill_embedded.content
+let canonical_skill_path () =
+  (repo_root ()) // ".collab" // "skills" // "c2c.md"
+
+let test_sync_gate_embedded_equals_canonical_skill () =
+  let canonical_content = read_file (canonical_skill_path ()) in
+  check string "embedded content equals .collab/skills/c2c.md"
+    canonical_content C2c_claude_skill_embedded.content
 
 let test_sync_gate_fails_when_embedded_is_stale () =
   let stale = C2c_claude_skill_embedded.content ^ "\n/* stale mutation */\n" in
-  let data_path = (repo_root ()) // "data" // "claude-skill" // "SKILL.md" in
-  let data_content = read_file data_path in
+  let canonical_content = read_file (canonical_skill_path ()) in
   check bool "stale embedded fails the sync gate" false
-    (String.equal data_content stale)
+    (String.equal canonical_content stale)
 
 let test_install_claude_writes_skill () =
   with_tmp_dir (fun home ->
@@ -182,49 +196,37 @@ let test_init_claude_cli_only_writes_skill () =
             check string "installed skill equals embedded content"
               C2c_claude_skill_embedded.content installed)))))
 
+let string_contains haystack needle =
+  let hay_len = String.length haystack in
+  let needle_len = String.length needle in
+  let rec loop i =
+    i + needle_len <= hay_len
+    && (String.sub haystack i needle_len = needle || loop (i + 1))
+  in
+  needle_len = 0 || loop 0
+
 let test_skill_leads_with_cli_not_mcp () =
-  (* Verify the skill content starts with CLI commands, not MCP tools *)
+  (* Verify the skill content starts with CLI + Monitor guidance, not MCP tools. *)
   let content = C2c_claude_skill_embedded.content in
-  let has_cli_send =
-    let needle = "c2c send" in
-    let hay_len = String.length content in
-    let needle_len = String.length needle in
-    let rec loop i =
-      i + needle_len <= hay_len
-      && (String.sub content i needle_len = needle || loop (i + 1))
-    in
-    loop 0
-  in
-  let has_monitor =
-    let needle = "c2c monitor" in
-    let hay_len = String.length content in
-    let needle_len = String.length needle in
-    let rec loop i =
-      i + needle_len <= hay_len
-      && (String.sub content i needle_len = needle || loop (i + 1))
-    in
-    loop 0
-  in
-  check bool "skill mentions c2c send (CLI)" true has_cli_send;
-  check bool "skill mentions c2c monitor" true has_monitor;
-  (* Verify no mcp__ prefix appears in the first 500 chars (CLI-first) *)
+  check bool "skill mentions c2c send (CLI)" true (string_contains content "c2c send");
+  check bool "skill mentions c2c monitor" true (string_contains content "c2c monitor");
+  check bool "skill has CLI-before-MCP command tables" true
+    (string_contains content "| Action | CLI | MCP tool (optional) |");
+  check bool "skill recommends plain personal monitor" true
+    (string_contains content "command: \"c2c monitor\"");
+  check bool "skill does not recommend --archive --all as primary monitor" false
+    (string_contains content "c2c monitor --archive --all");
+  check bool "skill does not say prefer MCP" false
+    (string_contains content "Prefer MCP");
+  (* Verify no mcp__ prefix appears in the first 500 chars (CLI-first). *)
   let first_500 = String.sub content 0 (min 500 (String.length content)) in
-  let has_mcp_prefix =
-    let needle = "mcp__" in
-    let hay_len = String.length first_500 in
-    let needle_len = String.length needle in
-    let rec loop i =
-      i + needle_len <= hay_len
-      && (String.sub first_500 i needle_len = needle || loop (i + 1))
-    in
-    loop 0
-  in
-  check bool "skill does NOT lead with mcp__ prefix" false has_mcp_prefix
+  check bool "skill does NOT lead with mcp__ prefix" false
+    (string_contains first_500 "mcp__")
 
 let () =
   run "c2c_claude_skill_embedded"
     [ ( "sync_gate",
-        [ test_case "embedded_equals_data_file" `Quick test_sync_gate_embedded_equals_data_file
+        [ test_case "embedded_equals_canonical_skill" `Quick test_sync_gate_embedded_equals_canonical_skill
         ; test_case "stale_embedded_would_fail" `Quick test_sync_gate_fails_when_embedded_is_stale
         ] )
     ; ( "install_writes_skill",

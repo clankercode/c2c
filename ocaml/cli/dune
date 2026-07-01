@@ -137,12 +137,12 @@
  (libraries alcotest unix)
  (deps %{exe:c2c.exe} (file ../../data/opencode-plugin/c2c.ts)))
 
-; B033: Claude skill embedded blob sync gate + install verification.
+; B033/B064: Claude skill embedded blob sync gate + install verification.
 (test
  (name test_c2c_claude_skill_embedded)
  (modules test_c2c_claude_skill_embedded c2c_claude_skill_embedded)
  (libraries alcotest unix)
- (deps %{exe:c2c.exe} (file ../../data/claude-skill/SKILL.md)))
+ (deps %{exe:c2c.exe} (file ../../.collab/skills/c2c.md)))
 
 (test
  (name test_c2c_peer_pass)

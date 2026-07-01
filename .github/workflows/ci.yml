@@ -55,6 +55,15 @@ jobs:
       - name: Install OCaml dependencies
         run: just install-deps
 
+      - name: Skill/generated drift gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          just sync-skills
+          just codegen-claude-skill
+          just sync-skills-check
+          git diff --exit-code -- .collab/skills .opencode/skills .codex/skills ocaml/cli/c2c_claude_skill_embedded.ml
+
       - name: Build
         run: just build
 

@@ -68,7 +68,10 @@ jobs:
           just codegen-role-designer
           just codegen-role-templates
           just codegen-opencode-plugin
-          git diff --exit-code -- .c2c ocaml data
+          just sync-skills
+          just codegen-claude-skill
+          just sync-skills-check
+          git diff --exit-code -- .c2c .collab/skills .opencode/skills .codex/skills ocaml data
 
       - name: Build command/docs drift report
         shell: bash
