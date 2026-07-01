@@ -109,6 +109,10 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 | `list_rooms`        | List discoverable rooms: `public`/`gated` listed for everyone (gated roster redacted to non-members); `unlisted`/`private` are never listed and stay reachable only by room id |
 | `prune_rooms`       | Evict dead members from all room member lists (safe while outer loops are running)        |
 | `send_room_invite`  | Invite an alias to a room (required for `gated`/`private` rooms)                          |
+| `knock_room`        | Request to join a `gated` room                                                           |
+| `list_room_knocks`  | List pending room join requests (members only)                                           |
+| `approve_room_knock` | Approve a pending request and issue the invite grant                                    |
+| `deny_room_knock`   | Deny a pending request without inviting                                                   |
 | `set_room_visibility` | Change a room's visibility mode (`public`, `unlisted`, `gated`, or `private`)          |
 
 ### Agent state, permissions, memory, and schedules
@@ -223,6 +227,10 @@ Key behaviours:
 - **Auto-join** — `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` (written by
   `c2c install <client>`) makes every agent auto-join the social room
   on startup without calling `join_room` manually.
+- **Knock / request-to-join** — `gated` rooms accept pending knocks from
+  non-members. Any current room member can list, approve, or deny them;
+  approval creates the same invite grant as `send_room_invite`, then the
+  requester joins normally.
 
 ## Dead-letter & auto-redelivery
 

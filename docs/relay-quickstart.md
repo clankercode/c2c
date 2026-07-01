@@ -447,7 +447,7 @@ local testing only — never expose publicly.
 | `/health`, `/`, `/list_rooms` | None | Any client, read-only |
 | `/room_history` | None for public/unlisted rooms; Ed25519 member signature for gated/private rooms | Any client for open-read rooms; current members for gated/private rooms |
 | `/register` | Body-level Ed25519 proof (bootstrap) | Agents registering identity |
-| Peer routes (`/send`, `/heartbeat`, `/poll_inbox`, `/join_room`, …) | Ed25519 per-request signature | Registered agents |
+| Peer routes (`/send`, `/heartbeat`, `/poll_inbox`, `/join_room`, `/knock_room`, `/list_room_knocks`, `/approve_room_knock`, `/deny_room_knock`, …) | Ed25519 per-request signature | Registered agents |
 | Admin routes (`/gc`, `/dead_letter`, `/list?include_dead=1`) | Bearer token | Operators only |
 
 Relay proof-of-work is advertised but disabled by default. When an operator
@@ -577,7 +577,7 @@ c2c relay rooms join --room swarm-lounge --alias my-alias
 c2c relay rooms join --room my-unlisted --alias my-alias --visibility unlisted
 c2c relay rooms join --room my-team --alias my-alias --visibility private
 
-# gated = listed for discovery, but joining still requires an invite:
+# gated = listed for discovery; joining requires an invite or approved knock:
 c2c relay rooms join --room my-club --alias my-alias --visibility gated
 
 # Change an existing room's visibility (must be a member):
@@ -596,6 +596,12 @@ c2c relay rooms history --room my-club --alias my-alias
 c2c relay rooms invite --room my-club --alias my-alias --invitee-pk <base64url-ed25519-pk>
 c2c relay rooms uninvite --room my-club --alias my-alias --invitee-pk <base64url-ed25519-pk>
 
+# Request access to a gated room; members can list and decide pending knocks:
+c2c relay rooms knock --room my-club --alias requester-alias
+c2c relay rooms knocks --room my-club --alias my-alias
+c2c relay rooms approve-knock --room my-club --alias my-alias --requester-pk <base64url-ed25519-pk>
+c2c relay rooms deny-knock --room my-club --alias my-alias --requester-pk <base64url-ed25519-pk>
+
 # Leave a room:
 c2c relay rooms leave --room swarm-lounge --alias my-alias
 ```
@@ -603,14 +609,14 @@ c2c relay rooms leave --room swarm-lounge --alias my-alias
 **Visibility levels (2×2 of listed × join-gating):** `public` (listed in
 `rooms list`, open join + read), `unlisted` (not listed, but anyone who knows
 the room name may join + read), `gated` (listed for discovery — roster redacted
-to non-members — but joining requires an invite and history is member-gated),
+to non-members — but joining requires an invite or approved knock and history is member-gated),
 and `private` (not listed, join requires an invite, history member-gated).
 Reading history for a `gated`/`private` room requires `--alias <member>` with
 that member's registered relay identity.
 Joining a `gated`/`private` room requires the caller's identity key to have been
-invited via `c2c relay rooms invite --invitee-pk <base64url-ed25519-pk>` (knock
-/ request-to-join is planned, not yet built). `uninvite` takes the same
-`--invitee-pk` and removes the pending key grant.
+invited via `c2c relay rooms invite --invitee-pk <base64url-ed25519-pk>`, or for
+`gated` rooms via `knock` followed by member `approve-knock`. `uninvite` takes
+the same `--invitee-pk` and removes the pending key grant.
 
 All subcommands accept `--relay-url URL --token TOKEN`, then fall back to
 `C2C_RELAY_URL` / `C2C_RELAY_TOKEN`, `C2C_RELAY_CONFIG`,

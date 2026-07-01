@@ -104,7 +104,7 @@ inventory.
 | `test_ephemeral_dm_e2e.py` | `docker-compose.e2e-multi-agent.yml` | Ephemeral archive contract across Docker cross-container topology. ~8 assertions (archive file grep checks). |
 | `test_monitor_leak_e2e.py` | `docker-compose.e2e-multi-agent.yml` | Inotify watch cleanup after session exit (E2E). ~6 assertions via `/proc/<pid>/fdinfo/`. |
 | `test_relay_outage.py` | `docker-compose.e2e-multi-agent.yml` | Relay outage + recovery, outbox persistence + reconnect. ~6 assertions (message delivery after restart). |
-| `test_room_acl_e2e.py` | `docker-compose.e2e-multi-agent.yml` | Room invite-gated ACL enforcement across broker boundary. ~20 assertions using `_room_helpers.py`. |
+| `test_room_acl_e2e.py` | `docker-compose.e2e-multi-agent.yml` | Room gated ACL enforcement across broker boundary. ~20 assertions using `_room_helpers.py`. |
 | `test_s5_signing_e2e.py` | `docker-compose.e2e-multi-agent.yml` | Signing keys provisioning E2E — Ed25519 identity, sign+verify cross-broker. ~15 assertions. |
 | `test_peer_pass_e2e.py` | `docker-compose.e2e-multi-agent.yml` | Peer-PASS lifecycle E2E — sign → DM → verify roundtrip. ~18 assertions. |
 | `test_coord_cherry_pick_e2e.py` | `docker-compose.e2e-multi-agent.yml` | Cherry-pick + auto-DM across containers. ~12 assertions (git cat-file, SHA regex). |

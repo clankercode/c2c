@@ -516,6 +516,163 @@ let rooms_invite_cmd =
      Printf.eprintf "error: %s\n%!" msg;
      exit 1)
 
+let room_knock_to_json (k : room_knock) =
+  `Assoc
+    [ ("requester_alias", `String k.requester_alias)
+    ; ("requested_at", `Float k.requested_at)
+    ]
+
+let rooms_knock_cmd =
+  let room_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Gated room to request access to.")
+  in
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Your alias (overrides registry lookup). Required when C2C_MCP_SESSION_ID is unset.")
+  in
+  let+ json = json_flag
+  and+ room_id = room_id
+  and+ alias_opt = alias_flag in
+  let broker = Broker.create ~root:(resolve_broker_root ()) in
+  let requester_alias =
+    Option.value alias_opt ~default:(resolve_alias_with_broker broker)
+  in
+  let output_mode = if json then Json else Human in
+  (try
+     let result =
+       Broker.knock_room broker ~room_id ~requester_alias
+     in
+     match output_mode with
+     | Json ->
+         print_json
+           (`Assoc
+             [ ("ok", `Bool true)
+             ; ("room_id", `String result.kr_room_id)
+             ; ("requester_alias", `String result.kr_requester_alias)
+             ; ("already_pending", `Bool result.kr_already_pending)
+             ; ( "notified",
+                 `List (List.map (fun a -> `String a) result.kr_notified) )
+             ])
+     | Human ->
+         if result.kr_already_pending then
+           Printf.printf "Already requested to join room %s as %s\n"
+             room_id requester_alias
+         else
+           Printf.printf "Requested to join room %s as %s (%d members notified)\n"
+             room_id requester_alias (List.length result.kr_notified)
+   with Invalid_argument msg ->
+     Printf.eprintf "error: %s\n%!" msg;
+     exit 1)
+
+let rooms_knocks_cmd =
+  let room_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
+  in
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Your alias (overrides registry lookup). Required when C2C_MCP_SESSION_ID is unset.")
+  in
+  let+ json = json_flag
+  and+ room_id = room_id
+  and+ alias_opt = alias_flag in
+  let broker = Broker.create ~root:(resolve_broker_root ()) in
+  let caller_alias =
+    Option.value alias_opt ~default:(resolve_alias_with_broker broker)
+  in
+  let output_mode = if json then Json else Human in
+  (try
+     let knocks = Broker.list_room_knocks broker ~room_id ~caller_alias in
+     match output_mode with
+     | Json -> print_json (`List (List.map room_knock_to_json knocks))
+     | Human ->
+         if knocks = [] then
+           Printf.printf "No pending knocks for room %s.\n" room_id
+         else
+           List.iter
+             (fun (k : room_knock) ->
+                Printf.printf "  %s requested at %s\n" k.requester_alias
+                  (C2c_time.human_utc k.requested_at))
+             knocks
+   with Invalid_argument msg ->
+     Printf.eprintf "error: %s\n%!" msg;
+     exit 1)
+
+let rooms_approve_knock_cmd =
+  let room_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
+  in
+  let requester =
+    Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"ALIAS" ~doc:"Alias whose knock should be approved.")
+  in
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Your alias (overrides registry lookup). Required when C2C_MCP_SESSION_ID is unset.")
+  in
+  let+ json = json_flag
+  and+ room_id = room_id
+  and+ requester = requester
+  and+ alias_opt = alias_flag in
+  let broker = Broker.create ~root:(resolve_broker_root ()) in
+  let approver_alias =
+    Option.value alias_opt ~default:(resolve_alias_with_broker broker)
+  in
+  let output_mode = if json then Json else Human in
+  (try
+     Broker.approve_room_knock broker ~room_id ~approver_alias
+       ~requester_alias:requester;
+     match output_mode with
+     | Json ->
+         print_json
+           (`Assoc
+             [ ("ok", `Bool true)
+             ; ("room_id", `String room_id)
+             ; ("requester_alias", `String requester)
+             ; ("approved", `Bool true)
+             ])
+     | Human ->
+         Printf.printf "Approved %s to join room %s\n" requester room_id
+   with Invalid_argument msg ->
+     Printf.eprintf "error: %s\n%!" msg;
+     exit 1)
+
+let rooms_deny_knock_cmd =
+  let room_id =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
+  in
+  let requester =
+    Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"ALIAS" ~doc:"Alias whose knock should be denied.")
+  in
+  let alias_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
+      ~doc:"Your alias (overrides registry lookup). Required when C2C_MCP_SESSION_ID is unset.")
+  in
+  let+ json = json_flag
+  and+ room_id = room_id
+  and+ requester = requester
+  and+ alias_opt = alias_flag in
+  let broker = Broker.create ~root:(resolve_broker_root ()) in
+  let denier_alias =
+    Option.value alias_opt ~default:(resolve_alias_with_broker broker)
+  in
+  let output_mode = if json then Json else Human in
+  (try
+     Broker.deny_room_knock broker ~room_id ~denier_alias
+       ~requester_alias:requester;
+     match output_mode with
+     | Json ->
+         print_json
+           (`Assoc
+             [ ("ok", `Bool true)
+             ; ("room_id", `String room_id)
+             ; ("requester_alias", `String requester)
+             ; ("denied", `Bool true)
+             ])
+     | Human ->
+         Printf.printf "Denied %s's request to join room %s\n" requester room_id
+   with Invalid_argument msg ->
+     Printf.eprintf "error: %s\n%!" msg;
+     exit 1)
+
 let rooms_members_cmd =
   let room_id =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
@@ -784,6 +941,10 @@ let rooms_send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message t
 let rooms_history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show room message history.") rooms_history_cmd
 let rooms_tail = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail" ~doc:"Tail room history; follow new messages as they arrive.") rooms_tail_cmd
 let rooms_invite = Cmdliner.Cmd.v (Cmdliner.Cmd.info "invite" ~doc:"Invite an alias to a room.") rooms_invite_cmd
+let rooms_knock = Cmdliner.Cmd.v (Cmdliner.Cmd.info "knock" ~doc:"Request to join a gated room.") rooms_knock_cmd
+let rooms_knocks = Cmdliner.Cmd.v (Cmdliner.Cmd.info "knocks" ~doc:"List pending room join requests.") rooms_knocks_cmd
+let rooms_approve_knock = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approve-knock" ~doc:"Approve a pending room join request.") rooms_approve_knock_cmd
+let rooms_deny_knock = Cmdliner.Cmd.v (Cmdliner.Cmd.info "deny-knock" ~doc:"Deny a pending room join request.") rooms_deny_knock_cmd
 let rooms_members = Cmdliner.Cmd.v (Cmdliner.Cmd.info "members" ~doc:"List room members.") rooms_members_cmd
 let rooms_visibility = Cmdliner.Cmd.v (Cmdliner.Cmd.info "visibility" ~doc:"Get or set room visibility (public, unlisted, gated, or private).") rooms_visibility_cmd
 let rooms_create = Cmdliner.Cmd.v (Cmdliner.Cmd.info "create" ~doc:"Create a room with explicit visibility (#394).") rooms_create_cmd
@@ -793,10 +954,10 @@ let rooms_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "rooms" ~doc:"Manage persistent N:N rooms.")
-    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_delete; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility; rooms_my_rooms ]
+    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_delete; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_knock; rooms_knocks; rooms_approve_knock; rooms_deny_knock; rooms_members; rooms_visibility; rooms_my_rooms ]
 
 let room_group =
   Cmdliner.Cmd.group
     ~default:rooms_list_cmd
     (Cmdliner.Cmd.info "room" ~doc:"Alias for rooms.")
-    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_members; rooms_visibility; rooms_my_rooms ]
+    [ rooms_list; rooms_create; rooms_join; rooms_leave; rooms_send; rooms_history; rooms_tail; rooms_invite; rooms_knock; rooms_knocks; rooms_approve_knock; rooms_deny_knock; rooms_members; rooms_visibility; rooms_my_rooms ]

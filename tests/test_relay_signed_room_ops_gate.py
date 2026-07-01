@@ -6,7 +6,9 @@ verifies:
   - unsigned join_room → rejected with relay_err_unsigned_room_op
   - unsigned leave_room → rejected with relay_err_unsigned_room_op
   - unsigned set_room_visibility → rejected with relay_err_unsigned_room_op
+  - unsigned knock_room → rejected with relay_err_unsigned_room_op
   - signed join_room (with Ed25519 proof) → accepted
+  - signed gated knock/list/approve/deny request-to-join flows work
 
 These tests require the OCaml relay binary (c2c relay serve) and an Ed25519
 identity fixture (C2C_RELAY_IDENTITY_PATH). They are NOT run against the
@@ -280,6 +282,29 @@ class SignedRoomOpHelper:
             "nonce": nonce,
         }
 
+    def sign_room_op_with_extra(self, sign_ctx: str, room_id: str,
+                                *extra_fields: str) -> dict:
+        """Proof for room ops whose canonical blob carries extra fields between
+        alias and identity_pk, such as approve/deny knock requester_pk."""
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        nonce = self._b64url_nopad_encode(os.urandom(16))
+        blob = "\x1f".join([
+            sign_ctx,
+            room_id,
+            self.alias,
+            *extra_fields,
+            self.identity_pk_b64,
+            ts,
+            nonce,
+        ])
+        sig = self._sign(blob)
+        return {
+            "identity_pk": self.identity_pk_b64,
+            "sig": self._b64url_nopad_encode(sig),
+            "ts": ts,
+            "nonce": nonce,
+        }
+
 
 class RequireSignedRoomOpsTests(unittest.TestCase):
     """Tests for C2C_REQUIRE_SIGNED_ROOM_OPS=1 gate.
@@ -336,6 +361,18 @@ class RequireSignedRoomOpsSetVisibilityTests(RequireSignedRoomOpsTests):
             "visibility": "public",
         })
         self.assertFalse(r["ok"], f"unsigned set_room_visibility should be rejected: {r}")
+        self.assertEqual(r["error_code"], "unsigned_room_op",
+                         f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
+
+
+class RequireSignedRoomOpsKnockTests(RequireSignedRoomOpsTests):
+    def test_unsigned_knock_room_rejected(self):
+        """Unsigned /knock_room must be rejected with relay_err_unsigned_room_op."""
+        r = self.client.post("/knock_room", {
+            "alias": ALICE_ALIAS,
+            "room_id": ROOM_ID,
+        })
+        self.assertFalse(r["ok"], f"unsigned knock_room should be rejected: {r}")
         self.assertEqual(r["error_code"], "unsigned_room_op",
                          f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
 
@@ -406,6 +443,10 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
 
     JOIN_CTX = "c2c/v1/room-join"
     SETVIS_CTX = "c2c/v1/room-set-visibility"
+    KNOCK_CTX = "c2c/v1/room-knock"
+    LIST_KNOCKS_CTX = "c2c/v1/room-list-knocks"
+    APPROVE_KNOCK_CTX = "c2c/v1/room-approve-knock"
+    DENY_KNOCK_CTX = "c2c/v1/room-deny-knock"
     ALIAS = "vis-e2e-alice"
     ALIAS2 = "vis-e2e-bob"
 
@@ -457,6 +498,48 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
             auth_header=helper.sign_request("POST", "/room_history", body),
         )
 
+    def _signed_knock(self, room_id: str) -> dict:
+        proof = self.helper2.sign_room_op(self.KNOCK_CTX, room_id)
+        return self.client.post("/knock_room", {
+            "alias": self.ALIAS2,
+            "room_id": room_id,
+            **proof,
+        })
+
+    def _signed_list_knocks(self, room_id: str) -> dict:
+        proof = self.helper.sign_room_op(self.LIST_KNOCKS_CTX, room_id)
+        return self.client.post("/list_room_knocks", {
+            "alias": self.ALIAS,
+            "room_id": room_id,
+            **proof,
+        })
+
+    def _signed_approve_knock(self, room_id: str) -> dict:
+        proof = self.helper.sign_room_op_with_extra(
+            self.APPROVE_KNOCK_CTX,
+            room_id,
+            self.helper2.identity_pk_b64,
+        )
+        return self.client.post("/approve_room_knock", {
+            "alias": self.ALIAS,
+            "room_id": room_id,
+            "requester_pk": self.helper2.identity_pk_b64,
+            **proof,
+        })
+
+    def _signed_deny_knock(self, room_id: str) -> dict:
+        proof = self.helper.sign_room_op_with_extra(
+            self.DENY_KNOCK_CTX,
+            room_id,
+            self.helper2.identity_pk_b64,
+        )
+        return self.client.post("/deny_room_knock", {
+            "alias": self.ALIAS,
+            "room_id": room_id,
+            "requester_pk": self.helper2.identity_pk_b64,
+            **proof,
+        })
+
     def test_signed_join_public_is_listed(self):
         r = self._signed_join("vis-e2e-public", "public")
         self.assertTrue(r["ok"], f"signed join (public) should be accepted: {r}")
@@ -494,6 +577,66 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
         })
         self.assertFalse(r2["ok"],
                          f"uninvited join into a gated room must be rejected: {r2}")
+
+    def test_gated_knock_approve_then_join(self):
+        room_id = "knock-e2e-approve"
+        r = self._signed_join(room_id, "gated")
+        self.assertTrue(r["ok"], f"signed join (gated) should be accepted: {r}")
+
+        proof = self.helper2.sign_room_op(self.JOIN_CTX, room_id)
+        pre_join = self.client.post("/join_room", {
+            "alias": self.ALIAS2, "room_id": room_id, **proof,
+        })
+        self.assertFalse(pre_join["ok"],
+                         f"uninvited requester should not join before approval: {pre_join}")
+
+        knock = self._signed_knock(room_id)
+        self.assertTrue(knock["ok"], f"signed knock should be accepted: {knock}")
+        self.assertFalse(knock.get("already_pending"),
+                         f"first knock should not be already_pending: {knock}")
+
+        dup = self._signed_knock(room_id)
+        self.assertTrue(dup["ok"], f"duplicate signed knock should be ok: {dup}")
+        self.assertTrue(dup.get("already_pending"),
+                        f"duplicate knock should be already_pending: {dup}")
+
+        listed = self._signed_list_knocks(room_id)
+        self.assertTrue(listed["ok"], f"member should list knocks: {listed}")
+        knocks = listed.get("knocks", [])
+        self.assertEqual(len(knocks), 1, f"expected one pending knock: {listed}")
+        self.assertEqual(knocks[0]["requester_pk"], self.helper2.identity_pk_b64)
+
+        approve = self._signed_approve_knock(room_id)
+        self.assertTrue(approve["ok"], f"member should approve knock: {approve}")
+
+        proof = self.helper2.sign_room_op(self.JOIN_CTX, room_id)
+        joined = self.client.post("/join_room", {
+            "alias": self.ALIAS2, "room_id": room_id, **proof,
+        })
+        self.assertTrue(joined["ok"], f"approved requester should join: {joined}")
+
+    def test_gated_knock_deny_keeps_join_blocked(self):
+        room_id = "knock-e2e-deny"
+        r = self._signed_join(room_id, "gated")
+        self.assertTrue(r["ok"], f"signed join (gated) should be accepted: {r}")
+
+        knock = self._signed_knock(room_id)
+        self.assertTrue(knock["ok"], f"signed knock should be accepted: {knock}")
+
+        deny = self._signed_deny_knock(room_id)
+        self.assertTrue(deny["ok"], f"member should deny knock: {deny}")
+
+        listed = self._signed_list_knocks(room_id)
+        self.assertTrue(listed["ok"], f"member should list knocks: {listed}")
+        self.assertEqual(listed.get("knocks", []), [],
+                         f"denied knock should be removed: {listed}")
+
+        proof = self.helper2.sign_room_op(self.JOIN_CTX, room_id)
+        joined = self.client.post("/join_room", {
+            "alias": self.ALIAS2, "room_id": room_id, **proof,
+        })
+        self.assertFalse(joined["ok"],
+                         f"denied requester should remain unable to join: {joined}")
 
     def test_unlisted_not_listed_but_second_identity_joins_ok(self):
         # Creator opens an unlisted room: NOT listed...

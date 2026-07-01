@@ -392,10 +392,51 @@ let test_invite_ctx_constants () =
   Alcotest.(check string) "uninvite ctx" "c2c/v1/room-uninvite" room_uninvite_sign_ctx;
   Alcotest.(check string) "set-visibility ctx"
     "c2c/v1/room-set-visibility" room_set_visibility_sign_ctx;
+  Alcotest.(check string) "knock ctx"
+    "c2c/v1/room-knock" room_knock_sign_ctx;
+  Alcotest.(check string) "list knocks ctx"
+    "c2c/v1/room-list-knocks" room_list_knocks_sign_ctx;
+  Alcotest.(check string) "approve knock ctx"
+    "c2c/v1/room-approve-knock" room_approve_knock_sign_ctx;
+  Alcotest.(check string) "deny knock ctx"
+    "c2c/v1/room-deny-knock" room_deny_knock_sign_ctx;
   Alcotest.(check string) "not_invited code"
     "not_invited" relay_err_not_invited;
   Alcotest.(check string) "not_a_member code"
-    "not_a_member" relay_err_not_a_member
+    "not_a_member" relay_err_not_a_member;
+  Alcotest.(check string) "join_directly code"
+    "join_directly" relay_err_join_directly;
+  Alcotest.(check string) "already_invited code"
+    "already_invited" relay_err_already_invited;
+  Alcotest.(check string) "already_member code"
+    "already_member" relay_err_already_member
+
+let test_room_op_target_pk_signed () =
+  let id = Relay_identity.generate () in
+  let target_pk = "requester-pk-b64" in
+  let proof =
+    Relay_signed_ops.sign_room_op_with_target_pk id
+      ~ctx:room_approve_knock_sign_ctx ~room_id:"club"
+      ~alias:"alice" ~target_pk
+  in
+  let pk =
+    match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet proof.Relay_signed_ops.identity_pk_b64 with
+    | Ok pk -> pk
+    | Error _ -> Alcotest.fail "identity_pk should be valid base64url"
+  in
+  let sig_ =
+    match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet proof.Relay_signed_ops.sig_b64 with
+    | Ok sig_ -> sig_
+    | Error _ -> Alcotest.fail "sig should be valid base64url"
+  in
+  let blob = Relay_identity.canonical_msg ~ctx:room_approve_knock_sign_ctx
+    [ "club"; "alice"; target_pk; proof.identity_pk_b64; proof.ts; proof.nonce ] in
+  Alcotest.(check bool) "target-pk signed blob verifies" true
+    (Relay_identity.verify ~pk ~msg:blob ~sig_);
+  let tampered = Relay_identity.canonical_msg ~ctx:room_approve_knock_sign_ctx
+    [ "club"; "alice"; "other-pk"; proof.identity_pk_b64; proof.ts; proof.nonce ] in
+  Alcotest.(check bool) "target-pk tamper rejected" false
+    (Relay_identity.verify ~pk ~msg:tampered ~sig_)
 
 (* --- L3/5: operator allowlist + admin unbind --- *)
 
@@ -507,6 +548,7 @@ let tests = [
   "invite_list_roundtrip",         `Quick, test_invite_list_roundtrip;
   "set_visibility",                `Quick, test_set_visibility;
   "invite_ctx_constants",          `Quick, test_invite_ctx_constants;
+  "room_op_target_pk_signed",      `Quick, test_room_op_target_pk_signed;
   "allowlist_unlisted_falls_through", `Quick, test_allowlist_unlisted_falls_through;
   "allowlist_matching_pk_accepted",   `Quick, test_allowlist_matching_pk_accepted;
   "allowlist_mismatched_pk_rejected", `Quick, test_allowlist_mismatched_pk_rejected;

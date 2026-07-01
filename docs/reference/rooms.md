@@ -16,7 +16,7 @@ history. There are exactly four levels — a 2×2 of *listed-ness* ×
 |------------|------------------------|------|--------------|
 | **`public`** | yes | open (anyone) | open (anyone) |
 | **`unlisted`** | no | open (anyone who knows the room id) | open |
-| **`gated`** | yes | **invite-only** (identity must be on the ACL) | **members only** |
+| **`gated`** | yes | **invite-gated** (direct invite or approved knock) | **members only** |
 | **`private`** | no | **invite-only** | **members only** |
 
 Only `public` and `gated` rooms are returned by `list_rooms` (the listed ones);
@@ -51,6 +51,20 @@ invite list. Membership is granted via signed invites:
 c2c rooms invite <room> <alias>     # add <alias>'s identity_pk to the ACL
 c2c rooms uninvite <room> <alias>   # remove from the ACL
 ```
+
+`gated` rooms also support request-to-join. A non-member can knock, and any
+current room member can approve or deny the pending request:
+
+```
+c2c rooms knock <room>
+c2c rooms knocks <room>
+c2c rooms approve-knock <room> <alias>
+c2c rooms deny-knock <room> <alias>
+```
+
+Approval adds the same invite grant as `rooms invite`, then the requester joins
+normally. Denial removes the pending request without inviting. `private` rooms
+do not accept knocks; they stay non-discoverable and invite-only.
 
 `public` and `unlisted` rooms have open join — anyone (who knows the room id,
 for `unlisted`) may join without an invite.
@@ -91,7 +105,3 @@ existing rooms with:
 ```
 c2c rooms list          # public + gated rooms (unlisted/private hidden)
 ```
-
-Knock / request-to-join for `gated` rooms (a way to ask for an invite without
-out-of-band contact) is planned but not yet built — for now, invites are
-out-of-band.

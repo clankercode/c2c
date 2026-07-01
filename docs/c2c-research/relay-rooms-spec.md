@@ -151,8 +151,9 @@ Server behaviour:
 (Relay code: `Relay.*.join_room` calls `canonical_visibility_exn`,
 then `open_join = visibility = "public" || visibility = "unlisted"`
 in the join-admission gate; gated/private require the caller's
-`identity_pk` on the invite list. Knock / request-to-join is planned,
-not built — gated/private rooms need an out-of-band invite today.)
+`identity_pk` on the invite list. `gated` rooms accept knock /
+request-to-join; approval adds the same invite grant and the requester
+then joins normally. `private` rooms stay non-discoverable and invite-only.)
 
 ### 4.2 Leave
 
@@ -225,8 +226,9 @@ below and rejects anything else with
 - Non-members who previously were members see nothing post-leave from a
   member-gated room. They retain their local archive of what they saw while
   in the room.
-- gated/private rooms require an **out-of-band invite** to join today;
-  knock / request-to-join is planned, not built.
+- gated/private rooms require an invite grant to join. For `gated` rooms,
+  a requester may knock and any current member may approve or deny that
+  pending request. `private` rooms do not accept knocks.
 
 Invite management (v1, minimal):
 - Room creator is added to `invited_members` on create.
@@ -235,6 +237,11 @@ Invite management (v1, minimal):
   current member of `gated`/`private` rooms (no role hierarchy in v1).
 - `c2c relay rooms uninvite <room> <identity_pk>` removes the entry.
   Does NOT evict existing members — just prevents re-join.
+- `c2c relay rooms knock --room <room> --alias <alias>` stores a pending
+  request for a `gated` room under the requester's `identity_pk`.
+- `c2c relay rooms knocks --room <room> --alias <member>` lists pending
+  requests. `approve-knock --requester-pk <pk>` invites and removes the
+  knock; `deny-knock --requester-pk <pk>` removes it without inviting.
 
 SIGN_CTX values for invite management (as shipped at L4/5, commit
 `4cffcb2`):
@@ -244,6 +251,10 @@ SIGN_CTX values for invite management (as shipped at L4/5, commit
 | `/set_room_visibility`| `c2c/v1/room-set-visibility`  |
 | `/invite_room`        | `c2c/v1/room-invite`          |
 | `/uninvite_room`      | `c2c/v1/room-uninvite`        |
+| `/knock_room`         | `c2c/v1/room-knock`           |
+| `/list_room_knocks`   | `c2c/v1/room-list-knocks`     |
+| `/approve_room_knock` | `c2c/v1/room-approve-knock`   |
+| `/deny_room_knock`    | `c2c/v1/room-deny-knock`      |
 
 All three require the signer to be a current member. Canonical blob
 follows the same shape as §3 (`SIGN_CTX \x1f <fields> \x1f <ts> \x1f
@@ -312,14 +323,17 @@ New/updated commands under `c2c relay rooms`:
 
 | Command                                 | Behaviour                                         |
 |-----------------------------------------|---------------------------------------------------|
-| `create <room> [--visibility V]`        | Create + auto-invite self                         |
-| `invite <room> <alias\|identity_pk>`    | Append to `invited_members`                       |
-| `uninvite <room> <identity_pk>`         | Remove from `invited_members`                     |
-| `members <room>`                        | List current members with fingerprints            |
-| `join <room> --alias A`                 | Signed join (§4.1); replaces existing local verb  |
-| `leave <room> --alias A`                | Signed leave (§4.2)                               |
-| `send <room> --alias A <content>`       | Signed send; builds §2 envelope                   |
-| `history <room> [--after-seq N] [--limit M]` | Paginated history read                       |
+| `list`                                  | List public and gated rooms                       |
+| `join --room R --alias A [--visibility V]` | Signed join (§4.1); `--visibility` applies on create |
+| `leave --room R --alias A`              | Signed leave (§4.2)                               |
+| `send --room R --alias A <content>`     | Signed send; builds §2 envelope                   |
+| `history --room R [--alias A] [--limit M]` | History read; member signature for gated/private |
+| `invite --room R --alias A --invitee-pk PK` | Append to `invited_members`                   |
+| `uninvite --room R --alias A --invitee-pk PK` | Remove from `invited_members`              |
+| `knock --room R --alias A`              | Request to join a gated room                      |
+| `knocks --room R --alias A`             | List pending knocks (members only)                |
+| `approve-knock --room R --alias A --requester-pk PK` | Invite requester and remove knock      |
+| `deny-knock --room R --alias A --requester-pk PK` | Remove knock without inviting              |
 
 Existing verbs keep working; they silently gain the signing step.
 No Python shell-out — identity loading goes through the OCaml
@@ -356,10 +370,13 @@ OCaml (`ocaml/test/test_relay_rooms.ml`, new):
    different alias → `alias_identity_mismatch`.
 5. `join_room` to a `gated`/`private` room without being on the invite
    list → `not_invited`.
-6. `join_room` → `leave_room` → `send_room` → `not_a_member`.
-7. `room_history` with `after_seq` paginates correctly and never
+6. `knock_room` to a `gated` room is idempotent; `approve_room_knock`
+   invites and removes the knock; `deny_room_knock` removes it without
+   inviting.
+7. `join_room` → `leave_room` → `send_room` → `not_a_member`.
+8. `room_history` with `after_seq` paginates correctly and never
    returns messages from a room the caller isn't in.
-8. Replay: `send_room` twice with the same nonce → second returns
+9. Replay: `send_room` twice with the same nonce → second returns
    `replayed_nonce`.
 
 Integration (`.collab/runbooks/c2c-delivery-smoke.md §8`):
@@ -466,6 +483,7 @@ with concrete deliverables:
 | 3 | `sender_pk` in room history output + client-side verify on read (§6) | Slice 2 |
 | 4 | Envelope `{ct, enc, sender_pk}` wire format landed for `enc: "none"` (§2) | Slice 2 |
 | 5 | `invited_members` ACL + `c2c relay rooms invite/uninvite` (§4, §5, §8) | Slice 1 |
+| 6 | Knock / request-to-join for gated rooms + `approve-knock` / `deny-knock` (§4, §5, §8) | Slice 5 |
 
 Slice 2 is the keystone — once it lands, `send_room` can't be forged
 on the wire and the envelope is locked. Slices 3–5 are independent

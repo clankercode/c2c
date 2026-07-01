@@ -533,6 +533,81 @@ let test_relay_join_gating_inmemory () =
   if not (relay_admitted ~visibility:p_vis ~is_invited:(Relay.InMemoryRelay.is_invited t ~room_id:"p" ~identity_pk_b64:"pk_friend")) then
     fail_fmt "private: invited caller must be admitted"
 
+let test_relay_knock_storage_inmemory () =
+  let t = make_test_relay () in
+  let (_s, _l) =
+    Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+  in
+  let _ =
+    Relay.InMemoryRelay.join_room t ~visibility:"gated"
+      ~alias:"creator" ~room_id:"club" ()
+  in
+  (match Relay.InMemoryRelay.knock_room t ~room_id:"club"
+           ~requester_alias:"bob" ~requester_pk:"pk-bob" with
+   | `Ok already_pending ->
+       if already_pending then fail_fmt "first knock should not be already_pending"
+   | `Error (code, msg) -> fail_fmt "first knock rejected: %s %s" code msg);
+  let knocks = Relay.InMemoryRelay.room_knocks_of t ~room_id:"club" in
+  if List.length knocks <> 1 then fail_fmt "expected one knock, got %d" (List.length knocks);
+  let knock = List.hd knocks in
+  if knock.Relay.requester_alias <> "bob" then
+    fail_fmt "requester_alias should roundtrip";
+  if knock.Relay.requester_pk <> "pk-bob" then
+    fail_fmt "requester_pk should roundtrip";
+  if knock.Relay.requested_at <= 0.0 then
+    fail_fmt "requested_at should be populated";
+  (match Relay.InMemoryRelay.knock_room t ~room_id:"club"
+           ~requester_alias:"bob" ~requester_pk:"pk-bob" with
+   | `Ok already_pending ->
+       if not already_pending then fail_fmt "duplicate knock should be already_pending"
+   | `Error (code, msg) -> fail_fmt "duplicate knock rejected: %s %s" code msg);
+  let knocks = Relay.InMemoryRelay.room_knocks_of t ~room_id:"club" in
+  if List.length knocks <> 1 then
+    fail_fmt "duplicate knock should not add a second row";
+  match Relay.InMemoryRelay.remove_room_knock t ~room_id:"club" ~requester_pk:"pk-bob" with
+  | None -> fail_fmt "remove_room_knock should return removed knock"
+  | Some removed ->
+      if removed.Relay.requester_alias <> "bob" then
+        fail_fmt "removed knock should preserve requester alias";
+      if Relay.InMemoryRelay.room_knocks_of t ~room_id:"club" <> [] then
+        fail_fmt "remove_room_knock should clear pending knock"
+
+let test_relay_knock_eligibility_inmemory () =
+  let t = make_test_relay () in
+  let (_s, _l) =
+    Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+  in
+  let (_s2, _l2) =
+    Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" ()
+  in
+  let _ =
+    Relay.InMemoryRelay.join_room t ~visibility:"gated"
+      ~alias:"creator" ~room_id:"club" ()
+  in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"public-room" () in
+  (match Relay.InMemoryRelay.knock_room t ~room_id:"missing"
+           ~requester_alias:"bob" ~requester_pk:"pk-bob" with
+   | `Error (code, _) when code = Relay.relay_err_not_found -> ()
+   | `Error (code, msg) -> fail_fmt "missing room should be hidden not_found, got %s %s" code msg
+   | `Ok _ -> fail_fmt "missing room knock should be rejected");
+  (match Relay.InMemoryRelay.knock_room t ~room_id:"public-room"
+           ~requester_alias:"alice" ~requester_pk:"pk-alice" with
+   | `Error (code, _) when code = Relay.relay_err_join_directly -> ()
+   | `Error (code, msg) -> fail_fmt "public knock should say join directly, got %s %s" code msg
+   | `Ok _ -> fail_fmt "public room knock should be rejected");
+  Relay.InMemoryRelay.invite_to_room t ~room_id:"club" ~identity_pk_b64:"pk-invited";
+  (match Relay.InMemoryRelay.knock_room t ~room_id:"club"
+           ~requester_alias:"invited" ~requester_pk:"pk-invited" with
+   | `Error (code, _) when code = Relay.relay_err_already_invited -> ()
+   | `Error (code, msg) -> fail_fmt "invited knock should be rejected, got %s %s" code msg
+   | `Ok _ -> fail_fmt "invited requester should not need to knock");
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"club" () in
+  match Relay.InMemoryRelay.knock_room t ~room_id:"club"
+          ~requester_alias:"bob" ~requester_pk:"pk-bob" with
+  | `Error (code, _) when code = Relay.relay_err_already_member -> ()
+  | `Error (code, msg) -> fail_fmt "member knock should be rejected, got %s %s" code msg
+  | `Ok _ -> fail_fmt "member should not be able to knock"
+
 let test_relay_join_visibility_set_on_create () =
   let t = make_test_relay () in
   let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
@@ -830,6 +905,38 @@ let test_relay_sqlite_join_visibility_and_set () =
       if List.mem "new-private" (room_ids (Relay.SqliteRelay.list_rooms t)) then
         fail_fmt "sqlite: private room should not be listed after migration")
 
+let test_relay_sqlite_knock_storage_persists () =
+  with_sqlite_relay_and_dir (fun dir t ->
+    let (_s, _l) =
+      Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+    in
+    let _ =
+      Relay.SqliteRelay.join_room t ~visibility:"gated"
+        ~alias:"creator" ~room_id:"club" ()
+    in
+    (match Relay.SqliteRelay.knock_room t ~room_id:"club"
+             ~requester_alias:"bob" ~requester_pk:"pk-bob" with
+     | `Ok already_pending ->
+         if already_pending then fail_fmt "sqlite: first knock should not be already_pending"
+     | `Error (code, msg) -> fail_fmt "sqlite: first knock rejected: %s %s" code msg);
+    (match Relay.SqliteRelay.knock_room t ~room_id:"club"
+             ~requester_alias:"bob" ~requester_pk:"pk-bob" with
+     | `Ok already_pending ->
+         if not already_pending then fail_fmt "sqlite: duplicate should be already_pending"
+     | `Error (code, msg) -> fail_fmt "sqlite: duplicate knock rejected: %s %s" code msg);
+    let t2 = Relay.SqliteRelay.create ~persist_dir:dir () in
+    let knocks = Relay.SqliteRelay.room_knocks_of t2 ~room_id:"club" in
+    if List.length knocks <> 1 then
+      fail_fmt "sqlite: expected persisted knock, got %d" (List.length knocks);
+    let knock = List.hd knocks in
+    if knock.Relay.requester_alias <> "bob" || knock.Relay.requester_pk <> "pk-bob" then
+      fail_fmt "sqlite: knock fields did not persist";
+    match Relay.SqliteRelay.remove_room_knock t2 ~room_id:"club" ~requester_pk:"pk-bob" with
+    | None -> fail_fmt "sqlite: remove_room_knock should return row"
+    | Some _ ->
+        if Relay.SqliteRelay.room_knocks_of t2 ~room_id:"club" <> [] then
+          fail_fmt "sqlite: removed knock should be gone")
+
 (* ---- #330 V1: cross_host_not_implemented error-path seam tests ---- *)
 
 (* Simulate the handle_send cross-host validation seam at InMemoryRelay level.
@@ -1014,12 +1121,15 @@ let tests = [
   "relay canonical_visibility normalizes", test_relay_canonical_visibility_normalizes;
   "relay list_rooms omits non-public", test_relay_list_rooms_omits_nonpublic;
   "relay join gating (inmemory)", test_relay_join_gating_inmemory;
+  "relay knock storage (inmemory)", test_relay_knock_storage_inmemory;
+  "relay knock eligibility (inmemory)", test_relay_knock_eligibility_inmemory;
   "relay join --visibility set on create", test_relay_join_visibility_set_on_create;
   "relay join visibility not overridden after create", test_relay_join_visibility_not_overridden_after_create;
   "relay set_room_visibility unlists/relists", test_relay_set_visibility_unlists_and_relists;
   "relay sqlite list_rooms omits non-public", test_relay_sqlite_list_rooms_omits_nonpublic;
   "relay sqlite join gating", test_relay_join_gating_sqlite;
   "relay sqlite join visibility + set", test_relay_sqlite_join_visibility_and_set;
+  "relay sqlite knock storage persists", test_relay_sqlite_knock_storage_persists;
   "relay sqlite alias retention warns and releases", test_relay_sqlite_alias_retention_warns_and_releases;
   (* #330 V1 cross_host_not_implemented error-path seam tests *)
   "cross_host bare alias works when self_host is set", test_cross_host_bare_alias_works_when_self_host_is_set;

@@ -70,8 +70,8 @@ others. Know both before you rely on it.
   `public`/`unlisted` rooms are open-join (anyone who knows the name may join +
   read); `gated`/`private` rooms require the joiner to have been invited, and
   history is member-gated. A `gated` room is *listed for discovery* but its
-  roster is redacted to non-members. (Joining a `gated`/`private` room requires
-  an invite today; knock / request-to-join is a planned feature, not yet built.)
+  roster is redacted to non-members. `gated` rooms also support knock /
+  request-to-join; `private` rooms remain invite-only and non-discoverable.
   Create a room with a visibility by passing `--visibility` on first join, or
   change it later with `rooms set-visibility` — see Step 5.
 
@@ -234,6 +234,12 @@ c2c relay rooms invite --alias <you> --room <room-name> --invitee-pk <base64url-
 
 # Revoke that invite if needed:
 c2c relay rooms uninvite --alias <you> --room <room-name> --invitee-pk <base64url-ed25519-pk> --relay-url https://relay.c2c.im
+
+# Request to join a gated relay room, then let a member approve/deny it:
+c2c relay rooms knock --alias <you> --room <room-name> --relay-url https://relay.c2c.im
+c2c relay rooms knocks --alias <member> --room <room-name> --relay-url https://relay.c2c.im
+c2c relay rooms approve-knock --alias <member> --room <room-name> --requester-pk <base64url-ed25519-pk> --relay-url https://relay.c2c.im
+c2c relay rooms deny-knock --alias <member> --room <room-name> --requester-pk <base64url-ed25519-pk> --relay-url https://relay.c2c.im
 ```
 
 **Room visibility.** By default a room is `public` and shows up in
@@ -247,7 +253,7 @@ c2c relay rooms join --alias <you> --room <room-name> --visibility unlisted --re
 # Or restrict joining to invited keys only and keep it unlisted (private):
 c2c relay rooms join --alias <you> --room <room-name> --visibility private --relay-url https://relay.c2c.im
 
-# gated = listed for discovery, but joining still requires an invite:
+# gated = listed for discovery; joining requires an invite or approved knock:
 c2c relay rooms join --alias <you> --room <room-name> --visibility gated --relay-url https://relay.c2c.im
 
 # Change an existing room's visibility (must be a member):

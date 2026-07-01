@@ -390,6 +390,149 @@ let send_room_invite ~broker ~session_id_override ~arguments =
             in
             Lwt.return (tool_ok content))))
 
+let room_knock_json (k : room_knock) =
+  `Assoc
+    [ ("requester_alias", `String k.requester_alias)
+    ; ("requested_at", `Float k.requested_at)
+    ]
+
+let knock_room ~broker ~session_id_override ~arguments =
+  let room_id = string_member "room_id" arguments in
+  (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
+   | None -> Lwt.return (missing_member_alias_result "knock_room")
+   | Some requester_alias ->
+       (match send_alias_impersonation_check ?session_id_override:session_id_override broker requester_alias with
+        | Some conflict ->
+            Lwt.return
+              (tool_result
+                 ~content:
+                   (Printf.sprintf
+                      "knock_room rejected: alias '%s' is currently held by alive \
+                       session '%s' — you cannot knock as another agent."
+                      requester_alias conflict.session_id)
+                 ~is_error:true)
+        | None ->
+            with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
+            try
+              let result =
+                Broker.knock_room broker ~room_id ~requester_alias
+              in
+              let content =
+                `Assoc
+                  [ ("ok", `Bool true)
+                  ; ("room_id", `String result.kr_room_id)
+                  ; ("requester_alias", `String result.kr_requester_alias)
+                  ; ("already_pending", `Bool result.kr_already_pending)
+                  ; ( "notified",
+                      `List
+                        (List.map (fun a -> `String a) result.kr_notified) )
+                  ]
+                |> Yojson.Safe.to_string
+              in
+              Lwt.return (tool_ok content)
+            with Invalid_argument msg ->
+              Lwt.return (tool_err msg))))
+
+let list_room_knocks ~broker ~session_id_override ~arguments =
+  let room_id = string_member "room_id" arguments in
+  (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
+   | None -> Lwt.return (missing_member_alias_result "list_room_knocks")
+   | Some caller_alias ->
+       (match send_alias_impersonation_check ?session_id_override:session_id_override broker caller_alias with
+        | Some conflict ->
+            Lwt.return
+              (tool_result
+                 ~content:
+                   (Printf.sprintf
+                      "list_room_knocks rejected: alias '%s' is currently held \
+                       by alive session '%s' — you cannot list knocks as \
+                       another agent."
+                      caller_alias conflict.session_id)
+                 ~is_error:true)
+        | None ->
+            with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
+            try
+              let knocks =
+                Broker.list_room_knocks broker ~room_id ~caller_alias
+              in
+              let content =
+                `List (List.map room_knock_json knocks)
+                |> Yojson.Safe.to_string
+              in
+              Lwt.return (tool_ok content)
+            with Invalid_argument msg ->
+              Lwt.return (tool_err msg))))
+
+let approve_room_knock ~broker ~session_id_override ~arguments =
+  let room_id = string_member "room_id" arguments in
+  let requester_alias = string_member "requester_alias" arguments in
+  (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
+   | None -> Lwt.return (missing_member_alias_result "approve_room_knock")
+   | Some approver_alias ->
+       (match send_alias_impersonation_check ?session_id_override:session_id_override broker approver_alias with
+        | Some conflict ->
+            Lwt.return
+              (tool_result
+                 ~content:
+                   (Printf.sprintf
+                      "approve_room_knock rejected: alias '%s' is currently held \
+                       by alive session '%s' — you cannot approve knocks as \
+                       another agent."
+                      approver_alias conflict.session_id)
+                 ~is_error:true)
+        | None ->
+            with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
+            try
+              Broker.approve_room_knock broker ~room_id ~approver_alias
+                ~requester_alias;
+              let content =
+                `Assoc
+                  [ ("ok", `Bool true)
+                  ; ("room_id", `String room_id)
+                  ; ("requester_alias", `String requester_alias)
+                  ; ("approved", `Bool true)
+                  ]
+                |> Yojson.Safe.to_string
+              in
+              Lwt.return (tool_ok content)
+            with Invalid_argument msg ->
+              Lwt.return (tool_err msg))))
+
+let deny_room_knock ~broker ~session_id_override ~arguments =
+  let room_id = string_member "room_id" arguments in
+  let requester_alias = string_member "requester_alias" arguments in
+  (match alias_for_current_session_or_argument ?session_id_override:session_id_override broker arguments with
+   | None -> Lwt.return (missing_member_alias_result "deny_room_knock")
+   | Some denier_alias ->
+       (match send_alias_impersonation_check ?session_id_override:session_id_override broker denier_alias with
+        | Some conflict ->
+            Lwt.return
+              (tool_result
+                 ~content:
+                   (Printf.sprintf
+                      "deny_room_knock rejected: alias '%s' is currently held by \
+                       alive session '%s' — you cannot deny knocks as another \
+                       agent."
+                      denier_alias conflict.session_id)
+                 ~is_error:true)
+        | None ->
+            with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
+            try
+              Broker.deny_room_knock broker ~room_id ~denier_alias
+                ~requester_alias;
+              let content =
+                `Assoc
+                  [ ("ok", `Bool true)
+                  ; ("room_id", `String room_id)
+                  ; ("requester_alias", `String requester_alias)
+                  ; ("denied", `Bool true)
+                  ]
+                |> Yojson.Safe.to_string
+              in
+              Lwt.return (tool_ok content)
+            with Invalid_argument msg ->
+              Lwt.return (tool_err msg))))
+
 let set_room_visibility ~broker ~session_id_override ~arguments =
   let room_id = string_member "room_id" arguments in
   let visibility_str = string_member "visibility" arguments in

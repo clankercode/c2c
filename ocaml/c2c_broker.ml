@@ -3366,10 +3366,34 @@ open C2c_mcp_helpers
     | `Null -> Public
     | _ -> Private
 
-  let room_meta_to_json { visibility; invited_members; created_by } =
+  let room_knock_to_json { requester_alias; requested_at } =
+    `Assoc
+      [ ("requester_alias", `String requester_alias)
+      ; ("requested_at", `Float requested_at)
+      ]
+
+  let room_knock_of_json json =
+    let open Yojson.Safe.Util in
+    { requester_alias =
+        (try
+           match member "requester_alias" json with
+           | `String s -> s
+           | _ -> ""
+         with _ -> "")
+    ; requested_at =
+        (try
+           match member "requested_at" json with
+           | `Float f -> f
+           | `Int i -> float_of_int i
+           | _ -> 0.0
+         with _ -> 0.0)
+    }
+
+  let room_meta_to_json { visibility; invited_members; pending_knocks; created_by } =
     `Assoc
       [ ("visibility", room_visibility_to_json visibility)
       ; ("invited_members", `List (List.map (fun s -> `String s) invited_members))
+      ; ("pending_knocks", `List (List.map room_knock_to_json pending_knocks))
       ; ("created_by", `String created_by)
       ]
 
@@ -3386,6 +3410,17 @@ open C2c_mcp_helpers
                  items
            | _ -> []
          with _ -> [])
+    ; pending_knocks =
+        (try
+           match member "pending_knocks" json with
+           | `List items ->
+               items
+               |> List.filter_map
+                    (fun item ->
+                       let knock = room_knock_of_json item in
+                       if knock.requester_alias = "" then None else Some knock)
+           | _ -> []
+         with _ -> [])
     ; created_by =
         (try
            match member "created_by" json with
@@ -3398,7 +3433,7 @@ open C2c_mcp_helpers
     ensure_room_dir t ~room_id;
     match read_json_file ~broker_root:t.root (room_meta_path t ~room_id) ~default:(`Assoc []) with
     | `Assoc _ as json -> room_meta_of_json json
-    | _ -> { visibility = Public; invited_members = []; created_by = "" }
+    | _ -> { visibility = Public; invited_members = []; pending_knocks = []; created_by = "" }
 
   let save_room_meta t ~room_id meta =
     ensure_room_dir t ~room_id;
@@ -3645,6 +3680,155 @@ open C2c_mcp_helpers
          ~content:envelope ()
      with _ -> ())
 
+  type knock_room_result =
+    { kr_room_id : string
+    ; kr_requester_alias : string
+    ; kr_already_pending : bool
+    ; kr_notified : string list
+    }
+
+  let alias_mem_casefold alias aliases =
+    let target = alias_casefold alias in
+    List.exists (fun a -> alias_casefold a = target) aliases
+
+  let room_has_member_alias members alias =
+    let target = alias_casefold alias in
+    List.exists (fun m -> alias_casefold m.rm_alias = target) members
+
+  let remove_pending_knock pending requester_alias =
+    let target = alias_casefold requester_alias in
+    List.filter
+      (fun (k : room_knock) -> alias_casefold k.requester_alias <> target)
+      pending
+
+  let hidden_or_no_knocks_error =
+    "knock_room rejected: room is not discoverable or does not accept knocks"
+
+  let knock_room t ~room_id ~requester_alias =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let dir = room_dir t ~room_id in
+    if not (Sys.file_exists dir) then
+      invalid_arg hidden_or_no_knocks_error;
+    let meta = load_room_meta t ~room_id in
+    let members = load_room_members t ~room_id in
+    (match meta.visibility with
+     | Public ->
+         invalid_arg
+           ("knock_room rejected: room '" ^ room_id ^ "' is public; join directly")
+     | Unlisted ->
+         invalid_arg
+           ("knock_room rejected: room '" ^ room_id ^ "' is unlisted; join directly")
+     | Private ->
+         invalid_arg hidden_or_no_knocks_error
+     | Gated ->
+         if room_has_member_alias members requester_alias then
+           invalid_arg
+             ("knock_room rejected: '" ^ requester_alias
+              ^ "' is already a member of room '" ^ room_id ^ "'");
+         if alias_mem_casefold requester_alias meta.invited_members then
+           invalid_arg
+             ("knock_room rejected: '" ^ requester_alias
+              ^ "' is already invited to room '" ^ room_id ^ "'");
+         let already_pending =
+           List.exists
+             (fun (k : room_knock) ->
+                alias_casefold k.requester_alias = alias_casefold requester_alias)
+             meta.pending_knocks
+         in
+         if already_pending then
+           { kr_room_id = room_id
+           ; kr_requester_alias = requester_alias
+           ; kr_already_pending = true
+           ; kr_notified = []
+           }
+         else begin
+           let knock =
+             { requester_alias; requested_at = Unix.gettimeofday () }
+           in
+           save_room_meta t ~room_id
+             { meta with pending_knocks = meta.pending_knocks @ [ knock ] };
+           let notified = ref [] in
+           let envelope =
+             Printf.sprintf
+               "<c2c event=\"room-knock\" from=\"%s\" room=\"%s\">%s wants \
+                to join room %s. Run `c2c rooms approve-knock %s %s` to \
+                approve, or `c2c rooms deny-knock %s %s` to deny.</c2c>"
+               requester_alias room_id requester_alias room_id room_id
+               requester_alias room_id requester_alias
+           in
+           List.iter
+             (fun (m : room_member) ->
+                if alias_casefold m.rm_alias = alias_casefold requester_alias
+                then ()
+                else
+                  try
+                    enqueue_message t ~from_alias:requester_alias
+                      ~to_alias:m.rm_alias ~content:envelope ();
+                    notified := m.rm_alias :: !notified
+                  with _ -> ())
+             members;
+           { kr_room_id = room_id
+           ; kr_requester_alias = requester_alias
+           ; kr_already_pending = false
+           ; kr_notified = List.rev !notified
+           }
+         end)
+
+  let list_room_knocks t ~room_id ~caller_alias =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let members = load_room_members t ~room_id in
+    if not (room_has_member_alias members caller_alias) then
+      invalid_arg "list_room_knocks rejected: only room members can list knocks";
+    let meta = load_room_meta t ~room_id in
+    meta.pending_knocks
+
+  let approve_room_knock t ~room_id ~approver_alias ~requester_alias =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let members = load_room_members t ~room_id in
+    if not (room_has_member_alias members approver_alias) then
+      invalid_arg "approve_room_knock rejected: only room members can approve knocks";
+    let meta = load_room_meta t ~room_id in
+    let target = alias_casefold requester_alias in
+    let had_pending =
+      List.exists
+        (fun (k : room_knock) -> alias_casefold k.requester_alias = target)
+        meta.pending_knocks
+    in
+    if not had_pending then
+      invalid_arg
+        ("approve_room_knock rejected: no pending knock from '" ^ requester_alias
+         ^ "' in room '" ^ room_id ^ "'");
+    send_room_invite t ~room_id ~from_alias:approver_alias
+      ~invitee_alias:requester_alias;
+    let latest = load_room_meta t ~room_id in
+    save_room_meta t ~room_id
+      { latest with
+        pending_knocks = remove_pending_knock latest.pending_knocks requester_alias
+      }
+
+  let deny_room_knock t ~room_id ~denier_alias ~requester_alias =
+    if not (valid_room_id room_id) then
+      invalid_arg ("invalid room_id: " ^ room_id);
+    let members = load_room_members t ~room_id in
+    if not (room_has_member_alias members denier_alias) then
+      invalid_arg "deny_room_knock rejected: only room members can deny knocks";
+    let meta = load_room_meta t ~room_id in
+    let target = alias_casefold requester_alias in
+    let had_pending =
+      List.exists
+        (fun (k : room_knock) -> alias_casefold k.requester_alias = target)
+        meta.pending_knocks
+    in
+    if not had_pending then
+      invalid_arg
+        ("deny_room_knock rejected: no pending knock from '" ^ requester_alias
+         ^ "' in room '" ^ room_id ^ "'");
+    save_room_meta t ~room_id
+      { meta with pending_knocks = remove_pending_knock meta.pending_knocks requester_alias }
+
   let set_room_visibility t ~room_id ~from_alias ~visibility =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
@@ -3694,7 +3878,7 @@ open C2c_mcp_helpers
       (* #alias-casefold: store [created_by] as canonical-lowercase
          (defense-in-depth, matches the join-time stamp at the other
          creation site). *)
-      { visibility; invited_members = dedup_invited;
+      { visibility; invited_members = dedup_invited; pending_knocks = [];
         created_by = alias_casefold caller_alias };
     let members =
       if auto_join then begin

@@ -116,6 +116,22 @@ let base_tool_definitions =
       ~description:"Invite an alias to a room. Only existing room members can send invites. For gated and private rooms, the invitee will be allowed to join."
       ~required:["room_id"; "invitee_alias"]
       ~properties:[ prop "room_id" "Room to invite to."; prop "invitee_alias" "Alias to invite."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
+  ; tool_definition ~name:"knock_room"
+      ~description:"Request to join a gated room. Only works for discoverable gated rooms when the requester is not already a member or invited. Duplicate knocks are idempotent."
+      ~required:["room_id"]
+      ~properties:[ prop "room_id" "Gated room to request access to."; prop "alias" "Legacy fallback requester alias (deprecated)." ]
+  ; tool_definition ~name:"list_room_knocks"
+      ~description:"List pending request-to-join knocks for a room. Only current room members can list knocks."
+      ~required:["room_id"]
+      ~properties:[ prop "room_id" "Room whose pending knocks to list."; prop "alias" "Legacy fallback member alias (deprecated)." ]
+  ; tool_definition ~name:"approve_room_knock"
+      ~description:"Approve a pending gated-room knock. Only current room members can approve. Approval issues the normal room invite grant and removes the pending knock."
+      ~required:["room_id"; "requester_alias"]
+      ~properties:[ prop "room_id" "Room containing the pending knock."; prop "requester_alias" "Alias whose knock should be approved."; prop "alias" "Legacy fallback approver alias (deprecated)." ]
+  ; tool_definition ~name:"deny_room_knock"
+      ~description:"Deny a pending gated-room knock without inviting the requester. Only current room members can deny."
+      ~required:["room_id"; "requester_alias"]
+      ~properties:[ prop "room_id" "Room containing the pending knock."; prop "requester_alias" "Alias whose knock should be denied."; prop "alias" "Legacy fallback denier alias (deprecated)." ]
   ; tool_definition ~name:"set_room_visibility"
       ~description:"Change a room's visibility mode. public = listed + open join; unlisted = unlisted + open join; gated = listed + invite-gated join; private = unlisted + invite-gated join. Only existing room members can change visibility."
       ~required:["room_id"; "visibility"]
@@ -276,6 +292,14 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
       C2c_room_handlers.room_history ~broker ~session_id_override ~arguments
   | "send_room_invite" ->
       C2c_room_handlers.send_room_invite ~broker ~session_id_override ~arguments
+  | "knock_room" ->
+      C2c_room_handlers.knock_room ~broker ~session_id_override ~arguments
+  | "list_room_knocks" ->
+      C2c_room_handlers.list_room_knocks ~broker ~session_id_override ~arguments
+  | "approve_room_knock" ->
+      C2c_room_handlers.approve_room_knock ~broker ~session_id_override ~arguments
+  | "deny_room_knock" ->
+      C2c_room_handlers.deny_room_knock ~broker ~session_id_override ~arguments
   | "set_room_visibility" ->
       C2c_room_handlers.set_room_visibility ~broker ~session_id_override ~arguments
   | "open_pending_reply" ->

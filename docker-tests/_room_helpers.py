@@ -2,8 +2,8 @@
 #407 S7 — room ACL E2E helpers for cross-container tests.
 
 Provides utilities to:
-  - Register agents on their respective brokers
-  - Create rooms with visibility and invited_members
+  - Register agents on the relay with stable Ed25519 identities
+  - Create relay rooms with visibility and invited identity public keys
   - Send messages to rooms
   - Read room history
   - Attempt to join rooms (expecting success or failure)
@@ -17,8 +17,17 @@ import json
 import subprocess
 from typing import Any
 
+from _signing_helpers import ensure_testagent_dirs
 
 C2C_CLI = "/usr/local/bin/c2c"
+RELAY_URL = "http://relay:7331"
+
+ALIAS_TO_CONTAINER = {
+    "a1": "c2c-e2e-agent-a1",
+    "a2": "c2c-e2e-agent-a2",
+    "b1": "c2c-e2e-agent-b1",
+    "b2": "c2c-e2e-agent-b2",
+}
 
 
 def _run_shell_in(container: str, script: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -60,11 +69,52 @@ def _run_c2c_in(
 
 
 def register(container: str, alias: str) -> subprocess.CompletedProcess:
-    """Register an alias on the local broker inside a container."""
+    """Provision identity, register locally, and bind the alias on the relay."""
+    ensure_testagent_dirs(container)
+    show = _run_c2c_in(container, ["relay", "identity", "show", "--json"])
+    if show.returncode != 0:
+        init = _run_c2c_in(container, [
+            "relay", "identity", "init", "--alias-hint", alias, "--json"
+        ])
+        if init.returncode != 0:
+            return init
     session_id = f"{alias}-session"
-    return _run_c2c_in(container, [
+    local = _run_c2c_in(container, [
         "register", "--alias", alias, "--session-id", session_id
     ])
+    if local.returncode not in (0, 2):
+        return local
+    return _run_c2c_in(container, [
+        "relay", "register",
+        "--alias", alias,
+        "--relay-url", RELAY_URL,
+    ])
+
+
+def _alias_container(alias: str) -> str:
+    try:
+        return ALIAS_TO_CONTAINER[alias]
+    except KeyError as exc:
+        raise AssertionError(f"no Docker room ACL container mapping for alias {alias}") from exc
+
+
+def relay_public_key(container: str) -> str:
+    """Return this container's relay identity public key."""
+    r = _run_c2c_in(container, ["relay", "identity", "show", "--json"])
+    assert r.returncode == 0, f"identity show failed in {container}: {r.stderr}"
+    data = json.loads(r.stdout)
+    pk = data.get("public_key") or data.get("pubkey") or data.get("pk")
+    assert pk, f"public key missing from identity show in {container}: {data}"
+    return pk
+
+
+def _relay_rooms_args(subcmd: str, room_id: str, alias: str) -> list[str]:
+    return [
+        "relay", "rooms", subcmd,
+        "--relay-url", RELAY_URL,
+        "--room", room_id,
+        "--alias", alias,
+    ]
 
 
 def room_create(
@@ -74,19 +124,32 @@ def room_create(
     invites: list[str] | None = None,
     as_alias: str | None = None,
 ) -> subprocess.CompletedProcess:
-    """Create a room with visibility and optional invited_members.
+    """Create a relay room with visibility and optional invited identities.
 
-    Runs: c2c rooms create <room_id> [--visibility <public|invite_only>] [--invite <alias>] ...
+    Runs: c2c relay rooms join --room <room_id> --visibility <public|gated>
+          c2c relay rooms invite --invitee-pk <pk> ...
 
     Returns CompletedProcess. Check returncode for success.
     """
-    argv = ["rooms", "create", room_id, "--visibility", visibility]
+    alias = as_alias or "a1"
+    argv = _relay_rooms_args("join", room_id, alias)
+    argv += ["--visibility", visibility]
+    created = _run_c2c_in(container, argv)
+    if created.returncode != 0:
+        return created
     if invites:
         for inv in invites:
-            argv += ["--invite", inv]
-    if as_alias:
-        argv += ["--alias", as_alias]
-    return _run_c2c_in(container, argv)
+            invitee_pk = relay_public_key(_alias_container(inv))
+            invited = _run_c2c_in(container, [
+                "relay", "rooms", "invite",
+                "--relay-url", RELAY_URL,
+                "--room", room_id,
+                "--alias", alias,
+                "--invitee-pk", invitee_pk,
+            ])
+            if invited.returncode != 0:
+                return invited
+    return created
 
 
 def room_join(
@@ -96,14 +159,12 @@ def room_join(
 ) -> subprocess.CompletedProcess:
     """Join a room.
 
-    Runs: c2c room join <room_id> [--alias <alias>]
+    Runs: c2c relay rooms join --room <room_id> --alias <alias>
 
     Returns CompletedProcess. Check returncode for success.
     """
-    argv = ["room", "join", room_id]
-    if as_alias:
-        argv += ["--alias", as_alias]
-    return _run_c2c_in(container, argv)
+    alias = as_alias or _container_alias(container)
+    return _run_c2c_in(container, _relay_rooms_args("join", room_id, alias))
 
 
 def room_send(
@@ -114,14 +175,21 @@ def room_send(
 ) -> subprocess.CompletedProcess:
     """Send a message to a room.
 
-    Runs: c2c rooms send <room_id> <message> [--alias <alias>]
+    Runs: c2c relay rooms send --room <room_id> --alias <alias> <message>
 
     Returns CompletedProcess. Check returncode for success.
     """
-    argv = ["rooms", "send", room_id, message]
-    if as_alias:
-        argv += ["--alias", as_alias]
+    alias = as_alias or _container_alias(container)
+    argv = _relay_rooms_args("send", room_id, alias)
+    argv.append(message)
     return _run_c2c_in(container, argv)
+
+
+def _container_alias(container: str) -> str:
+    for alias, mapped in ALIAS_TO_CONTAINER.items():
+        if mapped == container:
+            return alias
+    raise AssertionError(f"no Docker room ACL alias mapping for container {container}")
 
 
 def room_history(
@@ -134,10 +202,22 @@ def room_history(
     Returns (messages, stderr). messages is a list of dicts on success,
     empty list on failure. stderr contains error text on failure.
     """
-    r = _run_c2c_in(container, ["room", "history", room_id, "--limit", str(limit), "--json"])
+    alias = _container_alias(container)
+    r = _run_c2c_in(container, [
+        "relay", "rooms", "history",
+        "--relay-url", RELAY_URL,
+        "--room", room_id,
+        "--alias", alias,
+        "--limit", str(limit),
+    ])
     if r.returncode == 0:
         try:
-            return json.loads(r.stdout), r.stderr
+            data = json.loads(r.stdout)
+            if isinstance(data, dict):
+                return data.get("history", []), r.stderr
+            if isinstance(data, list):
+                return data, r.stderr
+            return [], r.stderr
         except json.JSONDecodeError:
             return [], r.stderr
     return [], r.stderr

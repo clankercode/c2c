@@ -71,6 +71,10 @@ namespace. Pi Agent uses the `pi-c2c` extension and `c2c` CLI bridge instead.
 | `room_history` | Read a room's message log |
 | `list_rooms` | List all known rooms |
 | `my_rooms` | List rooms you're a member of |
+| `knock_room` | Request to join a gated room |
+| `list_room_knocks` | List pending room join requests (members only) |
+| `approve_room_knock` | Approve a pending room join request |
+| `deny_room_knock` | Deny a pending room join request |
 | `delete_room` | Delete a room and its history |
 | `sweep` | Remove dead registrations and orphan inboxes |
 | `tail_log` | Read broker RPC audit log (debugging) |
@@ -139,7 +143,9 @@ c2c relay status       # check relay health + peer count
 c2c relay list         # list remote peers
 c2c relay gc --once    # release 12-month-unseen aliases and prune orphan inboxes
 c2c relay rooms list   # list remote rooms
-c2c relay rooms invite ROOM --invitee-pk KEY  # invite to gated room
+c2c relay rooms invite --room ROOM --alias MEMBER --invitee-pk KEY
+c2c relay rooms knock --room ROOM --alias A   # request to join gated room
+c2c relay rooms approve-knock --room ROOM --alias MEMBER --requester-pk KEY
 c2c relay subscribe-daemon start --relay-url URL  # start WebSocket push daemon
 c2c relay subscribe-daemon register --alias A  # register alias for push
 c2c relay mobile-pair   # mobile device pairing via QR token

@@ -14,6 +14,7 @@ let relay_err_signature_invalid = "signature_invalid"
 let relay_err_timestamp_out_of_window = "timestamp_out_of_window"
 let relay_err_nonce_replay = "nonce_replay"
 let relay_err_missing_proof_field = "missing_proof_field"
+let relay_err_not_found = "not_found"
 
 (* Signature windows (spec §4.3): 120s past / 30s future, 10 min nonce TTL *)
 let register_ts_past_window = 120.0
@@ -61,6 +62,10 @@ let relay_err_unsupported_enc = "unsupported_enc"
 let relay_err_not_invited = "not_invited"
 let relay_err_not_a_member = "not_a_member"
 let relay_err_unsigned_room_op = "unsigned_room_op"
+let relay_err_join_directly = "join_directly"
+let relay_err_already_invited = "already_invited"
+let relay_err_already_member = "already_member"
+let relay_err_no_pending_knock = "no_pending_knock"
 
 (* Strip any "@host" or "@host:port" suffix from an alias string.
    Returns bare alias for hashtbl/registration lookup. #686 *)
@@ -88,6 +93,16 @@ let require_signed_room_ops () =
 let room_invite_sign_ctx = "c2c/v1/room-invite"
 let room_uninvite_sign_ctx = "c2c/v1/room-uninvite"
 let room_set_visibility_sign_ctx = "c2c/v1/room-set-visibility"
+let room_knock_sign_ctx = "c2c/v1/room-knock"
+let room_list_knocks_sign_ctx = "c2c/v1/room-list-knocks"
+let room_approve_knock_sign_ctx = "c2c/v1/room-approve-knock"
+let room_deny_knock_sign_ctx = "c2c/v1/room-deny-knock"
+
+type room_knock = {
+  requester_alias : string;
+  requester_pk : string;
+  requested_at : float;
+}
 
 (* Room visibility — four levels (relay-canonical wire values), a 2x2 of
    listed-ness x join-gating:
@@ -384,6 +399,14 @@ CREATE TABLE IF NOT EXISTS room_invites (
     PRIMARY KEY (room_id, identity_pk_b64)
 );
 
+CREATE TABLE IF NOT EXISTS room_knocks (
+    room_id TEXT NOT NULL,
+    requester_identity_pk_b64 TEXT NOT NULL,
+    requester_alias TEXT NOT NULL,
+    requested_at REAL NOT NULL,
+    PRIMARY KEY (room_id, requester_identity_pk_b64)
+);
+
 CREATE TABLE IF NOT EXISTS pairing_tokens (
     binding_id TEXT PRIMARY KEY,
     token_b64 TEXT NOT NULL,
@@ -562,12 +585,17 @@ module type RELAY = sig
   val dead_letter : t -> Yojson.Safe.t list
   val add_dead_letter : t -> Yojson.Safe.t -> unit
   val list_rooms : t -> Yojson.Safe.t list
+  val room_exists : t -> room_id:string -> bool
   val room_visibility_of : t -> room_id:string -> string
   val room_invites_of : t -> room_id:string -> string list
   val is_invited : t -> room_id:string -> identity_pk_b64:string -> bool
   val set_room_visibility : t -> room_id:string -> visibility:string -> unit
   val invite_to_room : t -> room_id:string -> identity_pk_b64:string -> unit
   val uninvite_from_room : t -> room_id:string -> identity_pk_b64:string -> unit
+  val knock_room : t -> room_id:string -> requester_alias:string ->
+    requester_pk:string -> [> `Ok of bool | `Error of string * string]
+  val room_knocks_of : t -> room_id:string -> room_knock list
+  val remove_room_knock : t -> room_id:string -> requester_pk:string -> room_knock option
   val is_room_member_alias : t -> room_id:string -> alias:string -> bool
   (* S5a: Pairing token management *)
   val store_pairing_token : t -> binding_id:string -> token_b64:string ->
@@ -616,6 +644,7 @@ module InMemoryRelay : RELAY = struct
     (* Layer 4 slice 5: per-room visibility and invited identity_pk list. *)
     room_visibility : (string, string) Hashtbl.t;  (* "public" | "unlisted" | "gated" | "private" *)
     room_invites : (string, string list) Hashtbl.t; (* b64url-nopad pks *)
+    room_knocks : (string, room_knock list) Hashtbl.t;
     (* L3/5: operator allowlist (alias → identity_pk b64url-nopad). If an
        alias is present here, registrations must match the pinned pk. *)
     allowed_identities : (string, string) Hashtbl.t;
@@ -695,6 +724,7 @@ module InMemoryRelay : RELAY = struct
       rooms = Hashtbl.create 16;
       room_visibility = Hashtbl.create 16;
       room_invites = Hashtbl.create 16;
+      room_knocks = Hashtbl.create 16;
       allowed_identities = Hashtbl.create 16;
       room_history;
       seen_ids = Hashtbl.create 64;
@@ -1262,6 +1292,9 @@ module InMemoryRelay : RELAY = struct
     )
 
   (* Layer 4 slice 5 helpers — visibility + invited_pk list. *)
+  let room_exists t ~room_id =
+    with_lock t (fun () -> Hashtbl.mem t.rooms room_id)
+
   let room_visibility_of t ~room_id =
     with_lock t (fun () ->
       match Hashtbl.find_opt t.room_visibility room_id with
@@ -1298,6 +1331,28 @@ module InMemoryRelay : RELAY = struct
         Hashtbl.replace t.room_invites room_id
           (List.filter ((<>) identity_pk_b64) l))
 
+  let room_knocks_of t ~room_id =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.room_knocks room_id with
+      | Some l -> List.rev l
+      | None -> [])
+
+  let remove_room_knock t ~room_id ~requester_pk =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.room_knocks room_id with
+      | None -> None
+      | Some l ->
+        let removed, kept =
+          List.fold_left (fun (removed, kept) k ->
+            if k.requester_pk = requester_pk then
+              (Some k, kept)
+            else
+              (removed, k :: kept))
+            (None, []) l
+        in
+        Hashtbl.replace t.room_knocks room_id kept;
+        removed)
+
   let is_room_member_alias t ~room_id ~alias =
     with_lock t (fun () ->
       let now = Unix.gettimeofday () in
@@ -1306,6 +1361,64 @@ module InMemoryRelay : RELAY = struct
         when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
         List.mem alias members
       | _ -> false)
+
+  let knock_room t ~room_id ~requester_alias ~requester_pk =
+    with_lock t (fun () ->
+      if not (Hashtbl.mem t.rooms room_id) then
+        `Error (relay_err_not_found,
+          "room is not discoverable or does not accept knocks")
+      else
+        let visibility =
+          match Hashtbl.find_opt t.room_visibility room_id with
+          | Some v -> canonical_visibility_or_raw v
+          | None -> "public"
+        in
+        if visibility = "public" || visibility = "unlisted" then
+          `Error (relay_err_join_directly,
+            Printf.sprintf "room %S is %s; join directly" room_id visibility)
+        else if visibility <> "gated" then
+          `Error (relay_err_not_found,
+            "room is not discoverable or does not accept knocks")
+        else
+          let now = Unix.gettimeofday () in
+          let already_member =
+            match Hashtbl.find_opt t.leases requester_alias,
+                  Hashtbl.find_opt t.rooms room_id with
+            | Some lease, Some members
+              when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
+              List.mem requester_alias members
+            | _ -> false
+          in
+          if already_member then
+            `Error (relay_err_already_member,
+              Printf.sprintf "alias %S is already a member of room %S"
+                requester_alias room_id)
+          else
+            let invites =
+              match Hashtbl.find_opt t.room_invites room_id with
+              | Some l -> l
+              | None -> []
+            in
+            if List.mem requester_pk invites then
+              `Error (relay_err_already_invited,
+                Printf.sprintf "requester is already invited to room %S" room_id)
+            else
+              let cur =
+                match Hashtbl.find_opt t.room_knocks room_id with
+                | Some l -> l
+                | None -> []
+              in
+              if List.exists (fun k -> k.requester_pk = requester_pk) cur then
+                `Ok true
+              else begin
+                let knock = {
+                  requester_alias;
+                  requester_pk;
+                  requested_at = now;
+                } in
+                Hashtbl.replace t.room_knocks room_id (knock :: cur);
+                `Ok false
+              end)
 
   let send_room t ~from_alias ~room_id ~content ?(message_id = None) ?envelope () =
     with_lock t (fun () ->
@@ -2694,6 +2807,16 @@ module SqliteRelay : RELAY = struct
       else "public"
     )
 
+  let room_exists t ~room_id =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let stmt = Sqlite3.prepare conn "SELECT 1 FROM rooms WHERE room_id = ? LIMIT 1" in
+      Sqlite3.bind_text stmt 1 room_id |> ignore;
+      let found = Sqlite3.step stmt = Rc.ROW in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      found
+    )
+
   let room_invites_of t ~room_id =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
@@ -2749,6 +2872,147 @@ module SqliteRelay : RELAY = struct
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 identity_pk_b64 |> ignore;
       Sqlite3.step stmt |> ignore
+    )
+
+  let room_knocks_of t ~room_id =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let knocks = ref [] in
+      let stmt = Sqlite3.prepare conn
+        "SELECT requester_alias, requester_identity_pk_b64, requested_at \
+         FROM room_knocks WHERE room_id = ? ORDER BY requested_at ASC"
+      in
+      Sqlite3.bind_text stmt 1 room_id |> ignore;
+      let rec loop () =
+        let rc = Sqlite3.step stmt in
+        if rc = Rc.ROW then begin
+          let requester_alias = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+          let requester_pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1) in
+          let requested_at = data_to_float_default (Sqlite3.column stmt 2) in
+          knocks := { requester_alias; requester_pk; requested_at } :: !knocks;
+          loop ()
+        end else if rc <> Rc.DONE then
+          failwith ("room_knocks_of step failed: " ^ Rc.to_string rc)
+      in
+      loop ();
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      List.rev !knocks
+    )
+
+  let remove_room_knock t ~room_id ~requester_pk =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let select_stmt = Sqlite3.prepare conn
+        "SELECT requester_alias, requester_identity_pk_b64, requested_at \
+         FROM room_knocks WHERE room_id = ? AND requester_identity_pk_b64 = ? LIMIT 1"
+      in
+      Sqlite3.bind_text select_stmt 1 room_id |> ignore;
+      Sqlite3.bind_text select_stmt 2 requester_pk |> ignore;
+      let found =
+        match Sqlite3.step select_stmt with
+        | Rc.ROW ->
+          Some {
+            requester_alias = Sqlite3.Data.to_string_exn (Sqlite3.column select_stmt 0);
+            requester_pk = Sqlite3.Data.to_string_exn (Sqlite3.column select_stmt 1);
+            requested_at = data_to_float_default (Sqlite3.column select_stmt 2);
+          }
+        | _ -> None
+      in
+      (try Sqlite3.finalize select_stmt |> ignore with _ -> ());
+      (match found with
+       | None -> None
+       | Some knock ->
+         let del_stmt = Sqlite3.prepare conn
+           "DELETE FROM room_knocks WHERE room_id = ? AND requester_identity_pk_b64 = ?"
+         in
+         Sqlite3.bind_text del_stmt 1 room_id |> ignore;
+         Sqlite3.bind_text del_stmt 2 requester_pk |> ignore;
+         Sqlite3.step del_stmt |> ignore;
+         (try Sqlite3.finalize del_stmt |> ignore with _ -> ());
+         Some knock)
+    )
+
+  let knock_room t ~room_id ~requester_alias ~requester_pk =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let room_stmt =
+        Sqlite3.prepare conn "SELECT visibility FROM rooms WHERE room_id = ? LIMIT 1"
+      in
+      Sqlite3.bind_text room_stmt 1 room_id |> ignore;
+      let visibility_opt =
+        match Sqlite3.step room_stmt with
+        | Rc.ROW ->
+          Some (canonical_visibility_or_raw
+            (Sqlite3.Data.to_string_exn (Sqlite3.column room_stmt 0)))
+        | _ -> None
+      in
+      (try Sqlite3.finalize room_stmt |> ignore with _ -> ());
+      match visibility_opt with
+      | None ->
+        `Error (relay_err_not_found,
+          "room is not discoverable or does not accept knocks")
+      | Some visibility when visibility = "public" || visibility = "unlisted" ->
+        `Error (relay_err_join_directly,
+          Printf.sprintf "room %S is %s; join directly" room_id visibility)
+      | Some visibility when visibility <> "gated" ->
+        `Error (relay_err_not_found,
+          "room is not discoverable or does not accept knocks")
+      | Some _ ->
+        let member_stmt = Sqlite3.prepare conn
+          "SELECT leases.last_seen \
+           FROM room_members JOIN leases ON leases.alias = room_members.alias \
+           WHERE room_members.room_id = ? AND room_members.alias = ? LIMIT 1"
+        in
+        Sqlite3.bind_text member_stmt 1 room_id |> ignore;
+        Sqlite3.bind_text member_stmt 2 requester_alias |> ignore;
+        let already_member =
+          match Sqlite3.step member_stmt with
+          | Rc.ROW ->
+            let last_seen = data_to_float_default (Sqlite3.column member_stmt 0) in
+            not (alias_released ~now:(Unix.gettimeofday ()) ~last_seen)
+          | _ -> false
+        in
+        (try Sqlite3.finalize member_stmt |> ignore with _ -> ());
+        if already_member then
+          `Error (relay_err_already_member,
+            Printf.sprintf "alias %S is already a member of room %S"
+              requester_alias room_id)
+        else
+          let invite_stmt = Sqlite3.prepare conn
+            "SELECT 1 FROM room_invites WHERE room_id = ? AND identity_pk_b64 = ? LIMIT 1"
+          in
+          Sqlite3.bind_text invite_stmt 1 room_id |> ignore;
+          Sqlite3.bind_text invite_stmt 2 requester_pk |> ignore;
+          let already_invited = Sqlite3.step invite_stmt = Rc.ROW in
+          (try Sqlite3.finalize invite_stmt |> ignore with _ -> ());
+          if already_invited then
+            `Error (relay_err_already_invited,
+              Printf.sprintf "requester is already invited to room %S" room_id)
+          else
+            let dup_stmt = Sqlite3.prepare conn
+              "SELECT 1 FROM room_knocks \
+               WHERE room_id = ? AND requester_identity_pk_b64 = ? LIMIT 1"
+            in
+            Sqlite3.bind_text dup_stmt 1 room_id |> ignore;
+            Sqlite3.bind_text dup_stmt 2 requester_pk |> ignore;
+            let already_pending = Sqlite3.step dup_stmt = Rc.ROW in
+            (try Sqlite3.finalize dup_stmt |> ignore with _ -> ());
+            if already_pending then
+              `Ok true
+            else begin
+              let insert_stmt = Sqlite3.prepare conn
+                "INSERT INTO room_knocks \
+                 (room_id, requester_identity_pk_b64, requester_alias, requested_at) \
+                 VALUES (?, ?, ?, ?)"
+              in
+              Sqlite3.bind_text insert_stmt 1 room_id |> ignore;
+              Sqlite3.bind_text insert_stmt 2 requester_pk |> ignore;
+              Sqlite3.bind_text insert_stmt 3 requester_alias |> ignore;
+              Sqlite3.bind_double insert_stmt 4 (Unix.gettimeofday ()) |> ignore;
+              Sqlite3.step insert_stmt |> ignore;
+              (try Sqlite3.finalize insert_stmt |> ignore with _ -> ());
+              `Ok false
+            end
     )
 
   let is_room_member_alias t ~room_id ~alias =
@@ -3178,6 +3442,13 @@ end = struct
     | `Ok -> json_ok [ ("result", `String "ok") ]
     | `Error (code, msg) -> json_error code msg []
 
+  let json_of_room_knock k =
+    `Assoc [
+      ("requester_alias", `String k.requester_alias);
+      ("requester_pk", `String k.requester_pk);
+      ("requested_at", `Float k.requested_at);
+    ]
+
   let json_of_gc_result (expired, pruned) =
     json_ok [
       ("expired", `List (List.map (fun a -> `String a) expired));
@@ -3231,7 +3502,7 @@ end = struct
        doesn't exist yet so per-request header auth can't work. handle_register
        does its own crypto verification; auth_decision just allows it through.
        Room mutation routes (join_room, leave_room, send_room, set_room_visibility,
-       send_room_invite) similarly carry body-level Ed25519 proof via verify_room_op_proof
+       invite/uninvite/knock/knock-decision) similarly carry body-level Ed25519 proof via verify_room_op_proof
        and also accept an unsigned legacy path. They do their own auth at the handler
        level; bypassing header auth here lets signed AND unsigned bodies through. *)
     let is_self_auth =
@@ -3241,6 +3512,12 @@ end = struct
       || path = "/send_room"
       || path = "/set_room_visibility"
       || path = "/send_room_invite"
+      || path = "/invite_room"
+      || path = "/uninvite_room"
+      || path = "/knock_room"
+      || path = "/list_room_knocks"
+      || path = "/approve_room_knock"
+      || path = "/deny_room_knock"
       || path = "/mobile-pair/prepare"
       || path = "/mobile-pair"
       || path = "/forward"
@@ -4577,6 +4854,126 @@ generateKeys();
   let handle_uninvite_room relay body =
     handle_room_invite_op relay ~sign_ctx:room_uninvite_sign_ctx ~op:`Uninvite body
 
+  let handle_knock_room relay body =
+    let alias = get_string body "alias" in
+    let room_id = get_string body "room_id" in
+    if alias = "" || room_id = "" then
+      respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
+    else
+      match verify_room_op_proof relay ~sign_ctx:room_knock_sign_ctx
+              ~room_id ~alias body with
+      | Error (code, msg) ->
+        if code = err_bad_request || code = relay_err_missing_proof_field then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        let requester_pk =
+          match get_opt_string body "identity_pk" with
+          | Some pk when pk <> "" -> pk
+          | _ -> get_opt_string body "requester_pk" |> Option.value ~default:""
+        in
+        if requester_pk = "" then
+          respond_bad_request (json_error_str err_bad_request
+            "identity_pk is required for knock_room")
+        else
+          match R.knock_room relay ~room_id ~requester_alias:alias
+                  ~requester_pk with
+          | `Ok already_pending ->
+            respond_ok (`Assoc [
+              ("ok", `Bool true);
+              ("room_id", `String room_id);
+              ("requester_alias", `String alias);
+              ("requester_pk", `String requester_pk);
+              ("already_pending", `Bool already_pending);
+              ("notified", `List []);
+            ])
+          | `Error (code, msg) when code = relay_err_not_found ->
+            respond_not_found (json_error_str code msg)
+          | `Error (code, msg) ->
+            respond_bad_request (json_error_str code msg)
+
+  let handle_list_room_knocks relay body =
+    let alias = get_string body "alias" in
+    let room_id = get_string body "room_id" in
+    if alias = "" || room_id = "" then
+      respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
+    else
+      match verify_room_op_proof relay ~sign_ctx:room_list_knocks_sign_ctx
+              ~room_id ~alias body with
+      | Error (code, msg) ->
+        if code = err_bad_request || code = relay_err_missing_proof_field then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        if not (R.is_room_member_alias relay ~room_id ~alias) then
+          respond_unauthorized (json_error_str relay_err_not_a_member
+            (Printf.sprintf "alias %S is not a member of room %S" alias room_id))
+        else
+          let knocks = R.room_knocks_of relay ~room_id in
+          respond_ok (`Assoc [
+            ("ok", `Bool true);
+            ("room_id", `String room_id);
+            ("knocks", `List (List.map json_of_room_knock knocks));
+          ])
+
+  let handle_room_knock_decision relay ~sign_ctx ~decision body =
+    let alias = get_string body "alias" in
+    let room_id = get_string body "room_id" in
+    let requester_pk = get_string body "requester_pk" in
+    if alias = "" || room_id = "" || requester_pk = "" then
+      respond_bad_request (json_error_str err_bad_request
+        "alias, room_id, and requester_pk are required")
+    else
+      match verify_room_op_proof relay ~sign_ctx ~room_id ~alias
+              ~extra_signed_fields:[ requester_pk ] body with
+      | Error (code, msg) ->
+        if code = err_bad_request || code = relay_err_missing_proof_field then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        if not (R.is_room_member_alias relay ~room_id ~alias) then
+          respond_unauthorized (json_error_str relay_err_not_a_member
+            (Printf.sprintf "alias %S is not a member of room %S" alias room_id))
+        else
+          match R.remove_room_knock relay ~room_id ~requester_pk with
+          | None ->
+            respond_bad_request (json_error_str relay_err_no_pending_knock
+              (Printf.sprintf "no pending knock from requester_pk %S in room %S"
+                 requester_pk room_id))
+          | Some removed ->
+            (match decision with
+             | `Approve ->
+               R.invite_to_room relay ~room_id ~identity_pk_b64:requester_pk
+             | `Deny -> ());
+            let fields = [
+              ("ok", `Bool true);
+              ("room_id", `String room_id);
+              ("requester_alias", `String removed.requester_alias);
+              ("requester_pk", `String requester_pk);
+              ("decision", `String (match decision with `Approve -> "approved" | `Deny -> "denied"));
+            ] in
+            let fields =
+              match decision with
+              | `Approve ->
+                let invites = R.room_invites_of relay ~room_id in
+                fields @ [
+                  ("invited_members", `List (List.map (fun s -> `String s) invites));
+                ]
+              | `Deny -> fields
+            in
+            respond_ok (`Assoc fields)
+
+  let handle_approve_room_knock relay body =
+    handle_room_knock_decision relay
+      ~sign_ctx:room_approve_knock_sign_ctx ~decision:`Approve body
+
+  let handle_deny_room_knock relay body =
+    handle_room_knock_decision relay
+      ~sign_ctx:room_deny_knock_sign_ctx ~decision:`Deny body
+
   let handle_leave_room relay body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
@@ -5552,6 +5949,30 @@ generateKeys();
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_uninvite_room relay j)
 
+      | `POST, "/knock_room" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_knock_room relay j)
+
+      | `POST, "/list_room_knocks" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_list_room_knocks relay j)
+
+      | `POST, "/approve_room_knock" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_approve_room_knock relay j)
+
+      | `POST, "/deny_room_knock" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_deny_room_knock relay j)
+
       | `POST, "/send_room" ->
         let json = parse_body () in
         (match json with
@@ -5752,6 +6173,14 @@ module Relay_client : sig
   val invite_room_signed : t -> alias:string -> room_id:string -> invitee_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val uninvite_room : t -> alias:string -> room_id:string -> invitee_pk:string -> Yojson.Safe.t Lwt.t
   val uninvite_room_signed : t -> alias:string -> room_id:string -> invitee_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
+  val knock_room : t -> alias:string -> room_id:string -> requester_pk:string -> Yojson.Safe.t Lwt.t
+  val knock_room_signed : t -> alias:string -> room_id:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
+  val list_room_knocks : t -> alias:string -> room_id:string -> Yojson.Safe.t Lwt.t
+  val list_room_knocks_signed : t -> alias:string -> room_id:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
+  val approve_room_knock : t -> alias:string -> room_id:string -> requester_pk:string -> Yojson.Safe.t Lwt.t
+  val approve_room_knock_signed : t -> alias:string -> room_id:string -> requester_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
+  val deny_room_knock : t -> alias:string -> room_id:string -> requester_pk:string -> Yojson.Safe.t Lwt.t
+  val deny_room_knock_signed : t -> alias:string -> room_id:string -> requester_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val set_room_visibility : t -> alias:string -> room_id:string -> visibility:string -> Yojson.Safe.t Lwt.t
   val set_room_visibility_signed : t -> alias:string -> room_id:string -> visibility:string
     -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
@@ -6087,6 +6516,75 @@ end = struct
       ("alias", `String alias);
       ("room_id", `String room_id);
       ("invitee_pk", `String invitee_pk);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
+  let knock_room t ~alias ~room_id ~requester_pk =
+    post t "/knock_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("requester_pk", `String requester_pk);
+    ])
+
+  let knock_room_signed t ~alias ~room_id ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/knock_room" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
+  let list_room_knocks t ~alias ~room_id =
+    post t "/list_room_knocks" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+    ])
+
+  let list_room_knocks_signed t ~alias ~room_id ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/list_room_knocks" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
+  let approve_room_knock t ~alias ~room_id ~requester_pk =
+    post t "/approve_room_knock" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("requester_pk", `String requester_pk);
+    ])
+
+  let approve_room_knock_signed t ~alias ~room_id ~requester_pk ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/approve_room_knock" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("requester_pk", `String requester_pk);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
+  let deny_room_knock t ~alias ~room_id ~requester_pk =
+    post t "/deny_room_knock" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("requester_pk", `String requester_pk);
+    ])
+
+  let deny_room_knock_signed t ~alias ~room_id ~requester_pk ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/deny_room_knock" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("requester_pk", `String requester_pk);
       ("identity_pk", `String identity_pk);
       ("ts", `String ts);
       ("nonce", `String nonce);

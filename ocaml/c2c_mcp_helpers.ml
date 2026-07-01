@@ -98,6 +98,7 @@ type message = { from_alias : string; to_alias : string; content : string; defer
     trace post-delivery. Default false (#284). *)
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
+type room_knock = { requester_alias : string; requested_at : float }
 (* 4-level visibility, a 2x2 of listed-ness x join-gating:
    - Public:   listed + open join + open read.
    - Unlisted: NOT listed (hidden from non-members in list_rooms) + open join + open read.
@@ -108,6 +109,7 @@ type room_visibility = Public | Unlisted | Gated | Private
 type room_meta =
   { visibility : room_visibility
   ; invited_members : string list
+  ; pending_knocks : room_knock list
   ; created_by : string
     (** Alias of the room creator. Empty string for legacy rooms whose
         meta.json predates the field; legacy rooms can only be deleted

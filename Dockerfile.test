@@ -27,7 +27,8 @@ RUN opam update -y \
  && opam install --yes \
         dune cmdliner yojson lwt logs cohttp-lwt-unix uuidm sqlite3 \
         base64 digestif mirage-crypto-ec mirage-crypto-rng mirage-crypto-rng-lwt \
-        tls-lwt ca-certs conduit-lwt-unix x509 ptime hacl-star
+        tls-lwt ca-certs conduit-lwt-unix x509 ptime hacl-star \
+        "lambda-term" "zed" "uucp"
 
 # Copy source — --chown changes ownership of the copied tree to opam:opam.
 COPY dune-project ./
@@ -46,6 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home /home/testagent --shell /usr/sbin/nologin testagent \
     && mkdir -p /home/testagent /var/lib/c2c \
+    && chown -R testagent /home/testagent /var/lib/c2c \
     && pip install --no-cache-dir pytest pytest-timeout \
     && rm -rf /var/cache/pip
 

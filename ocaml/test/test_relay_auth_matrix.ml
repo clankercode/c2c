@@ -143,10 +143,11 @@ let t_register_allowed_dev_mode () =
     (allowed (decide ~path:"/register" ~token:None ~auth:None ~ed:false ()))
 
 (* --- Room mutation routes: body-level self-auth (like /register) ---
-   /join_room, /leave_room, /send_room, /set_room_visibility, /send_room_invite
-   carry Ed25519 proof in the JSON body via verify_room_op_proof. They must be
-   allowed through auth_decision (no header auth required) so the body-level
-   verification in the handler can run. Unsigned bodies use the legacy path. *)
+   /join_room, /leave_room, /send_room, /set_room_visibility,
+   invite/uninvite, and knock operations carry Ed25519 proof in the JSON body
+   via verify_room_op_proof. They must be allowed through auth_decision (no
+   header auth required) so the body-level verification in the handler can run.
+   Unsigned bodies use the legacy path. *)
 
 let t_join_room_no_header_auth_allowed () =
   Alcotest.(check bool) "/join_room allowed without Ed25519 header (body-auth)" true
@@ -167,6 +168,30 @@ let t_set_room_visibility_no_header_auth_allowed () =
 let t_send_room_invite_no_header_auth_allowed () =
   Alcotest.(check bool) "/send_room_invite allowed without Ed25519 header (body-auth)" true
     (allowed (decide ~path:"/send_room_invite" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_invite_room_no_header_auth_allowed () =
+  Alcotest.(check bool) "/invite_room allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/invite_room" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_uninvite_room_no_header_auth_allowed () =
+  Alcotest.(check bool) "/uninvite_room allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/uninvite_room" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_knock_room_no_header_auth_allowed () =
+  Alcotest.(check bool) "/knock_room allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/knock_room" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_list_room_knocks_no_header_auth_allowed () =
+  Alcotest.(check bool) "/list_room_knocks allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/list_room_knocks" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_approve_room_knock_no_header_auth_allowed () =
+  Alcotest.(check bool) "/approve_room_knock allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/approve_room_knock" ~token:(Some "t0p") ~auth:None ~ed:false ()))
+
+let t_deny_room_knock_no_header_auth_allowed () =
+  Alcotest.(check bool) "/deny_room_knock allowed without Ed25519 header (body-auth)" true
+    (allowed (decide ~path:"/deny_room_knock" ~token:(Some "t0p") ~auth:None ~ed:false ()))
 
 let t_ws_subscribe_no_header_auth_allowed () =
   Alcotest.(check bool) "/ws/subscribe allowed without Ed25519 header (X-header auth)" true
@@ -207,6 +232,18 @@ let () =
         t_set_room_visibility_no_header_auth_allowed;
       Alcotest.test_case "/send_room_invite no header allowed" `Quick
         t_send_room_invite_no_header_auth_allowed;
+      Alcotest.test_case "/invite_room no header allowed" `Quick
+        t_invite_room_no_header_auth_allowed;
+      Alcotest.test_case "/uninvite_room no header allowed" `Quick
+        t_uninvite_room_no_header_auth_allowed;
+      Alcotest.test_case "/knock_room no header allowed" `Quick
+        t_knock_room_no_header_auth_allowed;
+      Alcotest.test_case "/list_room_knocks no header allowed" `Quick
+        t_list_room_knocks_no_header_auth_allowed;
+      Alcotest.test_case "/approve_room_knock no header allowed" `Quick
+        t_approve_room_knock_no_header_auth_allowed;
+      Alcotest.test_case "/deny_room_knock no header allowed" `Quick
+        t_deny_room_knock_no_header_auth_allowed;
       Alcotest.test_case "/ws/subscribe no header allowed" `Quick
         t_ws_subscribe_no_header_auth_allowed;
     ];

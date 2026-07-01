@@ -2338,6 +2338,73 @@ let run_capture command =
       let rc = Sys.command (Printf.sprintf "%s > %s 2>&1" command (Filename.quote tmpfile)) in
       (rc, read_file tmpfile))
 
+let test_rooms_knock_approve_then_join_flow () =
+  with_temp_dir (fun broker_root ->
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      let live_pid = Unix.getpid () in
+      C2c_mcp.Broker.register broker ~session_id:"alice-sid"
+        ~alias:"alice" ~pid:(Some live_pid) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"bob-sid"
+        ~alias:"bob" ~pid:(Some live_pid) ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"gated-room"
+                ~alias:"alice" ~session_id:"alice-sid");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"gated-room"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
+      let env =
+        Printf.sprintf "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s"
+          (Filename.quote broker_root)
+      in
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "%s C2C_MCP_SESSION_ID=bob-sid c2c rooms knock gated-room --json"
+                env))
+      in
+      check int ("rooms knock exits 0: " ^ out) 0 rc;
+      let knock_json = Yojson.Safe.from_string out in
+      check bool "knock ok" true
+        Yojson.Safe.Util.(knock_json |> member "ok" |> to_bool);
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "%s C2C_MCP_SESSION_ID=alice-sid c2c rooms knocks gated-room --json"
+                env))
+      in
+      check int ("rooms knocks exits 0: " ^ out) 0 rc;
+      let knocks =
+        Yojson.Safe.from_string out |> Yojson.Safe.Util.to_list
+      in
+      check int "one pending knock in CLI list" 1 (List.length knocks);
+      check string "CLI listed requester" "bob"
+        Yojson.Safe.Util.(List.hd knocks |> member "requester_alias" |> to_string);
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "%s C2C_MCP_SESSION_ID=alice-sid c2c rooms approve-knock gated-room bob --json"
+                env))
+      in
+      check int ("rooms approve-knock exits 0: " ^ out) 0 rc;
+      let approve_json = Yojson.Safe.from_string out in
+      check bool "approve ok" true
+        Yojson.Safe.Util.(approve_json |> member "ok" |> to_bool);
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "%s C2C_MCP_SESSION_ID=bob-sid c2c rooms join gated-room --history-limit 0 --json"
+                env))
+      in
+      check int ("bob joins after approval: " ^ out) 0 rc;
+      let members =
+        Yojson.Safe.Util.(
+          Yojson.Safe.from_string out |> member "members" |> to_list
+          |> List.map (fun item -> item |> member "alias" |> to_string))
+      in
+      check bool "joined room members include bob" true (List.mem "bob" members))
+
 let test_poll_inbox_cross_repo_alias_drains () =
   with_temp_dir (fun broker_root ->
       let root = Filename.quote broker_root in
@@ -2526,6 +2593,7 @@ let () =
     ; ( "rooms_join",
         [ ( "rooms join missing room exits non-zero", `Quick, test_rooms_join_missing_room_exits_nonzero )
         ; ( "rooms join --help exits 0", `Quick, test_rooms_join_help_exits_zero )
+        ; ( "rooms knock approve then join flow", `Quick, test_rooms_knock_approve_then_join_flow )
         ] )
     ; ( "rooms_my_rooms",
         [ ( "rooms my-rooms exits 0", `Quick, test_rooms_my_rooms_exits_zero )

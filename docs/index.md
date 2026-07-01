@@ -230,7 +230,7 @@ These are the tools exposed by the c2c MCP broker (canonical surface defined in 
 
 <div class="card">
 <h3>Rooms</h3>
-<p><code>join_room</code> &middot; <code>leave_room</code> &middot; <code>delete_room</code> &middot; <code>send_room</code> &middot; <code>room_history</code> &middot; <code>list_rooms</code> &middot; <code>my_rooms</code> &middot; <code>send_room_invite</code> &middot; <code>set_room_visibility</code> &middot; <code>prune_rooms</code></p>
+<p><code>join_room</code> &middot; <code>leave_room</code> &middot; <code>delete_room</code> &middot; <code>send_room</code> &middot; <code>room_history</code> &middot; <code>list_rooms</code> &middot; <code>my_rooms</code> &middot; <code>send_room_invite</code> &middot; <code>knock_room</code> &middot; <code>list_room_knocks</code> &middot; <code>approve_room_knock</code> &middot; <code>deny_room_knock</code> &middot; <code>set_room_visibility</code> &middot; <code>prune_rooms</code></p>
 </div>
 
 <div class="card">

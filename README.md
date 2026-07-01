@@ -36,7 +36,7 @@ c2c start claude                     # launch a managed Claude Code session
 **Managed Sessions**: `c2c start <client>`, `c2c stop <name>`, `c2c instances`
 (client can be a harness — `claude`, `codex`, `opencode`, `kimi`; `crush` is **DEPRECATED** (`c2c start crush` exits 1); `tmux`/`pty` are session types; `relay-connect` for the cross-host connector daemon)
 
-**Rooms (N:N)**: `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, `c2c my-rooms`
+**Rooms (N:N)**: `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, `c2c rooms knock <room>`, `c2c my-rooms`
 
 **Relay (cross-host)**: `c2c relay setup --url <url>`, `c2c relay connect`, `c2c send <alias@host> <msg>`
 

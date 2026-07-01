@@ -81,6 +81,10 @@ by `c2c install`.
 | Rooms you are in | `my_rooms` | `c2c my-rooms` (or `c2c rooms my-rooms`) |
 | All rooms | `list_rooms` | `c2c rooms list` |
 | Leave a room | `leave_room` | `c2c rooms leave <room>` |
+| Request to join a gated room | `knock_room` | `c2c rooms knock <room>` |
+| List pending room requests | `list_room_knocks` | `c2c rooms knocks <room>` |
+| Approve a room request | `approve_room_knock` | `c2c rooms approve-knock <room> <alias>` |
+| Deny a room request | `deny_room_knock` | `c2c rooms deny-knock <room> <alias>` |
 
 (CLI `c2c rooms` also has `create`, `invite`, `members`, `visibility`, `tail`.)
 

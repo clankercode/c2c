@@ -992,7 +992,10 @@ let test_tools_list_includes_register_list_send_and_whoami () =
            in
            List.iter
              (fun expected -> check bool expected true (List.mem expected names))
-             [ "register"; "list"; "send"; "whoami"; "poll_inbox" ])
+             [ "register"; "list"; "send"; "whoami"; "poll_inbox"
+             ; "knock_room"; "list_room_knocks"; "approve_room_knock"
+             ; "deny_room_knock"
+             ])
 
 (* Fork a child, wait for it to exit, return the dead PID.
    The PID remains allocated briefly before being reaped by init. *)
@@ -8021,6 +8024,151 @@ let test_send_room_invite_only_member_can_invite () =
            C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
              ~from_alias:"bob" ~invitee_alias:"carol"))
 
+let test_room_meta_pending_knocks_defaults_empty () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"club"
+                ~alias:"alice" ~session_id:"session-a");
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"club" in
+      check (list string) "pending_knocks defaults empty" []
+        (List.map (fun (k : C2c_mcp.room_knock) -> k.requester_alias)
+           meta.pending_knocks))
+
+let test_knock_room_gated_duplicate_idempotent_and_notifies_members () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
+      let first =
+        C2c_mcp.Broker.knock_room broker ~room_id:"club"
+          ~requester_alias:"bob"
+      in
+      check bool "first knock is new" false first.kr_already_pending;
+      check (list string) "notified current member" ["alice"]
+        first.kr_notified;
+      let second =
+        C2c_mcp.Broker.knock_room broker ~room_id:"club"
+          ~requester_alias:"bob"
+      in
+      check bool "duplicate knock is idempotent" true
+        second.kr_already_pending;
+      check (list string) "duplicate does not re-notify" []
+        second.kr_notified;
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"club" in
+      check (list string) "one pending requester" ["bob"]
+        (List.map (fun (k : C2c_mcp.room_knock) -> k.requester_alias)
+           meta.pending_knocks);
+      let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-a" in
+      check bool "member inbox has room-knock envelope" true
+        (List.exists
+           (fun (msg : C2c_mcp.message) ->
+              string_contains msg.content "event=\"room-knock\""
+              && string_contains msg.content "bob"
+              && string_contains msg.content "club")
+           inbox))
+
+let test_knock_room_rejects_direct_join_or_undiscoverable_rooms () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"plaza"
+                ~alias:"alice" ~session_id:"session-a");
+      check_raises "public room says join directly"
+        (Invalid_argument
+           "knock_room rejected: room 'plaza' is public; join directly")
+        (fun () ->
+           ignore (C2c_mcp.Broker.knock_room broker ~room_id:"plaza"
+                     ~requester_alias:"bob"));
+      check_raises "unknown room hidden"
+        (Invalid_argument
+           "knock_room rejected: room is not discoverable or does not accept knocks")
+        (fun () ->
+           ignore (C2c_mcp.Broker.knock_room broker ~room_id:"missing-room"
+                     ~requester_alias:"bob"));
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"plaza"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Private;
+      check_raises "private room hidden"
+        (Invalid_argument
+           "knock_room rejected: room is not discoverable or does not accept knocks")
+        (fun () ->
+           ignore (C2c_mcp.Broker.knock_room broker ~room_id:"plaza"
+                     ~requester_alias:"bob")))
+
+let test_approve_room_knock_invites_and_removes_pending () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
+      ignore (C2c_mcp.Broker.knock_room broker ~room_id:"club"
+                ~requester_alias:"bob");
+      C2c_mcp.Broker.approve_room_knock broker ~room_id:"club"
+        ~approver_alias:"alice" ~requester_alias:"bob";
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"club" in
+      check (list string) "approved requester invited" ["bob"]
+        meta.invited_members;
+      check (list string) "pending knock removed" []
+        (List.map (fun (k : C2c_mcp.room_knock) -> k.requester_alias)
+           meta.pending_knocks);
+      let members =
+        C2c_mcp.Broker.join_room broker ~room_id:"club"
+          ~alias:"bob" ~session_id:"session-b"
+      in
+      check bool "approved requester can join" true
+        (List.exists (fun (m : C2c_mcp.room_member) -> m.rm_alias = "bob") members))
+
+let test_deny_room_knock_removes_without_inviting () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
+      ignore (C2c_mcp.Broker.knock_room broker ~room_id:"club"
+                ~requester_alias:"bob");
+      C2c_mcp.Broker.deny_room_knock broker ~room_id:"club"
+        ~denier_alias:"alice" ~requester_alias:"bob";
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"club" in
+      check (list string) "denied requester not invited" []
+        meta.invited_members;
+      check (list string) "pending knock removed" []
+        (List.map (fun (k : C2c_mcp.room_knock) -> k.requester_alias)
+           meta.pending_knocks);
+      check_raises "denied requester still cannot join"
+        (Invalid_argument
+           "join_room rejected: room 'club' requires an invite and 'bob' is not on the invite list")
+        (fun () ->
+           ignore (C2c_mcp.Broker.join_room broker ~room_id:"club"
+                     ~alias:"bob" ~session_id:"session-b")))
+
+let test_list_room_knocks_member_only () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
+      ignore (C2c_mcp.Broker.knock_room broker ~room_id:"club"
+                ~requester_alias:"bob");
+      check_raises "non-member cannot list knocks"
+        (Invalid_argument
+           "list_room_knocks rejected: only room members can list knocks")
+        (fun () ->
+           ignore (C2c_mcp.Broker.list_room_knocks broker ~room_id:"club"
+                     ~caller_alias:"bob"));
+      let knocks =
+        C2c_mcp.Broker.list_room_knocks broker ~room_id:"club"
+          ~caller_alias:"alice"
+      in
+      check (list string) "member sees pending requester" ["bob"]
+        (List.map (fun (k : C2c_mcp.room_knock) -> k.requester_alias) knocks))
+
 let test_join_room_invite_only_rejects_uninvited () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -8195,6 +8343,146 @@ let test_tools_call_send_room_invite_via_mcp () =
                check bool "send_room_invite success" false is_error;
                let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
                check (list string) "invited via MCP" ["bob"] meta.invited_members))
+
+let test_tools_call_knock_room_via_mcp () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-b";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let request =
+             `Assoc
+               [ ("jsonrpc", `String "2.0")
+               ; ("id", `Int 304)
+               ; ("method", `String "tools/call")
+               ; ( "params",
+                   `Assoc
+                     [ ("name", `String "knock_room")
+                     ; ( "arguments",
+                         `Assoc [ ("room_id", `String "secret-club") ] )
+                     ] )
+               ]
+           in
+           let response =
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           match response with
+           | None -> fail "expected tools/call response"
+           | Some json ->
+               let open Yojson.Safe.Util in
+               let is_error =
+                 json |> member "result" |> member "isError" |> to_bool_option
+                 |> Option.value ~default:false
+               in
+               check bool "knock_room success" false is_error;
+               let text =
+                 json |> member "result" |> member "content" |> index 0
+                 |> member "text" |> to_string
+               in
+               let body = Yojson.Safe.from_string text in
+               check bool "ok true" true
+                 (body |> member "ok" |> to_bool);
+               check bool "not duplicate" false
+                 (body |> member "already_pending" |> to_bool);
+               let notified =
+                 body |> member "notified" |> to_list |> List.map to_string
+               in
+               check (list string) "notified member" ["alice"] notified;
+               let meta =
+                 C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club"
+               in
+               check (list string) "pending via MCP" ["bob"]
+                 (List.map
+                    (fun (k : C2c_mcp.room_knock) -> k.requester_alias)
+                    meta.pending_knocks)))
+
+let test_tools_call_list_and_approve_room_knock_via_mcp () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"session-b"
+        ~alias:"bob" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      C2c_mcp.Broker.set_room_visibility broker ~room_id:"secret-club"
+        ~from_alias:"alice" ~visibility:C2c_mcp.Gated;
+      ignore (C2c_mcp.Broker.knock_room broker ~room_id:"secret-club"
+                ~requester_alias:"bob");
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-a";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let result_is_error json =
+             let open Yojson.Safe.Util in
+             match json |> member "result" |> member "isError" with
+             | `Bool b -> b
+             | _ -> false
+           in
+           let result_text json =
+             let open Yojson.Safe.Util in
+             json |> member "result" |> member "content" |> index 0
+             |> member "text" |> to_string
+           in
+           let call id name args =
+             let request =
+               `Assoc
+                 [ ("jsonrpc", `String "2.0")
+                 ; ("id", `Int id)
+                 ; ("method", `String "tools/call")
+                 ; ( "params",
+                     `Assoc [ ("name", `String name); ("arguments", args) ] )
+                 ]
+             in
+             Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+           in
+           let listed =
+             call 305 "list_room_knocks"
+               (`Assoc [ ("room_id", `String "secret-club") ])
+           in
+           (match listed with
+           | None -> fail "expected list_room_knocks response"
+           | Some json ->
+                check bool "list_room_knocks success" false
+                  (result_is_error json);
+                let knocks =
+                  Yojson.Safe.from_string (result_text json)
+                  |> Yojson.Safe.Util.to_list
+                in
+                check int "one listed knock" 1 (List.length knocks);
+                check string "listed requester" "bob"
+                  Yojson.Safe.Util.(List.hd knocks |> member "requester_alias" |> to_string));
+           let approved =
+             call 306 "approve_room_knock"
+               (`Assoc
+                 [ ("room_id", `String "secret-club")
+                 ; ("requester_alias", `String "bob")
+                 ])
+           in
+           (match approved with
+           | None -> fail "expected approve_room_knock response"
+           | Some json ->
+                check bool "approve_room_knock success" false
+                  (result_is_error json);
+                let meta =
+                  C2c_mcp.Broker.load_room_meta broker
+                    ~room_id:"secret-club"
+                in
+                check (list string) "approved via MCP invited" ["bob"]
+                  meta.invited_members;
+                check (list string) "approved via MCP pending cleared" []
+                  (List.map
+                     (fun (k : C2c_mcp.room_knock) -> k.requester_alias)
+                     meta.pending_knocks))))
 
 let test_tools_call_set_room_visibility_via_mcp () =
   with_temp_dir (fun dir ->
@@ -14181,8 +14469,20 @@ let () =
              test_send_room_invite_adds_to_invite_list
          ; test_case "send_room_invite auto-DMs invitee (#433)" `Quick
              test_send_room_invite_auto_dms_invitee
-         ; test_case "send_room_invite only member can invite" `Quick
+           ; test_case "send_room_invite only member can invite" `Quick
              test_send_room_invite_only_member_can_invite
+         ; test_case "room meta pending_knocks defaults empty" `Quick
+             test_room_meta_pending_knocks_defaults_empty
+         ; test_case "knock_room gated duplicate idempotent and notifies members" `Quick
+             test_knock_room_gated_duplicate_idempotent_and_notifies_members
+         ; test_case "knock_room rejects direct-join or undiscoverable rooms" `Quick
+             test_knock_room_rejects_direct_join_or_undiscoverable_rooms
+         ; test_case "approve_room_knock invites and removes pending" `Quick
+             test_approve_room_knock_invites_and_removes_pending
+         ; test_case "deny_room_knock removes without inviting" `Quick
+             test_deny_room_knock_removes_without_inviting
+         ; test_case "list_room_knocks member-only" `Quick
+             test_list_room_knocks_member_only
          ; test_case "join_room invite_only rejects uninvited" `Quick
              test_join_room_invite_only_rejects_uninvited
          ; test_case "join_room invite_only accepts invited" `Quick
@@ -14207,6 +14507,10 @@ let () =
              test_list_rooms_includes_visibility_and_invited_members
          ; test_case "tools/call send_room_invite via MCP" `Quick
              test_tools_call_send_room_invite_via_mcp
+         ; test_case "tools/call knock_room via MCP" `Quick
+             test_tools_call_knock_room_via_mcp
+         ; test_case "tools/call list+approve room knock via MCP" `Quick
+             test_tools_call_list_and_approve_room_knock_via_mcp
          ; test_case "tools/call set_room_visibility via MCP" `Quick
              test_tools_call_set_room_visibility_via_mcp
          ; test_case "tools/call set_room_visibility unknown rejected" `Quick

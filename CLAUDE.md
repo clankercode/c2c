@@ -52,7 +52,8 @@ nudge toward this even when the immediate AC is narrower.
   not foreclose remote transport later.
 - **Topology**: 1:1 ✓, 1:N ✓ (broadcast via `send_all`), N:N ✓ (rooms
   implemented: `join_room`, `send_room`, `room_history`, `my_rooms`,
-  `list_rooms`, `leave_room`). `swarm-lounge` is the default social room;
+  `list_rooms`, `leave_room`, `knock_room`, `list_room_knocks`,
+  `approve_room_knock`, `deny_room_knock`). `swarm-lounge` is the default social room;
   all clients auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` written
   by `c2c install`. `c2c init` / `c2c rooms join <room>`, discoverable peers,
   sensible defaults.

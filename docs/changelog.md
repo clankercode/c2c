@@ -118,8 +118,9 @@ nav_label: Changelog
   discovery with its roster redacted to non-members, invite-gated join,
   member-gated history), and `private` (hidden, invite-gated join, member-gated
   history). Set with `set_room_visibility` / `c2c rooms visibility`; gated and
-  private rooms accept members via `send_room_invite`. Knock / request-to-join
-  for gated rooms is planned, not yet built.
+  private rooms accept members via `send_room_invite`. Gated rooms also support
+  knock / request-to-join via `knock_room`, `list_room_knocks`,
+  `approve_room_knock`, and `deny_room_knock`.
 - Only the four canonical tokens are accepted — the legacy
   `invite` / `invite_only` / `invite-only` synonyms were removed; unknown
   visibility values are now rejected at the CLI and relay rather than silently

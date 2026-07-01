@@ -386,7 +386,7 @@ let commands_by_safety_cmd =
     ("peek-inbox", "Peek at your inbox without draining");
     ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");
-    ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
+    ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/knock/knocks/approve-knock/deny-knock/members/visibility)");
     ("my-rooms", "List rooms you are a member of");
     ("history", "Show archived inbox messages");
     ("dead-letter", "Show dead-letter entries");
@@ -412,6 +412,10 @@ let commands_by_safety_cmd =
     ("register", "Register an alias for the current session");
     ("rooms send", "Send a message to a room");
     ("rooms invite", "Invite an alias to a room");
+    ("rooms knock", "Request to join a gated room");
+    ("rooms knocks", "List pending gated-room join requests");
+    ("rooms approve-knock", "Approve a pending room join request");
+    ("rooms deny-knock", "Deny a pending room join request");
     ("rooms visibility", "Get or set room visibility");
     ("agent list", "List all canonical role files");
     ("agent new", "Create a new canonical role file");
@@ -741,7 +745,9 @@ let send_cmd =
                     Printf.eprintf "error: alias '%s' is not registered.\n" to_alias;
                     Printf.eprintf "  Primary broker: %s\n" primary_root;
                     Printf.eprintf "  Also scanned: sessions broker, per-repo brokers, C2C_BROKER_SCAN_DIRS, sibling dirs.\n";
-                    Printf.eprintf "  hint: pass --root <broker-root> to target a specific broker,\n";
+                    Printf.eprintf "  hint: run `c2c init`, or register this session with `c2c register --alias <your-alias>`.\n";
+                    Printf.eprintf "  hint: run `c2c whoami` to confirm your current alias/session.\n";
+                    Printf.eprintf "  Advanced: pass --root <broker-root> to target a specific broker,\n";
                     Printf.eprintf "  or use `c2c list --global` to see all registered peers across brokers.\n%!"
                   end;
                   exit 1);
@@ -5270,7 +5276,7 @@ let relay_list_cmd =
 
 let relay_rooms_cmd =
   let subcmd =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|set-visibility" ~doc:"Rooms subcommand.")
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|knock|knocks|approve-knock|deny-knock|set-visibility" ~doc:"Rooms subcommand.")
   in
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
@@ -5285,10 +5291,13 @@ let relay_rooms_cmd =
     Cmdliner.Arg.(value & opt int 50 & info [ "limit" ] ~docv:"N" ~doc:"Max messages for history (default 50).")
   in
   let alias =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias (required for join/leave/send/invite/uninvite; optional for history, required there for gated/private rooms).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias (required for join/leave/send/invite/uninvite/knock/knocks/approve-knock/deny-knock; optional for history, required there for gated/private rooms).")
   in
   let invitee_pk =
     Cmdliner.Arg.(value & opt (some string) None & info [ "invitee-pk" ] ~docv:"PK" ~doc:"Base64url invitee identity public key (required for invite/uninvite).")
+  in
+  let requester_pk =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "requester-pk" ] ~docv:"PK" ~doc:"Base64url requester identity public key (required for approve-knock/deny-knock).")
   in
   let visibility =
     Cmdliner.Arg.(value & opt (some string) None & info [ "visibility" ] ~docv:"public|unlisted|gated|private" ~doc:"Room visibility: 'public' (listed + open join), 'unlisted' (unlisted + open join), 'gated' (listed + invite-gated join), or 'private' (unlisted + invite-gated join). Required for set-visibility; optional for join, where it applies only when the join creates the room.")
@@ -5308,6 +5317,7 @@ let relay_rooms_cmd =
   and+ limit = limit
   and+ alias = alias
   and+ invitee_pk = invitee_pk
+  and+ requester_pk = requester_pk
   and+ visibility = visibility
   and+ words = words in
   match subcmd with
@@ -5517,6 +5527,128 @@ let relay_rooms_cmd =
                           then Relay.Relay_client.invite_room
                           else Relay.Relay_client.uninvite_room in
                  Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val)
+           in
+           print_endline (Yojson.Safe.pretty_to_string result);
+           (match result with
+            | `Assoc fields ->
+                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+            | _ -> exit 1))
+  | "knock" ->
+      (match resolve_relay_url relay_url, room, alias with
+       | None, _, _ ->
+           Printf.eprintf "%s%!" relay_url_required_error;
+           exit 1
+       | _, None, _ ->
+           Printf.eprintf "error: --room required for 'rooms knock'.\n%!";
+           exit 1
+       | _, _, None ->
+           Printf.eprintf "error: --alias required for 'rooms knock'.\n%!";
+           exit 1
+       | Some url, Some room_id, Some requester_alias ->
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result =
+             match Relay_identity.load () with
+             | Ok id ->
+                 let p =
+                   Relay_signed_ops.sign_room_op id
+                     ~ctx:Relay.room_knock_sign_ctx ~room_id
+                     ~alias:requester_alias
+                 in
+                 Lwt_main.run (Relay.Relay_client.knock_room_signed client
+                   ~alias:requester_alias ~room_id
+                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                   ~sig_:p.Relay_signed_ops.sig_b64)
+             | Error _ ->
+                 Printf.eprintf "error: relay rooms knock requires an identity. Run 'c2c relay identity init' first.\n%!";
+                 exit 1
+           in
+           print_endline (Yojson.Safe.pretty_to_string result);
+           (match result with
+            | `Assoc fields ->
+                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+            | _ -> exit 1))
+  | "knocks" ->
+      (match resolve_relay_url relay_url, room, alias with
+       | None, _, _ ->
+           Printf.eprintf "%s%!" relay_url_required_error;
+           exit 1
+       | _, None, _ ->
+           Printf.eprintf "error: --room required for 'rooms knocks'.\n%!";
+           exit 1
+       | _, _, None ->
+           Printf.eprintf "error: --alias required for 'rooms knocks'.\n%!";
+           exit 1
+       | Some url, Some room_id, Some member_alias ->
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result =
+             match Relay_identity.load () with
+             | Ok id ->
+                 let p =
+                   Relay_signed_ops.sign_room_op id
+                     ~ctx:Relay.room_list_knocks_sign_ctx ~room_id
+                     ~alias:member_alias
+                 in
+                 Lwt_main.run (Relay.Relay_client.list_room_knocks_signed client
+                   ~alias:member_alias ~room_id
+                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                   ~sig_:p.Relay_signed_ops.sig_b64)
+             | Error _ ->
+                 Lwt_main.run (Relay.Relay_client.list_room_knocks client
+                   ~alias:member_alias ~room_id)
+           in
+           print_endline (Yojson.Safe.pretty_to_string result);
+           (match result with
+            | `Assoc fields ->
+                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
+            | _ -> exit 1))
+  | "approve-knock" | "deny-knock" ->
+      (match resolve_relay_url relay_url, room, alias, requester_pk with
+       | None, _, _, _ ->
+           Printf.eprintf "%s%!" relay_url_required_error;
+           exit 1
+       | _, None, _, _ ->
+           Printf.eprintf "error: --room required for 'rooms %s'.\n%!" subcmd;
+           exit 1
+       | _, _, None, _ ->
+           Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" subcmd;
+           exit 1
+       | _, _, _, None ->
+           Printf.eprintf "error: --requester-pk required for 'rooms %s'.\n%!" subcmd;
+           exit 1
+       | Some url, Some room_id, Some member_alias, Some requester_pk_val ->
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           let result =
+             match Relay_identity.load () with
+             | Ok id ->
+                 let sign_ctx =
+                   if subcmd = "approve-knock" then Relay.room_approve_knock_sign_ctx
+                   else Relay.room_deny_knock_sign_ctx
+                 in
+                 let p =
+                   Relay_signed_ops.sign_room_op_with_target_pk id
+                     ~ctx:sign_ctx ~room_id ~alias:member_alias
+                     ~target_pk:requester_pk_val
+                 in
+                 let fn =
+                   if subcmd = "approve-knock"
+                   then Relay.Relay_client.approve_room_knock_signed
+                   else Relay.Relay_client.deny_room_knock_signed
+                 in
+                 Lwt_main.run (fn client ~alias:member_alias ~room_id
+                   ~requester_pk:requester_pk_val
+                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                   ~sig_:p.Relay_signed_ops.sig_b64)
+             | Error _ ->
+                 let fn =
+                   if subcmd = "approve-knock"
+                   then Relay.Relay_client.approve_room_knock
+                   else Relay.Relay_client.deny_room_knock
+                 in
+                 Lwt_main.run (fn client ~alias:member_alias ~room_id
+                   ~requester_pk:requester_pk_val)
            in
            print_endline (Yojson.Safe.pretty_to_string result);
            (match result with
@@ -12632,7 +12764,7 @@ let commands_man is_agent =
          $(b,monitor) $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (use with care) =="
     ; `P "$(b,start) $(b,stop) $(b,restart) $(b,reset-thread) — manage c2c instances"
-    ; `P "$(b,c2c rooms) $(b,send|join|leave|list|members|history|invite|visibility|delete)"
+    ; `P "$(b,c2c rooms) $(b,send|join|leave|list|members|history|invite|knock|knocks|approve-knock|deny-knock|visibility|delete)"
     ; `P "$(b,c2c agent) $(b,c2c roles) $(b,compile|validate) — role file management"
     ; `P "$(b,c2c config) $(b,show|generation-client)"
     ; `P "$(b,init) $(b,repo)"
@@ -12760,7 +12892,7 @@ let fast_path_commands () =
     ("peek-inbox", "Peek at your inbox without draining");
     ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");
-    ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
+    ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/knock/knocks/approve-knock/deny-knock/members/visibility)");
     ("my-rooms", "List rooms you are a member of");
     ("history", "Show archived inbox messages");
     ("dead-letter", "Show dead-letter entries");
@@ -12786,6 +12918,10 @@ let fast_path_commands () =
     ("register", "Register an alias for the current session");
     ("rooms send", "Send a message to a room");
     ("rooms invite", "Invite an alias to a room");
+    ("rooms knock", "Request to join a gated room");
+    ("rooms knocks", "List pending gated-room join requests");
+    ("rooms approve-knock", "Approve a pending room join request");
+    ("rooms deny-knock", "Deny a pending room join request");
     ("rooms visibility", "Get or set room visibility");
     ("agent list", "List all canonical role files");
     ("agent new", "Create a new canonical role file");

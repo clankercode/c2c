@@ -173,10 +173,12 @@ type message =
   }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
+type room_knock = { requester_alias : string; requested_at : float }
 type room_visibility = Public | Unlisted | Gated | Private
 type room_meta =
   { visibility : room_visibility
   ; invited_members : string list
+  ; pending_knocks : room_knock list
   ; created_by : string
     (** Alias of the room creator. Empty string for legacy rooms whose
         meta.json predates the field. Used to gate [delete_room]
@@ -509,6 +511,16 @@ module Broker : sig
   val load_room_meta : t -> room_id:string -> room_meta
   val save_room_meta : t -> room_id:string -> room_meta -> unit
   val send_room_invite : t -> room_id:string -> from_alias:string -> invitee_alias:string -> unit
+  type knock_room_result =
+    { kr_room_id : string
+    ; kr_requester_alias : string
+    ; kr_already_pending : bool
+    ; kr_notified : string list
+    }
+  val knock_room : t -> room_id:string -> requester_alias:string -> knock_room_result
+  val list_room_knocks : t -> room_id:string -> caller_alias:string -> room_knock list
+  val approve_room_knock : t -> room_id:string -> approver_alias:string -> requester_alias:string -> unit
+  val deny_room_knock : t -> room_id:string -> denier_alias:string -> requester_alias:string -> unit
   val set_room_visibility : t -> room_id:string -> from_alias:string -> visibility:room_visibility -> unit
   type create_room_result =
     { cr_room_id : string

@@ -46,6 +46,14 @@ val sign_room_op_with_visibility :
   Relay_identity.t -> ctx:string -> room_id:string -> alias:string
   -> visibility:string -> signed_proof
 
+(** [sign_room_op_with_target_pk identity ~ctx ~room_id ~alias ~target_pk]
+    signs room ops whose body carries a target identity key, such as
+    approve/deny knock:
+    room_id || alias || target_pk || identity_pk || ts || nonce. *)
+val sign_room_op_with_target_pk :
+  Relay_identity.t -> ctx:string -> room_id:string -> alias:string
+  -> target_pk:string -> signed_proof
+
 (** [sign_send_room identity ~room_id ~from_alias ~content] produces
     a full §2 envelope for a v1 enc="none" room message:
     {ct=b64(content), enc="none", sender_pk, sig, ts, nonce}.

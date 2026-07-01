@@ -46,7 +46,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **restart-self**: `./restart-self` kills the outer loop wrapper. **Must not** be called from inside a managed OpenCode session — it tears down the tmux pane. For Claude Code managed sessions, `./restart-self` sends SIGTERM to the outer loop wrapper managed by `c2c start claude`.
 
-**Room support**: Full suite via MCP tools: `join_room`, `leave_room`, `send_room`, `list_rooms`, `my_rooms`, `room_history`, `send_room_invite`, `set_room_visibility`. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` is set by `c2c install claude`.
+**Room support**: Full suite via MCP tools: `join_room`, `leave_room`, `send_room`, `list_rooms`, `my_rooms`, `room_history`, `send_room_invite`, `knock_room`, `list_room_knocks`, `approve_room_knock`, `deny_room_knock`, `set_room_visibility`. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` is set by `c2c install claude`.
 
 **Ephemeral DMs**: Supported via `mcp__c2c__send` with `ephemeral: true`. Never written to recipient archive.
 
