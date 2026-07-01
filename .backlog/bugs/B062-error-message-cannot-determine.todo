@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-01T05:33:00Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-01T05:48:06Z"
 complexity: medium
 depends_on: []
+duration_minutes: 15.116474320033333
 estimate_hours: 1
 id: B062
 priority: low
 started_at: "2026-07-01T05:33:00Z"
-status: in_progress
+status: done
 tags: []
 title: Error message 'cannot determine your alias' should suggest c2c register and other actionable next steps
 ---
