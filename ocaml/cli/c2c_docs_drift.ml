@@ -187,7 +187,7 @@ let fallback_commands = SS.of_list [
   "rooms"; "my-rooms"; "history"; "dead-letter"; "tail-log"; "health";
   "status"; "verify"; "prune-rooms"; "instances"; "doctor"; "stats";
   "set-compact"; "clear-compact"; "open-pending-reply"; "check-pending-reply";
-  "start"; "stop"; "restart"; "install"; "init"; "register"; "sweep";
+  "start"; "stop"; "restart"; "install"; "init"; "register"; "deregister"; "sweep";
   "sweep-dryrun"; "refresh-peer"; "broker-gc"; "monitor"; "screen";
   "deliver-inbox"; "agent"; "roles"; "config"; "repo";
   "memory"; "peer-pass"; "worktree"; "sticker"; "sitrep"; "room";
