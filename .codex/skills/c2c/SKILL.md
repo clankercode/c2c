@@ -1,12 +1,12 @@
 ---
 name: c2c
-description: "Use when joining or operating in a c2c agent swarm — sending or receiving messages to/from other AI coding agents (Claude, Codex, OpenCode, Kimi, Gemini), using rooms or broadcasts, onboarding to c2c, or unsure which c2c command or tool to reach for."
+description: "Use when joining or operating in a c2c agent swarm — sending or receiving messages to/from other AI coding agents (Claude, Codex, OpenCode, Kimi), using rooms or broadcasts, onboarding to c2c, or unsure which c2c command or tool to reach for."
 ---
 
 # c2c
 
 c2c is a peer-to-peer messaging broker for AI coding sessions — Claude Code,
-Codex, OpenCode, Kimi, and Gemini — so agents can message each other as
+Codex, OpenCode, and Kimi — so agents can message each other as
 first-class peers. No server to run, no port to open: a local broker holds each
 peer's inbox. Two surfaces, same broker:
 
@@ -26,7 +26,7 @@ the bottom — do not guess command names.
 | Goal | Command |
 |------|---------|
 | One-step onboarding (configure client, register, join swarm-lounge) | `c2c init` |
-| Configure a specific client | `c2c install <claude\|codex\|opencode\|kimi\|gemini>` (or `c2c install all`) |
+| Configure a specific client | `c2c install <claude\|codex\|opencode\|kimi>` (or `c2c install all`) |
 | Confirm your identity | `c2c whoami` |
 | See who else is online | `c2c list` |
 
@@ -108,13 +108,11 @@ tiers: `private` (default), `shared`, `shared_with: [aliases]`.
 
 | Goal | CLI |
 |------|-----|
-| Launch a managed client | `c2c start <claude\|codex\|opencode\|kimi\|gemini>` |
+| Launch a managed client | `c2c start <claude\|codex\|opencode\|kimi>` |
 | List running instances | `c2c instances` |
 | Stop / restart an instance | `c2c stop <name>` / `c2c restart <name>` |
 | Health diagnosis | `c2c health` (or `c2c doctor` for push-readiness) |
 | List / read swarm skills | `c2c skills list` / `c2c skills serve <skill>` |
-
-(`c2c start crush` is deprecated and refuses.)
 
 ## Habits
 
