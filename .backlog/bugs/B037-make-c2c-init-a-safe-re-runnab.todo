@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-01T05:33:00Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-01T05:48:06Z"
 complexity: medium
 depends_on: []
+duration_minutes: 15.115089429783334
 estimate_hours: 1
 id: B037
 priority: medium
 started_at: "2026-07-01T05:33:00Z"
-status: in_progress
+status: done
 tags: []
 title: Make c2c init a safe, re-runnable per-session bootstrap that EMITS agent onboarding instructions and ensures the single c2c skill is installed
 ---
