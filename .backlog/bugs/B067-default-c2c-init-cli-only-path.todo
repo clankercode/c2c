@@ -1,0 +1,11 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B067
+priority: medium
+status: pending
+tags: []
+title: Default c2c init (CLI-only path) does NOT write the /c2c skill — only the MCP/hooks path does
+---
+The skill writer EXISTS and works: C2c_setup.setup_claude (c2c_setup.ml:1487-1519) writes ~/.claude/skills/c2c/SKILL.md from embedded content. But c2c init only reaches setup_claude when do_mcp_setup=true, and --with-mcp/--hooks both default OFF ('CLI is the primary usage path'). So the DEFAULT c2c init (CLI-only, setup_result=Cli_only at c2c.ml:7718) does NOT write the skill. Per B049 (CLI+Monitor is the default Claude path), the default init should also ensure the /c2c skill since it's a static Claude reference with no MCP dependency. Fix: add skill-write step to the Cli_only branch of init_cmd (c2c.ml:7716-7720). Related: B033, B037, B049.

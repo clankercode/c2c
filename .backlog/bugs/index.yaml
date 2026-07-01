@@ -63,3 +63,4 @@ bugs:
     - file: B064-two-divergent-skill-sources-da.todo
     - file: B065-embedded-claude-skill-position.todo
     - file: B066-swarm-skill-collab-skills-c2c.todo
+    - file: B067-default-c2c-init-cli-only-path.todo
