@@ -47,36 +47,67 @@ let c2c_binary =
   let dir = Filename.dirname exe in
   Filename.concat dir "c2c.exe"
 
-(** Run c2c with a given HOME + broker root, capture exit code + combined output. *)
-let run_c2c ?(env=[]) ~home ~broker args =
+let c2c_base_env ~home ~broker ?(env=[]) () =
   let home_dir = home in
   let broker_dir = Filename.concat broker "broker" in
   mkdir_p home_dir;
   mkdir_p broker_dir;
+  [ "HOME=" ^ home_dir
+  ; "XDG_CONFIG_HOME=" ^ (home_dir // ".config")
+  ; "XDG_STATE_HOME=" ^ (home_dir // ".local" // "state")
+  ; "C2C_MCP_BROKER_ROOT=" ^ broker_dir
+  ; "C2C_CLI_FORCE=1"
+  ; "C2C_MCP_SESSION_ID="
+  ; "CLAUDE_SESSION_ID="
+  ; "C2C_MCP_AUTO_REGISTER_ALIAS="
+  ; "C2C_INSTANCE_NAME="
+  ]
+  @ List.map (fun (k,v) -> k ^ "=" ^ v) env
+  @ [ "PATH=" ^ Sys.getenv "PATH" ]
+
+(** Run c2c with a given HOME + broker root, capture exit code + combined output. *)
+let run_c2c ?(env=[]) ~home ~broker args =
   let binary =
     if Sys.file_exists c2c_binary then c2c_binary else "c2c"
   in
-  let env_list =
-    [ "HOME=" ^ home_dir
-    ; "XDG_CONFIG_HOME=" ^ (home_dir // ".config")
-    ; "XDG_STATE_HOME=" ^ (home_dir // ".local" // "state")
-    ; "C2C_MCP_BROKER_ROOT=" ^ broker_dir
-    ; "C2C_CLI_FORCE=1"
-    ; "C2C_MCP_SESSION_ID="
-    ; "CLAUDE_SESSION_ID="
-    ; "C2C_MCP_AUTO_REGISTER_ALIAS="
-    ; "C2C_INSTANCE_NAME="
-    ]
-    @ List.map (fun (k,v) -> k ^ "=" ^ v) env
-    @ [ "PATH=" ^ Sys.getenv "PATH" ]
-  in
-  let env_str = String.concat " " env_list in
+  let env_str = String.concat " " (c2c_base_env ~home ~broker ~env ()) in
   let args_str = String.concat " " (List.map Filename.quote args) in
   let cmd = Printf.sprintf "env %s %s %s >/tmp/onboard-out 2>&1; echo exit:$?"
     env_str (Filename.quote binary) args_str in
   let rc = Sys.command cmd in
   let output = try read_file "/tmp/onboard-out" with _ -> "" in
   (rc, output, "")
+
+let decode_sys_command_status = function
+  | 0 -> 0
+  | n when n > 0 && n land 0x7f = 0 -> n lsr 8
+  | n -> n
+
+let run_c2c_status_split ?(env=[]) ~home ~broker args =
+  let binary =
+    if Sys.file_exists c2c_binary then c2c_binary else "c2c"
+  in
+  let out_file = Filename.temp_file "c2c-onboard-cmd-" ".out" in
+  let err_file = Filename.temp_file "c2c-onboard-cmd-" ".err" in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Sys.remove out_file with _ -> ());
+      (try Sys.remove err_file with _ -> ()))
+    (fun () ->
+      let env_str = String.concat " " (c2c_base_env ~home ~broker ~env ()) in
+      let args_str = String.concat " " (List.map Filename.quote args) in
+      let cmd = Printf.sprintf "env %s %s %s >%s 2>%s"
+        env_str (Filename.quote binary) args_str
+        (Filename.quote out_file) (Filename.quote err_file)
+      in
+      let rc = decode_sys_command_status (Sys.command cmd) in
+      let stdout = try read_file out_file with _ -> "" in
+      let stderr = try read_file err_file with _ -> "" in
+      (rc, stdout, stderr))
+
+let run_c2c_status ?(env=[]) ~home ~broker args =
+  let rc, stdout, stderr = run_c2c_status_split ~env ~home ~broker args in
+  (rc, stdout ^ stderr)
 
 let string_contains haystack needle =
   let hay_len = String.length haystack in
@@ -109,6 +140,16 @@ let json_bool_member name = function
        | _ -> None)
   | _ -> None
 
+let json_member name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let json_string_list_member name json =
+  match json_member name json with
+  | Some (`List items) ->
+      Some (List.filter_map (function `String s -> Some s | _ -> None) items)
+  | _ -> None
+
 (** Wrap a test that sets up temp env and runs a c2c command sequence. *)
 let with_temp_env f =
   let tmp = Filename.get_temp_dir_name () in
@@ -137,6 +178,44 @@ let test_init_creates_alias () =
   let rc, out, _ = run_c2c ~home:tmp ~broker:tmp ["init"; "--no-setup"; "--alias"; alias; "--room"; ""; "--json"] in
   check int "c2c init exits 0" 0 rc;
   check bool "output mentions alias" true (string_contains out alias)
+
+let test_init_claude_cli_only_json_onboarding_and_rerun () =
+  with_temp_env @@ fun tmp ->
+  let session_id = Printf.sprintf "test-init-claude-session-%d" (Unix.getpid ()) in
+  let run_once () =
+    run_c2c_status_split
+      ~env:["C2C_MCP_SESSION_ID", session_id]
+      ~home:tmp ~broker:tmp
+      ["init"; "--client"; "claude"; "--no-nonce"; "--room"; ""; "--json"]
+  in
+  let rc1, out1, _err1 = run_once () in
+  check int "first c2c init exits 0" 0 rc1;
+  let json1 = Yojson.Safe.from_string out1 in
+  check (option bool) "json ok true" (Some true) (json_bool_member "ok" json1);
+  check (option string) "json setup is cli-only" (Some "cli-only (no MCP)") (json_str_member "setup" json1);
+  let alias1 = json_str_member "alias" json1 in
+  check bool "first init has alias" true (Option.is_some alias1);
+  let onboarding1 = match json_member "onboarding" json1 with Some j -> j | None -> `Null in
+  let lines1 = Option.value (json_string_list_member "lines" onboarding1) ~default:[] in
+  check bool "onboarding mentions c2c monitor" true
+    (List.exists (fun s -> string_contains s "c2c monitor") lines1);
+  check bool "onboarding explains MCP is optional" true
+    (List.exists (fun s -> string_contains s "MCP is optional") lines1);
+  let skill_path = tmp // ".claude" // "skills" // "c2c" // "SKILL.md" in
+  check bool "CLI-only claude init writes /c2c skill" true (file_exists skill_path);
+  let rc2, out2, _err2 = run_once () in
+  check int "second c2c init exits 0" 0 rc2;
+  let json2 = Yojson.Safe.from_string out2 in
+  check (option string) "second init reuses same alias" alias1 (json_str_member "alias" json2)
+
+let test_send_without_alias_error_suggests_onboarding_commands () =
+  with_temp_env @@ fun tmp ->
+  let rc, out = run_c2c_status ~home:tmp ~broker:tmp ["send"; "nobody"; "hi"] in
+  check bool "send without alias fails" true (rc <> 0);
+  check bool "error suggests c2c register" true (string_contains out "c2c register");
+  check bool "error suggests c2c init" true (string_contains out "c2c init");
+  check bool "error suggests c2c whoami" true (string_contains out "c2c whoami");
+  check bool "env vars are an advanced fallback" true (string_contains out "Advanced:")
 
 let test_init_creates_session_dir () =
   with_temp_env @@ fun tmp ->
@@ -323,6 +402,8 @@ let () =
         [ test_case "c2c --version runs" `Quick test_c2c_version_runs
         ; test_case "init creates session dir" `Quick test_init_creates_session_dir
         ; test_case "init creates alias" `Quick test_init_creates_alias
+        ; test_case "init claude CLI-only emits JSON onboarding, writes skill, and reruns" `Quick test_init_claude_cli_only_json_onboarding_and_rerun
+        ; test_case "send without alias suggests onboarding commands" `Quick test_send_without_alias_error_suggests_onboarding_commands
         ; test_case "init creates identity.json" `Quick test_identity_json_created
         ] )
     ; ( "relay_identity",
