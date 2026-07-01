@@ -256,7 +256,11 @@ SIGN_CTX values for invite management (as shipped at L4/5, commit
 | `/approve_room_knock` | `c2c/v1/room-approve-knock`   |
 | `/deny_room_knock`    | `c2c/v1/room-deny-knock`      |
 
-All three require the signer to be a current member. Canonical blob
+`/knock_room` is signed by the requester and requires that requester to be
+outside the room and not already invited. `/list_room_knocks`,
+`/approve_room_knock`, and `/deny_room_knock` require the signer to be a
+current member. Approve and deny signatures include the `requester_pk` being
+decided, so the signed payload covers the target identity. Canonical blob
 follows the same shape as §3 (`SIGN_CTX \x1f <fields> \x1f <ts> \x1f
 <nonce>`) with the per-endpoint payload in place of the send fields.
 
