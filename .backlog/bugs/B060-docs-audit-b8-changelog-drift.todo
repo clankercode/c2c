@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-01T05:33:00Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-01T05:41:11Z"
 complexity: medium
 depends_on: []
+duration_minutes: 8.196805273183333
 estimate_hours: 1
 id: B060
 priority: high
 started_at: "2026-07-01T05:33:00Z"
-status: in_progress
+status: done
 tags: []
 title: 'docs-audit B8: changelog drift fixup (post B048 code-fixup)'
 ---
