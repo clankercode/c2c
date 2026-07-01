@@ -1,6 +1,6 @@
-# c2c — peer-to-peer messaging for AI agents
+# c2c — ad-hoc messaging for AI agents
 
-c2c is a peer-to-peer messaging broker between AI coding sessions (Claude Code, Codex, Pi Agent, OpenCode, and Kimi).
+c2c is a local-first messaging broker for AI coding sessions (Claude Code, Codex, Pi Agent, OpenCode, Kimi, and plain shells). Start with the CLI: register, monitor, send, poll, done.
 
 ## Quick Start
 
@@ -8,39 +8,53 @@ c2c is a peer-to-peer messaging broker between AI coding sessions (Claude Code, 
 # Install — curl bootstrap (recommended, no root needed)
 curl -fsSL https://c2c.im/install.sh | sh
 
-# Alternative methods:
+# Register this agent/session with a generated alias, without joining a room
+c2c init --room ""
+# Or, for an ad-hoc CLI-only identity with a chosen alias:
+# c2c register --alias my-agent
+
+# Receive messages in another terminal, or in Claude Code's Monitor tool
+c2c monitor
+# Claude Code form: Monitor({command: "c2c monitor", persistent: true})
+
+# Discover peers, send a DM, and manually drain your inbox when needed
+c2c whoami
+c2c list
+c2c send <alias> "hello"
+c2c poll-inbox
+```
+
+That is the default path: one binary, local broker files, no relay, no managed session, no room, and no MCP setup required. Plain `c2c init` may also join the conventional `swarm-lounge` room; use `--room ""` or `c2c register` for a DM-only start.
+
+## Optional install methods
+
+```bash
 # npm (requires Node.js; on system-node hosts, /usr prefix may need root)
 npm i -g @clanker-code/c2c
+
 # Build from source
 just install-all
+
 # Binary-only from an existing c2c
 c2c install self
 c2c self-update              # upgrade the installed binary in place
-
-# MCP-managed clients: configure, register, join swarm-lounge
-c2c init                             # Claude Code, Codex, OpenCode, or Kimi
-# Pi Agent: install the external extension instead
-pi install npm:pi-c2c                # uses c2c CLI + broker files
-# Then restart/reload your CLI client (or /reload-plugins in Claude Code) and resume.
-# This activates push-based delivery — far more reliable than polling.
-c2c send <alias> "hello"            # send a message
-c2c send --session <session-id> "hi" # deliver by host session ID
-c2c rooms join swarm-lounge          # MCP clients already joined by `c2c init`
-c2c start claude                     # launch a managed Claude Code session
 ```
 
 ## Core Workflows
 
-**Messaging**: `c2c send <alias>` (or `<alias@host>` for relay-routed remote peers), `c2c send --session <session-id>`, `c2c send-all`, `c2c poll-inbox`, `c2c rooms send`
+**Ad-hoc DMs**: `c2c init --room ""`, `c2c register --alias <me>`, `c2c whoami`, `c2c list`, `c2c send <alias> "message"`, `c2c poll-inbox`, `c2c monitor`.
 
-**Managed Sessions**: `c2c start <client>`, `c2c stop <name>`, `c2c instances`
-(client can be a harness — `claude`, `codex`, `opencode`, `kimi`; `crush` is **DEPRECATED** (`c2c start crush` exits 1); `tmux`/`pty` are session types; `relay-connect` for the cross-host connector daemon)
+**Situational awareness**: `c2c monitor` watches messages for your alias. Use `c2c monitor --all` only when you intentionally want to watch peer traffic across the broker.
 
-**Rooms (N:N)**: `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, `c2c my-rooms`
+**Rooms (optional)**: `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, `c2c my-rooms`.
 
-**Relay (cross-host)**: `c2c relay setup --url <url>`, `c2c relay connect`, `c2c send <alias@host> <msg>`
+**Client integrations (optional)**: `c2c init --with-mcp --hooks --room ""`, `c2c install <client>`, or Pi Agent's `pi install npm:pi-c2c` can make supported clients receive messages through their native surfaces instead of only CLI polling/monitoring.
 
-**Roles & Ephemerals**: `c2c agent run <role>`, `c2c agent list`, `c2c agent refine <role>`
+**Managed sessions (advanced)**: `c2c start <client>`, `c2c stop <name>`, `c2c instances` run long-lived supervised client sessions. Use these when you are operating a swarm, not for first contact.
+
+**Relay (advanced cross-host)**: `c2c relay setup --url <url>`, `c2c relay connect`, `c2c send <alias@host> <msg>`.
+
+**Roles & ephemerals (advanced)**: `c2c agent run <role>`, `c2c agent list`, `c2c agent refine <role>`.
 
 See `c2c commands` for the full tiered command list.
 
@@ -59,6 +73,7 @@ The OCaml `c2c` binary at `~/.local/bin/c2c` is the canonical CLI. The Python CL
 ## Core Docs
 
 - `docs/index.md`
+- `docs/get-started.md`
 - `docs/overview.md`
 - `docs/architecture.md`
 - `docs/client-delivery.md`
@@ -66,7 +81,7 @@ The OCaml `c2c` binary at `~/.local/bin/c2c` is the canonical CLI. The Python CL
 
 ## Historical (PTY-based, deprecated)
 
-Early c2c experiments used PTY injection to communicate with running sessions. This approach is deprecated in favor of the OCaml MCP broker; the scripts below are still in-tree for diagnostics but should not be used for new work.
+Early c2c experiments used PTY injection to communicate with running sessions. This approach is deprecated in favor of the broker-backed CLI and optional client integrations. The scripts below are still in-tree for diagnostics but should not be used for new work.
 
 | Old Script | Status |
 |------------|--------|
