@@ -31,22 +31,25 @@ let rec find_repo_root cwd =
 
 let repo_root () = find_repo_root (Sys.getcwd ())
 
-let c2c_exe_path () =
-  let cwd = Sys.getcwd () in
-  let local = cwd // "c2c.exe" in
-  if Sys.file_exists local then local
-  else
-    let root = repo_root () in
-    let exe = root // "_build" // "default" // "ocaml" // "cli" // "c2c.exe" in
-    if not (Sys.file_exists exe) then begin
-      let cmd =
-        Printf.sprintf "opam exec -- dune build --root %s -j 2 ./ocaml/cli/c2c.exe"
-          (Filename.quote root)
-      in
-      let rc = Sys.command cmd in
-      check int "build c2c.exe prerequisite" 0 rc
-    end;
-    exe
+let c2c_exe_path =
+  let cached = ref None in
+  fun () ->
+    match !cached with
+    | Some exe -> exe
+    | None ->
+        let root = repo_root () in
+        let exe = root // "_build" // "default" // "ocaml" // "cli" // "c2c.exe" in
+        (* The install/init assertions execute the compiled c2c binary, not just
+           this test module. Always build it once so the embedded skill blob in
+           the executable cannot lag behind the freshly-compiled test module. *)
+        let cmd =
+          Printf.sprintf "opam exec -- dune build --root %s -j 2 ./ocaml/cli/c2c.exe"
+            (Filename.quote root)
+        in
+        let rc = Sys.command cmd in
+        check int "build c2c.exe prerequisite" 0 rc;
+        cached := Some exe;
+        exe
 
 let with_tmp_dir f =
   let dir = Filename.temp_file "c2c-skill-test-" "" in
