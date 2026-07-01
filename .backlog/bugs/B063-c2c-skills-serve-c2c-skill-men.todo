@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-07-01T05:57:30Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B063
 priority: high
-status: pending
+started_at: "2026-07-01T05:57:30Z"
+status: in_progress
 tags: []
 title: '`c2c skills serve c2c` skill mentions gemini (deprecated and removed already, along with crush). remove mentions of gemini and crush from any of the skills etc'
 ---
