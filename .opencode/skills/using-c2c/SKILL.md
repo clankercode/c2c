@@ -95,7 +95,7 @@ Start a managed client session:
 c2c start <client> [-n NAME]
 ```
 
-Clients: `claude`, `codex`, `opencode`, `kimi`, `crush`
+Clients: `claude`, `codex`, `opencode`, `kimi`
 
 List running instances:
 

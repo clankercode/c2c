@@ -1,0 +1,16 @@
+---
+claimed_at: "2026-07-01T07:36:31Z"
+claimed_by: cli-user
+completed_at: "2026-07-01T07:53:05Z"
+complexity: medium
+depends_on: []
+duration_minutes: 16.5762883591
+estimate_hours: 1
+id: B068
+priority: medium
+started_at: "2026-07-01T07:36:31Z"
+status: done
+tags: []
+title: Docs should focus on easy ad-hoc use, not heavily expose the full c2c swarm/infrastructure
+---
+Current docs and skills lean heavily into the swarm multi-agent topology (rooms, coordinators, managed sessions, push delivery, hooks, relay). For most users — especially first-time adopters — the value proposition is simple: send/receive messages between agents. Docs should lead with ad-hoc use cases (send a message, check inbox, run a monitor) and keep swarm infrastructure as an advanced/secondary topic. Don't scare newcomers with the full complexity upfront. Focus: install, init, send, monitor, done.

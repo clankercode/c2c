@@ -1,0 +1,16 @@
+---
+claimed_at: "2026-07-01T07:36:31Z"
+claimed_by: cli-user
+completed_at: "2026-07-01T08:00:16Z"
+complexity: medium
+depends_on: []
+duration_minutes: 23.758996758883335
+estimate_hours: 1
+id: B064
+priority: high
+started_at: "2026-07-01T07:36:31Z"
+status: done
+tags: []
+title: 'Two DIVERGENT skill sources: data/claude-skill/SKILL.md (embedded by install) vs .collab/skills/c2c.md (synced/served) — B041 single-source not achieved'
+---
+There are TWO hand-maintained skill files with different content and nothing syncs them: (a) data/claude-skill/SKILL.md -> codegen-claude-skill -> c2c_claude_skill_embedded.ml -> what c2c install claude/init write; (b) .collab/skills/c2c.md -> sync-skills -> .claude/.opencode/.codex + what c2c skills serve prints. They have already diverged (different descriptions, different bodies, different receive guidance). A Claude agent gets DIFFERENT skill content depending on whether it was installed vs served. This defeats B041's single-source-of-truth goal. Expected: ONE canonical skill body feeds both the binary embed AND sync-skills fan-out. Add a gate so the two can't drift. Related: B041, B033, B049.

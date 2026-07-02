@@ -1,0 +1,17 @@
+---
+claimed_at: "2026-07-01T05:57:30Z"
+claimed_by: cli-user
+completed_at: "2026-07-01T06:04:17Z"
+complexity: medium
+depends_on: []
+duration_minutes: 6.785245547116666
+estimate_hours: 1
+id: B063
+priority: high
+started_at: "2026-07-01T05:57:30Z"
+status: done
+tags: []
+title: '`c2c skills serve c2c` skill mentions gemini (deprecated and removed already, along with crush). remove mentions of gemini and crush from any of the skills etc'
+---
+
+`c2c skills serve c2c` skill mentions gemini (deprecated and removed already, along with crush). remove mentions of gemini and crush from any of the skills etc

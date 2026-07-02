@@ -1,0 +1,16 @@
+---
+claimed_at: "2026-07-01T07:36:31Z"
+claimed_by: cli-user
+completed_at: "2026-07-01T08:00:16Z"
+complexity: medium
+depends_on: []
+duration_minutes: 23.760626177983333
+estimate_hours: 1
+id: B065
+priority: high
+started_at: "2026-07-01T07:36:31Z"
+status: done
+tags: []
+title: Embedded Claude skill positions Monitor as secondary awareness sidecar, not primary receive path
+---
+The skill that c2c install claude writes has Monitor at lines 40-43 but frames it as supplementary 'awareness without draining' using --archive --all (shows ALL peer traffic). Primary is push delivery (managed sessions), fallback is poll inbox. For a PLAIN (non-managed) Claude agent with no push delivery, Monitor running plain c2c monitor should be the PRIMARY personal-inbox receive path, not an awareness sidecar. Correction: earlier claim that Monitor was omitted entirely was wrong — it IS present but deprioritized. Expected: for non-managed agents, lead with Monitor({command: 'c2c monitor'}) as primary receive path; push-delivery and poll-inbox as other options; reserve --all for situational awareness. Related: B034, B043, B049, B064.
