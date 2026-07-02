@@ -2514,7 +2514,7 @@ let test_deliver_inbox_register_self_enables_alias_send () =
       let outfile = Filename.temp_file "c2c-deliver-register" ".out" in
       Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore) (fun () ->
           let cmd = Printf.sprintf
-            "%s %s --inotify --loop --cross-repo --alias recv --register --full-body > %s 2>&1 & pid=$!; sleep 1; %s C2C_MCP_SESSION_ID=sender-sid c2c send --cross-repo --from sender recv 'registered receiver body'; sleep 1; kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true"
+            "%s %s --loop --cross-repo --alias recv --register --full-body > %s 2>&1 & pid=$!; sleep 2; %s C2C_MCP_SESSION_ID=sender-sid c2c send --cross-repo --from sender recv 'registered receiver body'; sleep 2; kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null || true"
             env
             (Filename.quote c2c_deliver_inbox_binary)
             (Filename.quote outfile)
