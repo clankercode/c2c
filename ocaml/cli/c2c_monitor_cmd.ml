@@ -1,0 +1,822 @@
+(* c2c_monitor_cmd — inotify-based inbox watcher subcommand.
+   Extracted from c2c.ml as part of the architecture refactoring. *)
+
+open C2c_mcp
+open C2c_cli_helpers
+
+let ( // ) = Filename.concat
+
+(* --- helper functions ---------------------------------------------------- *)
+
+(* Read an inbox JSON file, returning the parsed message list. *)
+let read_inbox_file path =
+  try
+    let ic = open_in path in
+    let content = Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+      let buf = Buffer.create 512 in
+      (try while true do Buffer.add_channel buf ic 1 done with End_of_file -> ());
+      Buffer.contents buf)
+    in
+    (match Yojson.Safe.from_string content with
+     | `List msgs -> msgs
+     | _ -> [])
+  with _ -> []
+
+(* Extract a string field from a JSON assoc or return a default. *)
+let jstr fields key def =
+  match List.assoc_opt key fields with Some (`String s) -> s | _ -> def
+
+(* Truncate a string to max_len, appending "…" if clipped. *)
+let truncate s max_len =
+  let s = String.trim s in
+  if String.length s > max_len then String.sub s 0 max_len ^ "…" else s
+
+(* Current time as [HH:MM:SS] *)
+let now_hms () =
+  let t = Unix.localtime (Unix.gettimeofday ()) in
+  Printf.sprintf "[%02d:%02d:%02d]" t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec
+
+(* Determine if a to_alias value is a room fanout (contains '#') *)
+let parse_to_alias s =
+  match String.split_on_char '#' s with
+  | [_alias; room] -> `Room room
+  | _ -> `Direct s
+
+(* Short-window dedup for room fanouts. One room message lands in N peer
+   archives; each archive append emits. Keyed on (from_alias, to_alias,
+   content) — if we saw the exact same triple within the last 30s, skip.
+   Max 1024 entries, oldest evicted on overflow. *)
+let dedup_seen : (string * string * string, float) Hashtbl.t = Hashtbl.create 64
+let dedup_window_s = 30.0
+
+let dedup_check ~from ~to_raw ~content =
+  let key = (from, to_raw, content) in
+  let now = Unix.gettimeofday () in
+  (* Opportunistic GC when table gets large *)
+  if Hashtbl.length dedup_seen > 1024 then begin
+    let stale = Hashtbl.fold (fun k ts acc ->
+      if now -. ts > dedup_window_s then k :: acc else acc) dedup_seen [] in
+    List.iter (Hashtbl.remove dedup_seen) stale
+  end;
+  match Hashtbl.find_opt dedup_seen key with
+  | Some ts when now -. ts < dedup_window_s -> false
+  | _ -> Hashtbl.replace dedup_seen key now; true
+
+(* Emit one notification line per unique sender, collapsing bursts. *)
+let emit_messages ~my_alias ~all ~full_body msgs =
+  (* Group messages by from_alias *)
+  let by_sender = Hashtbl.create 4 in
+  List.iter (fun msg ->
+    match msg with
+    | `Assoc fields ->
+        let from = jstr fields "from_alias" "?" in
+        let existing = try Hashtbl.find by_sender from with Not_found -> [] in
+        Hashtbl.replace by_sender from (existing @ [fields])
+    | _ -> ()
+  ) msgs;
+  Hashtbl.iter (fun from sender_msgs ->
+    let n = List.length sender_msgs in
+    let first = List.hd sender_msgs in
+    let to_raw = jstr first "to_alias" "" in
+    let is_mine = match my_alias with
+      | None -> true
+      | Some me -> to_raw = me || String.length to_raw > String.length me + 1
+                   && String.sub to_raw 0 (String.length me) = me
+    in
+    let body = jstr first "content" "" in
+    (* Normalize room fanouts: each peer's archive tags to_alias with their
+       own alias prefix (coder1#swarm-lounge vs planner1#swarm-lounge) so
+       dedup sees them as distinct. Strip alias, keep just #<room>. *)
+    let dedup_to = match parse_to_alias to_raw with
+      | `Room room -> "#" ^ room
+      | `Direct d -> d
+    in
+    let keep = dedup_check ~from ~to_raw:dedup_to ~content:body in
+    if keep && (all || is_mine) then begin
+      let icon = if is_mine then "📬" else "💬" in
+      let dest = match parse_to_alias to_raw with
+        | `Room room -> "@" ^ room
+        | `Direct d -> if is_mine then "you" else d
+      in
+      let subject =
+        if n = 1 then
+          if full_body then Printf.sprintf "\"%s\"" body
+          else Printf.sprintf "\"%s\"" (truncate body 80)
+        else
+          Printf.sprintf "(%d msgs) \"%s\"" n (truncate body 60)
+      in
+      Printf.printf "%s %s  %s→%s  %s\n%!"
+        (now_hms ()) icon from dest subject
+    end
+  ) by_sender
+
+(* --- Cmdliner args -------------------------------------------------------- *)
+
+(* --- monitor Cmdliner term ----------------------------------------------- *)
+
+let monitor_cmd =
+  let open Cmdliner in
+  let open Cmdliner.Term in
+  let broker_root_opt =
+    Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
+           ~doc:"Broker root dir (default: auto-resolve via env/git).")
+  in
+  let alias_opt =
+    Arg.(value & opt (some string) None & info ["alias";"a"] ~docv:"ALIAS"
+           ~doc:"My alias (default: C2C_MCP_SESSION_ID). Only messages addressed to \
+                 this alias are shown by default.")
+  in
+  let all_flag =
+    Arg.(value & flag & info ["all"]
+           ~doc:"Also show messages addressed to other peers (situational awareness).")
+  in
+  let drains_flag =
+    Arg.(value & flag & info ["drains"]
+           ~doc:"Show drain events (when a peer polls their inbox to empty).")
+  in
+  let sweeps_flag =
+    Arg.(value & flag & info ["sweeps"]
+           ~doc:"Show sweep/delete events.")
+  in
+  let full_body_flag =
+    Arg.(value & flag & info ["full-body";"body"]
+           ~doc:"Emit full message content. This is now the default; use $(b,--snippet) for the old 80-char preview.")
+  in
+  let snippet_flag =
+    Arg.(value & flag & info ["snippet"]
+           ~doc:"Emit an 80-char subject snippet instead of the full body (legacy default).")
+  in
+  let from_opt =
+    Arg.(value & opt (some string) None & info ["from"] ~docv:"ALIAS"
+           ~doc:"Only show messages from this sender alias.")
+  in
+  let json_flag =
+    Arg.(value & flag & info ["json"]
+           ~doc:"Emit JSON objects instead of human-readable lines.")
+  in
+  let archive_flag =
+    Arg.(value & flag & info ["archive"]
+           ~doc:"Watch append-only archive (archive/*.jsonl). This is now the default; use $(b,--live) for the old inbox-watching mode.")
+  in
+  let live_flag =
+    Arg.(value & flag & info ["live"]
+           ~doc:"Watch live inboxes (*.inbox.json) instead of the archive. \
+                 Subject to the race where the drain hook clears the inbox \
+                 before the monitor reads it. Legacy behaviour.")
+  in
+  let include_self_flag =
+    Arg.(value & flag & info ["include-self"]
+           ~doc:"Include messages sent by you. Off by default — your own broadcasts \
+                 and DMs echo back through archive/inbox events and are noise.")
+  in
+  let force_flag =
+    Arg.(value & flag & info ["force"]
+           ~doc:"Override the per-alias monitor lockfile guard (#354). By default \
+                 a second $(b,c2c monitor --alias ALIAS) refuses to start if a live \
+                 monitor for the same alias is already running, to prevent fork-bomb \
+                 accumulation. Stale locks (holder pid dead) are taken over \
+                 automatically; $(b,--force) is only needed to displace a \
+                 still-alive holder.")
+  in
+  let cross_repo = cross_repo_flag in
+  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force cross_repo ->
+    (* Resolve effective flags: --archive and --full-body are now defaults.
+       --live reverts to inbox watching; --snippet reverts to 80-char preview. *)
+    let full_body = full_body || not snippet in  (* full_body unless --snippet *)
+    let archive = archive || not live in  (* archive unless --live *)
+    let broker_root =
+      (* #518: treat empty-string env/arg as "unset" — same shape as #496/#497.
+         C2C_MCP_BROKER_ROOT='' should fall through to resolve_broker_root ()
+         rather than being used as a bogus empty-string path. *)
+      let resolved value_opt =
+        match value_opt with
+        | Some s when String.trim s <> "" -> Some (String.trim s)
+        | _ -> None
+      in
+      match resolved broker_root_arg with
+      | Some r -> r
+      | None ->
+          if cross_repo then C2c_repo_fp.resolve_sessions_broker_root ()
+          else (match C2c_utils.trimmed_env_value "C2C_MCP_BROKER_ROOT" with
+                | Some r -> r
+                | None -> (try C2c_utils.resolve_broker_root () with _ ->
+                    Printf.eprintf "c2c monitor: cannot resolve broker root \
+                      (set C2C_MCP_BROKER_ROOT or run from inside the repo)\n%!";
+                    exit 1))
+    in
+    let my_alias =
+      match alias_arg with
+      | Some a -> Some a
+      | None ->
+          (* Resolution chain for bare `c2c monitor` (no --alias):
+             1. C2C_MCP_AUTO_REGISTER_ALIAS (explicit alias env var)
+             2. Config file ~/.config/c2c/default-alias (written by init/install)
+             3. C2C_MCP_SESSION_ID (proxy — works when session_id = alias)
+             4. Scan broker registrations for a single alive registration *)
+          match C2c_utils.alias_from_env_only () with
+          | Some _ as a -> a
+          | None ->
+              let config_alias () =
+                let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+                let path = home // ".config" // "c2c" // "default-alias" in
+                let s = C2c_io.read_file_opt path in
+                let s = String.trim s in
+                if s <> "" then Some s else None
+              in
+              match config_alias () with
+              | Some _ as a -> a
+              | None ->
+                  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+                  | Some _ as a -> a
+                  | None ->
+                      try
+                        let regs = Broker.list_registrations
+                          (Broker.create ~root:broker_root) in
+                        let alive = List.filter
+                          (fun (r : registration) ->
+                            Broker.registration_liveness_state r = Broker.Alive)
+                          regs in
+                        (match alive with
+                         | [r] -> Some r.alias
+                         | _ -> None)
+                      with _ -> None
+    in
+    (* #354: per-alias monitor lockfile guard.
+       Prevents fork-bomb accumulation when `c2c monitor --alias <a>` is launched
+       in a loop (e.g. by a buggy supervisor). Lockfile location matches the
+       `doctor monitor-leak` scanner: <broker_root>/.monitor-locks/<alias>.lock.
+       Behaviour:
+         - Try non-blocking POSIX advisory lock (Unix.lockf F_TLOCK).
+         - If acquired: write our PID, install at_exit cleanup, proceed.
+         - If conflict: read holder PID. If /proc/<pid> is gone (stale), take over
+           by truncating + rewriting the lockfile and retrying. If holder is alive,
+           refuse with a clear error unless --force is set; with --force we kill
+           the holder (SIGTERM) and take over.
+       Skip the guard when no alias is set (e.g. unscoped `c2c monitor --all`). *)
+    let _monitor_lock_fd : Unix.file_descr option =
+      match my_alias with
+      | None -> None
+      | Some alias ->
+          let lock_dir = Filename.concat broker_root ".monitor-locks" in
+          (try Unix.mkdir lock_dir 0o700
+           with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+              | _ -> ());
+          let lock_path = Filename.concat lock_dir (alias ^ ".lock") in
+          let pid_alive p =
+            try Sys.is_directory (Printf.sprintf "/proc/%d" p)
+            with _ -> false
+          in
+          let read_holder_pid fd =
+            try
+              ignore (Unix.lseek fd 0 Unix.SEEK_SET);
+              let buf = Bytes.create 32 in
+              let n = Unix.read fd buf 0 32 in
+              if n <= 0 then None
+              else int_of_string_opt (String.trim (Bytes.sub_string buf 0 n))
+            with _ -> None
+          in
+          let write_pid fd =
+            (try Unix.ftruncate fd 0 with _ -> ());
+            ignore (Unix.lseek fd 0 Unix.SEEK_SET);
+            let s = string_of_int (Unix.getpid ()) ^ "\n" in
+            ignore (Unix.write_substring fd s 0 (String.length s))
+          in
+          let rec acquire ~retry =
+            let fd =
+              Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT] 0o644
+            in
+            match Unix.lockf fd Unix.F_TLOCK 0 with
+            | () ->
+                write_pid fd;
+                (* Cleanup on exit: release lock + remove lockfile.
+                   Closing fd releases the lock automatically. *)
+                at_exit (fun () ->
+                  (try Unix.ftruncate fd 0 with _ -> ());
+                  (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+                  (try Unix.close fd with _ -> ());
+                  (try Unix.unlink lock_path with _ -> ()));
+                Some fd
+            | exception Unix.Unix_error
+                ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
+                let holder = read_holder_pid fd in
+                Unix.close fd;
+                (match holder with
+                 | Some p when pid_alive p && not force ->
+                     Printf.eprintf
+                       "c2c monitor: alias '%s' already has a live monitor \
+                        (pid %d). Refusing to start (#354 fork-bomb guard).\n\
+                        \  Stop it first:  kill %d\n\
+                        \  Or override:    c2c monitor --alias %s --force\n%!"
+                       alias p p alias;
+                     exit 1
+                 | Some p when pid_alive p (* && force *) ->
+                     Printf.eprintf
+                       "c2c monitor: --force given; sending SIGTERM to existing \
+                        monitor (alias=%s pid=%d) and taking over.\n%!" alias p;
+                     (try Unix.kill p Sys.sigterm with _ -> ());
+                     (* Brief grace period to let the holder release the lock. *)
+                     let deadline = Unix.gettimeofday () +. 2.0 in
+                     while pid_alive p && Unix.gettimeofday () < deadline do
+                       Unix.sleepf 0.05
+                     done;
+                     if retry > 0 then acquire ~retry:(retry - 1)
+                     else begin
+                       Printf.eprintf
+                         "c2c monitor: failed to displace holder pid %d after \
+                          --force; giving up.\n%!" p;
+                       exit 1
+                     end
+                 | _ ->
+                     (* Stale lock (holder dead or unreadable PID). Take over. *)
+                     if retry > 0 then acquire ~retry:(retry - 1)
+                     else begin
+                       Printf.eprintf
+                         "c2c monitor: stale lock for alias '%s'; takeover \
+                          retries exhausted.\n%!" alias;
+                       exit 1
+                     end)
+            | exception e ->
+                Unix.close fd;
+                Printf.eprintf
+                  "c2c monitor: unexpected error acquiring lockfile %s: %s\n%!"
+                  lock_path (Printexc.to_string e);
+                exit 1
+          in
+          (* On the stale-lock path the F_TLOCK retry must actually succeed —
+             since the dead holder's fd is gone the kernel will grant us the
+             lock on the next attempt. Cap retries at 3 to avoid any pathological
+             loop (e.g. another concurrent monitor racing us). *)
+          acquire ~retry:3
+    in
+    let registry_path = Filename.concat broker_root "registry.json" in
+    (* Read aliases from registry.json — returns (alias, session_id) pairs. *)
+    let read_registry_aliases () =
+      try
+        let ic = open_in registry_path in
+        let content = really_input_string ic (in_channel_length ic) in
+        close_in ic;
+        match Yojson.Safe.from_string content with
+        | `Assoc fields ->
+            (match List.assoc_opt "registrations" fields with
+             | Some (`List regs) ->
+                 List.filter_map (fun r -> match r with
+                   | `Assoc rfields ->
+                       (match List.assoc_opt "alias" rfields,
+                              List.assoc_opt "session_id" rfields with
+                        | Some (`String a), Some (`String s) -> Some (a, s)
+                        | _ -> None)
+                   | _ -> None) regs
+             | _ -> [])
+        | _ -> []
+      with _ -> []
+    in
+    (* Snapshot: alias → session_id. Used to diff registry changes. *)
+    let known_peers : (string, string) Hashtbl.t = Hashtbl.create 16 in
+    List.iter (fun (a, s) -> Hashtbl.replace known_peers a s) (read_registry_aliases ());
+    (* Snapshot: room_id → alias set. Used to diff room membership changes. *)
+    let known_room_members : (string, (string, unit) Hashtbl.t) Hashtbl.t =
+      Hashtbl.create 4
+    in
+    let read_room_members room_id =
+      let path = broker_root // "rooms" // room_id // "members.json" in
+      try
+        let ic = open_in path in
+        let content = really_input_string ic (in_channel_length ic) in
+        close_in ic;
+        (match Yojson.Safe.from_string content with
+         | `List members ->
+             List.filter_map (fun m -> match m with
+               | `Assoc fields -> (match List.assoc_opt "alias" fields with
+                   | Some (`String a) -> Some a | _ -> None)
+               | _ -> None) members
+         | _ -> [])
+      with _ -> []
+    in
+    (* #433: snapshot per-room invited_members for room.invite emission.
+       Reads the [invited_members] field from rooms/<room>/meta.json. *)
+    let known_room_invited : (string, (string, unit) Hashtbl.t) Hashtbl.t =
+      Hashtbl.create 4
+    in
+    let read_room_invited room_id =
+      let path = broker_root // "rooms" // room_id // "meta.json" in
+      try
+        let ic = open_in path in
+        let content = really_input_string ic (in_channel_length ic) in
+        close_in ic;
+        (match Yojson.Safe.from_string content with
+         | `Assoc fields ->
+             (match List.assoc_opt "invited_members" fields with
+              | Some (`List items) ->
+                  List.filter_map
+                    (function `String s -> Some s | _ -> None)
+                    items
+              | _ -> [])
+         | _ -> [])
+      with _ -> []
+    in
+    (try
+       let rooms_dir = broker_root // "rooms" in
+       if Sys.file_exists rooms_dir then
+         Array.iter (fun room_id ->
+           let tbl : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+           List.iter (fun a -> Hashtbl.replace tbl a ()) (read_room_members room_id);
+           Hashtbl.replace known_room_members room_id tbl;
+           let itbl : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+           List.iter (fun a -> Hashtbl.replace itbl a ()) (read_room_invited room_id);
+           Hashtbl.replace known_room_invited room_id itbl
+         ) (Sys.readdir rooms_dir)
+     with _ -> ());
+    (* Archive mode watches <broker_root>/archive/*.jsonl (append-only).
+       Each drained message is a full JSON object on its own line. We track
+       per-file read offsets so we only emit newly-appended lines. This avoids
+       the race where the PostToolUse hook drains the live inbox before our
+       inotify event fires on <root>/*.inbox.json. *)
+    let watch_dir =
+      if archive then Filename.concat broker_root "archive" else broker_root
+    in
+    if archive && not (Sys.file_exists watch_dir) then
+      mkdir_p ~mode:0o700 watch_dir;
+    (* Per-file read offsets for archive mode. Init to current size so we
+       don't re-emit historical entries on startup. *)
+    let archive_offsets : (string, int) Hashtbl.t = Hashtbl.create 16 in
+    if archive && Sys.file_exists watch_dir then begin
+      Array.iter (fun fname ->
+        let n = String.length fname in
+        if n > 6 && String.sub fname (n - 6) 6 = ".jsonl" then
+          let path = Filename.concat watch_dir fname in
+          try
+            let st = Unix.stat path in
+            Hashtbl.replace archive_offsets path st.Unix.st_size
+          with _ -> ()
+      ) (Sys.readdir watch_dir)
+    end;
+    let read_new_archive_entries path =
+      let prev = try Hashtbl.find archive_offsets path with Not_found -> 0 in
+      try
+        let st = Unix.stat path in
+        let sz = st.Unix.st_size in
+        if sz <= prev then []
+        else
+          let fd = Unix.openfile path [Unix.O_RDONLY] 0 in
+          Fun.protect ~finally:(fun () -> Unix.close fd) (fun () ->
+            let _ = Unix.lseek fd prev Unix.SEEK_SET in
+            let buf = Bytes.create (sz - prev) in
+            let rec read_all off rem =
+              if rem <= 0 then () else
+              let r = Unix.read fd buf off rem in
+              if r = 0 then () else read_all (off + r) (rem - r)
+            in
+            read_all 0 (sz - prev);
+            Hashtbl.replace archive_offsets path sz;
+            let text = Bytes.unsafe_to_string buf in
+            let lines = String.split_on_char '\n' text in
+            List.filter_map (fun ln ->
+              let ln = String.trim ln in
+              if ln = "" then None
+              else try Some (Yojson.Safe.from_string ln) with _ -> None
+            ) lines)
+      with _ -> []
+    in
+    (* Belt-and-braces startup orphan check: if the parent already died before
+       we enter the inotify loop, exit immediately rather than loop forever. *)
+    (if Unix.getppid () = 1 then exit 0);
+    let cmd =
+      if archive then
+        (* Archive: flat dir, original space-delimited format. *)
+        Printf.sprintf
+          "inotifywait -m -e close_write,modify,delete,moved_to --format '%%e %%f' %s"
+          (Filename.quote watch_dir)
+      else
+        (* Live: recursive so rooms/<id>/members.json is caught.
+           Tab-delimited with %w%f = full path avoids space-in-path ambiguity.
+           No -q: we read stderr to detect "Watches established." and emit a
+           monitor.ready event so tests/callers don't need a fixed sleep. *)
+        Printf.sprintf
+          "inotifywait -m -r -e close_write,modify,delete,moved_to --format '%%e\t%%w%%f' %s"
+          (Filename.quote watch_dir)
+    in
+    let (ic, _oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
+    (* Drain inotifywait stderr in a background thread; set a flag once we see
+       "Watches established." so the main thread knows inotifywait is armed.
+       This replaces the fixed sleep in callers (tests, plugin) with a
+       deterministic signal, preventing the race where events are triggered
+       before inotifywait finishes setting up watches. *)
+    let ready_flag = Atomic.make false in
+    let str_contains haystack needle =
+      let hl = String.length haystack and nl = String.length needle in
+      if nl = 0 then true
+      else if nl > hl then false
+      else begin
+        let found = ref false in
+        let i = ref 0 in
+        while !i <= hl - nl && not !found do
+          if String.sub haystack !i nl = needle then found := true;
+          incr i
+        done;
+        !found
+      end
+    in
+    let _err_thread = Thread.create (fun () ->
+      (try while true do
+        let line = String.lowercase_ascii (input_line err_ic) in
+        if str_contains line "watches established" then
+          Atomic.set ready_flag true
+      done with End_of_file | Sys_error _ -> ());
+      (* Signal on EOF too so main thread never waits forever. *)
+      Atomic.set ready_flag true
+    ) () in
+    (* Poll ready_flag up to 10s with 50ms sleeps — no timed Condition needed. *)
+    let deadline = Unix.gettimeofday () +. 10.0 in
+    while not (Atomic.get ready_flag) && Unix.gettimeofday () < deadline do
+      Thread.delay 0.05
+    done;
+    if json then begin
+      let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+      print_string (Yojson.Safe.to_string
+        (`Assoc [ "event_type", `String "monitor.ready"
+                ; "monitor_ts", `String ts ]));
+      print_newline ()
+    end;
+    Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
+      try while true do
+        (* If our parent died (reparented to init/PID 1), we are an orphan —
+           exit rather than accumulate as a zombie monitor process. *)
+        (if Unix.getppid () = 1 then exit 0);
+        let line = input_line ic in
+        (* Archive uses space-delimited "EVENT FILENAME"; live uses
+           tab-delimited "EVENT\tFULL_PATH" (recursive, full path). *)
+        let parts =
+          if archive then String.split_on_char ' ' (String.trim line)
+          else String.split_on_char '\t' (String.trim line)
+        in
+        (match parts with
+         | event :: filename :: _ when archive ->
+             let n = String.length filename in
+             let is_jsonl = n > 6 && String.sub filename (n - 6) 6 = ".jsonl" in
+             if is_jsonl then begin
+               let sid = String.sub filename 0 (n - 6) in
+               let path = Filename.concat watch_dir filename in
+               let entries = read_new_archive_entries path in
+               (* Apply --from filter *)
+               let entries = match from_filter with
+                 | None -> entries
+                 | Some f -> List.filter (fun m -> match m with
+                     | `Assoc fields -> jstr fields "from_alias" "" = f
+                     | _ -> false) entries
+               in
+               (* Drop self-sent unless --include-self *)
+               let entries =
+                 if include_self then entries
+                 else match my_alias with
+                   | None -> entries
+                   | Some me -> List.filter (fun m -> match m with
+                       | `Assoc fields -> jstr fields "from_alias" "" <> me
+                       | _ -> true) entries
+               in
+               (match entries with
+                | [] -> ()
+                | msgs ->
+                    if json then begin
+                      let is_mine = match my_alias with
+                        | None -> true | Some me -> sid = me in
+                      if all || is_mine then
+                        List.iter (fun m ->
+                          let m_with_ts = match m with
+                            | `Assoc fields ->
+                                let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                                `Assoc (("event_type", `String "message")
+                                        :: ("monitor_ts", `String ts) :: fields)
+                            | _ -> m
+                          in
+                          print_string (Yojson.Safe.to_string m_with_ts);
+                          print_newline ()
+                        ) msgs
+                    end else
+                      emit_messages ~my_alias ~all ~full_body msgs)
+             end;
+             ignore event
+         | event :: full_path :: _ ->
+             (* In live mode filename is a full path; basename is used for routing. *)
+             let filename = Filename.basename full_path in
+             let n = String.length filename in
+             let is_inbox = n > 11 && String.sub filename (n - 11) 11 = ".inbox.json" in
+             let is_lock  = n >= 5  && String.sub filename (n - 5) 5 = ".lock" in
+             if is_inbox && not is_lock then begin
+               let alias = String.sub filename 0 (n - 11) in
+               let event_up = String.uppercase_ascii event in
+               let is_delete = String.length event_up >= 6
+                               && String.sub event_up 0 6 = "DELETE" in
+               if is_delete then begin
+                 if sweeps then begin
+                   if json then begin
+                     let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "sweep"
+                               ; "alias",      `String alias
+                               ; "monitor_ts", `String ts ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 🗑️  SWEEP  %s (inbox deleted)\n%!" (now_hms ()) alias
+                 end
+               end else begin
+                 let inbox_path = Filename.concat broker_root filename in
+                 let msgs = read_inbox_file inbox_path in
+                 (* Apply --from filter *)
+                 let msgs = match from_filter with
+                   | None -> msgs
+                   | Some f -> List.filter (fun m -> match m with
+                       | `Assoc fields -> jstr fields "from_alias" "" = f
+                       | _ -> false) msgs
+                 in
+                 (* Drop self-sent unless --include-self *)
+                 let msgs =
+                   if include_self then msgs
+                   else match my_alias with
+                     | None -> msgs
+                     | Some me -> List.filter (fun m -> match m with
+                         | `Assoc fields -> jstr fields "from_alias" "" <> me
+                         | _ -> true) msgs
+                 in
+                 (match msgs with
+                  | [] ->
+                      if drains then begin
+                        if json then begin
+                          let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                          print_string (Yojson.Safe.to_string
+                            (`Assoc [ "event_type", `String "drain"
+                                    ; "alias",      `String alias
+                                    ; "monitor_ts", `String ts ]));
+                          print_newline ()
+                        end else
+                          Printf.printf "%s 📤  DRAIN  %s (inbox cleared)\n%!" (now_hms ()) alias
+                      end
+                  | msgs ->
+                      if json then begin
+                        let is_mine = match my_alias with
+                          | None -> true | Some me -> alias = me in
+                        if all || is_mine then
+                          List.iter (fun m ->
+                            let m_with_ts = match m with
+                              | `Assoc fields ->
+                                  let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                                  `Assoc (("event_type", `String "message")
+                                          :: ("monitor_ts", `String ts) :: fields)
+                              | _ -> m
+                            in
+                            print_string (Yojson.Safe.to_string m_with_ts);
+                            print_newline ()
+                          ) msgs
+                      end else
+                        emit_messages ~my_alias ~all ~full_body msgs)
+               end
+             end else if filename = "registry.json" && not archive then begin
+               (* Registry changed — diff against snapshot and emit peer events. *)
+               let new_regs = read_registry_aliases () in
+               let new_tbl : (string, string) Hashtbl.t = Hashtbl.create 16 in
+               List.iter (fun (a, s) -> Hashtbl.replace new_tbl a s) new_regs;
+               let ts () = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+               (* Emit peer.alive for any alias not previously known. *)
+               List.iter (fun (a, _s) ->
+                 if not (Hashtbl.mem known_peers a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "peer.alive"
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 🟢  PEER   %s (registered)\n%!" (now_hms ()) a
+                 end
+               ) new_regs;
+               (* Emit peer.dead for any alias no longer present. *)
+               Hashtbl.iter (fun a _s ->
+                 if not (Hashtbl.mem new_tbl a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "peer.dead"
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 🔴  PEER   %s (deregistered)\n%!" (now_hms ()) a
+                 end
+               ) known_peers;
+               (* Update snapshot. *)
+               Hashtbl.reset known_peers;
+               List.iter (fun (a, s) -> Hashtbl.replace known_peers a s) new_regs
+             end else if filename = "members.json"
+                      && Filename.basename (Filename.dirname (Filename.dirname full_path)) = "rooms"
+             then begin
+               (* Room membership changed — extract room_id, diff, emit events. *)
+               let room_id = Filename.basename (Filename.dirname full_path) in
+               let new_members = read_room_members room_id in
+               let new_tbl : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+               List.iter (fun a -> Hashtbl.replace new_tbl a ()) new_members;
+               let prev_tbl =
+                 try Hashtbl.find known_room_members room_id
+                 with Not_found ->
+                   let t : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+                   Hashtbl.replace known_room_members room_id t; t
+               in
+               let ts () = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+               List.iter (fun a ->
+                 if not (Hashtbl.mem prev_tbl a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "room.join"
+                               ; "room_id",    `String room_id
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 🚪  ROOM   %s joined %s\n%!" (now_hms ()) a room_id
+                 end
+               ) new_members;
+               Hashtbl.iter (fun a () ->
+                 if not (Hashtbl.mem new_tbl a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "room.leave"
+                               ; "room_id",    `String room_id
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s 👋  ROOM   %s left %s\n%!" (now_hms ()) a room_id
+                 end
+               ) prev_tbl;
+               Hashtbl.reset prev_tbl;
+               List.iter (fun a -> Hashtbl.replace prev_tbl a ()) new_members
+             end else if filename = "meta.json"
+                      && Filename.basename (Filename.dirname (Filename.dirname full_path)) = "rooms"
+             then begin
+               (* #433: Room meta changed — diff invited_members and emit
+                  room.invite for any newly-invited alias. The MCP
+                  Broker.send_room_invite already auto-DMs the invitee;
+                  this monitor event is the parallel observability surface
+                  (parity with room.join / room.leave). *)
+               let room_id = Filename.basename (Filename.dirname full_path) in
+               let new_invited = read_room_invited room_id in
+               let new_tbl : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+               List.iter (fun a -> Hashtbl.replace new_tbl a ()) new_invited;
+               let prev_tbl =
+                 try Hashtbl.find known_room_invited room_id
+                 with Not_found ->
+                   let t : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+                   Hashtbl.replace known_room_invited room_id t; t
+               in
+               let ts () = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+               List.iter (fun a ->
+                 if not (Hashtbl.mem prev_tbl a) then begin
+                   if json then begin
+                     print_string (Yojson.Safe.to_string
+                       (`Assoc [ "event_type", `String "room.invite"
+                               ; "room_id",    `String room_id
+                               ; "alias",      `String a
+                               ; "monitor_ts", `String (ts ()) ]));
+                     print_newline ()
+                   end else
+                     Printf.printf "%s ✉️  ROOM   %s invited to %s\n%!" (now_hms ()) a room_id
+                 end
+               ) new_invited;
+               Hashtbl.reset prev_tbl;
+               List.iter (fun a -> Hashtbl.replace prev_tbl a ()) new_invited
+             end
+         | _ -> ()
+        )
+      done with End_of_file -> ())
+  ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
+    $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
+    $ force_flag $ cross_repo
+
+(* --- monitor Cmd ---------------------------------------------------------- *)
+
+let monitor =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "monitor"
+       ~doc:"Watch broker inboxes and emit formatted event notifications."
+       ~man:[ `S "DESCRIPTION"
+            ; `P "Watches the broker inbox directory with $(b,inotifywait) and emits \
+                  one formatted line per new message (or event). Designed for Claude Code's \
+                  Monitor tool — each output line becomes the notification summary."
+            ; `P "Default behaviour: only show messages addressed to your alias \
+                  ($(b,C2C_MCP_SESSION_ID)). New messages only — drains and sweeps \
+                  suppressed unless $(b,--drains)/$(b,--sweeps) are set."
+            ; `P "Burst deduplication: multiple messages from the same sender in one \
+                  inbox write are collapsed to a single line with a count."
+            ; `S "OUTPUT FORMAT"
+            ; `P "[HH:MM:SS] ICON  TYPE  from→to  \"subject…\""
+            ; `P "ICON: 📬 = addressed to you, 💬 = peer traffic (--all), \
+                  📤 = drain (--drains), 🗑️ = sweep (--sweeps)"
+            ; `S "EXAMPLES"
+            ; `P "$(b,c2c monitor)  — zero-flag form: auto-resolves alias + broker, watches archive with full body. Recommended."
+            ; `P "$(b,c2c monitor --all)  — broad swarm monitor"
+            ; `P "$(b,c2c monitor --all --drains --sweeps)  — everything"
+            ; `P "$(b,c2c monitor --from coder1)  — only messages from coder1"
+            ; `P "$(b,c2c monitor --snippet)  — 80-char subject preview (legacy)"
+            ; `P "$(b,c2c monitor --live)  — watch live inboxes instead of archive (legacy)"
+            ; `P "$(b,c2c monitor --json)  — JSON output for programmatic parsing"
+            ; `P "In Claude Code: Monitor({command: \"c2c monitor\", persistent: true})"
+            ; `P "Per-alias lockfile prevents duplicate monitors; use $(b,--force) to displace a live holder."
+            ])
+    monitor_cmd
