@@ -71,4 +71,6 @@ jobs:
         run: python3 -m pytest tests/test_release_tool.py -q --force-test-env
 
       - name: OCaml tests
+        env:
+          DUNE_WATCHDOG_TIMEOUT: '180'
         run: just test-ocaml
