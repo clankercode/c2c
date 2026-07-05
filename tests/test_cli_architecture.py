@@ -298,3 +298,31 @@ def test_command_listing_is_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_commands_cmd.commands_by_safety")
     assert_token_reference(c2c_ml, "C2c_commands_cmd.commands_man")
     assert_token_reference(c2c_ml, "C2c_commands_cmd.fast_path_commands")
+
+
+def test_sweep_commands_are_extracted_from_monolithic_cli():
+    """Sweep and registry-prune commands should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    sweep_ml = REPO / "ocaml" / "cli" / "c2c_sweep_cmd.ml"
+
+    assert sweep_ml.exists(), "expected extracted sweep command module"
+    sweep_src = sweep_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "instances_dir_base",
+        "c2c_start_session_ids",
+        "default_prune_patterns",
+        "registry_prune_cmd",
+        "force_flag",
+        "sweep_cmd",
+        "sweep_dryrun_run",
+        "sweep_dryrun_cmd",
+        "sweep_dryrun",
+        "sweep",
+        "registry_prune",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, sweep_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_sweep_cmd.sweep")
+    assert_token_reference(c2c_ml, "C2c_sweep_cmd.registry_prune")
+    assert_token_reference(c2c_ml, "C2c_sweep_cmd.sweep_dryrun")
