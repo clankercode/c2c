@@ -20,6 +20,15 @@ def assert_ocaml_value_extracted(c2c_src: str, module_src: str, name: str) -> No
     assert_ocaml_value_defined(module_src, name)
 
 
+def assert_ocaml_type_extracted(c2c_src: str, module_src: str, name: str) -> None:
+    assert re.search(rf"\btype\s+{re.escape(name)}\b", c2c_src) is None, (
+        f"expected OCaml type {name!r} to be extracted from c2c.ml"
+    )
+    assert re.search(rf"\btype\s+{re.escape(name)}\b", module_src), (
+        f"expected OCaml type {name!r} to be defined"
+    )
+
+
 def assert_token_reference(src: str, dotted_name: str) -> None:
     assert re.search(rf"\b{re.escape(dotted_name)}(?![A-Za-z0-9_])", src), (
         f"expected token-bounded reference to {dotted_name!r}"
@@ -147,3 +156,25 @@ def test_managed_lifecycle_commands_are_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_managed_cmd.reset_thread")
     assert_token_reference(c2c_ml, "C2c_managed_cmd.restart_self")
     assert_token_reference(c2c_ml, "C2c_managed_cmd.restart_self_cmd")
+
+
+def test_gui_command_is_extracted_from_monolithic_cli():
+    """GUI launch and batch-smoke helpers should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    gui_ml = REPO / "ocaml" / "cli" / "c2c_gui_cmd.ml"
+
+    assert gui_ml.exists(), "expected extracted GUI command module"
+    gui_src = gui_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "find_gui_binary",
+        "registration_to_json",
+        "room_to_json",
+        "gui_batch",
+        "gui_cmd",
+        "gui",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, gui_src, name)
+
+    assert_ocaml_type_extracted(c2c_ml, gui_src, "gui_batch_check")
+    assert_token_reference(c2c_ml, "C2c_gui_cmd.gui")
