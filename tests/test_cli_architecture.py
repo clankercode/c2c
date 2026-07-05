@@ -61,3 +61,27 @@ def test_init_setup_commands_are_extracted_from_monolithic_cli():
     assert "let self_update_cmd =" in init_src
     assert "let install =" in init_src
     assert "let repo_config_path () =" in init_src
+
+
+def test_instances_and_diag_commands_are_extracted_from_monolithic_cli():
+    """Managed-instance listing, cleanup, and diagnostics should be modular."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    instances_ml = REPO / "ocaml" / "cli" / "c2c_instances_cmd.ml"
+
+    assert instances_ml.exists(), "expected extracted instances command module"
+    instances_src = instances_ml.read_text(encoding="utf-8")
+
+    assert "let instances_cmd =" not in c2c_ml
+    assert "let clean_stale_cmd =" not in c2c_ml
+    assert "let instances_gc_cmd =" not in c2c_ml
+    assert "let diag_cmd =" not in c2c_ml
+    assert "let instances_deprecated_term =" not in c2c_ml
+    assert "C2c_instances_cmd.dev_instances_sub" in c2c_ml
+    assert "C2c_instances_cmd.diag" in c2c_ml
+    assert "C2c_instances_cmd.diag_cmd" in c2c_ml
+    assert "C2c_instances_cmd.instances_deprecated" in c2c_ml
+    assert "let instances_cmd =" in instances_src
+    assert "let clean_stale_cmd =" in instances_src
+    assert "let instances_gc_cmd =" in instances_src
+    assert "let diag_cmd =" in instances_src
+    assert "let instances_deprecated_term =" in instances_src

@@ -488,11 +488,12 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
-        names = [item["name"] for item in payload]
-        self.assertEqual(sorted(names), ["fresh-stopped", "live-running", "stale-stopped"])
-        statuses = {item["name"]: item["status"] for item in payload}
-        self.assertEqual(statuses["stale-stopped"], "stopped")
-        self.assertEqual(statuses["fresh-stopped"], "stopped")
+        self.assertEqual(payload["alive"], 1)
+        self.assertEqual(payload["total"], 3)
+        self.assertTrue(payload["filtered"])
+        names = [item["name"] for item in payload["instances"]]
+        self.assertEqual(names, ["live-running"])
+        statuses = {item["name"]: item["status"] for item in payload["instances"]}
         self.assertEqual(statuses["live-running"], "running")
 
     def test_instances_cli_prune_older_than_removes_stale_stopped_instances(self):
@@ -525,8 +526,11 @@ class C2CCLITests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
-        names = sorted(item["name"] for item in payload)
-        self.assertEqual(names, ["fresh-stopped", "live-running"])
+        self.assertEqual(payload["alive"], 1)
+        self.assertEqual(payload["total"], 2)
+        self.assertTrue(payload["filtered"])
+        names = [item["name"] for item in payload["instances"]]
+        self.assertEqual(names, ["live-running"])
         self.assertFalse(stale_dir.exists())
         self.assertTrue(fresh_dir.exists())
         self.assertTrue(live_dir.exists())

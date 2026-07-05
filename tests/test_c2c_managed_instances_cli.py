@@ -83,11 +83,21 @@ class ManagedInstancesCLITests(unittest.TestCase):
     def test_instances_json_includes_delivery_mode(self):
         result = self._run("instances", "--json")
         payload = json.loads(result.stdout)
-        self.assertEqual(len(payload), 1)
-        self.assertEqual(payload[0]["name"], "opencode-test")
-        self.assertEqual(payload[0]["delivery_mode"], "plugin")
+        self.assertEqual(payload["alive"], 0)
+        self.assertEqual(payload["total"], 1)
+        self.assertTrue(payload["filtered"])
+        self.assertEqual(payload["instances"], [])
+
+        result = self._run("instances", "--all", "--json")
+        payload = json.loads(result.stdout)
+        self.assertEqual(len(payload["instances"]), 1)
+        self.assertEqual(payload["instances"][0]["name"], "opencode-test")
+        self.assertEqual(payload["instances"][0]["delivery_mode"], "plugin")
 
     def test_status_json_includes_managed_instances_with_delivery_mode(self):
+        (self.instance_dir / "outer.pid").write_text(
+            f"{os.getpid()}\n", encoding="utf-8"
+        )
         broker_root = self.home / ".git" / "c2c" / "mcp"
         broker_root.mkdir(parents=True, exist_ok=True)
         (broker_root / "registry.json").write_text("[]", encoding="utf-8")
