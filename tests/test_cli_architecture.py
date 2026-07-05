@@ -71,9 +71,11 @@ def test_init_setup_commands_are_extracted_from_monolithic_cli():
     """Onboarding/setup commands should live outside ocaml/cli/c2c.ml."""
     c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
     init_ml = REPO / "ocaml" / "cli" / "c2c_init_cmd.ml"
+    config_ml = REPO / "ocaml" / "cli" / "c2c_config_cmd.ml"
 
     assert init_ml.exists(), "expected extracted init/setup command module"
     init_src = init_ml.read_text(encoding="utf-8")
+    config_src = config_ml.read_text(encoding="utf-8") if config_ml.exists() else ""
 
     assert "let init_cmd =" not in c2c_ml
     assert "let completion_cmd =" not in c2c_ml
@@ -84,7 +86,7 @@ def test_init_setup_commands_are_extracted_from_monolithic_cli():
     assert "C2c_init_cmd.install" in c2c_ml
     assert "C2c_init_cmd.self_update" in c2c_ml
     assert "C2c_init_cmd.completion_cmd" in c2c_ml
-    assert "C2c_init_cmd.repo_config_path" in c2c_ml
+    assert "C2c_init_cmd.repo_config_path" in (c2c_ml + config_src)
     assert "let init_cmd =" in init_src
     assert "let completion_cmd =" in init_src
     assert "let self_update_cmd =" in init_src
@@ -178,3 +180,32 @@ def test_gui_command_is_extracted_from_monolithic_cli():
 
     assert_ocaml_type_extracted(c2c_ml, gui_src, "gui_batch_check")
     assert_token_reference(c2c_ml, "C2c_gui_cmd.gui")
+
+
+def test_config_and_repo_commands_are_extracted_from_monolithic_cli():
+    """Local config and repo supervisor commands should be modular."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    config_ml = REPO / "ocaml" / "cli" / "c2c_config_cmd.ml"
+
+    assert config_ml.exists(), "expected extracted config/repo command module"
+    config_src = config_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "c2c_config_path",
+        "config_read",
+        "config_write",
+        "config_set",
+        "valid_generation_clients",
+        "config_show_term",
+        "config_generation_client_term",
+        "config_show_cmd",
+        "config_generation_client_cmd",
+        "config_group",
+        "repo_set_supervisor_cmd",
+        "repo_show_cmd",
+        "repo_group",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, config_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_config_cmd.config_group")
+    assert_token_reference(c2c_ml, "C2c_config_cmd.repo_group")
