@@ -209,3 +209,32 @@ def test_config_and_repo_commands_are_extracted_from_monolithic_cli():
 
     assert_token_reference(c2c_ml, "C2c_config_cmd.config_group")
     assert_token_reference(c2c_ml, "C2c_config_cmd.repo_group")
+
+
+def test_statefile_and_plugin_commands_are_extracted_from_monolithic_cli():
+    """Statefile/debug/plugin plumbing commands should live outside c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    statefile_ml = REPO / "ocaml" / "cli" / "c2c_statefile_cmd.ml"
+
+    assert statefile_ml.exists(), "expected extracted statefile/plugin command module"
+    statefile_src = statefile_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "statefile_cmd",
+        "statefile_top",
+        "debug_statefile_log_cmd",
+        "debug_statefile_checkpoint_cmd",
+        "debug_group",
+        "oc_plugin_stream_write_statefile_cmd",
+        "oc_plugin_message_json",
+        "oc_plugin_drain_inbox_to_spool_cmd",
+        "oc_plugin_group",
+        "cc_plugin_write_statefile_cmd",
+        "cc_plugin_group",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, statefile_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_statefile_cmd.statefile_top")
+    assert_token_reference(c2c_ml, "C2c_statefile_cmd.debug_group")
+    assert_token_reference(c2c_ml, "C2c_statefile_cmd.oc_plugin_group")
+    assert_token_reference(c2c_ml, "C2c_statefile_cmd.cc_plugin_group")
