@@ -1,9 +1,29 @@
 """Architecture guards for the OCaml CLI refactor."""
 
+import re
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+def assert_ocaml_value_defined(src: str, name: str) -> None:
+    assert re.search(rf"\blet\s+{re.escape(name)}\b", src), (
+        f"expected OCaml value {name!r} to be defined"
+    )
+
+
+def assert_ocaml_value_extracted(c2c_src: str, module_src: str, name: str) -> None:
+    assert re.search(rf"\blet\s+{re.escape(name)}\b", c2c_src) is None, (
+        f"expected OCaml value {name!r} to be extracted from c2c.ml"
+    )
+    assert_ocaml_value_defined(module_src, name)
+
+
+def assert_token_reference(src: str, dotted_name: str) -> None:
+    assert re.search(rf"\b{re.escape(dotted_name)}(?![A-Za-z0-9_])", src), (
+        f"expected token-bounded reference to {dotted_name!r}"
+    )
 
 
 def test_doctor_command_is_extracted_from_monolithic_cli():
@@ -95,21 +115,35 @@ def test_managed_lifecycle_commands_are_extracted_from_monolithic_cli():
     assert managed_ml.exists(), "expected extracted managed lifecycle command module"
     managed_src = managed_ml.read_text(encoding="utf-8")
 
-    assert "let start_cmd =" not in c2c_ml
-    assert "let stop_cmd =" not in c2c_ml
-    assert "let restart_cmd =" not in c2c_ml
-    assert "let reset_thread_cmd =" not in c2c_ml
-    assert "let restart_self_cmd =" not in c2c_ml
-    assert "let default_kickoff_prompt" not in c2c_ml
-    assert "C2c_managed_cmd.start" in c2c_ml
-    assert "C2c_managed_cmd.stop" in c2c_ml
-    assert "C2c_managed_cmd.restart" in c2c_ml
-    assert "C2c_managed_cmd.reset_thread" in c2c_ml
-    assert "C2c_managed_cmd.restart_self" in c2c_ml
-    assert "C2c_managed_cmd.restart_self_cmd" in c2c_ml
-    assert "let start_cmd =" in managed_src
-    assert "let stop_cmd =" in managed_src
-    assert "let restart_cmd =" in managed_src
-    assert "let reset_thread_cmd =" in managed_src
-    assert "let restart_self_cmd =" in managed_src
-    assert "let default_kickoff_prompt" in managed_src
+    for name in [
+        "roles_dir",
+        "role_file_path",
+        "read_role",
+        "yaml_scalar",
+        "write_role",
+        "prompt_for_role",
+        "default_kickoff_prompt",
+        "agent_file_path",
+        "render_role_for_client",
+        "resolve_role_pmodel_for_launch",
+        "write_agent_file",
+        "get_opencode_theme",
+        "start_cmd",
+        "start",
+        "stop_cmd",
+        "stop",
+        "restart_cmd",
+        "restart",
+        "reset_thread_cmd",
+        "reset_thread",
+        "restart_self_cmd",
+        "restart_self",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, managed_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_managed_cmd.start")
+    assert_token_reference(c2c_ml, "C2c_managed_cmd.stop")
+    assert_token_reference(c2c_ml, "C2c_managed_cmd.restart")
+    assert_token_reference(c2c_ml, "C2c_managed_cmd.reset_thread")
+    assert_token_reference(c2c_ml, "C2c_managed_cmd.restart_self")
+    assert_token_reference(c2c_ml, "C2c_managed_cmd.restart_self_cmd")
