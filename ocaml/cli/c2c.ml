@@ -3438,87 +3438,6 @@ let default_term =
   let+ () = Cmdliner.Term.const () in
   print_enriched_landing ()
 
-(* --- subcommand group: supervisor ----------------------------------------- *)
-(* Human-friendly wrappers for replying to question.asked / permission.asked
-   sentinels without crafting raw protocol strings by hand. *)
-
-let supervisor_send ~to_alias ~content =
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let from_alias = resolve_alias ~override:None broker in
-  (try
-     C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ();
-     Printf.printf "ok -> %s (from %s)\n" to_alias from_alias
-   with Invalid_argument msg ->
-     Printf.eprintf "error: %s\n%!" msg; exit 1)
-
-let supervisor_answer_cmd =
-  let open Cmdliner.Term in
-  const (fun peer qid answer ->
-    supervisor_send ~to_alias:peer
-      ~content:(Printf.sprintf "question:%s:answer:%s" qid answer))
-  $ Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"PEER" ~doc:"Agent alias to reply to.")
-  $ Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"ID"   ~doc:"Question request ID (from the DM notification).")
-  $ Cmdliner.Arg.(required & pos 2 (some string) None & info [] ~docv:"ANSWER" ~doc:"Free-text answer or selected option.")
-
-let supervisor_reject_question_cmd =
-  let open Cmdliner.Term in
-  const (fun peer qid ->
-    supervisor_send ~to_alias:peer
-      ~content:(Printf.sprintf "question:%s:reject" qid))
-  $ Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"PEER" ~doc:"Agent alias to reply to.")
-  $ Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"ID"   ~doc:"Question request ID.")
-
-let supervisor_approve_cmd =
-  let open Cmdliner.Term in
-  let always_flag = Cmdliner.Arg.(value & flag & info ["always"] ~doc:"Grant permanent approval (approve-always) instead of once.") in
-  const (fun peer permid always ->
-    let decision = if always then "approve-always" else "approve-once" in
-    supervisor_send ~to_alias:peer
-      ~content:(Printf.sprintf "permission:%s:%s" permid decision))
-  $ Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"PEER"   ~doc:"Agent alias to reply to.")
-  $ Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"ID"     ~doc:"Permission request ID (from the DM notification).")
-  $ always_flag
-
-let supervisor_reject_permission_cmd =
-  let open Cmdliner.Term in
-  const (fun peer permid ->
-    supervisor_send ~to_alias:peer
-      ~content:(Printf.sprintf "permission:%s:reject" permid))
-  $ Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"PEER" ~doc:"Agent alias to reply to.")
-  $ Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"ID"   ~doc:"Permission request ID.")
-
-let supervisor_group =
-  Cmdliner.Cmd.group
-    (Cmdliner.Cmd.info "supervisor"
-       ~doc:"Human-friendly replies to agent permission and question requests."
-       ~man:[ `S "DESCRIPTION"
-            ; `P "Wrappers that send structured reply sentinels to an agent's \
-                  inbox without requiring you to craft the raw protocol strings."
-            ; `S "EXAMPLES"
-            ; `P "$(b,c2c supervisor answer oc-coder1 abc123 \"yes\")"
-            ; `P "$(b,c2c supervisor question-reject oc-coder1 abc123)"
-            ; `P "$(b,c2c supervisor approve oc-coder1 perm456)"
-            ; `P "$(b,c2c supervisor approve --always oc-coder1 perm456)"
-            ; `P "$(b,c2c supervisor reject oc-coder1 perm456)"
-            ])
-    [ Cmdliner.Cmd.v
-        (Cmdliner.Cmd.info "answer"
-           ~doc:"Answer a question request (question.asked). Sends question:<ID>:answer:<ANSWER>.")
-        supervisor_answer_cmd
-    ; Cmdliner.Cmd.v
-        (Cmdliner.Cmd.info "question-reject"
-           ~doc:"Reject a question request. Sends question:<ID>:reject.")
-        supervisor_reject_question_cmd
-    ; Cmdliner.Cmd.v
-        (Cmdliner.Cmd.info "approve"
-           ~doc:"Approve a permission request (permission.asked). Use --always for permanent approval.")
-        supervisor_approve_cmd
-    ; Cmdliner.Cmd.v
-        (Cmdliner.Cmd.info "reject"
-           ~doc:"Reject a permission request. Sends permission:<ID>:reject.")
-        supervisor_reject_permission_cmd
-    ]
-
 (* Build tier-grouped COMMANDS man page text *)
 let commands_man is_agent =
   (* DEV section: only revealed when `--dev` is on argv (mirrors the `--all`
@@ -4085,7 +4004,7 @@ let () =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; sweep; registry_prune
     ; sweep_dryrun; migrate_broker; history; C2c_health_cmd.health; C2c_health_cmd.connect; setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; list_glyphs
-    ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
+    ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; relay_pins; mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit

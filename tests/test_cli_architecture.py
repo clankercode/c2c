@@ -238,3 +238,24 @@ def test_statefile_and_plugin_commands_are_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_statefile_cmd.debug_group")
     assert_token_reference(c2c_ml, "C2c_statefile_cmd.oc_plugin_group")
     assert_token_reference(c2c_ml, "C2c_statefile_cmd.cc_plugin_group")
+
+
+def test_supervisor_commands_are_extracted_from_monolithic_cli():
+    """Supervisor reply helpers should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    supervisor_ml = REPO / "ocaml" / "cli" / "c2c_supervisor_cmd.ml"
+
+    assert supervisor_ml.exists(), "expected extracted supervisor command module"
+    supervisor_src = supervisor_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "supervisor_send",
+        "supervisor_answer_cmd",
+        "supervisor_reject_question_cmd",
+        "supervisor_approve_cmd",
+        "supervisor_reject_permission_cmd",
+        "supervisor_group",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, supervisor_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_supervisor_cmd.supervisor_group")
