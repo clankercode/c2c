@@ -277,3 +277,24 @@ def test_mesh_command_is_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, mesh_src, name)
 
     assert_token_reference(c2c_ml, "C2c_mesh_cmd.mesh_group")
+
+
+def test_command_listing_is_extracted_from_monolithic_cli():
+    """Safety-tier command listings should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    commands_cmd_ml = REPO / "ocaml" / "cli" / "c2c_commands_cmd.ml"
+
+    assert commands_cmd_ml.exists(), "expected extracted command-listing module"
+    commands_cmd_src = commands_cmd_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "commands_by_safety_cmd",
+        "commands_by_safety",
+        "commands_man",
+        "fast_path_commands",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, commands_cmd_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_commands_cmd.commands_by_safety")
+    assert_token_reference(c2c_ml, "C2c_commands_cmd.commands_man")
+    assert_token_reference(c2c_ml, "C2c_commands_cmd.fast_path_commands")
