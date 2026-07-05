@@ -259,3 +259,21 @@ def test_supervisor_commands_are_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, supervisor_src, name)
 
     assert_token_reference(c2c_ml, "C2c_supervisor_cmd.supervisor_group")
+
+
+def test_mesh_command_is_extracted_from_monolithic_cli():
+    """Relay mesh inspection should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    mesh_ml = REPO / "ocaml" / "cli" / "c2c_mesh_cmd.ml"
+
+    assert mesh_ml.exists(), "expected extracted mesh command module"
+    mesh_src = mesh_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "mesh_status_cmd",
+        "mesh_status",
+        "mesh_group",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, mesh_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_mesh_cmd.mesh_group")
