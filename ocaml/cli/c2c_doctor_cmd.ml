@@ -890,4 +890,3 @@ let doctor = Cmdliner.Cmd.group
       C2c_doctor_cherry_pick_readiness.c2c_doctor_cherry_pick_readiness_cmd;
       C2c_doctor_hooks.c2c_doctor_hooks_cmd;
       C2c_doctor_schedule.c2c_doctor_schedule_cmd ]
-
