@@ -85,3 +85,31 @@ def test_instances_and_diag_commands_are_extracted_from_monolithic_cli():
     assert "let instances_gc_cmd =" in instances_src
     assert "let diag_cmd =" in instances_src
     assert "let instances_deprecated_term =" in instances_src
+
+
+def test_managed_lifecycle_commands_are_extracted_from_monolithic_cli():
+    """Managed-session lifecycle commands should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    managed_ml = REPO / "ocaml" / "cli" / "c2c_managed_cmd.ml"
+
+    assert managed_ml.exists(), "expected extracted managed lifecycle command module"
+    managed_src = managed_ml.read_text(encoding="utf-8")
+
+    assert "let start_cmd =" not in c2c_ml
+    assert "let stop_cmd =" not in c2c_ml
+    assert "let restart_cmd =" not in c2c_ml
+    assert "let reset_thread_cmd =" not in c2c_ml
+    assert "let restart_self_cmd =" not in c2c_ml
+    assert "let default_kickoff_prompt" not in c2c_ml
+    assert "C2c_managed_cmd.start" in c2c_ml
+    assert "C2c_managed_cmd.stop" in c2c_ml
+    assert "C2c_managed_cmd.restart" in c2c_ml
+    assert "C2c_managed_cmd.reset_thread" in c2c_ml
+    assert "C2c_managed_cmd.restart_self" in c2c_ml
+    assert "C2c_managed_cmd.restart_self_cmd" in c2c_ml
+    assert "let start_cmd =" in managed_src
+    assert "let stop_cmd =" in managed_src
+    assert "let restart_cmd =" in managed_src
+    assert "let reset_thread_cmd =" in managed_src
+    assert "let restart_self_cmd =" in managed_src
+    assert "let default_kickoff_prompt" in managed_src
