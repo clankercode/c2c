@@ -36,3 +36,28 @@ def test_inject_and_screen_commands_are_extracted_from_monolithic_cli():
     assert "C2c_inject_cmd.screen" in c2c_ml
     assert "let inject_cmd =" in inject_src
     assert "let screen_cmd =" in inject_src
+
+
+def test_init_setup_commands_are_extracted_from_monolithic_cli():
+    """Onboarding/setup commands should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    init_ml = REPO / "ocaml" / "cli" / "c2c_init_cmd.ml"
+
+    assert init_ml.exists(), "expected extracted init/setup command module"
+    init_src = init_ml.read_text(encoding="utf-8")
+
+    assert "let init_cmd =" not in c2c_ml
+    assert "let completion_cmd =" not in c2c_ml
+    assert "let self_update_cmd =" not in c2c_ml
+    assert "let install =" not in c2c_ml
+    assert "let repo_config_path () =" not in c2c_ml
+    assert "C2c_init_cmd.init" in c2c_ml
+    assert "C2c_init_cmd.install" in c2c_ml
+    assert "C2c_init_cmd.self_update" in c2c_ml
+    assert "C2c_init_cmd.completion_cmd" in c2c_ml
+    assert "C2c_init_cmd.repo_config_path" in c2c_ml
+    assert "let init_cmd =" in init_src
+    assert "let completion_cmd =" in init_src
+    assert "let self_update_cmd =" in init_src
+    assert "let install =" in init_src
+    assert "let repo_config_path () =" in init_src

@@ -455,6 +455,15 @@ class C2CCLITests(unittest.TestCase):
             result.stdout,
         )
 
+    def test_completion_help_bypasses_fast_path(self):
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        for help_flag in ("--help", "--help=plain"):
+            with self.subTest(help_flag=help_flag):
+                result = run_native_cli("completion", help_flag, env=self.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Generate shell completion scripts", result.stdout)
+                self.assertIn("--shell", result.stdout)
+
     def test_instances_cli_lists_stopped_and_running_instances(self):
         env, instances_dir = self.native_home_env("home-list")
         now = time.time()
