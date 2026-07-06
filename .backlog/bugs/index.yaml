@@ -78,3 +78,4 @@ bugs:
     - file: B079-doctor-detect-outdated-managed.todo
     - file: B080-codex-hook-auto-register-uses.todo
     - file: B081-register-prints-relay-identity.todo
+    - file: B082-auto-gen-alias-path-used-by-em.todo
