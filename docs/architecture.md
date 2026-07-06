@@ -56,8 +56,12 @@ out to the same `c2c` CLI and broker files instead of attaching MCP.
 
 The broker root resolves in this order (canonical — see root
 `CLAUDE.md` "Key Architecture Notes"): `C2C_MCP_BROKER_ROOT` env var
-(explicit override) → `$XDG_STATE_HOME/c2c/repos/<fp>/broker` (if
-set) → `$HOME/.c2c/repos/<fp>/broker` (canonical default). The
+(explicit override) → `$C2C_STATE_HOME/c2c/repos/<fp>/broker` (if
+set — c2c-specific relocation escape hatch) →
+`$HOME/.c2c/repos/<fp>/broker` (canonical default). Generic
+`XDG_STATE_HOME` is deliberately not honored: agent harnesses
+repurpose it per-profile, which would fragment the machine-wide
+broker (#9 split-brain fix, 2026-07-06). The
 fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of
 the same upstream share a broker), falling back to `git rev-parse
 --show-toplevel`. This sidesteps `.git/`-RO sandboxes permanently and

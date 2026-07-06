@@ -9,6 +9,18 @@ nav_label: Changelog
 
 ## 0.9.0
 
+- **Broker root no longer honors generic `XDG_STATE_HOME`** (#9) — agent
+  harnesses (e.g. Claude Code profile-share) export a per-profile
+  `XDG_STATE_HOME`, which silently fragmented the machine-wide broker:
+  a Claude session landed on a private broker while codex/pi peers were on
+  `~/.c2c`, invisible to each other. Resolution is now
+  `C2C_MCP_BROKER_ROOT` → `$C2C_STATE_HOME/c2c/repos/<fp>/broker` (new
+  c2c-specific relocation escape hatch) → `$HOME/.c2c/repos/<fp>/broker`
+  (canonical). Orphaned XDG-profile brokers trigger a one-line stderr
+  warning, a `c2c health`/`c2c doctor` split-brain report
+  (`xdg_split_brain_broker` in `--json`), and `c2c migrate-broker` now
+  defaults `--from` to the orphaned XDG broker when the legacy path is
+  absent. The OpenCode plugin resolver was updated to match.
 - **CLI-first onboarding — `c2c init` reworked** (B030/B037/B046) — init is
   now CLI-first with MCP/hooks opt-in (`--with-mcp`/`--hooks`). Re-running
   init is safe (idempotent, reuses existing registered alias). Onboarding

@@ -18,6 +18,20 @@ let legacy_broker_root () =
        with _ -> "")
   | None -> ""
 
+(** Default migration source when --from is not given:
+    1. the legacy <git-common-dir>/c2c/mcp path, if it exists;
+    2. otherwise an orphaned XDG-profile broker
+       ($XDG_STATE_HOME/c2c/repos/<fp>/broker) that the resolver no longer
+       selects (#9 split-brain) — so a bare `c2c migrate-broker` fixes both
+       known migration cases. *)
+let default_migrate_source () =
+  let legacy = legacy_broker_root () in
+  if legacy <> "" && Sys.file_exists legacy then legacy
+  else
+    match C2c_repo_fp.xdg_split_brain_broker () with
+    | Some xdg -> xdg
+    | None -> legacy
+
 (** #507: rewrite .opencode/c2c-plugin.json with the post-migration broker_root
     and current fingerprint, preserving session_id and alias for continuity. *)
 let sync_sidecar_for_migration ~new_root ~json =
@@ -85,7 +99,7 @@ Canonical broker root: %s\n%!"
   end
 
 let migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar ~rewrite_mcp_configs ~suggest_shell_export =
-  let from = Option.value from_path ~default:(legacy_broker_root ()) in
+  let from = Option.value from_path ~default:(default_migrate_source ()) in
   let to_ = Option.value to_path ~default:(resolve_broker_root ()) in
   let do_rewrite ~print_line =
     if rewrite_mcp_configs then
@@ -179,7 +193,9 @@ let migrate_broker_cmd =
   let from =
     Arg.(value & opt (some string) None & info ["from"; "f"]
            ~docv:"PATH"
-           ~doc:"Source broker root (default: the legacy .git/c2c/mcp path)")
+           ~doc:"Source broker root (default: the legacy .git/c2c/mcp path if \
+                 it exists, else an orphaned \\$XDG_STATE_HOME/c2c/repos/<fp>/broker \
+                 profile broker)")
   in
   let to_ =
     Arg.(value & opt (some string) None & info ["to"; "t"]
@@ -223,9 +239,12 @@ let migrate_broker : unit Cmdliner.Cmd.t =
     (Cmdliner.Cmd.info "migrate-broker"
        ~doc:"Migrate broker data from the legacy .git/c2c/mcp path to the new per-repo path."
        ~man:[ `S "DESCRIPTION"
-            ; `P "Migrates broker state from the legacy $(b,.git/c2c/mcp) path to the \
-                  canonical per-repo path ($(b,\\$XDG_STATE_HOME/c2c/repos/<fp>/broker) \
-                  or $(b,\\$HOME/.c2c/repos/<fp>/broker))."
+            ; `P "Migrates broker state from the legacy $(b,.git/c2c/mcp) path — or \
+                  from an orphaned XDG-profile broker \
+                  ($(b,\\$XDG_STATE_HOME/c2c/repos/<fp>/broker), no longer selected \
+                  by the resolver) — to the canonical per-repo path \
+                  ($(b,\\$C2C_STATE_HOME/c2c/repos/<fp>/broker) if set, else \
+                  $(b,\\$HOME/.c2c/repos/<fp>/broker))."
             ; `P "Run $(b,--dry-run) first to preview the action plan."
             ; `S "TWO-PHASE COMMIT"
             ; `P "The migration is a two-phase commit: (1) COPY every eligible entry to \

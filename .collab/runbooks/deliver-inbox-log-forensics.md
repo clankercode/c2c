@@ -26,8 +26,9 @@ Cross-correlate via: `ts`, `session_id`, and `drained_by_pid` (daemon PID from `
 Broker root resolution (`C2c_repo_fp.resolve_broker_root`):
 ```
 C2C_MCP_BROKER_ROOT env var    (explicit override)
-→ $XDG_STATE_HOME/c2c/repos/<fp>/broker  (if set)
+→ $C2C_STATE_HOME/c2c/repos/<fp>/broker  (if set — c2c-specific escape hatch)
 → $HOME/.c2c/repos/<fp>/broker            (canonical default)
+(generic XDG_STATE_HOME is NOT honored — #9 split-brain fix, 2026-07-06)
 ```
 
 Fingerprint `<fp>` is SHA-256 of `remote.origin.url` (12 hex chars), or `"default"`.

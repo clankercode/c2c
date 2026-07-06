@@ -325,6 +325,11 @@ let health_cmd =
   let relay_check = check_relay_http () in
   let plugin_checks = check_plugin_installs () in
   let legacy_broker = C2c_broker_root_check.is_legacy_broker_root root in
+  (* #9 split-brain: an XDG-profile broker (pre-2026-07 resolution order, or
+     written by a session with a per-profile XDG_STATE_HOME) that the resolver
+     no longer selects. Registrations there are invisible to peers on the
+     canonical root. *)
+  let xdg_split_brain = C2c_repo_fp.xdg_split_brain_broker () in
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -348,8 +353,13 @@ let health_cmd =
           [ ("broker_root", `String root)
           ; ("legacy_broker_warning", `Bool legacy_broker)
           ; ("migrate_hint",
-             if legacy_broker then `String "c2c migrate-broker --dry-run"
+             if legacy_broker || xdg_split_brain <> None
+             then `String "c2c migrate-broker --dry-run"
              else `Null)
+          ; ("xdg_split_brain_broker",
+             match xdg_split_brain with
+             | Some p -> `String p
+             | None -> `Null)
           ; ("root_exists", `Bool root_exists)
           ; ("registry_exists", `Bool registry_exists)
           ; ("dead_letter_exists", `Bool dead_letter_exists)
@@ -371,6 +381,15 @@ let health_cmd =
         print_string (C2c_broker_root_check.legacy_broker_warning_text root)
       else
         Printf.printf "broker root:    %s\n" root;
+      (match xdg_split_brain with
+       | Some p ->
+           Printf.printf
+             "\xe2\x9a\xa0 split-brain: broker data also exists at XDG-profile path %s\n\
+             \  Registrations there are invisible to peers on the canonical root.\n\
+             \  Run: c2c migrate-broker --dry-run   # audit what will move\n\
+             \  Then: c2c migrate-broker             # merge into %s\n"
+             p root
+       | None -> ());
       Printf.printf "root exists:    %s\n" (string_of_bool root_exists);
       Printf.printf "registry:       %s\n" (string_of_bool registry_exists);
       Printf.printf "dead-letter:    %s\n" (string_of_bool dead_letter_exists);

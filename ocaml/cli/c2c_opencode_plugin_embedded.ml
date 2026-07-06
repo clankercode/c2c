@@ -239,10 +239,13 @@ const C2CDelivery: Plugin = async (ctx) => {
       `  to populate the sidecar config.${hint}`
     );
   }
-  // [#496 Option A] Canonical broker-root resolver — mirrors C2c_repo_fp.resolve_broker_root
-  // in OCaml. C2C_MCP_BROKER_ROOT wins if set (explicit override). Otherwise derives
-  // from git remote fingerprint: $XDG_STATE_HOME/c2c/repos/<fp>/broker or
-  // $HOME/.c2c/repos/<fp>/broker. Never falls through to empty string.
+  // [#496 Option A; #9 split-brain fix] Canonical broker-root resolver — mirrors
+  // C2c_repo_fp.resolve_broker_root in OCaml. C2C_MCP_BROKER_ROOT wins if set
+  // (explicit override). Otherwise derives from git remote fingerprint:
+  // $C2C_STATE_HOME/c2c/repos/<fp>/broker (c2c-specific relocation escape hatch)
+  // or $HOME/.c2c/repos/<fp>/broker (canonical). Generic XDG_STATE_HOME is
+  // deliberately NOT honored — per-profile XDG overrides (Claude profile-share)
+  // fragment the machine-wide broker. Never falls through to empty string.
   function resolveBrokerRoot(): string {
     const env = process.env.C2C_MCP_BROKER_ROOT?.trim();
     if (env) {
@@ -262,10 +265,12 @@ const C2CDelivery: Plugin = async (ctx) => {
       } catch { /* not a git repo */ }
     }
     if (!fp) fp = "default";
-    const xdg = process.env.XDG_STATE_HOME?.trim();
-    if (xdg) return path.join(xdg, "c2c", "repos", fp, "broker");
+    const stateHome = process.env.C2C_STATE_HOME?.trim();
+    if (stateHome) return path.join(stateHome, "c2c", "repos", fp, "broker");
     const home = process.env.HOME?.trim();
     if (home) return path.join(home, ".c2c", "repos", fp, "broker");
+    const xdg = process.env.XDG_STATE_HOME?.trim();
+    if (xdg) return path.join(xdg, "c2c", "repos", fp, "broker");
     return path.join("/tmp", "c2c", "repos", fp, "broker");
   }
   const brokerRoot: string = resolveBrokerRoot();

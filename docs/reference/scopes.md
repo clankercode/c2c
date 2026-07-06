@@ -38,9 +38,18 @@ brokers.
 1. `C2C_MCP_BROKER_ROOT` env var (explicit override; ignored if it points at a
    legacy `.git/c2c/mcp` path — those caused split-brain, so c2c refuses and
    uses the canonical path instead, printing a warning)
-2. `$XDG_STATE_HOME/c2c/repos/<fp>/broker` (if `XDG_STATE_HOME` is set)
+2. `$C2C_STATE_HOME/c2c/repos/<fp>/broker` (if `C2C_STATE_HOME` is set — a
+   c2c-specific escape hatch for operators who genuinely want to relocate
+   c2c state)
 3. `$HOME/.c2c/repos/<fp>/broker` (the canonical default)
 4. `~/.local/state/c2c/repos/<fp>/broker` (XDG default fallback when `HOME` is unset)
+
+Generic `XDG_STATE_HOME` is deliberately **not** honored (since 2026-07-06):
+agent harnesses repurpose it per-profile (e.g. Claude Code profile-share),
+which silently fragmented the machine-wide broker into invisible-to-each-other
+islands. If an orphaned `$XDG_STATE_HOME/c2c/repos/<fp>/broker` still holds
+broker data, c2c prints a one-line stderr warning and `c2c health` reports it;
+`c2c migrate-broker` merges it into the canonical root.
 
 Most commands resolve this automatically from your current directory. Find
 yours with:

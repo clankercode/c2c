@@ -213,9 +213,12 @@ class Scenario:
         #
         #   <fp> = sha256(remote.origin.url)[:12], else sha256(git toplevel)[:12],
         #          else "default"
-        #   root = $XDG_STATE_HOME/c2c/repos/<fp>/broker
+        #   root = $C2C_STATE_HOME/c2c/repos/<fp>/broker   (c2c-specific escape hatch)
         #          else $HOME/.c2c/repos/<fp>/broker
+        #          else $XDG_STATE_HOME/c2c/repos/<fp>/broker  (HOME unset last resort)
         #          else /tmp/c2c/repos/<fp>/broker
+        # Generic XDG_STATE_HOME is NOT honored when HOME is set (#9 split-brain
+        # fix, 2026-07-06): per-profile XDG exports fragmented the shared broker.
         if self._broker_root is None:
             fp = ""
             remote = subprocess.run(
@@ -233,13 +236,15 @@ class Scenario:
                     fp = hashlib.sha256(toplevel.encode("utf-8")).hexdigest()[:12]
             if not fp:
                 fp = "default"
-            xdg = os.environ.get("XDG_STATE_HOME", "").strip()
+            c2c_state = os.environ.get("C2C_STATE_HOME", "").strip()
             home = os.environ.get("HOME", "").strip()
-            if xdg:
-                base = Path(xdg)
-                self._broker_root = base / "c2c" / "repos" / fp / "broker"
+            xdg = os.environ.get("XDG_STATE_HOME", "").strip()
+            if c2c_state:
+                self._broker_root = Path(c2c_state) / "c2c" / "repos" / fp / "broker"
             elif home:
                 self._broker_root = Path(home) / ".c2c" / "repos" / fp / "broker"
+            elif xdg:
+                self._broker_root = Path(xdg) / "c2c" / "repos" / fp / "broker"
             else:
                 self._broker_root = Path("/tmp") / "c2c" / "repos" / fp / "broker"
         return self._broker_root

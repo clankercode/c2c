@@ -38,7 +38,10 @@ let repo_fingerprint =
 
 (** XDG_STATE_HOME per XDG spec, with HOME fallback.
     Duplicated here because c2c_utils (CLI executable) can't be called from
-    the library (c2c_mcp). *)
+    the library (c2c_mcp).
+    NOTE: no longer consulted for broker-root resolution (see
+    [resolve_broker_root_fallback]) — kept for the HOME-unset last resort
+    and the XDG-profile split-brain detection below. *)
 let xdg_state_home () =
   match Sys.getenv_opt "XDG_STATE_HOME" with
   | Some v when String.trim v <> "" -> String.trim v
@@ -47,20 +50,83 @@ let xdg_state_home () =
        | Some h when String.trim h <> "" -> String.trim h // ".local" // "state"
        | _ -> "/tmp")
 
-(** Broker-root fallback — computes the path without consulting C2C_MCP_BROKER_ROOT.
-    Shared between resolve_broker_root (step 1 = env var) and
-    resolve_broker_root_canonical (steps 2-4 = what we'd get without the env var). *)
-let resolve_broker_root_fallback () =
+(** C2C_STATE_HOME — c2c-specific state-relocation escape hatch. Unlike
+    XDG_STATE_HOME (which agent harnesses repurpose per-profile, e.g. Claude
+    Code profile-share exports XDG_STATE_HOME=~/.local/state/cc-p, silently
+    fragmenting the machine-wide message bus), this var is only ever set by
+    operators who genuinely want to relocate c2c state. *)
+let c2c_state_home () =
+  match Sys.getenv_opt "C2C_STATE_HOME" with
+  | Some v when String.trim v <> "" -> Some (String.trim v)
+  | _ -> None
+
+(** Broker-root fallback path — pure; computes the path without consulting
+    C2C_MCP_BROKER_ROOT and without emitting warnings.
+    Order: C2C_STATE_HOME (explicit relocation) → $HOME/.c2c (canonical)
+    → XDG default (HOME unset last resort).
+    Generic XDG_STATE_HOME is deliberately NOT honored here: per-profile
+    XDG overrides split the machine-wide broker (peers become invisible to
+    each other). See #9 / 2026-07-06 split-brain incident. *)
+let resolve_broker_root_fallback_path () =
   let fp = repo_fingerprint () in
-  let xdg_root = xdg_state_home () // "c2c" // "repos" // fp // "broker" in
-  match Sys.getenv_opt "XDG_STATE_HOME" with
-  | Some xdg when xdg <> "" -> xdg_root  (* XDG_STATE_HOME wins *)
-  | _ ->
-      (* Canonical default: $HOME/.c2c/repos/<fp>/broker *)
+  match c2c_state_home () with
+  | Some s -> s // "c2c" // "repos" // fp // "broker"
+  | None ->
       (match Sys.getenv_opt "HOME" with
        | Some h when String.trim h <> "" ->
            String.trim h // ".c2c" // "repos" // fp // "broker"
-       | _ -> xdg_root)  (* No HOME: fall back to XDG default *)
+       | _ ->
+           (* No HOME: XDG default chain (ultimately /tmp). *)
+           xdg_state_home () // "c2c" // "repos" // fp // "broker")
+
+(** Detect an XDG-profile broker that the resolver no longer selects.
+    Returns [Some xdg_broker_path] when ALL of:
+    - C2C_STATE_HOME is unset (operator did not explicitly relocate),
+    - XDG_STATE_HOME is set,
+    - $XDG_STATE_HOME/c2c/repos/<fp>/broker differs from the resolved
+      fallback path, and
+    - that XDG-profile broker contains a registry.json (real broker data —
+      an empty dir is not split-brain).
+    Used for the one-line stderr warning below and by `c2c health` /
+    `c2c doctor` split-brain reporting. *)
+let xdg_split_brain_broker () =
+  match c2c_state_home () with
+  | Some _ -> None
+  | None ->
+      (match Sys.getenv_opt "XDG_STATE_HOME" with
+       | Some xdg when String.trim xdg <> "" ->
+           let fp = repo_fingerprint () in
+           let xdg_broker =
+             String.trim xdg // "c2c" // "repos" // fp // "broker" in
+           if xdg_broker <> resolve_broker_root_fallback_path ()
+              && Sys.file_exists (xdg_broker // "registry.json")
+           then Some xdg_broker
+           else None
+       | _ -> None)
+
+(** One-line, once-per-process stderr warning when an orphaned XDG-profile
+    broker exists. Goes to stderr only, so --json stdout is never polluted
+    (same convention as the legacy-path warning in resolve_broker_root). *)
+let xdg_split_brain_warned = ref false
+
+let warn_xdg_split_brain () =
+  if not !xdg_split_brain_warned then
+    match xdg_split_brain_broker () with
+    | Some xdg_broker ->
+        xdg_split_brain_warned := true;
+        Printf.eprintf
+          "[WARNING] c2c broker data exists at XDG-profile path %s but the canonical root is %s — run 'c2c migrate-broker' to merge it (details: c2c doctor).\n%!"
+          xdg_broker (resolve_broker_root_fallback_path ())
+    | None -> ()
+
+(** Broker-root fallback — computes the path without consulting C2C_MCP_BROKER_ROOT.
+    Shared between resolve_broker_root (step 1 = env var) and
+    resolve_broker_root_canonical (steps 2-4 = what we'd get without the env var).
+    Emits the split-brain stderr warning (once per process) as a side effect. *)
+let resolve_broker_root_fallback () =
+  let p = resolve_broker_root_fallback_path () in
+  warn_xdg_split_brain ();
+  p
 
 (** Check if a broker-root path matches the pre-#294 legacy layout
     (`<git-common-dir>/c2c/mcp`). Inline version of
@@ -79,12 +145,14 @@ let is_legacy_path path =
     in
     loop 0
 
-(** Pure broker-root path resolution — no side effects.
-    Resolution order (coord1 2026-04-26):
+(** Broker-root path resolution.
+    Resolution order (2026-07-06, was coord1 2026-04-26 — generic
+    XDG_STATE_HOME dropped to fix per-profile split-brain):
       1. C2C_MCP_BROKER_ROOT env var (explicit override)
-      2. $XDG_STATE_HOME/c2c/repos/<fp>/broker  (if XDG_STATE_HOME set)
+      2. $C2C_STATE_HOME/c2c/repos/<fp>/broker  (if C2C_STATE_HOME set —
+         c2c-specific relocation escape hatch)
       3. $HOME/.c2c/repos/<fp>/broker  (canonical default)
-      4. ~/.local/state/c2c/repos/<fp>/broker  (XDG default fallback)
+      4. ~/.local/state/c2c/repos/<fp>/broker  (HOME unset: XDG default fallback)
     The broker directory is created lazily on first use via Broker.ensure_root.
 
     When C2C_MCP_BROKER_ROOT points to a legacy .git/c2c/mcp path, the env

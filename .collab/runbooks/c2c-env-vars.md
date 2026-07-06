@@ -10,12 +10,18 @@ keep CLAUDE.md lean. All values are verbatim from source; do not paraphrase.
 
 ### `C2C_MCP_BROKER_ROOT`
 
-Broker root resolution order (coord1 2026-04-26):
+Broker root resolution order (2026-07-06, #9 split-brain fix; was coord1 2026-04-26):
 - `C2C_MCP_BROKER_ROOT` env var (explicit override)
-- `$XDG_STATE_HOME/c2c/repos/<fp>/broker` (if set)
+- `$C2C_STATE_HOME/c2c/repos/<fp>/broker` (if `C2C_STATE_HOME` set — c2c-specific relocation escape hatch)
 - `$HOME/.c2c/repos/<fp>/broker` (canonical default)
 
+Generic `XDG_STATE_HOME` is **no longer honored** for broker-root resolution: agent harnesses (e.g. Claude Code profile-share, which exports `XDG_STATE_HOME=~/.local/state/cc-p`) repurpose it per-profile, silently fragmenting the machine-wide message bus — a Claude session landed on a private broker while codex/pi peers were on `~/.c2c`, invisible to each other. If an orphaned `$XDG_STATE_HOME/c2c/repos/<fp>/broker` with real broker data (a `registry.json`) exists, `c2c` prints a one-line stderr warning (once per process) and `c2c health` / `c2c doctor` report it (`xdg_split_brain_broker` in `--json`); run `c2c migrate-broker` to merge it (it defaults `--from` to the orphaned XDG broker when the legacy path is absent).
+
 The fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of the same upstream share a broker), falling back to `git rev-parse --show-toplevel`. This sidesteps `.git/`-RO sandboxes permanently. Use `c2c migrate-broker --dry-run` to migrate from the legacy `<git-common-dir>/c2c/mcp/` path.
+
+### `C2C_STATE_HOME`
+
+c2c-specific state-relocation escape hatch for broker-root resolution (see order above). Only set this if you genuinely want to relocate c2c broker state; unlike `XDG_STATE_HOME` it is never exported by agent harnesses, so it cannot fragment the shared broker by accident. Setting it also suppresses the split-brain warning (deliberate relocation).
 
 **Stale entries in `.mcp.json` files** — if `C2C_MCP_BROKER_ROOT` is hard-coded in a project's `.mcp.json` `env` block pointing at the legacy `.git/c2c/mcp` path (or at the current resolver default — same skip-when-default rule as the opencode-plugin slice), the explicit override silently re-creates the split-brain symptom even after migration. Operator-facing fix: `c2c migrate-broker --rewrite-mcp-configs` (compatible with `--dry-run`) scans the project root + `.worktrees/*/.mcp.json` and strips matching entries; operator overrides (any other value) are preserved with a `[KEEP]` log line. See #512.
 
