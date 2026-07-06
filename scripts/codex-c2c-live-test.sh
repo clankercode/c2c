@@ -6,12 +6,12 @@
 #   scripts/codex-c2c-live-test.sh [PEER_ALIAS] [TEST_ALIAS] [WAIT_TIMEOUT]
 #
 #   PEER_ALIAS    peer that will reply while codex blocks (default: fable-scribe)
-#   TEST_ALIAS    alias codex registers as (default: codex-vanilla-zq)
+#   TEST_ALIAS    alias codex registers as (default: vanilla-probe-zq)
 #   WAIT_TIMEOUT  wait-inbox timeout (default: 120s)
 #
 # The DRIVER (you, the coordinating agent) must watch for the test DM and reply
 # to TEST_ALIAS while codex blocks in step 6, e.g.:
-#   c2c send codex-vanilla-zq "reply — unblocking your wait-inbox"
+#   c2c send vanilla-probe-zq "reply — unblocking your wait-inbox"
 #
 # Notes:
 # - Strips inherited Claude/companion session env so the codex child cannot
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 PEER_ALIAS="${1:-fable-scribe}"
-TEST_ALIAS="${2:-codex-vanilla-zq}"
+TEST_ALIAS="${2:-vanilla-probe-zq}"
 WAIT_TIMEOUT="${3:-120s}"
 REPORT=/tmp/codex-c2c-live-test.md
 
