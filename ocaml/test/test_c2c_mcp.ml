@@ -11580,9 +11580,20 @@ let test_resolve_alias_no_match_when_session_dead () =
 
 (* --- memory_write: broker-level tests (cedar-coder) --- *)
 
+let with_memory_root_override dir f =
+  let previous = Sys.getenv_opt "C2C_MEMORY_ROOT_OVERRIDE" in
+  Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" (Filename.concat dir "memory");
+  Fun.protect
+    ~finally:(fun () ->
+      match previous with
+      | Some v -> Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" v
+      | None -> Unix.putenv "C2C_MEMORY_ROOT_OVERRIDE" "")
+    f
+
 (* memory_write creates file with correct frontmatter + body *)
 let test_memory_write_creates_file () =
   with_temp_dir (fun dir ->
+    with_memory_root_override dir (fun () ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"s-writer" ~alias:"writer"
@@ -11612,11 +11623,12 @@ let test_memory_write_creates_file () =
       check bool "file contains shared: false" true
         (string_contains content "shared: false");
       check bool "file contains body" true
-        (string_contains content "hello world"))
+        (string_contains content "hello world")))
 
 (* memory_write with shared=true creates file in shared path *)
 let test_memory_write_shared_true () =
   with_temp_dir (fun dir ->
+    with_memory_root_override dir (fun () ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"s-writer2" ~alias:"writer2"
@@ -11640,11 +11652,12 @@ let test_memory_write_shared_true () =
         (fun () -> really_input_string ic (in_channel_length ic))
       in
       check bool "file has shared: true" true
-        (string_contains content "shared: true"))
+        (string_contains content "shared: true")))
 
 (* memory_write with shared_with=[alias] triggers a handoff DM *)
 let test_memory_write_shared_with_triggers_dm () =
   with_temp_dir (fun dir ->
+    with_memory_root_override dir (fun () ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"s-writer3" ~alias:"writer3"
@@ -11670,11 +11683,12 @@ let test_memory_write_shared_with_triggers_dm () =
       let msg = List.hd inbox in
       check string "DM from writer3" "writer3" msg.from_alias;
       check bool "DM content references the note path" true
-        (string_contains msg.content "target-note"))
+        (string_contains msg.content "target-note")))
 
 (* memory_write overwrites existing entry *)
 let test_memory_write_overwrites_existing () =
   with_temp_dir (fun dir ->
+    with_memory_root_override dir (fun () ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"s-writer4" ~alias:"writer4"
@@ -11709,7 +11723,7 @@ let test_memory_write_overwrites_existing () =
       check bool "new content present after overwrite" true
         (string_contains content2 "new content");
       check bool "original content gone after overwrite" false
-        (string_contains content2 "original content"))
+        (string_contains content2 "original content")))
 
 (* --- #286: send-memory handoff --- *)
 
@@ -14002,9 +14016,16 @@ let test_generate_alias_charset_lowercase () =
     | _ -> fail "unexpected alias shape"
   done
 
-let test_default_name_no_nonce_bare () =
+let test_default_name_ignores_no_nonce_for_default_alias () =
   let a = C2c_start.default_name ~no_nonce:true "codex" in
-  check int "default_name no-nonce has 2 segments" 2 (alias_segment_count a)
+  check int "default_name has client + 2 words + nonce" 4 (alias_segment_count a);
+  match String.split_on_char '-' a with
+  | [ client; w1; w2; nonce ] ->
+      check string "client prefix" "codex" client;
+      check bool "word1 non-empty" true (String.length w1 > 0);
+      check bool "word2 non-empty" true (String.length w2 > 0);
+      check bool "nonce is 4 lowercase alnum" true (nonce_is_lowercase_alnum nonce)
+  | _ -> fail "unexpected default_name shape"
 
 (* ------------------------------------------------------------------------- *)
 (* B071: stable_client_pid — walk a fake /proc ancestry.                       *)
@@ -14919,6 +14940,6 @@ let () =
                 test_generate_alias_no_nonce_bare
             ; test_case "B2 nonce charset is lowercase alnum" `Quick
                 test_generate_alias_charset_lowercase
-            ; test_case "B2 default_name --no-nonce bare" `Quick
-                test_default_name_no_nonce_bare
+            ; test_case "B082 default_name keeps prefix+nonce" `Quick
+                test_default_name_ignores_no_nonce_for_default_alias
             ] ) ]

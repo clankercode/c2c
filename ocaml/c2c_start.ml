@@ -2537,10 +2537,18 @@ let generate_alias ?(no_nonce = false) () =
   in
   loop ()
 
-let default_name ?(no_nonce = false) _client =
-  (* #277: drop the "<client>-" prefix; the random word pair is already
-     unique enough and the prefix added noise to instance/alias display. *)
-  generate_alias ~no_nonce ()
+let default_alias_prefix client =
+  match String.lowercase_ascii (String.trim client) with
+  | "" -> "agent"
+  | "codex-headless" -> "codex"
+  | other -> other
+
+let default_name ?(no_nonce = false) client =
+  (* B082: default auto-picked names must not be bare alias-pool word pairs.
+     Keep the entropy suffix even if an older caller still passes
+     [~no_nonce:true]; explicit user-chosen -n/--alias values are unchanged. *)
+  let _ = no_nonce in
+  Printf.sprintf "%s-%s" (default_alias_prefix client) (generate_alias ())
 
 (* ---------------------------------------------------------------------------
  * Broker root

@@ -1,10 +1,15 @@
 ---
+claimed_at: "2026-07-06T12:48:16Z"
+claimed_by: cli-user
+completed_at: "2026-07-06T13:14:24Z"
 complexity: medium
 depends_on: []
+duration_minutes: 26.140380409633334
 estimate_hours: 1
 id: B079
 priority: high
-status: pending
+started_at: "2026-07-06T12:48:16Z"
+status: done
 tags: []
 title: 'doctor: detect outdated managed hook/config blocks (codex hooks TOML, AGENTS.md, claude settings) — diff installed block vs what current binary would render; offer ''c2c install <client>'' refresh. Trust-hash group indices can also drift when user adds own hooks.'
 ---

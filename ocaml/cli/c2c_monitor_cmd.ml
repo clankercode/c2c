@@ -698,8 +698,10 @@ let monitor_cmd =
                (* Rebuild the path against watch_dir so it matches the offset
                   table keys initialised at startup. *)
                let path = Filename.concat watch_dir filename in
-               let is_mine = match my_alias with
-                 | None -> true | Some me -> sid = me in
+               let is_mine =
+                 C2c_monitor_logic.archive_owner_is_mine ~archive_id:sid
+                   ~my_alias ~my_session_id:inbox_sid ()
+               in
                emit ~is_mine (apply_filters (read_new_archive_entries path))
              end else begin
                match inbox_filename with

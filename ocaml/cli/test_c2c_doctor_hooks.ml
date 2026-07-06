@@ -31,6 +31,19 @@ let write_file path content =
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc content)
 
+let replace_first ~needle ~replacement s =
+  let sl = String.length s and nl = String.length needle in
+  let rec find i =
+    if i + nl > sl then None
+    else if String.sub s i nl = needle then Some i
+    else find (i + 1)
+  in
+  match find 0 with
+  | None -> s
+  | Some i ->
+      String.sub s 0 i ^ replacement
+      ^ String.sub s (i + nl) (sl - i - nl)
+
 let settings_json event command =
   Printf.sprintf {|{
   "hooks": {
@@ -52,6 +65,19 @@ let set_claude_dirs dirs =
 let run_check dirs =
   set_claude_dirs dirs;
   C2c_doctor_hooks.check ~dirs ()
+
+let codex_config_path home = home // ".codex" // "config.toml"
+let codex_agents_path home = home // ".codex" // "AGENTS.md"
+
+let fresh_codex_config ?(existing = "model = \"gpt-5.5\"\n") home =
+  let config_path = codex_config_path home in
+  existing ^ "\n"
+  ^ C2c_codex_hooks.render_hooks_block ~config_path ~existing
+
+let write_fresh_codex_install ?existing home =
+  write_file (codex_config_path home) (fresh_codex_config ?existing home);
+  write_file (codex_agents_path home)
+    (C2c_codex_hooks.upsert_agents_md "# Operator notes\n")
 
 let test_missing_c2c_hook_reported () =
   with_tmp_dir (fun dir ->
@@ -172,6 +198,65 @@ let test_multiple_dirs_aggregate () =
       check int "dangling count" 1 r.C2c_doctor_hooks.total_dangling;
       check int "dir result count" 2 (List.length r.C2c_doctor_hooks.dirs)))
 
+let test_codex_managed_blocks_current () =
+  with_tmp_dir (fun home ->
+    write_fresh_codex_install home;
+    let r = C2c_doctor_hooks.check_codex_managed_blocks ~home () in
+    check bool "codex installed detected" true r.C2c_doctor_hooks.installed;
+    check int "no codex block issues" 0 r.C2c_doctor_hooks.total_issues;
+    check string "config current" "current"
+      (C2c_doctor_hooks.status_label r.C2c_doctor_hooks.config.status);
+    check string "agents current" "current"
+      (C2c_doctor_hooks.status_label r.C2c_doctor_hooks.agents_md.status))
+
+let test_codex_stale_config_reported () =
+  with_tmp_dir (fun home ->
+    let config =
+      fresh_codex_config home
+      |> replace_first ~needle:"statusMessage = \"c2c onboarding\""
+           ~replacement:"statusMessage = \"old onboarding\""
+    in
+    write_file (codex_config_path home) config;
+    write_file (codex_agents_path home) C2c_codex_hooks.agents_md_block;
+    let r = C2c_doctor_hooks.check_codex_managed_blocks ~home () in
+    check int "one stale config issue" 1 r.C2c_doctor_hooks.total_issues;
+    check string "config stale" "stale"
+      (C2c_doctor_hooks.status_label r.C2c_doctor_hooks.config.status);
+    check (option string) "refresh command" (Some "c2c install codex")
+      r.C2c_doctor_hooks.config.refresh_command;
+    check bool "diff present" true
+      (Option.is_some r.C2c_doctor_hooks.config.first_diff))
+
+let test_codex_missing_agents_block_reported () =
+  with_tmp_dir (fun home ->
+    write_file (codex_config_path home) (fresh_codex_config home);
+    let r = C2c_doctor_hooks.check_codex_managed_blocks ~home () in
+    check int "one missing agents issue" 1 r.C2c_doctor_hooks.total_issues;
+    check string "agents missing" "missing"
+      (C2c_doctor_hooks.status_label r.C2c_doctor_hooks.agents_md.status);
+    check (option string) "refresh command" (Some "c2c install codex")
+      r.C2c_doctor_hooks.agents_md.refresh_command)
+
+let test_codex_trust_index_drift_reported () =
+  with_tmp_dir (fun home ->
+    let user_hook =
+      "[[hooks.PostToolUse]]\n\
+       [[hooks.PostToolUse.hooks]]\n\
+       type = \"command\"\n\
+       command = \"/usr/bin/user-hook\"\n\n"
+    in
+    (* Simulate a user adding a hook group after install. The rendered c2c
+       block still has post_tool_use index 0, but a fresh install would put
+       c2c after the user hook and pre-trust index 1. *)
+    write_file (codex_config_path home) (user_hook ^ fresh_codex_config home);
+    write_file (codex_agents_path home) C2c_codex_hooks.agents_md_block;
+    let r = C2c_doctor_hooks.check_codex_managed_blocks ~home () in
+    check bool "trust index drift" true r.C2c_doctor_hooks.trust_index_drift;
+    check string "config stale" "stale"
+      (C2c_doctor_hooks.status_label r.C2c_doctor_hooks.config.status);
+    check bool "reason mentions indices" true
+      (C2c_doctor_hooks.contains r.C2c_doctor_hooks.config.reason "indices"))
+
 let () =
   run "c2c_doctor_hooks"
     [ ( "dangling_detection"
@@ -184,5 +269,11 @@ let () =
         ; test_case "non-c2c missing hook ignored"    `Quick test_non_c2c_hook_not_flagged
         ; test_case "relative and PATH c2c ignored"   `Quick test_relative_and_path_c2c_commands_ignored
         ; test_case "multiple dirs aggregate"         `Quick test_multiple_dirs_aggregate
+        ] )
+    ; ( "codex-managed-blocks"
+      , [ test_case "current blocks ok" `Quick test_codex_managed_blocks_current
+        ; test_case "stale config reported" `Quick test_codex_stale_config_reported
+        ; test_case "missing AGENTS.md reported" `Quick test_codex_missing_agents_block_reported
+        ; test_case "trust index drift reported" `Quick test_codex_trust_index_drift_reported
         ] )
     ]

@@ -174,7 +174,11 @@ let check_plugin_installs () =
          if String.sub data i nl = needle then found := true
        done;
        if !found then
-         add (`Green, "codex: MCP server configured")
+         let codex_blocks = C2c_doctor_hooks.check_codex_managed_blocks () in
+         if codex_blocks.installed && codex_blocks.total_issues > 0 then
+           add (`Yellow, "codex: managed hooks/AGENTS.md blocks stale or missing (run: c2c install codex)")
+         else
+           add (`Green, "codex: MCP server configured")
        else
          add (`Yellow, "codex: config exists but no c2c MCP entry (run: c2c install codex)")
      with _ -> add (`Gray, "codex: could not read config.toml")
@@ -463,11 +467,11 @@ let connect_dashboard ~root ~broker ~output_mode =
     else `Not_found
   in
   let all_installed = List.for_all (fun c -> client_status c = `Installed) supported_clients in
-  let any_installed = List.exists (fun c -> client_status c = `Installed) supported_clients in
+  let any_configured = List.exists (fun c -> client_status c <> `Not_found) supported_clients in
   let next_action =
     if not root_exists then
       "broker root not found — run 'c2c init' to get started"
-    else if not any_installed then
+    else if not any_configured then
       "no clients configured — run 'c2c install <client>' (or 'c2c install all')"
     else if not all_installed then
       let missing = List.filter (fun c -> client_status c <> `Installed) supported_clients in

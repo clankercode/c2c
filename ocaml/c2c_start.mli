@@ -129,6 +129,11 @@ val generate_alias : ?no_nonce:bool -> unit -> string
     "ember-frost". When [~no_nonce:false] (the default), a 4-character
     lowercase alphanumeric nonce is appended: "ember-frost-a7c2". *)
 
+val default_alias_prefix : string -> string
+(** [default_alias_prefix client] normalizes a client name into the prefix used
+    for default auto-generated aliases. Empty/unknown registration paths use
+    ["agent"]. *)
+
 val fds_to_close : preserve:Unix.file_descr list -> Unix.file_descr list
 (** [fds_to_close ~preserve] is a pure function that returns the list of
     file descriptors that [close_unlisted_fds] would close — i.e. all fds in
@@ -136,10 +141,10 @@ val fds_to_close : preserve:Unix.file_descr list -> Unix.file_descr list
     This is testable without closing anything. *)
 
 val default_name : ?no_nonce:bool -> string -> string
-(** [default_name ?no_nonce _client] returns "<word1>-<word2>" using random
-    words. The client argument is retained for call-site compatibility but is
-    no longer used in the returned name (#277). When [~no_nonce:false]
-    (the default), a 4-character lowercase alphanumeric nonce is appended. *)
+(** [default_name ?no_nonce client] returns
+    "<client>-<word1>-<word2>-<nonce>" using random words. [no_nonce] is
+    accepted for old callers but ignored so default auto-generated names keep
+    their entropy suffix. *)
 
 val likes_shell_substitution : string -> bool
 (** [likes_shell_substitution s] returns true when [s] looks like an unexpanded

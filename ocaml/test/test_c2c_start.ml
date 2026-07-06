@@ -4162,30 +4162,28 @@ let () =
             `Quick, test_fds_to_close_preserves_stdio )
         ] )
     ; ( "default_name",
-        [ ( "default_name_drops_client_prefix",
+        [ ( "default_name_includes_client_prefix_and_nonce",
             `Quick,
             (fun () ->
-              (* #277: default_name should NOT prefix with the client name.
-                 With no_nonce=true the returned string is a bare
-                 "<word1>-<word2>" pair, with no occurrence of the client
-                 substring at the start. (The nonce suffix is tested
-                 separately — see test_c2c_mcp's B2 default_name_no_nonce_bare
-                 and shape tests.) *)
+              (* B082: default auto-generated names must carry a client prefix
+                 and an entropy suffix even when old callers pass no_nonce. *)
               List.iter
                 (fun client ->
                   let n = C2c_start.default_name ~no_nonce:true client in
+                  let expected_prefix = C2c_start.default_alias_prefix client ^ "-" in
                   check bool
-                    (Printf.sprintf "name %S does not start with %S-" n client)
-                    false
-                    (String.length n > String.length client + 1
-                     && String.sub n 0 (String.length client + 1)
-                        = client ^ "-");
-                  check bool
-                    (Printf.sprintf "name %S has exactly one '-' separator" n)
+                    (Printf.sprintf "name %S starts with %S" n expected_prefix)
                     true
-                    (let count = ref 0 in
-                     String.iter (fun c -> if c = '-' then incr count) n;
-                     !count = 1))
+                    (String.length n > String.length expected_prefix
+                     && String.sub n 0 (String.length expected_prefix)
+                        = expected_prefix);
+                  check bool
+                    (Printf.sprintf "name %S has client + 2 words + nonce" n)
+                    true
+                    (match String.split_on_char '-' n with
+                     | [ _client; w1; w2; nonce ] ->
+                         w1 <> "" && w2 <> "" && String.length nonce = 4
+                     | _ -> false))
                 [ "claude"; "codex"; "opencode"; "kimi"; "pi" ]) )
         ] )
     ; ( "generate_alias_378",

@@ -111,6 +111,29 @@ let debug_install_failure label cmd rc content =
       "\n[install-test-debug:%s]\ncmd=%s\nrc=%d\noutput-start\n%s\noutput-end\n%!"
       label cmd rc content
 
+let install_codex_fixture ~home ~broker_root =
+  let alias = Printf.sprintf "cli-codex-%d" (Unix.getpid ()) in
+  let schedule_root = Filename.concat home ".c2c-test-schedules" in
+  let tmpfile = Filename.temp_file "c2c-install-codex-fixture" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+    (fun () ->
+      let env =
+        Printf.sprintf "%s C2C_MCP_BROKER_ROOT=%s C2C_SCHEDULE_ROOT_OVERRIDE=%s"
+          (isolated_home_env home)
+          (Filename.quote broker_root)
+          (Filename.quote schedule_root)
+      in
+      let cmd =
+        c2c_cmd
+          (Printf.sprintf "%s c2c install codex --alias %s > %s 2>&1"
+             env (Filename.quote alias) (Filename.quote tmpfile))
+      in
+      let rc = Sys.command cmd in
+      if rc <> 0 then
+        fail
+          (Printf.sprintf "codex fixture install failed rc=%d output=%s"
+             rc (read_file tmpfile)))
+
 (* ------------------------------------------------------------------------- *)
 (* c2c doctor — verify health check output and exit 0 on clean run          *)
 (* ------------------------------------------------------------------------- *)
@@ -2271,13 +2294,13 @@ let test_connect_detects_codex () =
   with_temp_dir (fun dir ->
     let home = Filename.concat dir "fakehome" in
     Unix.mkdir home 0o755;
-    let codex_dir = Filename.concat home ".codex" in
-    Unix.mkdir codex_dir 0o755;
-    let config_path = Filename.concat codex_dir "config.toml" in
-    write_file config_path "[mcp_servers.c2c]\ncommand = \"c2c-mcp-server\"\n";
     let broker_root = Filename.concat dir "broker" in
     Unix.mkdir broker_root 0o755;
-    let env = Printf.sprintf "HOME=%s C2C_MCP_BROKER_ROOT=%s" home broker_root in
+    install_codex_fixture ~home ~broker_root;
+    let env =
+      Printf.sprintf "%s C2C_MCP_BROKER_ROOT=%s"
+        (isolated_home_env home) (Filename.quote broker_root)
+    in
     let tmpfile = Filename.temp_file "c2c-connect-codex" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
@@ -2372,11 +2395,6 @@ let test_connect_dashboard_next_action_all_installed_no_session () =
     Unix.mkdir claude_dir 0o755;
     write_file (Filename.concat claude_dir "settings.json")
       {|{"hooks":{"PostToolUse":[{"command":"c2c-hook","type":"command"}]}}|};
-    (* Codex: ~/.codex/config.toml with mcp_servers.c2c *)
-    let codex_dir = Filename.concat home ".codex" in
-    Unix.mkdir codex_dir 0o755;
-    write_file (Filename.concat codex_dir "config.toml")
-      "[mcp_servers.c2c]\ncommand = \"c2c-mcp-server\"\n";
     (* OpenCode: ~/.config/opencode/plugins/c2c.ts (>= 1024 bytes) *)
     let config_dir = Filename.concat home ".config" in
     (try Unix.mkdir config_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
@@ -2393,7 +2411,11 @@ let test_connect_dashboard_next_action_all_installed_no_session () =
       {|{"mcpServers":{"c2c":{"type":"stdio"}}}|};
     let broker_root = Filename.concat dir "broker" in
     Unix.mkdir broker_root 0o755;
-    let env = Printf.sprintf "HOME=%s C2C_MCP_BROKER_ROOT=%s" home broker_root in
+    install_codex_fixture ~home ~broker_root;
+    let env =
+      Printf.sprintf "%s C2C_MCP_BROKER_ROOT=%s"
+        (isolated_home_env home) (Filename.quote broker_root)
+    in
     let tmpfile = Filename.temp_file "c2c-connect-nosession" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
@@ -2445,21 +2467,22 @@ let test_init_require_easy_terminates_with_nonce () =
       match extract_alias_line content with
       | Some alias -> (
           match String.split_on_char '-' alias with
-          | [ w1; w2; nonce ] ->
+          | [ client; w1; w2; nonce ] ->
+              check string "client prefix" "codex" client;
               check bool "word1 non-empty" true (String.length w1 > 0);
               check bool "word2 non-empty" true (String.length w2 > 0);
               check int "nonce length 4" 4 (String.length nonce)
-          | _ -> fail "alias not word-word-nonce")
+          | _ -> fail "alias not client-word-word-nonce")
       | None -> fail "no alias line in init output")
 
-let test_init_no_nonce_yields_bare () =
+let test_init_no_nonce_keeps_default_entropy () =
   with_temp_dir (fun dir ->
       let rc, content = run_c2c_init ~broker_root:dir ~args:"--client codex --no-nonce" in
       check int "init --no-nonce exits 0" 0 rc;
       match extract_alias_line content with
       | Some alias ->
-          (* codex-<word>-<word>: 3 segments, no nonce suffix. *)
-          check int "alias has 3 segments" 3
+          (* B082: --no-nonce is deprecated for default aliases. *)
+          check int "alias has client + 2 words + nonce" 4
             (List.length (String.split_on_char '-' alias))
       | None -> fail "no alias line in init output")
 
@@ -3383,7 +3406,7 @@ let () =
         ] )
     ; ( "init_name_hardening",
         [ ( "init --require-easy terminates with nonce", `Quick, test_init_require_easy_terminates_with_nonce )
-        ; ( "init --no-nonce yields bare alias", `Quick, test_init_no_nonce_yields_bare )
+        ; ( "init --no-nonce keeps default entropy", `Quick, test_init_no_nonce_keeps_default_entropy )
         ; ( "init --alias foo is not nonce'd", `Quick, test_init_explicit_alias_not_nonced )
         ; ( "init --alias codex is rejected", `Quick, test_init_rejects_banned_alias )
         ; ( "init reuses alias for same session_id", `Quick, test_init_reuses_alias_for_same_session_id )

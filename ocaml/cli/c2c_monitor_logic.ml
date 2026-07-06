@@ -145,3 +145,16 @@ let filter_unseen seen (msgs : Yojson.Safe.t list) : Yojson.Safe.t list =
       else if Hashtbl.mem seen.tbl k then false
       else (mark seen k; true))
     msgs
+
+(* Archive files are keyed by session id in the current broker layout, while
+   operator-facing monitor filters are keyed by alias. Prefer session-id
+   comparison when it is available; keep an alias fallback for legacy/named
+   sessions where the archive id and alias are intentionally the same string. *)
+let archive_owner_is_mine ~archive_id ~my_alias ~my_session_id () =
+  match my_session_id with
+  | Some sid when sid = archive_id -> true
+  | Some _ -> false
+  | None ->
+      (match my_alias with
+       | Some alias -> alias = archive_id
+       | None -> true)
