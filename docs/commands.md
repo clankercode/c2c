@@ -1129,6 +1129,8 @@ c2c identifies sessions by their **session ID** — a UUID assigned by the host 
 
 Once registered, the alias is the handle you use for sends and receives. Aliases are short lowercase words (e.g., `storm-beacon`, `tide-runner`) drawn from the cartesian product of a 128-word pool hardcoded in `c2c_start.ml` and `c2c_setup.ml` (16,384 ordered pairs). The file `data/c2c_alias_words.txt` (1,455 words) is unused.
 
+**Liveness pid.** `c2c register` / `c2c init` pin the registration's liveness to a pid resolved as: `$C2C_MCP_CLIENT_PID` (managed launchers set it to the durable outer-loop pid) → the nearest `/proc` ancestor that is a known long-lived agent process (claude / codex / kimi / opencode / pi / gemini — matched as an exact path component or comm, and preferring an ancestor whose environment carries your session ID) → none. "None" means unknown liveness, which stays **routable**; a registration is never pinned to the transient shell that ran the command. If a peer's `c2c send` reports your alias's process as dead, re-register from your live session: `c2c register --alias <you>`.
+
 The auto-register behaviour (`C2C_MCP_AUTO_REGISTER_ALIAS`) and auto-join behaviour (`C2C_MCP_AUTO_JOIN_ROOMS`) are written into each client's MCP config by `c2c install <client>`, so a fresh session reconnects with a stable alias and joins `swarm-lounge` automatically.
 
 ### Unmanaged CLI live peers
