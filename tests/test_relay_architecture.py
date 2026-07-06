@@ -141,3 +141,22 @@ def test_relay_observer_protocol_parser_is_extracted_from_relay_ml():
     assert re.search(r"\blet\s+parse_observer_ws_msg\b", relay_ml) is None
     assert re.search(r"\blet\s+parse_observer_ws_msg\b", protocol_src)
     assert re.search(r"\binclude\s+Relay_observer_protocol\b", relay_ml)
+
+
+def test_relay_observer_push_helpers_are_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    push_ml = REPO / "ocaml" / "relay_observer_push.ml"
+
+    assert push_ml.exists(), "expected extracted observer push module"
+    push_src = push_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "observer_sessions",
+        "push_to_observers",
+        "push_pseudo_registration_to_observers",
+        "push_pseudo_unregistration_to_observers",
+    ]:
+        assert re.search(rf"\blet\s+{re.escape(name)}\b", relay_ml) is None
+        assert re.search(rf"\blet\s+{re.escape(name)}\b", push_src)
+
+    assert re.search(r"\binclude\s+Relay_observer_push\b", relay_ml)
