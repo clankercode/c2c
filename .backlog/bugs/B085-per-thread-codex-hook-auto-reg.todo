@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-06T13:19:22Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-06T14:42:40Z"
 complexity: medium
 depends_on: []
+duration_minutes: 83.31643993565
 estimate_hours: 1
 id: B085
 priority: high
 started_at: "2026-07-06T13:19:22Z"
-status: in_progress
+status: done
 tags: []
 title: 'per-thread codex hook auto-registrations accumulate forever (every codex exec conversation leaves an unknown-liveness registry row). Need GC: deregister on codex SessionEnd hook if available, else TTL sweep for unknown-liveness codex-* rows idle >N hours (careful: sweep is dangerous for live sessions, prefer SessionEnd + lazy expiry on read)'
 ---

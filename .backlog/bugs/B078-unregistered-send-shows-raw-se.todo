@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-06T13:19:22Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-06T14:42:31Z"
 complexity: medium
 depends_on: []
+duration_minutes: 83.15662063333333
 estimate_hours: 1
 id: B078
 priority: high
 started_at: "2026-07-06T13:19:22Z"
-status: in_progress
+status: done
 tags: []
 title: unregistered send shows raw session id as sender — recipient cannot reply
 ---
