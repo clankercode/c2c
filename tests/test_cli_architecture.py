@@ -483,3 +483,23 @@ def test_broker_status_commands_are_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_broker_cmd.dead_letter")
     assert_token_reference(c2c_ml, "C2c_broker_cmd.prune_rooms")
     assert_token_reference(c2c_ml, "C2c_broker_cmd.get_tmux_location")
+
+
+def test_git_wrapper_command_is_extracted_from_monolithic_cli():
+    """Git attribution/signing wrapper command assembly should be modular."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    git_cmd_ml = REPO / "ocaml" / "cli" / "c2c_git_cmd.ml"
+
+    assert git_cmd_ml.exists(), "expected extracted git wrapper command module"
+    git_cmd_src = git_cmd_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "has_author_flag",
+        "has_sign_flag",
+        "is_signing_subcmd",
+        "git_cmd",
+        "git",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, git_cmd_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_git_cmd.git")
