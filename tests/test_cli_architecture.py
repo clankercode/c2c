@@ -563,3 +563,22 @@ def test_refresh_peer_command_is_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, refresh_src, name)
 
     assert_token_reference(c2c_ml, "C2c_refresh_peer_cmd.refresh_peer")
+
+
+def test_serve_commands_are_extracted_from_monolithic_cli():
+    """MCP stdio command assembly should live outside c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    serve_ml = REPO / "ocaml" / "cli" / "c2c_serve_cmd.ml"
+
+    assert serve_ml.exists(), "expected extracted serve/MCP command module"
+    serve_src = serve_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "serve_cmd",
+        "serve",
+        "mcp",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, serve_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_serve_cmd.serve")
+    assert_token_reference(c2c_ml, "C2c_serve_cmd.mcp")
