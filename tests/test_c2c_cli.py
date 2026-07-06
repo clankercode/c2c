@@ -464,6 +464,15 @@ class C2CCLITests(unittest.TestCase):
                 self.assertIn("Generate shell completion scripts", result.stdout)
                 self.assertIn("--shell", result.stdout)
 
+    def test_server_info_json_fast_path_outputs_single_json_document(self):
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        result = run_native_cli("server-info", "--json", env=self.env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["name"], "c2c")
+        self.assertIn("features", payload)
+
     def test_instances_cli_lists_stopped_and_running_instances(self):
         env, instances_dir = self.native_home_env("home-list")
         now = time.time()

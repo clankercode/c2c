@@ -2050,7 +2050,10 @@ let try_fast_path () =
           | "--json" | "-j" -> json := true
           | _ -> unknown := true
         done;
-        if not !unknown then fast_path_server_info ~json:!json ()
+        if not !unknown then begin
+          fast_path_server_info ~json:!json ();
+          exit 0
+        end
     | "completion" ->
         fast_path_completion ()
     | "skills" when n >= 3 ->
