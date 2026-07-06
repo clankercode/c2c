@@ -703,8 +703,12 @@ let first_nonempty_env keys =
   in
   loop keys
 
+(* CLAUDE_SESSION_ID is the historical Claude Code export; current Claude Code
+   (>= v2.1.x) exports CLAUDE_CODE_SESSION_ID into Bash-tool environments
+   instead. Keep the legacy key FIRST so it still wins when both are set
+   (back-compat with wrappers that set CLAUDE_SESSION_ID explicitly). *)
 let native_session_id_env_keys = function
-  | "claude" -> [ "CLAUDE_SESSION_ID" ]
+  | "claude" -> [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID" ]
   | "codex" -> [ "CODEX_THREAD_ID" ]
   | "opencode" -> [ "C2C_OPENCODE_SESSION_ID" ]
   | "kimi" | "crush" | "codex-headless" -> []
@@ -715,7 +719,7 @@ let inferred_client_type_from_env () =
   | Some client_type -> Some client_type
   | None ->
       if first_nonempty_env [ "CODEX_THREAD_ID" ] <> None then Some "codex"
-      else if first_nonempty_env [ "CLAUDE_SESSION_ID" ] <> None then Some "claude"
+      else if first_nonempty_env [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID" ] <> None then Some "claude"
       else if first_nonempty_env [ "C2C_OPENCODE_SESSION_ID" ] <> None then Some "opencode"
       else None
 

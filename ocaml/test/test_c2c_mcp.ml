@@ -2,6 +2,18 @@ open Alcotest
 
 let () = Random.self_init ()
 
+(* Hermeticity: the test process may itself run inside a Claude Code session
+   (dune runtest from a Bash tool), which exports CLAUDE_CODE_SESSION_ID and
+   CLAUDECODE into the environment. session_id_from_env /
+   inferred_client_type_from_env would pick those up and change behavior of
+   any test that expects "no session env". Scrub them up front; tests that
+   need them set them explicitly. *)
+let () =
+  List.iter
+    (fun k -> Unix.putenv k "")
+    [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_MCP_SESSION_ID"
+    ; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"; "C2C_OPENCODE_SESSION_ID" ]
+
 let with_temp_dir f =
   let base = Filename.get_temp_dir_name () in
   let dir = Filename.concat base (Printf.sprintf "c2c-mcp-%08x" (Random.bits ())) in
@@ -1855,6 +1867,41 @@ let test_session_id_from_env_uses_client_specific_claude_fallback () =
       Unix.putenv "CLAUDE_SESSION_ID" "")
     (fun () ->
       check (option string) "session id from env" (Some "claude-session-123")
+        (C2c_mcp.session_id_from_env ~client_type:"claude" ()))
+
+let test_session_id_from_env_uses_claude_code_session_id () =
+  (* Current Claude Code (>= v2.1.x) exports CLAUDE_CODE_SESSION_ID (not
+     CLAUDE_SESSION_ID) into Bash-tool environments. It must resolve both via
+     the explicit client_type and via client-type inference. *)
+  Unix.putenv "C2C_MCP_SESSION_ID" "";
+  Unix.putenv "CLAUDE_SESSION_ID" "";
+  Unix.putenv "CLAUDE_CODE_SESSION_ID" "cc-session-456";
+  Fun.protect
+    ~finally:(fun () ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Unix.putenv "CLAUDE_CODE_SESSION_ID" "")
+    (fun () ->
+      check (option string) "session id via explicit client_type"
+        (Some "cc-session-456")
+        (C2c_mcp.session_id_from_env ~client_type:"claude" ());
+      check (option string) "session id via inferred client type"
+        (Some "cc-session-456")
+        (C2c_mcp.session_id_from_env ()))
+
+let test_session_id_from_env_prefers_legacy_claude_session_id () =
+  (* Back-compat: when both keys are set (e.g. a wrapper explicitly exports
+     CLAUDE_SESSION_ID), the legacy key still wins. *)
+  Unix.putenv "C2C_MCP_SESSION_ID" "";
+  Unix.putenv "CLAUDE_SESSION_ID" "legacy-claude-1";
+  Unix.putenv "CLAUDE_CODE_SESSION_ID" "cc-session-789";
+  Fun.protect
+    ~finally:(fun () ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "";
+      Unix.putenv "CLAUDE_SESSION_ID" "";
+      Unix.putenv "CLAUDE_CODE_SESSION_ID" "")
+    (fun () ->
+      check (option string) "legacy CLAUDE_SESSION_ID wins over CLAUDE_CODE_SESSION_ID"
+        (Some "legacy-claude-1")
         (C2c_mcp.session_id_from_env ~client_type:"claude" ()))
 
 let test_session_id_from_env_uses_client_specific_opencode_fallback () =
@@ -14097,6 +14144,10 @@ let () =
              test_session_id_from_env_accepts_managed_codex_thread_id
          ; test_case "session_id_from_env uses client-specific CLAUDE_SESSION_ID fallback" `Quick
              test_session_id_from_env_uses_client_specific_claude_fallback
+         ; test_case "session_id_from_env picks up CLAUDE_CODE_SESSION_ID (explicit + inferred)" `Quick
+             test_session_id_from_env_uses_claude_code_session_id
+         ; test_case "session_id_from_env prefers legacy CLAUDE_SESSION_ID when both set" `Quick
+             test_session_id_from_env_prefers_legacy_claude_session_id
          ; test_case "session_id_from_env uses client-specific opencode fallback" `Quick
              test_session_id_from_env_uses_client_specific_opencode_fallback
          ; test_case "tools/call register uses CODEX_THREAD_ID when C2C session id missing" `Quick

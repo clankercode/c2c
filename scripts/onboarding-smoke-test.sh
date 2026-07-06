@@ -68,8 +68,8 @@ mkdir -p "$C2C_MCP_BROKER_ROOT"
 
 # Strip env vars that would inherit from the operator's session and
 # pollute the smoke run.
-unset C2C_MCP_SESSION_ID CLAUDE_SESSION_ID C2C_MCP_AUTO_REGISTER_ALIAS \
-      C2C_INSTANCE_NAME
+unset C2C_MCP_SESSION_ID CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID \
+      C2C_MCP_CLIENT_TYPE C2C_MCP_AUTO_REGISTER_ALIAS C2C_INSTANCE_NAME
 
 echo "=== c2c Onboarding Smoke Test ==="
 info "alias:       $ALIAS"

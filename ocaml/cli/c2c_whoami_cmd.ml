@@ -17,8 +17,11 @@ let whoami_cmd =
   let output_mode = if json then Json else Human in
   match env_session_id () with
   | None ->
-      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID or run from a supported client session.\n\
-hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
+      Printf.eprintf "error: no session ID could be resolved.\n\
+hint: Run 'c2c init' once — it registers this context and persists a fallback identity\n\
+      so later c2c commands resolve it automatically (no env vars needed).\n\
+      Claude Code sessions are detected via CLAUDE_CODE_SESSION_ID/CLAUDE_SESSION_ID;\n\
+      Codex MCP sessions auto-register via 'c2c install codex'. Advanced: set C2C_MCP_SESSION_ID.\n%!";
       exit 1
   | Some sid ->
       let regs = C2c_mcp.Broker.list_registrations broker in
