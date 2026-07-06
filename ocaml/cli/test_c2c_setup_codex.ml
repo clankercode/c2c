@@ -71,6 +71,7 @@ let test_fresh_install_writes_hooks_and_agents_md () =
       [ "[[hooks.UserPromptSubmit]]"
       ; "[[hooks.PostToolUse]]"
       ; "[[hooks.SessionStart]]"
+      ; "[[hooks.SessionEnd]]"
       ; "command = \"c2c hook codex\""
       ; Printf.sprintf "[hooks.state.\"%s:user_prompt_submit:0:0\"]"
           (home // ".codex" // "config.toml")
@@ -114,7 +115,7 @@ let test_reinstall_is_idempotent () =
     check int "one hooks block after reinstall" 1
       (count_occurrences ~haystack:second
          ~needle:C2c_codex_hooks.config_begin_marker);
-    check int "one c2c hook command per event (3 total)" 3
+    check int "one c2c hook command per event (4 total)" 4
       (count_occurrences ~haystack:second ~needle:"command = \"c2c hook codex\"");
     check int "hooks block count stable"
       (count_occurrences ~haystack:first ~needle:"trusted_hash")

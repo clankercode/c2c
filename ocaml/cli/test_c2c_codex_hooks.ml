@@ -97,7 +97,7 @@ let test_render_block_contents () =
       check bool (event ^ " handler") true
         (contains ~haystack:block
            ~needle:(Printf.sprintf "[[hooks.%s.hooks]]" event)))
-    [ "UserPromptSubmit"; "PostToolUse"; "SessionStart" ];
+    [ "UserPromptSubmit"; "PostToolUse"; "SessionStart"; "SessionEnd" ];
   check bool "command" true
     (contains ~haystack:block ~needle:"command = \"c2c hook codex\"");
   (* Zero pre-existing groups -> all state keys index 0. *)
@@ -110,6 +110,9 @@ let test_render_block_contents () =
   check bool "ss state key @0" true
     (contains ~haystack:block
        ~needle:(Printf.sprintf "[hooks.state.\"%s:session_start:0:0\"]" config_path));
+  check bool "se state key @0" true
+    (contains ~haystack:block
+       ~needle:(Printf.sprintf "[hooks.state.\"%s:session_end:0:0\"]" config_path));
   (* Each state entry carries the hash of the corresponding rendered hook. *)
   let expected_hash event status_message =
     C2c_codex_hooks.hook_trusted_hash ~event ~matcher:None
@@ -120,6 +123,9 @@ let test_render_block_contents () =
     (contains ~haystack:block ~needle:(expected_hash "UserPromptSubmit" "c2c inbox"));
   check bool "ss trusted_hash" true
     (contains ~haystack:block ~needle:(expected_hash "SessionStart" "c2c onboarding"))
+  ;
+  check bool "se trusted_hash" true
+    (contains ~haystack:block ~needle:(expected_hash "SessionEnd" "c2c cleanup"))
 
 let test_render_block_offsets_group_indices () =
   (* User already has one PostToolUse group and one Stop group: our

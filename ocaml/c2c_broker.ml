@@ -122,7 +122,7 @@ open C2c_mcp_helpers
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; ed25519_pubkey; pubkey_signed_at; pubkey_sig; compacting; last_activity_ts; role; compaction_count; automated_delivery; tmux_location = _; cwd; metadata_opt_out } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; ed25519_pubkey; pubkey_signed_at; pubkey_sig; compacting; last_activity_ts; role; compaction_count; automated_delivery; tmux_location = _; cwd; metadata_opt_out; registered_by; opaque_host_id = _ } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -232,7 +232,12 @@ open C2c_mcp_helpers
       if metadata_opt_out then with_cwd @ [ ("metadata_opt_out", `Bool true) ]
       else with_cwd
     in
-    `Assoc with_metadata_opt_out
+    let with_registered_by =
+      match registered_by with
+      | Some rb -> with_metadata_opt_out @ [ ("registered_by", `String rb) ]
+      | None -> with_metadata_opt_out
+    in
+    `Assoc with_registered_by
 
   let int_opt_member name json =
     let open Yojson.Safe.Util in
@@ -299,6 +304,7 @@ open C2c_mcp_helpers
     ; tmux_location = str_opt "tmux_location" json
     ; cwd = str_opt "cwd" json
     ; metadata_opt_out = bool_member_default "metadata_opt_out" json false
+    ; registered_by = str_opt "registered_by" json
     ; opaque_host_id = str_opt "opaque_host_id" json
     }
 
@@ -360,6 +366,25 @@ open C2c_mcp_helpers
      the symmetric eviction predicate at L1898, the M4 alias-reuse guard
      at L848, the hijack guards at L4704+5074, and the pending-perm guard. *)
   let alias_casefold s = String.lowercase_ascii s
+
+  let codex_hook_registered_by = "codex-hook"
+  let codex_hook_auto_registration_ttl_s = 24.0 *. 60.0 *. 60.0
+
+  let is_codex_hook_auto_registration reg =
+    reg.registered_by = Some codex_hook_registered_by
+
+  let codex_hook_activity_anchor reg =
+    match reg.last_activity_ts with
+    | Some ts -> Some ts
+    | None -> reg.registered_at
+
+  let is_expired_codex_hook_auto_registration reg =
+    is_codex_hook_auto_registration reg
+    && reg.pid = None
+    &&
+    match codex_hook_activity_anchor reg with
+    | Some ts -> Unix.gettimeofday () -. ts > codex_hook_auto_registration_ttl_s
+    | None -> false
 
   let load_registrations t =
     ensure_root t;
@@ -1207,7 +1232,9 @@ open C2c_mcp_helpers
                | _ -> ()))
     with _ -> ()
 
-  let list_registrations t = load_registrations t
+  let list_registrations t =
+    load_registrations t
+    |> List.filter (fun reg -> not (is_expired_codex_hook_auto_registration reg))
 
   (* /proc/<pid>/stat line layout: "<pid> (<comm>) <state> <ppid> ... <starttime> ..."
      comm can contain spaces and parens, so we split on the LAST ')'. The fields
@@ -1671,7 +1698,9 @@ open C2c_mcp_helpers
     let target = alias_casefold alias in
     let matches =
       load_registrations t
-      |> List.filter (fun reg -> alias_casefold reg.alias = target)
+      |> List.filter (fun reg ->
+        alias_casefold reg.alias = target
+        && not (is_expired_codex_hook_auto_registration reg))
     in
     (* #432: silent multi-match on alive rows is the smoking gun for the
        galaxy-coder-style misdelivery. Log it so the next investigator
@@ -1797,6 +1826,11 @@ open C2c_mcp_helpers
   let pidless_keep_window_s = 3600.0
 
   let is_sweep_keepable reg =
+    if
+      is_codex_hook_auto_registration reg
+      && reg.pid = None
+    then not (is_expired_codex_hook_auto_registration reg)
+    else
     match reg.pid with
     | Some _ ->
         registration_is_alive reg && not (is_provisional_expired reg)
@@ -2059,7 +2093,7 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) ?(metadata_opt_out = false) ?(opaque_host_id = None) ?(from_auto_gen = false) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) () =
     if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -2172,6 +2206,7 @@ open C2c_mcp_helpers
           ; tmux_location = effective_tmux_location
           ; cwd
           ; metadata_opt_out
+          ; registered_by
           ; opaque_host_id = old_opaque_host_id }
         in
         let kept =
