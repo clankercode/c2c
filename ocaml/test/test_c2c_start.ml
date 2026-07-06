@@ -33,6 +33,9 @@ let with_instance_dir name f =
       ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
     (fun () -> f dir)
 
+let unique_instance_name prefix =
+  Printf.sprintf "%s-%d-%d" prefix (Unix.getpid ()) (Random.bits ())
+
 let rec has_adjacent_pair left right = function
   | a :: b :: _ when a = left && b = right -> true
   | _ :: tl -> has_adjacent_pair left right tl
@@ -2144,7 +2147,7 @@ let test_sync_instance_alias_ignores_mismatched_session () =
       check string "alias unchanged" "old-alias" saved.alias
 
 let test_last_exit_code_reason_roundtrip () =
-  let name = "test-exit-roundtrip" in
+  let name = unique_instance_name "test-exit-roundtrip" in
   with_instance_dir name @@ fun _dir ->
   with_temp_dir @@ fun broker_root ->
   let now = Unix.gettimeofday () in
@@ -2175,13 +2178,25 @@ let test_last_exit_code_reason_roundtrip () =
       check (option string) "last_exit_reason roundtrip" (Some "term") saved.last_exit_reason
 
 let test_last_exit_code_reason_backward_compat_missing_field () =
-  let name = "test-exit-compat" in
+  let name = unique_instance_name "test-exit-compat" in
   with_instance_dir name @@ fun _dir ->
   with_temp_dir @@ fun broker_root ->
   let path = C2c_start.config_path name in
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-    output_string oc "{\"name\":\"test-exit-compat\",\"client\":\"kimi\",\"session_id\":\"test-exit-compat\",\"resume_session_id\":\"test-exit-compat\",\"alias\":\"test-exit-compat\",\"extra_args\":[],\"created_at\":123.0,\"broker_root\":\"/tmp\",\"auto_join_rooms\":\"swarm-lounge\"}\n");
+    Yojson.Safe.pretty_to_channel oc
+      (`Assoc
+         [ ("name", `String name)
+         ; ("client", `String "kimi")
+         ; ("session_id", `String name)
+         ; ("resume_session_id", `String name)
+         ; ("alias", `String name)
+         ; ("extra_args", `List [])
+         ; ("created_at", `Float 123.0)
+         ; ("broker_root", `String broker_root)
+         ; ("auto_join_rooms", `String "swarm-lounge")
+         ]);
+    output_string oc "\n");
   match C2c_start.load_config_opt name with
   | None -> fail "expected config from legacy json"
   | Some saved ->

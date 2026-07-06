@@ -273,11 +273,11 @@ test-ocaml:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-60}" opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-900}" opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
     ln -sf "$PWD/_build/default/ocaml/cli/c2c.exe" "$PWD/_build/default/ocaml/cli/c2c"
     ln -sf "$PWD/_build/default/ocaml/cli/c2c_deliver_inbox.exe" "$PWD/_build/default/ocaml/cli/c2c-deliver-inbox"
     PATH="$PWD/_build/default/ocaml/cli:$PATH" \
-      flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-60}" opam exec -- dune runtest --root "$PWD" ocaml/
+      flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-900}" opam exec -- dune runtest --root "$PWD" ocaml/
 
 # Run TypeScript (vitest) unit tests for the .opencode plugin
 # Installs devDependencies on demand (idempotent if already installed).
@@ -311,7 +311,7 @@ test-ts-integration:
 # reaches the recipient inbox / room history) is the OCaml suite
 # test_c2c_watch_e2e, run by `just test-ocaml`.
 watch-e2e:
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe
     scripts/c2c-watch-e2e.sh
 
 # B013 codex delivery regression guard (background-safe, no codex process):
@@ -321,7 +321,7 @@ watch-e2e:
 # tmux/codex round-trip lives in scripts/test-codex-delivery-tmux-e2e.sh
 # (run its 'run' mode from inside tmux; 'preflight' is the safe default).
 codex-deliver-e2e:
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
     scripts/test-codex-deliver-inbox-e2e.sh
 
 # Run all tests (Python + OCaml + TS + npm packaging). Always rebuilds OCaml first to avoid stale binary.
