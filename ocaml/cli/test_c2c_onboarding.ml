@@ -59,6 +59,10 @@ let c2c_base_env ~home ~broker ?(env=[]) () =
   ; "C2C_CLI_FORCE=1"
   ; "C2C_MCP_SESSION_ID="
   ; "CLAUDE_SESSION_ID="
+  (* Operator sessions may set CLAUDE_CONFIG_DIR (e.g. profile-share setups);
+     without clearing it, `init --client claude` writes the /c2c skill into
+     the operator's REAL Claude config dir and the temp-HOME assertion fails. *)
+  ; "CLAUDE_CONFIG_DIR="
   ; "C2C_MCP_AUTO_REGISTER_ALIAS="
   ; "C2C_INSTANCE_NAME="
   ]
