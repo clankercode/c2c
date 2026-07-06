@@ -377,7 +377,7 @@ let init_cmd =
           [ Printf.sprintf "Start receiving: run c2c monitor"
           ; Printf.sprintf "Send:    c2c send <alias> <msg>    (e.g. c2c send %s \"hello\")" alias
           ; "Check:   c2c poll-inbox"
-          ; Printf.sprintf "Room:    c2c send-room %s <msg>" room_id_str
+          ; Printf.sprintf "Room:    c2c rooms send %s <msg>" room_id_str
           ] @
           (if is_claude then
             [ "Monitor: add to Claude Code Monitor tool for auto-delivery" ]
@@ -438,7 +438,7 @@ let init_cmd =
        Printf.printf "  Start receiving: run c2c monitor\n";
        Printf.printf "  Send:    c2c send <alias> <msg>    (e.g. c2c send %s \"hello\")\n" alias;
        Printf.printf "  Check:   c2c poll-inbox\n";
-       Printf.printf "  Room:    c2c send-room %s <msg>\n" room;
+       Printf.printf "  Room:    c2c rooms send %s <msg>\n" room;
        Printf.printf "  c2c monitor           — watch for incoming messages (auto-resolves alias)\n";
        (match client_resolved with
         | Some "claude" ->
