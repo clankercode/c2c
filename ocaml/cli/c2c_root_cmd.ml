@@ -383,7 +383,7 @@ let try_fast_path () =
                C2c_skills_cmd.fast_path_skills_list ~json:!json ();
                exit 0
              end
-         | "serve" when n >= 4 ->
+         | "serve" when n = 4 && not (String.starts_with ~prefix:"-" argv.(3)) ->
              C2c_skills_cmd.fast_path_skills_serve argv.(3);
              exit 0
          | _ -> ())

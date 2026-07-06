@@ -482,6 +482,22 @@ class C2CCLITests(unittest.TestCase):
         self.assertIsInstance(payload, list)
         self.assertTrue(any(skill.get("id") == "c2c" for skill in payload))
 
+    def test_skills_serve_help_bypasses_fast_path(self):
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        result = run_native_cli("skills", "serve", "c2c", "--help=plain", env=self.env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Print a skill's full content", result.stdout)
+        self.assertIn("SKILL", result.stdout)
+        self.assertNotIn("# c2c", result.stdout)
+
+    def test_skills_serve_extra_arg_bypasses_fast_path_validation(self):
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        result = run_native_cli("skills", "serve", "c2c", "extra-arg", env=self.env)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("# c2c", result.stdout)
+
     def test_relay_pins_rotate_and_delete_initialize_pin_store_root(self):
         self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
         broker_root = Path(self.temp_dir.name) / "relay-pins-broker"
