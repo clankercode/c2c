@@ -76,3 +76,4 @@ bugs:
     - file: B077-c2c-list-label-unknown-client.todo
     - file: B078-unregistered-send-shows-raw-se.todo
     - file: B079-doctor-detect-outdated-managed.todo
+    - file: B080-codex-hook-auto-register-uses.todo

@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B080
+priority: high
+status: pending
+tags: []
+title: 'codex hook auto-register uses installer static alias hint for ALL vanilla sessions: registers sid=alias (not payload thread id) + stale pid => born-dead shared identity, invisible to session''s own CLI (whoami shows unregistered). Hook should register per-thread under payload session_id with auto-gen alias; installer hint only for managed sessions. Seen live 2026-07-06 20:55 (codex-lehto-orvi-ayr7).'
+---
+
+codex hook auto-register uses installer static alias hint for ALL vanilla sessions: registers sid=alias (not payload thread id) + stale pid => born-dead shared identity, invisible to session's own CLI (whoami shows unregistered). Hook should register per-thread under payload session_id with auto-gen alias; installer hint only for managed sessions. Seen live 2026-07-06 20:55 (codex-lehto-orvi-ayr7).
