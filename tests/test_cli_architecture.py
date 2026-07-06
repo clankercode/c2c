@@ -35,6 +35,15 @@ def assert_token_reference(src: str, dotted_name: str) -> None:
     )
 
 
+def root_wiring_src() -> str:
+    """Source that owns top-level command-table wiring."""
+    c2c_src = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    main_ml = REPO / "ocaml" / "cli" / "c2c_main_cmd.ml"
+    if not main_ml.exists():
+        return c2c_src
+    return c2c_src + main_ml.read_text(encoding="utf-8")
+
+
 def test_doctor_command_is_extracted_from_monolithic_cli():
     """The doctor command assembly should live outside ocaml/cli/c2c.ml."""
     c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
@@ -45,7 +54,7 @@ def test_doctor_command_is_extracted_from_monolithic_cli():
 
     assert "let doctor_cmd =" not in c2c_ml
     assert "let doctor =" not in c2c_ml
-    assert "C2c_doctor_cmd.doctor" in c2c_ml
+    assert "C2c_doctor_cmd.doctor" in root_wiring_src()
     assert "let doctor_cmd =" in doctor_src
     assert "let doctor =" in doctor_src
 
@@ -65,7 +74,7 @@ def test_inject_and_screen_commands_are_extracted_from_monolithic_cli():
     assert "let screen_cmd =" not in c2c_ml
     assert "C2c_inject_cmd.inject_cmd" in root_and_dev_src
     assert "C2c_inject_cmd.inject" in root_and_dev_src
-    assert "C2c_inject_cmd.screen" in c2c_ml
+    assert "C2c_inject_cmd.screen" in root_wiring_src()
     assert "let inject_cmd =" in inject_src
     assert "let screen_cmd =" in inject_src
 
@@ -85,10 +94,10 @@ def test_init_setup_commands_are_extracted_from_monolithic_cli():
     assert "let self_update_cmd =" not in c2c_ml
     assert "let install =" not in c2c_ml
     assert "let repo_config_path () =" not in c2c_ml
-    assert "C2c_init_cmd.init" in c2c_ml
-    assert "C2c_init_cmd.install" in c2c_ml
-    assert "C2c_init_cmd.self_update" in c2c_ml
-    assert "C2c_init_cmd.completion_cmd" in c2c_ml
+    assert "C2c_init_cmd.init" in root_wiring_src()
+    assert "C2c_init_cmd.install" in root_wiring_src()
+    assert "C2c_init_cmd.self_update" in root_wiring_src()
+    assert "C2c_init_cmd.completion_cmd" in root_wiring_src()
     assert "C2c_init_cmd.repo_config_path" in (c2c_ml + config_src)
     assert "let init_cmd =" in init_src
     assert "let completion_cmd =" in init_src
@@ -116,7 +125,7 @@ def test_instances_and_diag_commands_are_extracted_from_monolithic_cli():
     assert "C2c_instances_cmd.dev_instances_sub" in root_and_dev_src
     assert "C2c_instances_cmd.diag" in root_and_dev_src
     assert "C2c_instances_cmd.diag_cmd" in root_and_dev_src
-    assert "C2c_instances_cmd.instances_deprecated" in c2c_ml
+    assert "C2c_instances_cmd.instances_deprecated" in root_wiring_src()
     assert "let instances_cmd =" in instances_src
     assert "let clean_stale_cmd =" in instances_src
     assert "let instances_gc_cmd =" in instances_src
@@ -161,10 +170,10 @@ def test_managed_lifecycle_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, managed_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_managed_cmd.start")
-    assert_token_reference(c2c_ml, "C2c_managed_cmd.stop")
-    assert_token_reference(c2c_ml, "C2c_managed_cmd.restart")
-    assert_token_reference(c2c_ml, "C2c_managed_cmd.reset_thread")
+    assert_token_reference(root_wiring_src(), "C2c_managed_cmd.start")
+    assert_token_reference(root_wiring_src(), "C2c_managed_cmd.stop")
+    assert_token_reference(root_wiring_src(), "C2c_managed_cmd.restart")
+    assert_token_reference(root_wiring_src(), "C2c_managed_cmd.reset_thread")
     assert_token_reference(root_and_dev_src, "C2c_managed_cmd.restart_self")
     assert_token_reference(root_and_dev_src, "C2c_managed_cmd.restart_self_cmd")
 
@@ -188,7 +197,7 @@ def test_gui_command_is_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, gui_src, name)
 
     assert_ocaml_type_extracted(c2c_ml, gui_src, "gui_batch_check")
-    assert_token_reference(c2c_ml, "C2c_gui_cmd.gui")
+    assert_token_reference(root_wiring_src(), "C2c_gui_cmd.gui")
 
 
 def test_config_and_repo_commands_are_extracted_from_monolithic_cli():
@@ -216,8 +225,8 @@ def test_config_and_repo_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, config_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_config_cmd.config_group")
-    assert_token_reference(c2c_ml, "C2c_config_cmd.repo_group")
+    assert_token_reference(root_wiring_src(), "C2c_config_cmd.config_group")
+    assert_token_reference(root_wiring_src(), "C2c_config_cmd.repo_group")
 
 
 def test_statefile_and_plugin_commands_are_extracted_from_monolithic_cli():
@@ -243,10 +252,10 @@ def test_statefile_and_plugin_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, statefile_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_statefile_cmd.statefile_top")
-    assert_token_reference(c2c_ml, "C2c_statefile_cmd.debug_group")
-    assert_token_reference(c2c_ml, "C2c_statefile_cmd.oc_plugin_group")
-    assert_token_reference(c2c_ml, "C2c_statefile_cmd.cc_plugin_group")
+    assert_token_reference(root_wiring_src(), "C2c_statefile_cmd.statefile_top")
+    assert_token_reference(root_wiring_src(), "C2c_statefile_cmd.debug_group")
+    assert_token_reference(root_wiring_src(), "C2c_statefile_cmd.oc_plugin_group")
+    assert_token_reference(root_wiring_src(), "C2c_statefile_cmd.cc_plugin_group")
 
 
 def test_supervisor_commands_are_extracted_from_monolithic_cli():
@@ -267,7 +276,7 @@ def test_supervisor_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, supervisor_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_supervisor_cmd.supervisor_group")
+    assert_token_reference(root_wiring_src(), "C2c_supervisor_cmd.supervisor_group")
 
 
 def test_mesh_command_is_extracted_from_monolithic_cli():
@@ -285,7 +294,7 @@ def test_mesh_command_is_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, mesh_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_mesh_cmd.mesh_group")
+    assert_token_reference(root_wiring_src(), "C2c_mesh_cmd.mesh_group")
 
 
 def test_command_listing_is_extracted_from_monolithic_cli():
@@ -306,8 +315,8 @@ def test_command_listing_is_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, commands_cmd_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_commands_cmd.commands_by_safety")
-    assert_token_reference(c2c_ml, "C2c_commands_cmd.commands_man")
+    assert_token_reference(root_wiring_src(), "C2c_commands_cmd.commands_by_safety")
+    assert_token_reference(root_wiring_src(), "C2c_commands_cmd.commands_man")
     assert_token_reference(fast_path_src, "C2c_commands_cmd.fast_path_commands")
 
 
@@ -334,9 +343,9 @@ def test_sweep_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, sweep_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_sweep_cmd.sweep")
-    assert_token_reference(c2c_ml, "C2c_sweep_cmd.registry_prune")
-    assert_token_reference(c2c_ml, "C2c_sweep_cmd.sweep_dryrun")
+    assert_token_reference(root_wiring_src(), "C2c_sweep_cmd.sweep")
+    assert_token_reference(root_wiring_src(), "C2c_sweep_cmd.registry_prune")
+    assert_token_reference(root_wiring_src(), "C2c_sweep_cmd.sweep_dryrun")
 
 
 def test_hook_commands_are_extracted_from_monolithic_cli():
@@ -358,7 +367,7 @@ def test_hook_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, hook_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_hook_cmd.hook")
+    assert_token_reference(root_wiring_src(), "C2c_hook_cmd.hook")
 
 
 def test_stats_commands_are_extracted_from_monolithic_cli():
@@ -379,7 +388,7 @@ def test_stats_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, stats_cmd_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_stats_cmd.stats")
+    assert_token_reference(root_wiring_src(), "C2c_stats_cmd.stats")
 
 
 def test_skills_commands_are_extracted_from_monolithic_cli():
@@ -405,7 +414,7 @@ def test_skills_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, skills_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_skills_cmd.skills_group")
+    assert_token_reference(root_wiring_src(), "C2c_skills_cmd.skills_group")
     assert_token_reference(fast_path_src, "C2c_skills_cmd.fast_path_skills_list")
     assert_token_reference(fast_path_src, "C2c_skills_cmd.fast_path_skills_serve")
 
@@ -429,7 +438,7 @@ def test_migrate_broker_command_is_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, migrate_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_migrate_cmd.migrate_broker")
+    assert_token_reference(root_wiring_src(), "C2c_migrate_cmd.migrate_broker")
 
 
 def test_history_command_is_extracted_from_monolithic_cli():
@@ -446,7 +455,7 @@ def test_history_command_is_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, history_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_history_cmd.history")
+    assert_token_reference(root_wiring_src(), "C2c_history_cmd.history")
 
 
 def test_list_glyphs_command_is_extracted_from_monolithic_cli():
@@ -463,7 +472,7 @@ def test_list_glyphs_command_is_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, glyphs_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_glyphs_cmd.list_glyphs")
+    assert_token_reference(root_wiring_src(), "C2c_glyphs_cmd.list_glyphs")
 
 
 def test_broker_status_commands_are_extracted_from_monolithic_cli():
@@ -490,12 +499,12 @@ def test_broker_status_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, broker_cmd_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_broker_cmd.tail_log")
-    assert_token_reference(c2c_ml, "C2c_broker_cmd.server_info")
-    assert_token_reference(c2c_ml, "C2c_broker_cmd.my_rooms")
-    assert_token_reference(c2c_ml, "C2c_broker_cmd.dead_letter")
-    assert_token_reference(c2c_ml, "C2c_broker_cmd.prune_rooms")
-    assert_token_reference(c2c_ml, "C2c_broker_cmd.get_tmux_location")
+    assert_token_reference(root_wiring_src(), "C2c_broker_cmd.tail_log")
+    assert_token_reference(root_wiring_src(), "C2c_broker_cmd.server_info")
+    assert_token_reference(root_wiring_src(), "C2c_broker_cmd.my_rooms")
+    assert_token_reference(root_wiring_src(), "C2c_broker_cmd.dead_letter")
+    assert_token_reference(root_wiring_src(), "C2c_broker_cmd.prune_rooms")
+    assert_token_reference(root_wiring_src(), "C2c_broker_cmd.get_tmux_location")
 
 
 def test_git_wrapper_command_is_extracted_from_monolithic_cli():
@@ -515,7 +524,7 @@ def test_git_wrapper_command_is_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, git_cmd_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_git_cmd.git")
+    assert_token_reference(root_wiring_src(), "C2c_git_cmd.git")
 
 
 def test_host_utility_commands_are_extracted_from_monolithic_cli():
@@ -537,7 +546,7 @@ def test_host_utility_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, host_cmd_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_host_cmd.setcap")
+    assert_token_reference(root_wiring_src(), "C2c_host_cmd.setcap")
     assert_token_reference(root_and_dev_src, "C2c_host_cmd.smoke_test")
     assert_token_reference(root_and_dev_src, "C2c_host_cmd.smoke_test_cmd")
 
@@ -560,7 +569,7 @@ def test_relay_pins_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, relay_pins_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_relay_pins_cmd.relay_pins")
+    assert_token_reference(root_wiring_src(), "C2c_relay_pins_cmd.relay_pins")
 
 
 def test_refresh_peer_command_is_extracted_from_monolithic_cli():
@@ -578,7 +587,7 @@ def test_refresh_peer_command_is_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, refresh_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_refresh_peer_cmd.refresh_peer")
+    assert_token_reference(root_wiring_src(), "C2c_refresh_peer_cmd.refresh_peer")
 
 
 def test_serve_commands_are_extracted_from_monolithic_cli():
@@ -596,8 +605,8 @@ def test_serve_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, serve_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_serve_cmd.serve")
-    assert_token_reference(c2c_ml, "C2c_serve_cmd.mcp")
+    assert_token_reference(root_wiring_src(), "C2c_serve_cmd.serve")
+    assert_token_reference(root_wiring_src(), "C2c_serve_cmd.mcp")
 
 
 def test_inbox_commands_are_extracted_from_monolithic_cli():
@@ -624,12 +633,12 @@ def test_inbox_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, inbox_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_inbox_cmd.set_compact")
-    assert_token_reference(c2c_ml, "C2c_inbox_cmd.clear_compact")
-    assert_token_reference(c2c_ml, "C2c_inbox_cmd.open_pending_reply")
-    assert_token_reference(c2c_ml, "C2c_inbox_cmd.check_pending_reply")
-    assert_token_reference(c2c_ml, "C2c_inbox_cmd.poll_inbox")
-    assert_token_reference(c2c_ml, "C2c_inbox_cmd.peek_inbox")
+    assert_token_reference(root_wiring_src(), "C2c_inbox_cmd.set_compact")
+    assert_token_reference(root_wiring_src(), "C2c_inbox_cmd.clear_compact")
+    assert_token_reference(root_wiring_src(), "C2c_inbox_cmd.open_pending_reply")
+    assert_token_reference(root_wiring_src(), "C2c_inbox_cmd.check_pending_reply")
+    assert_token_reference(root_wiring_src(), "C2c_inbox_cmd.poll_inbox")
+    assert_token_reference(root_wiring_src(), "C2c_inbox_cmd.peek_inbox")
 
 
 def test_register_commands_are_extracted_from_monolithic_cli():
@@ -648,8 +657,8 @@ def test_register_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, register_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_register_cmd.register")
-    assert_token_reference(c2c_ml, "C2c_register_cmd.deregister")
+    assert_token_reference(root_wiring_src(), "C2c_register_cmd.register")
+    assert_token_reference(root_wiring_src(), "C2c_register_cmd.deregister")
 
 
 def test_whoami_command_is_extracted_from_monolithic_cli():
@@ -666,7 +675,7 @@ def test_whoami_command_is_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, whoami_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_whoami_cmd.whoami")
+    assert_token_reference(root_wiring_src(), "C2c_whoami_cmd.whoami")
 
 
 def test_list_commands_are_extracted_from_monolithic_cli():
@@ -688,8 +697,8 @@ def test_list_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, list_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_list_cmd.list")
-    assert_token_reference(c2c_ml, "C2c_list_cmd.sessions")
+    assert_token_reference(root_wiring_src(), "C2c_list_cmd.list")
+    assert_token_reference(root_wiring_src(), "C2c_list_cmd.sessions")
 
 
 def test_send_commands_are_extracted_from_monolithic_cli():
@@ -710,8 +719,8 @@ def test_send_commands_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, send_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_send_cmd.send")
-    assert_token_reference(c2c_ml, "C2c_send_cmd.send_all")
+    assert_token_reference(root_wiring_src(), "C2c_send_cmd.send")
+    assert_token_reference(root_wiring_src(), "C2c_send_cmd.send_all")
 
 
 def test_root_help_and_fast_paths_are_extracted_from_monolithic_cli():
@@ -736,10 +745,10 @@ def test_root_help_and_fast_paths_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, root_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_root_cmd.try_fast_path")
-    assert_token_reference(c2c_ml, "C2c_root_cmd.sanitize_help_env")
-    assert_token_reference(c2c_ml, "C2c_root_cmd.default_term")
-    assert_token_reference(c2c_ml, "C2c_root_cmd.help")
+    assert_token_reference(root_wiring_src(), "C2c_root_cmd.try_fast_path")
+    assert_token_reference(root_wiring_src(), "C2c_root_cmd.sanitize_help_env")
+    assert_token_reference(root_wiring_src(), "C2c_root_cmd.default_term")
+    assert_token_reference(root_wiring_src(), "C2c_root_cmd.help")
 
 
 def test_dev_group_and_deprecated_wrappers_are_extracted_from_monolithic_cli():
@@ -760,8 +769,27 @@ def test_dev_group_and_deprecated_wrappers_are_extracted_from_monolithic_cli():
     ]:
         assert_ocaml_value_extracted(c2c_ml, dev_src, name)
 
-    assert_token_reference(c2c_ml, "C2c_dev_cmd.smoke_test_deprecated")
-    assert_token_reference(c2c_ml, "C2c_dev_cmd.restart_self_deprecated")
-    assert_token_reference(c2c_ml, "C2c_dev_cmd.diag_deprecated")
-    assert_token_reference(c2c_ml, "C2c_dev_cmd.dev_group")
-    assert_token_reference(c2c_ml, "C2c_dev_cmd.inject_deprecated")
+    assert_token_reference(root_wiring_src(), "C2c_dev_cmd.smoke_test_deprecated")
+    assert_token_reference(root_wiring_src(), "C2c_dev_cmd.restart_self_deprecated")
+    assert_token_reference(root_wiring_src(), "C2c_dev_cmd.diag_deprecated")
+    assert_token_reference(root_wiring_src(), "C2c_dev_cmd.dev_group")
+    assert_token_reference(root_wiring_src(), "C2c_dev_cmd.inject_deprecated")
+
+
+def test_main_command_table_is_extracted_from_executable_stub():
+    """The executable module should delegate to a small main-command module."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    main_ml = REPO / "ocaml" / "cli" / "c2c_main_cmd.ml"
+
+    assert main_ml.exists(), "expected extracted main command module"
+    main_src = main_ml.read_text(encoding="utf-8")
+
+    assert "let all_cmds" not in c2c_ml
+    assert "Cmdliner.Cmd.eval" not in c2c_ml
+    assert "C2c_main_cmd.run ()" in c2c_ml
+    assert_ocaml_value_defined(main_src, "all_cmds")
+    assert_ocaml_value_defined(main_src, "run")
+    assert_token_reference(main_src, "C2c_root_cmd.try_fast_path")
+    assert_token_reference(main_src, "C2c_root_cmd.default_term")
+    assert_token_reference(main_src, "C2c_dev_cmd.dev_group")
+    assert_token_reference(main_src, "C2c_commands_cmd.commands_man")
