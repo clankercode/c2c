@@ -451,3 +451,35 @@ def test_list_glyphs_command_is_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, glyphs_src, name)
 
     assert_token_reference(c2c_ml, "C2c_glyphs_cmd.list_glyphs")
+
+
+def test_broker_status_commands_are_extracted_from_monolithic_cli():
+    """Small broker/status inspection commands should live outside c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    broker_cmd_ml = REPO / "ocaml" / "cli" / "c2c_broker_cmd.ml"
+
+    assert broker_cmd_ml.exists(), "expected extracted broker/status command module"
+    broker_cmd_src = broker_cmd_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "get_tmux_location_cmd",
+        "tail_log_cmd",
+        "server_info_cmd",
+        "my_rooms_cmd",
+        "dead_letter_cmd",
+        "prune_rooms_cmd",
+        "tail_log",
+        "server_info",
+        "my_rooms",
+        "dead_letter",
+        "prune_rooms",
+        "get_tmux_location",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, broker_cmd_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_broker_cmd.tail_log")
+    assert_token_reference(c2c_ml, "C2c_broker_cmd.server_info")
+    assert_token_reference(c2c_ml, "C2c_broker_cmd.my_rooms")
+    assert_token_reference(c2c_ml, "C2c_broker_cmd.dead_letter")
+    assert_token_reference(c2c_ml, "C2c_broker_cmd.prune_rooms")
+    assert_token_reference(c2c_ml, "C2c_broker_cmd.get_tmux_location")
