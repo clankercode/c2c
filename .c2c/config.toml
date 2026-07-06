@@ -35,10 +35,12 @@ gui          = "anthropic:claude-sonnet-4-6"
 
 # Per-client binary overrides for `c2c start <client>`.
 # Use when multiple versions of a client are installed and the PATH default
-# lacks features needed for full delivery (e.g. --xml-input-fd on codex).
-# Priority: --binary flag > [default_binary] > client config default.
+# lacks needed features. Priority: --binary flag > [default_binary] > client
+# config default. (The former codex override pointed at a now-deleted alpha
+# binary that carried --xml-input-fd; that flag was removed upstream in
+# codex >=0.142 and the PATH codex is the only binary, so the entry is gone.
+# Codex delivery now rides hooks — see `c2c hook codex`.)
 [default_binary]
-codex = "/home/xertrov/.local/bin/codex"
 
 # Swarm-wide rendered strings (#341). Per-repo overrides for prompts
 # auto-emitted by `c2c start <client>`.

@@ -150,13 +150,18 @@ now the canonical framing.)
 - **Restart yourself after MCP broker updates.** New broker tools/flags are invisible until restart (`dune build` alone isn't enough; `/plugin reconnect` only revives existing tools). Run `c2c restart <name>`, then call the new tool from your session before marking done. After any restart (esp. first time joining), orient via `.collab/runbooks/first-5-turns-for-new-agents.md` (whoami → list → memory list → room_history → archive-skim → DM coordinator1).
 - **SIGUSR1 to inner OpenCode pid** (NOT the outer-loop wrapper) recovers a stuck MCP session without full restart — OCPlugin reconnects to broker. Sibling outer-loop SIGUSR1 can cascade a failure. See `.collab/findings/2026-04-26T01-08-00Z-test-agent-mcp-outage.md`.
 - **`kimi -p` (or any child CLI) inside Claude Code inherits `CLAUDE_SESSION_ID`.** Broker guards against this, but for one-shot probes use explicit `C2C_MCP_SESSION_ID=kimi-probe-$(date +%s)` + `--mcp-config-file`. See `.collab/findings-archive/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
-- **Two codex binaries on this machine — PATH default lacks `--xml-input-fd`.**
-  `/home/xertrov/.bun/bin/codex` (v0.125.0, stable, missing `--xml-input-fd`) is
-  first in PATH. `/home/xertrov/.local/bin/codex` (v0.125.0-alpha.2) has it and
-  enables the xml_fd deliver mode. `.c2c/config.toml` has a `[default_binary]`
-  entry pointing `codex` at the alpha binary so `c2c start codex` picks it up
-  automatically. If you see `unavailable` deliver mode after a codex upgrade, check
-  that `[default_binary] codex` still points to a binary that advertises `--xml-input-fd`.
+- **Single codex binary — hooks are the codex delivery path (2026-07-06).**
+  `codex` is v0.142.5 at `/home/xertrov/.bun/bin/codex` (npm `@openai/codex`);
+  the old `/home/xertrov/.local/bin/codex` alpha is GONE and `--xml-input-fd`
+  was removed upstream, so the managed xml_fd deliver mode is dead (the
+  `codex_supports_xml_input_fd` capability probe now always reports false).
+  Inbound delivery for codex uses **codex hooks**: `c2c install codex` writes
+  UserPromptSubmit/PostToolUse/SessionStart hooks running `c2c hook codex`
+  into `~/.codex/config.toml`, pre-trusted via `[hooks.state]` trust hashes
+  (no `/hooks` approval prompt). Vanilla codex sessions self-onboard on the
+  first hook fire (auto-register + onboarding note). Follow-up: port managed
+  `c2c start codex` delivery to hooks too. Details:
+  `.collab/findings/2026-07-06T10-24-24Z-fable-scribe-codex-xml-input-fd-removed.md`.
 - **Launch managed sessions via `c2c start <client>`** (claude / codex / opencode / kimi / gemini). `crush` is **DEPRECATED** — `c2c start crush` refuses (exit 1). Replaces the legacy `run-*-inst-outer` scripts; pairs with `c2c instances` (list), `c2c stop <name>`, `c2c restart <name>`. Exits when client exits (does NOT loop).
 - **Never call `mcp__c2c__sweep` during active swarm operation.** Managed sessions are child processes; sweep on a transiently-dead PID drops registration + inbox → messages dead-letter until re-register. Verify no outer loops first: `pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"`. Safe alternatives: `mcp__c2c__list` (liveness), `mcp__c2c__peek_inbox` (no drain). Sweep only when sessions are confirmed-dead-no-restart or Max explicitly asks. See `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`.
 
