@@ -16,7 +16,7 @@ broker architecture.
 ## Current Architecture (as of 2026-04-14)
 
 - **Broker:** OCaml MCP broker module (`ocaml/c2c_mcp.ml`) — implements the JSON-RPC stdio MCP interface; the `c2c serve` command starts the broker
-- **Registry:** hand-rolled YAML in the broker root dir (`$XDG_STATE_HOME/c2c/repos/<fp>/broker/` or `$HOME/.c2c/repos/<fp>/broker/`); legacy path was `.git/c2c/mcp/` (migrated via `c2c migrate-broker`)
+- **Registry:** hand-rolled YAML in the broker root dir (`$HOME/.c2c/repos/<fp>/broker/`, or `$C2C_STATE_HOME/c2c/repos/<fp>/broker/` if set; generic `XDG_STATE_HOME` is not honored — #9 split-brain fix); legacy path was `.git/c2c/mcp/` (migrated via `c2c migrate-broker`)
 - **Delivery:**
   - MCP auto-delivery via `poll_inbox` / `peek_inbox`
   - CLI fallback via `c2c poll-inbox`, `c2c send`, `c2c room send`

@@ -957,7 +957,7 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `sweep [--json]` | Remove dead registrations and orphan inboxes (rescues content to dead-letter). |
 | `sweep-dryrun [--json]` | Read-only preview of what `sweep` would drop. Safe during active swarm. |
 | `watch [--as ALIAS] [--interval FLOAT]` | Top-level full-screen operator TUI over the broker (peers, DMs, rooms, compose/send). This is not the delivery watcher; use `c2c deliver watch` for inbox delivery polling. |
-| `migrate-broker [--from PATH] [--to PATH] [--dry-run] [--json]` | Migrate broker data from the legacy `<git-common-dir>/c2c/mcp` path to the new per-repo path (`$HOME/.c2c/repos/<fp>/broker`). Use `--dry-run` first. |
+| `migrate-broker [--from PATH] [--to PATH] [--dry-run] [--json]` | Migrate broker data to the canonical per-repo path (`$HOME/.c2c/repos/<fp>/broker`). Default source: the legacy `<git-common-dir>/c2c/mcp` path if it exists, else an orphaned `$XDG_STATE_HOME/c2c/repos/<fp>/broker` profile broker (#9 split-brain). Use `--dry-run` first. |
 
 ### Configuration & per-repo
 

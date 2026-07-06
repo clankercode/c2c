@@ -134,8 +134,9 @@ c2c poll-inbox --json | jq '.[].content'
 2. The peer's `poll-inbox` returns the marker content.
 3. The peer's inbox file is `[]` after draining (no leaked copy). The
    path resolves via the broker-root priority documented in CLAUDE.md
-   (`C2C_MCP_BROKER_ROOT` env > `$XDG_STATE_HOME/c2c/repos/<fp>/broker`
-   > `$HOME/.c2c/repos/<fp>/broker`); look it up at runtime with
+   (`C2C_MCP_BROKER_ROOT` env > `$C2C_STATE_HOME/c2c/repos/<fp>/broker`
+   > `$HOME/.c2c/repos/<fp>/broker`; generic `XDG_STATE_HOME` is not
+   honored — #9 split-brain fix); look it up at runtime with
    `c2c health --json | jq -r .broker_root` and check
    `<broker_root>/<session>.inbox.json`.
 
