@@ -473,6 +473,27 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(payload["name"], "c2c")
         self.assertIn("features", payload)
 
+    def test_relay_pins_rotate_and_delete_initialize_pin_store_root(self):
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        broker_root = Path(self.temp_dir.name) / "relay-pins-broker"
+        broker_root.mkdir(parents=True, exist_ok=True)
+        env = dict(self.env)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+
+        rotated = run_native_cli("relay-pins", "rotate", "alice", env=env)
+        self.assertEqual(rotated.returncode, 0, rotated.stderr)
+        self.assertIn("Rotated all pins for alias alice", rotated.stdout)
+
+        deleted = run_native_cli("relay-pins", "delete", "alice", "--ed25519", env=env)
+        self.assertEqual(deleted.returncode, 0, deleted.stderr)
+        self.assertIn("Deleted ed25519 pins for alias alice", deleted.stdout)
+
+        listed = run_native_cli("relay-pins", "--json", env=env)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        payload = json.loads(listed.stdout)
+        self.assertEqual(payload["broker_root"], str(broker_root))
+        self.assertTrue(payload["relay_pins_exists"])
+
     def test_instances_cli_lists_stopped_and_running_instances(self):
         env, instances_dir = self.native_home_env("home-list")
         now = time.time()

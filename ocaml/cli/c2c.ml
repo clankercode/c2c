@@ -1444,98 +1444,6 @@ let refresh_peer =
 
 (* --- doctor command group moved to c2c_doctor_cmd.ml --------------------- *)
 
-(* --- subcommand: relay-pins delete ---------------------------------------- *)
-
-let relay_pins_delete_cmd =
-  let open Cmdliner in
-  let alias_flag =
-    Arg.(required & pos 0 (some string) None & info []
-           ~docv:"ALIAS" ~doc:"Target alias whose pins to delete.")
-  in
-  let ed25519_flag =
-    Arg.(value & flag & info ["ed25519"]
-           ~doc:"Delete the Ed25519 pin for the alias.")
-  in
-  let x25519_flag =
-    Arg.(value & flag & info ["x25519"]
-           ~doc:"Delete the X25519 pin for the alias.")
-  in
-  let min_version_flag =
-    Arg.(value & flag & info ["min-version"]
-           ~doc:"Delete the min-observed-envelope-version pin for the alias.")
-  in
-  let all_flag =
-    Arg.(value & flag & info ["all"]
-           ~doc:"Delete all three pin types for the alias (default if no axis flag is given).")
-  in
-  let+ alias = alias_flag
-  and+ delete_ed25519 = ed25519_flag
-  and+ delete_x25519 = x25519_flag
-  and+ delete_min_version = min_version_flag
-  and+ delete_all = all_flag in
-  let axes =
-    if delete_all || (not delete_ed25519 && not delete_x25519 && not delete_min_version) then
-      ["ed25519"; "x25519"; "min_observed_envelope_version"]
-    else
-      (if delete_ed25519 then ["ed25519"] else [])
-      @ (if delete_x25519 then ["x25519"] else [])
-      @ (if delete_min_version then ["min_observed_envelope_version"] else [])
-  in
-  if axes = [] then
-    (Printf.eprintf "Error: no pin axis specified. Use --all or at least one of --ed25519, --x25519, --min-version.\n%!";
-     exit 1);
-  let broker_root = C2c_utils.resolve_broker_root () in
-  C2c_mcp.Broker.relay_pin_delete ~broker_root ~alias ~axes;
-  let axes_str = String.concat ", " axes in
-  Printf.printf "Deleted %s pins for alias %s.\n" axes_str alias;
-  Printf.printf "Audit event written to broker.log.\n";
-  exit 0
-
-let relay_pins_delete =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "delete"
-       ~doc:"Delete one or more TOFU pins for an alias.")
-    relay_pins_delete_cmd
-
-(* --- subcommand: relay-pins rotate ---------------------------------------- *)
-
-let relay_pins_rotate_cmd =
-  let open Cmdliner in
-  let alias_flag =
-    Arg.(required & pos 0 (some string) None & info []
-           ~docv:"ALIAS" ~doc:"Target alias whose pins to rotate.")
-  in
-  let+ alias = alias_flag in
-  let broker_root = C2c_utils.resolve_broker_root () in
-  let epoch = C2c_mcp.Broker.relay_pin_rotate ~broker_root ~alias in
-  Printf.printf "Rotated all pins for alias %s (rotation_epoch=%d).\n" alias epoch;
-  Printf.printf "Next first-contact from this alias will be logged as expected (TOFU first-seen).\n";
-  Printf.printf "Audit event written to broker.log.\n";
-  exit 0
-
-let relay_pins_rotate =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "rotate"
-       ~doc:"Rotate all TOFU pins for an alias (clears keys and bumps rotation epoch).")
-    relay_pins_rotate_cmd
-
-(* --- subcommand: relay-pins list ----------------------------------------- *)
-
-let relay_pins_list_cmd =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "list"
-       ~doc:"List all pinned aliases and their key fingerprints + min-observed-envelope-version. Alias for relay-pin-status.")
-    C2c_doctor_cmd.relay_pin_status_cmd
-
-(* --- relay-pins command group --------------------------------------------- *)
-
-let relay_pins =
-  Cmdliner.Cmd.group
-    ~default:C2c_doctor_cmd.relay_pin_status_cmd
-    (Cmdliner.Cmd.info "relay-pins"
-       ~doc:"Inspect and manage broker TOFU pins (relay_pins.json).")
-    [ relay_pins_list_cmd; C2c_doctor_cmd.relay_pin_status; relay_pins_delete; relay_pins_rotate ]
-
 (* --- help subcommand ------------------------------------------------------- *)
 
 (* `c2c help [COMMAND...]` is a plain-English alias for `c2c [COMMAND...] --help`.
@@ -1998,7 +1906,7 @@ let () =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; C2c_sweep_cmd.sweep; C2c_sweep_cmd.registry_prune
     ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; C2c_host_cmd.setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; C2c_git_cmd.git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; C2c_broker_cmd.tail_log; C2c_broker_cmd.server_info; C2c_broker_cmd.my_rooms; C2c_broker_cmd.dead_letter; C2c_broker_cmd.prune_rooms; C2c_broker_cmd.get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; C2c_glyphs_cmd.list_glyphs
-    ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; relay_pins; C2c_mesh_cmd.mesh_group; C2c_skills_cmd.skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
+    ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; C2c_relay_pins_cmd.relay_pins; C2c_mesh_cmd.mesh_group; C2c_skills_cmd.skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit

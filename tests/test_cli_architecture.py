@@ -524,3 +524,24 @@ def test_host_utility_commands_are_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_host_cmd.setcap")
     assert_token_reference(c2c_ml, "C2c_host_cmd.smoke_test")
     assert_token_reference(c2c_ml, "C2c_host_cmd.smoke_test_cmd")
+
+
+def test_relay_pins_commands_are_extracted_from_monolithic_cli():
+    """Relay TOFU pin operator commands should live outside c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    relay_pins_ml = REPO / "ocaml" / "cli" / "c2c_relay_pins_cmd.ml"
+
+    assert relay_pins_ml.exists(), "expected extracted relay-pins command module"
+    relay_pins_src = relay_pins_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "relay_pins_delete_cmd",
+        "relay_pins_delete",
+        "relay_pins_rotate_cmd",
+        "relay_pins_rotate",
+        "relay_pins_list_cmd",
+        "relay_pins",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, relay_pins_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_relay_pins_cmd.relay_pins")
