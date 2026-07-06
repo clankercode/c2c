@@ -182,3 +182,23 @@ def test_relay_mobile_pair_nonce_cache_is_extracted_from_relay_ml():
         assert re.search(rf"\blet\s+{re.escape(name)}\b", nonce_cache_src)
 
     assert re.search(r"\binclude\s+Relay_mobile_pair_nonce_cache\b", relay_ml)
+
+
+def test_relay_registration_lease_module_is_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    lease_ml = REPO / "ocaml" / "relay_registration_lease.ml"
+
+    assert lease_ml.exists(), "expected extracted registration lease module"
+    lease_src = lease_ml.read_text(encoding="utf-8")
+
+    assert re.search(r"\bmodule\s+RegistrationLease\b", relay_ml) is None
+    assert re.search(r"\bmodule\s+RegistrationLease\b", lease_src)
+
+    for pattern in [
+        r"\bval\s+make\b",
+        r"\blet\s+to_json\b",
+        r"\blet\s+opaque_host_id\b",
+    ]:
+        assert re.search(pattern, lease_src)
+
+    assert re.search(r"\binclude\s+Relay_registration_lease\b", relay_ml)
