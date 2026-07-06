@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-07-06T10:27:51Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B072
 priority: high
-status: pending
+started_at: "2026-07-06T10:27:51Z"
+status: in_progress
 tags: []
 title: send error says 'alias not registered' when registration exists but pid dead
 ---
