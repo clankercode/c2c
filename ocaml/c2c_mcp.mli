@@ -368,6 +368,27 @@ module Broker : sig
       original [C2C_MCP_CLIENT_PID] no longer points at a live
       process. *)
 
+  val known_agent_process_tokens : string list
+  (** Basenames identifying long-lived agent host processes (claude,
+      codex, kimi, opencode, pi, gemini, crush). See [stable_client_pid]. *)
+
+  val stable_client_pid :
+    ?proc_root:string ->
+    ?max_hops:int ->
+    ?session_id:string ->
+    ?start_pid:int ->
+    unit ->
+    int option
+  (** B071: walk /proc ancestry from [start_pid] (default [Unix.getppid ()])
+      upward (max [max_hops] hops, default 15) and return the first ancestor
+      whose cmdline (exact basename of argv[0]/argv[1]) or comm identifies a
+      known long-lived agent process. When [session_id] is given, an ancestor
+      that also carries that session id as an environ value wins immediately
+      (strong signal); a cmdline-only match is the fallback. None when no
+      ancestor matches — callers should then register with pid=None (unknown
+      liveness, which is routable) rather than a transient shell pid.
+      [proc_root] (default "/proc") is injectable for tests. *)
+
   val refresh_pid_if_dead_with :
     scan_pids:(unit -> int list) ->
     read_environ:(int -> (string * string) list option) ->

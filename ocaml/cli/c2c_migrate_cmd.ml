@@ -165,6 +165,7 @@ let migrate_broker_run ~from_path ~to_path ~dry_run ~json ~sync_sidecar ~rewrite
       ; "from", `String from
       ; "to", `String to_
       ; "dry_run", `Bool dry_run
+      ; "source_removed", `Bool outcome.source_removed
       ; "copied", `List (List.map (fun s -> `String s) outcome.copied)
       ; "skipped_already_at_canonical",
           `List (List.map (fun s -> `String s) outcome.skipped_already)

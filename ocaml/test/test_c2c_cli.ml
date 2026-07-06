@@ -512,6 +512,117 @@ let test_send_not_found_error_mentions_scanned_brokers () =
           check bool "error mentions sessions broker scan" true
             (string_contains content "sessions broker")))
 
+(* B072: a registration that EXISTS but whose pid is dead must NOT be
+   reported as "not registered" — that error sent operators chasing the
+   wrong problem. It must name the dead pid and hint at re-registering. *)
+let test_send_dead_alias_reports_dead_not_unregistered () =
+  with_temp_dir (fun parent_dir ->
+      let broker_dir = Filename.concat parent_dir "broker" in
+      Unix.mkdir broker_dir 0o755;
+      let broker = C2c_mcp.Broker.create ~root:broker_dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b072-sender-sid" ~alias:"b072-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      (* pid beyond pid_max: /proc/<pid> can never exist => Dead. *)
+      C2c_mcp.Broker.register broker
+        ~session_id:"b072-dead-sid" ~alias:"b072-dead-target"
+        ~pid:(Some 99999999) ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-dead" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b072-sender-sid \
+             %s send b072-dead-target 'hello dead' > %s 2>&1"
+            (Filename.quote broker_dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check bool "send to dead alias exits non-zero" true (rc <> 0);
+          check bool
+            (Printf.sprintf "dead alias error names the dead pid (output: %s)" content)
+            true
+            (string_contains content "looks dead"
+             && string_contains content "99999999");
+          check bool "dead alias error hints re-register" true
+            (string_contains content "c2c register --alias b072-dead-target");
+          check bool "dead alias error does NOT claim unregistered" false
+            (string_contains content "is not registered")))
+
+(* B071/B072: a registration with pid=None (unknown liveness) MUST route —
+   unknown is the documented fallback when no stable agent pid is found. *)
+let test_send_unknown_liveness_alias_routes () =
+  with_temp_dir (fun parent_dir ->
+      let broker_dir = Filename.concat parent_dir "broker" in
+      Unix.mkdir broker_dir 0o755;
+      let broker = C2c_mcp.Broker.create ~root:broker_dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b071-sender-sid" ~alias:"b071-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"b071-pidless-sid" ~alias:"b071-pidless-target"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-pidless" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b071-sender-sid \
+             %s send b071-pidless-target 'hello unknown' > %s 2>&1"
+            (Filename.quote broker_dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int
+            (Printf.sprintf "send to unknown-liveness alias exits 0 (output: %s)" content)
+            0 rc;
+          let drained = C2c_mcp.Broker.drain_inbox
+            ~drained_by:"b071-test" broker ~session_id:"b071-pidless-sid" in
+          check int "pidless target inbox drained 1 message" 1 (List.length drained)))
+
+(* B071 regression: a zero-env `c2c register` (no C2C_MCP_CLIENT_PID) must
+   produce a ROUTABLE registration. The old getppid() fallback pinned the
+   transient test/tool shell — born-dead and unroutable. With the fix the
+   pid is either a stable agent ancestor (alive) or None (unknown liveness);
+   both route. *)
+let test_register_zero_env_is_routable () =
+  with_temp_dir (fun parent_dir ->
+      let broker_dir = Filename.concat parent_dir "broker" in
+      Unix.mkdir broker_dir 0o755;
+      let broker = C2c_mcp.Broker.create ~root:broker_dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b071-reg-sender-sid" ~alias:"b071-reg-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let rc = Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s \
+         %s register --alias b071-reg-fresh --session-id b071-reg-fresh-sid \
+         > /dev/null 2>&1"
+        (Filename.quote broker_dir) c2c_binary)
+      in
+      check int "zero-env register exits 0" 0 rc;
+      (* The registration must never pin a dead transient pid. *)
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      (match List.find_opt
+               (fun (r : C2c_mcp.registration) -> r.alias = "b071-reg-fresh")
+               regs
+       with
+       | None -> Alcotest.fail "b071-reg-fresh registration missing"
+       | Some r ->
+           check bool "fresh registration is not born dead" true
+             (C2c_mcp.Broker.registration_is_alive r));
+      let outfile = Filename.temp_file "c2c-reg-route" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b071-reg-sender-sid \
+             %s send b071-reg-fresh 'routability check' > %s 2>&1"
+            (Filename.quote broker_dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int
+            (Printf.sprintf "send to freshly-registered alias exits 0 (output: %s)"
+               content)
+            0 rc))
+
 (* ------------------------------------------------------------------------- *)
 (* c2c whoami — verify alias display                                        *)
 (* ------------------------------------------------------------------------- *)
@@ -2902,6 +3013,77 @@ let test_migrate_broker_defaults_to_xdg_source () =
       check bool "dry-run destination is the canonical HOME root" true
         (string_contains out (home // ".c2c" // "repos")))
 
+(* B073: a live (non-dry-run) migration from an XDG-profile source must
+   remove the source broker tree — including entries skipped as
+   already-at-canonical — so the split-brain warning stops firing. The
+   incident shape was skip-heavy ("1 copied, 4 skipped"): the canonical
+   root already holds most files, only one is new. *)
+let test_migrate_broker_xdg_live_silences_warning () =
+  with_temp_dir (fun sandbox ->
+      let repo = sandbox // "repo" in
+      let home = sandbox // "home" in
+      mkdir_p repo; mkdir_p home;
+      check int "git init sandbox repo" 0
+        (Sys.command
+           (Printf.sprintf "git -C %s init -q" (Filename.quote repo)));
+      let env = split_brain_env home in
+      let in_repo cmd =
+        Printf.sprintf "cd %s && %s" (Filename.quote repo) (c2c_cmd cmd) in
+      let root =
+        let rc, out, _err =
+          run_capture_split (in_repo (Printf.sprintf "env %s c2c health --json" env))
+        in
+        check int "health --json in sandbox exits 0" 0 rc;
+        match Yojson.Safe.from_string out with
+        | `Assoc kvs ->
+            (match List.assoc_opt "broker_root" kvs with
+             | Some (`String r) -> r
+             | _ -> Alcotest.fail "sandbox health json missing broker_root")
+        | _ -> Alcotest.fail "sandbox health --json not a json object"
+      in
+      let fp = fp_of_broker_root root in
+      let xdg_broker = plant_xdg_broker home fp in
+      (* Skip-heavy shape: canonical root already exists with overlapping
+         content; XDG source has the same files + one new one. *)
+      let canonical = home // ".c2c" // "repos" // fp // "broker" in
+      mkdir_p canonical;
+      mkdir_p (xdg_broker // "keys");
+      mkdir_p (canonical // "keys");
+      write_file (canonical // "registry.json") "{\"registrations\":[]}\n";
+      write_file (xdg_broker // "sess1.inbox.json") "[]";
+      write_file (canonical // "sess1.inbox.json") "[]";
+      write_file (xdg_broker // "keys" // "id") "k\n";
+      write_file (canonical // "keys" // "id") "k\n";
+      write_file (xdg_broker // "only-in-xdg.log") "new\n";
+      (* Live migration (no --dry-run). *)
+      let rc, out, _err =
+        run_capture_split
+          (in_repo (Printf.sprintf "env %s c2c migrate-broker --json" env))
+      in
+      check int "live migrate-broker exits 0" 0 rc;
+      (match Yojson.Safe.from_string out with
+       | `Assoc kvs ->
+           (match List.assoc_opt "ok" kvs with
+            | Some (`Bool true) -> ()
+            | _ -> Alcotest.fail "migrate --json ok!=true");
+           (match List.assoc_opt "source_removed" kvs with
+            | Some (`Bool true) -> ()
+            | _ -> Alcotest.fail "migrate --json source_removed!=true")
+       | _ -> Alcotest.fail "migrate --json did not emit a json object");
+      check bool "XDG source registry.json is gone" false
+        (Sys.file_exists (xdg_broker // "registry.json"));
+      check bool "XDG source broker tree is gone" false
+        (Sys.file_exists xdg_broker);
+      check bool "new file landed at canonical" true
+        (Sys.file_exists (canonical // "only-in-xdg.log"));
+      (* The split-brain warning must be silent on the next command. *)
+      let rc, _out, err =
+        run_capture_split (in_repo (Printf.sprintf "env %s c2c health --json" env))
+      in
+      check int "post-migrate health exits 0" 0 rc;
+      check bool "post-migrate stderr has no split-brain warning" false
+        (string_contains err "migrate-broker"))
+
 let () =
   Alcotest.run "c2c_cli"
     [ ( "broker_root_split_brain",
@@ -2911,6 +3093,7 @@ let () =
         ; ( "no warning without an XDG broker", `Quick, test_no_warning_without_xdg_broker )
         ; ( "health human output reports split-brain", `Quick, test_health_human_reports_split_brain )
         ; ( "migrate-broker defaults --from to the XDG broker", `Quick, test_migrate_broker_defaults_to_xdg_source )
+        ; ( "live migrate from XDG source silences the warning (B073)", `Quick, test_migrate_broker_xdg_live_silences_warning )
         ] )
     ; ( "doctor",
         [ ( "doctor exits 0 on clean run", `Quick, test_doctor_runs_and_exits_zero )
@@ -2941,6 +3124,9 @@ let () =
         ; ( "send unknown alias routes to relay outbox", `Quick, test_send_unknown_alias_routes_to_relay_outbox )
         ; ( "send cross-broker fallback routes to sibling broker", `Quick, test_send_cross_broker_fallback )
         ; ( "send not-found error mentions scanned brokers", `Quick, test_send_not_found_error_mentions_scanned_brokers )
+        ; ( "send to dead alias reports dead, not unregistered (B072)", `Quick, test_send_dead_alias_reports_dead_not_unregistered )
+        ; ( "send to unknown-liveness alias routes (B071/B072)", `Quick, test_send_unknown_liveness_alias_routes )
+        ; ( "zero-env register is routable (B071)", `Quick, test_register_zero_env_is_routable )
         ] )
     ; ( "whoami",
         [ ( "whoami exits 0", `Quick, test_whoami_exits_zero )
