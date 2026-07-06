@@ -401,7 +401,7 @@ let test_list_output_contains_peer_entries () =
          a clean CI broker. *)
       let has_status = List.exists (fun l ->
         string_contains l "alive" || string_contains l "dead"
-        || string_contains l "???"
+        || string_contains l "unknown"
       ) lines in
       let has_empty_state =
         List.exists
@@ -413,6 +413,79 @@ let test_list_output_contains_peer_entries () =
       in
       check bool "list output contains peer status entries or empty state" true
         (has_status || has_empty_state))
+
+let test_list_unknown_liveness_is_not_labeled_unknown_client_type () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"session-unknown-liveness" ~alias:"unknown-liveness"
+        ~pid:None ~pid_start_time:None ();
+      let tmpfile = Filename.temp_file "c2c-list-unknown" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+        (fun () ->
+           let cmd =
+             c2c_cmd
+               (Printf.sprintf
+                  "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s c2c list > %s 2>&1"
+                  (Filename.quote dir) tmpfile)
+           in
+           let rc = Sys.command cmd in
+           let content = read_file tmpfile in
+           check int "c2c list exits 0" 0 rc;
+           check bool "row contains test alias" true
+             (string_contains content "unknown-liveness");
+           check bool "row contains unknown liveness label" true
+             (string_contains content "unknown");
+           check bool "row does not call liveness unknown client_type" true
+             (not (string_contains content "unknown client_type"));
+           check bool "row does not render unknown liveness as ???" true
+             (not (string_contains content "???"))))
+
+let test_register_happy_path_does_not_emit_relay_identity_debug_noise () =
+  with_temp_dir (fun dir ->
+      let outfile = Filename.temp_file "c2c-register" ".out" in
+      let errfile = Filename.temp_file "c2c-register" ".err" in
+      Fun.protect
+        ~finally:(fun () ->
+           (try Sys.remove outfile with _ -> ());
+           (try Sys.remove errfile with _ -> ()))
+        (fun () ->
+           let cmd =
+             c2c_cmd
+               (Printf.sprintf
+                  "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-register-noise c2c register --alias register-noise > %s 2>%s"
+                  (Filename.quote dir) outfile errfile)
+           in
+           let rc = Sys.command cmd in
+           let stderr = read_file errfile in
+           check int "c2c register exits 0" 0 rc;
+           check bool "stderr omits relay identity ssh-keygen debug line" true
+             (not (string_contains stderr "[relay_identity] ssh-keygen"))))
+
+let test_register_cli_blocked_alias_explains_reason_and_suggestion () =
+  with_temp_dir (fun dir ->
+      let outfile = Filename.temp_file "c2c-register-blocked" ".out" in
+      let errfile = Filename.temp_file "c2c-register-blocked" ".err" in
+      Fun.protect
+        ~finally:(fun () ->
+           (try Sys.remove outfile with _ -> ());
+           (try Sys.remove errfile with _ -> ()))
+        (fun () ->
+           let cmd =
+             c2c_cmd
+               (Printf.sprintf
+                  "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-register-blocked c2c register --alias codex-foo > %s 2>%s"
+                  (Filename.quote dir) outfile errfile)
+           in
+           let rc = Sys.command cmd in
+           let stderr = read_file errfile in
+           check bool "c2c register blocked alias exits non-zero" true (rc <> 0);
+           check bool "stderr explains client prefix reservation" true
+             (string_contains stderr "reserved for auto-generated client identities");
+           check bool "stderr suggests concrete non-prefixed alias" true
+             (string_contains stderr "Try 'foo'");
+           check bool "stderr suggests avoiding client prefixes" true
+             (string_contains stderr "not starting with a reserved client prefix")))
 
 (* ------------------------------------------------------------------------- *)
 (* c2c send — fixture-gated send test                                       *)
@@ -3118,6 +3191,9 @@ let () =
     ; ( "list",
         [ ( "list exits 0", `Quick, test_list_exits_zero )
         ; ( "list output contains peer entries", `Quick, test_list_output_contains_peer_entries )
+        ; ( "unknown liveness is not labeled unknown client type", `Quick, test_list_unknown_liveness_is_not_labeled_unknown_client_type )
+        ; ( "register happy path omits relay identity debug noise", `Quick, test_register_happy_path_does_not_emit_relay_identity_debug_noise )
+        ; ( "register CLI blocked alias explains reason and suggestion", `Quick, test_register_cli_blocked_alias_explains_reason_and_suggestion )
         ] )
     ; ( "send",
         [ ( "send missing args exits non-zero", `Quick, test_send_missing_args_exits_nonzero )

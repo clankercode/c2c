@@ -192,7 +192,7 @@ let list_cmd =
                   match C2c_mcp.Broker.registration_liveness_state r with
                   | C2c_mcp.Broker.Alive -> "alive"
                   | C2c_mcp.Broker.Dead -> "dead "
-                  | C2c_mcp.Broker.Unknown -> "??? (unknown client_type)"
+                  | C2c_mcp.Broker.Unknown -> "unknown"
                 in
                 let pid_str = match r.pid with Some p -> Printf.sprintf " pid=%d" p | None -> "" in
                 if enriched then
@@ -262,7 +262,7 @@ let list_cmd =
                   match C2c_mcp.Broker.registration_liveness_state r with
                   | C2c_mcp.Broker.Alive -> "alive"
                   | C2c_mcp.Broker.Dead -> "dead"
-                  | C2c_mcp.Broker.Unknown -> "?"
+                  | C2c_mcp.Broker.Unknown -> "unknown"
                 in
                 let (role_class, description) = lookup_role_info r.alias in
                 let role_class = if role_class = "" then "—" else role_class in
@@ -282,7 +282,7 @@ let list_cmd =
                   match C2c_mcp.Broker.registration_liveness_state r with
                   | C2c_mcp.Broker.Alive -> "alive"
                   | C2c_mcp.Broker.Dead -> "dead "
-                  | C2c_mcp.Broker.Unknown -> "??? (unknown client_type)"
+                  | C2c_mcp.Broker.Unknown -> "unknown"
                 in
                 let pid_str =
                   match r.pid with

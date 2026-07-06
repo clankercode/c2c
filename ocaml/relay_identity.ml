@@ -70,14 +70,7 @@ let generate ?(alias_hint = "") () =
    (e.g. Docker image without openssh-client installed). *)
 let ssh_keygen_available_flag : bool Lazy.t =
   lazy (
-    let rc = Sys.command "command -v ssh-keygen >/dev/null 2>&1" in
-    if rc = 0 then begin
-      Printf.eprintf "[relay_identity] ssh-keygen available — openssh-key export enabled.\n%!";
-      true
-    end else begin
-      Printf.eprintf "[relay_identity] ssh-keygen unavailable — openssh-key export disabled for this session.\n%!";
-      false
-    end
+    Sys.command "command -v ssh-keygen >/dev/null 2>&1" = 0
   )
 
 let ssh_keygen_available () = Lazy.force ssh_keygen_available_flag

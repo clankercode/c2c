@@ -2064,8 +2064,7 @@ open C2c_mcp_helpers
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
     if (not from_auto_gen) && is_banned_alias alias then
-      invalid_arg (Printf.sprintf
-        "register rejected: '%s' is a blocked alias" alias);
+      invalid_arg (C2c_blocklist.blocked_alias_error alias);
     if not (C2c_name.is_valid alias) then
       invalid_arg (Printf.sprintf "register rejected: %s"
         (C2c_name.error_message "alias" alias));

@@ -282,6 +282,25 @@ let test_register_rejects_banned_alias_claude_code () =
            check bool "error mentions blocked" true
              (string_contains (get_text_content result) "blocked")))
 
+let test_register_rejects_client_prefixed_alias_with_reason_and_suggestion () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_broker.create ~root:dir in
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-banned-codex-prefix";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let args = `Assoc [("alias", `String "codex-foo")] in
+           let result = Lwt_main.run
+             (C2c_identity_handlers.register ~broker ~session_id_override:None ~arguments:args)
+           in
+           let text = get_text_content result in
+           check bool "isError=true for codex-foo" true (get_is_error result);
+           check bool "error explains client prefix reservation" true
+             (string_contains text "reserved for auto-generated client identities");
+           check bool "error suggests concrete non-prefixed alias" true
+             (string_contains text "Try 'foo'");
+           check bool "error suggests avoiding client prefixes" true
+             (string_contains text "not starting with a reserved client prefix")))
+
 let test_register_rejects_banned_alias_gpt () =
   with_temp_dir (fun dir ->
       let broker = C2c_broker.create ~root:dir in
@@ -363,6 +382,7 @@ let test_set = [
   "register success", `Quick, test_register_success;
   "register rejects banned alias claude", `Quick, test_register_rejects_banned_alias_claude;
   "register rejects banned alias claude-code", `Quick, test_register_rejects_banned_alias_claude_code;
+  "register rejects client-prefixed alias with reason and suggestion", `Quick, test_register_rejects_client_prefixed_alias_with_reason_and_suggestion;
   "register rejects banned alias gpt", `Quick, test_register_rejects_banned_alias_gpt;
   "register accepts lyra-quill", `Quick, test_register_accepts_lyra_quill;
   "register env origin accepts auto-gen prefix", `Quick, test_register_env_origin_accepts_auto_gen_prefix;

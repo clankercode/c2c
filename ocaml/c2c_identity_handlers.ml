@@ -57,8 +57,7 @@ let register ~broker ~session_id_override ~arguments =
         Lwt.return (tool_err (Printf.sprintf
           "register rejected: '%s' is a reserved system alias and cannot be registered" alias))
       else if (not alias_from_auto_gen) && C2c_blocklist.is_banned_alias alias then
-        Lwt.return (tool_err (Printf.sprintf
-          "register rejected: '%s' is a blocked alias" alias))
+        Lwt.return (tool_err (C2c_blocklist.blocked_alias_error alias))
       else if not (C2c_name.is_valid alias) then
         Lwt.return (tool_err (Printf.sprintf "register rejected: %s"
           (C2c_name.error_message "alias" alias)))
