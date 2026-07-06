@@ -63,8 +63,8 @@ nudge toward this even when the immediate AC is narrower.
   design target and should shape how room identity and history are
   stored.
 
-Full verbatim framing lives in `.goal-loops/active-goal.md` under
-"Group Goal Context".
+(The former `.goal-loops/` dir was removed 2026-07-06 — this section is
+now the canonical framing.)
 
 ## Development Rules
 
