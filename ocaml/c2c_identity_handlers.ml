@@ -11,31 +11,6 @@ open C2c_mcp_helpers
 open C2c_mcp_helpers_post_broker
 module Broker = C2c_broker
 
-let suggested_alias_for_blocked_alias alias =
-  let valid_candidate s =
-    s <> "" && C2c_name.is_valid s && not (C2c_blocklist.is_banned_alias s)
-  in
-  let suffix_candidate =
-    match String.index_opt alias '-' with
-    | Some i when i + 1 < String.length alias ->
-        Some (String.sub alias (i + 1) (String.length alias - i - 1))
-    | _ -> None
-  in
-  match suffix_candidate with
-  | Some suffix when valid_candidate suffix -> suffix
-  | _ ->
-      let prefixed = "agent-" ^ alias in
-      if valid_candidate prefixed then prefixed else "agent-name"
-
-let blocked_alias_error alias =
-  Printf.sprintf
-    "register rejected: '%s' is a blocked alias. Names equal to reserved \
-     client/system aliases or starting with reserved client prefixes are \
-     reserved for auto-generated client identities. Try '%s' or pick a name \
-     not starting with a reserved client prefix (claude-, codex-, opencode-, \
-     kimi-, gemini-, crush-)."
-    alias (suggested_alias_for_blocked_alias alias)
-
 let register ~broker ~session_id_override ~arguments =
       let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
       let explicit_alias = optional_string_member "alias" arguments in
@@ -82,7 +57,7 @@ let register ~broker ~session_id_override ~arguments =
         Lwt.return (tool_err (Printf.sprintf
           "register rejected: '%s' is a reserved system alias and cannot be registered" alias))
       else if (not alias_from_auto_gen) && C2c_blocklist.is_banned_alias alias then
-        Lwt.return (tool_err (blocked_alias_error alias))
+        Lwt.return (tool_err (C2c_blocklist.blocked_alias_error alias))
       else if not (C2c_name.is_valid alias) then
         Lwt.return (tool_err (Printf.sprintf "register rejected: %s"
           (C2c_name.error_message "alias" alias)))

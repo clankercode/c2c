@@ -462,6 +462,31 @@ let test_register_happy_path_does_not_emit_relay_identity_debug_noise () =
            check bool "stderr omits relay identity ssh-keygen debug line" true
              (not (string_contains stderr "[relay_identity] ssh-keygen"))))
 
+let test_register_cli_blocked_alias_explains_reason_and_suggestion () =
+  with_temp_dir (fun dir ->
+      let outfile = Filename.temp_file "c2c-register-blocked" ".out" in
+      let errfile = Filename.temp_file "c2c-register-blocked" ".err" in
+      Fun.protect
+        ~finally:(fun () ->
+           (try Sys.remove outfile with _ -> ());
+           (try Sys.remove errfile with _ -> ()))
+        (fun () ->
+           let cmd =
+             c2c_cmd
+               (Printf.sprintf
+                  "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-register-blocked c2c register --alias codex-foo > %s 2>%s"
+                  (Filename.quote dir) outfile errfile)
+           in
+           let rc = Sys.command cmd in
+           let stderr = read_file errfile in
+           check bool "c2c register blocked alias exits non-zero" true (rc <> 0);
+           check bool "stderr explains client prefix reservation" true
+             (string_contains stderr "reserved for auto-generated client identities");
+           check bool "stderr suggests concrete non-prefixed alias" true
+             (string_contains stderr "Try 'foo'");
+           check bool "stderr suggests avoiding client prefixes" true
+             (string_contains stderr "not starting with a reserved client prefix")))
+
 (* ------------------------------------------------------------------------- *)
 (* c2c send — fixture-gated send test                                       *)
 (* ------------------------------------------------------------------------- *)
@@ -3168,6 +3193,7 @@ let () =
         ; ( "list output contains peer entries", `Quick, test_list_output_contains_peer_entries )
         ; ( "unknown liveness is not labeled unknown client type", `Quick, test_list_unknown_liveness_is_not_labeled_unknown_client_type )
         ; ( "register happy path omits relay identity debug noise", `Quick, test_register_happy_path_does_not_emit_relay_identity_debug_noise )
+        ; ( "register CLI blocked alias explains reason and suggestion", `Quick, test_register_cli_blocked_alias_explains_reason_and_suggestion )
         ] )
     ; ( "send",
         [ ( "send missing args exits non-zero", `Quick, test_send_missing_args_exits_nonzero )
