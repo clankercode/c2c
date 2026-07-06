@@ -22,16 +22,23 @@ on:
         type: boolean
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  ci-gate:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   validate:
+    needs: ci-gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
@@ -87,7 +94,7 @@ jobs:
           path: dist/release-notes.md
 
   build:
-    needs: validate
+    needs: [ci-gate, validate]
     strategy:
       fail-fast: false
       matrix:
@@ -177,7 +184,7 @@ jobs:
           path: dist/c2c-${{ matrix.target }}/
 
   package:
-    needs: [validate, build]
+    needs: [ci-gate, validate, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
