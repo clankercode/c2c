@@ -1843,100 +1843,6 @@ let prune_rooms_cmd =
 (* Relay subcommands extracted to c2c_relay_cmd.ml *)
 (* Mesh subcommands extracted to c2c_mesh_cmd.ml *)
 
-(* --- skills helpers -------------------------------------------------------- *)
-
-let skills_dir () = Sys.getcwd () // ".opencode" // "skills"
-
-let list_subdirs dir =
-  try
-    Array.to_list (Sys.readdir dir)
-    |> List.filter (fun name ->
-      let path = dir // name in
-      try Sys.is_directory path with _ -> false)
-  with _ -> []
-
-let read_first_lines path n =
-  try
-    let ic = open_in path in
-    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-      let lines = ref [] in
-      for _i = 1 to n do
-        match input_line ic with
-        | line -> lines := line :: !lines
-        | exception End_of_file -> ()
-      done;
-      List.rev !lines)
-  with _ -> []
-
-let parse_skill_frontmatter dir name =
-  let skill_md = dir // name // "SKILL.md" in
-  let lines = read_first_lines skill_md 10 in
-  let name_ref = ref None in
-  let desc_ref = ref None in
-  let strip_quotes s =
-    let len = String.length s in
-    if len >= 2 && s.[0] = '"' && s.[len - 1] = '"'
-    then String.sub s 1 (len - 2)
-    else s
-  in
-  let in_frontmatter = ref false in
-  List.iter (fun line ->
-    let line = String.trim line in
-    if line = "---" then in_frontmatter := not !in_frontmatter
-    else if !in_frontmatter then
-      if Str.string_match (Str.regexp "^name:[ ]*\\([^ ].*\\)$") line 0
-      then name_ref := Some (Str.matched_group 1 line)
-      else if Str.string_match (Str.regexp "^description:[ ]*\\(\".*\"\\)$") line 0
-      then desc_ref := Some (strip_quotes (Str.matched_group 1 line))
-      else if Str.string_match (Str.regexp "^description:[ ]*\\([^ ].*\\)$") line 0
-      then desc_ref := Some (Str.matched_group 1 line)
-  ) lines;
-  (!name_ref, !desc_ref)
-
-let skills_list_cmd =
-  let json = json_flag in
-  let+ json = json in
-  let dir = skills_dir () in
-  let names = list_subdirs dir in
-  if json then
-    let skills = List.map (fun name ->
-      let (parsed_name, desc) = parse_skill_frontmatter dir name in
-      `Assoc ([ ("id", `String name) ]
-        @ (match parsed_name with Some n -> [ ("name", `String n) ] | None -> [])
-        @ (match desc with Some d -> [ ("description", `String d) ] | None -> []))
-    ) names in
-    print_json (`List skills)
-  else
-    List.iter (fun name ->
-      let (parsed_name, desc) = parse_skill_frontmatter dir name in
-      Printf.printf "%s\n" name;
-      (match parsed_name with Some n -> Printf.printf "  name: %s\n" n | None -> ());
-      (match desc with Some d -> Printf.printf "  description: %s\n" d | None -> ());
-      print_newline ()
-    ) names
-
-let skills_serve_cmd =
-  let name =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info []
-      ~docv:"SKILL" ~doc:"Skill name (directory name under .opencode/skills/)")
-  in
-  let+ name = name in
-  let dir = skills_dir () in
-  let skill_md = dir // name // "SKILL.md" in
-  try
-    let content = read_first_lines skill_md 10000 in
-    List.iter (fun line -> Printf.printf "%s\n" line) content
-  with _ ->
-    Printf.eprintf "error: skill '%s' not found in %s\n%!" name dir;
-    exit 1
-
-let skills_group =
-  Cmdliner.Cmd.group
-    ~default:skills_list_cmd
-    (Cmdliner.Cmd.info "skills" ~doc:"List and serve c2c swarm skills.")
-    [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List all available skills.") skills_list_cmd
-    ; Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Print a skill's full content.") skills_serve_cmd ]
-
 (* --- main entry point ----------------------------------------------------- *)
 
 let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a registered peer alias or session ID.") send_cmd
@@ -2738,118 +2644,6 @@ let fast_path_completion () =
         exit 1
   end
 
-let fast_path_skills_list ~json () =
-  let dir = Sys.getcwd () // ".opencode" // "skills" in
-  let names =
-    try
-      Array.to_list (Sys.readdir dir)
-      |> List.filter (fun name ->
-        let path = dir // name in
-        try Sys.is_directory path with _ -> false)
-    with _ -> []
-  in
-  if json then
-    let skills = List.map (fun name ->
-      let skill_md = dir // name // "SKILL.md" in
-      let lines =
-        (try
-          let ic = open_in skill_md in
-          Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-            let rec go acc n =
-              if n <= 0 then List.rev acc
-              else
-                match input_line ic with
-                | line -> go (line :: acc) (n - 1)
-                | exception End_of_file -> List.rev acc
-            in
-            go [] 10)
-        with _ -> [])
-      in
-      let name_ref = ref None in
-      let desc_ref = ref None in
-      let strip_quotes s =
-        let len = String.length s in
-        if len >= 2 && s.[0] = '"' && s.[len - 1] = '"'
-        then String.sub s 1 (len - 2)
-        else s
-      in
-      let in_frontmatter = ref false in
-      List.iter (fun line ->
-        let line = String.trim line in
-        if line = "---" then in_frontmatter := not !in_frontmatter
-        else if !in_frontmatter then
-          if Str.string_match (Str.regexp "^name:[ ]*\\([^ ].*\\)$") line 0
-          then name_ref := Some (Str.matched_group 1 line)
-          else if Str.string_match (Str.regexp "^description:[ ]*\\(\".*\"\\)$") line 0
-          then desc_ref := Some (strip_quotes (Str.matched_group 1 line))
-          else if Str.string_match (Str.regexp "^description:[ ]*\\([^ ].*\\)$") line 0
-          then desc_ref := Some (Str.matched_group 1 line)
-      ) lines;
-      `Assoc ([ ("id", `String name) ]
-        @ (match !name_ref with Some n -> [ ("name", `String n) ] | None -> [])
-        @ (match !desc_ref with Some d -> [ ("description", `String d) ] | None -> []))
-    ) names in
-    print_json (`List skills)
-  else
-    List.iter (fun name ->
-      let skill_md = dir // name // "SKILL.md" in
-      let lines =
-        (try
-          let ic = open_in skill_md in
-          Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-            let rec go acc n =
-              if n <= 0 then List.rev acc
-              else
-                match input_line ic with
-                | line -> go (line :: acc) (n - 1)
-                | exception End_of_file -> List.rev acc
-            in
-            go [] 10)
-        with _ -> [])
-      in
-      let name_ref = ref None in
-      let desc_ref = ref None in
-      let strip_quotes s =
-        let len = String.length s in
-        if len >= 2 && s.[0] = '"' && s.[len - 1] = '"'
-        then String.sub s 1 (len - 2)
-        else s
-      in
-      let in_frontmatter = ref false in
-      List.iter (fun line ->
-        let line = String.trim line in
-        if line = "---" then in_frontmatter := not !in_frontmatter
-        else if !in_frontmatter then
-          if Str.string_match (Str.regexp "^name:[ ]*\\([^ ].*\\)$") line 0
-          then name_ref := Some (Str.matched_group 1 line)
-          else if Str.string_match (Str.regexp "^description:[ ]*\\(\".*\"\\)$") line 0
-          then desc_ref := Some (strip_quotes (Str.matched_group 1 line))
-          else if Str.string_match (Str.regexp "^description:[ ]*\\([^ ].*\\)$") line 0
-          then desc_ref := Some (Str.matched_group 1 line)
-      ) lines;
-      Printf.printf "%s\n" name;
-      (match !name_ref with Some n -> Printf.printf "  name: %s\n" n | None -> ());
-      (match !desc_ref with Some d -> Printf.printf "  description: %s\n" d | None -> ());
-      print_newline ()
-    ) names
-
-let fast_path_skills_serve name =
-  let dir = Sys.getcwd () // ".opencode" // "skills" in
-  let skill_md = dir // name // "SKILL.md" in
-  try
-    let ic = open_in skill_md in
-    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-      let rec copy_all () =
-        try
-          print_endline (input_line ic);
-          copy_all ()
-        with End_of_file -> ()
-      in
-      copy_all ())
-  with _ ->
-    Printf.eprintf "error: skill '%s' not found in %s\n%!" name dir;
-    exit 1
-
 let try_fast_path () =
   (* Skip fast-path if any flag we don't recognize appears, so cmdliner
      can produce its standard error. We only handle the trivial shape:
@@ -2893,9 +2687,9 @@ let try_fast_path () =
                | "--json" | "-j" -> json := true
                | _ -> unknown := true
              done;
-             if not !unknown then fast_path_skills_list ~json:!json ()
+             if not !unknown then C2c_skills_cmd.fast_path_skills_list ~json:!json ()
          | "serve" when n >= 4 ->
-             fast_path_skills_serve argv.(3)
+             C2c_skills_cmd.fast_path_skills_serve argv.(3)
          | _ -> ())
     | "get-tmux-location" ->
         let json = ref false in
@@ -2972,7 +2766,7 @@ let () =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; C2c_sweep_cmd.sweep; C2c_sweep_cmd.registry_prune
     ; C2c_sweep_cmd.sweep_dryrun; migrate_broker; history; C2c_health_cmd.health; C2c_health_cmd.connect; setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; list_glyphs
-    ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; relay_pins; C2c_mesh_cmd.mesh_group; skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
+    ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; relay_pins; C2c_mesh_cmd.mesh_group; C2c_skills_cmd.skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit

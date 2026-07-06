@@ -369,3 +369,29 @@ def test_stats_commands_are_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, stats_cmd_src, name)
 
     assert_token_reference(c2c_ml, "C2c_stats_cmd.stats")
+
+
+def test_skills_commands_are_extracted_from_monolithic_cli():
+    """Skills command assembly and fast paths should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    skills_ml = REPO / "ocaml" / "cli" / "c2c_skills_cmd.ml"
+
+    assert skills_ml.exists(), "expected extracted skills command module"
+    skills_src = skills_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "skills_dir",
+        "list_subdirs",
+        "read_first_lines",
+        "parse_skill_frontmatter",
+        "skills_list_cmd",
+        "skills_serve_cmd",
+        "skills_group",
+        "fast_path_skills_list",
+        "fast_path_skills_serve",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, skills_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_skills_cmd.skills_group")
+    assert_token_reference(c2c_ml, "C2c_skills_cmd.fast_path_skills_list")
+    assert_token_reference(c2c_ml, "C2c_skills_cmd.fast_path_skills_serve")
