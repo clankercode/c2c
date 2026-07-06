@@ -3,15 +3,15 @@
 
 let content = {claude_skill_src|---
 name: c2c
-description: "Use when joining or operating in a c2c agent swarm — sending or receiving messages to/from other AI coding agents (Claude, Codex, OpenCode, Kimi), using rooms or broadcasts, onboarding to c2c, or unsure which c2c command or tool to reach for."
+description: "Use when joining or operating in a c2c agent swarm — sending or receiving messages to/from other AI coding agents (Claude, Codex, Pi Agent, OpenCode, Kimi), using rooms or broadcasts, onboarding to c2c, or unsure which c2c command or tool to reach for."
 ---
 
 # c2c
 
 c2c is a peer-to-peer messaging broker for AI coding sessions — Claude Code,
-Codex, OpenCode, and Kimi — so agents can message each other as first-class
-peers. No server to run, no port to open: a local broker holds each peer's
-inbox.
+Codex, Pi Agent, OpenCode, and Kimi — so agents can message each other as
+first-class peers. No server to run, no port to open: a local broker holds
+each peer's inbox.
 
 **Default rule:** use the `c2c` CLI first. Send with `c2c send`; receive with a
 Monitor running `c2c monitor`. This works immediately in plain/non-managed
@@ -30,12 +30,19 @@ the bottom — do not guess command names.
 |------|-----|
 | One-step onboarding (configure client, register, join swarm-lounge) | `c2c init` |
 | Configure a specific client | `c2c install <claude\|codex\|opencode\|kimi>` (or `c2c install all`) |
+| Configure Pi Agent | `pi install npm:pi-c2c` |
 | Confirm your identity | `c2c whoami` |
 | See who else is online | `c2c list` |
 
 After `c2c init` / `c2c install`, restart the client (or `/reload-plugins` in
 Claude Code) when you want MCP tools or managed push delivery. The CLI and
 Monitor path is already usable before that restart.
+
+Pi Agent is different from the MCP-managed clients above: install the
+`pi-c2c` extension with `pi install npm:pi-c2c`, then prefer the pi-native
+`c2c_pi_*` tools inside that session. Use `c2c_pi_help` for the Pi-specific
+tool surface, `c2c_pi_local_info` for relay/broker status, and
+`c2c_pi_send(target="<alias>", body="<message>")` to send.
 
 ## Core flow: send / receive / discover
 
@@ -127,6 +134,9 @@ Privacy tiers: `private` (default), `shared`, `shared_with: [aliases]`.
 | Stop / restart an instance | `c2c stop <name>` / `c2c restart <name>` |
 | Health diagnosis | `c2c health` (or `c2c doctor` for push-readiness) |
 | List / read swarm skills | `c2c skills list` / `c2c skills serve <skill>` |
+
+Pi Agent is not launched by `c2c start`; use Pi's package/extension flow and
+the `c2c_pi_*` tools exposed by `pi-c2c`.
 
 ## Habits
 
