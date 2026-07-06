@@ -71,3 +71,4 @@ bugs:
     - file: B072-send-error-says-alias-not-regi.todo
     - file: B073-migrate-broker-leaves-xdg-sour.todo
     - file: B074-register-blocked-alias-error-g.todo
+    - file: B075-just-test-ocaml-killed-by-60s.todo
