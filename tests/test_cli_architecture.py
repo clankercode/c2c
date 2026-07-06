@@ -326,3 +326,25 @@ def test_sweep_commands_are_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_sweep_cmd.sweep")
     assert_token_reference(c2c_ml, "C2c_sweep_cmd.registry_prune")
     assert_token_reference(c2c_ml, "C2c_sweep_cmd.sweep_dryrun")
+
+
+def test_hook_commands_are_extracted_from_monolithic_cli():
+    """Claude Code hook command assembly should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    hook_ml = REPO / "ocaml" / "cli" / "c2c_hook_cmd.ml"
+
+    assert hook_ml.exists(), "expected extracted hook command module"
+    hook_src = hook_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "min_hook_runtime_ms",
+        "sleep_to_min_runtime",
+        "hook_post_tool_cmd",
+        "hook_post_tool",
+        "hook_stop_cmd",
+        "hook_stop",
+        "hook",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, hook_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_hook_cmd.hook")
