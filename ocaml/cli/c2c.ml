@@ -1214,82 +1214,9 @@ let peek_inbox = Cmdliner.Cmd.v (Cmdliner.Cmd.info "peek-inbox" ~doc:"Peek at yo
 
 (* Approval subcommands extracted to c2c_approval_cmd.ml *)
 
-(* --- subcommand: setcap --------------------------------------------------- *)
-
-let setcap_cmd =
-  let apply =
-    Cmdliner.Arg.(value & flag & info [ "apply" ]
-                    ~doc:"Exec `sudo setcap cap_sys_ptrace=ep <interp>` (needs tty + sudo).")
-  in
-  let json =
-    Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Machine-readable output.")
-  in
-  let+ apply = apply
-  and+ json = json in
-  match find_python_script "c2c_setcap.py" with
-  | None ->
-      Printf.eprintf "error: cannot find c2c_setcap.py. Run from inside the c2c git repo.\n%!";
-      exit 1
-  | Some script ->
-      let args = [ "python3"; script ] in
-      let args = if apply then args @ [ "--apply" ] else args in
-      let args = if json then args @ [ "--json" ] else args in
-      Unix.execvp "python3" (Array.of_list args)
-
-let setcap = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setcap"
-                               ~doc:"Grant CAP_SYS_PTRACE to the c2c Python interpreter (only needed for Codex PTY notify daemon; OpenCode + Kimi use non-PTY delivery).")
-               setcap_cmd
-
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
 let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
 let deregister = Cmdliner.Cmd.v (Cmdliner.Cmd.info "deregister" ~doc:"Remove a registration from the broker.") deregister_cmd
-(* --- subcommand: smoke-test ----------------------------------------------- *)
-
-let smoke_test_cmd =
-  let+ json = json_flag in
-  let tmp_dir = Filename.temp_file "c2c-smoke-" "" in
-  Sys.remove tmp_dir;
-  Unix.mkdir tmp_dir 0o755;
-  let broker_root = tmp_dir // "broker" in
-  Unix.mkdir broker_root 0o755;
-  let broker = C2c_mcp.Broker.create ~root:broker_root in
-  let session_a = "smoke-session-a" in
-  let session_b = "smoke-session-b" in
-  let alias_a = "smoke-a" in
-  let alias_b = "smoke-b" in
-  let pid = Some (Unix.getpid ()) in
-  let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
-  C2c_mcp.Broker.register broker ~session_id:session_a ~alias:alias_a ~pid ~pid_start_time ();
-  C2c_mcp.Broker.register broker ~session_id:session_b ~alias:alias_b ~pid ~pid_start_time ();
-  let marker =
-    Printf.sprintf "c2c-smoke-%d-%d"
-      (Unix.gettimeofday () |> int_of_float)
-      (Random.int 100000)
-  in
-  C2c_mcp.Broker.enqueue_message broker ~from_alias:alias_a ~to_alias:alias_b ~content:marker ();
-  let messages = C2c_mcp.Broker.drain_inbox broker ~session_id:session_b in
-  let ok = List.exists (fun (m : C2c_mcp.message) -> m.content = marker) messages in
-  let rec rm_rf path =
-    if Sys.is_directory path then (
-      let entries = Sys.readdir path in
-      Array.iter (fun e -> rm_rf (path // e)) entries;
-      Unix.rmdir path)
-    else Sys.remove path
-  in
-  rm_rf tmp_dir;
-  let output_mode = if json then Json else Human in
-  match output_mode with
-  | Json ->
-      print_json
-        (`Assoc [ ("ok", `Bool ok); ("marker", `String marker) ])
-  | Human ->
-      if ok then
-        Printf.printf "smoke-test passed (marker: %s)\n" marker
-      else (
-        Printf.eprintf "smoke-test failed: marker not received (marker: %s)\n%!" marker;
-        exit 1)
-
-let smoke_test = Cmdliner.Cmd.v (Cmdliner.Cmd.info "smoke-test" ~doc:"Run an end-to-end broker smoke test.") smoke_test_cmd
 
 (* Phase 1 split: install/setup code moved to c2c_setup.ml *)
 
@@ -2023,7 +1950,7 @@ let dev_group =
     ; C2c_worktree.worktree_group; C2c_sitrep.sitrep_group
     ; C2c_peer_pass.peer_pass_group ]
   in
-  let tier3_subs = [ C2c_instances_cmd.diag; C2c_managed_cmd.restart_self; smoke_test; C2c_inject_cmd.inject ] in
+  let tier3_subs = [ C2c_instances_cmd.diag; C2c_managed_cmd.restart_self; C2c_host_cmd.smoke_test; C2c_inject_cmd.inject ] in
   let visible_subs =
     if is_agent_session () then tier2_subs
     else tier2_subs @ tier3_subs
@@ -2053,7 +1980,7 @@ let restart_self_deprecated =
 
 let smoke_test_deprecated =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "smoke-test" ~doc:"[DEPRECATED: use c2c dev smoke-test]")
-    (deprecation_wrap ~old_name:"smoke-test" ~new_path:"dev smoke-test" smoke_test_cmd)
+    (deprecation_wrap ~old_name:"smoke-test" ~new_path:"dev smoke-test" C2c_host_cmd.smoke_test_cmd)
 
 let inject_deprecated =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "inject" ~doc:"[DEPRECATED: use c2c dev inject]")
@@ -2069,7 +1996,7 @@ let () =
   let tier_grouped_man = C2c_commands_cmd.commands_man is_agent in
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; C2c_sweep_cmd.sweep; C2c_sweep_cmd.registry_prune
-    ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; C2c_git_cmd.git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
+    ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; C2c_host_cmd.setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; C2c_git_cmd.git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; C2c_broker_cmd.tail_log; C2c_broker_cmd.server_info; C2c_broker_cmd.my_rooms; C2c_broker_cmd.dead_letter; C2c_broker_cmd.prune_rooms; C2c_broker_cmd.get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; C2c_glyphs_cmd.list_glyphs
     ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; relay_pins; C2c_mesh_cmd.mesh_group; C2c_skills_cmd.skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in

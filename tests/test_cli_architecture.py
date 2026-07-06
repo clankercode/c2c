@@ -503,3 +503,24 @@ def test_git_wrapper_command_is_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, git_cmd_src, name)
 
     assert_token_reference(c2c_ml, "C2c_git_cmd.git")
+
+
+def test_host_utility_commands_are_extracted_from_monolithic_cli():
+    """Host setup and broker smoke commands should live outside c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    host_cmd_ml = REPO / "ocaml" / "cli" / "c2c_host_cmd.ml"
+
+    assert host_cmd_ml.exists(), "expected extracted host utility command module"
+    host_cmd_src = host_cmd_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "setcap_cmd",
+        "setcap",
+        "smoke_test_cmd",
+        "smoke_test",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, host_cmd_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_host_cmd.setcap")
+    assert_token_reference(c2c_ml, "C2c_host_cmd.smoke_test")
+    assert_token_reference(c2c_ml, "C2c_host_cmd.smoke_test_cmd")
