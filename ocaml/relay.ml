@@ -13,6 +13,7 @@ include Relay_observer_bindings
 include Relay_observer_sessions
 include Relay_observer_protocol
 include Relay_observer_push
+include Relay_observer_runtime
 include Relay_mobile_pair_nonce_cache
 include Relay_pow_challenge
 include Relay_client
@@ -2412,17 +2413,6 @@ end
 
 (* Instantiate rate limiter once at module level — avoids fresh-type-in-functor issue. *)
 module Rate_limiter_inst = Relay_ratelimit.Make()
-
-let observer_bindings = ObserverBindings.create ()
-let get_observer_binding ~binding_id = ObserverBindings.get observer_bindings ~binding_id
-let add_observer_binding ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey ~machine_ed25519_pubkey ~provenance_sig =
-  ObserverBindings.add observer_bindings ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey
-    ~machine_ed25519_pubkey ~provenance_sig
-let binding_id_of_phone_pk ~phone_ed25519_pubkey =
-  ObserverBindings.binding_id_of_phone_pk observer_bindings ~phone_ed25519_pubkey
-
-(* S6: Short queue for observer message short-term storage *)
-let short_queue = Relay_short_queue.ShortQueue.create ()
 
 module Relay_server(R : RELAY) : sig
   val make_callback :

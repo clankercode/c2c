@@ -287,3 +287,23 @@ def test_relay_alias_helpers_are_extracted_from_relay_ml():
         assert re.search(rf"^let\s+{re.escape(name)}\b", alias_src, re.MULTILINE)
 
     assert re.search(r"\binclude\s+Relay_alias_helpers\b", relay_ml)
+
+
+def test_relay_observer_runtime_state_is_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    runtime_ml = REPO / "ocaml" / "relay_observer_runtime.ml"
+
+    assert runtime_ml.exists(), "expected extracted relay observer runtime module"
+    runtime_src = runtime_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "observer_bindings",
+        "get_observer_binding",
+        "add_observer_binding",
+        "binding_id_of_phone_pk",
+        "short_queue",
+    ]:
+        assert re.search(rf"^let\s+{re.escape(name)}\b", relay_ml, re.MULTILINE) is None
+        assert re.search(rf"^let\s+{re.escape(name)}\b", runtime_src, re.MULTILINE)
+
+    assert re.search(r"\binclude\s+Relay_observer_runtime\b", relay_ml)
