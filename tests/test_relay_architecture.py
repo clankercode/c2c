@@ -251,3 +251,22 @@ def test_relay_client_module_is_extracted_from_relay_ml():
         assert re.search(pattern, client_src)
 
     assert re.search(r"\binclude\s+Relay_client\b", relay_ml)
+
+
+def test_relay_backend_contract_is_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    contract_ml = REPO / "ocaml" / "relay_backend_contract.ml"
+
+    assert contract_ml.exists(), "expected extracted relay backend contract module"
+    contract_src = contract_ml.read_text(encoding="utf-8")
+
+    for pattern in [
+        r"^type\s+device_pair_pending\b",
+        r"^let\s+get_now\b",
+        r"^let\s+with_lock\b",
+        r"^module\s+type\s+RELAY\b",
+    ]:
+        assert re.search(pattern, relay_ml, re.MULTILINE) is None
+        assert re.search(pattern, contract_src, re.MULTILINE)
+
+    assert re.search(r"\binclude\s+Relay_backend_contract\b", relay_ml)
