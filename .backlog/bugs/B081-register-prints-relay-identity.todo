@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B081
+priority: high
+status: pending
+tags: []
+title: register prints '[relay_identity] ssh-keygen available — openssh-key export enabled.' to stderr — debug noise on a happy-path command
+---
+
+register prints '[relay_identity] ssh-keygen available — openssh-key export enabled.' to stderr — debug noise on a happy-path command
