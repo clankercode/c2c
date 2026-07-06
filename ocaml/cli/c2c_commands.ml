@@ -23,6 +23,7 @@ let command_tier_map () : (string * safety) list =
   ; "whoami", Tier1
   ; "poll-inbox", Tier1
   ; "peek-inbox", Tier1
+  ; "wait-inbox", Tier1
   ; "await-reply", Tier1
   ; "approval-reply", Tier1
   ; "authorize", Tier1
