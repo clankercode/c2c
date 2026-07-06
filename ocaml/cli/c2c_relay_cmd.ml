@@ -333,6 +333,35 @@ let resolve_relay_token opt =
        | Some v when v <> "" -> Some v
        | _ -> relay_config_string_field "token")
 
+(* --- shared result rendering -----------------------------------------------
+
+   Every relay subcommand ends by printing the relay's JSON response and
+   exiting 0/1 on its "ok" field. [print_result_and_exit] centralizes that
+   tail so auth failures can carry actionable hints: when the relay rejects a
+   signed request because the claimed alias has no identity binding
+   (Relay_client_hints.is_missing_identity_binding), a fix-it hint naming the
+   exact registration command is printed to stderr. Pass [~alias_source] for
+   any request that was (or may have been) signed with an alias; omit it for
+   unsigned/admin requests and for `relay register` itself (hinting "run
+   c2c relay register" at a failing register would be circular). *)
+let print_result_and_exit ?alias_source result =
+  print_endline (Yojson.Safe.pretty_to_string result);
+  let ok = match result with
+    | `Assoc fields ->
+        (match List.assoc_opt "ok" fields with Some (`Bool true) -> true | _ -> false)
+    | _ -> false
+  in
+  if ok then exit 0
+  else begin
+    (match alias_source with
+     | Some src ->
+         (match Relay_client_hints.hint_for_response ~alias_source:src result with
+          | Some hint -> Printf.eprintf "%s%!" hint
+          | None -> ())
+     | None -> ());
+    exit 1
+  end
+
 let relay_connect_cmd =
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
@@ -503,11 +532,7 @@ let relay_status_cmd =
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       let result = Lwt_main.run (Relay.Relay_client.health client) in
-      print_endline (Yojson.Safe.pretty_to_string result);
-      (match result with
-       | `Assoc fields ->
-           (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-       | _ -> exit 1)
+      print_result_and_exit result
 
 let relay_list_cmd =
   let relay_url =
@@ -516,11 +541,18 @@ let relay_list_cmd =
   let token =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
+  let alias =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS"
+      ~doc:"Alias to sign the /list request as (default: $(b,C2C_MCP_AUTO_REGISTER_ALIAS), \
+            else the \"anon\" placeholder). Must be bound to your local identity on the \
+            relay via $(b,c2c relay register --alias) $(i,ALIAS).")
+  in
   let dead =
     Cmdliner.Arg.(value & flag & info [ "dead" ] ~doc:"Include reserved offline aliases.")
   in
   let+ relay_url = relay_url
   and+ token = token
+  and+ alias = alias
   and+ dead = dead in
   match resolve_relay_url relay_url with
   | None ->
@@ -528,20 +560,27 @@ let relay_list_cmd =
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+      (* Signing alias: --alias wins, then C2C_MCP_AUTO_REGISTER_ALIAS, else the
+         "anon" placeholder (kept so dev-mode relays without auth still answer;
+         prod relays reject it — print_result_and_exit renders the fix). *)
+      let alias_source = match alias, env_auto_alias () with
+        | Some a, _ -> Relay_client_hints.Explicit a
+        | None, Some a -> Relay_client_hints.Explicit a
+        | None, None -> Relay_client_hints.Anon_fallback
+      in
+      let signing_alias = match alias_source with
+        | Relay_client_hints.Explicit a -> a
+        | Relay_client_hints.Anon_fallback -> "anon"
+      in
       let result = (match Relay_identity.load () with
         | Ok id when not dead ->
             (* /list (no include_dead) is a peer route: requires Ed25519 in prod mode *)
-            let alias = Option.value ~default:"anon" (env_auto_alias ()) in
-            let auth = Relay_signed_ops.sign_request id ~alias ~meth:"GET" ~path:"/list" ~body_str:"" () in
+            let auth = Relay_signed_ops.sign_request id ~alias:signing_alias ~meth:"GET" ~path:"/list" ~body_str:"" () in
             Lwt_main.run (Relay.Relay_client.list_peers_signed client ~auth_header:auth ())
         | _ ->
             (* /list?include_dead=1 is an admin route (Bearer only); also fallback when no identity *)
             Lwt_main.run (Relay.Relay_client.list_peers client ~include_dead:dead ())) in
-      print_endline (Yojson.Safe.pretty_to_string result);
-      (match result with
-       | `Assoc fields ->
-           (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-       | _ -> exit 1)
+      print_result_and_exit ~alias_source result
 
 let relay_rooms_cmd =
   let subcmd =
@@ -634,11 +673,7 @@ let relay_rooms_cmd =
                  else
                    Lwt_main.run (Relay.Relay_client.leave_room client ~alias ~room_id)
            in
-           print_endline (Yojson.Safe.pretty_to_string result);
-           (match result with
-            | `Assoc fields ->
-                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-            | _ -> exit 1))
+           print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
   | "send" ->
       (match resolve_relay_url relay_url, room, alias, words with
        | None, _, _, _ ->
@@ -674,11 +709,7 @@ let relay_rooms_cmd =
                    (Relay.Relay_client.send_room client
                       ~from_alias ~room_id ~content ())
            in
-           print_endline (Yojson.Safe.pretty_to_string result);
-           (match result with
-            | `Assoc fields ->
-                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-            | _ -> exit 1))
+           print_result_and_exit ~alias_source:(Relay_client_hints.Explicit from_alias) result)
   | "history" ->
       (match resolve_relay_url relay_url, room with
        | None, _ ->
@@ -740,11 +771,10 @@ let relay_rooms_cmd =
                  `Assoc fs'
              | other -> other
            in
-           print_endline (Yojson.Safe.pretty_to_string annotated);
-           (match annotated with
-            | `Assoc fields ->
-                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-            | _ -> exit 1))
+           let alias_source =
+             Option.map (fun a -> Relay_client_hints.Explicit a) alias
+           in
+           print_result_and_exit ?alias_source annotated)
   | "list" ->
       (match resolve_relay_url relay_url with
        | None ->
@@ -753,11 +783,7 @@ let relay_rooms_cmd =
        | Some url ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            let result = Lwt_main.run (Relay.Relay_client.list_rooms client) in
-            print_endline (Yojson.Safe.pretty_to_string result);
-            (match result with
-             | `Assoc fields ->
-                 (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-             | _ -> exit 1))
+           print_result_and_exit result)
   | "invite" | "uninvite" ->
       (match resolve_relay_url relay_url, room, alias, invitee_pk with
        | None, _, _, _ ->
@@ -793,11 +819,7 @@ let relay_rooms_cmd =
                           else Relay.Relay_client.uninvite_room in
                  Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val)
            in
-           print_endline (Yojson.Safe.pretty_to_string result);
-           (match result with
-            | `Assoc fields ->
-                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-            | _ -> exit 1))
+           print_result_and_exit ~alias_source:(Relay_client_hints.Explicit from_alias) result)
   | "set-visibility" ->
       (match resolve_relay_url relay_url, room, alias, visibility with
        | None, _, _, _ ->
@@ -832,11 +854,7 @@ let relay_rooms_cmd =
                  Lwt_main.run (Relay.Relay_client.set_room_visibility client
                    ~alias ~room_id ~visibility:visibility_val)
            in
-           print_endline (Yojson.Safe.pretty_to_string result);
-            (match result with
-             | `Assoc fields ->
-                 (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-             | _ -> exit 1))
+           print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
   | _ ->
       Printf.eprintf "error: unknown rooms subcommand '%s'\n%!" subcmd;
       exit 1
@@ -874,11 +892,9 @@ let relay_register_cmd =
             Lwt_main.run (Relay.Relay_client.register client
               ~node_id ~session_id ~alias ~client_type:"cli" ~identity_pk:"" ()))
       in
-      print_endline (Yojson.Safe.pretty_to_string result);
-      (match result with
-       | `Assoc fields ->
-           (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-       | _ -> exit 1)
+      (* No ~alias_source: register IS the binding-establishment command, so
+         hinting "run c2c relay register" at a failing register is circular. *)
+      print_result_and_exit result
 
 (* c2c relay dm — cross-host direct messages (§8.3) *)
 let relay_dm_cmd =
@@ -936,11 +952,8 @@ let relay_dm_cmd =
                   | Error _ ->
                       Lwt_main.run (Relay.Relay_client.send client
                         ~from_alias ~to_alias ~content ())) in
-                print_endline (Yojson.Safe.pretty_to_string result);
-                (match result with
-                 | `Assoc fields ->
-                     (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-                 | _ -> exit 1))
+                print_result_and_exit
+                  ~alias_source:(Relay_client_hints.Explicit from_alias) result)
        | "poll" ->
            let from_alias = match alias with
              | Some a -> a
@@ -962,11 +975,8 @@ let relay_dm_cmd =
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.poll_inbox client
                    ~node_id ~session_id:node_id)) in
-           print_endline (Yojson.Safe.pretty_to_string result);
-           (match result with
-            | `Assoc fields ->
-                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-            | _ -> exit 1)
+           print_result_and_exit
+             ~alias_source:(Relay_client_hints.Explicit from_alias) result
        | "send-all" ->
            (* Broadcast (1:N) — POST /send_all with Ed25519 auth header.
               Used by relay smoke tests (gap D) to verify the broadcast
@@ -1005,11 +1015,8 @@ let relay_dm_cmd =
                   | Error _ ->
                       Lwt_main.run (Relay.Relay_client.request client
                         ~meth:`POST ~path:"/send_all" ~body ())) in
-                print_endline (Yojson.Safe.pretty_to_string result);
-                (match result with
-                 | `Assoc fields ->
-                     (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-                 | _ -> exit 1))
+                print_result_and_exit
+                  ~alias_source:(Relay_client_hints.Explicit from_alias) result)
        | other ->
            Printf.eprintf "error: unknown dm subcommand: %s\n%!" other;
            exit 1)
@@ -1131,12 +1138,7 @@ let relay_mobile_pair_cmd =
             (Relay.Relay_client.mobile_pair_confirm client
                ~token:token_val ~phone_ed25519_pubkey:ed_pk ~phone_x25519_pubkey:x_pk)
           in
-          if json then print_endline (Yojson.Safe.pretty_to_string result)
-          else print_endline (Yojson.Safe.pretty_to_string result);
-           (match result with
-            | `Assoc fields ->
-                (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-            | _ -> exit 1)
+          print_result_and_exit result
       | "revoke" ->
           let bid = binding_id in
           if bid = None then (Printf.eprintf "error: --binding-id required for revoke.\n%!"; exit 1);
@@ -1144,12 +1146,7 @@ let relay_mobile_pair_cmd =
           let result = Lwt_main.run
             (Relay.Relay_client.mobile_pair_revoke client ~binding_id:bid)
           in
-          if json then print_endline (Yojson.Safe.pretty_to_string result)
-          else print_endline (Yojson.Safe.pretty_to_string result);
-          (match result with
-           | `Assoc fields ->
-               (match List.assoc_opt "ok" fields with Some (`Bool true) -> exit 0 | _ -> exit 1)
-           | _ -> exit 1)
+          print_result_and_exit result
       | "init" ->
           (match Relay_identity.load () with
            | Error _ ->
