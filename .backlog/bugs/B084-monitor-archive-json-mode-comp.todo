@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B084
+priority: high
+status: pending
+tags: []
+title: monitor archive JSON mode compares is_mine as session_id-vs-alias (different namespaces) — human path unaffected (reported by monitor-fix worker)
+---
+
+monitor archive JSON mode compares is_mine as session_id-vs-alias (different namespaces) — human path unaffected (reported by monitor-fix worker)
