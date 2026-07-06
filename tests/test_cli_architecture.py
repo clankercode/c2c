@@ -54,14 +54,17 @@ def test_inject_and_screen_commands_are_extracted_from_monolithic_cli():
     """PTY injection and screen capture should live outside ocaml/cli/c2c.ml."""
     c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
     inject_ml = REPO / "ocaml" / "cli" / "c2c_inject_cmd.ml"
+    dev_ml = REPO / "ocaml" / "cli" / "c2c_dev_cmd.ml"
 
     assert inject_ml.exists(), "expected extracted inject/screen command module"
     inject_src = inject_ml.read_text(encoding="utf-8")
+    dev_src = dev_ml.read_text(encoding="utf-8") if dev_ml.exists() else ""
+    root_and_dev_src = c2c_ml + dev_src
 
     assert "let inject_cmd =" not in c2c_ml
     assert "let screen_cmd =" not in c2c_ml
-    assert "C2c_inject_cmd.inject_cmd" in c2c_ml
-    assert "C2c_inject_cmd.inject" in c2c_ml
+    assert "C2c_inject_cmd.inject_cmd" in root_and_dev_src
+    assert "C2c_inject_cmd.inject" in root_and_dev_src
     assert "C2c_inject_cmd.screen" in c2c_ml
     assert "let inject_cmd =" in inject_src
     assert "let screen_cmd =" in inject_src
@@ -98,18 +101,21 @@ def test_instances_and_diag_commands_are_extracted_from_monolithic_cli():
     """Managed-instance listing, cleanup, and diagnostics should be modular."""
     c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
     instances_ml = REPO / "ocaml" / "cli" / "c2c_instances_cmd.ml"
+    dev_ml = REPO / "ocaml" / "cli" / "c2c_dev_cmd.ml"
 
     assert instances_ml.exists(), "expected extracted instances command module"
     instances_src = instances_ml.read_text(encoding="utf-8")
+    dev_src = dev_ml.read_text(encoding="utf-8") if dev_ml.exists() else ""
+    root_and_dev_src = c2c_ml + dev_src
 
     assert "let instances_cmd =" not in c2c_ml
     assert "let clean_stale_cmd =" not in c2c_ml
     assert "let instances_gc_cmd =" not in c2c_ml
     assert "let diag_cmd =" not in c2c_ml
     assert "let instances_deprecated_term =" not in c2c_ml
-    assert "C2c_instances_cmd.dev_instances_sub" in c2c_ml
-    assert "C2c_instances_cmd.diag" in c2c_ml
-    assert "C2c_instances_cmd.diag_cmd" in c2c_ml
+    assert "C2c_instances_cmd.dev_instances_sub" in root_and_dev_src
+    assert "C2c_instances_cmd.diag" in root_and_dev_src
+    assert "C2c_instances_cmd.diag_cmd" in root_and_dev_src
     assert "C2c_instances_cmd.instances_deprecated" in c2c_ml
     assert "let instances_cmd =" in instances_src
     assert "let clean_stale_cmd =" in instances_src
@@ -122,9 +128,12 @@ def test_managed_lifecycle_commands_are_extracted_from_monolithic_cli():
     """Managed-session lifecycle commands should live outside ocaml/cli/c2c.ml."""
     c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
     managed_ml = REPO / "ocaml" / "cli" / "c2c_managed_cmd.ml"
+    dev_ml = REPO / "ocaml" / "cli" / "c2c_dev_cmd.ml"
 
     assert managed_ml.exists(), "expected extracted managed lifecycle command module"
     managed_src = managed_ml.read_text(encoding="utf-8")
+    dev_src = dev_ml.read_text(encoding="utf-8") if dev_ml.exists() else ""
+    root_and_dev_src = c2c_ml + dev_src
 
     for name in [
         "roles_dir",
@@ -156,8 +165,8 @@ def test_managed_lifecycle_commands_are_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_managed_cmd.stop")
     assert_token_reference(c2c_ml, "C2c_managed_cmd.restart")
     assert_token_reference(c2c_ml, "C2c_managed_cmd.reset_thread")
-    assert_token_reference(c2c_ml, "C2c_managed_cmd.restart_self")
-    assert_token_reference(c2c_ml, "C2c_managed_cmd.restart_self_cmd")
+    assert_token_reference(root_and_dev_src, "C2c_managed_cmd.restart_self")
+    assert_token_reference(root_and_dev_src, "C2c_managed_cmd.restart_self_cmd")
 
 
 def test_gui_command_is_extracted_from_monolithic_cli():
@@ -513,9 +522,12 @@ def test_host_utility_commands_are_extracted_from_monolithic_cli():
     """Host setup and broker smoke commands should live outside c2c.ml."""
     c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
     host_cmd_ml = REPO / "ocaml" / "cli" / "c2c_host_cmd.ml"
+    dev_ml = REPO / "ocaml" / "cli" / "c2c_dev_cmd.ml"
 
     assert host_cmd_ml.exists(), "expected extracted host utility command module"
     host_cmd_src = host_cmd_ml.read_text(encoding="utf-8")
+    dev_src = dev_ml.read_text(encoding="utf-8") if dev_ml.exists() else ""
+    root_and_dev_src = c2c_ml + dev_src
 
     for name in [
         "setcap_cmd",
@@ -526,8 +538,8 @@ def test_host_utility_commands_are_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, host_cmd_src, name)
 
     assert_token_reference(c2c_ml, "C2c_host_cmd.setcap")
-    assert_token_reference(c2c_ml, "C2c_host_cmd.smoke_test")
-    assert_token_reference(c2c_ml, "C2c_host_cmd.smoke_test_cmd")
+    assert_token_reference(root_and_dev_src, "C2c_host_cmd.smoke_test")
+    assert_token_reference(root_and_dev_src, "C2c_host_cmd.smoke_test_cmd")
 
 
 def test_relay_pins_commands_are_extracted_from_monolithic_cli():
@@ -728,3 +740,28 @@ def test_root_help_and_fast_paths_are_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_root_cmd.sanitize_help_env")
     assert_token_reference(c2c_ml, "C2c_root_cmd.default_term")
     assert_token_reference(c2c_ml, "C2c_root_cmd.help")
+
+
+def test_dev_group_and_deprecated_wrappers_are_extracted_from_monolithic_cli():
+    """Developer group and deprecated top-level wrappers should be modular."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    dev_ml = REPO / "ocaml" / "cli" / "c2c_dev_cmd.ml"
+
+    assert dev_ml.exists(), "expected extracted dev command module"
+    dev_src = dev_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "dev_group",
+        "deprecation_wrap",
+        "diag_deprecated",
+        "restart_self_deprecated",
+        "smoke_test_deprecated",
+        "inject_deprecated",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, dev_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_dev_cmd.smoke_test_deprecated")
+    assert_token_reference(c2c_ml, "C2c_dev_cmd.restart_self_deprecated")
+    assert_token_reference(c2c_ml, "C2c_dev_cmd.diag_deprecated")
+    assert_token_reference(c2c_ml, "C2c_dev_cmd.dev_group")
+    assert_token_reference(c2c_ml, "C2c_dev_cmd.inject_deprecated")
