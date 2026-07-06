@@ -122,10 +122,10 @@ c2c list-glyphs --compact  # single-line JSON (optional convenience; Yojson.Safe
 1. New module `ocaml/glyphs.ml` (+ `Glyphs` in `ocaml/dune:46` `c2c_mcp` lib
    `modules`): pure data + `to_json : unit -> Yojson.Safe.t`. Keeping it in the
    lib (not CLI-only) lets tests and any future MCP surface reuse it.
-2. `ocaml/cli/c2c.ml`: `list_glyphs_cmd` (a `--compact` flag) near host-id
-   (~3084) using `print_json` (c2c.ml:269) / `Yojson.Safe.to_string`; wrap as
+2. `ocaml/cli/c2c_glyphs_cmd.ml`: `list_glyphs_cmd` (a `--compact` flag)
+   using `print_json` / `Yojson.Safe.to_string`; wrap as
    `list_glyphs = Cmd.v (Cmd.info "list-glyphs" ~doc:"(dev) …") list_glyphs_cmd`;
-   append to `all_cmds` (~12595).
+   append `C2c_glyphs_cmd.list_glyphs` to `all_cmds`.
 3. `--dev` global flag + `hidden_unless_dev` set: thread through
    `fast_path_commands` (12068), `commands_by_safety_cmd` (315), `commands_man`
    (11946). `list-glyphs` NOT added to `command_tier_map` → defaults Tier2 →

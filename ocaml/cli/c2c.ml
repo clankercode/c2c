@@ -1029,36 +1029,6 @@ let send_all_cmd =
 
 (* Health, connect, verify, host-id subcommands extracted to c2c_health_cmd.ml *)
 
-(* --- subcommand: list-glyphs --------------------------------------------- *)
-(* .collab/design/2026-06-26-c2c-list-glyphs-registry.md — emit the canonical
-   c2c TUI glyph registry (message direction, broker route, liveness,
-   subagent-registration vocabulary + ascii fallbacks + semantic colors +
-   action tokens + message-sources) as JSON so clients (pi-c2c today) can
-   fetch the vocabulary at launch instead of hardcoding it.
-
-   HARD CONSTRAINT: this command MUST be always-runnable in any session.
-   pi-c2c invokes it with the host session env (which may set a session-id
-   var that flips `is_agent_session ()` true). It is therefore classified
-   Tier1 in command_tier_map so `filter_commands` never drops it from the
-   dispatchable cmdliner group. "Hidden from help by default" is handled in
-   the help-text layer via `hidden_unless_dev` + the global `--dev` flag,
-   NOT via the tier filter (which would make it unrunnable). *)
-let list_glyphs_cmd =
-  let compact =
-    Cmdliner.Arg.(value & flag & info [ "compact" ]
-      ~doc:"Emit single-line JSON instead of pretty-printed.")
-  in
-  let+ compact = compact in
-  let json = Glyphs.to_json () in
-  if compact then print_endline (Yojson.Safe.to_string json)
-  else print_json json
-
-let list_glyphs =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "list-glyphs"
-      ~doc:"(dev) emit the canonical c2c TUI glyph registry as JSON")
-    list_glyphs_cmd
-
 (* --- subcommand: git ----------------------------------------------------- *)
 
 let has_author_flag args =
@@ -2422,7 +2392,7 @@ let () =
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; C2c_sweep_cmd.sweep; C2c_sweep_cmd.registry_prune
     ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
-    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; list_glyphs
+    ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; C2c_glyphs_cmd.list_glyphs
     ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; relay_pins; C2c_mesh_cmd.mesh_group; C2c_skills_cmd.skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in
   let visible_cmds = filter_commands ~cmds:all_cmds in

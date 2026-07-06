@@ -434,3 +434,20 @@ def test_history_command_is_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, history_src, name)
 
     assert_token_reference(c2c_ml, "C2c_history_cmd.history")
+
+
+def test_list_glyphs_command_is_extracted_from_monolithic_cli():
+    """Glyph registry command assembly should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    glyphs_ml = REPO / "ocaml" / "cli" / "c2c_glyphs_cmd.ml"
+
+    assert glyphs_ml.exists(), "expected extracted glyphs command module"
+    glyphs_src = glyphs_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "list_glyphs_cmd",
+        "list_glyphs",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, glyphs_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_glyphs_cmd.list_glyphs")
