@@ -674,3 +674,25 @@ def test_list_commands_are_extracted_from_monolithic_cli():
 
     assert_token_reference(c2c_ml, "C2c_list_cmd.list")
     assert_token_reference(c2c_ml, "C2c_list_cmd.sessions")
+
+
+def test_send_commands_are_extracted_from_monolithic_cli():
+    """Direct and broadcast send command assembly should live outside c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    send_ml = REPO / "ocaml" / "cli" / "c2c_send_cmd.ml"
+
+    assert send_ml.exists(), "expected extracted send command module"
+    send_src = send_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "find_alias_in_all_broots",
+        "find_alias_in_all_brokers",
+        "send_cmd",
+        "send_all_cmd",
+        "send",
+        "send_all",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, send_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_send_cmd.send")
+    assert_token_reference(c2c_ml, "C2c_send_cmd.send_all")
