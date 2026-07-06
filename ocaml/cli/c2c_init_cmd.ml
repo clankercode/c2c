@@ -118,11 +118,21 @@ let init_cmd =
   in
 
   (* B046: Resolve session_id BEFORE alias so we can look up existing
-     registrations and reuse the alias when --alias is not given. *)
+     registrations and reuse the alias when --alias is not given.
+     Resolution order (#10): env (C2C_MCP_SESSION_ID or a client-native key
+     such as CLAUDE_CODE_SESSION_ID) > persisted init-fallback statefile
+     (validated against the registry) > synthesize a fresh id. When the id
+     was NOT env-derived it is persisted to <broker_root>/default-session.json
+     after registration so later env-less `c2c` invocations in the same
+     context resolve the same identity. *)
+  let env_derived_session_id = C2c_mcp.session_id_from_env () in
   let session_id =
-    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-    | Some s when String.trim s <> "" -> s
-    | _ -> C2c_setup.generate_session_id ()
+    match env_derived_session_id with
+    | Some s -> s
+    | None ->
+        (match session_id_from_statefile () with
+         | Some s -> s
+         | None -> C2c_setup.generate_session_id ())
   in
 
   (* Resolve alias ONCE before do_install_client so both the .mcp.json env
@@ -236,6 +246,14 @@ let init_cmd =
      C2c_mcp.mkdir_p config_dir;
      ignore (C2c_io.write_file_atomic (config_dir // "default-alias") (alias ^ "\n"))
    with _ -> ());  (* best-effort, non-fatal *)
+
+  (* #10: persist the session id when it was NOT derived from the environment,
+     so the very next `c2c whoami`/`c2c send` in the same env-less context
+     resolves the identity we just registered. Env-derived ids are never
+     persisted — the env remains the source of truth for them. *)
+  if env_derived_session_id = None then
+    write_session_statefile ~broker_root:root ~session_id ~alias
+      ~client:client_resolved;
 
   let room_result =
     if String.trim room = "" then `Skipped
@@ -519,6 +537,20 @@ let init =
                   the session, and joins swarm-lounge. Run once per project."
             ; `P "Auto-detects the client from $(b,C2C_MCP_SESSION_ID) or installed binaries. \
                   Override with $(b,--client)."
+            ; `S "SESSION IDENTITY"
+            ; `P "The session id is resolved from the environment first \
+                  ($(b,C2C_MCP_SESSION_ID), then client-native keys such as \
+                  $(b,CLAUDE_SESSION_ID)/$(b,CLAUDE_CODE_SESSION_ID) or \
+                  $(b,CODEX_THREAD_ID)). When none is present, init synthesizes \
+                  one and persists it to $(i,<broker-root>/default-session.json) \
+                  so later env-less $(b,c2c) commands (whoami, send, ...) resolve \
+                  the same identity."
+            ; `P "LIMITATION: the persisted fallback holds a $(i,single) identity \
+                  per repo — it is intended for CLI-only single-session usage. Two \
+                  env-less agents running $(b,c2c init) in the same repo will \
+                  collide (last init wins). Env-derived session ids always take \
+                  precedence over the fallback, and a stale fallback (session no \
+                  longer registered) is ignored."
             ; `S "EXAMPLES"
             ; `P "$(b,c2c init)  — auto-detect client, configure, register, join swarm-lounge"
             ; `P "$(b,c2c init --client opencode --alias my-bot)  — explicit client and alias"

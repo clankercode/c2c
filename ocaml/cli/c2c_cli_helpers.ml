@@ -96,14 +96,98 @@ let find_python_script script =
 
 (* --- session / alias resolution ------------------------------------------- *)
 
+(* --- init-fallback session statefile (#10) ---------------------------------
+   When `c2c init` cannot derive a session id from the environment it
+   synthesizes one and persists it to <broker_root>/default-session.json so
+   that later `c2c` invocations in the same context (e.g. a Claude/Codex shell
+   tool with zero exported env vars) resolve the same identity.
+
+   This fallback is LAST RESORT and CLI-ONLY:
+   - an env-derived session id (C2C_MCP_SESSION_ID or a client-native key such
+     as CLAUDE_CODE_SESSION_ID) always wins — the fallback can never shadow it;
+   - it is deliberately NOT wired into C2c_mcp.session_id_from_env, so the MCP
+     server never picks it up (two MCP servers in one repo would otherwise
+     silently share/steal the CLI session);
+   - the file holds a single identity per repo/broker root. Two CLI-only
+     agents sharing a repo will collide — last `c2c init` wins;
+   - a stale statefile (session no longer in the broker registry) is ignored. *)
+
+let session_statefile_path ~broker_root =
+  Filename.concat broker_root "default-session.json"
+
+let read_session_statefile ~broker_root =
+  let path = session_statefile_path ~broker_root in
+  if not (Sys.file_exists path) then None
+  else
+    match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+    | Some (`Assoc fields) ->
+        (match List.assoc_opt "session_id" fields with
+         | Some (`String sid) when String.trim sid <> "" -> Some (String.trim sid)
+         | _ -> None)
+    | _ -> None
+
+(* Best-effort, non-fatal: identity persistence must never break init. *)
+let write_session_statefile ~broker_root ~session_id ~alias ~client =
+  let path = session_statefile_path ~broker_root in
+  let json =
+    `Assoc
+      [ ("session_id", `String session_id)
+      ; ("alias", `String alias)
+      ; ("client", (match client with Some c -> `String c | None -> `Null))
+      ; ("created_at", `String (C2c_time.now_iso8601_utc ()))
+      ]
+  in
+  (try
+     C2c_mcp.mkdir_p broker_root;
+     ignore (C2c_io.write_file_atomic path (Yojson.Safe.pretty_to_string json ^ "\n"))
+   with _ -> ())
+
+let statefile_session_registered ~broker_root sid =
+  try
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    List.exists
+      (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+      (C2c_mcp.Broker.list_registrations broker)
+  with _ -> false
+
+let session_fallback_note_emitted = ref false
+
+(* Resolve the persisted fallback session, validated against the broker
+   registry. Emits a one-line stderr note (once per process) when used so
+   commands like `whoami` say where the identity came from. *)
+let session_id_from_statefile () =
+  let broker_root = C2c_utils.resolve_broker_root () in
+  match read_session_statefile ~broker_root with
+  | None -> None
+  | Some sid ->
+      if statefile_session_registered ~broker_root sid then begin
+        if not !session_fallback_note_emitted then begin
+          session_fallback_note_emitted := true;
+          Printf.eprintf "note: session resolved from %s (c2c init fallback)\n%!"
+            (session_statefile_path ~broker_root)
+        end;
+        Some sid
+      end else begin
+        if debug_enabled then
+          Printf.eprintf
+            "[DEBUG session_id_from_statefile] stale statefile (session %s not in registry) — ignored\n%!"
+            sid;
+        None
+      end
+
 let env_session_id () =
   match C2c_mcp.session_id_from_env () with
   | Some s ->
       if debug_enabled then Printf.eprintf "[DEBUG env_session_id] returning Some=%s\n%!" s;
       Some s
   | None ->
-      if debug_enabled then Printf.eprintf "[DEBUG env_session_id] returning None\n%!";
-      None
+      (match session_id_from_statefile () with
+       | Some s ->
+           if debug_enabled then Printf.eprintf "[DEBUG env_session_id] returning statefile fallback=%s\n%!" s;
+           Some s
+       | None ->
+           if debug_enabled then Printf.eprintf "[DEBUG env_session_id] returning None\n%!";
+           None)
 
 let env_auto_alias () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with

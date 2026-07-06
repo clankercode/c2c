@@ -39,6 +39,8 @@ let run_c2c ?(env = []) args =
     [ "C2C_CLI_FORCE=1"
     ; "C2C_MCP_SESSION_ID="
     ; "CLAUDE_SESSION_ID="
+    ; "CLAUDE_CODE_SESSION_ID="
+    ; "C2C_MCP_CLIENT_TYPE="
     ; "C2C_MCP_AUTO_REGISTER_ALIAS="
     ; "C2C_INSTANCE_NAME="
     ]

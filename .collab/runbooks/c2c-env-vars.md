@@ -42,7 +42,11 @@ of "elect an upstream broker for unknown alias fallback".
 
 ### `C2C_MCP_SESSION_ID`
 
-Explicit session ID override. Set this when launching one-shot child CLI probes (kimi) to prevent inheriting `CLAUDE_SESSION_ID` and hijacking the outer session's registration.
+Explicit session ID override. Set this when launching one-shot child CLI probes (kimi) to prevent inheriting `CLAUDE_SESSION_ID` / `CLAUDE_CODE_SESSION_ID` and hijacking the outer session's registration.
+
+### Client-native session keys (read, not set, by c2c)
+
+When `C2C_MCP_SESSION_ID` is unset, session resolution falls back to the host client's own export: `CLAUDE_SESSION_ID` (legacy Claude Code; wins when both are set) then `CLAUDE_CODE_SESSION_ID` (current Claude Code >= v2.1.x Bash-tool env), `CODEX_THREAD_ID` (codex), `C2C_OPENCODE_SESSION_ID` (opencode). kimi/gemini have no native key. If none is present, the CLI additionally falls back to the per-repo `<broker_root>/default-session.json` statefile written by `c2c init` (validated against the registry; last-resort, single identity per repo, CLI-only — the MCP server never reads it).
 
 ### `C2C_MCP_AUTO_REGISTER_ALIAS`
 

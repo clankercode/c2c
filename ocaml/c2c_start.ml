@@ -3073,10 +3073,12 @@ let build_env ?(broker_root_override : string option = None)
      append our authoritative values. This avoids the duplicate-key bug where
      both the parent's C2C_MCP_SESSION_ID and the child's appear in the array
      (previously a buggy in-place replacement left both copies).
-     Also strip CLAUDE_SESSION_ID: when starting a new managed session, the child
-     should create a fresh session rather than inheriting the parent's. *)
+     Also strip CLAUDE_SESSION_ID / CLAUDE_CODE_SESSION_ID: when starting a new
+     managed session, the child should create a fresh session rather than
+     inheriting the parent's. *)
   let legacy_native_session_keys =
-    [ "CLAUDE_SESSION_ID"; "CODEX_SESSION_ID"; "CODEX_THREAD_ID"; "OPENCODE_SESSION_ID";
+    [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "CODEX_SESSION_ID";
+      "CODEX_THREAD_ID"; "OPENCODE_SESSION_ID";
       "KIMI_SESSION_ID"; "CRUSH_SESSION_ID" ]
   in
   (* Always strip C2C_MCP_FORCE_CAPABILITIES from inherited env. For

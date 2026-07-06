@@ -59,10 +59,12 @@ let c2c_base_env ~home ~broker ?(env=[]) () =
   ; "C2C_CLI_FORCE=1"
   ; "C2C_MCP_SESSION_ID="
   ; "CLAUDE_SESSION_ID="
-  (* Operator sessions may set CLAUDE_CONFIG_DIR (e.g. profile-share setups);
-     without clearing it, `init --client claude` writes the /c2c skill into
-     the operator's REAL Claude config dir and the temp-HOME assertion fails. *)
+  ; "CLAUDE_CODE_SESSION_ID="
+  (* Hermeticity: when this suite runs from inside a Claude Code session the
+     operator's CLAUDE_CONFIG_DIR (e.g. ~/.claude-p) leaks in and
+     resolve_claude_dir writes the /c2c skill there instead of the temp HOME. *)
   ; "CLAUDE_CONFIG_DIR="
+  ; "C2C_MCP_CLIENT_TYPE="
   ; "C2C_MCP_AUTO_REGISTER_ALIAS="
   ; "C2C_INSTANCE_NAME="
   ]
@@ -323,6 +325,86 @@ let test_full_pipeline_local () =
   check int "whoami exits 0" 0 rc;
   check bool "whoami mentions alias" true (string_contains out alias)
 
+(* ---------------------------------------------------------------- *)
+(* Session identity: init → whoami round-trip with zero env vars (#10) *)
+
+let write_file path content =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) @@ fun () ->
+  output_string oc content
+
+let test_init_whoami_roundtrip_no_env () =
+  (* Acceptance (#10): `c2c init` with NO session env must persist the
+     synthesized session id so the very next `c2c whoami` in the same
+     env-less context succeeds. *)
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-idn-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--alias"; alias; "--room"; ""]
+  in
+  check int "init exits 0" 0 rc;
+  let statefile = tmp // "broker" // "default-session.json" in
+  check bool "default-session.json persisted in broker root" true
+    (file_exists statefile);
+  let rc, out, err = run_c2c_status_split ~home:tmp ~broker:tmp ["whoami"] in
+  check int "whoami exits 0 with zero session env" 0 rc;
+  check bool "whoami resolves the init alias" true (string_contains out alias);
+  check bool "whoami notes the fallback source on stderr" true
+    (string_contains err "init fallback");
+  (* Re-running init in the same context reuses the persisted session
+     (and therefore the same alias via B046 session->alias reuse). *)
+  let rc, out2, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int "second init exits 0" 0 rc;
+  check bool "second init reuses the same alias" true (string_contains out2 alias)
+
+let test_env_session_id_wins_over_statefile () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-idn-fb-%d" (Unix.getpid ()) in
+  let env_alias = Printf.sprintf "test-idn-env-%d" (Unix.getpid ()) in
+  let env_sid = Printf.sprintf "env-session-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--alias"; alias; "--room"; ""]
+  in
+  check int "init exits 0" 0 rc;
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["register"; "--alias"; env_alias; "--session-id"; env_sid]
+  in
+  check int "register exits 0" 0 rc;
+  (* CLAUDE_CODE_SESSION_ID (env-derived) must shadow the statefile. *)
+  let rc, out, err =
+    run_c2c_status_split ~env:["CLAUDE_CODE_SESSION_ID", env_sid]
+      ~home:tmp ~broker:tmp ["whoami"]
+  in
+  check int "whoami exits 0" 0 rc;
+  check bool "env-derived session resolves its own alias" true
+    (string_contains out env_alias);
+  check bool "statefile alias not used" false (string_contains out alias);
+  check bool "no fallback note when env wins" false
+    (string_contains err "init fallback")
+
+let test_stale_session_statefile_ignored () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-idn-stale-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--alias"; alias; "--room"; ""]
+  in
+  check int "init exits 0" 0 rc;
+  (* Point the statefile at a session id the registry has never seen. *)
+  let statefile = tmp // "broker" // "default-session.json" in
+  write_file statefile
+    "{\"session_id\": \"stale-session-xyz\", \"alias\": \"ghost\", \"client\": null, \"created_at\": \"2026-01-01T00:00:00Z\"}\n";
+  let rc, out = run_c2c_status ~home:tmp ~broker:tmp ["whoami"] in
+  check bool "whoami fails when statefile is stale" true (rc <> 0);
+  check bool "stale session id never adopted" false
+    (string_contains out "stale-session-xyz")
+
 let test_register_captures_cwd () =
   with_temp_env @@ fun tmp ->
   let alias = Printf.sprintf "test-cwd-%d" (Unix.getpid ()) in
@@ -422,6 +504,11 @@ let () =
         ] )
     ; ( "full_pipeline",
         [ test_case "local pipeline: init→identity→relay setup→list→whoami" `Quick test_full_pipeline_local
+        ] )
+    ; ( "session_identity",
+        [ test_case "init→whoami round-trip with zero session env (#10)" `Quick test_init_whoami_roundtrip_no_env
+        ; test_case "env-derived session id shadows the statefile" `Quick test_env_session_id_wins_over_statefile
+        ; test_case "stale statefile (unregistered session) is ignored" `Quick test_stale_session_statefile_ignored
         ] )
     ; ( "register_metadata",
         [ test_case "CLI register captures cwd" `Quick test_register_captures_cwd
