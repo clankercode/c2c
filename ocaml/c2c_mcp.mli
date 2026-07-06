@@ -381,7 +381,9 @@ module Broker : sig
     int option
   (** B071: walk /proc ancestry from [start_pid] (default [Unix.getppid ()])
       upward (max [max_hops] hops, default 15) and return the first ancestor
-      whose cmdline (exact basename of argv[0]/argv[1]) or comm identifies a
+      whose cmdline (exact path component of argv[0]/argv[1] — covers
+      versioned installs like ~/.local/share/claude/versions/2.1.201) or
+      comm identifies a
       known long-lived agent process. When [session_id] is given, an ancestor
       that also carries that session id as an environ value wins immediately
       (strong signal); a cmdline-only match is the fallback. None when no

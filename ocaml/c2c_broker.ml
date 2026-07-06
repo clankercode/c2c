@@ -1346,12 +1346,16 @@ open C2c_mcp_helpers
   (* [proc_root] is injectable so tests can fake /proc with a temp dir. *)
   (* ---------------------------------------------------------------- *)
 
-  (** Basenames that identify a long-lived agent host process. Matched as
-      the exact basename of argv[0] or argv[1] (leading tokens only, so a
-      wrapper like `node /usr/bin/claude` matches but a script named
-      `codex-c2c-live-test.sh` does not), or as the exact /proc comm. *)
+  (** Names that identify a long-lived agent host process. Matched as an
+      exact path COMPONENT of argv[0] or argv[1] (leading tokens only) or
+      as the exact /proc comm — never substring-anywhere, so a script named
+      `codex-c2c-live-test.sh` does not match. Component matching (not just
+      basename) is required because real installs run versioned binaries,
+      e.g. Claude Code is `~/.local/share/claude/versions/2.1.201` (comm
+      "2.1.201") — the "claude" signal only survives in the path. *)
   let known_agent_process_tokens =
-    [ "claude"; "codex"; "kimi"; "opencode"; "pi"; "gemini"; "crush" ]
+    [ "claude"; "claude-code"; "codex"; "kimi"; "opencode"; "pi"; "gemini"
+    ; "crush" ]
 
   (** Parent pid from /proc/<pid>/stat — field 4 (index 1 of the tail
       after the last ')', same parsing discipline as read_pid_start_time). *)
@@ -1402,19 +1406,22 @@ open C2c_mcp_helpers
     with Sys_error _ | End_of_file -> None
 
   (** True when /proc/<pid> identifies a known long-lived agent process.
-      Exact-basename match on argv[0]/argv[1] or exact comm match — never
-      substring-anywhere, to avoid matching e.g. `codex-c2c-live-test.sh`. *)
+      Exact path-COMPONENT match on argv[0]/argv[1] or exact comm match —
+      never substring-anywhere, so `codex-c2c-live-test.sh` cannot match.
+      Component (not just basename) matching is load-bearing: the real
+      Claude Code binary is `~/.local/share/claude/versions/2.1.201`, so
+      both its basename and comm are the bare version string. *)
   let pid_is_known_agent ?proc_root pid =
-    let token_matches s =
-      List.mem
-        (String.lowercase_ascii (Filename.basename s))
-        known_agent_process_tokens
+    let token_matches_path s =
+      String.split_on_char '/' s
+      |> List.exists (fun comp ->
+             List.mem (String.lowercase_ascii comp) known_agent_process_tokens)
     in
     let argv = read_pid_cmdline ?proc_root pid in
     (match argv with
      | a0 :: rest ->
-         token_matches a0
-         || (match rest with a1 :: _ -> token_matches a1 | [] -> false)
+         token_matches_path a0
+         || (match rest with a1 :: _ -> token_matches_path a1 | [] -> false)
      | [] -> false)
     || (match read_pid_comm ?proc_root pid with
         | Some c -> List.mem (String.lowercase_ascii c) known_agent_process_tokens

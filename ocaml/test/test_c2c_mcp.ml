@@ -14095,6 +14095,19 @@ let test_stable_pid_comm_only_match () =
         (Some 100)
         (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
 
+let test_stable_pid_matches_versioned_install_path () =
+  (* Real-world Claude Code: argv0 is a bare version-numbered binary under a
+     .../claude/versions/ dir; comm is "2.1.201". The "claude" signal only
+     survives as a path component. *)
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:100 ~argv:["/usr/bin/zsh"] ();
+      write_fake_proc_entry proc ~pid:100 ~ppid:1
+        ~argv:["/home/u/.local/share/claude/versions/2.1.201"; "--agent-id"; "x"]
+        ~comm:"2.1.201" ();
+      check (option int) "versioned claude install matches via path component"
+        (Some 100)
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
 let () =
   run "c2c_mcp"
     [ ( "stable_client_pid",
@@ -14112,6 +14125,8 @@ let () =
             test_stable_pid_terminates_on_self_parent
         ; test_case "comm-only match with empty cmdline" `Quick
             test_stable_pid_comm_only_match
+        ; test_case "versioned install path matches via component" `Quick
+            test_stable_pid_matches_versioned_install_path
         ] )
     ; ( "broker",
         [ test_case "register and list" `Quick test_register_and_list
