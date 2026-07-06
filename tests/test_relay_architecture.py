@@ -71,3 +71,21 @@ def test_relay_pairing_token_sql_is_extracted_from_relay_ml():
         assert re.search(rf"\blet\s+{re.escape(name)}\b", token_sql_src)
 
     assert re.search(r"\binclude\s+Relay_pairing_token_sql\b", relay_ml)
+
+
+def test_relay_host_routing_helpers_are_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    host_routing_ml = REPO / "ocaml" / "relay_host_routing.ml"
+
+    assert host_routing_ml.exists(), "expected extracted relay host-routing module"
+    host_routing_src = host_routing_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "split_alias_host",
+        "host_acceptable",
+        "peer_relay_t",
+    ]:
+        assert re.search(rf"\b(let|type)\s+{re.escape(name)}\b", relay_ml) is None
+        assert re.search(rf"\b(let|type)\s+{re.escape(name)}\b", host_routing_src)
+
+    assert re.search(r"\binclude\s+Relay_host_routing\b", relay_ml)
