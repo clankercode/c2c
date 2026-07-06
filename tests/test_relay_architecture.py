@@ -229,3 +229,25 @@ def test_relay_pow_challenge_helpers_are_extracted_from_relay_ml():
 
     assert re.search(r"\btype\s+pow_challenge\b", pow_src)
     assert re.search(r"\binclude\s+Relay_pow_challenge\b", relay_ml)
+
+
+def test_relay_client_module_is_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    client_ml = REPO / "ocaml" / "relay_client.ml"
+
+    assert client_ml.exists(), "expected extracted relay client module"
+    client_src = client_ml.read_text(encoding="utf-8")
+
+    assert re.search(r"^module\s+Relay_client\b", relay_ml, re.MULTILINE) is None
+    assert re.search(r"^module\s+Relay_client\b", client_src, re.MULTILINE)
+
+    for pattern in [
+        r"\bval\s+request\b",
+        r"\blet\s+post_with_pow_retry\b",
+        r"\blet\s+register_signed\b",
+        r"\blet\s+room_history\b",
+        r"\blet\s+mobile_pair_prepare\b",
+    ]:
+        assert re.search(pattern, client_src)
+
+    assert re.search(r"\binclude\s+Relay_client\b", relay_ml)
