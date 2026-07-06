@@ -60,6 +60,8 @@ let c2c_base_env ~home ~broker ?(env=[]) () =
   ; "C2C_MCP_SESSION_ID="
   ; "CLAUDE_SESSION_ID="
   ; "CLAUDE_CODE_SESSION_ID="
+  ; "CODEX_THREAD_ID="
+  ; "C2C_OPENCODE_SESSION_ID="
   (* Hermeticity: when this suite runs from inside a Claude Code session the
      operator's CLAUDE_CONFIG_DIR (e.g. ~/.claude-p) leaks in and
      resolve_claude_dir writes the /c2c skill there instead of the temp HOME. *)

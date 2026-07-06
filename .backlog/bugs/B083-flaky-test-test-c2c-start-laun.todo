@@ -1,10 +1,15 @@
 ---
+claimed_at: "2026-07-06T12:12:33Z"
+claimed_by: cli-user
+completed_at: "2026-07-06T12:30:36Z"
 complexity: medium
 depends_on: []
+duration_minutes: 18.059832468366668
 estimate_hours: 1
 id: B083
 priority: high
-status: pending
+started_at: "2026-07-06T12:12:33Z"
+status: done
 tags: []
 title: 'flaky test: test_c2c_start launch_args ''last_exit_code_reason_backward_compat'' fails under parallel just test-ocaml (shared test-exit-compat instance path?), passes standalone — test isolation'
 ---
