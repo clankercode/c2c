@@ -392,7 +392,7 @@ let init_cmd =
         let room_id_str = match room_result with `Joined r -> r | _ -> room in
         let onboarding_lines =
           let is_claude = match client_resolved with Some "claude" -> true | _ -> false in
-          [ Printf.sprintf "Start receiving: run c2c monitor"
+          [ Printf.sprintf "Start receiving: run c2c monitor (shows incoming DMs; add --drain to also clear the inbox)"
           ; Printf.sprintf "Send:    c2c send <alias> <msg>    (e.g. c2c send %s \"hello\")" alias
           ; "Check:   c2c poll-inbox"
           ; Printf.sprintf "Room:    c2c rooms send %s <msg>" room_id_str
@@ -457,7 +457,8 @@ let init_cmd =
        Printf.printf "  Send:    c2c send <alias> <msg>    (e.g. c2c send %s \"hello\")\n" alias;
        Printf.printf "  Check:   c2c poll-inbox\n";
        Printf.printf "  Room:    c2c rooms send %s <msg>\n" room;
-       Printf.printf "  c2c monitor           — watch for incoming messages (auto-resolves alias)\n";
+       Printf.printf "  c2c monitor           — watch incoming messages (auto-resolves alias; watches your live inbox, peeks by default)\n";
+       Printf.printf "  c2c monitor --drain   — same, but the monitor consumes (drains) your inbox\n";
        (match client_resolved with
         | Some "claude" ->
             Printf.printf "  Monitor: add to Claude Code Monitor tool for auto-delivery\n"
