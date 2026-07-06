@@ -109,3 +109,23 @@ def test_relay_observer_bindings_module_is_extracted_from_relay_ml():
         assert re.search(pattern, bindings_src)
 
     assert re.search(r"\binclude\s+Relay_observer_bindings\b", relay_ml)
+
+
+def test_relay_observer_sessions_module_is_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    sessions_ml = REPO / "ocaml" / "relay_observer_sessions.ml"
+
+    assert sessions_ml.exists(), "expected extracted observer sessions module"
+    sessions_src = sessions_ml.read_text(encoding="utf-8")
+
+    assert re.search(r"\bmodule\s+ObserverSessions\b", relay_ml) is None
+    assert re.search(r"\bmodule\s+ObserverSessions\b", sessions_src)
+
+    for pattern in [
+        r"\bmutable\s+sessions\b",
+        r"\bRelay_ws_frame\.Session\.t\s+list\b",
+    ]:
+        assert re.search(pattern, relay_ml) is None
+        assert re.search(pattern, sessions_src)
+
+    assert re.search(r"\binclude\s+Relay_observer_sessions\b", relay_ml)
