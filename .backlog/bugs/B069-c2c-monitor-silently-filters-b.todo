@@ -1,0 +1,24 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B069
+priority: high
+status: pending
+tags: []
+title: c2c monitor silently filters by stale global default-alias
+---
+
+# c2c monitor silently filters by stale global default-alias
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior

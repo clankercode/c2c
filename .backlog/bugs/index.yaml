@@ -65,3 +65,4 @@ bugs:
     - file: B066-swarm-skill-collab-skills-c2c.todo
     - file: B067-default-c2c-init-cli-only-path.todo
     - file: B068-docs-should-focus-on-easy-ad-h.todo
+    - file: B069-c2c-monitor-silently-filters-b.todo
