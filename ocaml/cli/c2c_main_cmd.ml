@@ -13,6 +13,7 @@ let all_cmds =
   ; C2c_inbox_cmd.check_pending_reply
   ; C2c_inbox_cmd.poll_inbox
   ; C2c_inbox_cmd.peek_inbox
+  ; C2c_inbox_cmd.wait_inbox
   ; C2c_approval_cmd.await_reply
   ; C2c_approval_cmd.approval_reply
   ; C2c_approval_cmd.authorize

@@ -439,6 +439,14 @@ module Broker : sig
       pending file after replay. Returns the number of messages replayed. *)
   val drain_inbox : ?drained_by:string -> t -> session_id:string -> message list
   val drain_inbox_push : ?drained_by:string -> t -> session_id:string -> message list
+  val drain_inbox_matching :
+    ?drained_by:string -> t -> session_id:string -> pred:(message -> bool) -> message list
+  (** Like [drain_inbox] but drains only messages satisfying [pred];
+      non-matching messages remain in the live inbox for later polls.
+      Matching non-ephemeral messages are archived before the inbox is
+      rewritten (same invariant as [drain_inbox], all under the per-inbox
+      lock). Used by [poll-inbox --wait --from] / [wait-inbox --from] so
+      waiting on one sender never consumes other senders' messages. *)
   val is_session_channel_capable : t -> session_id:string -> bool
   (** Returns [true] iff the registration for [session_id] has its
       [automated_delivery] flag set to [Some true]. Used by inbox-hook

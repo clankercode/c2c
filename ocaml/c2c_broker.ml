@@ -2721,6 +2721,28 @@ open C2c_mcp_helpers
              save_inbox t ~session_id to_keep);
         to_push)
 
+  (* Like drain_inbox but only drains messages satisfying [pred]; non-matching
+     messages remain in the live inbox for later polls.  Used by the CLI's
+     `poll-inbox --wait --from <alias>` / `wait-inbox --from <alias>` so
+     waiting on one sender never consumes other senders' messages.  Same
+     archive-before-clear invariant as drain_inbox: matching non-ephemeral
+     messages are appended to the archive BEFORE the inbox is rewritten, all
+     under the per-inbox lock. *)
+  let drain_inbox_matching ?(drained_by = "unknown") t ~session_id ~pred =
+    with_inbox_lock t ~session_id (fun () ->
+        let messages = load_inbox t ~session_id in
+        let matching, rest = List.partition pred messages in
+        (match matching with
+         | [] -> ()
+         | _ ->
+             (* #284: same archive-skip rule for ephemeral messages. *)
+             let to_archive = List.filter (fun m -> not m.ephemeral) matching in
+             (match to_archive with
+              | [] -> ()
+              | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
+             save_inbox t ~session_id rest);
+        matching)
+
   type sweep_result =
     { dropped_regs : registration list
     ; deleted_inboxes : string list

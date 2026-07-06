@@ -2526,6 +2526,205 @@ let test_deliver_inbox_register_self_enables_alias_send () =
           check bool "self-registered receiver gets alias send" true (string_contains out "registered receiver body");
           check bool "self-registered receiver drains exactly one" true (string_contains out "delivered=1")))
 
+(* ------------------------------------------------------------------------- *)
+(* poll-inbox --wait / wait-inbox — blocking one-shot receive                *)
+(* ------------------------------------------------------------------------- *)
+
+(* Seed helper: enqueue a message directly into a session inbox, bypassing
+   alias resolution (enqueue_by_session_id writes under the inbox lock). *)
+let seed_message broker ~session_id ~from_alias ~content =
+  let msg : C2c_mcp.message =
+    { from_alias
+    ; to_alias = "wait-test-recipient"
+    ; content
+    ; deferrable = false
+    ; reply_via = None
+    ; enc_status = None
+    ; ts = Unix.gettimeofday ()
+    ; ephemeral = false
+    ; message_id = None
+    }
+  in
+  C2c_mcp.Broker.enqueue_by_session_id broker ~session_id ~messages:[ msg ]
+
+let wait_cmd ~dir ~sid args =
+  Printf.sprintf
+    "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s %s"
+    (Filename.quote dir) sid c2c_binary args
+
+(* (a) empty inbox + --wait --timeout 1s → exit 1, stderr note, clean stdout *)
+let test_wait_empty_inbox_times_out () =
+  with_temp_dir (fun dir ->
+      let outfile = Filename.temp_file "c2c-wait-to" ".out" in
+      let errfile = Filename.temp_file "c2c-wait-to" ".err" in
+      Fun.protect
+        ~finally:(fun () ->
+          Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+        (fun () ->
+          let cmd = wait_cmd ~dir ~sid:"wait-empty-sid"
+            (Printf.sprintf "poll-inbox --wait --timeout 1s --poll-interval 0.2 > %s 2> %s"
+               (Filename.quote outfile) (Filename.quote errfile))
+          in
+          let rc = Sys.command cmd in
+          check int "wait on empty inbox exits 1" 1 rc;
+          check string "stdout stays clean on timeout" "" (read_file outfile);
+          check bool "stderr carries timeout note" true
+            (string_contains (read_file errfile) "timeout: no messages after 1s")))
+
+(* (b) pre-seeded inbox + --wait → exit 0, message printed, inbox drained *)
+let test_wait_preseeded_drains () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      seed_message broker ~session_id:"wait-seed-sid"
+        ~from_alias:"seed-sender" ~content:"preseeded hello";
+      let rc, out = run_capture
+        (wait_cmd ~dir ~sid:"wait-seed-sid" "poll-inbox --wait --timeout 5s --poll-interval 0.2")
+      in
+      check int "preseeded wait exits 0" 0 rc;
+      check bool "message printed" true (string_contains out "preseeded hello");
+      check int "inbox drained after wait" 0
+        (List.length (C2c_mcp.Broker.read_inbox broker ~session_id:"wait-seed-sid")))
+
+(* (c) --peek --wait → exit 0, message NOT drained *)
+let test_wait_peek_does_not_drain () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      seed_message broker ~session_id:"wait-peek-sid"
+        ~from_alias:"seed-sender" ~content:"peek me";
+      let rc, out = run_capture
+        (wait_cmd ~dir ~sid:"wait-peek-sid" "poll-inbox --wait --peek --timeout 5s --poll-interval 0.2")
+      in
+      check int "peek wait exits 0" 0 rc;
+      check bool "peeked message printed" true (string_contains out "peek me");
+      check int "message survives peek" 1
+        (List.length (C2c_mcp.Broker.read_inbox broker ~session_id:"wait-peek-sid")))
+
+(* (d) message arriving DURING the wait unblocks it.  The seeder is a forked
+   child of the test process (same C2c_mcp lib), enqueuing after 0.6s while
+   the CLI blocks in its poll loop. *)
+let test_wait_unblocks_on_mid_wait_arrival () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let pid = Unix.fork () in
+      if pid = 0 then begin
+        (* child: seed after a delay, then exit without running finalisers *)
+        (try
+           Unix.sleepf 0.6;
+           seed_message broker ~session_id:"wait-race-sid"
+             ~from_alias:"late-sender" ~content:"mid-wait arrival"
+         with _ -> ());
+        Unix._exit 0
+      end
+      else begin
+        let started = Unix.gettimeofday () in
+        let rc, out = run_capture
+          (wait_cmd ~dir ~sid:"wait-race-sid" "wait-inbox --timeout 10s --poll-interval 0.2")
+        in
+        ignore (Unix.waitpid [] pid);
+        let elapsed = Unix.gettimeofday () -. started in
+        check int "mid-wait arrival exits 0" 0 rc;
+        check bool "mid-wait message printed" true (string_contains out "mid-wait arrival");
+        check bool "unblocked before the timeout" true (elapsed < 8.0);
+        check bool "actually waited for the arrival" true (elapsed >= 0.5)
+      end)
+
+(* (e) --from filter: non-matching does not unblock and is not drained;
+   matching is drained (case-insensitively) while non-matching survives. *)
+let test_wait_from_nonmatching_does_not_unblock () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      seed_message broker ~session_id:"wait-from-sid"
+        ~from_alias:"other" ~content:"noise msg";
+      let rc, _out = run_capture
+        (wait_cmd ~dir ~sid:"wait-from-sid"
+           "wait-inbox --from wanted --timeout 1s --poll-interval 0.2")
+      in
+      check int "non-matching sender does not unblock (timeout)" 1 rc;
+      check int "non-matching message not drained" 1
+        (List.length (C2c_mcp.Broker.read_inbox broker ~session_id:"wait-from-sid")))
+
+let test_wait_from_matching_selective_drain () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      seed_message broker ~session_id:"wait-from2-sid"
+        ~from_alias:"other" ~content:"noise msg";
+      seed_message broker ~session_id:"wait-from2-sid"
+        ~from_alias:"wanted" ~content:"wanted msg";
+      (* --from is case-insensitive: filter WANTED matches sender "wanted" *)
+      let rc, out = run_capture
+        (wait_cmd ~dir ~sid:"wait-from2-sid"
+           "wait-inbox --from WANTED --timeout 5s --poll-interval 0.2")
+      in
+      check int "matching sender unblocks" 0 rc;
+      check bool "matching message printed" true (string_contains out "wanted msg");
+      check bool "non-matching message not printed" false (string_contains out "noise msg");
+      let remaining = C2c_mcp.Broker.read_inbox broker ~session_id:"wait-from2-sid" in
+      check int "non-matching message survives selective drain" 1 (List.length remaining);
+      check string "survivor is the non-matching sender" "other"
+        (List.hd remaining).from_alias)
+
+(* (f) bad duration → exit 2; wait-only flags without --wait → exit 2 *)
+let test_wait_bad_duration_exits_two () =
+  with_temp_dir (fun dir ->
+      let rc, out = run_capture
+        (wait_cmd ~dir ~sid:"wait-bad-sid" "poll-inbox --wait --timeout bogus")
+      in
+      check int "bad --timeout exits 2" 2 rc;
+      check bool "error mentions timeout" true (string_contains out "invalid --timeout"))
+
+let test_wait_flags_require_wait () =
+  with_temp_dir (fun dir ->
+      let rc, out = run_capture
+        (wait_cmd ~dir ~sid:"wait-req-sid" "poll-inbox --timeout 5s")
+      in
+      check int "--timeout without --wait exits 2" 2 rc;
+      check bool "error mentions --wait" true (string_contains out "require --wait"))
+
+(* (g) JSON shape matches poll-inbox --json; and JSON timeout emits [] *)
+let test_wait_json_shape_matches_poll_inbox () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      seed_message broker ~session_id:"wait-json-sid"
+        ~from_alias:"json-sender" ~content:"json body";
+      let rc, out = run_capture
+        (wait_cmd ~dir ~sid:"wait-json-sid"
+           "wait-inbox --json --timeout 5s --poll-interval 0.2")
+      in
+      check int "json wait exits 0" 0 rc;
+      match Yojson.Safe.from_string out with
+      | `List [ `Assoc fields ] ->
+          let str k = match List.assoc_opt k fields with Some (`String s) -> s | _ -> "<missing>" in
+          check string "from_alias field" "json-sender" (str "from_alias");
+          check string "content field" "json body" (str "content");
+          check bool "to_alias present" true (List.mem_assoc "to_alias" fields);
+          check bool "ts present" true (List.mem_assoc "ts" fields)
+      | _ -> fail ("unexpected JSON shape: " ^ out))
+
+let test_wait_json_timeout_emits_empty_list () =
+  with_temp_dir (fun dir ->
+      let outfile = Filename.temp_file "c2c-wait-json-to" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = wait_cmd ~dir ~sid:"wait-json-to-sid"
+            (Printf.sprintf "wait-inbox --json --timeout 1s --poll-interval 0.2 > %s 2>/dev/null"
+               (Filename.quote outfile))
+          in
+          let rc = Sys.command cmd in
+          check int "json timeout exits 1" 1 rc;
+          match Yojson.Safe.from_string (read_file outfile) with
+          | `List [] -> ()
+          | j -> fail ("expected [] on json timeout, got: " ^ Yojson.Safe.to_string j)))
+
+(* wait-inbox is registered as a real command with wait forced on *)
+let test_wait_inbox_command_registered () =
+  with_temp_dir (fun dir ->
+      let rc, out = run_capture
+        (wait_cmd ~dir ~sid:"wait-help-sid" "wait-inbox --help=plain")
+      in
+      check int "wait-inbox --help exits 0" 0 rc;
+      check bool "help mentions blocking receive" true
+        (string_contains out "Blocking one-shot receive"))
+
 let () =
   Alcotest.run "c2c_cli"
     [ ( "doctor",
@@ -2568,6 +2767,19 @@ let () =
     ; ( "poll_inbox",
         [ ( "cross-repo alias drains", `Quick, test_poll_inbox_cross_repo_alias_drains )
         ; ( "cross-repo alias errors", `Quick, test_poll_inbox_cross_repo_alias_errors )
+        ] )
+    ; ( "wait_inbox",
+        [ ( "empty inbox --wait times out with exit 1", `Quick, test_wait_empty_inbox_times_out )
+        ; ( "preseeded inbox --wait drains and exits 0", `Quick, test_wait_preseeded_drains )
+        ; ( "--peek --wait does not drain", `Quick, test_wait_peek_does_not_drain )
+        ; ( "mid-wait arrival unblocks", `Quick, test_wait_unblocks_on_mid_wait_arrival )
+        ; ( "--from non-matching does not unblock or drain", `Quick, test_wait_from_nonmatching_does_not_unblock )
+        ; ( "--from matching drains selectively", `Quick, test_wait_from_matching_selective_drain )
+        ; ( "bad --timeout duration exits 2", `Quick, test_wait_bad_duration_exits_two )
+        ; ( "wait-only flags require --wait", `Quick, test_wait_flags_require_wait )
+        ; ( "--json shape matches poll-inbox --json", `Quick, test_wait_json_shape_matches_poll_inbox )
+        ; ( "--json timeout emits []", `Quick, test_wait_json_timeout_emits_empty_list )
+        ; ( "wait-inbox command registered", `Quick, test_wait_inbox_command_registered )
         ] )
     ; ( "deliver_inbox",
         [ ( "dry-run does not drain", `Quick, test_deliver_inbox_dry_run_does_not_drain )
