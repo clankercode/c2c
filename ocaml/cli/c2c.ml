@@ -1331,115 +1331,6 @@ let serve = Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Run the MCP server (
 
 let mcp = Cmdliner.Cmd.v (Cmdliner.Cmd.info "mcp" ~doc:"Alias for serve (runs the MCP server).") serve_cmd
 
-(* --- subcommand: refresh-peer ---------------------------------------------- *)
-
-let refresh_peer_run json target pid_opt session_id_opt dry_run =
-  let output_mode = if json then Json else Human in
-  let root = resolve_broker_root () in
-  let broker = C2c_mcp.Broker.create ~root in
-  let start_time = match pid_opt with
-    | Some pid ->
-        if not (Sys.file_exists ("/proc/" ^ string_of_int pid)) then begin
-          (match output_mode with
-           | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "PID %d is not alive" pid)) ])
-           | Human -> Printf.eprintf "error: PID %d is not alive. Refusing to update.\n%!" pid);
-          exit 1
-        end;
-        C2c_mcp.Broker.read_pid_start_time pid
-    | None -> None
-  in
-  C2c_mcp.Broker.with_registry_lock broker (fun () ->
-    let regs = C2c_mcp.Broker.list_registrations broker in
-    let match_result = List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = target) regs in
-    let matched_by, matched_reg = match match_result with
-      | Some r -> ("alias", r)
-      | None ->
-          (match List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = target) regs with
-           | Some r -> ("session_id", r)
-           | None ->
-               (match output_mode with
-                | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String (Printf.sprintf "No registration found for '%s'" target)) ])
-                | Human -> Printf.eprintf "error: No registration found for '%s'.\n%!" target);
-               exit 1)
-    in
-    let old_pid = matched_reg.pid in
-    if pid_opt = None then begin
-      if C2c_mcp.Broker.registration_is_alive matched_reg then
-        match output_mode with
-        | Json -> print_json (`Assoc
-            [ ("alias", `String matched_reg.alias); ("matched_by", `String matched_by)
-            ; ("status", `String "already_alive")
-            ; ("pid", match old_pid with None -> `Null | Some p -> `Int p) ])
-        | Human ->
-            Printf.printf "Registration for '%s' is already alive (pid=%s). No change needed.\n"
-              matched_reg.alias (match old_pid with None -> "None" | Some p -> string_of_int p)
-      else begin
-        (match output_mode with
-         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String "Dead PID. Provide --pid.") ])
-         | Human -> Printf.eprintf "error: Dead PID. Provide --pid <live-pid> to refresh.\n%!");
-        exit 1
-      end
-    end else begin
-      let new_regs = List.map (fun (r : C2c_mcp.registration) ->
-        if r.session_id = matched_reg.session_id then
-          { r with pid = pid_opt; pid_start_time = start_time }
-        else r
-      ) regs in
-      if dry_run then
-        match output_mode with
-        | Json -> print_json (`Assoc
-            [ ("alias", `String matched_reg.alias); ("matched_by", `String matched_by)
-            ; ("status", `String "dry_run")
-            ; ("old_pid", match old_pid with None -> `Null | Some p -> `Int p)
-            ; ("new_pid", `Int (Option.get pid_opt))
-            ; ("new_pid_start_time", match start_time with None -> `Null | Some t -> `Int t) ])
-        | Human ->
-            Printf.printf "[dry-run] Would update '%s': pid %s -> %d\n"
-              matched_reg.alias
-              (match old_pid with None -> "None" | Some p -> string_of_int p)
-              (Option.get pid_opt)
-      else begin
-        C2c_mcp.Broker.save_registrations broker new_regs;
-        match output_mode with
-        | Json -> print_json (`Assoc
-            [ ("ok", `Bool true); ("alias", `String matched_reg.alias)
-            ; ("matched_by", `String matched_by); ("status", `String "updated")
-            ; ("old_pid", match old_pid with None -> `Null | Some p -> `Int p)
-            ; ("new_pid", `Int (Option.get pid_opt))
-            ; ("new_pid_start_time", match start_time with None -> `Null | Some t -> `Int t) ])
-        | Human ->
-            Printf.printf "Updated '%s': pid %s -> %d\n"
-              matched_reg.alias
-              (match old_pid with None -> "None" | Some p -> string_of_int p)
-              (Option.get pid_opt)
-      end
-    end)
-
-let refresh_peer_cmd =
-  let target =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ALIAS_OR_SESSION_ID" ~doc:"Alias or session ID of the peer to refresh.")
-  in
-  let pid_opt =
-    Cmdliner.Arg.(value & opt (some int) None & info [ "pid" ] ~docv:"PID" ~doc:"New live PID to point the registration at.")
-  in
-  let session_id_opt =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id" ] ~docv:"ID" ~doc:"Correct session_id to write (fixes drift).")
-  in
-  let dry_run =
-    Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Show what would change without writing.")
-  in
-  let+ json = json_flag
-  and+ target = target
-  and+ pid_opt = pid_opt
-  and+ session_id_opt = session_id_opt
-  and+ dry_run = dry_run in
-  refresh_peer_run json target pid_opt session_id_opt dry_run
-
-let refresh_peer =
-  Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "refresh-peer" ~doc:"Refresh a stale broker registration to a new live PID.")
-    refresh_peer_cmd
-
 (* Managed-instance commands moved to c2c_instances_cmd.ml. *)
 
 (* --- doctor command group moved to c2c_doctor_cmd.ml --------------------- *)
@@ -1904,7 +1795,7 @@ let () =
   let tier_grouped_man = C2c_commands_cmd.commands_man is_agent in
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; C2c_sweep_cmd.sweep; C2c_sweep_cmd.registry_prune
-    ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; C2c_host_cmd.setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; C2c_git_cmd.git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
+    ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; C2c_host_cmd.setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; C2c_git_cmd.git; register; deregister; C2c_refresh_peer_cmd.refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; C2c_broker_cmd.tail_log; C2c_broker_cmd.server_info; C2c_broker_cmd.my_rooms; C2c_broker_cmd.dead_letter; C2c_broker_cmd.prune_rooms; C2c_broker_cmd.get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; C2c_glyphs_cmd.list_glyphs
     ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; C2c_relay_pins_cmd.relay_pins; C2c_mesh_cmd.mesh_group; C2c_skills_cmd.skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in

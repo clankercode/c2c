@@ -494,6 +494,46 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(payload["broker_root"], str(broker_root))
         self.assertTrue(payload["relay_pins_exists"])
 
+    def test_refresh_peer_session_id_updates_registry(self):
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        broker_root = Path(self.temp_dir.name) / "refresh-peer-broker"
+        broker_root.mkdir(parents=True, exist_ok=True)
+        env = dict(self.env)
+        env["C2C_MCP_BROKER_ROOT"] = str(broker_root)
+        live_pid = os.getpid()
+
+        registered = run_native_cli(
+            "register",
+            "--alias",
+            "refresh-probe",
+            "--session-id",
+            "old-sid",
+            "--json",
+            env=env,
+        )
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+
+        refreshed = run_native_cli(
+            "refresh-peer",
+            "refresh-probe",
+            "--pid",
+            str(live_pid),
+            "--session-id",
+            "new-sid",
+            "--json",
+            env=env,
+        )
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        refresh_payload = json.loads(refreshed.stdout)
+        self.assertEqual(refresh_payload["old_session_id"], "old-sid")
+        self.assertEqual(refresh_payload["new_session_id"], "new-sid")
+
+        listed = run_native_cli("list", "--all", "--json", env=env)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        rows = json.loads(listed.stdout)
+        row = next(r for r in rows if r["alias"] == "refresh-probe")
+        self.assertEqual(row["session_id"], "new-sid")
+
     def test_instances_cli_lists_stopped_and_running_instances(self):
         env, instances_dir = self.native_home_env("home-list")
         now = time.time()

@@ -545,3 +545,21 @@ def test_relay_pins_commands_are_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, relay_pins_src, name)
 
     assert_token_reference(c2c_ml, "C2c_relay_pins_cmd.relay_pins")
+
+
+def test_refresh_peer_command_is_extracted_from_monolithic_cli():
+    """Stale-registration repair command assembly should be modular."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    refresh_ml = REPO / "ocaml" / "cli" / "c2c_refresh_peer_cmd.ml"
+
+    assert refresh_ml.exists(), "expected extracted refresh-peer command module"
+    refresh_src = refresh_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "refresh_peer_run",
+        "refresh_peer_cmd",
+        "refresh_peer",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, refresh_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_refresh_peer_cmd.refresh_peer")
