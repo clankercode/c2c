@@ -43,7 +43,7 @@ historical/archived set is gated behind `--all`.
 - `c2c instances` → currently-running managed sessions only
 - `c2c instances --all` → include historical and zombie entries
 - `c2c list` → live aliases (registered + reachable)
-- `c2c list --all` → include `??? unknown client_type` rows
+- `c2c list --all` → include `unknown` liveness rows
 - (future) `c2c findings` → open-actionable only; `--all` for the
   whole archive
 
