@@ -34,3 +34,19 @@ switch silently went inconsistent.
 - Watch for the next system OCaml bump — same failure mode will recur.
 
 **Severity:** high (repo unbuildable until fixed), now mitigated.
+
+---
+
+**CORRECTION (coordinator, 2026-07-06 22:10 AEST, per worker's parting report).**
+Two distinct incidents got conflated here:
+1. The system OCaml 5.4.1→5.5.0 pacman upgrade broke the `c2c` switch — true,
+   as described above. But that switch is a near-empty decoy; repo builds run
+   on the ambient `clawq-5.1` switch.
+2. The repo-wide 20:29 build breakage (cohttp 6.1.1→5.3.x, cmdliner
+   2.1.0→1.3.0 on `clawq-5.1`) was caused by this slice's own
+   `opam install --yes --switch=clawq-5.1 uucp lambda-term zed` — opam
+   recomputed the switch solution and downgraded load-bearing packages.
+   Recovery + guardrails:
+   2026-07-06T10-50-00Z-fable-scribe-opam-switch-downgrade-broke-builds.md
+   (restored via `opam switch import` of the 20:28 auto-backup).
+Do not treat the system upgrade as the cause of the 20:29 downgrade.
