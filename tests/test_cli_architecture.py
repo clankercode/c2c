@@ -395,3 +395,25 @@ def test_skills_commands_are_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_skills_cmd.skills_group")
     assert_token_reference(c2c_ml, "C2c_skills_cmd.fast_path_skills_list")
     assert_token_reference(c2c_ml, "C2c_skills_cmd.fast_path_skills_serve")
+
+
+def test_migrate_broker_command_is_extracted_from_monolithic_cli():
+    """Broker migration command assembly should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    migrate_ml = REPO / "ocaml" / "cli" / "c2c_migrate_cmd.ml"
+
+    assert migrate_ml.exists(), "expected extracted migrate-broker command module"
+    migrate_src = migrate_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "legacy_broker_root",
+        "sync_sidecar_for_migration",
+        "mcp_config_rewriter_run",
+        "suggest_shell_export_run",
+        "migrate_broker_run",
+        "migrate_broker_cmd",
+        "migrate_broker",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, migrate_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_migrate_cmd.migrate_broker")
