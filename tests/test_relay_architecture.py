@@ -53,3 +53,21 @@ def test_relay_sqlite_support_is_extracted_from_relay_ml():
         assert re.search(rf"\blet\s+{re.escape(name)}\b", support_src)
 
     assert re.search(r"\binclude\s+Relay_sqlite_support\b", relay_ml)
+
+
+def test_relay_pairing_token_sql_is_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    token_sql_ml = REPO / "ocaml" / "relay_pairing_token_sql.ml"
+
+    assert token_sql_ml.exists(), "expected extracted pairing-token SQL module"
+    token_sql_src = token_sql_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "store_pairing_token_db",
+        "get_and_burn_pairing_token_db",
+        "find_pairing_token_db",
+    ]:
+        assert re.search(rf"\blet\s+{re.escape(name)}\b", relay_ml) is None
+        assert re.search(rf"\blet\s+{re.escape(name)}\b", token_sql_src)
+
+    assert re.search(r"\binclude\s+Relay_pairing_token_sql\b", relay_ml)
