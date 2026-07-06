@@ -303,6 +303,17 @@ let print_json json =
   Yojson.Safe.pretty_to_channel stdout json;
   print_newline ()
 
+(* ASCII case-insensitive substring test. Shared by `c2c find` and
+   `c2c list --match`. An empty needle matches everything. *)
+let string_contains_ci haystack needle =
+  let h = String.lowercase_ascii haystack in
+  let n = String.lowercase_ascii needle in
+  let hl = String.length h and nl = String.length n in
+  if nl = 0 then true
+  else
+    let rec loop i = i + nl <= hl && (String.sub h i nl = n || loop (i + 1)) in
+    loop 0
+
 (* Commands that are runnable in any session (Tier1/Tier2) but are
    de-emphasised in the curated `c2c commands` / `c2c --help` listings
    unless `--dev` (or `--all`) is passed. Orthogonal to the tier map:
