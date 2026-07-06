@@ -28,16 +28,29 @@ let mesh_status_cmd : unit Cmdliner.Term.t =
   | Some url ->
       let client = Relay.Relay_client.make url in
       (* Fetch peers - signed if identity exists and --include-dead not set. *)
+      let alias_source = match env_auto_alias () with
+        | Some a -> Relay_client_hints.Explicit a
+        | None -> Relay_client_hints.Anon_fallback
+      in
+      let signing_alias = match alias_source with
+        | Relay_client_hints.Explicit a -> a
+        | Relay_client_hints.Anon_fallback -> "anon"
+      in
       let peers_result = (
         match Relay_identity.load (), include_dead with
         | Ok id, false ->
-            let alias = Option.value ~default:"anon" (env_auto_alias ()) in
-            let auth = Relay_signed_ops.sign_request id ~alias
+            let auth = Relay_signed_ops.sign_request id ~alias:signing_alias
               ~meth:"GET" ~path:"/list" ~body_str:"" () in
             Lwt_main.run (Relay.Relay_client.list_peers_signed client ~auth_header:auth ())
         | _ ->
             Lwt_main.run (Relay.Relay_client.list_peers client ~include_dead ())
       ) in
+      (* Surface a fix-it hint (stderr) when /list was rejected for a missing
+         alias→identity binding — the table below would otherwise just render
+         zero peers with no explanation. *)
+      (match Relay_client_hints.hint_for_response ~alias_source peers_result with
+       | Some hint -> Printf.eprintf "%s%!" hint
+       | None -> ());
       (* Fetch rooms. *)
       let rooms_result = Lwt_main.run (Relay.Relay_client.list_rooms client) in
       if as_json then begin

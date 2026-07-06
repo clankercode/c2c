@@ -967,7 +967,7 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay connect [--relay-url URL] [--token T] [--token-file PATH] [--interval N] [--once]` | Bridge local broker to remote relay. Falls back to env vars and saved `relay.json` config. |
 | `relay setup [--url URL] [--token T] [--token-file PATH] [--show]` | Save relay config to disk |
 | `relay status` | Show relay server health and peer count |
-| `relay list [--dead] [--json]` | List peers registered on the relay. With `--dead`, includes reserved offline aliases plus `alias_release_warning` / `alias_release_at` metadata. |
+| `relay list [--alias A] [--dead] [--json]` | List peers registered on the relay. `--alias` picks the alias to sign the request as (default: `C2C_MCP_AUTO_REGISTER_ALIAS`, else `anon`); if the relay has no identity binding for it, the CLI prints a fix-it hint naming the exact `relay register` command. With `--dead`, includes reserved offline aliases plus `alias_release_warning` / `alias_release_at` metadata. |
 | `relay gc [--once] [--interval N] [--verbose] [--json]` | Release aliases unseen for 12 months and prune orphan inboxes on the relay |
 | `relay identity init [--path PATH]` | Generate Ed25519 identity keypair for prod-mode auth |
 | `relay identity show` | Display current identity fingerprint and metadata |
@@ -1063,7 +1063,7 @@ and sends a tmux wake-prompt when the pane is idle. See
 | `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay. |
 | `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk. |
 | `relay status [--relay-url URL] [--token T]` | Show relay server health. |
-| `relay list [--dead] [--relay-url URL] [--token T] [--json]` | List peers registered on the relay; `--dead` includes reserved offline aliases and release-warning metadata. |
+| `relay list [--alias A] [--dead] [--relay-url URL] [--token T] [--json]` | List peers registered on the relay; `--alias` selects the signing alias (default: `C2C_MCP_AUTO_REGISTER_ALIAS`, else `anon`); `--dead` includes reserved offline aliases and release-warning metadata. |
 | `relay gc [--once] [--interval N] [--verbose] [--json]` | Release aliases unseen for 12 months and prune orphan inboxes on the relay. |
 | `relay identity init\|show` | Generate or display the local Ed25519 identity. |
 | `relay register --alias A [--relay-url URL] [--token T]` | Register Ed25519 identity on the relay (prod-mode bootstrap). |

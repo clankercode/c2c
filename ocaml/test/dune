@@ -24,6 +24,11 @@
  (libraries c2c_mcp alcotest str))
 
 (test
+ (name test_relay_client_hints)
+ (modules test_relay_client_hints)
+ (libraries c2c_mcp alcotest yojson))
+
+(test
  (name test_wire_bridge)
  (modules test_wire_bridge)
  (libraries c2c_mcp alcotest unix))
