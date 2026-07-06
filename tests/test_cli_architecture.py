@@ -614,3 +614,23 @@ def test_inbox_commands_are_extracted_from_monolithic_cli():
     assert_token_reference(c2c_ml, "C2c_inbox_cmd.check_pending_reply")
     assert_token_reference(c2c_ml, "C2c_inbox_cmd.poll_inbox")
     assert_token_reference(c2c_ml, "C2c_inbox_cmd.peek_inbox")
+
+
+def test_register_commands_are_extracted_from_monolithic_cli():
+    """Broker registration command assembly should live outside c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    register_ml = REPO / "ocaml" / "cli" / "c2c_register_cmd.ml"
+
+    assert register_ml.exists(), "expected extracted register command module"
+    register_src = register_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "register_cmd",
+        "deregister_cmd",
+        "register",
+        "deregister",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, register_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_register_cmd.register")
+    assert_token_reference(c2c_ml, "C2c_register_cmd.deregister")

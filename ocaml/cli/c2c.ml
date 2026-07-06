@@ -784,123 +784,7 @@ let send_all_cmd =
 
 (* Health, connect, verify, host-id subcommands extracted to c2c_health_cmd.ml *)
 
-(* --- subcommand: register ------------------------------------------------- *)
-
-let register_cmd =
-  let alias =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to register (default: C2C_MCP_AUTO_REGISTER_ALIAS).")
-  in
-  let session_id_opt =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID" ~doc:"Session ID (default: resolved from C2C_MCP_SESSION_ID or the current client session).")
-  in
-  let no_metadata =
-    Cmdliner.Arg.(value & flag & info [ "no-metadata" ] ~doc:"Opt out of metadata exposure/federation (cwd, canonical alias). Does NOT affect cwd capture, which is required for the worktree-mismatch guard.")
-  in
-  let broker_root_opt =
-    Cmdliner.Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
-           ~doc:"Broker root dir (default: auto-resolve via env/git). Overrides --cross-repo.")
-  in
-  let+ json = json_flag
-  and+ alias_opt = alias
-  and+ session_id_opt = session_id_opt
-  and+ no_metadata = no_metadata
-  and+ cross_repo = cross_repo_flag
-  and+ broker_root_opt = broker_root_opt in
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
-  let alias, alias_from_auto_gen =
-    match alias_opt with
-    | Some a -> (a, false)
-    | None -> (
-        match env_auto_alias () with
-        | Some a ->
-            let from_auto_gen =
-              match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" with
-              | Some v -> String.trim v = "1"
-              | None -> false
-            in
-            (a, from_auto_gen)
-        | None ->
-            Printf.eprintf
-              "error: no alias specified and C2C_MCP_AUTO_REGISTER_ALIAS not set.\n\
-               hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n\
-               Pass --alias ALIAS to register explicitly.\n%!";
-            exit 1)
-  in
-  let session_id =
-    match session_id_opt with
-    | Some s -> s
-    | None -> (
-        match env_session_id () with
-        | Some s -> s
-        | None ->
-            Printf.eprintf
-              "error: no session ID specified and no ambient client session ID was found.\n\
-               hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n\
-               Pass --session-id ID to specify explicitly.\n%!";
-            exit 1)
-  in
-  (* Prefer C2C_MCP_CLIENT_PID (set by managed launchers to the outer loop PID)
-     over getppid(), so `c2c register` from inside a managed session pins
-     liveness to the durable outer process rather than a transient shell. *)
-  let pid =
-    match Sys.getenv_opt "C2C_MCP_CLIENT_PID" with
-    | Some s -> (match int_of_string_opt (String.trim s) with Some p -> Some p | None -> Some (Unix.getppid ()))
-    | None -> Some (Unix.getppid ())
-  in
-  let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
-  (try
-     C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time
-       ~client_type:(env_client_type ()) ~cwd:(Some (Sys.getcwd ()))
-       ~metadata_opt_out:no_metadata ~from_auto_gen:alias_from_auto_gen ()
-   with Invalid_argument msg ->
-     (if json then
-        print_json (`Assoc [("ok", `Bool false); ("error", `String msg)])
-      else
-        Printf.eprintf "error: %s\n%!" msg);
-     exit 1);
-  (match C2c_mcp.Broker.write_allowed_signers_entry broker ~alias with
-   | Ok () -> ()
-   | Error e -> Printf.eprintf "[allowed_signers] warning: %s\n%!" e);
-  let output_mode = if json then Json else Human in
-  match output_mode with
-  | Json ->
-      print_json
-        (`Assoc
-          [ ("alias", `String alias)
-          ; ("session_id", `String session_id)
-          ])
-  | Human ->
-      Printf.printf "registered %s (session %s)\n" alias session_id
-
-(* --- subcommand: deregister ---------------------------------------------- *)
-
-let deregister_cmd =
-  let alias_arg =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ALIAS" ~doc:"Alias to deregister.")
-  in
-  let broker_root_opt =
-    Cmdliner.Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
-           ~doc:"Broker root dir (default: auto-resolve via env/git). Overrides --cross-repo.")
-  in
-  let+ json = json_flag
-  and+ alias = alias_arg
-  and+ cross_repo = cross_repo_flag
-  and+ broker_root_opt = broker_root_opt in
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
-  match C2c_mcp.Broker.deregister broker ~alias with
-  | None ->
-      Printf.eprintf "error: no registration found for alias '%s'\n%!" alias;
-      exit 1
-  | Some reg ->
-      if json then
-        print_json
-          (`Assoc
-            [ ("alias", `String reg.alias)
-            ; ("session_id", `String reg.session_id)
-            ; ("deregistered", `Bool true)
-            ])
-      else
-        Printf.printf "deregistered %s (session %s)\n" reg.alias reg.session_id
+(* Register/deregister command island moved to c2c_register_cmd.ml. *)
 
 (* Monitor subcommand extracted to c2c_monitor_cmd.ml *)
 
@@ -919,8 +803,7 @@ let whoami = Cmdliner.Cmd.v (Cmdliner.Cmd.info "whoami" ~doc:"Show current c2c i
 (* Approval subcommands extracted to c2c_approval_cmd.ml *)
 
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
-let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
-let deregister = Cmdliner.Cmd.v (Cmdliner.Cmd.info "deregister" ~doc:"Remove a registration from the broker.") deregister_cmd
+(* Register/deregister commands extracted to c2c_register_cmd.ml. *)
 
 (* Phase 1 split: install/setup code moved to c2c_setup.ml *)
 
@@ -1392,7 +1275,7 @@ let () =
   let tier_grouped_man = C2c_commands_cmd.commands_man is_agent in
   let all_cmds =
     [ send; list; sessions; whoami; C2c_inbox_cmd.set_compact; C2c_inbox_cmd.clear_compact; C2c_inbox_cmd.open_pending_reply; C2c_inbox_cmd.check_pending_reply; C2c_inbox_cmd.poll_inbox; C2c_inbox_cmd.peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; C2c_sweep_cmd.sweep; C2c_sweep_cmd.registry_prune
-    ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; C2c_host_cmd.setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; C2c_git_cmd.git; register; deregister; C2c_refresh_peer_cmd.refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
+    ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; C2c_host_cmd.setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; C2c_git_cmd.git; C2c_register_cmd.register; C2c_register_cmd.deregister; C2c_refresh_peer_cmd.refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; C2c_broker_cmd.tail_log; C2c_broker_cmd.server_info; C2c_broker_cmd.my_rooms; C2c_broker_cmd.dead_letter; C2c_broker_cmd.prune_rooms; C2c_broker_cmd.get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; C2c_glyphs_cmd.list_glyphs
     ; C2c_serve_cmd.serve; C2c_serve_cmd.mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; C2c_relay_pins_cmd.relay_pins; C2c_mesh_cmd.mesh_group; C2c_skills_cmd.skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in
