@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-06T10:28:00Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-06T10:59:21Z"
 complexity: medium
 depends_on: []
+duration_minutes: 31.35598249568333
 estimate_hours: 1
 id: B069
 priority: high
 started_at: "2026-07-06T10:28:00Z"
-status: in_progress
+status: done
 tags: []
 title: c2c monitor silently filters by stale global default-alias
 ---
