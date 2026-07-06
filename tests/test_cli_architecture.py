@@ -651,3 +651,26 @@ def test_whoami_command_is_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, whoami_src, name)
 
     assert_token_reference(c2c_ml, "C2c_whoami_cmd.whoami")
+
+
+def test_list_commands_are_extracted_from_monolithic_cli():
+    """Peer discovery/listing command assembly should be modular."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    list_ml = REPO / "ocaml" / "cli" / "c2c_list_cmd.ml"
+
+    assert list_ml.exists(), "expected extracted list command module"
+    list_src = list_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "lookup_role_info",
+        "truncate_str",
+        "format_last_seen",
+        "list_cmd",
+        "sessions_cmd",
+        "list",
+        "sessions",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, list_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_list_cmd.list")
+    assert_token_reference(c2c_ml, "C2c_list_cmd.sessions")
