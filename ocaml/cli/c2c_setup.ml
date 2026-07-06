@@ -540,6 +540,10 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   end;
   Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
+  (* Without C2C_MCP_AUTO_REGISTER_ALIAS the c2c MCP server inside codex never
+     auto-registers (auto_register_impl bails when the alias env is absent) —
+     mirror setup_kimi/setup_gemini which have always written it. *)
+  Buffer.add_string buf (Printf.sprintf "C2C_MCP_AUTO_REGISTER_ALIAS = \"%s\"\n" alias_val);
   Buffer.add_string buf "C2C_MCP_CLIENT_TYPE = \"codex\"\n";
   Buffer.add_string buf "C2C_MCP_AUTO_DRAIN_CHANNEL = \"0\"\n";
   Buffer.add_string buf
@@ -613,6 +617,14 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen exi
       ; ("env", `Assoc
           ([ ("C2C_MCP_BROKER_ROOT", `String root)
            ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+           (* Pin the client type so inferred_client_type_from_env never fires
+              inside kimi. Without this, a `kimi` launched from a Claude Code
+              shell inherits CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID, infers
+              "claude", and hijacks the parent Claude session's identity/inbox
+              (storm-beacon kimi-session-hijack finding). kimi has no native
+              session-id key, so pinning yields the safe derived-from-alias
+              session id. *)
+           ; ("C2C_MCP_CLIENT_TYPE", `String "kimi")
            ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
            ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String (default_social_room ()))
            ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")

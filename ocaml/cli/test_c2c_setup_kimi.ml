@@ -234,6 +234,23 @@ let test_env_marker_absent_when_alias_explicit () =
     false
     (List.mem_assoc "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" env_fields)
 
+let test_kimi_config_pins_client_type () =
+  (* Hijack hardening: kimi's env block must pin C2C_MCP_CLIENT_TYPE=kimi so
+     inferred_client_type_from_env never fires. Otherwise a kimi launched from
+     a Claude Code shell inherits CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID,
+     infers "claude", and adopts the parent Claude session's identity/inbox. *)
+  let result =
+    C2c_setup.build_kimi_mcp_config ~alias_from_auto_gen:false
+      ~root ~alias_val:"lyra-quill" ~server_path (`Assoc [])
+  in
+  let env_fields = c2c_env_fields result in
+  Alcotest.(check (option string))
+    "C2C_MCP_CLIENT_TYPE pinned to kimi"
+    (Some "kimi")
+    (match List.assoc_opt "C2C_MCP_CLIENT_TYPE" env_fields with
+     | Some (`String s) -> Some s
+     | _ -> None)
+
 let test_kimi_config_uses_configured_social_room () =
   with_temp_dir (fun dir ->
     let c2c_dir = dir // ".c2c" in
@@ -301,6 +318,26 @@ let test_setup_codex_writes_env_marker_when_auto_gen () =
       true
       (contains_substring ~haystack:content
          ~needle:"[mcp_servers.c2c.env]"))
+
+let test_setup_codex_writes_auto_register_alias () =
+  (* Codex auto-identity gap (#10 companion): without
+     C2C_MCP_AUTO_REGISTER_ALIAS in [mcp_servers.c2c.env] the c2c MCP server
+     inside codex never auto-registers (auto_register_impl bails when the
+     alias env is absent). setup_codex must write it, mirroring
+     setup_kimi / setup_gemini. *)
+  with_temp_dir (fun dir ->
+    let home = dir // "home" in
+    Unix.mkdir home 0o700;
+    run_setup_codex ~alias_from_auto_gen:false
+      ~alias_val:"lyra-quill"
+      ~home ~server_path:"/fake/bin/c2c_mcp_server.exe" ();
+    let config_path = home // ".codex" // "config.toml" in
+    let content = read_file config_path in
+    Alcotest.(check bool)
+      "C2C_MCP_AUTO_REGISTER_ALIAS written with the alias"
+      true
+      (contains_substring ~haystack:content
+         ~needle:"C2C_MCP_AUTO_REGISTER_ALIAS = \"lyra-quill\""))
 
 let test_setup_codex_omits_env_marker_when_alias_explicit () =
   (* When --alias is supplied (alias_from_auto_gen=false), the env marker
@@ -677,6 +714,8 @@ let () =
             test_env_marker_present_when_alias_from_auto_gen
         ; Alcotest.test_case "env marker absent when alias explicit" `Quick
             test_env_marker_absent_when_alias_explicit
+        ; Alcotest.test_case "client type pinned to kimi (hijack hardening)" `Quick
+            test_kimi_config_pins_client_type
         ; Alcotest.test_case "configured social_room becomes auto-join env" `Quick
             test_kimi_config_uses_configured_social_room
         ] )
@@ -699,6 +738,8 @@ let () =
     ; ("setup-codex-env-marker",
         [ Alcotest.test_case "setup_codex writes FROM_AUTO_GEN marker when alias auto-picked" `Quick
             test_setup_codex_writes_env_marker_when_auto_gen
+        ; Alcotest.test_case "setup_codex writes C2C_MCP_AUTO_REGISTER_ALIAS" `Quick
+            test_setup_codex_writes_auto_register_alias
         ; Alcotest.test_case "setup_codex omits FROM_AUTO_GEN marker when alias explicit" `Quick
             test_setup_codex_omits_env_marker_when_alias_explicit
         ] )
