@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-06T10:27:51Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-06T12:07:46Z"
 complexity: medium
 depends_on: []
+duration_minutes: 99.93261175368333
 estimate_hours: 1
 id: B071
 priority: high
 started_at: "2026-07-06T10:27:51Z"
-status: in_progress
+status: done
 tags: []
 title: CLI register pins transient shell pid — alias born dead+unroutable
 ---
