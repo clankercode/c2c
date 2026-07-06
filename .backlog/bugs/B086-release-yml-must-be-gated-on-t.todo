@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-06T14:50:05Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-06T14:56:17Z"
 complexity: medium
 depends_on: []
+duration_minutes: 6.215584459583333
 estimate_hours: 1
 id: B086
 priority: high
 started_at: "2026-07-06T14:50:05Z"
-status: in_progress
+status: done
 tags: []
 title: 'release.yml must be gated on test CI passing: require ci.yml green for the same SHA before building/publishing release artifacts (needs: via reusable workflow_call, or a check-runs API gate step). Requested by Max 2026-07-06.'
 ---
