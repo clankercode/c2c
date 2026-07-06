@@ -1,0 +1,6 @@
+; Include .collab in dune's source tree: test_c2c_claude_skill_embedded
+; (B033/B064 skill single-source gate) depends on .collab/skills/c2c.md,
+; and dune excludes dot-directories from the source tree by default —
+; without this stanza `dune runtest` fails with
+; "No rule found for .collab/skills/c2c.md".
+(dirs :standard .collab)
