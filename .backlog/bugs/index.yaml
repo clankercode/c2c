@@ -81,3 +81,4 @@ bugs:
     - file: B082-auto-gen-alias-path-used-by-em.todo
     - file: B083-flaky-test-test-c2c-start-laun.todo
     - file: B084-monitor-archive-json-mode-comp.todo
+    - file: B085-per-thread-codex-hook-auto-reg.todo
