@@ -1,0 +1,24 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B071
+priority: high
+status: pending
+tags: []
+title: CLI register pins transient shell pid — alias born dead+unroutable
+---
+
+# CLI register pins transient shell pid — alias born dead+unroutable
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior

@@ -67,3 +67,4 @@ bugs:
     - file: B068-docs-should-focus-on-easy-ad-h.todo
     - file: B069-c2c-monitor-silently-filters-b.todo
     - file: B070-c2c-monitor-watches-archive-on.todo
+    - file: B071-cli-register-pins-transient-sh.todo
