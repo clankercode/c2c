@@ -348,3 +348,24 @@ def test_hook_commands_are_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, hook_src, name)
 
     assert_token_reference(c2c_ml, "C2c_hook_cmd.hook")
+
+
+def test_stats_commands_are_extracted_from_monolithic_cli():
+    """Stats command assembly should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    stats_cmd_ml = REPO / "ocaml" / "cli" / "c2c_stats_cmd.ml"
+
+    assert stats_cmd_ml.exists(), "expected extracted stats command module"
+    stats_cmd_src = stats_cmd_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "stats_cmd",
+        "markdown_flag",
+        "csv_flag",
+        "compact_flag",
+        "stats_history_cmd",
+        "stats",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, stats_cmd_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_stats_cmd.stats")
