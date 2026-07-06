@@ -22,6 +22,7 @@ let commands_by_safety_cmd =
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");
     ("peek-inbox", "Peek at your inbox without draining");
+    ("wait-inbox", "Block until a message arrives, then drain once and exit (for clients with no push delivery)");
     ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");
     ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
@@ -134,6 +135,7 @@ let commands_man is_agent =
     ; `P "TIER LEGEND: Tier 1 = routine use, Tier 2 = lifecycle/setup (use with care), Tier 3 = system (hidden from agents), Tier 4 = internal plumbing."
     ; `P "== TIER 1: SAFE (messaging and queries) =="
     ; `P "$(b,send) $(b,list) $(b,whoami) $(b,poll-inbox) $(b,peek-inbox) \
+         $(b,wait-inbox) \
          $(b,send-all) $(b,history) $(b,health) $(b,dead-letter) \
          $(b,tail-log) $(b,my-rooms) $(b,prune-rooms) \
          $(b,set-compact) $(b,clear-compact) \
@@ -155,6 +157,7 @@ let commands_man is_agent =
     ; `P "TIER LEGEND: Tier 1 = routine use, Tier 2 = lifecycle/setup (use with care), Tier 3 = system infrastructure (do NOT run inside an agent), Tier 4 = internal plumbing."
     ; `P "== TIER 1: SAFE (agents can use freely) =="
     ; `P "$(b,send), $(b,list), $(b,whoami), $(b,poll-inbox), $(b,peek-inbox), \
+         $(b,wait-inbox), \
          $(b,send-all), $(b,history), $(b,health), $(b,status), $(b,verify), \
          $(b,register), $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), \
          $(b,dead-letter), $(b,prune-rooms), $(b,set-compact), $(b,clear-compact), \
@@ -198,6 +201,7 @@ let fast_path_commands () =
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");
     ("peek-inbox", "Peek at your inbox without draining");
+    ("wait-inbox", "Block until a message arrives, then drain once and exit (for clients with no push delivery)");
     ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");
     ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
