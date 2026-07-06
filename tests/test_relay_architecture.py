@@ -270,3 +270,20 @@ def test_relay_backend_contract_is_extracted_from_relay_ml():
         assert re.search(pattern, contract_src, re.MULTILINE)
 
     assert re.search(r"\binclude\s+Relay_backend_contract\b", relay_ml)
+
+
+def test_relay_alias_helpers_are_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    alias_ml = REPO / "ocaml" / "relay_alias_helpers.ml"
+
+    assert alias_ml.exists(), "expected extracted relay alias helper module"
+    alias_src = alias_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "normalize_relay_alias",
+        "alias_matches_display",
+    ]:
+        assert re.search(rf"^let\s+{re.escape(name)}\b", relay_ml, re.MULTILINE) is None
+        assert re.search(rf"^let\s+{re.escape(name)}\b", alias_src, re.MULTILINE)
+
+    assert re.search(r"\binclude\s+Relay_alias_helpers\b", relay_ml)
