@@ -33,3 +33,23 @@ def test_relay_common_helpers_are_extracted_from_relay_ml():
         assert re.search(rf"\b(let|type)\s+{re.escape(name)}\b", common_src)
 
     assert re.search(r"\binclude\s+Relay_common\b", relay_ml)
+
+
+def test_relay_sqlite_support_is_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    support_ml = REPO / "ocaml" / "relay_sqlite_support.ml"
+
+    assert support_ml.exists(), "expected extracted relay SQLite support module"
+    support_src = support_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "sqlite_ddl",
+        "exec_no_rows",
+        "exec_one_row",
+        "exec_many_rows",
+        "exec_prepared",
+    ]:
+        assert re.search(rf"\blet\s+{re.escape(name)}\b", relay_ml) is None
+        assert re.search(rf"\blet\s+{re.escape(name)}\b", support_src)
+
+    assert re.search(r"\binclude\s+Relay_sqlite_support\b", relay_ml)
