@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B086
+priority: high
+status: pending
+tags: []
+title: 'release.yml must be gated on test CI passing: require ci.yml green for the same SHA before building/publishing release artifacts (needs: via reusable workflow_call, or a check-runs API gate step). Requested by Max 2026-07-06.'
+---
+
+release.yml must be gated on test CI passing: require ci.yml green for the same SHA before building/publishing release artifacts (needs: via reusable workflow_call, or a check-runs API gate step). Requested by Max 2026-07-06.
