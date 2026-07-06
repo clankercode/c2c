@@ -22,6 +22,21 @@ let read_inbox_file path =
      | _ -> [])
   with _ -> []
 
+(* Convert a broker [message] record to the same JSON shape the monitor's
+   emit path consumes (used on the --drain inbox path, which returns records
+   rather than raw JSON). Only the fields emit/dedup read are included. *)
+let message_record_to_json (m : message) : Yojson.Safe.t =
+  let base =
+    [ ("from_alias", `String m.from_alias)
+    ; ("to_alias", `String m.to_alias)
+    ; ("content", `String m.content)
+    ; ("ts", `Float m.ts)
+    ]
+  in
+  match m.message_id with
+  | Some mid -> `Assoc (base @ [("message_id", `String mid)])
+  | None -> `Assoc base
+
 (* Extract a string field from a JSON assoc or return a default. *)
 let jstr fields key def =
   match List.assoc_opt key fields with Some (`String s) -> s | _ -> def
@@ -123,8 +138,19 @@ let monitor_cmd =
   in
   let alias_opt =
     Arg.(value & opt (some string) None & info ["alias";"a"] ~docv:"ALIAS"
-           ~doc:"My alias (default: C2C_MCP_SESSION_ID). Only messages addressed to \
-                 this alias are shown by default.")
+           ~doc:"My alias. Only messages addressed to this alias are shown by \
+                 default. When omitted the alias is resolved automatically: \
+                 C2C_MCP_AUTO_REGISTER_ALIAS, then THIS session's own broker \
+                 registration (session-id lookup — authoritative), then the \
+                 machine-global $(b,~/.config/c2c/default-alias) file, then \
+                 C2C_MCP_SESSION_ID, then a single alive registration.")
+  in
+  let drain_flag =
+    Arg.(value & flag & info ["drain"]
+           ~doc:"When watching the live inbox, DRAIN it (archive-append \
+                 preserved) instead of peeking. Use when this monitor is the \
+                 session's only inbox consumer. Default is non-draining (peek), \
+                 so a separate hook/poll consumer still receives the messages.")
   in
   let all_flag =
     Arg.(value & flag & info ["all"]
@@ -179,7 +205,7 @@ let monitor_cmd =
                  still-alive holder.")
   in
   let cross_repo = cross_repo_flag in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force cross_repo ->
+  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force drain cross_repo ->
     (* Resolve effective flags: --archive and --full-body are now defaults.
        --live reverts to inbox watching; --snippet reverts to 80-char preview. *)
     let full_body = full_body || not snippet in  (* full_body unless --snippet *)
@@ -204,42 +230,71 @@ let monitor_cmd =
                       (set C2C_MCP_BROKER_ROOT or run from inside the repo)\n%!";
                     exit 1))
     in
-    let my_alias =
-      match alias_arg with
-      | Some a -> Some a
+    (* Resolve the caller's session id via the standard chain
+       (C2C_MCP_SESSION_ID → client-native keys e.g. CLAUDE_CODE_SESSION_ID →
+       broker-root default-session statefile — see env_session_id). Used for
+       both authoritative alias resolution (B069) and locating this session's
+       live inbox file for inbox-watching (B070). *)
+    let resolved_sid = try env_session_id () with _ -> None in
+    (* One broker handle, reused for registration lookups. *)
+    let lookup_regs () =
+      try Broker.list_registrations (Broker.create ~root:broker_root)
+      with _ -> []
+    in
+    (* This session's OWN registration alias — authoritative and immune to
+       another agent's `c2c init` clobbering the shared default-alias file. *)
+    let session_reg =
+      match resolved_sid with
+      | None -> None
+      | Some sid ->
+          (match List.find_opt
+                   (fun (r : registration) -> r.session_id = sid)
+                   (lookup_regs ()) with
+           | Some r -> Some (r.alias, sid)
+           | None -> None)
+    in
+    let default_alias_file =
+      let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+      let path = home // ".config" // "c2c" // "default-alias" in
+      let s = String.trim (C2c_io.read_file_opt path) in
+      if s <> "" then Some s else None
+    in
+    let single_alive =
+      match List.filter
+              (fun (r : registration) ->
+                Broker.registration_liveness_state r = Broker.Alive)
+              (lookup_regs ()) with
+      | [r] -> Some r.alias
+      | _ -> None
+    in
+    (* B069: session registration outranks the machine-global default-alias
+       file. Order + labels live in the pure, unit-tested C2c_monitor_logic. *)
+    let my_alias, alias_source =
+      C2c_monitor_logic.resolve_alias
+        ~flag:alias_arg
+        ~auto_env:(C2c_utils.alias_from_env_only ())
+        ~session_reg
+        ~default_alias_file
+        ~session_id_env:(Sys.getenv_opt "C2C_MCP_SESSION_ID")
+        ~single_alive
+        ()
+    in
+    (* Session whose live inbox we watch (B070). Prefer the resolved session id;
+       otherwise map the resolved alias back to its registration's session id so
+       inbox-watching still works when the alias came from a fallback source. *)
+    let inbox_sid =
+      match resolved_sid with
+      | Some _ as s -> s
       | None ->
-          (* Resolution chain for bare `c2c monitor` (no --alias):
-             1. C2C_MCP_AUTO_REGISTER_ALIAS (explicit alias env var)
-             2. Config file ~/.config/c2c/default-alias (written by init/install)
-             3. C2C_MCP_SESSION_ID (proxy — works when session_id = alias)
-             4. Scan broker registrations for a single alive registration *)
-          match C2c_utils.alias_from_env_only () with
-          | Some _ as a -> a
-          | None ->
-              let config_alias () =
-                let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
-                let path = home // ".config" // "c2c" // "default-alias" in
-                let s = C2c_io.read_file_opt path in
-                let s = String.trim s in
-                if s <> "" then Some s else None
-              in
-              match config_alias () with
-              | Some _ as a -> a
-              | None ->
-                  match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-                  | Some _ as a -> a
-                  | None ->
-                      try
-                        let regs = Broker.list_registrations
-                          (Broker.create ~root:broker_root) in
-                        let alive = List.filter
-                          (fun (r : registration) ->
-                            Broker.registration_liveness_state r = Broker.Alive)
-                          regs in
-                        (match alive with
-                         | [r] -> Some r.alias
-                         | _ -> None)
-                      with _ -> None
+          (match my_alias with
+           | None -> None
+           | Some a ->
+               (match List.find_opt
+                        (fun (r : registration) ->
+                          Broker.alias_casefold r.alias = Broker.alias_casefold a)
+                        (lookup_regs ()) with
+                | Some r -> Some r.session_id
+                | None -> None))
     in
     (* #354: per-alias monitor lockfile guard.
        Prevents fork-bomb accumulation when `c2c monitor --alias <a>` is launched
@@ -436,6 +491,14 @@ let monitor_cmd =
     in
     if archive && not (Sys.file_exists watch_dir) then
       mkdir_p ~mode:0o700 watch_dir;
+    (* B070: in the default (archive) mode, ALSO watch this session's live
+       inbox file so a bare CLI session with no drainer still receives
+       messages (the archive only echoes what some OTHER consumer drained).
+       Live mode already watches inboxes, so this augments archive mode only. *)
+    let inbox_filename =
+      match inbox_sid with Some s -> Some (s ^ ".inbox.json") | None -> None
+    in
+    let do_inbox_watch = archive && inbox_filename <> None in
     (* Per-file read offsets for archive mode. Init to current size so we
        don't re-emit historical entries on startup. *)
     let archive_offsets : (string, int) Hashtbl.t = Hashtbl.create 16 in
@@ -477,15 +540,66 @@ let monitor_cmd =
             ) lines)
       with _ -> []
     in
+    (* B070: cross-path dedup between the inbox-watch (peek) path and the
+       archive-echo path. When a live-inbox message is surfaced and later
+       drained into the archive by any consumer, the archive event must not
+       re-print it. Keyed on message identity (see C2c_monitor_logic.msg_key). *)
+    let seen = C2c_monitor_logic.create_seen () in
+    (* Apply --from + self filters, then drop messages already surfaced. *)
+    let apply_filters msgs =
+      let msgs = match from_filter with
+        | None -> msgs
+        | Some f -> List.filter (fun m -> match m with
+            | `Assoc fields -> jstr fields "from_alias" "" = f
+            | _ -> false) msgs
+      in
+      let msgs =
+        if include_self then msgs
+        else match my_alias with
+          | None -> msgs
+          | Some me -> List.filter (fun m -> match m with
+              | `Assoc fields -> jstr fields "from_alias" "" <> me
+              | _ -> true) msgs
+      in
+      C2c_monitor_logic.filter_unseen seen msgs
+    in
+    (* Emit an already-filtered message list (json objects or human lines). *)
+    let emit ~is_mine msgs =
+      match msgs with
+      | [] -> ()
+      | msgs ->
+          if json then begin
+            if all || is_mine then
+              List.iter (fun m ->
+                let m_with_ts = match m with
+                  | `Assoc fields ->
+                      let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                      `Assoc (("event_type", `String "message")
+                              :: ("monitor_ts", `String ts) :: fields)
+                  | _ -> m
+                in
+                print_string (Yojson.Safe.to_string m_with_ts);
+                print_newline ()) msgs
+          end else
+            emit_messages ~my_alias ~all ~full_body msgs
+    in
     (* Belt-and-braces startup orphan check: if the parent already died before
        we enter the inotify loop, exit immediately rather than loop forever. *)
     (if Unix.getppid () = 1 then exit 0);
     let cmd =
       if archive then
-        (* Archive: flat dir, original space-delimited format. *)
-        Printf.sprintf
-          "inotifywait -m -e close_write,modify,delete,moved_to --format '%%e %%f' %s"
+        (* Archive (default): watch the append-only archive dir; when a session
+           inbox was resolved (B070) also watch the broker root for that
+           session's live *.inbox.json. Unified tab-delimited full-path format
+           so both watch roots parse identically; non-recursive (rooms/registry
+           events are a live-mode concern). *)
+        let paths =
           (Filename.quote watch_dir)
+          ^ (if do_inbox_watch then " " ^ Filename.quote broker_root else "")
+        in
+        Printf.sprintf
+          "inotifywait -m -e close_write,modify,delete,moved_to --format '%%e\t%%w%%f' %s"
+          paths
       else
         (* Live: recursive so rooms/<id>/members.json is caught.
            Tab-delimited with %w%f = full path avoids space-in-path ambiguity.
@@ -530,12 +644,36 @@ let monitor_cmd =
     while not (Atomic.get ready_flag) && Unix.gettimeofday () < deadline do
       Thread.delay 0.05
     done;
+    (* B069: make the resolved identity VISIBLE — a misresolved alias (e.g. a
+       stale default-alias file belonging to another agent) must never fail
+       silently. This line is the monitor's first output, so in Claude Code's
+       Monitor tool it becomes the first notification. *)
+    let sid_str = match resolved_sid with Some s -> s | None -> "?" in
     if json then begin
       let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
       print_string (Yojson.Safe.to_string
         (`Assoc [ "event_type", `String "monitor.ready"
-                ; "monitor_ts", `String ts ]));
+                ; "monitor_ts", `String ts
+                ; "alias", (match my_alias with Some a -> `String a | None -> `Null)
+                ; "session_id", (match resolved_sid with Some s -> `String s | None -> `Null)
+                ; "alias_source", `String (C2c_monitor_logic.source_label alias_source)
+                ; "inbox_watch", `Bool do_inbox_watch ]));
       print_newline ()
+    end else begin
+      (match my_alias with
+       | Some a ->
+           Printf.printf "%s monitoring as %s (session %s)%s\n%!"
+             (now_hms ()) a sid_str
+             (if C2c_monitor_logic.is_fallback_source alias_source
+              then Printf.sprintf " — resolved via %s"
+                     (C2c_monitor_logic.source_label alias_source)
+              else "")
+       | None ->
+           Printf.printf "%s monitoring ALL peers — no alias resolved (%s)\n%!"
+             (now_hms ()) (C2c_monitor_logic.source_label alias_source));
+      if do_inbox_watch then
+        Printf.printf "%s watching live inbox (%s)\n%!"
+          (now_hms ()) (if drain then "drain" else "peek")
     end;
     Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
       try while true do
@@ -543,58 +681,83 @@ let monitor_cmd =
            exit rather than accumulate as a zombie monitor process. *)
         (if Unix.getppid () = 1 then exit 0);
         let line = input_line ic in
-        (* Archive uses space-delimited "EVENT FILENAME"; live uses
-           tab-delimited "EVENT\tFULL_PATH" (recursive, full path). *)
-        let parts =
-          if archive then String.split_on_char ' ' (String.trim line)
-          else String.split_on_char '\t' (String.trim line)
-        in
+        (* Unified tab-delimited "EVENT\tFULL_PATH" format for both archive and
+           live modes (see the inotifywait --format above). *)
+        let parts = String.split_on_char '\t' (String.trim line) in
         (match parts with
-         | event :: filename :: _ when archive ->
+         | event :: full_path :: _ when archive ->
+             (* Archive mode routes two file kinds by suffix: append-only
+                archive entries (.jsonl in watch_dir) and — when inbox-watch is
+                on (B070) — this session's live inbox (.inbox.json in the
+                broker root). Both are unambiguous by suffix. *)
+             let filename = Filename.basename full_path in
              let n = String.length filename in
              let is_jsonl = n > 6 && String.sub filename (n - 6) 6 = ".jsonl" in
              if is_jsonl then begin
                let sid = String.sub filename 0 (n - 6) in
+               (* Rebuild the path against watch_dir so it matches the offset
+                  table keys initialised at startup. *)
                let path = Filename.concat watch_dir filename in
-               let entries = read_new_archive_entries path in
-               (* Apply --from filter *)
-               let entries = match from_filter with
-                 | None -> entries
-                 | Some f -> List.filter (fun m -> match m with
-                     | `Assoc fields -> jstr fields "from_alias" "" = f
-                     | _ -> false) entries
-               in
-               (* Drop self-sent unless --include-self *)
-               let entries =
-                 if include_self then entries
-                 else match my_alias with
-                   | None -> entries
-                   | Some me -> List.filter (fun m -> match m with
-                       | `Assoc fields -> jstr fields "from_alias" "" <> me
-                       | _ -> true) entries
-               in
-               (match entries with
-                | [] -> ()
-                | msgs ->
-                    if json then begin
-                      let is_mine = match my_alias with
-                        | None -> true | Some me -> sid = me in
-                      if all || is_mine then
-                        List.iter (fun m ->
-                          let m_with_ts = match m with
-                            | `Assoc fields ->
-                                let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
-                                `Assoc (("event_type", `String "message")
-                                        :: ("monitor_ts", `String ts) :: fields)
-                            | _ -> m
-                          in
-                          print_string (Yojson.Safe.to_string m_with_ts);
-                          print_newline ()
-                        ) msgs
-                    end else
-                      emit_messages ~my_alias ~all ~full_body msgs)
-             end;
-             ignore event
+               let is_mine = match my_alias with
+                 | None -> true | Some me -> sid = me in
+               emit ~is_mine (apply_filters (read_new_archive_entries path))
+             end else begin
+               match inbox_filename with
+               | Some ifn when filename = ifn ->
+                   (* B070: this session's live inbox changed. Peek (default) or
+                      drain (--drain) and surface newly-seen messages. Dedup
+                      against the eventual archive echo via `seen`. *)
+                   let event_up = String.uppercase_ascii event in
+                   let is_delete = String.length event_up >= 6
+                                   && String.sub event_up 0 6 = "DELETE" in
+                   let label = match my_alias with
+                     | Some a -> a | None -> String.sub filename 0 (n - 11) in
+                   if is_delete then begin
+                     if sweeps then begin
+                       if json then begin
+                         let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                         print_string (Yojson.Safe.to_string
+                           (`Assoc [ "event_type", `String "sweep"
+                                   ; "alias",      `String label
+                                   ; "monitor_ts", `String ts ]));
+                         print_newline ()
+                       end else
+                         Printf.printf "%s 🗑️  SWEEP  %s (inbox deleted)\n%!"
+                           (now_hms ()) label
+                     end
+                   end else begin
+                     let inbox_path = Filename.concat broker_root filename in
+                     let msgs =
+                       if drain then
+                         (match inbox_sid with
+                          | Some sid ->
+                              (try
+                                 List.map message_record_to_json
+                                   (Broker.drain_inbox ~drained_by:"c2c-monitor"
+                                      (Broker.create ~root:broker_root)
+                                      ~session_id:sid)
+                               with _ -> read_inbox_file inbox_path)
+                          | None -> read_inbox_file inbox_path)
+                       else read_inbox_file inbox_path
+                     in
+                     (match apply_filters msgs with
+                      | [] ->
+                          if drains then begin
+                            if json then begin
+                              let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                              print_string (Yojson.Safe.to_string
+                                (`Assoc [ "event_type", `String "drain"
+                                        ; "alias",      `String label
+                                        ; "monitor_ts", `String ts ]));
+                              print_newline ()
+                            end else
+                              Printf.printf "%s 📤  DRAIN  %s (inbox cleared)\n%!"
+                                (now_hms ()) label
+                          end
+                      | msgs -> emit ~is_mine:true msgs)
+                   end
+               | _ -> ()
+             end
          | event :: full_path :: _ ->
              (* In live mode filename is a full path; basename is used for routing. *)
              let filename = Filename.basename full_path in
@@ -787,7 +950,7 @@ let monitor_cmd =
       done with End_of_file -> ())
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
-    $ force_flag $ cross_repo
+    $ force_flag $ drain_flag $ cross_repo
 
 (* --- monitor Cmd ---------------------------------------------------------- *)
 
@@ -799,11 +962,24 @@ let monitor =
             ; `P "Watches the broker inbox directory with $(b,inotifywait) and emits \
                   one formatted line per new message (or event). Designed for Claude Code's \
                   Monitor tool — each output line becomes the notification summary."
-            ; `P "Default behaviour: only show messages addressed to your alias \
-                  ($(b,C2C_MCP_SESSION_ID)). New messages only — drains and sweeps \
+            ; `P "Default behaviour: only show messages addressed to your alias. \
+                  The alias is auto-resolved (no --alias needed): \
+                  $(b,C2C_MCP_AUTO_REGISTER_ALIAS), then THIS session's own broker \
+                  registration (authoritative — never shadowed by another agent's \
+                  $(b,~/.config/c2c/default-alias)), then that file, then \
+                  $(b,C2C_MCP_SESSION_ID), then a single alive registration. The \
+                  resolved identity is printed as the first line so a misresolution \
+                  is visible, not silent. New messages only — drains and sweeps \
                   suppressed unless $(b,--drains)/$(b,--sweeps) are set."
+            ; `P "Receive without a drainer: in the default (archive) mode the \
+                  monitor ALSO watches your session's live inbox, so a bare CLI \
+                  session with no hook/poll consumer still sees incoming messages \
+                  (peeked, not drained). Pass $(b,--drain) to make the monitor the \
+                  inbox consumer (archive-append preserved)."
             ; `P "Burst deduplication: multiple messages from the same sender in one \
-                  inbox write are collapsed to a single line with a count."
+                  inbox write are collapsed to a single line with a count. \
+                  Inbox-peek and archive-echo of the same message are deduped by \
+                  message identity so it is not printed twice."
             ; `S "OUTPUT FORMAT"
             ; `P "[HH:MM:SS] ICON  TYPE  from→to  \"subject…\""
             ; `P "ICON: 📬 = addressed to you, 💬 = peer traffic (--all), \
@@ -813,6 +989,7 @@ let monitor =
             ; `P "$(b,c2c monitor --all)  — broad swarm monitor"
             ; `P "$(b,c2c monitor --all --drains --sweeps)  — everything"
             ; `P "$(b,c2c monitor --from coder1)  — only messages from coder1"
+            ; `P "$(b,c2c monitor --drain)  — monitor is the inbox consumer (drains live inbox)"
             ; `P "$(b,c2c monitor --snippet)  — 80-char subject preview (legacy)"
             ; `P "$(b,c2c monitor --live)  — watch live inboxes instead of archive (legacy)"
             ; `P "$(b,c2c monitor --json)  — JSON output for programmatic parsing"
