@@ -582,3 +582,35 @@ def test_serve_commands_are_extracted_from_monolithic_cli():
 
     assert_token_reference(c2c_ml, "C2c_serve_cmd.serve")
     assert_token_reference(c2c_ml, "C2c_serve_cmd.mcp")
+
+
+def test_inbox_commands_are_extracted_from_monolithic_cli():
+    """Inbox, compaction, and pending-reply command assembly should be modular."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    inbox_ml = REPO / "ocaml" / "cli" / "c2c_inbox_cmd.ml"
+
+    assert inbox_ml.exists(), "expected extracted inbox command module"
+    inbox_src = inbox_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "set_compact_cmd",
+        "clear_compact_cmd",
+        "open_pending_reply_cmd",
+        "check_pending_reply_cmd",
+        "poll_inbox_cmd",
+        "peek_inbox_cmd",
+        "set_compact",
+        "clear_compact",
+        "open_pending_reply",
+        "check_pending_reply",
+        "poll_inbox",
+        "peek_inbox",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, inbox_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_inbox_cmd.set_compact")
+    assert_token_reference(c2c_ml, "C2c_inbox_cmd.clear_compact")
+    assert_token_reference(c2c_ml, "C2c_inbox_cmd.open_pending_reply")
+    assert_token_reference(c2c_ml, "C2c_inbox_cmd.check_pending_reply")
+    assert_token_reference(c2c_ml, "C2c_inbox_cmd.poll_inbox")
+    assert_token_reference(c2c_ml, "C2c_inbox_cmd.peek_inbox")
