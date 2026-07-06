@@ -510,6 +510,18 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
         s)
     else ""
   in
+  (* Strip the c2c managed hooks block FIRST (on the raw content): the
+     MCP-section strip below drops non-section lines while `in_c2c` is true,
+     and the hooks block's BEGIN marker sits right after the last
+     [mcp_servers.c2c.tools.*] section — stripping in the other order would
+     eat the marker and orphan the block body (duplicating hooks on every
+     reinstall). *)
+  let existing =
+    C2c_codex_hooks.strip_managed_block
+      ~begin_marker:C2c_codex_hooks.config_begin_marker
+      ~end_marker:C2c_codex_hooks.config_end_marker
+      existing
+  in
   let lines = String.split_on_char '\n' existing in
   let stripped =
     let buf = Buffer.create (String.length existing) in
@@ -555,7 +567,15 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
     Buffer.add_string buf (Printf.sprintf "\n[mcp_servers.c2c.tools.%s]\n" tool);
     Buffer.add_string buf "approval_mode = \"auto\"\n"
   ) c2c_tools_list;
-  let new_content = stripped ^ Buffer.contents buf in
+  (* #5 vanilla-codex: managed hooks block (UserPromptSubmit + PostToolUse +
+     SessionStart -> `c2c hook codex`) with pre-computed trust hashes so codex
+     runs the hooks without a /hooks approval prompt. Idempotent: the previous
+     c2c hooks block was stripped above, and the trust-state group indices are
+     recomputed against the remaining (user) hooks each install. *)
+  let hooks_block =
+    C2c_codex_hooks.render_hooks_block ~config_path ~existing:stripped
+  in
+  let new_content = stripped ^ Buffer.contents buf ^ "\n" ^ hooks_block in
   mkdir_or_dryrun dry_run (Filename.dirname config_path);
   if dry_run then
     Printf.printf "[DRY-RUN] would write %d bytes to %s\n%!" (String.length new_content) config_path
@@ -565,6 +585,27 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
     Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
       output_string oc new_content);
     Unix.rename tmp config_path
+  end;
+  (* ~/.codex/AGENTS.md: marker-delimited c2c orientation block (identity,
+     send, wait-inbox, find, rooms, hooks-based delivery). *)
+  let agents_md_path = Filename.concat (Sys.getenv "HOME") (".codex" // "AGENTS.md") in
+  let agents_md_existing =
+    if Sys.file_exists agents_md_path then
+      let ic = open_in agents_md_path in
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        really_input_string ic (in_channel_length ic))
+    else ""
+  in
+  let agents_md_new = C2c_codex_hooks.upsert_agents_md agents_md_existing in
+  if dry_run then
+    Printf.printf "[DRY-RUN] would write %d bytes to %s\n%!"
+      (String.length agents_md_new) agents_md_path
+  else begin
+    let tmp = agents_md_path ^ ".tmp" in
+    let oc = open_out tmp in
+    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      output_string oc agents_md_new);
+    Unix.rename tmp agents_md_path
   end;
   (* Write deliver-watch supervisor scripts for non-MCP clients. *)
   let home = Sys.getenv "HOME" in
@@ -586,7 +627,14 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
     end else []
   in
   { artifacts =
-      [ C2c_install_manifest.shared_toml_section ~path:config_path ~section_prefix:"mcp_servers.c2c" ]
+      [ C2c_install_manifest.shared_toml_section ~path:config_path ~section_prefix:"mcp_servers.c2c"
+      ; C2c_install_manifest.shared_block ~path:config_path
+          ~begin_marker:C2c_codex_hooks.config_begin_marker
+          ~end_marker:C2c_codex_hooks.config_end_marker ()
+      ; C2c_install_manifest.shared_block ~path:agents_md_path
+          ~begin_marker:C2c_codex_hooks.agents_md_begin_marker
+          ~end_marker:C2c_codex_hooks.agents_md_end_marker ()
+      ]
       @ deliver_watch_artifacts
   ; extra_json =
       [ ("client", `String client)
@@ -595,6 +643,8 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
       ; ("config", `String config_path)
       ; ("server", `String server_path)
       ; ("deliver_watch", `Bool deliver_watch)
+      ; ("hooks", `String "UserPromptSubmit+PostToolUse+SessionStart -> c2c hook codex (pre-trusted)")
+      ; ("agents_md", `String agents_md_path)
       ]
   }
 
