@@ -1,0 +1,24 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B076
+priority: high
+status: pending
+tags: []
+title: test_c2c_cli missing dune dep on c2c_deliver_inbox.exe
+---
+
+# test_c2c_cli missing dune dep on c2c_deliver_inbox.exe
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior
