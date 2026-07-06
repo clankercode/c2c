@@ -245,8 +245,9 @@ let hook_codex_cmd =
              or an exact-id registration) — use it.
           2. payload session_id maps to a managed `c2c start codex` instance
              (codex thread-id file) — use the managed session.
-          3. ambient env (C2C_MCP_SESSION_ID / CODEX_THREAD_ID) or the
-             `c2c init` default-session statefile resolves to a registration.
+          3. for payload-free fallback events only, ambient env
+             (C2C_MCP_SESSION_ID / CODEX_THREAD_ID) or the `c2c init`
+             default-session statefile resolves to a registration.
           4. nothing resolved -> auto-register this codex session. The static
              installer alias hint is used only after step 2 proves a managed
              `c2c start codex` owns this payload thread; vanilla codex exec
@@ -263,11 +264,14 @@ let hook_codex_cmd =
            | None -> None
            | Some _ -> None
          in
-         let step3 () =
-           match C2c_cli_helpers.env_session_id () with
-           | Some sid when registered sid -> Some sid
-           | _ -> None
-         in
+          let step3 () =
+            match payload_sid with
+            | Some _ -> None
+            | None ->
+                (match C2c_cli_helpers.env_session_id () with
+                 | Some sid when registered sid -> Some sid
+                 | _ -> None)
+          in
          match step1 with
          | Some _ -> step1
          | None ->

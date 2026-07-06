@@ -257,6 +257,52 @@ let test_vanilla_auto_register_ignores_installer_alias_hint () =
                 (contains ~haystack:context ~needle:r.alias)
           | None -> failf "expected onboarding output, got: %S" stdout)))
 
+let test_vanilla_auto_register_second_thread_ignores_statefile () =
+  with_ctx (fun ctx ->
+    let sid1 = "codex-thread-vanilla-b080-a" in
+    let sid2 = "codex-thread-vanilla-b080-b" in
+    let rc1, stdout1, stderr1 =
+      run_hook ctx ~payload:(payload ~session_id:sid1 ())
+    in
+    check int "first hook exit 0" 0 rc1;
+    let regs1 = C2c_mcp.Broker.list_registrations (broker ctx) in
+    let reg1 =
+      List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = sid1) regs1
+    in
+    let alias1 =
+      match reg1 with
+      | None ->
+          failf "expected first vanilla registration for %s (stdout %S stderr %S)"
+            sid1 stdout1 stderr1
+      | Some r ->
+          check bool "first alias generated" true
+            (alias_looks_generated_for_codex r.alias);
+          r.alias
+    in
+    let rc2, stdout2, stderr2 =
+      run_hook ctx ~payload:(payload ~session_id:sid2 ())
+    in
+    check int "second hook exit 0" 0 rc2;
+    let regs2 = C2c_mcp.Broker.list_registrations (broker ctx) in
+    let reg2 =
+      List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = sid2) regs2
+    in
+    (match reg2 with
+     | None ->
+         failf "expected second vanilla registration for %s (stdout %S stderr %S)"
+           sid2 stdout2 stderr2
+     | Some r ->
+         check bool "second alias generated" true
+           (alias_looks_generated_for_codex r.alias);
+         check bool "second alias is fresh" false (r.alias = alias1);
+         (match parse_context stdout2 with
+          | Some (_, context) ->
+              check bool "second onboarding mentions fresh alias" true
+                (contains ~haystack:context ~needle:r.alias);
+              check bool "second onboarding avoids old alias" false
+                (contains ~haystack:context ~needle:alias1)
+          | None -> failf "expected second onboarding output, got: %S" stdout2)))
+
 let test_managed_session_auto_register_honors_installer_alias_hint () =
   with_ctx (fun ctx ->
     let hint_alias = "codex-managed-hint-b080" in
@@ -357,6 +403,8 @@ let () =
             test_unregistered_session_auto_registers_once
         ; test_case "vanilla auto-register ignores installer alias hint" `Quick
             test_vanilla_auto_register_ignores_installer_alias_hint
+        ; test_case "vanilla auto-register second thread ignores statefile" `Quick
+            test_vanilla_auto_register_second_thread_ignores_statefile
         ; test_case "managed auto-register honors installer alias hint" `Quick
             test_managed_session_auto_register_honors_installer_alias_hint
         ; test_case "deferrable held until turn boundary" `Quick
