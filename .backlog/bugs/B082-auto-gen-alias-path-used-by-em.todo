@@ -1,10 +1,15 @@
 ---
+claimed_at: "2026-07-06T12:48:16Z"
+claimed_by: cli-user
+completed_at: "2026-07-06T13:14:24Z"
 complexity: medium
 depends_on: []
+duration_minutes: 26.140713717416666
 estimate_hours: 1
 id: B082
 priority: high
-status: pending
+started_at: "2026-07-06T12:48:16Z"
+status: done
 tags: []
 title: auto-gen alias path (used by ember-quill registration, client_type None) hands out bare two-word pool names with no entropy suffix — collision-prone (16k combos, shared pool with human-assigned names like lyra-quill/storm-ember). All default alias generation should use <client>-<word>-<word>-<4char> like the codex hook path. Audit every gen path via c2c_alias_words.ml consumers.
 ---

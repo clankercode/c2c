@@ -389,13 +389,15 @@ let do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server =
              Printf.eprintf "error: %s\n%!" msg;
              exit 1)
 
+let default_alias_prefix = C2c_start.default_alias_prefix
+
 let default_alias_for_client ?(no_nonce = false) client =
-  let client = match String.lowercase_ascii client with
-    | "codex-headless" -> "codex"
-    | other -> other
-  in
-  let suffix = C2c_start.generate_alias ~no_nonce () in
-  Printf.sprintf "%s-%s" client suffix
+  (* B082: default auto-generated aliases must include both a client-ish
+     prefix and the entropy suffix. [no_nonce] is accepted for old CLI callers
+     but no longer removes entropy from default aliases. *)
+  let _ = no_nonce in
+  let suffix = C2c_start.generate_alias () in
+  Printf.sprintf "%s-%s" (default_alias_prefix client) suffix
 
 (* --- setup: Codex (TOML) --- *)
 
@@ -2068,7 +2070,8 @@ let install_common_args () =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS" ~doc:"Alias to use (default: auto-generated per client).")
   in
   let no_nonce =
-    Cmdliner.Arg.(value & flag & info [ "no-nonce" ] ~doc:"Disable the 4-character nonce suffix on auto-generated aliases.")
+    Cmdliner.Arg.(value & flag & info [ "no-nonce" ]
+      ~doc:"Deprecated no-op: default auto-generated aliases always keep the 4-character nonce suffix.")
   in
   let broker_root =
     Cmdliner.Arg.(value & opt (some string) None & info [ "broker-root"; "b" ] ~docv:"DIR" ~doc:"Broker root directory (default: auto-detected).")

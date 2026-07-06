@@ -173,6 +173,22 @@ let test_seen_bounded_eviction () =
   let re = L.filter_unseen seen [m1] in
   Alcotest.(check (list string)) "evicted key re-emitted" ["1"] (contents re)
 
+(* B084: archive filenames are session ids, not aliases. JSON mode previously
+   compared the archive id against my_alias and suppressed this session's own
+   archive when the two strings differed. *)
+let test_archive_owner_uses_session_id () =
+  Alcotest.(check bool) "own session archive" true
+    (L.archive_owner_is_mine ~archive_id:"sid-123"
+       ~my_alias:(Some "codex-ember-quill-a1b2")
+       ~my_session_id:(Some "sid-123") ());
+  Alcotest.(check bool) "other session archive" false
+    (L.archive_owner_is_mine ~archive_id:"sid-456"
+       ~my_alias:(Some "sid-456")
+       ~my_session_id:(Some "sid-123") ());
+  Alcotest.(check bool) "legacy alias fallback" true
+    (L.archive_owner_is_mine ~archive_id:"codex-local"
+       ~my_alias:(Some "codex-local") ~my_session_id:None ())
+
 let () =
   Alcotest.run "c2c_monitor_logic"
     [ ( "alias-resolution-order",
@@ -193,5 +209,6 @@ let () =
         ; Alcotest.test_case "filter_unseen keeps distinct" `Quick test_filter_unseen_distinct_kept
         ; Alcotest.test_case "filter_unseen keeps non-objects" `Quick test_filter_unseen_keeps_nonobjects
         ; Alcotest.test_case "seen set bounded eviction" `Quick test_seen_bounded_eviction
+        ; Alcotest.test_case "archive owner uses session id" `Quick test_archive_owner_uses_session_id
         ] )
     ]

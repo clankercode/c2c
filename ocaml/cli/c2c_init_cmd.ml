@@ -56,7 +56,8 @@ let init_cmd =
            ~doc:"Alias to register under. Auto-generated when omitted.")
   in
   let no_nonce_flag =
-    Arg.(value & flag & info ["no-nonce"] ~doc:"Disable the 4-character nonce suffix on the auto-generated alias.")
+    Arg.(value & flag & info ["no-nonce"]
+           ~doc:"Deprecated no-op: default auto-generated aliases always keep the 4-character nonce suffix.")
   in
   let room_arg =
     Arg.(value & opt string "swarm-lounge" & info ["room"; "r"] ~docv:"ROOM"
@@ -161,20 +162,24 @@ let init_cmd =
             (* Generate a BARE candidate first; the nonce is appended AFTER
                the require-easy pool check to avoid an infinite loop
                (#B-require-easy blocker). *)
-            let base_gen_fn = if use_easy then C2c_setup.generate_alias_easy ~no_nonce:true else begin
+            let prefix =
               match client_resolved with
-              | Some c -> fun () -> C2c_setup.default_alias_for_client ~no_nonce:true c
-              | None -> fun () -> C2c_setup.generate_alias ~no_nonce:true ()
-            end in
+              | Some c -> C2c_setup.default_alias_prefix c
+              | None -> "agent"
+            in
+            let base_gen_fn =
+              if use_easy then C2c_setup.generate_alias_easy ~no_nonce:true
+              else C2c_setup.generate_alias ~no_nonce:true
+            in
             let rec loop () =
               let bare = base_gen_fn () in
               if require_easy then
                 let w1, w2 = match String.split_on_char '-' bare with [w1; w2] -> (w1, w2) | _ -> ("", "") in
                 let easy = C2c_alias_words.easy_pool in
                 let is_easy w = Array.exists (fun e -> e = w) easy in
-                if is_easy w1 && is_easy w2 then C2c_nonce.append_nonce ~no_nonce bare else loop ()
+                if is_easy w1 && is_easy w2 then C2c_nonce.append_nonce (prefix ^ "-" ^ bare) else loop ()
               else
-                C2c_nonce.append_nonce ~no_nonce bare
+                C2c_nonce.append_nonce (prefix ^ "-" ^ bare)
             in
             let a = loop () in
             Printf.eprintf "[c2c register] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;

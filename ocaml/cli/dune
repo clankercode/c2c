@@ -234,8 +234,8 @@
 
 (test
   (name test_c2c_doctor_hooks)
-  (modules test_c2c_doctor_hooks c2c_doctor_hooks)
-  (libraries c2c_mcp alcotest yojson unix))
+  (modules test_c2c_doctor_hooks c2c_doctor_hooks c2c_codex_hooks)
+  (libraries c2c_mcp alcotest yojson unix digestif.ocaml))
 
  (test
   (name test_c2c_sitrep)

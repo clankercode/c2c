@@ -229,7 +229,8 @@ let start_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Custom alias (defaults to instance name).")
   in
   let no_nonce =
-    Cmdliner.Arg.(value & flag & info [ "no-nonce" ] ~doc:"Disable the 4-character nonce suffix on the auto-generated instance name.")
+    Cmdliner.Arg.(value & flag & info [ "no-nonce" ]
+      ~doc:"Deprecated no-op: default auto-generated instance names always keep the 4-character nonce suffix.")
   in
   let bin =
     Cmdliner.Arg.(value & opt (some string) None & info [ "bin" ] ~docv:"PATH" ~doc:"Custom binary path or name to launch.")
