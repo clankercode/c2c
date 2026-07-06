@@ -1,10 +1,15 @@
 ---
+claimed_at: "2026-07-06T12:12:33Z"
+claimed_by: cli-user
+completed_at: "2026-07-06T12:30:32Z"
 complexity: medium
 depends_on: []
+duration_minutes: 17.997068062483333
 estimate_hours: 1
 id: B076
 priority: high
-status: pending
+started_at: "2026-07-06T12:12:33Z"
+status: done
 tags: []
 title: test_c2c_cli missing dune dep on c2c_deliver_inbox.exe
 ---
