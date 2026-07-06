@@ -283,9 +283,11 @@ def test_command_listing_is_extracted_from_monolithic_cli():
     """Safety-tier command listings should live outside ocaml/cli/c2c.ml."""
     c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
     commands_cmd_ml = REPO / "ocaml" / "cli" / "c2c_commands_cmd.ml"
+    root_ml = REPO / "ocaml" / "cli" / "c2c_root_cmd.ml"
 
     assert commands_cmd_ml.exists(), "expected extracted command-listing module"
     commands_cmd_src = commands_cmd_ml.read_text(encoding="utf-8")
+    fast_path_src = root_ml.read_text(encoding="utf-8") if root_ml.exists() else c2c_ml
 
     for name in [
         "commands_by_safety_cmd",
@@ -297,7 +299,7 @@ def test_command_listing_is_extracted_from_monolithic_cli():
 
     assert_token_reference(c2c_ml, "C2c_commands_cmd.commands_by_safety")
     assert_token_reference(c2c_ml, "C2c_commands_cmd.commands_man")
-    assert_token_reference(c2c_ml, "C2c_commands_cmd.fast_path_commands")
+    assert_token_reference(fast_path_src, "C2c_commands_cmd.fast_path_commands")
 
 
 def test_sweep_commands_are_extracted_from_monolithic_cli():
@@ -375,9 +377,11 @@ def test_skills_commands_are_extracted_from_monolithic_cli():
     """Skills command assembly and fast paths should live outside ocaml/cli/c2c.ml."""
     c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
     skills_ml = REPO / "ocaml" / "cli" / "c2c_skills_cmd.ml"
+    root_ml = REPO / "ocaml" / "cli" / "c2c_root_cmd.ml"
 
     assert skills_ml.exists(), "expected extracted skills command module"
     skills_src = skills_ml.read_text(encoding="utf-8")
+    fast_path_src = root_ml.read_text(encoding="utf-8") if root_ml.exists() else c2c_ml
 
     for name in [
         "skills_dir",
@@ -393,8 +397,8 @@ def test_skills_commands_are_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, skills_src, name)
 
     assert_token_reference(c2c_ml, "C2c_skills_cmd.skills_group")
-    assert_token_reference(c2c_ml, "C2c_skills_cmd.fast_path_skills_list")
-    assert_token_reference(c2c_ml, "C2c_skills_cmd.fast_path_skills_serve")
+    assert_token_reference(fast_path_src, "C2c_skills_cmd.fast_path_skills_list")
+    assert_token_reference(fast_path_src, "C2c_skills_cmd.fast_path_skills_serve")
 
 
 def test_migrate_broker_command_is_extracted_from_monolithic_cli():
@@ -696,3 +700,31 @@ def test_send_commands_are_extracted_from_monolithic_cli():
 
     assert_token_reference(c2c_ml, "C2c_send_cmd.send")
     assert_token_reference(c2c_ml, "C2c_send_cmd.send_all")
+
+
+def test_root_help_and_fast_paths_are_extracted_from_monolithic_cli():
+    """Root landing/help and startup fast paths should be modular."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    root_ml = REPO / "ocaml" / "cli" / "c2c_root_cmd.ml"
+
+    assert root_ml.exists(), "expected extracted root command module"
+    root_src = root_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "help_cmd",
+        "help",
+        "sanitize_help_env",
+        "print_enriched_landing",
+        "default_term",
+        "fast_path_get_tmux_location",
+        "fast_path_help",
+        "fast_path_server_info",
+        "fast_path_completion",
+        "try_fast_path",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, root_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_root_cmd.try_fast_path")
+    assert_token_reference(c2c_ml, "C2c_root_cmd.sanitize_help_env")
+    assert_token_reference(c2c_ml, "C2c_root_cmd.default_term")
+    assert_token_reference(c2c_ml, "C2c_root_cmd.help")

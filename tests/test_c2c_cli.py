@@ -473,6 +473,15 @@ class C2CCLITests(unittest.TestCase):
         self.assertEqual(payload["name"], "c2c")
         self.assertIn("features", payload)
 
+    def test_skills_list_json_fast_path_outputs_single_json_document(self):
+        self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
+        result = run_native_cli("skills", "list", "--json", env=self.env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIsInstance(payload, list)
+        self.assertTrue(any(skill.get("id") == "c2c" for skill in payload))
+
     def test_relay_pins_rotate_and_delete_initialize_pin_store_root(self):
         self.assertTrue(NATIVE_C2C.exists(), NATIVE_C2C)
         broker_root = Path(self.temp_dir.name) / "relay-pins-broker"
