@@ -66,3 +66,4 @@ bugs:
     - file: B067-default-c2c-init-cli-only-path.todo
     - file: B068-docs-should-focus-on-easy-ad-h.todo
     - file: B069-c2c-monitor-silently-filters-b.todo
+    - file: B070-c2c-monitor-watches-archive-on.todo
