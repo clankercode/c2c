@@ -130,10 +130,359 @@ let hook_stop : unit Cmdliner.Cmd.t =
     (Cmdliner.Cmd.info "stop" ~doc:"Stop hook: deliver queued messages on text-only turns (blocks stop to inject messages).")
     hook_stop_cmd
 
+(* --- Codex hook (#5, vanilla-codex slice) ------------------------------------
+
+   One command serves every codex hook event: the payload's hook_event_name
+   tells us which event fired. Installed by `c2c install codex` for
+   UserPromptSubmit + PostToolUse + SessionStart (see C2c_codex_hooks for the
+   event-choice rationale).
+
+   Contract with codex (validated against codex-rs 0.142 schemas):
+   - stdin: JSON payload {hook_event_name, session_id, cwd, ...}
+   - stdout: either empty (no-op) or
+       {"hookSpecificOutput":{"hookEventName":"<event>","additionalContext":"..."}}
+     hookEventName is REQUIRED and must equal the event name (per-event const
+     in the output schema, additionalProperties=false).
+   - NEVER break the codex turn: any error -> exit 0 with empty stdout.
+     Runtime is hard-capped via alarm() well under the configured hook
+     timeout. *)
+
+(* Events whose codex output schema supports hookSpecificOutput.additionalContext.
+   Stop is absent on purpose: its output supports decision=block only, so
+   draining on Stop would eat messages we cannot deliver. *)
+let codex_context_events =
+  [ "SessionStart"; "UserPromptSubmit"; "PostToolUse"; "PreToolUse" ]
+
+let read_stdin_all ~max_bytes =
+  let chunk_size = 8192 in
+  let chunk = Bytes.create chunk_size in
+  let buf = Buffer.create chunk_size in
+  let rec loop remaining =
+    if remaining <= 0 then Buffer.contents buf
+    else
+      match input stdin chunk 0 (min chunk_size remaining) with
+      | 0 -> Buffer.contents buf
+      | n ->
+          Buffer.add_subbytes buf chunk 0 n;
+          loop (remaining - n)
+  in
+  try loop max_bytes with _ -> Buffer.contents buf
+
+let payload_string_field payload name =
+  match payload with
+  | `Assoc fields ->
+      (match List.assoc_opt name fields with
+       | Some (`String s) when String.trim s <> "" -> Some (String.trim s)
+       | _ -> None)
+  | _ -> None
+
+(* Walk up the process tree looking for the codex process, so the broker
+   registration's liveness pid outlives this short-lived hook process.
+   Hooks run via `$SHELL -lc`, so the immediate parent is a transient shell.
+   Returns None when no codex-looking ancestor is found (registration then
+   has no pid => liveness Unknown, which the broker treats as alive-ish). *)
+let find_codex_ancestor_pid () =
+  let proc_comm pid =
+    try
+      let ic = open_in (Printf.sprintf "/proc/%d/comm" pid) in
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        Some (String.trim (input_line ic)))
+    with _ -> None
+  in
+  let proc_ppid pid =
+    try
+      let ic = open_in (Printf.sprintf "/proc/%d/stat" pid) in
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        let line = input_line ic in
+        (* comm can contain spaces/parens; fields resume after the last ')'. *)
+        match String.rindex_opt line ')' with
+        | None -> None
+        | Some i ->
+            let rest = String.sub line (i + 1) (String.length line - i - 1) in
+            (match String.split_on_char ' ' (String.trim rest) with
+             | _state :: ppid :: _ -> int_of_string_opt ppid
+             | _ -> None))
+    with _ -> None
+  in
+  let contains_codex s =
+    let s = String.lowercase_ascii s in
+    let n = "codex" in
+    let sl = String.length s and nl = String.length n in
+    let rec at i = i + nl <= sl && (String.sub s i nl = n || at (i + 1)) in
+    at 0
+  in
+  let rec walk pid depth =
+    if depth > 6 || pid <= 1 then None
+    else
+      match proc_comm pid with
+      | Some comm when contains_codex comm -> Some pid
+      | _ ->
+          (match proc_ppid pid with
+           | Some ppid -> walk ppid (depth + 1)
+           | None -> None)
+  in
+  walk (Unix.getppid ()) 0
+
+let codex_onboarding_text ~alias =
+  Printf.sprintf
+    "c2c: this codex session is now registered on the local agent-messaging \
+     system as `%s`. Peer messages will appear automatically in your context \
+     as `<c2c ...>` blocks. Key commands: `c2c whoami` (identity), `c2c list \
+     --alive` (peers online), `c2c find <substr>` (peer lookup), `c2c send \
+     <alias> \"msg\"` (DM), `c2c wait-inbox --timeout 5m` (blocking receive \
+     when idle), `c2c rooms join swarm-lounge` (social room)."
+    alias
+
+let codex_wake_text ~alias =
+  Printf.sprintf
+    "c2c: connected as `%s`. Inbound agent messages arrive automatically via \
+     hooks; send with `c2c send <alias> \"msg\"`, block-receive when idle \
+     with `c2c wait-inbox`."
+    alias
+
+let hook_codex_cmd =
+  let open Cmdliner.Term in
+  const (fun () ->
+    (* Hard runtime cap: exit cleanly well before the configured hook timeout
+       (10s) so a wedged broker dir can never stall a codex turn. *)
+    (try
+       Sys.set_signal Sys.sigalrm (Sys.Signal_handle (fun _ -> exit 0));
+       ignore (Unix.alarm 8)
+     with _ -> ());
+    (try
+       if C2c_hook_lib.is_subagent_quiet () then exit 0;
+       let raw = read_stdin_all ~max_bytes:(1024 * 1024) in
+       let payload =
+         try Yojson.Safe.from_string (String.trim raw) with _ -> `Null
+       in
+       let event =
+         match payload_string_field payload "hook_event_name" with
+         | Some e -> e
+         | None -> exit 0
+       in
+       if not (List.mem event codex_context_events) then exit 0;
+       let broker_root = C2c_utils.resolve_broker_root () in
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+       let regs () = C2c_mcp.Broker.list_registrations broker in
+       let registered sid =
+         List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) (regs ())
+       in
+       let payload_sid =
+         match payload_string_field payload "session_id" with
+         | Some s ->
+             (match C2c_mcp.validate_session_id s with
+              | Ok sid -> Some sid
+              | Error _ -> None)
+         | None -> None
+       in
+       let config_path =
+         match Sys.getenv_opt "HOME" with
+         | Some home -> Filename.concat home (Filename.concat ".codex" "config.toml")
+         | None -> ""
+       in
+       let session_by_alias alias =
+         let alias_cf = C2c_mcp.Broker.alias_casefold alias in
+         let matches =
+           List.filter
+             (fun (r : C2c_mcp.registration) ->
+                C2c_mcp.Broker.alias_casefold r.alias = alias_cf)
+             (regs ())
+         in
+         let live =
+           List.filter
+             (fun r ->
+                C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive)
+             matches
+         in
+         match (live, matches) with
+         | r :: _, _ -> Some r.session_id
+         | [], r :: _ -> Some r.session_id
+         | [], [] -> None
+       in
+       (* Identity resolution, most-specific first:
+          1. payload session_id has a registration (previous auto-register
+             or an exact-id registration) — use it.
+          2. payload session_id maps to a managed `c2c start codex` instance
+             (codex thread-id file) — use the managed session.
+          3. ambient env (C2C_MCP_SESSION_ID / CODEX_THREAD_ID) or the
+             `c2c init` default-session statefile resolves to a registration.
+          4. the alias `c2c install codex` pinned into [mcp_servers.c2c.env]
+             is registered (by the MCP server inside codex) — unify with it
+             so hook-drain and MCP tools share one identity/inbox.
+          5. nothing resolved -> auto-register this codex session. *)
+       let resolved =
+         let step1 =
+           match payload_sid with
+           | Some sid when registered sid -> Some sid
+           | _ -> None
+         in
+         let step2 () =
+           match payload_sid with
+           | Some tid ->
+               (match
+                  C2c_mcp_helpers_post_broker.managed_session_id_from_codex_thread
+                    ~broker_root ~thread_id:tid
+                with
+                | Some sid when registered sid -> Some sid
+                | _ -> None)
+           | None -> None
+         in
+         let step3 () =
+           match C2c_cli_helpers.env_session_id () with
+           | Some sid when registered sid -> Some sid
+           | _ -> None
+         in
+         let step4 () =
+           match C2c_codex_hooks.installer_alias_hint ~config_path with
+           | Some alias -> session_by_alias alias
+           | None -> None
+         in
+         match step1 with
+         | Some _ -> step1
+         | None ->
+             (match step2 () with
+              | Some _ as r -> r
+              | None ->
+                  (match step3 () with
+                   | Some _ as r -> r
+                   | None -> step4 ()))
+       in
+       let session_id, onboarded_alias =
+         match resolved with
+         | Some sid -> (sid, None)
+         | None ->
+             (* Auto-register: zero-setup onboarding for vanilla codex.
+                Only when the payload carries a session_id — that id is
+                stable for the conversation, so the registration persists
+                and every later hook fire resolves via step 1 (no re-register
+                loop). Without a payload sid we cannot register a stable
+                identity, so stay silent. *)
+             (match payload_sid with
+              | None -> exit 0
+              | Some sid ->
+                  (* from_auto_gen: client-prefixed aliases (codex-...) are on
+                     the user-supplied blocklist; auto-generated ones bypass it
+                     via the flag. The installer hint and our own generated
+                     fallback are both auto-generated. *)
+                  let alias, from_auto_gen =
+                    match C2c_cli_helpers.env_auto_alias () with
+                    | Some a ->
+                        ( a
+                        , Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN"
+                          |> Option.map String.trim = Some "1" )
+                    | None ->
+                        (match C2c_codex_hooks.installer_alias_hint ~config_path with
+                         | Some a -> (a, true)
+                         | None -> (C2c_setup.default_alias_for_client "codex", true))
+                  in
+                  let pid = find_codex_ancestor_pid () in
+                  let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
+                  (try
+                     C2c_mcp.Broker.register broker ~session_id:sid ~alias ~pid
+                       ~pid_start_time ~client_type:(Some "codex")
+                       ~cwd:(payload_string_field payload "cwd")
+                       ~from_auto_gen ()
+                   with e ->
+                     (try
+                        prerr_endline
+                          ("c2c hook codex: auto-register failed: "
+                           ^ Printexc.to_string e)
+                      with _ -> ());
+                     exit 0);
+                  (* Persist the identity for plain `c2c` CLI calls from this
+                     codex session (same statefile `c2c init` uses), but never
+                     steal a statefile that still points at a live identity. *)
+                  (match C2c_cli_helpers.read_session_statefile ~broker_root with
+                   | Some existing
+                     when C2c_cli_helpers.statefile_session_registered ~broker_root existing -> ()
+                   | _ ->
+                       C2c_cli_helpers.write_session_statefile ~broker_root
+                         ~session_id:sid ~alias ~client:(Some "codex"));
+                  (sid, Some alias))
+       in
+       (* Drain. Turn boundaries (SessionStart / UserPromptSubmit) deliver
+          everything including deferrable messages; mid-turn events
+          (PostToolUse / PreToolUse) deliver only push (non-deferrable)
+          messages, respecting sender intent. Ephemeral no-archive semantics
+          are handled inside the broker drain. *)
+       let full_drain = event = "SessionStart" || event = "UserPromptSubmit" in
+       let repo_broker, messages =
+         if full_drain then begin
+           let repo_messages =
+             if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then []
+             else C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id
+           in
+           let global_messages =
+             try
+               let root = C2c_repo_fp.resolve_sessions_broker_root () in
+               if C2c_hook_lib.global_inbox_exists ~root ~session_id then
+                 let gb = C2c_mcp.Broker.create ~root in
+                 C2c_mcp.Broker.drain_inbox ~drained_by:"hook" gb ~session_id
+               else []
+             with _ -> []
+           in
+           (Some broker, repo_messages @ global_messages)
+         end
+         else
+           let rb, msgs, _alias =
+             C2c_hook_lib.drain_all_messages ~session_id ~broker_root
+           in
+           (rb, msgs)
+       in
+       let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
+       let intro =
+         match onboarded_alias with
+         | Some alias -> codex_onboarding_text ~alias
+         | None ->
+             if event = "SessionStart" then
+               let alias =
+                 List.find_map
+                   (fun (r : C2c_mcp.registration) ->
+                      if r.session_id = session_id then Some r.alias else None)
+                   (regs ())
+               in
+               (match alias with
+                | Some a -> codex_wake_text ~alias:a
+                | None -> "")
+             else ""
+       in
+       let context =
+         match (intro, messages_text) with
+         | "", "" -> ""
+         | "", m -> m
+         | i, "" -> i ^ "\n"
+         | i, m -> i ^ "\n\n" ^ m
+       in
+       if context <> "" then begin
+         let json : Yojson.Safe.t =
+           `Assoc
+             [ ( "hookSpecificOutput"
+               , `Assoc
+                   [ ("hookEventName", `String event)
+                   ; ("additionalContext", `String context)
+                   ] )
+             ]
+         in
+         print_string (Yojson.Safe.to_string json);
+         print_newline ()
+       end;
+       exit 0
+     with
+     | e ->
+         (* Never break the codex turn: swallow everything, exit 0. *)
+         (try prerr_endline ("c2c hook codex: " ^ Printexc.to_string e) with _ -> ());
+         exit 0)) $ const ()
+
+let hook_codex : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "codex"
+       ~doc:"Codex CLI hook: reads the codex hook payload (JSON) on stdin, resolves this session's c2c identity (auto-registering vanilla sessions on first fire), drains the inbox, and emits messages as hookSpecificOutput.additionalContext. Installed into ~/.codex/config.toml by `c2c install codex`. Never fails the codex turn: errors exit 0 with empty output.")
+    hook_codex_cmd
+
 let hook : unit Cmdliner.Cmd.t =
   let info = Cmdliner.Cmd.info "hook"
-    ~doc:"Hook subcommands for Claude Code integration. Use 'post-tool' for PostToolUse (drain inbox) and 'stop' for Stop (text-only turn delivery)."
+    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), and 'codex' for all Codex CLI hook events."
   in
   (* Default to post-tool for backward compat: `c2c hook` (no subcommand) behaves
      as the PostToolUse hook, same as before the hook group refactor. *)
-  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop ]
+  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex ]
