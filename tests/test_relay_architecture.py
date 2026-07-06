@@ -160,3 +160,25 @@ def test_relay_observer_push_helpers_are_extracted_from_relay_ml():
         assert re.search(rf"\blet\s+{re.escape(name)}\b", push_src)
 
     assert re.search(r"\binclude\s+Relay_observer_push\b", relay_ml)
+
+
+def test_relay_mobile_pair_nonce_cache_is_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    nonce_cache_ml = REPO / "ocaml" / "relay_mobile_pair_nonce_cache.ml"
+
+    assert nonce_cache_ml.exists(), "expected extracted mobile-pair nonce cache module"
+    nonce_cache_src = nonce_cache_ml.read_text(encoding="utf-8")
+
+    assert re.search(r"\bmodule\s+NonceCache\b", relay_ml) is None
+    assert re.search(r"\bmodule\s+NonceCache\b", nonce_cache_src)
+
+    for name in [
+        "nonce_cache",
+        "is_nonce_seen",
+        "record_nonce",
+        "cleanup_nonce_cache",
+    ]:
+        assert re.search(rf"\blet\s+{re.escape(name)}\b", relay_ml) is None
+        assert re.search(rf"\blet\s+{re.escape(name)}\b", nonce_cache_src)
+
+    assert re.search(r"\binclude\s+Relay_mobile_pair_nonce_cache\b", relay_ml)
