@@ -202,3 +202,30 @@ def test_relay_registration_lease_module_is_extracted_from_relay_ml():
         assert re.search(pattern, lease_src)
 
     assert re.search(r"\binclude\s+Relay_registration_lease\b", relay_ml)
+
+
+def test_relay_pow_challenge_helpers_are_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    pow_ml = REPO / "ocaml" / "relay_pow_challenge.ml"
+
+    assert pow_ml.exists(), "expected extracted relay PoW challenge module"
+    pow_src = pow_ml.read_text(encoding="utf-8")
+
+    assert re.search(r"\bmodule\s+PowChallenges\b", relay_ml) is None
+    assert re.search(r"\bmodule\s+PowChallenges\b", pow_src)
+
+    for name in [
+        "pow_challenge_ttl_s",
+        "pow_header_name",
+        "relay_pow_policy",
+        "relay_pow_enabled",
+        "stateless_pow_challenge",
+        "issue_pow_challenge",
+        "pow_header_value",
+        "pow_header",
+    ]:
+        assert re.search(rf"^let\s+{re.escape(name)}\b", relay_ml, re.MULTILINE) is None
+        assert re.search(rf"^let\s+{re.escape(name)}\b", pow_src, re.MULTILINE)
+
+    assert re.search(r"\btype\s+pow_challenge\b", pow_src)
+    assert re.search(r"\binclude\s+Relay_pow_challenge\b", relay_ml)
