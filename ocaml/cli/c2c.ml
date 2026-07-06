@@ -1027,72 +1027,6 @@ let send_all_cmd =
           (fun (a, r) -> Printf.printf "  skipped %s (%s)\n" a r)
           skipped
 
-(* --- subcommand: history -------------------------------------------------- *)
-
-let history_cmd =
-  let limit =
-    Cmdliner.Arg.(value & opt int 50 & info [ "limit"; "l" ] ~docv:"N" ~doc:"Max messages to return.")
-  in
-  let session_id_flag =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID"
-      ~doc:"Session ID to read archive for. Overrides C2C_MCP_SESSION_ID.")
-  in
-  let no_headers_flag =
-    Cmdliner.Arg.(value & flag & info [ "no-headers" ]
-      ~doc:"Suppress per-message header lines (timestamp + from -> to). \
-            Default emits a header before each body so messages are \
-            distinguishable; pass this to restore the legacy bare-body \
-            output for grep-friendly scripts. Has no effect with --json.")
-  in
-  let alias_flag =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
-      ~doc:"Look up session ID by alias and read that session's archive. \
-Mutually exclusive with --session-id.")
-  in
-  let+ json = json_flag
-  and+ limit = limit
-  and+ session_id_opt = session_id_flag
-  and+ no_headers = no_headers_flag
-  and+ alias_opt = alias_flag in
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let session_id =
-    match session_id_opt, alias_opt with
-    | Some _, Some _ ->
-        Printf.eprintf "error: --session-id and --alias are mutually exclusive.\n%!";
-        exit 1
-    | Some sid, None -> sid
-    | None, Some alias ->
-        let regs = C2c_mcp.Broker.list_registrations broker in
-        let matches = List.filter (fun (r : C2c_mcp.registration) -> r.alias = alias) regs in
-        (match matches with
-         | [] ->
-             Printf.eprintf "error: alias '%s' not found in registry.\n%!" alias;
-             exit 1
-         | [ r ] -> r.session_id
-         | _ ->
-             Printf.eprintf "error: alias '%s' matches multiple sessions.\n%!" alias;
-             exit 1)
-    | None, None -> resolve_session_id_for_inbox broker
-  in
-  let entries = C2c_mcp.Broker.read_archive broker ~session_id ~limit in
-  let output_mode = if json then Json else Human in
-  match output_mode with
-  | Json ->
-      print_json
-        (`List
-          (List.map
-             (fun (e : C2c_mcp.Broker.archive_entry) ->
-               `Assoc
-                 [ ("drained_at", `Float e.ae_drained_at)
-                 ; ("from_alias", `String e.ae_from_alias)
-                 ; ("to_alias", `String e.ae_to_alias)
-                 ; ("content", `String e.ae_content)
-                 ])
-             entries))
-  | Human ->
-      let headers = not no_headers in
-      List.iter print_endline (C2c_history.format_human ~headers entries)
-
 (* Health, connect, verify, host-id subcommands extracted to c2c_health_cmd.ml *)
 
 (* --- subcommand: list-glyphs --------------------------------------------- *)
@@ -1655,7 +1589,6 @@ let setcap = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setcap"
                setcap_cmd
 
 let send_all = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send-all" ~doc:"Broadcast a message to all peers.") send_all_cmd
-let history = Cmdliner.Cmd.v (Cmdliner.Cmd.info "history" ~doc:"Show archived inbox messages.") history_cmd
 let register = Cmdliner.Cmd.v (Cmdliner.Cmd.info "register" ~doc:"Register an alias for the current session.") register_cmd
 let deregister = Cmdliner.Cmd.v (Cmdliner.Cmd.info "deregister" ~doc:"Remove a registration from the broker.") deregister_cmd
 let tail_log = Cmdliner.Cmd.v (Cmdliner.Cmd.info "tail-log" ~doc:"Show recent broker RPC log entries.") tail_log_cmd
@@ -2488,7 +2421,7 @@ let () =
   let tier_grouped_man = C2c_commands_cmd.commands_man is_agent in
   let all_cmds =
     [ send; list; sessions; whoami; set_compact; clear_compact; open_pending_reply; check_pending_reply; poll_inbox; peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; C2c_sweep_cmd.sweep; C2c_sweep_cmd.registry_prune
-    ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; history; C2c_health_cmd.health; C2c_health_cmd.connect; setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
+    ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; git; register; deregister; refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; tail_log; server_info; my_rooms; dead_letter; prune_rooms; get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; list_glyphs
     ; serve; mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; relay_pins; C2c_mesh_cmd.mesh_group; C2c_skills_cmd.skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]
   in

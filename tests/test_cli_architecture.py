@@ -417,3 +417,20 @@ def test_migrate_broker_command_is_extracted_from_monolithic_cli():
         assert_ocaml_value_extracted(c2c_ml, migrate_src, name)
 
     assert_token_reference(c2c_ml, "C2c_migrate_cmd.migrate_broker")
+
+
+def test_history_command_is_extracted_from_monolithic_cli():
+    """Inbox archive history command assembly should live outside ocaml/cli/c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    history_ml = REPO / "ocaml" / "cli" / "c2c_history_cmd.ml"
+
+    assert history_ml.exists(), "expected extracted history command module"
+    history_src = history_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "history_cmd",
+        "history",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, history_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_history_cmd.history")
