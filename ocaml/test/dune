@@ -295,3 +295,10 @@
  (name test_relay_ws_server)
  (modules test_relay_ws_server)
  (libraries c2c_mcp alcotest base64 mirage-crypto-ec str unix))
+
+; #9 split-brain fix: broker-root resolution order (XDG_STATE_HOME dropped,
+; C2C_STATE_HOME escape hatch) + orphaned XDG-profile broker detection.
+(test
+ (name test_broker_root_resolution)
+ (modules test_broker_root_resolution)
+ (libraries c2c_mcp alcotest unix))

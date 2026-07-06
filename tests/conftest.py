@@ -301,8 +301,8 @@ def _cleanup_canonical_broker(sc: Scenario) -> None:
     """Best-effort removal of the canonical per-repo broker the scenario used.
 
     Scenario.broker_root() now resolves the canonical
-    $XDG_STATE_HOME/c2c/repos/<fp>/broker (outside tmp_path), so it is not
-    swept with the tmp workdir. The fingerprint is derived from the unique tmp
+    $HOME/.c2c/repos/<fp>/broker (or $C2C_STATE_HOME/c2c/repos/<fp>/broker;
+    outside tmp_path), so it is not swept with the tmp workdir. The fingerprint is derived from the unique tmp
     workdir, so this broker belongs solely to this test run — safe to delete.
     Guard on the ".../c2c/repos/<fp>/broker" shape so we never rmtree anything
     a live peer relies on.

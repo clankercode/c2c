@@ -122,7 +122,8 @@ def find_broker_root():
     """Resolve broker root via canonical priority:
     1. C2C_MCP_BROKER_ROOT env override
     2. Ask `c2c health --json` (authoritative — implements env →
-       XDG_STATE_HOME/c2c/repos/<fp>/broker → HOME/.c2c/repos/<fp>/broker)
+       C2C_STATE_HOME/c2c/repos/<fp>/broker → HOME/.c2c/repos/<fp>/broker;
+       generic XDG_STATE_HOME is NOT honored — #9 split-brain fix)
     3. Python fallback replicating the same priority if `c2c` is missing.
     """
     import subprocess, hashlib
@@ -156,16 +157,17 @@ def find_broker_root():
                 capture_output=True, text=True
             ).stdout.strip()
         if remote:
-            # Match canonical OCaml truncation (ocaml/c2c_repo_fp.ml:21-23)
+            # Match canonical OCaml truncation (ocaml/c2c_repo_fp.ml)
             fp = hashlib.sha256(remote.encode()).hexdigest()[:12]
-            xdg = os.environ.get("XDG_STATE_HOME")
-            if xdg:
-                p = Path(xdg) / "c2c" / "repos" / fp / "broker"
+            # #9: C2C_STATE_HOME (c2c-specific relocation), NOT XDG_STATE_HOME —
+            # per-profile XDG overrides fragment the machine-wide broker.
+            state_home = os.environ.get("C2C_STATE_HOME")
+            if state_home:
+                p = Path(state_home) / "c2c" / "repos" / fp / "broker"
                 if p.exists(): return p
             p = Path.home() / ".c2c" / "repos" / fp / "broker"
             if p.exists(): return p
-            # 4th tier (ocaml/c2c_repo_fp.ml:58): ~/.local/state/c2c/repos/<fp>/broker
-            # Unreachable in practice when HOME is set, but mirror canonical priority.
+            # Last resort (HOME unset in OCaml resolver): XDG default chain.
             p = Path.home() / ".local" / "state" / "c2c" / "repos" / fp / "broker"
             if p.exists(): return p
     except Exception:

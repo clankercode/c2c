@@ -2526,9 +2526,194 @@ let test_deliver_inbox_register_self_enables_alias_send () =
           check bool "self-registered receiver gets alias send" true (string_contains out "registered receiver body");
           check bool "self-registered receiver drains exactly one" true (string_contains out "delivered=1")))
 
+(* ------------------------------------------------------------------------- *)
+(* #9 split-brain: XDG_STATE_HOME profile brokers vs canonical HOME root.     *)
+(* End-to-end through the built binary: warning on stderr only (JSON stdout   *)
+(* stays clean), health reports the orphaned XDG broker, and migrate-broker   *)
+(* defaults its source to the orphaned XDG broker when no legacy path exists. *)
+(* ------------------------------------------------------------------------- *)
+
+let ( // ) = Filename.concat
+
+let mkdir_p = C2c_mcp.mkdir_p
+
+(* Run [command] capturing stdout and stderr separately. *)
+let run_capture_split command =
+  let out_f = Filename.temp_file "c2c-cli-stdout" ".out" in
+  let err_f = Filename.temp_file "c2c-cli-stderr" ".err" in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Sys.remove out_f with _ -> ());
+      (try Sys.remove err_f with _ -> ()))
+    (fun () ->
+      let rc =
+        Sys.command
+          (Printf.sprintf "%s > %s 2> %s" command (Filename.quote out_f)
+             (Filename.quote err_f))
+      in
+      (rc, read_file out_f, read_file err_f))
+
+(* Isolated env for split-brain tests: fresh HOME + per-profile XDG, with the
+   broker overrides explicitly cleared so resolution exercises the fallback
+   chain. Mirrors what a Claude profile-share session exports. *)
+let split_brain_env home =
+  Printf.sprintf
+    "HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s C2C_MCP_BROKER_ROOT= C2C_STATE_HOME= C2C_CLI_FORCE=1"
+    (Filename.quote home)
+    (Filename.quote (home // ".config"))
+    (Filename.quote (home // ".local" // "state"))
+
+(* Extract <fp> from a ".../repos/<fp>/broker" path reported by health. *)
+let fp_of_broker_root root =
+  Filename.basename (Filename.dirname root)
+
+let health_broker_root env =
+  let rc, out, _err =
+    run_capture_split (c2c_cmd (Printf.sprintf "env %s c2c health --json" env))
+  in
+  check int "health --json exits 0" 0 rc;
+  match Yojson.Safe.from_string out with
+  | `Assoc kvs ->
+      (match List.assoc_opt "broker_root" kvs with
+       | Some (`String r) -> r
+       | _ -> Alcotest.fail "health json missing broker_root")
+  | _ -> Alcotest.fail "health --json did not emit a json object"
+
+let plant_xdg_broker home fp =
+  let xdg_broker =
+    home // ".local" // "state" // "c2c" // "repos" // fp // "broker" in
+  mkdir_p xdg_broker;
+  write_file (xdg_broker // "registry.json") "{\"registrations\":[]}\n";
+  xdg_broker
+
+let test_xdg_profile_broker_resolves_to_canonical_home () =
+  with_temp_dir (fun home ->
+      let env = split_brain_env home in
+      let root = health_broker_root env in
+      check bool
+        (Printf.sprintf "broker root %s is under $HOME/.c2c despite XDG" root)
+        true
+        (string_contains root (home // ".c2c" // "repos")))
+
+let test_c2c_state_home_escape_hatch () =
+  with_temp_dir (fun home ->
+      let state = home // "relocated-state" in
+      mkdir_p state;
+      let env =
+        Printf.sprintf "%s C2C_STATE_HOME=%s" (split_brain_env home)
+          (Filename.quote state)
+      in
+      let root = health_broker_root env in
+      check bool
+        (Printf.sprintf "broker root %s is under $C2C_STATE_HOME" root)
+        true
+        (string_contains root (state // "c2c" // "repos")))
+
+let test_xdg_split_brain_warning_on_stderr_json_clean () =
+  with_temp_dir (fun home ->
+      let env = split_brain_env home in
+      let root = health_broker_root env in
+      let fp = fp_of_broker_root root in
+      let xdg_broker = plant_xdg_broker home fp in
+      let rc, out, err =
+        run_capture_split
+          (c2c_cmd (Printf.sprintf "env %s c2c health --json" env))
+      in
+      check int "health --json exits 0 with split-brain present" 0 rc;
+      (* stderr: one-line warning mentioning migrate-broker *)
+      check bool "stderr warning mentions migrate-broker" true
+        (string_contains err "migrate-broker");
+      check bool "stderr warning names the orphaned XDG broker" true
+        (string_contains err xdg_broker);
+      (* stdout: still valid JSON (warning must not pollute it) *)
+      (match Yojson.Safe.from_string out with
+       | `Assoc kvs ->
+           (match List.assoc_opt "xdg_split_brain_broker" kvs with
+            | Some (`String p) ->
+                check string "health json reports the XDG broker" xdg_broker p
+            | _ -> Alcotest.fail "health json missing xdg_split_brain_broker");
+           (match List.assoc_opt "migrate_hint" kvs with
+            | Some (`String hint) ->
+                check bool "migrate_hint mentions migrate-broker" true
+                  (string_contains hint "migrate-broker")
+            | _ -> Alcotest.fail "health json missing migrate_hint")
+       | _ -> Alcotest.fail "stdout polluted: health --json not a json object"))
+
+let test_no_warning_without_xdg_broker () =
+  with_temp_dir (fun home ->
+      let env = split_brain_env home in
+      let rc, _out, err =
+        run_capture_split
+          (c2c_cmd (Printf.sprintf "env %s c2c health --json" env))
+      in
+      check int "health --json exits 0" 0 rc;
+      check bool "no split-brain warning when XDG broker absent" false
+        (string_contains err "migrate-broker"))
+
+let test_health_human_reports_split_brain () =
+  with_temp_dir (fun home ->
+      let env = split_brain_env home in
+      let root = health_broker_root env in
+      let fp = fp_of_broker_root root in
+      let _xdg_broker = plant_xdg_broker home fp in
+      let rc, out, _err =
+        run_capture_split (c2c_cmd (Printf.sprintf "env %s c2c health" env))
+      in
+      check int "health exits 0" 0 rc;
+      check bool "human output mentions split-brain" true
+        (string_contains out "split-brain");
+      check bool "human output recommends migrate-broker" true
+        (string_contains out "c2c migrate-broker"))
+
+(* migrate-broker with no --from defaults to the orphaned XDG-profile broker
+   when the legacy .git/c2c/mcp path does not exist. Run inside a fresh temp
+   git repo so the main repo's legacy dir can't shadow the XDG source. *)
+let test_migrate_broker_defaults_to_xdg_source () =
+  with_temp_dir (fun sandbox ->
+      let repo = sandbox // "repo" in
+      let home = sandbox // "home" in
+      mkdir_p repo; mkdir_p home;
+      check int "git init sandbox repo" 0
+        (Sys.command
+           (Printf.sprintf "git -C %s init -q" (Filename.quote repo)));
+      let env = split_brain_env home in
+      let in_repo cmd =
+        Printf.sprintf "cd %s && %s" (Filename.quote repo) (c2c_cmd cmd) in
+      let rc, out, _err =
+        run_capture_split (in_repo (Printf.sprintf "env %s c2c health --json" env))
+      in
+      check int "health --json in sandbox exits 0" 0 rc;
+      let root =
+        match Yojson.Safe.from_string out with
+        | `Assoc kvs ->
+            (match List.assoc_opt "broker_root" kvs with
+             | Some (`String r) -> r
+             | _ -> Alcotest.fail "sandbox health json missing broker_root")
+        | _ -> Alcotest.fail "sandbox health --json not a json object"
+      in
+      let fp = fp_of_broker_root root in
+      let xdg_broker = plant_xdg_broker home fp in
+      let rc, out, _err =
+        run_capture_split
+          (in_repo (Printf.sprintf "env %s c2c migrate-broker --dry-run" env))
+      in
+      check int "migrate-broker --dry-run exits 0" 0 rc;
+      check bool "dry-run source is the orphaned XDG broker" true
+        (string_contains out xdg_broker);
+      check bool "dry-run destination is the canonical HOME root" true
+        (string_contains out (home // ".c2c" // "repos")))
+
 let () =
   Alcotest.run "c2c_cli"
-    [ ( "doctor",
+    [ ( "broker_root_split_brain",
+        [ ( "XDG profile resolves to canonical HOME root", `Quick, test_xdg_profile_broker_resolves_to_canonical_home )
+        ; ( "C2C_STATE_HOME escape hatch honored", `Quick, test_c2c_state_home_escape_hatch )
+        ; ( "orphaned XDG broker warns on stderr, JSON stays clean", `Quick, test_xdg_split_brain_warning_on_stderr_json_clean )
+        ; ( "no warning without an XDG broker", `Quick, test_no_warning_without_xdg_broker )
+        ; ( "health human output reports split-brain", `Quick, test_health_human_reports_split_brain )
+        ; ( "migrate-broker defaults --from to the XDG broker", `Quick, test_migrate_broker_defaults_to_xdg_source )
+        ] )
+    ; ( "doctor",
         [ ( "doctor exits 0 on clean run", `Quick, test_doctor_runs_and_exits_zero )
         ; ( "doctor output contains health checks", `Quick, test_doctor_output_contains_health_checks )
         ; ( "doctor output contains push status", `Quick, test_doctor_output_contains_push_status )
