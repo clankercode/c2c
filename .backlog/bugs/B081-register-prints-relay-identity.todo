@@ -1,10 +1,15 @@
 ---
+claimed_at: "2026-07-06T12:35:43Z"
+claimed_by: cli-user
+completed_at: "2026-07-06T12:49:02Z"
 complexity: medium
 depends_on: []
+duration_minutes: 13.3223850999
 estimate_hours: 1
 id: B081
 priority: high
-status: pending
+started_at: "2026-07-06T12:35:43Z"
+status: done
 tags: []
 title: register prints '[relay_identity] ssh-keygen available — openssh-key export enabled.' to stderr — debug noise on a happy-path command
 ---
