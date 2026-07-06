@@ -4,6 +4,7 @@ open C2c_commands
 let all_cmds =
   [ C2c_send_cmd.send
   ; C2c_list_cmd.list
+  ; C2c_find_cmd.find
   ; C2c_list_cmd.sessions
   ; C2c_whoami_cmd.whoami
   ; C2c_inbox_cmd.set_compact

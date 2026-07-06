@@ -55,11 +55,17 @@ let list_cmd =
     Cmdliner.Arg.(value & flag & info [ "alive"; "A" ]
       ~doc:"Show only alive sessions. By default, dead sessions (those whose PID has exited) are listed with a 'dead' state annotation. Use this flag to suppress them from the output.")
   in
+  let match_substr =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "match"; "m" ]
+      ~docv:"SUBSTR"
+      ~doc:"Show only sessions whose alias contains $(docv) (case-insensitive). Composes with --alive/--global/--all/--json.")
+  in
   let+ json = json_flag
   and+ all = all
   and+ enriched = enriched
   and+ global = global
   and+ alive_only = alive_only
+  and+ match_substr = match_substr
   and+ cross_repo = cross_repo_flag in
   mcp_nudge_if_needed ~cmd:"list";
 
@@ -69,7 +75,28 @@ let list_cmd =
   end;
 
   let is_alive r = C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive in
-  let regs_filter = if alive_only then List.filter is_alive else Fun.id in
+  let matches_alias (r : C2c_mcp.registration) =
+    match match_substr with
+    | None -> true
+    | Some s -> string_contains_ci r.alias s
+  in
+  let regs_filter regs =
+    regs
+    |> (if alive_only then List.filter is_alive else Fun.id)
+    |> List.filter matches_alias
+  in
+  (* Noise hint (dogfood friction): a mostly-dead listing buries the live
+     peers and can overflow agent-harness output truncation. Non-JSON output
+     only, and on stderr so scripts scraping stdout are unaffected. *)
+  let maybe_noise_hint (regs : C2c_mcp.registration list) =
+    let is_dead r = C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Dead in
+    let n_dead = List.length (List.filter is_dead regs) in
+    let n_alive = List.length (List.filter is_alive regs) in
+    if List.length regs > 20 && n_dead > n_alive then
+      Printf.eprintf
+        "hint: %d dead vs %d alive sessions listed — try `c2c list --alive`, `c2c list --match SUBSTR`, or `c2c find <alias>`.\n%!"
+        n_dead n_alive
+  in
 
   (* --- helpers shared between single-broker and global modes --- *)
   let list_registration_to_json ?(repo_fp="") ?(repo_path="") ~(enriched:bool) (r : C2c_mcp.registration) =
@@ -191,7 +218,8 @@ let list_cmd =
                   Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str
                 end
               ) regs
-            ) all_roots
+            ) all_roots;
+            maybe_noise_hint (List.map (fun (_, _, r) -> r) all_regs)
           end
   else
     (* single-broker (default or --cross-repo): use effective broker root *)
@@ -279,7 +307,8 @@ let list_cmd =
                 else
                   let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
                   Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
-               regs
+               regs;
+          maybe_noise_hint regs
 
 let sessions_cmd =
   let+ json = json_flag in

@@ -18,6 +18,7 @@ let commands_by_safety_cmd =
   let reveal_dev = show_all || show_dev in
   let tier1 = [
     ("list", "List registered c2c peers");
+    ("find", "Find a peer by alias substring or exact session ID (alive-first)");
     ("sessions", "List registered sessions (session_id, alias, client_type, liveness)");
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");
@@ -194,6 +195,7 @@ let fast_path_commands () =
   let is_agent = is_agent_session () in
   let tier1 = [
     ("list", "List registered c2c peers");
+    ("find", "Find a peer by alias substring or exact session ID (alive-first)");
     ("sessions", "List registered sessions (session_id, alias, client_type, liveness)");
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");

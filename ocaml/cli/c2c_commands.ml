@@ -20,6 +20,7 @@ let safety_to_label = function
 let command_tier_map () : (string * safety) list =
   [ "send", Tier1
   ; "list", Tier1
+  ; "find", Tier1
   ; "whoami", Tier1
   ; "poll-inbox", Tier1
   ; "peek-inbox", Tier1
