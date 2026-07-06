@@ -361,3 +361,29 @@ def test_relay_server_json_helpers_are_extracted_from_relay_ml():
         assert re.search(rf"^let\s+{re.escape(name)}\b", json_src, re.MULTILINE)
 
     assert re.search(r"\binclude\s+Relay_server_json\b", relay_ml)
+
+
+def test_relay_server_response_helpers_are_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    response_ml = REPO / "ocaml" / "relay_server_response.ml"
+
+    assert response_ml.exists(), "expected extracted relay server response helper module"
+    response_src = response_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "respond_json",
+        "respond_ok",
+        "respond_bad_request",
+        "respond_unauthorized",
+        "respond_too_many_requests",
+        "respond_not_found",
+        "respond_conflict",
+        "respond_internal_error",
+        "respond_bad_gateway",
+        "respond_gateway_timeout",
+        "respond_html",
+    ]:
+        assert re.search(rf"^  let\s+{re.escape(name)}\b", relay_ml, re.MULTILINE) is None
+        assert re.search(rf"^let\s+{re.escape(name)}\b", response_src, re.MULTILINE)
+
+    assert re.search(r"\binclude\s+Relay_server_response\b", relay_ml)
