@@ -1331,6 +1331,166 @@ open C2c_mcp_helpers
       ~read_environ:(effective_read_environ ())
       ~session_id
 
+  (* ---------------------------------------------------------------- *)
+  (* B071: stable client pid discovery.                                 *)
+  (*                                                                    *)
+  (* `c2c register` used to fall back to Unix.getppid (), but from an   *)
+  (* agent-harness shell (Claude Bash tool, codex shell) the parent is  *)
+  (* a transient per-command shell that dies immediately — the          *)
+  (* registration is born dead and send-side alias resolution refuses   *)
+  (* to route to it. Instead, walk /proc ancestry from the parent       *)
+  (* upward and pin liveness to the first ancestor that identifies as   *)
+  (* a known long-lived agent process. If none is found, callers        *)
+  (* should register pid=None (unknown liveness — which IS routable).   *)
+  (*                                                                    *)
+  (* [proc_root] is injectable so tests can fake /proc with a temp dir. *)
+  (* ---------------------------------------------------------------- *)
+
+  (** Names that identify a long-lived agent host process. Matched as an
+      exact path COMPONENT of argv[0] or argv[1] (leading tokens only) or
+      as the exact /proc comm — never substring-anywhere, so a script named
+      `codex-c2c-live-test.sh` does not match. Component matching (not just
+      basename) is required because real installs run versioned binaries,
+      e.g. Claude Code is `~/.local/share/claude/versions/2.1.201` (comm
+      "2.1.201") — the "claude" signal only survives in the path. *)
+  let known_agent_process_tokens =
+    [ "claude"; "claude-code"; "codex"; "kimi"; "opencode"; "pi"; "gemini"
+    ; "crush" ]
+
+  (** Parent pid from /proc/<pid>/stat — field 4 (index 1 of the tail
+      after the last ')', same parsing discipline as read_pid_start_time). *)
+  let read_pid_ppid ?(proc_root = "/proc") pid =
+    let path = Printf.sprintf "%s/%d/stat" proc_root pid in
+    try
+      let ic = open_in path in
+      Fun.protect
+        ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          let line = input_line ic in
+          match String.rindex_opt line ')' with
+          | None -> None
+          | Some idx ->
+              let tail = String.sub line (idx + 2) (String.length line - idx - 2) in
+              let parts = String.split_on_char ' ' tail in
+              (match List.nth_opt parts 1 with
+               | Some token -> int_of_string_opt token
+               | None -> None))
+    with Sys_error _ | End_of_file -> None
+
+  (** argv of /proc/<pid>/cmdline (NUL-separated). [] on any error. *)
+  let read_pid_cmdline ?(proc_root = "/proc") pid =
+    let path = Printf.sprintf "%s/%d/cmdline" proc_root pid in
+    try
+      let ic = open_in_bin path in
+      Fun.protect
+        ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          let buf = Buffer.create 256 in
+          (try
+             while true do
+               Buffer.add_channel buf ic 256
+             done
+           with End_of_file -> ());
+          Buffer.contents buf
+          |> String.split_on_char '\x00'
+          |> List.filter (fun s -> s <> ""))
+    with Sys_error _ | End_of_file -> []
+
+  let read_pid_comm ?(proc_root = "/proc") pid =
+    let path = Printf.sprintf "%s/%d/comm" proc_root pid in
+    try
+      let ic = open_in path in
+      Fun.protect
+        ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () -> Some (String.trim (input_line ic)))
+    with Sys_error _ | End_of_file -> None
+
+  (** True when /proc/<pid> identifies a known long-lived agent process.
+      Exact path-COMPONENT match on argv[0]/argv[1] or exact comm match —
+      never substring-anywhere, so `codex-c2c-live-test.sh` cannot match.
+      Component (not just basename) matching is load-bearing: the real
+      Claude Code binary is `~/.local/share/claude/versions/2.1.201`, so
+      both its basename and comm are the bare version string. *)
+  let pid_is_known_agent ?proc_root pid =
+    let token_matches_path s =
+      String.split_on_char '/' s
+      |> List.exists (fun comp ->
+             List.mem (String.lowercase_ascii comp) known_agent_process_tokens)
+    in
+    let argv = read_pid_cmdline ?proc_root pid in
+    (match argv with
+     | a0 :: rest ->
+         token_matches_path a0
+         || (match rest with a1 :: _ -> token_matches_path a1 | [] -> false)
+     | [] -> false)
+    || (match read_pid_comm ?proc_root pid with
+        | Some c -> List.mem (String.lowercase_ascii c) known_agent_process_tokens
+        | None -> false)
+
+  (** True when some environ VALUE of /proc/<pid> equals [value] exactly
+      (e.g. CLAUDE_SESSION_ID=<sid>). Environ reads fail cleanly for
+      other-uid processes — treated as no-match. *)
+  let proc_environ_has_value ?(proc_root = "/proc") pid value =
+    let path = Printf.sprintf "%s/%d/environ" proc_root pid in
+    try
+      let ic = open_in_bin path in
+      Fun.protect
+        ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          let buf = Buffer.create 4096 in
+          (try
+             while true do
+               Buffer.add_channel buf ic 4096
+             done
+           with End_of_file -> ());
+          Buffer.contents buf
+          |> String.split_on_char '\x00'
+          |> List.exists (fun entry ->
+                 match String.index_opt entry '=' with
+                 | None -> false
+                 | Some i ->
+                     String.sub entry (i + 1) (String.length entry - i - 1)
+                     = value))
+    with Sys_error _ | End_of_file -> false
+
+  (** Walk /proc ancestry from [start_pid] (default: getppid) upward, at
+      most [max_hops] hops, and return the first ancestor that identifies
+      as a known agent process. When [session_id] is given, an ancestor
+      whose cmdline matches AND whose environ carries that session id is
+      the strong signal and returned immediately; a cmdline-only match is
+      kept as fallback. Returns None when no ancestor matches — callers
+      should then register pid=None (unknown liveness, routable) rather
+      than a doomed transient pid. *)
+  let stable_client_pid ?(proc_root = "/proc") ?(max_hops = 15) ?session_id
+      ?start_pid () =
+    let start =
+      match start_pid with Some p -> p | None -> Unix.getppid ()
+    in
+    let environ_confirms pid =
+      match session_id with
+      | None -> false
+      | Some sid ->
+          String.trim sid <> ""
+          && proc_environ_has_value ~proc_root pid (String.trim sid)
+    in
+    let rec walk pid hops weak =
+      if pid <= 1 || hops > max_hops then weak
+      else begin
+        let is_agent = pid_is_known_agent ~proc_root pid in
+        if is_agent && environ_confirms pid then Some pid
+        else
+          let weak =
+            match weak with
+            | Some _ -> weak
+            | None -> if is_agent then Some pid else None
+          in
+          match read_pid_ppid ~proc_root pid with
+          | Some ppid when ppid <> pid && ppid > 0 -> walk ppid (hops + 1) weak
+          | _ -> weak
+      end
+    in
+    walk start 0 None
+
   (* Docker-in-Docker liveness: when C2C_IN_DOCKER=1 is set (e.g. in
      docker-compose test containers), PID namespaces are isolated — a
      process in container A cannot see /proc/<pid> of a process in

@@ -178,22 +178,25 @@ let rec copy_tree src dst =
 (* Remove legacy tree (phase 3)                                       *)
 (* ------------------------------------------------------------------ *)
 
+(* B073: existence must be lstat-based, not [Sys.file_exists] — the latter
+   follows symlinks, so a dangling symlink reads as "not there" and silently
+   survives removal, leaving the source tree (and the split-brain warning)
+   behind. *)
 let rec remove_tree path =
-  if not (Sys.file_exists path) then ()
-  else
-    match (Unix.lstat path).Unix.st_kind with
-    | Unix.S_DIR ->
-        let entries =
-          try Array.to_list (Sys.readdir path)
-          with _ -> []
-        in
-        List.iter (fun n ->
-          if n <> "." && n <> ".." then
-            remove_tree (path // n)
-        ) entries;
-        (try Unix.rmdir path with _ -> ())
-    | _ ->
-        (try Unix.unlink path with _ -> ())
+  match (try Some (Unix.lstat path).Unix.st_kind with _ -> None) with
+  | None -> ()  (* genuinely absent (not even a dangling symlink) *)
+  | Some Unix.S_DIR ->
+      let entries =
+        try Array.to_list (Sys.readdir path)
+        with _ -> []
+      in
+      List.iter (fun n ->
+        if n <> "." && n <> ".." then
+          remove_tree (path // n)
+      ) entries;
+      (try Unix.rmdir path with _ -> ())
+  | Some _ ->
+      (try Unix.unlink path with _ -> ())
 
 (* ------------------------------------------------------------------ *)
 (* High-level driver                                                  *)
@@ -206,6 +209,10 @@ type outcome = {
   denied : (string * string) list;  (* path, reason *)
   unknown : (string * string) list; (* path, reason *)
   error : string option;
+  source_removed : bool;
+  (** B073: true iff the source broker tree is gone after a live run.
+      A "successful" migration that leaves the source registry behind keeps
+      the split-brain warning firing forever — callers must surface this. *)
 }
 
 let empty_outcome = {
@@ -215,6 +222,7 @@ let empty_outcome = {
   denied = [];
   unknown = [];
   error = None;
+  source_removed = false;
 }
 
 (** Format a single classification line for `--dry-run` and human output. *)
@@ -268,7 +276,8 @@ let run ~src_root ~dest_root ~dry_run ~print_line =
         | _ -> None) entries in
       print_line "";
       print_line "DRY RUN complete. Run without --dry-run to execute.";
-      { ok = true; copied; skipped_already = skipped; denied; unknown = []; error = None }
+      { ok = true; copied; skipped_already = skipped; denied; unknown = [];
+        error = None; source_removed = false }
     end else begin
       (* Phase 1: copy *)
       mkdir_p dest_root;
@@ -290,10 +299,15 @@ let run ~src_root ~dest_root ~dry_run ~print_line =
         { empty_outcome with ok = false
         ; error = Some "copy phase failed; legacy tree preserved" }
       end else begin
-        (* Phase 2: verify *)
+        (* Phase 2: verify. lstat-based: [Sys.file_exists] follows symlinks,
+           so a faithfully-copied dangling symlink would read as "missing"
+           and wrongly abort the migration (B073). *)
+        let exists_lstat p =
+          try ignore (Unix.lstat p); true with _ -> false
+        in
         let missing = List.filter_map (fun e ->
           let dst = dest_root // e.rel_path in
-          if Sys.file_exists dst then None
+          if exists_lstat dst then None
           else Some e.rel_path
         ) to_copy in
         if missing <> [] then begin
@@ -303,7 +317,10 @@ let run ~src_root ~dest_root ~dry_run ~print_line =
           { empty_outcome with ok = false
           ; error = Some "verify phase failed; legacy tree preserved" }
         end else begin
-          (* Phase 3: remove legacy *)
+          (* Phase 3: remove legacy. Skipped-as-already-canonical entries
+             still count as confirmed at the destination, so the whole
+             source tree goes — leaving any of it (esp. registry.json)
+             behind keeps the split-brain warning firing forever (B073). *)
           List.iter (fun e ->
             let src = src_root // e.rel_path in
             remove_tree src
@@ -320,7 +337,29 @@ let run ~src_root ~dest_root ~dry_run ~print_line =
           print_line "";
           print_line (Printf.sprintf "Migration complete: %d copied, %d skipped, %d denied (process-local)."
                         (List.length copied) (List.length skipped) (List.length denied));
-          { ok = true; copied; skipped_already = skipped; denied; unknown = []; error = None }
+          (* B073: verify the source is actually gone and say so when it is
+             not — a silent survivor here means the operator keeps seeing a
+             split-brain warning recommending a migration that "already ran". *)
+          let source_removed =
+            match (try Some (Unix.lstat src_root) with _ -> None) with
+            | None -> true
+            | Some _ -> false
+          in
+          if not source_removed then begin
+            let residual =
+              try Array.to_list (Sys.readdir src_root) with _ -> []
+            in
+            print_line "";
+            print_line (Printf.sprintf
+              "WARNING: source broker tree could NOT be fully removed: %s" src_root);
+            List.iter (fun n -> print_line ("  residual: " ^ n)) residual;
+            print_line "The split-brain warning will keep firing until it is gone.";
+            print_line "If a live session keeps re-creating it (e.g. an older installed c2c";
+            print_line "resolving the broker root via XDG_STATE_HOME), restart/upgrade that";
+            print_line "session, then re-run: c2c migrate-broker"
+          end;
+          { ok = true; copied; skipped_already = skipped; denied; unknown = [];
+            error = None; source_removed }
         end
       end
     end

@@ -235,10 +235,31 @@ let send_cmd =
               C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
               if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
               flush stderr
-            with Invalid_argument _msg
+            with Invalid_argument msg
               when not (String.contains to_alias '@') ->
-              (* Primary broker doesn't have this alias — scan other brokers *)
-              let matches = find_alias_in_all_brokers ~primary_root to_alias in
+              (* B072: distinguish the broker's rejection reasons so the
+                 operator-facing error matches reality. *)
+              let dead_recipient =
+                String.starts_with ~prefix:"recipient is not alive" msg
+              in
+              let unknown_alias =
+                String.starts_with ~prefix:"enqueue_message rejected" msg
+              in
+              if not (dead_recipient || unknown_alias) then begin
+                (* Unrelated rejection (e.g. reserved from_alias spoof guard) —
+                   report as-is rather than misdiagnosing it as routing. *)
+                Printf.eprintf "error: %s\n%!" msg;
+                exit 1
+              end;
+              (* Primary broker can't route this alias — scan other brokers.
+                 Only route to a broker whose matching registration passes the
+                 liveness check (pid=None counts as unknown → routable); a
+                 dead match elsewhere is no better than the one here. *)
+              let matches =
+                find_alias_in_all_brokers ~primary_root to_alias
+                |> List.filter (fun (_root, r) ->
+                       C2c_mcp.Broker.registration_is_alive r)
+              in
               match matches with
               | (alt_root, _reg) :: _ ->
                   (* Found in another broker — route there *)
@@ -248,6 +269,39 @@ let send_cmd =
                   C2c_mcp.Broker.enqueue_message alt_broker
                     ~from_alias ~to_alias ~content ~ephemeral ();
                   if debug_enabled then Printf.eprintf "[DEBUG send_cmd] cross-broker enqueue_message returned\n%!"
+              | [] when dead_recipient ->
+                  (* B072: the registration EXISTS but its pid failed the
+                     liveness check — saying "not registered" here was a lie
+                     that sent operators chasing the wrong problem. *)
+                  let target_cf = C2c_mcp.Broker.alias_casefold to_alias in
+                  let reg_opt =
+                    try
+                      List.find_opt
+                        (fun (r : C2c_mcp.registration) ->
+                          C2c_mcp.Broker.alias_casefold r.alias = target_cf)
+                        (C2c_mcp.Broker.list_registrations broker)
+                    with _ -> None
+                  in
+                  let pid_str =
+                    match reg_opt with
+                    | Some r ->
+                        (match r.pid with
+                         | Some p -> string_of_int p
+                         | None -> "unknown")
+                    | None -> "unknown"
+                  in
+                  Printf.eprintf
+                    "error: alias '%s' is registered but its process (pid %s) looks dead; message not queued.\n"
+                    to_alias pid_str;
+                  Printf.eprintf "  Primary broker: %s\n" primary_root;
+                  Printf.eprintf
+                    "  hint: from the recipient's live session, re-register: c2c register --alias %s\n"
+                    to_alias;
+                  Printf.eprintf
+                    "  (register pins a stable agent pid found via /proc ancestry; when none is\n";
+                  Printf.eprintf
+                    "   found it records unknown liveness, which stays routable.)\n%!";
+                  exit 1
               | [] ->
                   (* Not found anywhere — provide actionable error *)
                   let is_room =

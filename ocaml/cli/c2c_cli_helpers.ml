@@ -199,6 +199,25 @@ let env_client_type () =
   | Some v when String.trim v <> "" -> Some (String.trim v)
   | _ -> None
 
+(** B071: pid to pin on a CLI-side registration (`c2c register`, `c2c init`).
+    Resolution: C2C_MCP_CLIENT_PID env (unchanged — managed launchers set it
+    to the durable outer-loop pid; the literal value is trusted as-is, incl.
+    the "0" test sentinel) → [Broker.stable_client_pid] (walk /proc ancestry
+    for a known long-lived agent process, strong-matched against
+    [session_id] when its environ carries it) → None.
+
+    None means unknown liveness, which send-side alias resolution treats as
+    routable — strictly better than the old [Unix.getppid ()] fallback,
+    which from an agent-harness shell pinned a transient per-command shell
+    pid and made the registration born-dead + unroutable. *)
+let resolve_registration_pid ~session_id () =
+  match Sys.getenv_opt "C2C_MCP_CLIENT_PID" with
+  | Some s ->
+      (match int_of_string_opt (String.trim s) with
+       | Some p -> Some p
+       | None -> C2c_mcp.Broker.stable_client_pid ~session_id ())
+  | None -> C2c_mcp.Broker.stable_client_pid ~session_id ()
+
 let is_coordinator () =
   Sys.getenv_opt "C2C_COORDINATOR" = Some "1"
 

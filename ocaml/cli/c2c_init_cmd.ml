@@ -229,8 +229,12 @@ let init_cmd =
     Printf.eprintf "  warning: relay identity init failed (rc=%d). Relay features may not work.\n  hint: run 'c2c relay identity init' manually to diagnose.\n%!" identity_init_rc;
 
   let alias_from_auto_gen = (alias_opt = None) in
+  (* B071: same pid chain as `c2c register` — env override → stable agent
+     ancestor → None (unknown liveness, routable). *)
+  let reg_pid = resolve_registration_pid ~session_id () in
+  let reg_pid_start = C2c_mcp.Broker.capture_pid_start_time reg_pid in
   (try
-     C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None
+     C2c_mcp.Broker.register broker ~session_id ~alias ~pid:reg_pid ~pid_start_time:reg_pid_start
        ~client_type:(env_client_type ()) ~from_auto_gen:alias_from_auto_gen ()
    with Invalid_argument msg ->
      (if json then

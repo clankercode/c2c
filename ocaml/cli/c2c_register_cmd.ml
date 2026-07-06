@@ -58,14 +58,11 @@ let register_cmd =
                Pass --session-id ID to specify explicitly.\n%!";
             exit 1)
   in
-  (* Prefer C2C_MCP_CLIENT_PID (set by managed launchers to the outer loop PID)
-     over getppid(), so `c2c register` from inside a managed session pins
-     liveness to the durable outer process rather than a transient shell. *)
-  let pid =
-    match Sys.getenv_opt "C2C_MCP_CLIENT_PID" with
-    | Some s -> (match int_of_string_opt (String.trim s) with Some p -> Some p | None -> Some (Unix.getppid ()))
-    | None -> Some (Unix.getppid ())
-  in
+  (* B071: C2C_MCP_CLIENT_PID env (managed launchers set it to the durable
+     outer-loop pid) → stable agent-ancestor pid from /proc → None (unknown
+     liveness, routable). Never getppid(): from an agent-harness shell that
+     is a transient per-command shell, making the registration born-dead. *)
+  let pid = resolve_registration_pid ~session_id () in
   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
   (try
      C2c_mcp.Broker.register broker ~session_id ~alias ~pid ~pid_start_time

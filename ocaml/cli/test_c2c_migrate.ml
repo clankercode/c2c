@@ -282,6 +282,55 @@ let test_migrate_fails_loud_on_unclassified_file () =
   check bool "destination not created" false
     (Sys.file_exists (dst // "registry.json"))
 
+(* B073: a skip-heavy migration (destination already holds most files —
+   the "1 copied, 4 skipped" incident shape) must still remove the whole
+   source tree, including the skipped-as-already-canonical registry.json,
+   and report source_removed=true. Otherwise the split-brain warning
+   keeps recommending a migration that already ran. *)
+let test_migrate_skip_heavy_removes_source () =
+  with_temp_dir @@ fun root ->
+  let src = root // "xdg-broker" in
+  let dst = root // "canonical" in
+  mkdir_p src; mkdir_p dst;
+  write_file (src // "registry.json") "{\"registrations\":[]}";
+  write_file (dst // "registry.json") "{\"registrations\":[]}";
+  write_file (src // "alice.inbox.json") "[]";
+  write_file (dst // "alice.inbox.json") "[]";
+  write_file (src // "keys" // "id") "k\n";
+  write_file (dst // "keys" // "id") "k\n";
+  write_file (src // "broker.log") "only-in-source\n";
+  let push, _ = collect_lines () in
+  let outcome =
+    C2c_migrate.run ~src_root:src ~dest_root:dst ~dry_run:false ~print_line:push
+  in
+  check bool "migration succeeds" true outcome.ok;
+  check bool "outcome reports source_removed" true outcome.source_removed;
+  check bool "skipped registry.json removed from source" false
+    (Sys.file_exists (src // "registry.json"));
+  check bool "source tree fully removed" false (Sys.file_exists src);
+  check bool "new file landed at canonical" true
+    (Sys.file_exists (dst // "broker.log"))
+
+(* B073: dangling symlinks read as absent through Sys.file_exists (it
+   follows links), so the old remove_tree silently left them — and the
+   source dir — behind. lstat-based removal must clear them. *)
+let test_migrate_removes_dangling_symlink_in_source () =
+  with_temp_dir @@ fun root ->
+  let src = root // "xdg-broker" in
+  let dst = root // "canonical" in
+  mkdir_p src;
+  write_file (src // "registry.json") "{\"registrations\":[]}";
+  (try Unix.symlink (root // "does-not-exist") (src // "dangling")
+   with Unix.Unix_error _ -> skip ());
+  let push, _ = collect_lines () in
+  let outcome =
+    C2c_migrate.run ~src_root:src ~dest_root:dst ~dry_run:false ~print_line:push
+  in
+  check bool "migration succeeds" true outcome.ok;
+  check bool "outcome reports source_removed" true outcome.source_removed;
+  check bool "source tree fully removed (incl. dangling symlink)" false
+    (Sys.file_exists src || (try ignore (Unix.lstat src); true with _ -> false))
+
 let suite =
   [ "dry-run lists all legacy artifacts", `Quick, test_dry_run_lists_all_legacy_artifacts
   ; "copies keys and allowed_signers", `Quick, test_migrate_copies_keys_and_allowed_signers
@@ -289,6 +338,8 @@ let suite =
   ; "denies *.pid and top-level *.lock", `Quick, test_migrate_denies_process_local_artifacts
   ; "copies top-level *.inbox.json", `Quick, test_migrate_top_level_inbox_json_copied
   ; "fails loud on unclassified file (FIFO)", `Quick, test_migrate_fails_loud_on_unclassified_file
+  ; "skip-heavy migration removes source (B073)", `Quick, test_migrate_skip_heavy_removes_source
+  ; "removes dangling symlink in source (B073)", `Quick, test_migrate_removes_dangling_symlink_in_source
   ]
 
 let () = run "c2c-migrate-360" [ "migrate", suite ]

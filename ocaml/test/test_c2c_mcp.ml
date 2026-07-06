@@ -14006,9 +14006,129 @@ let test_default_name_no_nonce_bare () =
   let a = C2c_start.default_name ~no_nonce:true "codex" in
   check int "default_name no-nonce has 2 segments" 2 (alias_segment_count a)
 
+(* ------------------------------------------------------------------------- *)
+(* B071: stable_client_pid — walk a fake /proc ancestry.                       *)
+(* ------------------------------------------------------------------------- *)
+
+let write_fake_proc_entry root ~pid ~ppid ~argv ?comm ?(environ = []) () =
+  let dir = Filename.concat root (string_of_int pid) in
+  Unix.mkdir dir 0o755;
+  let comm =
+    match comm with
+    | Some c -> c
+    | None ->
+        (match argv with a :: _ -> Filename.basename a | [] -> "kthread")
+  in
+  let write path contents =
+    let oc = open_out_bin path in
+    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+        output_string oc contents)
+  in
+  (* /proc/<pid>/stat: "<pid> (<comm>) <state> <ppid> ...". Pad the tail to
+     20+ fields so start-time parsing also has something to read. *)
+  let pad = String.concat " " (List.init 20 (fun _ -> "0")) in
+  write (Filename.concat dir "stat")
+    (Printf.sprintf "%d (%s) S %d %s\n" pid comm ppid pad);
+  write (Filename.concat dir "cmdline")
+    (String.concat "\x00" argv ^ (if argv = [] then "" else "\x00"));
+  write (Filename.concat dir "comm") (comm ^ "\n");
+  write (Filename.concat dir "environ")
+    (String.concat "\x00" (List.map (fun (k, v) -> k ^ "=" ^ v) environ))
+
+let test_stable_pid_finds_agent_ancestor () =
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:200 ~argv:["zsh"; "-c"; "c2c register"] ();
+      write_fake_proc_entry proc ~pid:200 ~ppid:100 ~argv:["/usr/bin/zsh"] ();
+      write_fake_proc_entry proc ~pid:100 ~ppid:1 ~argv:["/usr/local/bin/claude"] ();
+      check (option int) "walks to the claude ancestor" (Some 100)
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
+let test_stable_pid_matches_argv1_leading_token () =
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:100 ~argv:["bash"] ();
+      write_fake_proc_entry proc ~pid:100 ~ppid:1
+        ~argv:["node"; "/usr/lib/node_modules/.bin/claude"; "--flag"] ~comm:"node" ();
+      check (option int) "argv[1] basename matches wrapper-launched agent" (Some 100)
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
+let test_stable_pid_rejects_lookalike_script_names () =
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:200
+        ~argv:["bash"; "/x/codex-c2c-live-test.sh"] ~comm:"bash" ();
+      write_fake_proc_entry proc ~pid:200 ~ppid:1 ~argv:["/usr/bin/tmux"] ();
+      check (option int) "substring lookalikes do not match" None
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
+let test_stable_pid_none_without_agent_ancestor () =
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:200 ~argv:["zsh"] ();
+      write_fake_proc_entry proc ~pid:200 ~ppid:1 ~argv:["/usr/lib/systemd/systemd"] ();
+      check (option int) "no agent ancestor -> None (register pid=None)" None
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
+let test_stable_pid_prefers_environ_session_match () =
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:100 ~argv:["zsh"] ();
+      (* Inner claude WITHOUT the session id; outer claude WITH it. *)
+      write_fake_proc_entry proc ~pid:100 ~ppid:50 ~argv:["claude"] ();
+      write_fake_proc_entry proc ~pid:50 ~ppid:1 ~argv:["claude"]
+        ~environ:[ ("CLAUDE_SESSION_ID", "sess-b071") ] ();
+      check (option int) "environ session-id match wins over cmdline-only"
+        (Some 50)
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300
+           ~session_id:"sess-b071" ());
+      check (option int) "without session id the first cmdline match wins"
+        (Some 100)
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
+let test_stable_pid_terminates_on_self_parent () =
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:300 ~argv:["zsh"] ();
+      check (option int) "self-parent loop terminates without match" None
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
+let test_stable_pid_comm_only_match () =
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:100 ~argv:["zsh"] ();
+      write_fake_proc_entry proc ~pid:100 ~ppid:1 ~argv:[] ~comm:"codex" ();
+      check (option int) "comm-only agent match works when cmdline is empty"
+        (Some 100)
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
+let test_stable_pid_matches_versioned_install_path () =
+  (* Real-world Claude Code: argv0 is a bare version-numbered binary under a
+     .../claude/versions/ dir; comm is "2.1.201". The "claude" signal only
+     survives as a path component. *)
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:100 ~argv:["/usr/bin/zsh"] ();
+      write_fake_proc_entry proc ~pid:100 ~ppid:1
+        ~argv:["/home/u/.local/share/claude/versions/2.1.201"; "--agent-id"; "x"]
+        ~comm:"2.1.201" ();
+      check (option int) "versioned claude install matches via path component"
+        (Some 100)
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
 let () =
   run "c2c_mcp"
-    [ ( "broker",
+    [ ( "stable_client_pid",
+        [ test_case "finds agent ancestor via argv0" `Quick
+            test_stable_pid_finds_agent_ancestor
+        ; test_case "matches argv[1] leading token" `Quick
+            test_stable_pid_matches_argv1_leading_token
+        ; test_case "rejects lookalike script names" `Quick
+            test_stable_pid_rejects_lookalike_script_names
+        ; test_case "None without agent ancestor" `Quick
+            test_stable_pid_none_without_agent_ancestor
+        ; test_case "prefers environ session-id match" `Quick
+            test_stable_pid_prefers_environ_session_match
+        ; test_case "terminates on self-parent loop" `Quick
+            test_stable_pid_terminates_on_self_parent
+        ; test_case "comm-only match with empty cmdline" `Quick
+            test_stable_pid_comm_only_match
+        ; test_case "versioned install path matches via component" `Quick
+            test_stable_pid_matches_versioned_install_path
+        ] )
+    ; ( "broker",
         [ test_case "register and list" `Quick test_register_and_list
         ; test_case "register metadata_opt_out defaults false" `Quick
             test_register_metadata_opt_out_default_false
