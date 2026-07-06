@@ -307,3 +307,23 @@ def test_relay_observer_runtime_state_is_extracted_from_relay_ml():
         assert re.search(rf"^let\s+{re.escape(name)}\b", runtime_src, re.MULTILINE)
 
     assert re.search(r"\binclude\s+Relay_observer_runtime\b", relay_ml)
+
+
+def test_relay_server_auth_helpers_are_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    auth_ml = REPO / "ocaml" / "relay_server_auth.ml"
+
+    assert auth_ml.exists(), "expected extracted relay server auth helper module"
+    auth_src = auth_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "check_auth",
+        "header_has_bearer",
+        "header_has_ed25519",
+        "err_unauthorized",
+        "auth_decision",
+    ]:
+        assert re.search(rf"^  let\s+{re.escape(name)}\b", relay_ml, re.MULTILINE) is None
+        assert re.search(rf"^let\s+{re.escape(name)}\b", auth_src, re.MULTILINE)
+
+    assert re.search(r"\binclude\s+Relay_server_auth\b", relay_ml)
