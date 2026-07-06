@@ -613,81 +613,7 @@ let sessions_cmd =
   else
     print_string (C2c_sessions_format.format_human regs)
 
-(* --- subcommand: whoami --------------------------------------------------- *)
-
-let whoami_cmd =
-  let keys =
-    Cmdliner.Arg.(value & flag & info [ "keys"; "K" ]
-      ~doc:"Also show the per-alias Ed25519 public key and fingerprint (from <broker-root>/keys/<alias>.ed25519).")
-  in
-  let+ json = json_flag
-  and+ keys = keys in
-  mcp_nudge_if_needed ~cmd:"whoami";
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let output_mode = if json then Json else Human in
-  match env_session_id () with
-  | None ->
-      Printf.eprintf "error: no session ID. Set C2C_MCP_SESSION_ID or run from a supported client session.\n\
-hint: Run 'c2c init' to register and get started, or pass --session-id explicitly.\n%!";
-      exit 1
-  | Some sid ->
-      let regs = C2c_mcp.Broker.list_registrations broker in
-      let alias =
-        match List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs with
-        | Some r -> Some r.alias
-        | None ->
-            (* fall back: resolve by C2C_MCP_AUTO_REGISTER_ALIAS when session_id drifted *)
-            (match env_auto_alias () with
-             | None -> None
-             | Some a ->
-                 (match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = a) regs with
-                  | Some r -> Some r.alias
-                  | None -> None))
-      in
-      (* Load per-alias Ed25519 key if --keys was requested and alias is known *)
-      let identity_data =
-        if keys then
-          match alias with
-          | None -> None
-          | Some a ->
-              (match C2c_signing_helpers.per_alias_key_path ~alias:a with
-               | None -> None
-               | Some path ->
-                   (match Sys.file_exists path with
-                    | false -> None
-                    | true ->
-                        (match Relay_identity.load ~path () with
-                         | Ok id -> Some id
-                         | Error _ -> None)))
-        else None
-      in
-      match output_mode with
-      | Json ->
-          let base = [
-            ("session_id", `String sid);
-            ("alias", `String (Option.value alias ~default:""));
-          ] in
-          let with_keys = match identity_data with
-            | None -> base
-            | Some id ->
-                let pk_b64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet id.Relay_identity.public_key in
-                base @ [
-                  ("public_key", `String pk_b64);
-                  ("fingerprint", `String id.Relay_identity.fingerprint);
-                  ("alg", `String id.Relay_identity.alg);
-                ]
-          in
-          print_json (`Assoc with_keys)
-      | Human ->
-          Printf.printf "alias:     %s\nsession_id: %s\n"
-            (Option.value alias ~default:"(not registered)")
-            sid;
-          (match identity_data with
-           | None -> ()
-           | Some id ->
-               let pk_b64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet id.Relay_identity.public_key in
-               Printf.printf "public_key: %s\nfingerprint: %s\nalg:        %s\n"
-                 pk_b64 id.Relay_identity.fingerprint id.Relay_identity.alg)
+(* Whoami command island moved to c2c_whoami_cmd.ml. *)
 
 (* Inbox/compact/pending command island moved to c2c_inbox_cmd.ml. *)
 
@@ -797,7 +723,7 @@ let send_all_cmd =
 let send = Cmdliner.Cmd.v (Cmdliner.Cmd.info "send" ~doc:"Send a message to a registered peer alias or session ID.") send_cmd
 let list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List registered C2C peers.") list_cmd
 let sessions = Cmdliner.Cmd.v (Cmdliner.Cmd.info "sessions" ~doc:"List registered sessions with session_id, alias, client_type, cwd, and liveness.") sessions_cmd
-let whoami = Cmdliner.Cmd.v (Cmdliner.Cmd.info "whoami" ~doc:"Show current c2c identity.") whoami_cmd
+(* Whoami command extracted to c2c_whoami_cmd.ml. *)
 (* Inbox/compact/pending commands extracted to c2c_inbox_cmd.ml. *)
 
 (* Approval subcommands extracted to c2c_approval_cmd.ml *)
@@ -1274,7 +1200,7 @@ let () =
   let is_agent = is_agent_session () in
   let tier_grouped_man = C2c_commands_cmd.commands_man is_agent in
   let all_cmds =
-    [ send; list; sessions; whoami; C2c_inbox_cmd.set_compact; C2c_inbox_cmd.clear_compact; C2c_inbox_cmd.open_pending_reply; C2c_inbox_cmd.check_pending_reply; C2c_inbox_cmd.poll_inbox; C2c_inbox_cmd.peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; C2c_sweep_cmd.sweep; C2c_sweep_cmd.registry_prune
+    [ send; list; sessions; C2c_whoami_cmd.whoami; C2c_inbox_cmd.set_compact; C2c_inbox_cmd.clear_compact; C2c_inbox_cmd.open_pending_reply; C2c_inbox_cmd.check_pending_reply; C2c_inbox_cmd.poll_inbox; C2c_inbox_cmd.peek_inbox; C2c_approval_cmd.await_reply; C2c_approval_cmd.approval_reply; C2c_approval_cmd.authorize; C2c_approval_cmd.approval_pending_write; C2c_approval_cmd.approval_list; C2c_approval_cmd.approval_show; C2c_approval_cmd.approval_gc; C2c_approval_cmd.resolve_authorizer; send_all; C2c_sweep_cmd.sweep; C2c_sweep_cmd.registry_prune
     ; C2c_sweep_cmd.sweep_dryrun; C2c_migrate_cmd.migrate_broker; C2c_history_cmd.history; C2c_health_cmd.health; C2c_health_cmd.connect; C2c_host_cmd.setcap; C2c_health_cmd.status; C2c_health_cmd.verify; C2c_health_cmd.host_id; C2c_git_cmd.git; C2c_register_cmd.register; C2c_register_cmd.deregister; C2c_refresh_peer_cmd.refresh_peer; C2c_coord.coord_cherry_pick_cmd; C2c_coord.coord_group
     ; C2c_broker_cmd.tail_log; C2c_broker_cmd.server_info; C2c_broker_cmd.my_rooms; C2c_broker_cmd.dead_letter; C2c_broker_cmd.prune_rooms; C2c_broker_cmd.get_tmux_location; smoke_test_deprecated; C2c_init_cmd.init; C2c_init_cmd.install; C2c_init_cmd.self_update; C2c_init_cmd.update_alias; C2c_init_cmd.upgrade_alias; C2c_uninstall.uninstall_subcmd; C2c_init_cmd.completion_cmd; C2c_glyphs_cmd.list_glyphs
     ; C2c_serve_cmd.serve; C2c_serve_cmd.mcp; C2c_managed_cmd.start; C2c_agent.agent_group; C2c_config_cmd.config_group; C2c_agent.roles_group; C2c_gui_cmd.gui; C2c_managed_cmd.stop; C2c_managed_cmd.restart; C2c_managed_cmd.reset_thread; restart_self_deprecated; C2c_instances_cmd.instances_deprecated; diag_deprecated; dev_group; C2c_doctor_cmd.doctor; C2c_stats_cmd.stats; C2c_rooms.rooms_group; C2c_rooms.room_group    ; C2c_relay_cmd.relay_group; C2c_relay_pins_cmd.relay_pins; C2c_mesh_cmd.mesh_group; C2c_skills_cmd.skills_group; C2c_stickers.sticker_group; C2c_memory.memory_group; C2c_schedule.schedule_group; C2c_monitor_cmd.monitor; C2c_hook_cmd.hook; inject_deprecated; C2c_config_cmd.repo_group; C2c_inject_cmd.screen; C2c_statefile_cmd.statefile_top; C2c_statefile_cmd.debug_group; C2c_statefile_cmd.oc_plugin_group; C2c_statefile_cmd.cc_plugin_group; C2c_supervisor_cmd.supervisor_group; C2c_deliver_watch.deliver_group; C2c_commands_cmd.commands_by_safety; C2c_agent_help.agent_help; C2c_watch.watch_cmd; help ]

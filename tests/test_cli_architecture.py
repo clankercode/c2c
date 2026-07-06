@@ -634,3 +634,20 @@ def test_register_commands_are_extracted_from_monolithic_cli():
 
     assert_token_reference(c2c_ml, "C2c_register_cmd.register")
     assert_token_reference(c2c_ml, "C2c_register_cmd.deregister")
+
+
+def test_whoami_command_is_extracted_from_monolithic_cli():
+    """Identity lookup command assembly should live outside c2c.ml."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    whoami_ml = REPO / "ocaml" / "cli" / "c2c_whoami_cmd.ml"
+
+    assert whoami_ml.exists(), "expected extracted whoami command module"
+    whoami_src = whoami_ml.read_text(encoding="utf-8")
+
+    for name in [
+        "whoami_cmd",
+        "whoami",
+    ]:
+        assert_ocaml_value_extracted(c2c_ml, whoami_src, name)
+
+    assert_token_reference(c2c_ml, "C2c_whoami_cmd.whoami")
