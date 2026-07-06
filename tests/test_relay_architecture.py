@@ -89,3 +89,23 @@ def test_relay_host_routing_helpers_are_extracted_from_relay_ml():
         assert re.search(rf"\b(let|type)\s+{re.escape(name)}\b", host_routing_src)
 
     assert re.search(r"\binclude\s+Relay_host_routing\b", relay_ml)
+
+
+def test_relay_observer_bindings_module_is_extracted_from_relay_ml():
+    relay_ml = (REPO / "ocaml" / "relay.ml").read_text(encoding="utf-8")
+    bindings_ml = REPO / "ocaml" / "relay_observer_bindings.ml"
+
+    assert bindings_ml.exists(), "expected extracted observer bindings module"
+    bindings_src = bindings_ml.read_text(encoding="utf-8")
+
+    assert re.search(r"\bmodule\s+ObserverBindings\b", relay_ml) is None
+    assert re.search(r"\bmodule\s+ObserverBindings\b", bindings_src)
+
+    for pattern in [
+        r"\btype\s+binding\b",
+        r"\bphone_pk_to_binding\b",
+    ]:
+        assert re.search(pattern, relay_ml) is None
+        assert re.search(pattern, bindings_src)
+
+    assert re.search(r"\binclude\s+Relay_observer_bindings\b", relay_ml)
