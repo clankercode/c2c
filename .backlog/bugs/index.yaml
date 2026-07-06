@@ -75,3 +75,4 @@ bugs:
     - file: B076-test-c2c-cli-missing-dune-dep.todo
     - file: B077-c2c-list-label-unknown-client.todo
     - file: B078-unregistered-send-shows-raw-se.todo
+    - file: B079-doctor-detect-outdated-managed.todo

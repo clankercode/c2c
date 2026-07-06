@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B079
+priority: high
+status: pending
+tags: []
+title: 'doctor: detect outdated managed hook/config blocks (codex hooks TOML, AGENTS.md, claude settings) — diff installed block vs what current binary would render; offer ''c2c install <client>'' refresh. Trust-hash group indices can also drift when user adds own hooks.'
+---
+
+doctor: detect outdated managed hook/config blocks (codex hooks TOML, AGENTS.md, claude settings) — diff installed block vs what current binary would render; offer 'c2c install <client>' refresh. Trust-hash group indices can also drift when user adds own hooks.
