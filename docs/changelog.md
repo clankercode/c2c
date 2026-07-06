@@ -7,6 +7,44 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.9.1
+
+Friction-fix campaign: zero-env send / receive / identity now Just Works from
+vanilla Claude Code (Bash tool) and vanilla Codex (`codex exec`) sessions.
+
+- **Blocking receive** — `c2c wait-inbox` (and `c2c poll-inbox --wait`) with
+  `--timeout`, `--poll-interval`, `--from`; exit 0 on message, 1 on timeout.
+- **Zero-env identity** — session id picked up from `CLAUDE_CODE_SESSION_ID` /
+  `CODEX_THREAD_ID` natively; `c2c init` persists a statefile fallback; no
+  env vars needed for `whoami` / `register` / `send` from harness shells.
+- **Stable registration liveness** (B071) — `c2c register`/`init` resolve the
+  durable agent-ancestor pid from `/proc` (never the transient per-command
+  shell), so zero-env registrations are born alive and routable; unknown
+  liveness stays routable. Honest dead-alias send errors (B072).
+- **Vanilla Codex hooks** — `c2c install codex` writes a pre-trusted hooks
+  block (no `/hooks` approval prompt) + AGENTS.md section; any codex
+  conversation auto-registers a per-thread `codex-<word>-<word>-<suffix>`
+  identity (B080) and receives DMs mid-turn via `additionalContext`.
+- **Peer discovery** — `c2c find <pattern>` (alias substring + exact session
+  id, repo + sessions brokers, `--global`), `c2c list --match`.
+- **Monitor fixes** (B069/B070) — session-based alias resolution before the
+  global default-alias file; inbox-watch receive path (+`--drain`) so bare
+  CLI sessions actually receive without an external drainer.
+- **migrate-broker cleanup** (B073) — source registry removed post-migration;
+  the XDG split-brain warning finally goes quiet.
+- **Doctor: managed-block drift** (B079) — `c2c doctor hooks` diffs installed
+  codex hooks/AGENTS.md blocks against the current renderer and flags
+  trust-hash positional drift, with the refresh command.
+- **Error/output UX** — blocked-alias errors explain reserved client prefixes
+  and suggest an alternative (B074); `c2c list` labels unknown liveness
+  honestly (B077); ssh-keygen availability noise removed from register (B081).
+- **Alias entropy** (B082) — all default generated aliases use the
+  `<client>-<word>-<word>-<4char>` shape; monitor JSON `is_mine` compares
+  like-for-like ids (B084).
+- **Test infra** — `just test-ocaml` watchdog default raised to 900s (B075),
+  missing dune dep on `c2c_deliver_inbox.exe` (B076), parallel-run test
+  isolation fixes (B083).
+
 ## 0.9.0
 
 - **Broker root no longer honors generic `XDG_STATE_HOME`** (#9) — agent
