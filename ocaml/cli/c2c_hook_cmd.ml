@@ -176,53 +176,6 @@ let payload_string_field payload name =
        | _ -> None)
   | _ -> None
 
-(* Walk up the process tree looking for the codex process, so the broker
-   registration's liveness pid outlives this short-lived hook process.
-   Hooks run via `$SHELL -lc`, so the immediate parent is a transient shell.
-   Returns None when no codex-looking ancestor is found (registration then
-   has no pid => liveness Unknown, which the broker treats as alive-ish). *)
-let find_codex_ancestor_pid () =
-  let proc_comm pid =
-    try
-      let ic = open_in (Printf.sprintf "/proc/%d/comm" pid) in
-      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-        Some (String.trim (input_line ic)))
-    with _ -> None
-  in
-  let proc_ppid pid =
-    try
-      let ic = open_in (Printf.sprintf "/proc/%d/stat" pid) in
-      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-        let line = input_line ic in
-        (* comm can contain spaces/parens; fields resume after the last ')'. *)
-        match String.rindex_opt line ')' with
-        | None -> None
-        | Some i ->
-            let rest = String.sub line (i + 1) (String.length line - i - 1) in
-            (match String.split_on_char ' ' (String.trim rest) with
-             | _state :: ppid :: _ -> int_of_string_opt ppid
-             | _ -> None))
-    with _ -> None
-  in
-  let contains_codex s =
-    let s = String.lowercase_ascii s in
-    let n = "codex" in
-    let sl = String.length s and nl = String.length n in
-    let rec at i = i + nl <= sl && (String.sub s i nl = n || at (i + 1)) in
-    at 0
-  in
-  let rec walk pid depth =
-    if depth > 6 || pid <= 1 then None
-    else
-      match proc_comm pid with
-      | Some comm when contains_codex comm -> Some pid
-      | _ ->
-          (match proc_ppid pid with
-           | Some ppid -> walk ppid (depth + 1)
-           | None -> None)
-  in
-  walk (Unix.getppid ()) 0
-
 let codex_onboarding_text ~alias =
   Printf.sprintf
     "c2c: this codex session is now registered on the local agent-messaging \
@@ -280,36 +233,25 @@ let hook_codex_cmd =
          | Some home -> Filename.concat home (Filename.concat ".codex" "config.toml")
          | None -> ""
        in
-       let session_by_alias alias =
-         let alias_cf = C2c_mcp.Broker.alias_casefold alias in
-         let matches =
-           List.filter
-             (fun (r : C2c_mcp.registration) ->
-                C2c_mcp.Broker.alias_casefold r.alias = alias_cf)
-             (regs ())
-         in
-         let live =
-           List.filter
-             (fun r ->
-                C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive)
-             matches
-         in
-         match (live, matches) with
-         | r :: _, _ -> Some r.session_id
-         | [], r :: _ -> Some r.session_id
-         | [], [] -> None
+       let managed_sid_for_payload =
+         match payload_sid with
+         | Some tid ->
+             C2c_mcp_helpers_post_broker.managed_session_id_from_codex_thread
+               ~broker_root ~thread_id:tid
+         | None -> None
        in
        (* Identity resolution, most-specific first:
           1. payload session_id has a registration (previous auto-register
              or an exact-id registration) — use it.
           2. payload session_id maps to a managed `c2c start codex` instance
              (codex thread-id file) — use the managed session.
-          3. ambient env (C2C_MCP_SESSION_ID / CODEX_THREAD_ID) or the
-             `c2c init` default-session statefile resolves to a registration.
-          4. the alias `c2c install codex` pinned into [mcp_servers.c2c.env]
-             is registered (by the MCP server inside codex) — unify with it
-             so hook-drain and MCP tools share one identity/inbox.
-          5. nothing resolved -> auto-register this codex session. *)
+          3. for payload-free fallback events only, ambient env
+             (C2C_MCP_SESSION_ID / CODEX_THREAD_ID) or the `c2c init`
+             default-session statefile resolves to a registration.
+          4. nothing resolved -> auto-register this codex session. The static
+             installer alias hint is used only after step 2 proves a managed
+             `c2c start codex` owns this payload thread; vanilla codex exec
+             sessions get a fresh per-thread alias instead. *)
        let resolved =
          let step1 =
            match payload_sid with
@@ -317,26 +259,19 @@ let hook_codex_cmd =
            | _ -> None
          in
          let step2 () =
-           match payload_sid with
-           | Some tid ->
-               (match
-                  C2c_mcp_helpers_post_broker.managed_session_id_from_codex_thread
-                    ~broker_root ~thread_id:tid
-                with
-                | Some sid when registered sid -> Some sid
-                | _ -> None)
-           | None -> None
-         in
-         let step3 () =
-           match C2c_cli_helpers.env_session_id () with
+           match managed_sid_for_payload with
            | Some sid when registered sid -> Some sid
-           | _ -> None
-         in
-         let step4 () =
-           match C2c_codex_hooks.installer_alias_hint ~config_path with
-           | Some alias -> session_by_alias alias
            | None -> None
+           | Some _ -> None
          in
+          let step3 () =
+            match payload_sid with
+            | Some _ -> None
+            | None ->
+                (match C2c_cli_helpers.env_session_id () with
+                 | Some sid when registered sid -> Some sid
+                 | _ -> None)
+          in
          match step1 with
          | Some _ -> step1
          | None ->
@@ -345,7 +280,7 @@ let hook_codex_cmd =
               | None ->
                   (match step3 () with
                    | Some _ as r -> r
-                   | None -> step4 ()))
+                   | None -> None))
        in
        let session_id, onboarded_alias =
          match resolved with
@@ -359,23 +294,36 @@ let hook_codex_cmd =
                 identity, so stay silent. *)
              (match payload_sid with
               | None -> exit 0
-              | Some sid ->
+              | Some payload_sid ->
                   (* from_auto_gen: client-prefixed aliases (codex-...) are on
                      the user-supplied blocklist; auto-generated ones bypass it
-                     via the flag. The installer hint and our own generated
-                     fallback are both auto-generated. *)
+                     via the flag. Vanilla hooks always generate a fresh
+                     payload-thread alias. Managed hooks may reuse the alias
+                     `c2c install codex` wrote because the instance config maps
+                     the native codex thread back to a stable c2c session id. *)
+                  let managed_sid = managed_sid_for_payload in
+                  let sid = Option.value managed_sid ~default:payload_sid in
+                  let is_managed = Option.is_some managed_sid in
                   let alias, from_auto_gen =
-                    match C2c_cli_helpers.env_auto_alias () with
-                    | Some a ->
-                        ( a
-                        , Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN"
-                          |> Option.map String.trim = Some "1" )
-                    | None ->
-                        (match C2c_codex_hooks.installer_alias_hint ~config_path with
-                         | Some a -> (a, true)
-                         | None -> (C2c_setup.default_alias_for_client "codex", true))
+                    if is_managed then
+                      match C2c_cli_helpers.env_auto_alias () with
+                      | Some a ->
+                          ( a
+                          , Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN"
+                            |> Option.map String.trim = Some "1" )
+                      | None ->
+                          (match C2c_codex_hooks.installer_alias_hint ~config_path with
+                           | Some a -> (a, true)
+                           | None -> (C2c_setup.default_alias_for_client "codex", true))
+                    else
+                      (C2c_setup.default_alias_for_client "codex", true)
                   in
-                  let pid = find_codex_ancestor_pid () in
+                  let pid =
+                    if is_managed then
+                      C2c_cli_helpers.resolve_registration_pid ~session_id:sid ()
+                    else
+                      None
+                  in
                   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
                   (try
                      C2c_mcp.Broker.register broker ~session_id:sid ~alias ~pid
