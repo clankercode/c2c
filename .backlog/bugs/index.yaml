@@ -74,3 +74,4 @@ bugs:
     - file: B075-just-test-ocaml-killed-by-60s.todo
     - file: B076-test-c2c-cli-missing-dune-dep.todo
     - file: B077-c2c-list-label-unknown-client.todo
+    - file: B078-unregistered-send-shows-raw-se.todo
