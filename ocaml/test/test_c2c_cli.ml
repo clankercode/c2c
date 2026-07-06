@@ -544,6 +544,100 @@ let test_send_unknown_alias_routes_to_relay_outbox () =
           check bool "output reports unregistered alias" true
             (string_contains content "not registered")))
 
+let alias_looks_generated_for_client ~client alias =
+  match String.split_on_char '-' alias with
+  | [ c; w1; w2; suffix ] ->
+      c = client && w1 <> "" && w2 <> "" && String.length suffix = 4
+  | _ -> false
+
+let test_send_auto_registers_unregistered_session () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b078-recipient-sid" ~alias:"b078-recipient"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-autoreg" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let sender_sid = "codex-b078-sender-sid" in
+          let cmd =
+            Printf.sprintf
+              "env -u C2C_MCP_AUTO_REGISTER_ALIAS C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s C2C_MCP_CLIENT_TYPE=codex %s send b078-recipient 'hello from unregistered' > %s 2>&1"
+              (Filename.quote dir)
+              (Filename.quote sender_sid)
+              (Filename.quote c2c_binary)
+              (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int (Printf.sprintf "send exits 0 (output: %s)" content) 0 rc;
+          check bool "notice mentions auto-registration" true
+            (string_contains content "auto-registered as ");
+          check bool "notice mentions wait-inbox" true
+            (string_contains content "c2c wait-inbox");
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          let sender =
+            List.find_opt
+              (fun (r : C2c_mcp.registration) -> r.session_id = sender_sid)
+              regs
+          in
+          match sender with
+          | None -> fail "expected sender auto-registration"
+          | Some reg ->
+              check bool "generated codex alias shape" true
+                (alias_looks_generated_for_client ~client:"codex" reg.alias);
+              check (option string) "client type" (Some "codex") reg.client_type;
+              check bool "ok line uses generated alias" true
+                (string_contains content (Printf.sprintf "ok -> b078-recipient (from %s)" reg.alias));
+              let drained =
+                C2c_mcp.Broker.drain_inbox
+                  ~drained_by:"b078-test" broker ~session_id:"b078-recipient-sid"
+              in
+              check int "recipient has one message" 1 (List.length drained);
+              let msg = List.hd drained in
+              check string "recipient sees routable sender alias" reg.alias msg.from_alias;
+              check string "message body" "hello from unregistered" msg.content))
+
+let test_send_auto_register_failure_falls_back_to_raw_session_id () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b078-fallback-recipient-sid" ~alias:"b078-fallback-recipient"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-autoreg-fallback" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let sender_sid = "codex-b078-fallback-sid" in
+          let cmd =
+            Printf.sprintf
+              "env -u C2C_MCP_AUTO_REGISTER_ALIAS C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s C2C_MCP_CLIENT_TYPE=codex C2C_SEND_AUTOREGISTER_FAIL_FIXTURE=1 %s send b078-fallback-recipient 'fallback hello' > %s 2>&1"
+              (Filename.quote dir)
+              (Filename.quote sender_sid)
+              (Filename.quote c2c_binary)
+              (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int (Printf.sprintf "fallback send exits 0 (output: %s)" content) 0 rc;
+          check bool "no success notice on failed auto-register" false
+            (string_contains content "auto-registered as ");
+          check bool "ok line falls back to raw sid" true
+            (string_contains content
+               (Printf.sprintf "ok -> b078-fallback-recipient (from %s)" sender_sid));
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check bool "sender was not registered" false
+            (List.exists
+               (fun (r : C2c_mcp.registration) -> r.session_id = sender_sid)
+               regs);
+          let drained =
+            C2c_mcp.Broker.drain_inbox
+              ~drained_by:"b078-fallback-test" broker
+              ~session_id:"b078-fallback-recipient-sid"
+          in
+          check int "recipient has one fallback message" 1 (List.length drained);
+          let msg = List.hd drained in
+          check string "fallback preserves old sender label" sender_sid msg.from_alias))
+
 (* B052: cross-broker send fallback — alias registered only in sibling
    broker is found and the message is routed there. *)
 let test_send_cross_broker_fallback () =
@@ -3221,6 +3315,8 @@ let () =
     ; ( "send",
         [ ( "send missing args exits non-zero", `Quick, test_send_missing_args_exits_nonzero )
         ; ( "send unknown alias routes to relay outbox", `Quick, test_send_unknown_alias_routes_to_relay_outbox )
+        ; ( "send auto-registers unregistered sender (B078)", `Quick, test_send_auto_registers_unregistered_session )
+        ; ( "send falls back when auto-registration fails (B078)", `Quick, test_send_auto_register_failure_falls_back_to_raw_session_id )
         ; ( "send cross-broker fallback routes to sibling broker", `Quick, test_send_cross_broker_fallback )
         ; ( "send not-found error mentions scanned brokers", `Quick, test_send_not_found_error_mentions_scanned_brokers )
         ; ( "send to dead alias reports dead, not unregistered (B072)", `Quick, test_send_dead_alias_reports_dead_not_unregistered )

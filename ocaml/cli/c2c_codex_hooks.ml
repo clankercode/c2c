@@ -57,6 +57,7 @@ let event_label = function
   | "PreCompact" -> "pre_compact"
   | "PostCompact" -> "post_compact"
   | "SessionStart" -> "session_start"
+  | "SessionEnd" -> "session_end"
   | "UserPromptSubmit" -> "user_prompt_submit"
   | "SubagentStart" -> "subagent_start"
   | "SubagentStop" -> "subagent_stop"
@@ -123,6 +124,7 @@ let hook_command = "c2c hook codex"
      the Claude PostToolUse hook.
    - SessionStart: onboarding/wake note (identity + key commands) so every
      fresh codex conversation knows it is on c2c.
+   - SessionEnd: cleanup boundary for vanilla per-thread hook registrations.
    Stop is deliberately NOT installed: codex's Stop output supports
    decision=block only (no additionalContext), and blocking stop to inject
    messages risks turn loops in unattended sessions. *)
@@ -133,6 +135,8 @@ let managed_hooks =
     ; timeout = 10; status_message = "c2c inbox" }
   ; { event = "SessionStart"; matcher = None; command = hook_command
     ; timeout = 10; status_message = "c2c onboarding" }
+  ; { event = "SessionEnd"; matcher = None; command = hook_command
+    ; timeout = 10; status_message = "c2c cleanup" }
   ]
 
 (* --- TOML rendering ---------------------------------------------------------- *)

@@ -395,7 +395,7 @@ let list ~broker ~session_id_override:_ ~arguments =
         `List
           (List.map
              (fun reg ->
-               let { session_id; alias; pid; pid_start_time = _; registered_at } = reg in
+               let { session_id; alias; pid; pid_start_time = _; registered_at; _ } = reg in
                let base =
                  [ ("session_id", `String session_id); ("alias", `String alias) ]
                in

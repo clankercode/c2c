@@ -570,7 +570,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
     Buffer.add_string buf "approval_mode = \"auto\"\n"
   ) c2c_tools_list;
   (* #5 vanilla-codex: managed hooks block (UserPromptSubmit + PostToolUse +
-     SessionStart -> `c2c hook codex`) with pre-computed trust hashes so codex
+     SessionStart + SessionEnd -> `c2c hook codex`) with pre-computed trust hashes so codex
      runs the hooks without a /hooks approval prompt. Idempotent: the previous
      c2c hooks block was stripped above, and the trust-state group indices are
      recomputed against the remaining (user) hooks each install. *)
@@ -645,7 +645,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
       ; ("config", `String config_path)
       ; ("server", `String server_path)
       ; ("deliver_watch", `Bool deliver_watch)
-      ; ("hooks", `String "UserPromptSubmit+PostToolUse+SessionStart -> c2c hook codex (pre-trusted)")
+      ; ("hooks", `String "UserPromptSubmit+PostToolUse+SessionStart+SessionEnd -> c2c hook codex (pre-trusted)")
       ; ("agents_md", `String agents_md_path)
       ]
   }

@@ -3521,7 +3521,9 @@ let test_start_time_mismatch_is_not_alive () =
     ; automated_delivery = None
     ; tmux_location = None
     ; cwd = None
-    ; metadata_opt_out = false; opaque_host_id = None
+    ; metadata_opt_out = false
+    ; registered_by = None
+    ; opaque_host_id = None
     }
   in
   check bool "mismatched start_time → not alive" false
@@ -3553,7 +3555,9 @@ let test_start_time_match_is_alive () =
     ; automated_delivery = None
     ; tmux_location = None
     ; cwd = None
-    ; metadata_opt_out = false; opaque_host_id = None
+    ; metadata_opt_out = false
+    ; registered_by = None
+    ; opaque_host_id = None
     }
   in
   check bool "matching start_time → alive" true
@@ -3585,7 +3589,9 @@ let test_start_time_none_falls_back_to_proc_exists () =
     ; automated_delivery = None
     ; tmux_location = None
     ; cwd = None
-    ; metadata_opt_out = false; opaque_host_id = None
+    ; metadata_opt_out = false
+    ; registered_by = None
+    ; opaque_host_id = None
     }
   in
   check bool "pid exists + no stored start_time → alive" true
@@ -3841,6 +3847,105 @@ let write_file path contents =
   let oc = open_out path in
   output_string oc contents;
   close_out oc
+
+let registry_json_for_hook_expiry ?pid ?(registered_by = Some "codex-hook")
+    ~session_id ~alias ~registered_at ~last_activity_ts () =
+  let fields =
+    [ ("session_id", `String session_id)
+    ; ("alias", `String alias)
+    ; ("registered_at", `Float registered_at)
+    ; ("last_activity_ts", `Float last_activity_ts)
+    ; ("client_type", `String "codex")
+    ]
+    @ (match pid with Some p -> [ ("pid", `Int p) ] | None -> [])
+    @ (match registered_by with
+       | Some rb -> [ ("registered_by", `String rb) ]
+       | None -> [])
+  in
+  `Assoc fields
+
+let write_registry_json dir regs =
+  write_file (Filename.concat dir "registry.json")
+    (Yojson.Safe.to_string (`List regs))
+
+let test_list_skips_expired_codex_hook_auto_registration () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      write_registry_json dir
+        [ registry_json_for_hook_expiry
+            ~session_id:"codex-hook-old" ~alias:"codex-old-hook"
+            ~registered_at:(now -. (25.0 *. 3600.0))
+            ~last_activity_ts:(now -. (25.0 *. 3600.0)) ()
+        ; registry_json_for_hook_expiry
+            ~session_id:"codex-hook-fresh" ~alias:"codex-fresh-hook"
+            ~registered_at:(now -. 60.0)
+            ~last_activity_ts:(now -. 60.0) ()
+        ; registry_json_for_hook_expiry
+            ~registered_by:None
+            ~session_id:"codex-explicit-old" ~alias:"codex-explicit-old"
+            ~registered_at:(now -. (25.0 *. 3600.0))
+            ~last_activity_ts:(now -. (25.0 *. 3600.0)) ()
+        ];
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check bool "expired hook auto-registration hidden" false
+        (List.exists
+           (fun (r : C2c_mcp.registration) -> r.session_id = "codex-hook-old")
+           regs);
+      check bool "fresh hook auto-registration visible" true
+        (List.exists
+           (fun (r : C2c_mcp.registration) -> r.session_id = "codex-hook-fresh")
+           regs);
+      check bool "explicit old registration visible" true
+        (List.exists
+           (fun (r : C2c_mcp.registration) ->
+              r.session_id = "codex-explicit-old")
+           regs))
+
+let test_list_keeps_old_codex_hook_registration_with_live_pid () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      write_registry_json dir
+        [ registry_json_for_hook_expiry
+            ~pid:(Unix.getpid ())
+            ~session_id:"codex-hook-live-old" ~alias:"codex-live-old"
+            ~registered_at:(now -. (25.0 *. 3600.0))
+            ~last_activity_ts:(now -. (25.0 *. 3600.0)) ()
+        ];
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check bool "old hook row with pid is visible" true
+        (List.exists
+           (fun (r : C2c_mcp.registration) ->
+              r.session_id = "codex-hook-live-old")
+           regs))
+
+let test_sweep_reaps_expired_codex_hook_auto_registration () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      write_registry_json dir
+        [ registry_json_for_hook_expiry
+            ~session_id:"codex-hook-sweep-old" ~alias:"codex-sweep-old"
+            ~registered_at:(now -. (25.0 *. 3600.0))
+            ~last_activity_ts:(now -. (25.0 *. 3600.0)) ()
+        ; registry_json_for_hook_expiry
+            ~session_id:"codex-hook-sweep-fresh" ~alias:"codex-sweep-fresh"
+            ~registered_at:(now -. 60.0)
+            ~last_activity_ts:(now -. 60.0) ()
+        ];
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let result = C2c_mcp.Broker.sweep broker in
+      check bool "expired hook row reported dropped" true
+        (List.exists
+           (fun (r : C2c_mcp.registration) ->
+              r.session_id = "codex-hook-sweep-old")
+           result.dropped_regs);
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check bool "fresh hook row remains after sweep" true
+        (List.exists
+           (fun (r : C2c_mcp.registration) ->
+              r.session_id = "codex-hook-sweep-fresh")
+           regs))
 
 let test_auto_register_startup_redelivers_dead_letter_messages () =
   with_temp_dir (fun dir ->
@@ -14455,6 +14560,12 @@ let () =
              test_sweep_keeps_pidless_recent_drained_row
          ; test_case "#344 sweep keeps alive pid row" `Quick
              test_sweep_keeps_alive_pid_row
+         ; test_case "list skips expired codex-hook auto-registration (B085)" `Quick
+             test_list_skips_expired_codex_hook_auto_registration
+         ; test_case "list keeps old codex-hook row with live pid (B085)" `Quick
+             test_list_keeps_old_codex_hook_registration_with_live_pid
+         ; test_case "sweep reaps expired codex-hook auto-registration (B085)" `Quick
+             test_sweep_reaps_expired_codex_hook_auto_registration
          ; test_case "sweep preserves non-empty orphan to dead-letter" `Quick
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick

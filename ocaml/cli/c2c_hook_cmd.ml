@@ -134,7 +134,7 @@ let hook_stop : unit Cmdliner.Cmd.t =
 
    One command serves every codex hook event: the payload's hook_event_name
    tells us which event fired. Installed by `c2c install codex` for
-   UserPromptSubmit + PostToolUse + SessionStart (see C2c_codex_hooks for the
+   UserPromptSubmit + PostToolUse + SessionStart + SessionEnd (see C2c_codex_hooks for the
    event-choice rationale).
 
    Contract with codex (validated against codex-rs 0.142 schemas):
@@ -151,7 +151,7 @@ let hook_stop : unit Cmdliner.Cmd.t =
    Stop is absent on purpose: its output supports decision=block only, so
    draining on Stop would eat messages we cannot deliver. *)
 let codex_context_events =
-  [ "SessionStart"; "UserPromptSubmit"; "PostToolUse"; "PreToolUse" ]
+  [ "SessionStart"; "SessionEnd"; "UserPromptSubmit"; "PostToolUse"; "PreToolUse" ]
 
 let read_stdin_all ~max_bytes =
   let chunk_size = 8192 in
@@ -240,6 +240,23 @@ let hook_codex_cmd =
                ~broker_root ~thread_id:tid
          | None -> None
        in
+       if event = "SessionEnd" then begin
+         let candidates =
+           List.filter_map
+             (fun x -> x)
+             [ payload_sid; managed_sid_for_payload ]
+         in
+         (match
+            List.find_opt
+              (fun (r : C2c_mcp.registration) ->
+                 r.registered_by = Some "codex-hook"
+                 && List.exists (fun sid -> r.session_id = sid) candidates)
+              (regs ())
+          with
+          | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
+          | None -> ());
+         exit 0
+       end;
        (* Identity resolution, most-specific first:
           1. payload session_id has a registration (previous auto-register
              or an exact-id registration) — use it.
@@ -325,10 +342,14 @@ let hook_codex_cmd =
                       None
                   in
                   let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
+                  let registered_by =
+                    if is_managed then None else Some "codex-hook"
+                  in
                   (try
                      C2c_mcp.Broker.register broker ~session_id:sid ~alias ~pid
                        ~pid_start_time ~client_type:(Some "codex")
                        ~cwd:(payload_string_field payload "cwd")
+                       ~registered_by
                        ~from_auto_gen ()
                    with e ->
                      (try

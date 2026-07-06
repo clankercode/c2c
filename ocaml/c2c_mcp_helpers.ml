@@ -78,6 +78,10 @@ type registration =
         exposure/federation (cwd, canonical alias, etc.) beyond the
         broker's internal guard use. Captured at registration time;
         honored at every read/exposure site. Default false = metadata on. *)
+    ; registered_by : string option
+    (** Internal provenance for automatic registrations. Currently used for
+        vanilla codex hook rows so SessionEnd/lazy expiry can distinguish
+        them from explicit operator registrations. *)
     ; opaque_host_id : string option
     (** Slice 1 of .collab/design/2026-06-17-c2c-opaque-host-id.md:
         client-supplied opaque per-host identifier (12-16 hex chars,

@@ -65,6 +65,69 @@ let find_alias_in_all_broots ~exclude_root alias =
 let find_alias_in_all_brokers ~primary_root alias =
   find_alias_in_all_broots ~exclude_root:primary_root alias
 
+let env_truthy name =
+  match Sys.getenv_opt name with
+  | Some v ->
+      let v = String.lowercase_ascii (String.trim v) in
+      v <> "" && not (List.mem v [ "0"; "false"; "no" ])
+  | None -> false
+
+let has_nonempty_env name =
+  match Sys.getenv_opt name with
+  | Some v -> String.trim v <> ""
+  | None -> false
+
+let infer_send_auto_register_client ~session_id =
+  match env_client_type () with
+  | Some client -> client
+  | None ->
+      let sid = String.lowercase_ascii session_id in
+      if has_nonempty_env "CODEX_THREAD_ID"
+         || String.starts_with ~prefix:"codex" sid
+      then "codex"
+      else if has_nonempty_env "CLAUDE_CODE_SESSION_ID"
+              || has_nonempty_env "CLAUDE_SESSION_ID"
+              || String.starts_with ~prefix:"claude" sid
+      then "claude"
+      else if has_nonempty_env "C2C_OPENCODE_SESSION_ID"
+              || String.starts_with ~prefix:"opencode" sid
+      then "opencode"
+      else if has_nonempty_env "KIMI_SESSION_ID"
+              || String.starts_with ~prefix:"kimi" sid
+      then "kimi"
+      else "agent"
+
+let maybe_auto_register_sender broker ~from_override =
+  match from_override with
+  | Some a when String.trim a <> "" -> ()
+  | _ ->
+      match env_session_id () with
+      | None -> ()
+      | Some session_id ->
+          let already_registered =
+            C2c_mcp.Broker.list_registrations broker
+            |> List.exists
+                 (fun (r : C2c_mcp.registration) -> r.session_id = session_id)
+          in
+          if not already_registered then
+            try
+              if env_truthy "C2C_SEND_AUTOREGISTER_FAIL_FIXTURE" then
+                failwith "fixture: send auto-registration failure";
+              let client = infer_send_auto_register_client ~session_id in
+              let alias = C2c_setup.default_alias_for_client client in
+              let pid = resolve_registration_pid ~session_id () in
+              let pid_start_time =
+                C2c_mcp.Broker.capture_pid_start_time pid
+              in
+              C2c_mcp.Broker.register broker ~session_id ~alias ~pid
+                ~pid_start_time ~client_type:(Some client)
+                ~from_auto_gen:true ();
+              Printf.eprintf
+                "auto-registered as %s (replies will reach you: c2c wait-inbox)\n%!"
+                alias
+            with _ ->
+              ()
+
 let send_cmd =
   let args =
     Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"TARGET MSG" ~doc:"Recipient alias followed by message body, or message body when --session is set.")
@@ -135,6 +198,7 @@ let send_cmd =
     | None, [] ->
         bad_usage "send requires a recipient alias and message body"
   in
+  maybe_auto_register_sender broker ~from_override;
   let from_alias =
     match target with
     | `Alias _ -> resolve_alias ~override:from_override broker

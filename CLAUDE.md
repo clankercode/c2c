@@ -156,7 +156,7 @@ now the canonical framing.)
   was removed upstream, so the managed xml_fd deliver mode is dead (the
   `codex_supports_xml_input_fd` capability probe now always reports false).
   Inbound delivery for codex uses **codex hooks**: `c2c install codex` writes
-  UserPromptSubmit/PostToolUse/SessionStart hooks running `c2c hook codex`
+  UserPromptSubmit/PostToolUse/SessionStart/SessionEnd hooks running `c2c hook codex`
   into `~/.codex/config.toml`, pre-trusted via `[hooks.state]` trust hashes
   (no `/hooks` approval prompt). Vanilla codex sessions self-onboard on the
   first hook fire (auto-register + onboarding note). Follow-up: port managed

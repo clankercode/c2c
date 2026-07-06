@@ -224,6 +224,40 @@ let test_unregistered_session_auto_registers_once () =
     let regs2 = C2c_mcp.Broker.list_registrations (broker ctx) in
     check int "registration count stable" (List.length regs) (List.length regs2))
 
+let test_session_end_deregisters_hook_auto_registration () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-session-end-0001" in
+    let rc, _stdout, stderr =
+      run_hook ctx ~payload:(payload ~session_id:sid ())
+    in
+    check int "auto-register exit 0" 0 rc;
+    let regs = C2c_mcp.Broker.list_registrations (broker ctx) in
+    check bool "auto-registration exists before SessionEnd" true
+      (List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs);
+    let rc2, stdout2, stderr2 =
+      run_hook ctx ~payload:(payload ~event:"SessionEnd" ~session_id:sid ())
+    in
+    check int "SessionEnd exits 0" 0 rc2;
+    check string "SessionEnd stdout is quiet" "" (String.trim stdout2);
+    let regs2 = C2c_mcp.Broker.list_registrations (broker ctx) in
+    check bool
+      (Printf.sprintf "auto-registration removed (stderr before=%S after=%S)" stderr stderr2)
+      false
+      (List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs2))
+
+let test_session_end_keeps_explicit_registration () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-session-end-explicit" in
+    ignore (register ctx ~session_id:sid ~alias:"explicit-end");
+    let rc, stdout, _stderr =
+      run_hook ctx ~payload:(payload ~event:"SessionEnd" ~session_id:sid ())
+    in
+    check int "SessionEnd exits 0" 0 rc;
+    check string "SessionEnd stdout is quiet" "" (String.trim stdout);
+    let regs = C2c_mcp.Broker.list_registrations (broker ctx) in
+    check bool "explicit registration remains" true
+      (List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs))
+
 let test_vanilla_auto_register_ignores_installer_alias_hint () =
   with_ctx (fun ctx ->
     (* Vanilla codex inherits the static installer hint in ~/.codex/config.toml,
@@ -401,6 +435,10 @@ let () =
         ; test_case "empty inbox emits nothing" `Quick test_empty_inbox_emits_nothing
         ; test_case "auto-register once + onboarding" `Quick
             test_unregistered_session_auto_registers_once
+        ; test_case "SessionEnd deregisters hook auto-registration" `Quick
+            test_session_end_deregisters_hook_auto_registration
+        ; test_case "SessionEnd keeps explicit registration" `Quick
+            test_session_end_keeps_explicit_registration
         ; test_case "vanilla auto-register ignores installer alias hint" `Quick
             test_vanilla_auto_register_ignores_installer_alias_hint
         ; test_case "vanilla auto-register second thread ignores statefile" `Quick

@@ -143,6 +143,10 @@ type registration =
       exposure/federation (cwd, canonical alias, etc.) beyond the
       broker's internal guard use. Captured at registration time;
       honored at every read/exposure site. Default false = metadata on. *)
+  ; registered_by : string option
+  (** Internal provenance for automatic registrations. Currently used for
+      vanilla codex hook rows so SessionEnd/lazy expiry can distinguish
+      them from explicit operator registrations. *)
   ; opaque_host_id : string option
   (** Slice 1 of .collab/design/2026-06-17-c2c-opaque-host-id.md:
       client-supplied opaque per-host identifier (12-16 hex chars,
@@ -340,7 +344,7 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> ?cwd:string option -> ?metadata_opt_out:bool -> ?opaque_host_id:string option -> ?from_auto_gen:bool -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> ?cwd:string option -> ?metadata_opt_out:bool -> ?registered_by:string option -> ?opaque_host_id:string option -> ?from_auto_gen:bool -> unit -> unit
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
