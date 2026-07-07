@@ -275,6 +275,13 @@ module Broker : sig
   val is_reserved_system_alias : string -> bool
   (** Case-insensitive reserved system alias predicate. *)
 
+  val is_remote_alias : string -> bool
+  (** True if the alias contains ['@'] — a remote cross-host target that
+      cannot be resolved via the local registry and must be enqueued to the
+      relay outbox for async forwarding. Exported (B088) so the CLI can give
+      honest delivery reporting: a remote target is only ever queued locally
+      by [c2c send], never synchronously delivered. *)
+
   val alias_casefold : string -> string
   (** Canonical alias case-fold helper (currently [String.lowercase_ascii]).
       All alias comparisons inside the broker invariant must compare

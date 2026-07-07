@@ -12,7 +12,16 @@ let supervisor_send ~to_alias ~content =
   let from_alias = resolve_alias ~override:None broker in
   (try
      C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ();
-     Printf.printf "ok -> %s (from %s)\n" to_alias from_alias
+     (* B088: a remote [alias@host] target is only queued to the local relay
+        outbox here, never synchronously delivered — never report it as a
+        delivered [ok ->]. Supervisor replies are normally local peers; this
+        just keeps the output honest if a cross-host target is ever used. *)
+     if C2c_mcp.Broker.is_remote_alias to_alias then begin
+       Printf.printf "queued -> %s (from %s)\n" to_alias from_alias;
+       Printf.eprintf "warning: queued locally; no relay connector detected \
+         — run `c2c relay connect` or use `c2c relay dm send` to ship it.\n%!"
+     end else
+       Printf.printf "ok -> %s (from %s)\n" to_alias from_alias
    with Invalid_argument msg ->
      Printf.eprintf "error: %s\n%!" msg; exit 1)
 
