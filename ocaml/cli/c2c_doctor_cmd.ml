@@ -15,6 +15,12 @@ let doctor_cmd =
     Cmdliner.Arg.(value & flag & info [ "json" ]
       ~doc:"Output machine-readable JSON.")
   in
+  let relay =
+    Cmdliner.Arg.(value & flag & info [ "relay" ]
+      ~doc:"Run relay-side checks (configured, reachable, lease, connector, outbox, \
+            capabilities) with stable check_ids, copy-pasteable fix commands, and a \
+            non-zero exit on FAIL (B093).")
+  in
   let check_rebase_base =
     Cmdliner.Arg.(value & flag & info [ "check-rebase-base" ]
       ~doc:"Check if HEAD is based on origin/master (exit 0 = OK, exit 1 = STALE).")
@@ -25,9 +31,15 @@ let doctor_cmd =
   in
   let+ summary = summary
   and+ json = json
+  and+ relay = relay
   and+ check_rebase_base = check_rebase_base
   and+ install_freshness = install_freshness in
-  if check_rebase_base then begin
+  if relay then begin
+    (* B093: relay checks run inline (OCaml) regardless of repo context, so
+       `c2c doctor --relay` works outside the c2c git repo too. Exits non-zero
+       when any check FAILs. *)
+    exit (C2c_doctor_relay.run ~json)
+  end else if check_rebase_base then begin
     let git_dir = match git_repo_toplevel () with
       | None ->
           Printf.eprintf "error: must run from inside the c2c git repo.\n%!";

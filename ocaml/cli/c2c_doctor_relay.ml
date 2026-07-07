@@ -1,0 +1,641 @@
+(* c2c_doctor_relay — relay-side health checks for `c2c doctor --relay` (B093).
+
+   `c2c doctor` historically checked nothing relay-side: a dead connector or
+   a stuck remote-outbox was only findable by grepping broker files. This
+   module runs a battery of structured checks (each with a stable check_id,
+   a copy-pasteable fix_command, and a docs_url) and renders them in Human or
+   JSON form. A non-zero exit is produced when any check FAILs.
+
+   Reuses [C2c_relay_cmd.default_public_relay_url] / [resolve_relay_url] so the
+   default relay URL is never hardcoded here, and [C2c_relay_connector] for
+   outbox + connector-state inspection. *)
+
+open Printf
+
+(* ---------------------------------------------------------------------------
+ * Check result types
+ * --------------------------------------------------------------------------- *)
+
+type check_status = Pass | Fail | Inconclusive
+
+type check_result = {
+  check_id : string;            (* stable identifier, never reordered/renamed *)
+  status : check_status;
+  message : string;             (* one-line human summary *)
+  detail : string option;       (* optional multi-line extra context *)
+  fix_command : string option;  (* copy-pasteable shell, no leading prompt *)
+  docs_url : string option;
+}
+
+let status_str = function Pass -> "PASS" | Fail -> "FAIL" | Inconclusive -> "INCONCLUSIVE"
+
+let docs_relay = "https://c2c.im/docs/relay"
+
+(* ---------------------------------------------------------------------------
+ * Helpers
+ * --------------------------------------------------------------------------- *)
+
+let resolve_broker_root () =
+  try C2c_utils.resolve_broker_root () with _ -> "<unresolved>"
+
+(* Resolve relay URL + report the source so the operator knows where it came
+   from. Returns (url, source). *)
+let resolve_url_with_source () =
+  match Sys.getenv_opt "C2C_RELAY_URL" with
+  | Some v when String.trim v <> "" -> (String.trim v, "env C2C_RELAY_URL")
+  | _ ->
+      (match C2c_relay_cmd.resolve_relay_url None with
+       | Some v -> (v, "c2c relay setup config (relay.json)")
+       | None -> (C2c_relay_cmd.default_public_relay_url, "default (public relay)"))
+
+let age_str now ts =
+  let delta = max 0.0 (now -. ts) in
+  if delta < 60.0 then sprintf "%.0fs" delta
+  else if delta < 3600.0 then sprintf "%.0fm" (delta /. 60.0)
+  else if delta < 86400.0 then sprintf "%.0fh" (delta /. 3600.0)
+  else sprintf "%.1fd" (delta /. 86400.0)
+
+let rec take_first k xs = match xs, k with
+  | _, 0 | [], _ -> []
+  | x :: tl, _ -> x :: take_first (k - 1) tl
+
+(* Detect a running relay connector process (OCaml `c2c relay connect` or the
+   Python c2c_relay_connector.py). Returns matching pgrep lines. *)
+let detect_connector_processes () =
+  let patterns =
+    [ "c2c relay connect"
+    ; "c2c_relay_connector"
+    ]
+  in
+  List.concat_map
+    (fun pat ->
+       let cmd = sprintf "pgrep -af %s 2>/dev/null" (Filename.quote pat) in
+       let ic = Unix.open_process_in cmd in
+       let lines =
+         Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
+           (fun () ->
+              let acc = ref [] in
+              (try while true do acc := input_line ic :: !acc done
+               with End_of_file -> ());
+              List.rev !acc)
+       in
+       (* pgrep never matches itself; the patterns are specific enough
+          ("c2c relay connect" / "c2c_relay_connector") that false positives
+          from unrelated shells are rare. Return all matches as-is. *)
+       lines)
+    patterns
+
+let identity_opt () =
+  (* Mirrors relay_connect_cmd's resolution: C2C_RELAY_IDENTITY_PATH env wins,
+     else the default path if it exists. *)
+  let path =
+    match Sys.getenv_opt "C2C_RELAY_IDENTITY_PATH" with
+    | Some p -> Some p
+    | None ->
+        let p = Relay_identity.default_path () in
+        if Sys.file_exists p then Some p else None
+  in
+  match path with
+  | Some p -> (match Relay_identity.load ~path:p () with Ok id -> Some id | Error _ -> None)
+  | None -> None
+
+(* ---------------------------------------------------------------------------
+ * Probe (one Lwt pass: /health + /list)
+ * --------------------------------------------------------------------------- *)
+
+type probe = {
+  url : string;
+  url_source : string;
+  health : Yojson.Safe.t option;     (* None if unreachable / errored *)
+  health_error : string option;
+  peers : Yojson.Safe.t list;        (* [] if /list failed or returned none *)
+  list_error : string option;
+  list_needs_auth : bool;            (* relay rejected unsigned /list *)
+}
+
+let extract_peers = function
+  | `Assoc fs ->
+      (match List.assoc_opt "peers" fs with
+       | Some (`List xs) -> xs
+       | _ -> [])
+  | _ -> []
+
+let needs_auth = function
+  | `Assoc fs ->
+      (match List.assoc_opt "error_code" fs with
+       | Some (`String s) ->
+           let lc = String.lowercase_ascii s in
+           lc = "unauthorized" || lc = "needs_identity"
+           || lc = "auth_required" || lc = "missing_identity"
+       | _ -> false)
+  | _ -> false
+
+(* If /list returned ok=false for a non-auth reason (e.g. transient
+   connection_error while /health still succeeded), surface the error string
+   so the lease check can mark itself INCONCLUSIVE rather than falsely
+   reporting every alias as missing. *)
+let list_error_of = function
+  | `Assoc fs when List.assoc_opt "ok" fs = Some (`Bool false) ->
+      (match List.assoc_opt "error" fs with
+       | Some (`String s) -> Some s
+       | _ -> Some "unknown /list error")
+  | _ -> None
+
+let probe_relay ~url ~token ~identity ~signing_alias =
+  let client = Relay.Relay_client.make ?token ~timeout:5.0 url in
+  (* /health is unauthenticated. /list may need a signed request in prod mode;
+     sign as the caller's real alias so a bound identity is accepted. *)
+  let list_lwt =
+    match identity, signing_alias with
+    | Some id, Some alias ->
+        (try
+           let auth = Relay_signed_ops.sign_request id ~alias
+             ~meth:"GET" ~path:"/list" ~body_str:"" () in
+           Relay.Relay_client.list_peers_signed client ~auth_header:auth ()
+         with e -> Lwt.return (`Assoc []))
+    | _ -> Relay.Relay_client.list_peers client ()
+  in
+  let open Lwt.Infix in
+  Lwt_main.run
+    (Lwt.try_bind
+       (fun () ->
+          Relay.Relay_client.health client >>= fun health ->
+          list_lwt >>= fun list_resp ->
+          Lwt.return (health, list_resp))
+       (fun (health, list_resp) ->
+          let peers = extract_peers list_resp in
+          let na = needs_auth list_resp in
+          let list_error = if na then None else list_error_of list_resp in
+          Lwt.return
+            { url; url_source = ""; health = Some health; health_error = None;
+              peers; list_error; list_needs_auth = na })
+       (fun e ->
+          Lwt.return
+            { url; url_source = ""; health = None;
+              health_error = Some (Printexc.to_string e);
+              peers = []; list_error = None; list_needs_auth = false }))
+
+(* ---------------------------------------------------------------------------
+ * Checks
+ * --------------------------------------------------------------------------- *)
+
+let check_configured ~probe =
+  { check_id = "relay.configured"
+  ; status = Pass
+  ; message = sprintf "relay URL: %s (from %s)" probe.url probe.url_source
+  ; detail = None
+  ; fix_command =
+      Some (sprintf "c2c relay setup --url %s" C2c_relay_cmd.default_public_relay_url)
+  ; docs_url = Some docs_relay }
+
+let check_reachable ~probe =
+  match probe.health, probe.health_error with
+  | None, Some err ->
+      { check_id = "relay.reachable"
+      ; status = Fail
+      ; message = sprintf "relay unreachable: %s" probe.url
+      ; detail = Some (sprintf "error: %s" err)
+      ; fix_command =
+          Some (sprintf
+            "c2c relay status --relay-url %s   # confirm; if down, check the \
+             relay host or run a local relay with: c2c relay serve"
+            probe.url)
+      ; docs_url = Some docs_relay }
+  | None, None ->
+      { check_id = "relay.reachable"
+      ; status = Inconclusive
+      ; message = "relay reachable: no response and no error captured"
+      ; detail = None; fix_command = None; docs_url = Some docs_relay }
+  | Some j, _ ->
+      let open Yojson.Safe.Util in
+      let ok = j |> member "ok" = `Bool true in
+      let version = j |> member "version" |> to_string_option |> Option.value ~default:"?" in
+      let git_hash = j |> member "git_hash" |> to_string_option |> Option.value ~default:"?" in
+      let auth_mode = j |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown" in
+      if ok then
+        { check_id = "relay.reachable"
+        ; status = Pass
+        ; message = sprintf "relay reachable — %s @ %s (auth: %s)"
+            version git_hash auth_mode
+        ; detail = Some (sprintf "GET %s/health → ok" probe.url)
+        ; fix_command = None
+        ; docs_url = Some docs_relay }
+      else
+        { check_id = "relay.reachable"
+        ; status = Fail
+        ; message = sprintf "relay returned ok=false from %s/health" probe.url
+        ; detail = Some (Yojson.Safe.pretty_to_string j)
+        ; fix_command =
+            Some (sprintf "c2c relay status --relay-url %s" probe.url)
+        ; docs_url = Some docs_relay }
+
+let check_lease ~probe ~local_aliases ~local_total =
+  if probe.health = None then
+    { check_id = "relay.lease"
+    ; status = Inconclusive
+    ; message = "lease check skipped (relay unreachable)"
+    ; detail = None; fix_command = None; docs_url = Some docs_relay }
+  else if local_aliases = [] then
+    { check_id = "relay.lease"
+    ; status = Inconclusive
+    ; message =
+        sprintf "no alive local aliases to lease-check (%d total, 0 alive)"
+          local_total
+    ; detail = None
+    ; fix_command = Some "c2c init   # or restart a managed client (c2c start <client>)"
+    ; docs_url = Some docs_relay }
+  else if probe.list_needs_auth then
+    { check_id = "relay.lease"
+    ; status = Inconclusive
+    ; message = "relay requires signed /list; no usable local identity"
+    ; detail = Some "Run `c2c relay list` to inspect leases manually."
+    ; fix_command = Some "c2c relay identity init && c2c relay register --alias <alias>"
+    ; docs_url = Some docs_relay }
+  else if probe.list_error <> None then
+    { check_id = "relay.lease"
+    ; status = Inconclusive
+    ; message = sprintf "/list failed: %s"
+        (Option.value probe.list_error ~default:"(unknown)")
+    ; detail = Some "Relay reachable but /list errored; cannot assess leases."
+    ; fix_command = Some (sprintf "c2c relay list --relay-url %s" probe.url)
+    ; docs_url = Some docs_relay }
+  else
+    let open Yojson.Safe.Util in
+    (* Store (alive, remaining_lease_seconds) per peer alias so the TTL/expiry
+       is surfaced, not just the alive boolean (B093 asks for TTL/expiry). *)
+    let now = Unix.gettimeofday () in
+    let peer_info = Hashtbl.create 16 in
+    List.iter
+      (fun p ->
+         let alias = match p |> member "alias" with `String s -> s | _ -> "" in
+         let alive = match p |> member "alive" with `Bool b -> b | _ -> false in
+         let last_seen = match p |> member "last_seen" with
+           | `Float f -> f | `Int i -> float_of_int i | _ -> now in
+         let ttl = match p |> member "ttl" with
+           | `Float f -> f | `Int i -> float_of_int i | _ -> 0.0 in
+         let remaining = (last_seen +. ttl) -. now in
+         if alias <> "" then Hashtbl.replace peer_info alias (alive, remaining))
+      probe.peers;
+    let truly_missing =
+      List.filter (fun a -> not (Hashtbl.mem peer_info a)) local_aliases
+    in
+    let truly_dead =
+      List.filter
+        (fun a ->
+           match Hashtbl.find_opt peer_info a with
+           | Some (alive, _) -> not alive
+           | None -> false)
+        local_aliases
+    in
+    if truly_missing = [] && truly_dead = [] then begin
+      (* Report the shortest remaining lease so the operator knows when the
+         next heartbeat is due. *)
+      let min_remaining =
+        List.filter_map
+          (fun a -> match Hashtbl.find_opt peer_info a with
+           | Some (_, r) -> Some r | None -> None)
+          local_aliases
+        |> List.fold_left min infinity
+      in
+      let detail =
+        if min_remaining = infinity then None
+        else Some (sprintf "shortest remaining lease: %s" (age_str now (now -. min_remaining)))
+      in
+      { check_id = "relay.lease"
+      ; status = Pass
+      ; message = sprintf "all %d alive local alias(es) have live leases"
+          (List.length local_aliases)
+      ; detail; fix_command = None; docs_url = Some docs_relay }
+    end
+    else
+      (* Cap the named lists so the output isn't drowned by a huge roster. *)
+      let cap ~label xs =
+        let n = List.length xs in
+        let shown =
+          xs |> (fun l -> if List.length l > 10 then take_first 10 l else l)
+          |> String.concat ", "
+        in
+        sprintf "%s: %s%s" label shown
+          (if n > 10 then sprintf " (+%d more)" (n - 10) else "")
+      in
+      let bits = [] in
+      let bits =
+        if truly_missing <> [] then cap ~label:"not registered" truly_missing :: bits
+        else bits
+      in
+      let bits =
+        if truly_dead <> [] then cap ~label:"lease expired" truly_dead :: bits
+        else bits
+      in
+      { check_id = "relay.lease"
+      ; status = Fail
+      ; message = sprintf "%d/%d alive alias(es) missing or expired"
+          (List.length truly_missing + List.length truly_dead)
+          (List.length local_aliases)
+      ; detail = Some (String.concat "\n" bits)
+      ; fix_command =
+          Some (sprintf "c2c relay connect --relay-url %s   # re-registers + heartbeats"
+                  probe.url)
+      ; docs_url = Some docs_relay }
+
+let check_connector ~broker_root ~probe =
+  let procs = detect_connector_processes () in
+  let state = C2c_relay_connector.read_connector_state broker_root in
+  let now = Unix.gettimeofday () in
+  match procs, state with
+  | [], None ->
+      { check_id = "relay.connector"
+      ; status = Fail
+      ; message = "no relay connector running and no prior sync state"
+      ; detail = Some "Outbound remote-alias messages will queue in remote-outbox.jsonl indefinitely."
+      ; fix_command =
+          Some (sprintf "c2c relay connect --relay-url %s &" probe.url)
+      ; docs_url = Some docs_relay }
+  | [], Some st ->
+      let stale_s = now -. st.C2c_relay_connector.cs_last_sync_ts in
+      if stale_s < 120.0 then
+        { check_id = "relay.connector"
+        ; status = Inconclusive
+        ; message = sprintf "connector not running (last sync %s ago)"
+            (age_str now st.C2c_relay_connector.cs_last_sync_ts)
+        ; detail = Some "May be restarting; re-run shortly."
+        ; fix_command = Some (sprintf "c2c relay connect --relay-url %s &" probe.url)
+        ; docs_url = Some docs_relay }
+      else
+        { check_id = "relay.connector"
+        ; status = Fail
+        ; message = sprintf "connector not running (last sync %s ago)"
+            (age_str now st.C2c_relay_connector.cs_last_sync_ts)
+        ; detail = Some "Outbox will not drain until a connector restarts."
+        ; fix_command = Some (sprintf "c2c relay connect --relay-url %s &" probe.url)
+        ; docs_url = Some docs_relay }
+  | _ :: _, _ ->
+      (match state with
+       | None ->
+           { check_id = "relay.connector"
+           ; status = Pass
+           ; message =
+               sprintf "connector running (%d process(es)); no state file yet"
+                 (List.length procs)
+           ; detail = Some "First sync may still be in flight."
+           ; fix_command = None; docs_url = Some docs_relay }
+       | Some st ->
+           let last_err = match st.C2c_relay_connector.cs_last_error_detail with
+             | Some e -> sprintf " last error: %s" e
+             | None -> ""
+           in
+           let recent_err =
+             match st.C2c_relay_connector.cs_last_error_ts with
+             | Some ts when (now -. ts) < 300.0 -> true
+             | _ -> false
+           in
+           let status, detail =
+             if recent_err then
+               let op = Option.value st.C2c_relay_connector.cs_last_error_op ~default:"?" in
+               let ts = Option.value st.C2c_relay_connector.cs_last_error_ts ~default:0.0 in
+                 (Fail,
+                  Some (sprintf "recent error %s ago on %s%s"
+                          (age_str now ts) op last_err))
+             else
+               (Pass,
+                Some (sprintf "last ok sync %s ago; fwd=%d failed=%d dlq=%d inbound=%d"
+                        (age_str now st.C2c_relay_connector.cs_last_ok_ts)
+                        st.C2c_relay_connector.cs_outbox_forwarded
+                        st.C2c_relay_connector.cs_outbox_failed
+                        st.C2c_relay_connector.cs_outbox_dlqed
+                        st.C2c_relay_connector.cs_inbound_delivered))
+           in
+           { check_id = "relay.connector"
+           ; status
+           ; message =
+               sprintf "connector running (%d); last sync %s ago%s"
+                 (List.length procs) (age_str now st.C2c_relay_connector.cs_last_sync_ts) last_err
+           ; detail; fix_command = None; docs_url = Some docs_relay })
+
+let check_outbox ~broker_root =
+  let entries = C2c_relay_connector.read_outbox broker_root in
+  let depth = List.length entries in
+  let now = Unix.gettimeofday () in
+  if depth = 0 then
+    { check_id = "relay.outbox"
+    ; status = Pass
+    ; message = "remote-outbox empty (0 pending)"
+    ; detail = None; fix_command = None; docs_url = Some docs_relay }
+  else
+    let oldest =
+      List.fold_left
+        (fun acc e ->
+           if e.C2c_relay_connector.ob_enqueued_at < acc
+           then e.C2c_relay_connector.ob_enqueued_at else acc)
+        now entries
+    in
+    let age = now -. oldest in
+    let stuck = age > C2c_relay_connector.max_age_seconds in
+    let deep = depth > 25 in
+    let status = if stuck || deep then Fail else Pass in
+    let fix_command =
+      let (url, _) = resolve_url_with_source () in
+      if stuck then
+        Some (sprintf
+                "c2c relay connect --relay-url %s --once   # drain now; check relay reachability\n\
+                 # inspect stuck entries: head $(c2c root)/remote-outbox.jsonl"
+                url)
+      else if deep then
+        Some "c2c relay connect --once   # drain the backlog"
+      else None
+    in
+    let per_recip =
+      let tbl = Hashtbl.create 8 in
+      List.iter (fun e ->
+          let n = try Hashtbl.find tbl e.C2c_relay_connector.ob_to with Not_found -> 0 in
+          Hashtbl.replace tbl e.C2c_relay_connector.ob_to (n + 1)) entries;
+      Hashtbl.fold (fun k v acc -> sprintf "  %s: %d" k v :: acc) tbl []
+      |> List.rev |> String.concat "\n"
+    in
+    { check_id = "relay.outbox"
+    ; status
+    ; message = sprintf "remote-outbox depth=%d oldest=%s%s"
+        depth (age_str now oldest)
+        (if stuck then " (STUCK > 1h)" else if deep then " (deep)" else "")
+    ; detail = Some (sprintf "oldest pending: %s ago\nby recipient:\n%s"
+                       (age_str now oldest) per_recip)
+    ; fix_command
+    ; docs_url = Some docs_relay }
+
+(* Capabilities matrix: send / subscribe / connect / poll readiness for the
+   configured relay scheme. *)
+let check_capabilities ~probe ~connector_running =
+  let reachable = probe.health <> None in
+  let lc = String.lowercase_ascii probe.url in
+  let https = String.length lc >= 5 && String.sub lc 0 5 = "https" in
+  let yn b = if b then "yes" else "no" in
+  let matrix =
+    [ sprintf "  %-12s %-7s  %s" "send" (if reachable then "ready" else "no") "POST /send (DMs)"
+    ; sprintf "  %-12s %-7s  %s" "subscribe" (if reachable then "ready" else "no") "relay observer/push delivery"
+    ; sprintf "  %-12s %-7s  %s" "connect" (if connector_running then "ready" else "no") "live connector bridge"
+    ; sprintf "  %-12s %-7s  %s" "poll" (if reachable then "ready" else "no") "POST /poll_inbox (fallback fetch)"
+    ]
+  in
+  let all_ready = reachable && connector_running in
+  { check_id = "relay.capabilities"
+  ; status = if all_ready then Pass else Inconclusive
+  ; message =
+      sprintf "send=%s subscribe=%s connect=%s poll=%s (%s)"
+        (yn reachable) (yn reachable) (yn connector_running) (yn reachable)
+        (if https then "TLS" else "plaintext")
+  ; detail = Some (String.concat "\n" matrix)
+  ; fix_command =
+      if not connector_running then
+        Some (sprintf "c2c relay connect --relay-url %s &" probe.url)
+      else None
+  ; docs_url = Some docs_relay }
+
+(* ---------------------------------------------------------------------------
+ * Run all checks
+ * --------------------------------------------------------------------------- *)
+
+let run_checks () =
+  let broker_root = resolve_broker_root () in
+  let (url, url_source) = resolve_url_with_source () in
+  let token = C2c_relay_cmd.resolve_relay_token None in
+  let identity = identity_opt () in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  (* Only lease-check ALIVE local registrations: dead locals are obviously
+     not relay-leased and would drown the signal in noise. *)
+  let alive_regs =
+    List.filter
+      (fun (r : C2c_mcp.registration) ->
+         C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive)
+      (C2c_mcp.Broker.list_registrations broker)
+  in
+  let local_aliases = List.map (fun (r : C2c_mcp.registration) -> r.alias) alive_regs in
+  let local_total = List.length (C2c_mcp.Broker.list_registrations broker) in
+  (* Signing alias: env wins, else the first alive local registration. Only
+     used when an identity is loaded; falls back to unsigned /list otherwise. *)
+  let signing_alias =
+    match C2c_cli_helpers.env_auto_alias () with
+    | Some a -> Some a
+    | None -> (match local_aliases with a :: _ -> Some a | [] -> None)
+  in
+  let probe =
+    try probe_relay ~url ~token ~identity ~signing_alias
+    with e ->
+      { url; url_source
+      ; health = None
+      ; health_error = Some (Printexc.to_string e)
+      ; peers = []; list_error = None; list_needs_auth = false }
+  in
+  let probe = { probe with url_source } in
+  let connector_running = detect_connector_processes () <> [] in
+  let checks =
+    [ check_configured ~probe
+    ; check_reachable ~probe
+    ; check_lease ~probe ~local_aliases ~local_total
+    ; check_connector ~broker_root ~probe
+    ; check_outbox ~broker_root
+    ; check_capabilities ~probe ~connector_running
+    ]
+  in
+  (broker_root, probe, checks)
+
+(* ---------------------------------------------------------------------------
+ * Rendering
+ * --------------------------------------------------------------------------- *)
+
+let any_fail checks = List.exists (fun c -> c.status = Fail) checks
+
+let icon = function Pass -> "✓" | Fail -> "✗" | Inconclusive -> "?"
+
+let iso_now () =
+  let now = Unix.gettimeofday () in
+  let t = Unix.gmtime now in
+  sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+    (t.Unix.tm_year + 1900) (t.Unix.tm_mon + 1) t.Unix.tm_mday
+    t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec
+
+let render_human ~broker_root ~probe checks =
+  let line = String.make 64 '-' in
+  printf "c2c doctor --relay   (B093)\n";
+  printf "%s\n" line;
+  printf "broker root:  %s\n" broker_root;
+  printf "relay url:    %s  (%s)\n" probe.url probe.url_source;
+  printf "checked at:   %s\n" (iso_now ());
+  printf "%s\n\n" line;
+  List.iter
+    (fun c ->
+       printf "%s [%-7s] %s\n" (icon c.status) (status_str c.status) c.message;
+       printf "    check_id:    %s\n" c.check_id;
+       (match c.detail with
+        | Some d ->
+            List.iter (fun l -> printf "    %s\n" l) (String.split_on_char '\n' d)
+        | None -> ());
+       (match c.fix_command with
+        | Some cmd ->
+            let ls = String.split_on_char '\n' cmd in
+            List.iteri (fun i l ->
+                if i = 0 then printf "    fix:         %s\n" l
+                else printf "                 %s\n" l) ls
+        | None -> ());
+       (match c.docs_url with
+        | Some u -> printf "    docs:        %s\n" u
+        | None -> ());
+       printf "\n")
+    checks;
+  let n_fail = List.length (List.filter (fun c -> c.status = Fail) checks) in
+  let n_inc = List.length (List.filter (fun c -> c.status = Inconclusive) checks) in
+  let n_pass = List.length (List.filter (fun c -> c.status = Pass) checks) in
+  printf "%s\n" line;
+  printf "summary: %d PASS, %d FAIL, %d INCONCLUSIVE\n" n_pass n_fail n_inc;
+  if n_fail > 0 then
+    printf "→ %d check(s) FAILING. Run the listed fix: commands above.\n" n_fail
+
+let status_json = function
+  | Pass -> `String "PASS" | Fail -> `String "FAIL" | Inconclusive -> `String "INCONCLUSIVE"
+
+let render_json ~broker_root ~probe checks =
+  let checks_json =
+    `List
+      (List.map
+         (fun c ->
+            `Assoc
+              [ ("check_id", `String c.check_id)
+              ; ("status", status_json c.status)
+              ; ("message", `String c.message)
+              ; ("detail", match c.detail with Some d -> `String d | None -> `Null)
+              ; ("fix_command", match c.fix_command with Some s -> `String s | None -> `Null)
+              ; ("docs_url", match c.docs_url with Some s -> `String s | None -> `Null)
+              ])
+         checks)
+  in
+  let n_fail = List.length (List.filter (fun c -> c.status = Fail) checks) in
+  let n_inc = List.length (List.filter (fun c -> c.status = Inconclusive) checks) in
+  let summary =
+    `Assoc
+      [ ("total", `Int (List.length checks))
+      ; ("pass", `Int (List.length (List.filter (fun c -> c.status = Pass) checks)))
+      ; ("fail", `Int n_fail)
+      ; ("inconclusive", `Int n_inc)
+      ; ("any_fail", `Bool (n_fail > 0))
+      ]
+  in
+  let obj =
+    `Assoc
+      [ ("broker_root", `String broker_root)
+      ; ("relay_url", `String probe.url)
+      ; ("relay_url_source", `String probe.url_source)
+      ; ("checked_at", `String (iso_now ()))
+      ; ("checks", checks_json)
+      ; ("summary", summary)
+      ]
+  in
+  print_endline (Yojson.Safe.pretty_to_string obj)
+
+(* Entry point used by c2c_doctor_cmd. Prints output and returns an exit code
+   (0 unless any check FAILs). *)
+let run ~json =
+  let (broker_root, probe, checks) = run_checks () in
+  if json then
+    render_json ~broker_root ~probe checks
+  else
+    render_human ~broker_root ~probe checks;
+  if any_fail checks then 1 else 0
