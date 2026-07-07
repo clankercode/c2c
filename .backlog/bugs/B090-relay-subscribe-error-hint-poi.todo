@@ -1,14 +1,15 @@
 ---
+claimed_at: "2026-07-07T12:08:01Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B090
 priority: medium
-status: pending
-tags:
-    - relay
-    - relay-subscribe
-    - friction-report-cn
+started_at: "2026-07-07T12:08:01Z"
+status: in_progress
+tags: []
 title: relay subscribe error hint points at the broken relay connect (dead-end fallback for wss/HTTPS)
 ---
 c2c relay subscribe errors: does not support TLS WebSocket URLs yet; use an http:// relay URL or poll with relay connect. The public relay is HTTPS, so the suggested fallback (poll with relay connect) points at the broken connector. Fix: either support wss, or make the hint point at the working polling / monitor path. Source: friction-points-cn.md.
