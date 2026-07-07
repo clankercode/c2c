@@ -186,17 +186,58 @@ find_asset_url_and_checksum() {
   printf '%s %s' "$_url" "$_checksum"
 }
 
-# ---- delegate to self-update if c2c exists --------------------------------
+# ---- delegate to self-update if c2c exists and supports it --------------
+#
+# B092: Some older c2c binaries (notably the @clanker-code/c2c npm wrapper
+# before self-update landed) don't ship the `self-update` subcommand.
+# Delegating blindly made install.sh die with "unknown command self-update"
+# and left the user with no working install. Probe for the subcommand; if
+# it's missing, fall through to the fresh standalone install path below so
+# we still produce a working binary.
+
+c2c_has_self_update() {
+  # Probe the existing c2c's --help output for the 'self-update' subcommand.
+  # grep -w matches whole words so other subcommands containing 'self-update'
+  # (e.g. a hypothetical 'self-update-alias') won't false-positive. Exit 1
+  # when the word isn't present; redirect both streams so binaryes that
+  # print help to either fd are still inspected.
+  c2c --help 2>&1 | grep -qw 'self-update'
+}
+
+# Track *why* we ended up in the standalone install path so we can log it.
+#   0 = no c2c on PATH
+#   1 = c2c present but lacks 'self-update'
+#   2 = c2c present, advertised self-update, but the delegation failed
+FALLTHROUGH_REASON=0
 
 if command -v c2c >/dev/null 2>&1; then
-  info "existing c2c found on PATH: $(command -v c2c)"
-  info "delegating to 'c2c self-update'..."
-  exec c2c self-update "$@"
+  C2C_PATH="$(command -v c2c)"
+  info "existing c2c found on PATH: ${C2C_PATH}"
+  if c2c_has_self_update; then
+    info "delegating to 'c2c self-update'..."
+    # Run (not exec) so we can detect delegation failures and fall through
+    # to a fresh standalone install. A successful self-update replaces the
+    # binary in place; a failure leaves the old one in place and we replace
+    # it with the fresh standalone download below.
+    if c2c self-update "$@"; then
+      exit 0
+    fi
+    info "'c2c self-update' failed; falling through to fresh standalone install."
+    FALLTHROUGH_REASON=2
+  else
+    info "existing c2c at ${C2C_PATH} lacks the 'self-update' subcommand."
+    info "falling through to fresh standalone install."
+    FALLTHROUGH_REASON=1
+  fi
 fi
 
 # ---- main install path ----------------------------------------------------
 
-info "c2c not found on PATH — performing fresh install."
+case "$FALLTHROUGH_REASON" in
+  0) info "c2c not found on PATH — performing fresh install." ;;
+  1) info "performing fresh standalone install (existing c2c lacks self-update)." ;;
+  2) info "performing fresh standalone install (existing c2c self-update failed)." ;;
+esac
 
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
