@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-07T13:52:45Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-07T16:13:27Z"
 complexity: medium
 depends_on: []
+duration_minutes: 140.71400706635
 estimate_hours: 1
 id: B093
 priority: medium
 started_at: "2026-07-07T13:52:45Z"
-status: in_progress
+status: done
 tags: []
 title: 'doctor is local-only: add relay checks, a capabilities matrix, outbox depth, and a copy-pasteable fix_command per failure'
 ---
