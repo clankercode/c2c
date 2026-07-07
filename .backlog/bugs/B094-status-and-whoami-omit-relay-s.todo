@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-07T16:43:49Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-07T17:37:14Z"
 complexity: medium
 depends_on: []
+duration_minutes: 53.43061748393333
 estimate_hours: 1
 id: B094
 priority: medium
 started_at: "2026-07-07T16:43:49Z"
-status: in_progress
+status: done
 tags: []
 title: status and whoami omit relay state (connection, alias/lease) and the @hostid addressing convention is undocumented
 ---
