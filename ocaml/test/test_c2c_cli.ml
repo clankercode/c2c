@@ -2107,6 +2107,33 @@ let test_relay_dead_letter_no_relay_url_exits_nonzero () =
       check bool "stderr mentions --relay-url" true
         (string_contains err "--relay-url"))
 
+let test_relay_dm_peek_help_exits_zero () =
+  (* B096: `c2c relay dm peek` is wired up — its --help must exit 0 and
+     the dm group --help must list `peek`. *)
+  let outfile = Filename.temp_file "relay-dm-peek-help" ".out" in
+  let errfile = Filename.temp_file "relay-dm-peek-help" ".err" in
+  Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf
+        "C2C_CLI_FORCE=1 %s relay dm peek --help > %s 2> %s"
+        c2c_exe outfile errfile
+      in
+      let rc = Sys.command cmd in
+      check int "relay dm peek --help exits 0" 0 rc;
+      (* `relay dm --help` renders the positional docv which now lists peek. *)
+      let dm_outfile = Filename.temp_file "relay-dm-help" ".out" in
+      let dm_errfile = Filename.temp_file "relay-dm-help" ".err" in
+      Fun.protect ~finally:(fun () -> Sys.remove dm_outfile |> ignore; Sys.remove dm_errfile |> ignore)
+        (fun () ->
+          let dm_cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 %s relay dm --help > %s 2> %s"
+            c2c_exe dm_outfile dm_errfile
+          in
+          let _ = Sys.command dm_cmd in
+          let out = read_file dm_outfile in
+          check bool "relay dm --help lists peek subcommand" true
+            (string_contains out "peek")))
+
 let test_relay_subscribe_rejects_https_until_tls_supported () =
   let outfile = Filename.temp_file "relay-subscribe-https" ".out" in
   let errfile = Filename.temp_file "relay-subscribe-https" ".err" in
@@ -3472,6 +3499,7 @@ let () =
     ; ( "relay_dead_letter",
         [ ( "relay dead-letter --help exits 0", `Quick, test_relay_dead_letter_help_exits_zero )
         ; ( "relay dead-letter without relay-url exits non-zero", `Quick, test_relay_dead_letter_no_relay_url_exits_nonzero )
+        ; ( "relay dm peek --help exits 0 and is listed", `Quick, test_relay_dm_peek_help_exits_zero )
         ; ( "relay subscribe rejects https until TLS is supported", `Quick, test_relay_subscribe_rejects_https_until_tls_supported )
         ] )
     ; ( "send_from_spoofing",
