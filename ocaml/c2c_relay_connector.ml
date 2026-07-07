@@ -406,6 +406,141 @@ let classify_error json =
   | `String _ -> "other"
   | _ -> "other"
 
+(* ---------------------------------------------------------------------------
+ * Connector state (connector-state.json) — B093
+ *
+ * A small status file written after every sync so `c2c doctor --relay` can
+ * report last successful sync, last error, and live counts without grepping
+ * broker files or attaching to the connector process. Atomic temp+rename;
+ * absence of the file means the connector has never completed a sync here.
+ * --------------------------------------------------------------------------- *)
+
+let connector_state_path broker_root = broker_root // "connector-state.json"
+
+type connector_state = {
+  cs_last_sync_ts : float;
+  cs_last_ok_ts : float;
+  cs_last_error_op : string option;
+  cs_last_error_detail : string option;
+  cs_last_error_ts : float option;
+  cs_registered : string list;
+  cs_outbox_forwarded : int;
+  cs_outbox_failed : int;
+  cs_outbox_dlqed : int;
+  cs_inbound_delivered : int;
+}
+
+let write_connector_state broker_root (result : sync_result) =
+  let now = Unix.gettimeofday () in
+  let ok = result.last_error = None in
+  let last_ok_ts = if ok then now else 0.0 in
+  (* Preserve the previous last_ok_ts when this sync errored, so the doctor
+     check can still report how long ago the last healthy sync was. *)
+  let prev_ok_ts =
+    match C2c_io.read_json_opt (connector_state_path broker_root) with
+    | Some (`Assoc fs) ->
+        (match List.assoc_opt "last_ok_ts" fs with
+         | Some (`Float f) -> f
+         | Some (`Int i) -> float_of_int i
+         | _ -> 0.0)
+    | _ -> 0.0
+  in
+  let last_ok_ts = if ok then now else prev_ok_ts in
+  let err_assoc = match result.last_error with
+    | Some e ->
+        [ ("last_error_op", `String e.err_op)
+        ; ("last_error_detail", `String e.err_detail)
+        ; ("last_error_ts", `Float e.err_ts) ]
+    | None ->
+        [ ("last_error_op", `Null)
+        ; ("last_error_detail", `Null)
+        ; ("last_error_ts", `Null) ]
+  in
+  let json = `Assoc (
+    [ ("last_sync_ts", `Float now)
+    ; ("last_ok_ts", `Float last_ok_ts)
+    ; ("registered", `List (List.map (fun a -> `String a) result.registered))
+    ; ("outbox_forwarded", `Int result.outbox_forwarded)
+    ; ("outbox_failed", `Int result.outbox_failed)
+    ; ("outbox_dlqed", `Int result.outbox_dlqed)
+    ; ("inbound_delivered", `Int result.inbound_delivered)
+    ] @ err_assoc) in
+  let path = connector_state_path broker_root in
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+      Yojson.Safe.to_channel oc json ~std:false;
+      close_out oc;
+      Unix.rename tmp path)
+
+let read_connector_state broker_root : connector_state option =
+  match C2c_io.read_json_opt (connector_state_path broker_root) with
+  | None -> None
+  | Some json ->
+      let open Yojson.Safe.Util in
+      let get_float k = match json |> member k with
+        | `Float f -> Some f
+        | `Int i -> Some (float_of_int i)
+        | _ -> None
+      in
+      let get_str k = match json |> member k with `String s -> Some s | _ -> None in
+      let get_int k = match json |> member k with `Int i -> i | _ -> 0 in
+      let last_sync_ts = Option.value (get_float "last_sync_ts") ~default:0.0 in
+      let last_ok_ts = Option.value (get_float "last_ok_ts") ~default:0.0 in
+      let registered = match json |> member "registered" with
+        | `List xs -> List.filter_map (function `String s -> Some s | _ -> None) xs
+        | _ -> []
+      in
+      Some {
+        cs_last_sync_ts = last_sync_ts;
+        cs_last_ok_ts = last_ok_ts;
+        cs_last_error_op = get_str "last_error_op";
+        cs_last_error_detail = get_str "last_error_detail";
+        cs_last_error_ts = get_float "last_error_ts";
+        cs_registered = registered;
+        cs_outbox_forwarded = get_int "outbox_forwarded";
+        cs_outbox_failed = get_int "outbox_failed";
+        cs_outbox_dlqed = get_int "outbox_dlqed";
+        cs_inbound_delivered = get_int "inbound_delivered";
+      }
+
+(** Write a minimal connector-state.json recording that a sync raised an
+    exception (B093). Lets `c2c doctor --relay` report the last error even
+    when the connector's own sync loop catches and swallows it. Preserves the
+    prior last_ok_ts so the doctor check can still report staleness. *)
+let write_connector_state_error broker_root ~op ~detail =
+  let now = Unix.gettimeofday () in
+  let prev_ok_ts =
+    match C2c_io.read_json_opt (connector_state_path broker_root) with
+    | Some (`Assoc fs) ->
+        (match List.assoc_opt "last_ok_ts" fs with
+         | Some (`Float f) -> f
+         | Some (`Int i) -> float_of_int i
+         | _ -> 0.0)
+    | _ -> 0.0
+  in
+  let json = `Assoc (
+    [ ("last_sync_ts", `Float now)
+    ; ("last_ok_ts", `Float prev_ok_ts)
+    ; ("registered", `List [])
+    ; ("outbox_forwarded", `Int 0)
+    ; ("outbox_failed", `Int 0)
+    ; ("outbox_dlqed", `Int 0)
+    ; ("inbound_delivered", `Int 0)
+    ; ("last_error_op", `String op)
+    ; ("last_error_detail", `String detail)
+    ; ("last_error_ts", `Float now)
+    ]) in
+  let path = connector_state_path broker_root in
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+      Yojson.Safe.to_channel oc json ~std:false;
+      close_out oc;
+      Unix.rename tmp path)
+
 (** Append a single outbox entry to remote-outbox.jsonl (append-only, not rewrite).
     Used by enqueue_message when the target alias is remote (contains '@'). *)
 let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id () =
@@ -985,6 +1120,7 @@ let run (t : t) : unit =
     ) else (
       (try
         let result = Lwt_main.run (sync t) in
+        write_connector_state t.broker_root result;
         let err_str = match result.last_error with
           | None -> ""
           | Some e ->
@@ -1003,6 +1139,8 @@ let run (t : t) : unit =
           result.alerts_emitted
           err_str
       with exn ->
+        write_connector_state_error t.broker_root ~op:"sync"
+          ~detail:(Printexc.to_string exn);
         Printf.eprintf "[relay-connector] sync exception: %s\n%!" (Printexc.to_string exn));
       if not !shutdown then begin
         Unix.sleepf t.interval;
@@ -1039,6 +1177,7 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
     if once then begin
       match Lwt_main.run (sync t) with
       | result ->
+          write_connector_state t.broker_root result;
           let err_str = match result.last_error with
             | None -> ""
             | Some e -> Printf.sprintf " [%s: %s]" e.err_op e.err_detail
@@ -1054,6 +1193,8 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
             err_str;
           0
       | exception exn ->
+          write_connector_state_error t.broker_root ~op:"sync"
+            ~detail:(Printexc.to_string exn);
           Printf.eprintf "[relay-connector] sync exception: %s\n%!" (Printexc.to_string exn);
           1
     end else begin
