@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-07T12:08:02Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-07T13:01:38Z"
 complexity: medium
 depends_on: []
+duration_minutes: 53.6084605775
 estimate_hours: 1
 id: B091
 priority: high
 started_at: "2026-07-07T12:08:02Z"
-status: in_progress
+status: done
 tags: []
 title: default relay URL (https://relay.c2c.im) is not surfaced in help; relay setup --show returns it inconsistently
 ---
