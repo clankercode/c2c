@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-07T12:08:01Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-07T12:45:15Z"
 complexity: medium
 depends_on: []
+duration_minutes: 37.23847164961666
 estimate_hours: 1
 id: B090
 priority: medium
 started_at: "2026-07-07T12:08:01Z"
-status: in_progress
+status: done
 tags: []
 title: relay subscribe error hint points at the broken relay connect (dead-end fallback for wss/HTTPS)
 ---
