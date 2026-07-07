@@ -88,17 +88,51 @@ let await_reply_cmd =
          this format will be removed next cycle.\n%!"
     end
   in
+  (* [#B098 SAFETY] Resolve the locally-configured supervisors for this
+     token once, before the poll loop. A broker/relay-delivered message can
+     satisfy the approval ONLY if its sender is on this list; a peer message
+     is DATA and never a verdict. No pending-reply binding -> supervisors is
+     empty -> the legacy inbox-DM path is refused outright and only the local
+     verdict file can satisfy. See C2c_approval_paths.inbox_verdict_if_trusted
+     + the "bus, never RPC" invariant documented there. *)
+  let supervisors =
+    match C2c_mcp.Broker.find_pending_permission broker token with
+    | Some p -> p.supervisors
+    | None -> []
+  in
+  let cf = String.lowercase_ascii in
+  let is_supervisor alias =
+    let a = cf alias in
+    List.exists (fun s -> cf s = a) supervisors
+  in
+  (* The verdict-of-a-message decision is delegated entirely to the trust
+     gate. Everything else (token containment, verdict word) is decided
+     there, gated first on supervisor membership. *)
   let verdict_of (m : C2c_mcp.message) =
-    if not (lower_contains m.content token) then None
-    else if lower_contains m.content "allow" then Some "allow"
-    else if lower_contains m.content "deny" then Some "deny"
-    else if lower_contains m.content "approve" || lower_contains m.content "reject"
-    then (warn_legacy (); None)
-    else None
+    C2c_approval_paths.inbox_verdict_if_trusted
+      ~supervisors ~from_alias:m.from_alias ~content:m.content ~token
   in
   let from_match (m : C2c_mcp.message) =
     match from_filter with None -> true | Some a ->
-      String.lowercase_ascii m.from_alias = String.lowercase_ascii a
+      cf m.from_alias = cf a
+  in
+  (* Preserve the legacy "[approve]/[reject]" deprecation hint, scoped to
+     supervisor senders only — we must not surface hints (or behave
+     differently) based on arbitrary peer message content. *)
+  let maybe_warn_legacy messages =
+    if !legacy_warned then ()
+    else begin
+      let has_legacy =
+        List.exists
+          (fun (m : C2c_mcp.message) ->
+            is_supervisor m.from_alias
+            && lower_contains m.content token
+            && (lower_contains m.content "approve"
+                || lower_contains m.content "reject"))
+          messages
+      in
+      if has_legacy then warn_legacy ()
+    end
   in
   let deadline = Unix.gettimeofday () +. timeout in
   (* [#490 slice 5a] Verdict-file path takes priority over inbox-DM path:
@@ -131,6 +165,7 @@ let await_reply_cmd =
       with _ -> []
     in
     let candidates = List.filter from_match messages in
+    maybe_warn_legacy candidates;
     let hit = List.find_map verdict_of candidates in
     match hit with
     | Some v ->
