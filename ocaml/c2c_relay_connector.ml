@@ -887,22 +887,31 @@ let alias_eq a b = String.lowercase_ascii a = String.lowercase_ascii b
      wraps the still-required challenge. *)
 let response_difficulty json =
   let open Yojson.Safe.Util in
-  let required_difficulty j =
-    match j |> member "required" |> member "difficulty" with
+  (* B087: [Yojson.Safe.Util.member] RAISES Type_error on non-objects. A
+     normal relay success response has no [required] field, so the old
+     [member "difficulty" (member "required" json)] crashed on EVERY success
+     ([member "required"] -> [Null] -> [member "difficulty" Null] -> raise),
+     which took down the whole sync pass. Guard every descent: only read
+     members from actual [`Assoc] objects, and return None (no difficulty)
+     for null/missing/wrong-type inputs instead of raising. *)
+  let member_opt name = function
+    | `Assoc _ as obj -> obj |> member name
+    | _ -> `Null
+  in
+  let as_int = function
     | `Int n -> Some n
     | `Float f -> Some (int_of_float f)
     | _ -> None
   in
-  match json |> member "pow_minted_difficulty" with
-  | `Int n -> Some n
-  | `Float f -> Some (int_of_float f)
-  | _ ->
+  let required_difficulty j =
+    as_int (member_opt "difficulty" (member_opt "required" j))
+  in
+  match as_int (member_opt "pow_minted_difficulty" json) with
+  | Some n -> Some n
+  | None ->
       (match required_difficulty json with
        | Some n -> Some n
-       | None ->
-           (match json |> member "relay_response" with
-            | `Null -> None
-            | rr -> required_difficulty rr))
+       | None -> required_difficulty (member_opt "relay_response" json))
 
 let response_is_rate_limited json =
   let open Yojson.Safe.Util in
@@ -1191,7 +1200,16 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
             result.inbound_delivered
             result.alerts_emitted
             err_str;
-          0
+          (* B087: never exit 0 when the sync pass recorded a relay-level
+             failure (register/heartbeat/send/poll returned ok:false). The
+             exception branch below already exits 1; this covers the
+             "completed with errors" case that previously exited 0 and
+             masked the failure from callers/scripts. *)
+          (match result.last_error with
+           | None -> 0
+           | Some e ->
+               Printf.eprintf "[relay-connector] sync completed with errors: %s\n%!" e.err_op;
+               2)
       | exception exn ->
           write_connector_state_error t.broker_root ~op:"sync"
             ~detail:(Printexc.to_string exn);
