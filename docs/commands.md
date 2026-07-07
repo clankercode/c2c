@@ -975,7 +975,8 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay identity show` | Display current identity fingerprint and metadata |
 | `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
 | `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message via relay |
-| `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay |
+| `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay (drains the inbox) |
+| `relay dm peek [--alias A]` | Peek at pending cross-host DMs **without draining** the inbox (B096) — safe for monitor/tail watchers that must not steal messages from the poll consumer |
 | `relay subscribe --alias ALIAS` | WebSocket push subscription for DMs — connects to the relay's `/ws/subscribe` endpoint and prints received JSON payloads to stdout (foreground JSONL stream). Useful for piping into a client-specific delivery handler. Does not enqueue into the local broker or inject into a transcript — for that, use `relay connect`. Does not support TLS WebSocket URLs yet — use an `http://` relay URL. |
 | `relay subscribe-daemon start [--relay-url URL]` | Start a multi-alias subscription daemon that manages WebSocket connections on behalf of multiple clients via Unix socket IPC (`~/.c2c/relay-subscribe.sock`). |
 | `relay subscribe-daemon register --alias ALIAS` | Register an alias with the running subscribe-daemon. One-shot `register` closes its IPC connection on exit and the daemon cleans up that client's aliases — durable registration requires a long-lived client holding the socket open. |
@@ -1069,7 +1070,7 @@ and sends a tmux wake-prompt when the pane is idle. See
 | `relay gc [--once] [--interval N] [--verbose] [--json]` | Release aliases unseen for 12 months and prune orphan inboxes on the relay. |
 | `relay identity init\|show` | Generate or display the local Ed25519 identity. |
 | `relay register --alias A [--relay-url URL] [--token T]` | Register Ed25519 identity on the relay (prod-mode bootstrap). |
-| `relay dm send TO MSG\|poll [--alias A]` | Send or poll cross-host direct messages. |
+| `relay dm send TO MSG\|poll\|peek [--alias A]` | Send, poll (drain), or non-destructive peek of cross-host direct messages. |
 | `relay poll-inbox [--relay-url URL] [--session-id ID] [--token T]` | Poll a remote relay's `/remote_inbox/<session_id>` endpoint. |
 | `relay rooms list\|join\|leave\|send\|history\|invite\|uninvite\|knock\|knocks\|approve-knock\|deny-knock\|set-visibility …` | Manage relay rooms. |
 | `relay mobile-pair prepare\|confirm\|revoke` | Mobile device pairing via QR token flow. |

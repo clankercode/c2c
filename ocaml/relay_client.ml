@@ -44,6 +44,8 @@ module Relay_client : sig
     auth_header:string -> ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
   val poll_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
   val poll_inbox_signed : t -> node_id:string -> session_id:string -> auth_header:string -> Yojson.Safe.t Lwt.t
+  val peek_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
+  val peek_inbox_signed : t -> node_id:string -> session_id:string -> auth_header:string -> Yojson.Safe.t Lwt.t
   val list_rooms : t -> Yojson.Safe.t Lwt.t
   val room_history :
     t -> room_id:string -> ?limit:int -> unit -> Yojson.Safe.t Lwt.t
@@ -295,6 +297,23 @@ end = struct
       ("node_id", `String node_id);
       ("session_id", `String session_id);
     ])
+
+  (* B096: non-destructive counterpart to [poll_inbox]. The relay's
+     /peek_inbox route returns the same messages list without clearing
+     the inbox, so a tail/monitor watcher (B089) can observe pending DMs
+     without stealing them from the real poll-loop consumer. *)
+  let peek_inbox t ~node_id ~session_id =
+    post t "/peek_inbox" (`Assoc [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+    ])
+
+  let peek_inbox_signed t ~node_id ~session_id ~auth_header =
+    let body = `Assoc [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+    ] in
+    post_auth t "/peek_inbox" body auth_header
 
   let list_rooms t = get t "/list_rooms"
 

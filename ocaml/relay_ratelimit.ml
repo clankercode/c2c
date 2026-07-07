@@ -79,6 +79,9 @@ let policy_of_endpoint path =
     Some (30.0, 2.0)     (* frequent: 30 burst, 120/min = 2/s *)
   else if starts_with "/poll_inbox" path then
     Some (30.0, 2.0)     (* frequent: 30 burst, 120/min = 2/s *)
+  else if starts_with "/peek_inbox" path then
+    Some (30.0, 2.0)     (* B096: same cadence as poll — a peek-loop watcher
+                            (B089) must not be able to DoS the relay *)
   else if starts_with "/room_history" path then
     Some (20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
   else
