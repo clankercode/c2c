@@ -1,15 +1,15 @@
 ---
+claimed_at: "2026-07-07T15:51:35Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B098
 priority: critical
-status: pending
-tags:
-    - safety
-    - security
-    - P0
-    - friction-report-cn
+started_at: "2026-07-07T15:51:35Z"
+status: in_progress
+tags: []
 title: '[SAFETY] guarantee no remote peer can reach the approval / PreToolUse path; make bus-never-RPC a hard invariant'
 ---
 approval-* / approval-reply subcommands exist for a local PreToolUse hook flow. A remote relay peer must never be able to inject or answer an approval; that would be a critical privilege escalation. Assert and prove the approval path is local-operator-only and unreachable from any relay-delivered message. Record bus, never RPC (messages inform; the recipient decides whether to act; no feature where a message directly causes an action) as a written architecture decision because it sets the safety ceiling. Regression test: test_remote_message_cannot_reach_approval_path. Source: friction-points-cn.md.
