@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-07T15:51:35Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-07T16:30:09Z"
 complexity: medium
 depends_on: []
+duration_minutes: 38.56983324148333
 estimate_hours: 1
 id: B099
 priority: high
 started_at: "2026-07-07T15:51:35Z"
-status: in_progress
+status: done
 tags: []
 title: '[SAFETY] adapters do not inject untrusted-data framing (peer messages are data, not instructions)'
 ---
