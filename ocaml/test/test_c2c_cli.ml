@@ -768,6 +768,116 @@ let test_send_unknown_liveness_alias_routes () =
             ~drained_by:"b071-test" broker ~session_id:"b071-pidless-sid" in
           check int "pidless target inbox drained 1 message" 1 (List.length drained)))
 
+(* B088: a remote [alias@host] target is only ever enqueued to the local
+   relay outbox by `c2c send` — the relay connector ships it async. The old
+   code printed a blanket [ok ->] which read as success when nothing was
+   delivered. It must now report [queued], warn about the missing connector,
+   and surface [delivery.state:"queued"] in --json. Exit stays 0
+   (fire-and-forget back-compat) unless --fail-if-queued is passed. *)
+let test_send_remote_target_reports_queued_not_ok () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b088-sender-sid" ~alias:"b088-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-b088" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b088-sender-sid \
+             %s send peer@remotehost.example 'hello remote' > %s 2>&1"
+            (Filename.quote dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int (Printf.sprintf "remote send exits 0 (output: %s)" content) 0 rc;
+          (* The load-bearing assertion: never bare [ok ->] for a remote target. *)
+          check bool "remote send reports queued, not ok" true
+            (string_contains content "queued -> peer@remotehost.example");
+          check bool "remote send does NOT imply delivery with ok ->" false
+            (string_contains content "ok -> peer@remotehost.example");
+          check bool "warns about the missing relay connector" true
+            (string_contains content "queued locally");
+          (* And the message really did land in the local relay outbox. *)
+          let outbox = read_file (Filename.concat dir "remote-outbox.jsonl") in
+          check bool "outbox recorded the remote send" true
+            (string_contains outbox "peer@remotehost.example")))
+
+let test_send_remote_target_json_delivery_state_queued () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b088j-sender-sid" ~alias:"b088j-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-b088-json" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b088j-sender-sid \
+             %s send --json peer@remotehost.example 'hello json' > %s 2>&1"
+            (Filename.quote dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int (Printf.sprintf "remote --json send exits 0 (output: %s)" content) 0 rc;
+          (* back-compat: top-level queued:true preserved *)
+          check bool "json keeps top-level queued:true" true
+            (string_contains content "\"queued\": true");
+          check bool "json surfaces delivery.state queued" true
+            (string_contains content "\"delivery\"");
+          check bool "json delivery state is queued (not delivered)" true
+            (string_contains content "\"state\": \"queued\"");
+          check bool "json never claims delivered" false
+            (string_contains content "\"state\": \"delivered\"")))
+
+let test_send_remote_target_fail_if_queued_exits_nonzero () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b088f-sender-sid" ~alias:"b088f-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-b088-fail" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b088f-sender-sid \
+             %s send --fail-if-queued peer@remotehost.example 'strict' > %s 2>&1"
+            (Filename.quote dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check bool "--fail-if-queued on a remote target exits non-zero" true (rc <> 0);
+          check bool "--fail-if-queued still reports queued (not ok ->)" true
+            (string_contains content "queued ->")))
+
+(* B088: local same-broker targets still deliver synchronously — [ok ->] /
+   [delivery.state:"delivered"] stays accurate there. Regression guard so
+   the honest-reporting change doesn't accidentally demote local delivery. *)
+let test_send_local_target_still_reports_delivered () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b088-local-sender-sid" ~alias:"b088-local-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"b088-local-rcpt-sid" ~alias:"b088-local-rcpt"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-b088-local" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b088-local-sender-sid \
+             %s send --json b088-local-rcpt 'hi local' > %s 2>&1"
+            (Filename.quote dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int (Printf.sprintf "local --json send exits 0 (output: %s)" content) 0 rc;
+          check bool "local send reports delivered" true
+            (string_contains content "\"state\": \"delivered\"");
+          check bool "local send is not queued" false
+            (string_contains content "\"state\": \"queued\"")))
+
 (* B071 regression: a zero-env `c2c register` (no C2C_MCP_CLIENT_PID) must
    produce a ROUTABLE registration. The old getppid() fallback pinned the
    transient test/tool shell — born-dead and unroutable. With the fix the
@@ -3321,6 +3431,10 @@ let () =
         ; ( "send not-found error mentions scanned brokers", `Quick, test_send_not_found_error_mentions_scanned_brokers )
         ; ( "send to dead alias reports dead, not unregistered (B072)", `Quick, test_send_dead_alias_reports_dead_not_unregistered )
         ; ( "send to unknown-liveness alias routes (B071/B072)", `Quick, test_send_unknown_liveness_alias_routes )
+        ; ( "send to remote @host reports queued, not ok (B088)", `Quick, test_send_remote_target_reports_queued_not_ok )
+        ; ( "send to remote @host --json surfaces delivery.state queued (B088)", `Quick, test_send_remote_target_json_delivery_state_queued )
+        ; ( "send to remote @host --fail-if-queued exits non-zero (B088)", `Quick, test_send_remote_target_fail_if_queued_exits_nonzero )
+        ; ( "send to local target still reports delivered (B088)", `Quick, test_send_local_target_still_reports_delivered )
         ; ( "zero-env register is routable (B071)", `Quick, test_register_zero_env_is_routable )
         ] )
     ; ( "whoami",

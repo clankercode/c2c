@@ -128,6 +128,39 @@ let maybe_auto_register_sender broker ~from_override =
             with _ ->
               ()
 
+(** B088: honest delivery reporting for remote [alias@host] targets.
+
+    [c2c send alias@host] only ever appends to the local relay outbox — the
+    relay connector (a separate async process) ships it later. Printing a
+    blanket [ok ->] for that read as success when nothing was delivered,
+    so agents truthfully-but-wrongly reported "sent" and moved on. These
+    helpers classify the delivery state and produce an honest warning so the
+    text never implies delivery for a remote-only-queued message. Local
+    same-broker targets still deliver synchronously and legitimately report
+    [ok]/[delivered]. *)
+let relay_connector_running_best_effort () =
+  (* Best-effort liveness probe. Detects a managed [relay-connect] daemon via
+     its instance dir + [outer.pid] ([Unix.kill pid 0]). A foreground
+     [c2c relay connect] run directly in a terminal/tmux is NOT detected —
+     in that case the warning falls back to the generic "no relay connector
+     detected" guidance, which is still accurate (we have no evidence one is
+     running). Fails closed to [false] on any read error so sends never break. *)
+  try
+    C2c_health_cmd.read_managed_instances ()
+    |> List.exists (fun (i : managed_instance_view) ->
+         i.mi_client = "relay-connect" && i.mi_status = "running")
+  with _ -> false
+
+let remote_queued_warning () =
+  if relay_connector_running_best_effort () then
+    "queued locally for the relay outbox; a managed relay-connect daemon is \
+     running, but delivery is async and not confirmed here. Use \
+     `c2c relay dm send` for a synchronous relay send."
+  else
+    "queued locally; no relay connector detected — run `c2c relay connect` \
+     (or `c2c managed start relay-connect`) or use `c2c relay dm send` to \
+     ship it."
+
 let send_cmd =
   let args =
     Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"TARGET MSG" ~doc:"Recipient alias followed by message body, or message body when --session is set.")
@@ -169,6 +202,16 @@ let send_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info ["broker-root";"root"] ~docv:"DIR"
            ~doc:"Broker root dir (default: auto-resolve via env/git). Overrides --cross-repo.")
   in
+  (* B088: opt-in strict mode. A remote [alias@host] target is only queued
+     locally by [c2c send] (delivery is async via the relay connector). By
+     default this still exits 0 (fire-and-forget back-compat) but prints
+     [queued] + a warning. [—-fail-if-queued] flips the exit to 3 so a script
+     can detect non-delivery. Local same-broker targets deliver synchronously
+     and exit 0 regardless. *)
+  let fail_if_queued =
+    Cmdliner.Arg.(value & flag & info ["fail-if-queued"]
+      ~doc:"Exit non-zero (3) when the message is only queued locally and not confirmed delivered (e.g. a remote alias@host target). Opt-in; lets scripts detect non-delivery. Local same-broker targets still exit 0.")
+  in
   let+ json = json_flag
   and+ args = args
   and+ session_target = session_target
@@ -179,7 +222,8 @@ let send_cmd =
   and+ blocking = blocking_flag
   and+ urgent = urgent_flag
   and+ cross_repo = cross_repo_flag
-  and+ broker_root_opt = broker_root_opt in
+  and+ broker_root_opt = broker_root_opt
+  and+ fail_if_queued = fail_if_queued in
   mcp_nudge_if_needed ~cmd:"send";
   let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
   let target, content =
@@ -411,21 +455,59 @@ let send_cmd =
            , [ ("target_session_id", `String session_id) ]
            , "session " ^ session_id )
      in
-     match output_mode with
+     (* B088: classify delivery. A remote [alias@host] target is only ever
+        queued to the local relay outbox by this command — synchronous relay
+        contact is [c2c relay dm send]'s job — so it is always [queued] from
+        here. Local/session targets are written straight to the recipient's
+        inbox and are genuinely [delivered]. *)
+     let delivery_state, delivery_warning_opt =
+       match target with
+       | `Alias a when C2c_mcp.Broker.is_remote_alias a ->
+           ("queued", Some (remote_queued_warning ()))
+       | `Alias _ | `Session _ ->
+           ("delivered", None)
+     in
+     begin match output_mode with
      | Json ->
+         (* B088: surface delivery.state so machine consumers can tell a
+            remote-only-queued send ([queued], not delivered) from a
+            synchronous local delivery ([delivered]). [queued] (top-level
+            bool) is retained verbatim for back-compat with existing scripts. *)
+         let delivery_fields =
+           ("state", `String delivery_state)
+           :: (match delivery_warning_opt with
+               | Some w -> [("warning", `String w)]
+               | None -> [])
+         in
          let fields =
            [ ("queued", `Bool true)
            ; ("ts", `Float ts)
            ; ("from_alias", `String from_alias)
+           ; ("delivery", `Assoc delivery_fields)
            ]
            @ json_target_fields
          in
          let fields = match compacting_warning with Some w -> fields @ [("compacting_warning", `String w)] | None -> fields in
          print_json (`Assoc fields)
      | Human ->
-         Printf.printf "ok -> %s (from %s)" human_target from_alias;
+         (match delivery_state with
+          | "queued" ->
+              (* B088: never print bare [ok ->] for a remote-only-queued
+                 message — it implied delivery. [queued ->] is the honest
+                 signal; the explanatory warning follows on stderr. *)
+              Printf.printf "queued -> %s (from %s)" human_target from_alias
+          | _ ->
+              Printf.printf "ok -> %s (from %s)" human_target from_alias);
          (match compacting_warning with Some w -> Printf.printf " [%s]" w | None -> ());
-         print_newline ()
+         print_newline ();
+         (match delivery_warning_opt with
+          | Some w -> Printf.eprintf "warning: %s\n%!" w
+          | None -> ())
+     end;
+     (* B088: opt-in strict exit. Default stays 0 (fire-and-forget
+        back-compat) — only [--fail-if-queued] turns a remote-only-queued
+        send into a non-zero exit so scripts can detect non-delivery. *)
+     if fail_if_queued && delivery_state = "queued" then exit 3
    with Invalid_argument msg ->
      (* Catch-all for errors from Session sends or other paths. *)
      Printf.eprintf "error: %s\n%!" msg;
