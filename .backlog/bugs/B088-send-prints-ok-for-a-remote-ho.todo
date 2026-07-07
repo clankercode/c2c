@@ -1,15 +1,15 @@
 ---
+claimed_at: "2026-07-07T13:52:45Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B088
 priority: high
-status: pending
-tags:
-    - send
-    - relay
-    - P0
-    - friction-report-cn
+started_at: "2026-07-07T13:52:45Z"
+status: in_progress
+tags: []
 title: send prints ok -> for a remote @host target when only queued locally (no connector); should report queued + warn
 ---
 c2c send <alias>@<host> prints ok -> ... even when no working connector is live. It only enqueues to the remote-outbox and never delivers, but reads as success. An agent will truthfully but wrongly report sent and move on. Fix: for remote @host targets with no live relay path, report queued (not ok); warn to run c2c relay connect or use relay dm send; surface delivery.state in --json; exit code must let a script detect non-delivery. Distinct from B039/B052 (routing) and B044 (--from). Source: friction-points-cn.md.
