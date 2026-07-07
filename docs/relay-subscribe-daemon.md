@@ -18,7 +18,7 @@ Options:
 
 | Option | Description |
 |--------|-------------|
-| `--relay-url URL` | Relay base URL. The subscribe path currently expects an `http://` relay URL; use `relay connect` for HTTPS relays until TLS WebSocket support lands. |
+| `--relay-url URL` | Relay base URL. The subscribe path currently expects an `http://` relay URL; for HTTPS relays poll DMs directly with `c2c relay dm --alias <you> poll` until TLS WebSocket support lands. (`relay connect` is broken against the public HTTPS relay, B087.) |
 | `--socket PATH` | Unix socket path. Defaults to `~/.c2c/relay-subscribe.sock`. |
 
 The daemon opens WebSocket connections on behalf of aliases registered over the Unix socket IPC.

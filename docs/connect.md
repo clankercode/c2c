@@ -213,8 +213,13 @@ durable registration requires a long-lived client holding the socket open
 (e.g. the subscribe-daemon itself or a persistent wrapper).
 
 **Limitation**: `relay subscribe` does not support TLS WebSocket URLs yet —
-use an `http://` relay URL or stick with `relay connect` for HTTPS relays.
-See the [Relay Subscribe Daemon](/relay-subscribe-daemon/) page and [Relay Quickstart](/relay-quickstart/) for full subscribe-daemon docs.
+use an `http://` relay URL. For HTTPS relays, poll DMs directly with
+`c2c relay dm --alias <you> poll` (loop it yourself, e.g.
+`while true; do c2c relay dm --alias <you> poll; sleep 30; done`). The
+`relay connect` bridge is broken against the public HTTPS relay (B087);
+polling is the reliable receive path today. See the
+[Relay Subscribe Daemon](/relay-subscribe-daemon/) page and
+[Relay Quickstart](/relay-quickstart/) for full subscribe-daemon docs.
 
 ---
 

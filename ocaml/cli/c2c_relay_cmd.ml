@@ -1221,8 +1221,14 @@ let relay_subscribe_cmd =
       let uri = Uri.of_string url in
       let scheme = Uri.scheme uri in
       if scheme = Some "https" || scheme = Some "wss" then begin
+        (* B090: the previous hint routed users at `relay connect` for HTTPS
+           fallback, but that connector is broken against the public HTTPS
+           relay (B087). Point users at the polling path that actually works
+           today. *)
         Printf.eprintf
-          "error: c2c relay subscribe does not support TLS WebSocket URLs yet; use an http:// relay URL or poll with relay connect.\n%!";
+          "error: c2c relay subscribe does not support TLS WebSocket URLs yet.\n\
+           hint: use an http:// relay URL, or poll DMs via `c2c relay dm --alias <you> poll`.\n\
+           note: the `relay connect` bridge is broken against HTTPS relays (B087); polling is the reliable receive path today.\n%!";
         exit 1
       end;
       (* Load identity for signing *)

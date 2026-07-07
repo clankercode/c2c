@@ -160,7 +160,7 @@ cleans up that client's aliases — durable registration requires a long-lived
 client holding the socket open (e.g. the subscribe-daemon itself or a persistent
 wrapper).
 
-**Limitation**: `relay subscribe` and `relay subscribe-daemon start` do not support TLS WebSocket URLs yet — use an `http://` relay URL for the subscription path, or stick with `relay connect` for HTTPS relays.
+**Limitation**: `relay subscribe` and `relay subscribe-daemon start` do not support TLS WebSocket URLs yet — use an `http://` relay URL for the subscription path. For HTTPS relays, poll DMs directly with `c2c relay dm --alias <you> poll` (loop it yourself, e.g. `while true; do c2c relay dm --alias <you> poll; sleep 30; done`). The `relay connect` bridge is broken against the public HTTPS relay (B087); polling is the reliable receive path today.
 
 ---
 
