@@ -308,14 +308,25 @@ let relay_config_string_field key =
        | _ -> None)
   | _ -> None
 
+(* Default public relay URL. Surfaced in --help so users can find it
+   without reading source (B091). The same constant is also used as a
+   fallback in c2c_relay_subscribe_daemon.ml / c2c_health_cmd.ml. *)
+let default_public_relay_url = "https://relay.c2c.im"
+
 let relay_url_resolution_doc =
-  "Relay server URL (or C2C_RELAY_URL or saved c2c relay setup config)."
+  Printf.sprintf
+    "Relay server URL. Default: %s (public relay). \
+     Override with $(b,--relay-url), $(b,C2C_RELAY_URL), or $(b,c2c relay setup --url) <URL>."
+    default_public_relay_url
 
 let relay_token_resolution_doc =
   "Bearer token (or C2C_RELAY_TOKEN or saved c2c relay setup config)."
 
 let relay_url_required_error =
-  "error: --relay-url required (or set C2C_RELAY_URL or run c2c relay setup).\n"
+  Printf.sprintf
+    "error: --relay-url required (default public relay is %s; \
+     set C2C_RELAY_URL or run c2c relay setup --url <URL>).\n"
+    default_public_relay_url
 
 let resolve_relay_url opt =
   match opt with
@@ -459,7 +470,12 @@ let relay_connect_cmd =
 
 let relay_setup_cmd =
   let url =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "url" ] ~docv:"URL" ~doc:"Relay server URL.")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "url" ] ~docv:"URL"
+      ~doc:(Printf.sprintf
+              "Relay server URL. Default public relay is %s. \
+               Equivalent to $(b,C2C_RELAY_URL) or saved config; pass this \
+               flag to point at a private relay instead."
+              default_public_relay_url))
   in
   let token =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:"Bearer token.")
@@ -1646,9 +1662,32 @@ let relay_identity =
       ~doc:"Manage the local Ed25519 identity used for peer authentication.")
     [ relay_identity_init; relay_identity_show; relay_identity_fingerprint ]
 
+let relay_setup =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "setup"
+       ~doc:"Configure relay connection (URL + bearer token)."
+       ~man:
+         [ `S "DESCRIPTION"
+         ; `P
+             (Printf.sprintf
+                "Persist a relay URL and bearer token under \
+                 $(i,~/.config/c2c/relay.json). The default public relay \
+                 is $(b,%s) — use it unless you run your own relay. \
+                 Subsequent commands that talk to a relay \
+                 ($(b,status), $(b,list), $(b,dm), $(b,rooms), \
+                 $(b,subscribe), …) read from this config, from \
+                 $(b,C2C_RELAY_URL) / $(b,C2C_RELAY_TOKEN), or from \
+                 $(b,--relay-url) / $(b,--token) flags, in that order."
+                default_public_relay_url)
+         ; `P
+             "Example: $(b,c2c relay setup --url https://relay.c2c.im --token <TOKEN>)"
+         ; `S "OPTIONS"
+         ; `P "Flags listed below; $(b,--show) prints the currently saved config as JSON."
+         ])
+    relay_setup_cmd
+
 let relay_serve = Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Start the relay server.") relay_serve_cmd
 let relay_connect = Cmdliner.Cmd.v (Cmdliner.Cmd.info "connect" ~doc:"Run the relay connector.") relay_connect_cmd
-let relay_setup = Cmdliner.Cmd.v (Cmdliner.Cmd.info "setup" ~doc:"Configure relay connection.") relay_setup_cmd
 let relay_status = Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show relay health.") relay_status_cmd
 let relay_list = Cmdliner.Cmd.v (Cmdliner.Cmd.info "list" ~doc:"List relay peers.") relay_list_cmd
 let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay rooms.") relay_rooms_cmd
@@ -1662,14 +1701,33 @@ let relay_rooms = Cmdliner.Cmd.v (Cmdliner.Cmd.info "rooms" ~doc:"Manage relay r
 let relay_subscribe_daemon = C2c_relay_subscribe_daemon.subscribe_daemon_cmd
 
  let relay_group =
+  let group_doc =
+    Printf.sprintf
+      "Cross-machine relay (default: %s). \
+       Subcommands: serve, connect, setup, status, list, rooms, gc, \
+       dead-letter, identity, register, dm, mobile-pair, subscribe."
+      default_public_relay_url
+  in
+  let group_man =
+    [ `S "DESCRIPTION"
+    ; `P
+        (Printf.sprintf
+           "The relay connects brokers across machines. The default \
+            public relay is $(b,%s); switch to a private relay with \
+            $(b,c2c relay setup --url) <URL> or $(b,C2C_RELAY_URL)."
+           default_public_relay_url)
+    ; `P
+        "Use $(b,c2c relay setup) once to point your broker at the relay, \
+         then run $(b,c2c relay connect) to keep the broker connected."
+    ; `P
+        "Common workflow: $(b,c2c relay setup --url https://relay.c2c.im) \
+         then $(b,c2c relay connect). See also $(b,c2c relay setup --help) \
+         for the default URL and per-flag precedence."
+    ]
+  in
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
-    (Cmdliner.Cmd.info "relay"
-       ~doc:"Cross-machine relay: serve, connect, setup, status, list, rooms, gc, dead-letter, identity, register, dm, mobile-pair, subscribe."
-       ~man:[ `S "DESCRIPTION"
-            ; `P "The relay connects brokers across machines. Use $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
-            ; `P "Common workflow: run $(b,c2c relay setup) once, then $(b,c2c relay connect) to keep your broker connected to the relay."
-            ])
+    (Cmdliner.Cmd.info "relay" ~doc:group_doc ~man:group_man)
     [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair; relay_subscribe; relay_subscribe_daemon ]
 
 (* --- mesh ------------------------------------------------------------------- *)

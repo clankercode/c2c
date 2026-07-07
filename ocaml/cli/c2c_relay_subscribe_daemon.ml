@@ -530,7 +530,7 @@ let resolve_socket_path explicit =
 let start_daemon_cmd =
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL"
-      ~doc:"Relay server URL.")
+      ~doc:"Relay server URL (default: https://relay.c2c.im).")
   and socket = socket_path_arg () in
   let+ relay_url = relay_url
   and+ socket = socket in
@@ -549,9 +549,9 @@ let start_daemon_cmd =
          | `Assoc fields ->
            (match List.assoc_opt "url" fields with
             | Some (`String u) -> u
-            | _ -> "http://relay.c2c.im")
-         | _ -> "http://relay.c2c.im"
-       with _ -> "http://relay.c2c.im")
+            | _ -> "https://relay.c2c.im")
+         | _ -> "https://relay.c2c.im"
+       with _ -> "https://relay.c2c.im")
   in
   let uri = Uri.of_string url in
   let host = Option.value (Uri.host uri) ~default:"localhost" in

@@ -120,6 +120,10 @@ let run () =
                     "Then try: $(b,c2c list) to see peers, $(b,c2c send \
                      ALIAS MSG) to message someone, or $(b,c2c rooms) to \
                      join a room."
+                ; `P
+                    "Messaging across machines? The public relay defaults \
+                     to $(b,https://relay.c2c.im) — see $(b,c2c relay) and \
+                     $(b,c2c relay setup --help)."
                 ; `P "For full command reference see COMMANDS below."
                 ; `S "DESCRIPTION"
                 ; `P
