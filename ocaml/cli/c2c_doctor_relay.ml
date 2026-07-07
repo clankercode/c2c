@@ -221,12 +221,18 @@ let check_reachable ~probe =
         ; fix_command = None
         ; docs_url = Some docs_relay }
       else
+        (* The relay returned a well-formed JSON response — even ok=false
+           (e.g. "unknown endpoint /health" on an older relay version).
+           Receiving a coherent HTTP/JSON reply PROVES reachability; ok=false
+           here is an endpoint/detail nuance, NOT an unreachability condition.
+           The genuine unreachable path is the exception handler (health_error). *)
         { check_id = "relay.reachable"
-        ; status = Fail
-        ; message = sprintf "relay returned ok=false from %s/health" probe.url
+        ; status = Pass
+        ; message =
+            sprintf "relay reachable (responded; ok=false from %s/health)"
+              probe.url
         ; detail = Some (Yojson.Safe.pretty_to_string j)
-        ; fix_command =
-            Some (sprintf "c2c relay status --relay-url %s" probe.url)
+        ; fix_command = None
         ; docs_url = Some docs_relay }
 
 let check_lease ~probe ~local_aliases ~local_total =
