@@ -2134,6 +2134,26 @@ let test_relay_dm_peek_help_exits_zero () =
           check bool "relay dm --help lists peek subcommand" true
             (string_contains out "peek")))
 
+let test_monitor_help_lists_relay () =
+  (* B089: `c2c monitor` gained relay-inbox watcher flags (--no-relay,
+     --relay-interval, --relay-node-id, --relay-session-id). --help must exit 0
+     and list them so the feature is discoverable. *)
+  let outfile = Filename.temp_file "monitor-relay-help" ".out" in
+  let errfile = Filename.temp_file "monitor-relay-help" ".err" in
+  Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
+    (fun () ->
+      let cmd = Printf.sprintf
+        "C2C_CLI_FORCE=1 %s monitor --help > %s 2> %s"
+        c2c_exe outfile errfile
+      in
+      let rc = Sys.command cmd in
+      check int "monitor --help exits 0" 0 rc;
+      let out = read_file outfile in
+      check bool "monitor --help lists --no-relay" true
+        (string_contains out "--no-relay");
+      check bool "monitor --help lists --relay-interval" true
+        (string_contains out "--relay-interval"))
+
 let test_relay_subscribe_rejects_https_until_tls_supported () =
   let outfile = Filename.temp_file "relay-subscribe-https" ".out" in
   let errfile = Filename.temp_file "relay-subscribe-https" ".err" in
@@ -3500,6 +3520,7 @@ let () =
         [ ( "relay dead-letter --help exits 0", `Quick, test_relay_dead_letter_help_exits_zero )
         ; ( "relay dead-letter without relay-url exits non-zero", `Quick, test_relay_dead_letter_no_relay_url_exits_nonzero )
         ; ( "relay dm peek --help exits 0 and is listed", `Quick, test_relay_dm_peek_help_exits_zero )
+        ; ( "monitor --help lists relay watcher flags", `Quick, test_monitor_help_lists_relay )
         ; ( "relay subscribe rejects https until TLS is supported", `Quick, test_relay_subscribe_rejects_https_until_tls_supported )
         ] )
     ; ( "send_from_spoofing",
