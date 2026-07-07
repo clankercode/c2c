@@ -1,0 +1,15 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B100
+priority: high
+status: pending
+tags:
+    - docs
+    - relay
+    - onboarding
+    - friction-report-cn
+title: 'docs: the cross-machine golden-path quickstart is missing — the relay path is essentially undocumented'
+---
+The single biggest docs gap: two agents on different hosts talking is undocumented, and the local-vs-relay inbox distinction is invisible. Ship a cross-machine quickstart (install, local prove, relay setup/register, discover peers, relay dm send, receive via monitor/poll, verify) with real expected output and an inline symptom/cause/fix table. One end-to-end worked example would have saved the dogfood session the most time. Lead with honest alpha status. Source: friction-points-cn.md.

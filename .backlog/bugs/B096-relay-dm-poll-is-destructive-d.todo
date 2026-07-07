@@ -1,0 +1,14 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B096
+priority: medium
+status: pending
+tags:
+    - relay
+    - relay-dm
+    - friction-report-cn
+title: relay dm poll is destructive (drains) with no peek/cursor analog — multiple watchers race for messages
+---
+relay dm poll drains the inbox, so a poll-loop watcher is the only consumer and two watchers race for messages. There is a local peek-inbox but no relay dm peek analog. Add a non-destructive peek plus cursor/ack (at-least-once, dedupe by message_id) so a receive/monitor path can tail without stealing messages. Source: friction-points-cn.md.

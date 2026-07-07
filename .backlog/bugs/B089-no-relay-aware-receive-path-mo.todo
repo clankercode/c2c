@@ -1,0 +1,15 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B089
+priority: critical
+status: pending
+tags:
+    - monitor
+    - relay
+    - P0
+    - friction-report-cn
+title: 'no relay-aware receive path: monitor ignores the relay inbox; subscribe rejects wss; connect broken — only hand-rolled poll works'
+---
+An agent cannot receive cross-host messages through one supported command. c2c monitor watches only the local broker, never the relay inbox. relay subscribe refuses wss/HTTPS. relay connect is broken (see relay-connect bug). The only working path is a hand-rolled relay dm poll loop. Ship a first-class relay-aware monitor (poll-based is fine for now) so relay DMs surface like local ones; long term unify local+relay in one monitor. Related: B043 (local monitor e2e), B070 (archive-only). Source: friction-points-cn.md.

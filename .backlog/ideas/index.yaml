@@ -1,3 +1,17 @@
 ideas:
     - file: I001-controlled-codex-worker-via-ap.todo
       id: I001
+    - file: I002-canonical-versioned-message-js.todo
+      id: I002
+    - file: I003-deferred-trust-tiers-tofu-pinn.todo
+      id: I003
+    - file: I004-deferred-delivery-read-receipt.todo
+      id: I004
+    - file: I005-fake-relay-fixture-regression.todo
+      id: I005
+    - file: I006-deferred-relay-peer-discovery.todo
+      id: I006
+    - file: I007-north-star-deferred-harness-ad.todo
+      id: I007
+    - file: I008-identity-model-machine-key-as.todo
+      id: I008

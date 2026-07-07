@@ -1,0 +1,14 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B093
+priority: medium
+status: pending
+tags:
+    - doctor
+    - relay
+    - friction-report-cn
+title: 'doctor is local-only: add relay checks, a capabilities matrix, outbox depth, and a copy-pasteable fix_command per failure'
+---
+c2c doctor checks nothing relay-side. A dead connector / stuck remote-outbox was only found by grepping broker files. Add: relay configured; reachable; registered + lease alive; connector running + last sync/error; remote-outbox depth + oldest pending age. Each FAIL should carry a fix_command and docs_url. Add c2c capabilities --json (a send/subscribe/connect/poll matrix) so agents self-configure. Support c2c doctor --relay --json with stable check_ids and a non-zero exit on FAIL. Related: B021 (done, local), B079 (drift). Source: friction-points-cn.md.

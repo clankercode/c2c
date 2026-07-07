@@ -1,0 +1,13 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B092
+priority: medium
+status: pending
+tags:
+    - install
+    - friction-report-cn
+title: install.sh over an older npm c2c delegates to c2c self-update and dies (unknown command self-update); no fallthrough
+---
+When an older npm-installed c2c (lacking self-update, e.g. @clanker-code/c2c 0.8.6) is on PATH, install.sh detects c2c, delegates to c2c self-update, and dies with unknown command self-update. The installer assumes any existing c2c can self-update. Fix: detect a c2c lacking self-update and fall through to a fresh standalone install, or print actionable guidance. B027 added self-update; this is the missing fallthrough. Also: the npm symlink is tied to a specific nvm Node version, so changing/removing that Node makes c2c vanish from PATH; steer users to the standalone binary. Source: friction-points-cn.md.

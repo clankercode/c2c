@@ -1,0 +1,14 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B095
+priority: low
+status: pending
+tags:
+    - cli
+    - doctor
+    - friction-report-cn
+title: c2c connect collides confusingly with relay connect — it is a local loopback probe only
+---
+c2c connect is a local-only connection dashboard / loopback probe, but its name collides with relay connect (the cross-machine bridge). This confused users during dogfood. Fix: rename it, or fold all connectivity reporting under doctor --relay. Source: friction-points-cn.md.

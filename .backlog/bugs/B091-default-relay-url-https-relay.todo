@@ -1,0 +1,15 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B091
+priority: high
+status: pending
+tags:
+    - docs
+    - relay
+    - onboarding
+    - friction-report-cn
+title: default relay URL (https://relay.c2c.im) is not surfaced in help; relay setup --show returns it inconsistently
+---
+The public relay URL is not in c2c --help or c2c relay --help; it was found by reading source. Yet c2c relay setup --show already returns it as configured, which is inconsistent. Put the default relay URL plus how-to-configure instructions in relay setup --help and docs, and add a cross-machine pointer to top-level GETTING STARTED. Source: friction-points-cn.md (also Max note: need info about default relay + how to configure it).

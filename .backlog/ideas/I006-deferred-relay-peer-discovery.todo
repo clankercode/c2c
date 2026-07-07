@@ -1,0 +1,16 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 10
+id: I006
+priority: low
+status: pending
+tags:
+    - idea
+    - deferred
+    - relay
+    - discovery
+    - friction-report-cn
+title: '[DEFERRED] relay peer discovery (currently verify-only known alias@machine-hash; cannot discover unknown peers via relay)'
+---
+By design c2c cannot discover agents through the relay — you can only verify people you already know, and alias@machine-hash is the secret you must already possess. Max flagged (2026-07-07) this may be worth improving in future but is whatever for now. Future direction TBD: opt-in directory, introduction/exchange flow, or scoped search. Low priority; capture so it is not forgotten. Note: any discovery surface raises the spam/abuse surface — coordinate with the PoW/rate-limit work (B009/B010).

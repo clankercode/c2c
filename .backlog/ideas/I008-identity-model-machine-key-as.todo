@@ -1,0 +1,16 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 10
+id: I008
+priority: medium
+status: pending
+tags:
+    - idea
+    - identity
+    - security
+    - friction-report-cn
+    - adr-worthy
+title: 'identity model: machine key as trust anchor + OPTIONAL per-agent attestation via machine-signed in-band cert (mechanism b); preserve one-connection-per-machine'
+---
+DECISION (Max, 2026-07-07, grilling Q2): keep the machine identity key as the trust anchor (preserves one-connection-per-machine to the relay), and add an OPTIONAL per-agent attestation layer using mechanism (b): the machine identity key signs a short cert binding agent-key -> machine; the cert rides in the message envelope; the recipient verifies the machine signature against the relay-registered machine key it already trusts. No relay protocol change; preserves one-connection-per-machine; verifiable from message #1. Rationale: co-located agents can impersonate each other at the OS level anyway, so pretending agent-level isolation is security theatre; attesting the machine is the honest claim, and the per-agent signature is an opt-in refinement for agent-level distinction. Rejected alternatives: (a) TOFU (defers spoof risk to first-contact, which is exactly when trust gets established); (c) relay-registered agent keys (breaks one-connection-per-machine). Code reality today: the relay identity key is ONE machine-wide file (~/.config/c2c/identity.json) and node_id defaults to hostname-githash, so co-located agents already share a relay key by design; this idea formalizes that as intended and adds the optional layer rather than migrating to per-agent keys. IMPL DEFERRED (trusted-swarm-first). When built: per-agent key generated per session and stored alongside the existing per-alias broker keys (broker_root/keys/<alias>.ed25519.ssh); back-compat: messages without an agent signature still work. Related: I003 trust tiers (needs this), B097 unified list (surface identity_pk), B098 approval-path lockdown invariant. ADR-worthy: hard to reverse once pinning depends on it; surprising; real trade-off. Decision captured here until promoted to a formal .collab/design/ ADR.

@@ -1,0 +1,15 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 10
+id: I004
+priority: low
+status: pending
+tags:
+    - idea
+    - deferred
+    - relay
+    - friction-report-cn
+title: '[DEFERRED] delivery/read receipts + send --wait[=accepted|delivered|read] (privacy-preserving, opt-in both sides)'
+---
+Track delivery state advance queued -> accepted -> delivered -> read. Add c2c send --wait[=state] --timeout. Read receipts via a signed consume-ack event. Load-bearing privacy rule: declining to emit a read MUST be indistinguishable from not-yet-read; opt-in both sides; default off; unknown/blocked peers never receive reads. DEFERRED: depends on a push transport plus server-side cursors that do not exist yet (polling is canonical for now). Max confirmed defer impl, 2026-07-07. Privacy model is designed; save for later.

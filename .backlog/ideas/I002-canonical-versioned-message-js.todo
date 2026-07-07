@@ -1,0 +1,15 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 10
+id: I002
+priority: high
+status: pending
+tags:
+    - idea
+    - json
+    - relay
+    - friction-report-cn
+title: canonical versioned message JSON v1 — minimal slice (current fields + delivery.state); defer trust/verified fields
+---
+Define ONE versioned wire schema so send / monitor / poll --json share a shape. v1 ships ONLY the fields emitted today plus delivery.state (queued/accepted/delivered). DEFER from.identity_pk / verified / trust_tier / priority until the identity-attestation and trust work land — adding them prematurely forces rework. Carry schema_version from day one so v2 is non-breaking. This is the dependency hub for the unified relay-aware monitor (B089) and any future harness unification. Decided: trusted-swarm-first, so keep v1 lean.

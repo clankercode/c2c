@@ -1,0 +1,16 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 10
+id: I007
+priority: low
+status: pending
+tags:
+    - idea
+    - north-star
+    - deferred
+    - adapters
+    - friction-report-cn
+title: '[NORTH-STAR/DEFERRED] harness adapter unification — one contract, N thin shims (env --json + schema-generated tools + shared safety fragment + one hook contract + conformance)'
+---
+Today there are N bespoke bridges over the same core (mcp__c2c__send for Claude, c2c_pi_send for pi, Codex hooks, opencode plugin, kimi PreToolUse) and they are drifting. Unify into N thin shims binding ONE contract: (1) c2c env --json resolved identity/config with documented env precedence; (2) schema-generated tools so the MCP and pi surfaces are the same tool; (3) one shared safety prompt fragment served from c2c (also B099); (4) one push/schedule hook contract (Claude PostToolUse, kimi PreToolUse, wake.toml as instances); (5) c2c conformance self-check. This is NOT making harnesses natively c2c-aware (impossible for closed binaries like Claude) — it is a thin adapter per harness extension surface. DEFERRED north-star: build last, after canonical JSON (I002) and identity attestation land, else rework. Max confirmed defer, 2026-07-07.

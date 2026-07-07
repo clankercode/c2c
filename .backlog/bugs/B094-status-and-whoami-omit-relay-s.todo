@@ -1,0 +1,16 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B094
+priority: medium
+status: pending
+tags:
+    - status
+    - whoami
+    - docs
+    - relay
+    - friction-report-cn
+title: status and whoami omit relay state (connection, alias/lease) and the @hostid addressing convention is undocumented
+---
+c2c status shows only local peers/rooms; c2c whoami shows no relay identity or registration state. The @hostid addressing convention is undocumented in help: what the suffix means, how to get a peers suffix, and that bare-alias vs @host matters (learned only by reading relay list output). Fix: add relay connection state plus alias/lease to status and whoami; document the addressing convention. Source: friction-points-cn.md.

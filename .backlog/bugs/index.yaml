@@ -83,3 +83,17 @@ bugs:
     - file: B084-monitor-archive-json-mode-comp.todo
     - file: B085-per-thread-codex-hook-auto-reg.todo
     - file: B086-release-yml-must-be-gated-on-t.todo
+    - file: B087-relay-connect-crashes-on-pow-c.todo
+    - file: B088-send-prints-ok-for-a-remote-ho.todo
+    - file: B089-no-relay-aware-receive-path-mo.todo
+    - file: B090-relay-subscribe-error-hint-poi.todo
+    - file: B091-default-relay-url-https-relay.todo
+    - file: B092-install-sh-over-an-older-npm-c.todo
+    - file: B093-doctor-is-local-only-add-relay.todo
+    - file: B094-status-and-whoami-omit-relay-s.todo
+    - file: B095-c2c-connect-collides-confusing.todo
+    - file: B096-relay-dm-poll-is-destructive-d.todo
+    - file: B097-c2c-list-is-not-unified-local.todo
+    - file: B098-safety-guarantee-no-remote-pee.todo
+    - file: B099-safety-adapters-do-not-inject.todo
+    - file: B100-docs-the-cross-machine-golden.todo

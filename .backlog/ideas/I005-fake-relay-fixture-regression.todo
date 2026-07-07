@@ -1,0 +1,16 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 10
+id: I005
+priority: high
+status: pending
+tags:
+    - idea
+    - test
+    - testing
+    - do-now
+    - friction-report-cn
+title: fake relay fixture + regression-test-per-bug (highest-leverage test asset; doubles as executable spec)
+---
+Ship an in-process fake relay implementing register/PoW, DM send/poll, list, status, rooms — PLUS adverse-response fixtures: null/malformed PoW (the exact difficulty-off-null case from B087), 401/429/5xx, slow/timeout, truncated JSON, schema mismatch. Enables hermetic CI integration and failure-mode tests without the public relay. Turn each P0 bug into a named regression test: test_relay_connect_null_pow_challenge_exits_nonzero (B087), test_send_remote_no_connector_reports_queued (B088), test_remote_message_cannot_reach_approval_path (B098), test_subscribe_https_hint_points_to_working_path (B090). CI hermetic vs nightly real-relay. DO NOW — pairs with the P0 fixes. Not over-engineering.

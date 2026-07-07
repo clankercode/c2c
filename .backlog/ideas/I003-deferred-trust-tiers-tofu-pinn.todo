@@ -1,0 +1,15 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 10
+id: I003
+priority: low
+status: pending
+tags:
+    - idea
+    - safety
+    - deferred
+    - friction-report-cn
+title: '[DEFERRED] trust tiers + TOFU pinning + priority/interrupt gating by trust — build when opening to untrusted peers'
+---
+Bind trust to the pinned machine key (and the optional per-agent attestation key once landed). Tiers: blocked / unknown / allowlisted / trusted. TOFU on first contact; warn loudly on key change. Enforcement: unknown peers capped at FYI, never interrupt, never --blocking; only allowlisted/trusted may set interrupt / --urgent / --blocking. DEFERRED per trusted-swarm-first decision (Max + colleagues, 2026-07-07). The current injection defense is B098 (approval lockdown) + B099 (untrusted-data framing), not a full tier system. Depends on the identity-attestation idea.

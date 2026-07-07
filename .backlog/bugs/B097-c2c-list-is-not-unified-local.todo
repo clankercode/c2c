@@ -1,0 +1,15 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B097
+priority: medium
+status: pending
+tags:
+    - list
+    - relay
+    - identity
+    - friction-report-cn
+title: 'c2c list is not unified: local and relay peers are separate; identity_pk is not surfaced'
+---
+Discovery is split: local peers via c2c list, relay peers via relay list. The Ed25519 identity_pk is minted per registration but invisible during normal messaging, so agents cannot verify senders. Make c2c list show local and relay peers together, each tagged with source and full alias@hostid address and identity_pk and alive, with --json. See also the identity-granularity idea (two relay peers shared one key). Source: friction-points-cn.md.

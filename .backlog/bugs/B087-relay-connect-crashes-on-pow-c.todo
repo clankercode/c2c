@@ -1,0 +1,15 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B087
+priority: critical
+status: pending
+tags:
+    - relay
+    - relay-connect
+    - P0
+    - friction-report-cn
+title: relay connect crashes on PoW challenge (difficulty off null) as node=unknown-node, then exits 0 masking the failure
+---
+c2c relay connect --once --verbose --relay-url=<public> fails against the prod relay. Identity resolves as node=unknown-node; the connector throws a Yojson Type_error (cannot get member difficulty of non-object type null) while parsing the PoW challenge; it then exits 0, hiding the failure. Repro: c2c relay connect --once --verbose. Impact: the broker-to-relay bridge is unusable. Fix: resolve node identity; make the PoW parser match the relay servers actual response shape; never exit 0 on a caught sync exception. Source: friction-points-cn.md (Chris dogfood 2026-07-07).
