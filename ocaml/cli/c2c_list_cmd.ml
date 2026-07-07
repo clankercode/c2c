@@ -39,6 +39,68 @@ let format_last_seen (registered_at : float option) : string =
       else if delta < 86400.0 then Printf.sprintf "%dh ago" (int_of_float (delta /. 3600.0))
       else Printf.sprintf "%dd ago" (int_of_float (delta /. 86400.0))
 
+(* --- B097: relay-peer unification helpers -----------------------------------
+
+   Relay inclusion in `c2c list` is opt-in via --relay so the default listing
+   never touches the network (no regression for tests / offline / high-frequency
+   swarm wake ticks). When --relay is passed, peers are fetched from the
+   configured relay (graceful: failures become a one-line note, never a crash)
+   and merged with the local listing. Each row — local or relay — carries:
+     source     "local" | "relay"
+     address    <alias>@<opaque_host_id>  (bare alias when host id unknown)
+     identity_pk  Ed25519 public key (base64url), when published
+   plus the alive state. *)
+
+(* Local peer address: <alias>@<opaque_host_id>. A local registration is by
+   definition on THIS host, so a missing opaque_host_id falls back to this
+   host's computed id (same recipe as `c2c host-id`). *)
+let local_address (r : C2c_mcp.registration) : string =
+  let host = match r.opaque_host_id with
+    | Some h when h <> "" -> h
+    | _ -> Host_id.compute_host_hash ()
+  in
+  Printf.sprintf "%s@%s" r.alias host
+
+(* Extract a string field from a relay lease JSON object. *)
+let relay_str_field (peer : Yojson.Safe.t) (key : string) : string option =
+  match peer with
+  | `Assoc fs -> (match List.assoc_opt key fs with Some (`String s) -> Some s | _ -> None)
+  | _ -> None
+
+(* Extract a float field from a relay lease JSON object. *)
+let relay_float_field (peer : Yojson.Safe.t) (key : string) : float option =
+  match peer with
+  | `Assoc fs -> (match List.assoc_opt key fs with Some (`Float f) -> Some f | _ -> None)
+  | _ -> None
+
+(* Relay peer address: <alias>@<opaque_host_id> when the lease carries an
+   opaque_host_id, else the bare alias (the host half is unknown to the relay
+   — e.g. a peer registered before opaque_host_id shipped). *)
+let relay_address (peer : Yojson.Safe.t) : string =
+  let alias = Option.value (relay_str_field peer "alias") ~default:"?" in
+  match relay_str_field peer "opaque_host_id" with
+  | Some h when h <> "" -> Printf.sprintf "%s@%s" alias h
+  | _ -> alias
+
+(* Relay peer alive state as an explicit tri-state mirroring the local
+   registration_liveness_state JSON encoding: true | false | null (unknown).
+   The relay lease always emits a bool `alive`, but be defensive. *)
+let relay_alive_json (peer : Yojson.Safe.t) : Yojson.Safe.t =
+  match peer with
+  | `Assoc fs ->
+      (match List.assoc_opt "alive" fs with
+       | Some (`Bool b) -> `Bool b
+       | _ -> `Null)
+  | _ -> `Null
+
+let relay_peer_is_alive (peer : Yojson.Safe.t) : bool option =
+  match relay_alive_json peer with `Bool b -> Some b | _ -> None
+
+(* Short identity_pk fingerprint for human rows: first 8 chars of the
+   base64url key. Full key is always emitted in --json. *)
+let short_pk (pk : string) : string =
+  if String.length pk <= 8 then pk else String.sub pk 0 8 ^ "…"
+
 let list_cmd =
   let all =
     Cmdliner.Arg.(value & flag & info [ "all"; "a" ] ~doc:"Show extended info (session ID, registered time).")
@@ -58,7 +120,30 @@ let list_cmd =
   let match_substr =
     Cmdliner.Arg.(value & opt (some string) None & info [ "match"; "m" ]
       ~docv:"SUBSTR"
-      ~doc:"Show only sessions whose alias contains $(docv) (case-insensitive). Composes with --alive/--global/--all/--json.")
+      ~doc:"Show only sessions whose alias contains $(docv) (case-insensitive). Composes with --alive/--global/--all/--json/--relay.")
+  in
+  (* B097: relay-peer inclusion. Opt-in via --relay so the default listing
+     never touches the network (tests / offline / high-frequency swarm wake
+     ticks are unaffected). When set, ALSO fetch peers from the configured
+     relay and merge them with the local listing, tagging each row with
+     source: local|relay, the full alias@hostid address, identity_pk, and
+     alive. Failures are non-fatal: local peers always show + a one-line
+     note. See docs/reference/scopes.md. *)
+  let relay =
+    Cmdliner.Arg.(value & flag & info [ "relay" ]
+      ~doc:"Also fetch peers from the configured relay and merge them with the local listing. Each peer row is tagged with source (local|relay), the full alias@hostid address, identity_pk, and alive. The relay fetch is non-fatal: if the relay is unconfigured or unreachable, local peers still show with a one-line note. Requires a configured relay (c2c relay setup + c2c relay register --alias <ALIAS>).")
+  in
+  let relay_url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL"
+      ~doc:"Override the relay URL for --relay (default: saved c2c relay setup config, C2C_RELAY_URL, or the public relay).")
+  in
+  let relay_alias =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "relay-alias" ] ~docv:"ALIAS"
+      ~doc:"Alias to sign the relay /list request as for --relay (default: C2C_MCP_AUTO_REGISTER_ALIAS, else the \"anon\" placeholder). Must be bound to your local identity on the relay via c2c relay register --alias ALIAS.")
+  in
+  let relay_timeout =
+    Cmdliner.Arg.(value & opt float 3.0 & info [ "relay-timeout" ] ~docv:"SECONDS"
+      ~doc:"Timeout for the --relay peer fetch (default 3.0). Keeps `c2c list --relay` responsive when the relay is slow or unreachable.")
   in
   let+ json = json_flag
   and+ all = all
@@ -66,8 +151,12 @@ let list_cmd =
   and+ global = global
   and+ alive_only = alive_only
   and+ match_substr = match_substr
+  and+ relay = relay
+  and+ relay_url = relay_url
+  and+ relay_alias = relay_alias
+  and+ relay_timeout = relay_timeout
   and+ cross_repo = cross_repo_flag in
-  mcp_nudge_if_needed ~cmd:"list";
+    mcp_nudge_if_needed ~cmd:"list";
 
   if global && cross_repo then begin
     Printf.eprintf "error: --global (scan per-repo brokers) and --cross-repo (sessions broker) are mutually exclusive.\n%!";
@@ -101,8 +190,10 @@ let list_cmd =
   (* --- helpers shared between single-broker and global modes --- *)
   let list_registration_to_json ?(repo_fp="") ?(repo_path="") ~(enriched:bool) (r : C2c_mcp.registration) =
     let base : (string * Yojson.Safe.t) list =
-      [ ("session_id", `String r.session_id)
+      [ ("source", `String "local")
+      ; ("session_id", `String r.session_id)
       ; ("alias", `String r.alias)
+      ; ("address", `String (local_address r))
       ]
     in
     let with_repo = if repo_fp <> "" then base @ [ ("repo_fp", `String repo_fp); ("repo_path", `String repo_path) ] else base in
@@ -118,10 +209,18 @@ let list_cmd =
       | C2c_mcp.Broker.Unknown -> `Null
     in
     let with_alive = with_pid @ [ ("alive", alive_val) ] in
+    (* B097: surface the local Ed25519 identity key as identity_pk so callers
+       can verify senders / cross-reference relay peers. Mirrors the relay
+       lease field name for a uniform per-peer shape. *)
+    let with_identity =
+      match r.ed25519_pubkey with
+      | Some pk -> with_alive @ [ ("identity_pk", `String pk) ]
+      | None -> with_alive
+    in
     let fields =
       match r.registered_at with
-      | Some ts -> with_alive @ [ ("registered_at", `Float ts) ]
-      | None -> with_alive
+      | Some ts -> with_identity @ [ ("registered_at", `Float ts) ]
+      | None -> with_identity
     in
     let fields =
       match r.tmux_location with
@@ -150,12 +249,119 @@ let list_cmd =
 
   let output_mode = if json then Json else Human in
 
-  if global then
+  (* B097: relay peer fetch (opt-in via --relay). Computed once and merged
+     into both the JSON array and the human output. The fetch is non-fatal:
+     on no-config / network / auth failure we keep [relay_peers] empty and
+     surface [relay_note] as a one-line stderr note, so `c2c list` never
+     crashes or hangs (timeout-bounded). --match / --alive apply to relay
+     peers too (merge-then-filter). *)
+  let (relay_peers, relay_note) =
+    if not relay then ([], None)
+    else begin
+      let result =
+        C2c_relay_cmd.fetch_relay_peers_for_list
+          ~timeout:relay_timeout ?relay_url ?alias:relay_alias ()
+      in
+      let note = match result with
+        | C2c_relay_cmd.Relay_no_config ->
+            Some "no relay configured — run `c2c relay setup --url <URL>` and `c2c relay register --alias <ALIAS>` (showing local peers only)"
+        | C2c_relay_cmd.Relay_error msg ->
+            Some (Printf.sprintf "relay fetch failed (%s) — showing local peers only" msg)
+        | C2c_relay_cmd.Relay_peers _ -> None
+      in
+      let raw = match result with
+        | C2c_relay_cmd.Relay_peers ps -> ps
+        | _ -> []
+      in
+      let peer_matches (peer : Yojson.Safe.t) =
+        match match_substr with
+        | None -> true
+        | Some s ->
+            (match relay_str_field peer "alias" with
+             | Some a -> string_contains_ci a s
+             | None -> false)
+      in
+      let peers =
+        raw
+        |> List.filter peer_matches
+        |> (if alive_only then
+              List.filter (fun p -> relay_peer_is_alive p <> Some false)
+            else Fun.id)
+      in
+      (peers, note)
+    end
+  in
+
+  (* Normalise a relay lease JSON object into the unified per-peer shape:
+     source=relay, alias, full alias@hostid address, identity_pk, alive,
+     plus passthrough relay-only fields. *)
+  let relay_peer_to_json (peer : Yojson.Safe.t) : Yojson.Safe.t =
+    let alias = Option.value (relay_str_field peer "alias") ~default:"" in
+    let base =
+      [ ("source", `String "relay")
+      ; ("alias", `String alias)
+      ; ("address", `String (relay_address peer))
+      ; ("alive", relay_alive_json peer)
+      ]
+    in
+    let with_pk = match relay_str_field peer "identity_pk" with
+      | Some pk -> base @ [ ("identity_pk", `String pk) ]
+      | None -> base
+    in
+    let add_str key fields = match relay_str_field peer key with
+      | Some v -> fields @ [ (key, `String v) ]
+      | None -> fields
+    in
+    let add_float key fields = match relay_float_field peer key with
+      | Some v -> fields @ [ (key, `Float v) ]
+      | None -> fields
+    in
+    let fields =
+      with_pk
+      |> add_str "node_id"
+      |> add_str "session_id"
+      |> add_str "client_type"
+      |> add_str "opaque_host_id"
+      |> add_float "registered_at"
+      |> add_float "last_seen"
+    in
+    `Assoc fields
+  in
+
+  let relay_json = List.map relay_peer_to_json relay_peers in
+
+  (* Human-mode relay section + non-fatal note. Local rows are left untouched
+     so the default listing format is unchanged; the relay block is appended. *)
+  let emit_relay_human () =
+    (match relay_note with
+     | Some msg -> Printf.eprintf "note: %s\n%!" msg
+     | None -> ());
+    if relay_peers <> [] then begin
+      let n_total = List.length relay_peers in
+      let n_alive = List.length (List.filter (fun p -> relay_peer_is_alive p = Some true) relay_peers) in
+      Printf.printf "\nrelay peers (%d alive / %d total):\n" n_alive n_total;
+      Printf.printf "  %-34s %-8s %s\n" "ADDRESS" "STATE" "IDENTITY_PK";
+      List.iter (fun p ->
+        let state = match relay_peer_is_alive p with
+          | Some true -> "alive"
+          | Some false -> "dead"
+          | None -> "unknown"
+        in
+        let pk = match relay_str_field p "identity_pk" with
+          | Some k -> "pk:" ^ short_pk k
+          | None -> "—"
+        in
+        Printf.printf "  %-34s %-8s %s\n" (truncate_str (relay_address p) 34) state pk
+      ) relay_peers
+    end
+  in
+
+  let () = (if global then
     (* --global: scan all known broker roots *)
     let all_roots = C2c_repo_fp.list_all_broker_roots () in
     if all_roots = [] then (
       match output_mode with
-      | Json -> print_json (`List [])
+      | Json -> print_json (`List relay_json)
       | Human -> Printf.printf "No broker roots found.\n")
     else
       let all_regs =
@@ -170,7 +376,7 @@ let list_cmd =
       match output_mode with
       | Json ->
           let json_regs = List.map (fun (fp, root, r) -> list_registration_to_json ~repo_fp:fp ~repo_path:root ~enriched r) all_regs in
-          print_json (`List json_regs)
+          print_json (`List (json_regs @ relay_json))
       | Human ->
           if all_regs = [] then Printf.printf "No registered peers across %d broker root(s).\n" (List.length all_roots)
           else begin
@@ -227,9 +433,11 @@ let list_cmd =
     let regs = C2c_mcp.Broker.list_registrations broker |> regs_filter in
     if regs = [] then (
       match output_mode with
-      | Json -> print_json (`List [])
+      | Json -> print_json (`List relay_json)
       | Human ->
-          if cross_repo then Printf.printf "No registered peers on the sessions broker.\n"
+          if relay && relay_peers <> [] then
+            Printf.printf "No local peers in this repo.\n"
+          else if cross_repo then Printf.printf "No registered peers on the sessions broker.\n"
           else begin
             let n_alive =
               try
@@ -248,7 +456,7 @@ let list_cmd =
       match output_mode with
       | Json ->
           let json_regs = List.map (fun r -> list_registration_to_json ~enriched r) regs in
-          print_json (`List json_regs)
+          print_json (`List (json_regs @ relay_json))
       | Human ->
           if enriched then begin
             Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
@@ -308,7 +516,8 @@ let list_cmd =
                   let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
                   Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
                regs;
-          maybe_noise_hint regs
+          maybe_noise_hint regs) in
+  if relay && output_mode = Human then emit_relay_human ()
 
 let sessions_cmd =
   let+ json = json_flag in

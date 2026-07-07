@@ -598,6 +598,88 @@ let relay_list_cmd =
             Lwt_main.run (Relay.Relay_client.list_peers client ~include_dead:dead ())) in
       print_result_and_exit ~alias_source result
 
+(* --- shared relay peer fetch for `c2c list --relay` (B097) ---------------------
+
+   Mirrors relay_list_cmd's URL/token/alias resolution and signing, but is
+   non-fatal: it returns a result variant instead of calling exit, so `c2c list`
+   can degrade gracefully (local peers + one-line note) when the relay is
+   unconfigured, unreachable, or rejects the request. Never raises.
+
+   - [Relay_no_config]: no relay URL resolved from --relay-url / C2C_RELAY_URL /
+     saved `c2c relay setup` config, and none was forced.
+   - [Relay_peers peers]: the relay answered {"ok":true,"peers":[...]} (peers may
+     be empty). [peers] is the raw list of RegistrationLease JSON objects.
+   - [Relay_error note]: a short human-readable note for the failure (network,
+     timeout, auth, ok=false, or unexpected response shape). Surfaced as a
+     one-line stderr note by the caller.
+
+   Relay inclusion in `c2c list` is OPT-IN via --relay, so the default listing
+   never touches the network (no regression for tests / offline / high-frequency
+   swarm wake ticks). See docs/reference/scopes.md. *)
+type relay_peer_fetch =
+  | Relay_no_config
+  | Relay_peers of Yojson.Safe.t list
+  | Relay_error of string
+
+let fetch_relay_peers_for_list ~timeout ?relay_url ?token ?alias () =
+  match resolve_relay_url relay_url with
+  | None -> Relay_no_config
+  | Some url ->
+      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) ~timeout url in
+      (* Signing alias resolution matches `c2c relay list`: --alias >
+         C2C_MCP_AUTO_REGISTER_ALIAS > "anon" placeholder. Prod relays reject
+         the anon placeholder; the failure is surfaced as Relay_error with the
+         fix-it hint rendered by Relay_client_hints in the note. *)
+      let alias_source = match alias, env_auto_alias () with
+        | Some a, _ -> Relay_client_hints.Explicit a
+        | None, Some a -> Relay_client_hints.Explicit a
+        | None, None -> Relay_client_hints.Anon_fallback
+      in
+      let signing_alias = match alias_source with
+        | Relay_client_hints.Explicit a -> a
+        | Relay_client_hints.Anon_fallback -> "anon"
+      in
+      let parse resp =
+        match resp with
+        | `Assoc fs ->
+            (match List.assoc_opt "ok" fs with
+             | Some (`Bool true) ->
+                 (match List.assoc_opt "peers" fs with
+                  | Some (`List peers) -> Relay_peers peers
+                  | _ -> Relay_error "relay list response missing 'peers' array")
+             | _ ->
+                 let detail = match List.assoc_opt "error" fs with
+                   | Some (`String e) -> e
+                   | _ -> "relay rejected the list request"
+                 in
+                 let hint =
+                   match Relay_client_hints.hint_for_response ~alias_source resp with
+                   | Some h -> "\n" ^ h
+                   | None -> ""
+                 in
+                 Relay_error (Printf.sprintf "%s: %s%s" url detail hint))
+        | _ -> Relay_error "relay list response was not a JSON object"
+      in
+      try
+        let resp = match Relay_identity.load () with
+          | Ok id ->
+              (* /list (live peers only) is a peer route: requires Ed25519 auth
+                 in prod mode. We do not request include_dead here because that
+                 is a Bearer-only admin route and `c2c list` is a peer context. *)
+              let auth = Relay_signed_ops.sign_request id ~alias:signing_alias
+                ~meth:"GET" ~path:"/list" ~body_str:"" () in
+              Lwt_main.run (Relay.Relay_client.list_peers_signed client ~auth_header:auth ())
+          | Error _ ->
+              Lwt_main.run (Relay.Relay_client.list_peers client ())
+        in
+        parse resp
+      with
+      | Failure msg ->
+          (* cohttp/network failures and the request_timeout land here. *)
+          Relay_error (Printf.sprintf "%s (%s)" url msg)
+      | e ->
+          Relay_error (Printf.sprintf "%s (%s)" url (Printexc.to_string e))
+
 let relay_rooms_cmd =
   let subcmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|set-visibility" ~doc:"Rooms subcommand.")
