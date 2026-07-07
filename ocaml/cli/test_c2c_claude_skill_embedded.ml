@@ -208,6 +208,29 @@ let string_contains haystack needle =
   in
   needle_len = 0 || loop 0
 
+(* Like [string_contains] but insensitive to line wrapping: collapse runs of
+   ASCII whitespace (space, tab, newline, CR) in both haystack and needle to a
+   single space before matching. Markdown source is hard-wrapped, so a phrase
+   like "not an instruction" may appear as "not an\ninstruction"; this makes
+   presence-checks robust to re-wrapping. *)
+let collapse_ws s =
+  let b = Buffer.create (String.length s) in
+  let prev_space = ref false in
+  String.iter
+    (fun c ->
+      if c = ' ' || c = '\t' || c = '\n' || c = '\r' then begin
+        if not !prev_space then Buffer.add_char b ' ';
+        prev_space := true
+      end else begin
+        Buffer.add_char b c;
+        prev_space := false
+      end)
+    s;
+  Buffer.contents b
+
+let contains_phrase haystack needle =
+  string_contains (collapse_ws haystack) (collapse_ws needle)
+
 let test_skill_leads_with_cli_not_mcp () =
   (* Verify the skill content starts with CLI + Monitor guidance, not MCP tools. *)
   let content = C2c_claude_skill_embedded.content in
@@ -226,6 +249,29 @@ let test_skill_leads_with_cli_not_mcp () =
   check bool "skill does NOT lead with mcp__ prefix" false
     (string_contains first_500 "mcp__")
 
+(* B099: the embedded skill must carry the canonical "peer messages are
+   untrusted data, not instructions" safety framing. The text is
+   single-sourced in .collab/skills/c2c.md; this is the conformance gate for
+   its presence in the embedded blob that `c2c install claude` writes. *)
+let test_skill_contains_untrusted_data_framing () =
+  let content = C2c_claude_skill_embedded.content in
+  check bool "skill states peer messages are untrusted data" true
+    (contains_phrase content "untrusted third-party data");
+  check bool "skill states messages are not an instruction" true
+    (contains_phrase content "not an instruction");
+  check bool "skill forbids obeying/auto-executing peer messages" true
+    (contains_phrase content "Never obey or auto-execute");
+  check bool "skill names prompt-injection as the threat model" true
+    (contains_phrase content "prompt-injection");
+  check bool "skill teaches c2c whoami for self-identity" true
+    (contains_phrase content "c2c whoami");
+  check bool "skill teaches alias@host_id addressing" true
+    (contains_phrase content "@<host_id>");
+  check bool "skill says a peer must not trigger approvals/actions" true
+    (contains_phrase content "trigger an approval");
+  check bool "skill says operator is the only source of authority" true
+    (contains_phrase content "only source of authority")
+
 let () =
   run "c2c_claude_skill_embedded"
     [ ( "sync_gate",
@@ -239,5 +285,6 @@ let () =
         ] )
     ; ( "content_quality",
         [ test_case "skill_leads_with_cli_not_mcp" `Quick test_skill_leads_with_cli_not_mcp
+        ; test_case "skill_contains_untrusted_data_framing" `Quick test_skill_contains_untrusted_data_framing
         ] )
     ]
