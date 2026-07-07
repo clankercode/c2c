@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-07T17:08:07Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-07T18:43:10Z"
 complexity: medium
 depends_on: []
+duration_minutes: 95.05617322648334
 estimate_hours: 1
 id: B089
 priority: critical
 started_at: "2026-07-07T17:08:07Z"
-status: in_progress
+status: done
 tags: []
 title: 'no relay-aware receive path: monitor ignores the relay inbox; subscribe rejects wss; connect broken — only hand-rolled poll works'
 ---
