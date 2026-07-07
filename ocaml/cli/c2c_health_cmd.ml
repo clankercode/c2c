@@ -478,9 +478,9 @@ let connect_dashboard ~root ~broker ~output_mode =
       Printf.sprintf "partially configured — run 'c2c install %s' for missing clients"
         (String.concat " / " missing)
     else if alive_count = 0 then
-      "clients installed but no live session — restart your client or run 'c2c connect --verify'"
+      "clients installed but no live session — restart your client or run 'c2c ping --verify'"
     else
-      "you're connected! run 'c2c connect --verify' to confirm end-to-end delivery."
+      "you're connected! run 'c2c ping --verify' to confirm end-to-end delivery."
   in
   match output_mode with
   | Json ->
@@ -506,7 +506,7 @@ let connect_dashboard ~root ~broker ~output_mode =
         ])
   | Human ->
       let icon = function `Green -> "✓" | `Yellow -> "⚠" | `Red -> "✗" | `Gray -> "–" in
-      Printf.printf "c2c connect — connection status\n";
+      Printf.printf "c2c ping — connection status\n";
       Printf.printf "────────────────────────────────\n";
       Printf.printf "broker root:  %s\n" broker_root;
       Printf.printf "broker:       %s\n" (if root_exists then "present" else "MISSING");
@@ -606,12 +606,11 @@ let connect_verify ~root ~broker ~timeout_secs ~output_mode =
         Printf.printf "  WARNING: pre-existing inbox messages were disturbed during probe.\n";
       if status <> 0 then exit status
 
-let connect_cmd =
-  let verify = Cmdliner.Arg.(value & flag & info ["verify"; "V"] ~doc:"Run a loopback delivery probe: enqueue a self-marker and check it reaches the archive.") in
-  let timeout = Cmdliner.Arg.(value & opt int 5 & info ["timeout"; "t"] ~docv:"SECS" ~doc:"Seconds to wait for --verify delivery (default: 5).") in
-  let+ json = json_flag
-  and+ verify = verify
-  and+ timeout = timeout in
+(* Core logic shared by `c2c ping` (canonical) and the deprecated `c2c connect`
+   alias. B095: `connect` name-collided with `relay connect` (the cross-host
+   bridge), so the local connection-status / loopback-probe command was renamed
+   to `ping`; `connect` is retained as a backward-compatible alias. *)
+let ping_run ~json ~verify ~timeout =
   let output_mode = if json then Json else Human in
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
@@ -619,6 +618,28 @@ let connect_cmd =
     connect_verify ~root ~broker ~timeout_secs:timeout ~output_mode
   else
     connect_dashboard ~root ~broker ~output_mode
+
+let ping_cmd =
+  let verify = Cmdliner.Arg.(value & flag & info ["verify"; "V"] ~doc:"Run a loopback delivery probe: enqueue a self-marker and check it reaches the archive.") in
+  let timeout = Cmdliner.Arg.(value & opt int 5 & info ["timeout"; "t"] ~docv:"SECS" ~doc:"Seconds to wait for --verify delivery (default: 5).") in
+  let+ json = json_flag
+  and+ verify = verify
+  and+ timeout = timeout in
+  ping_run ~json ~verify ~timeout
+
+(* Deprecated alias (B095): `c2c connect` now delegates to `c2c ping`. Prints a
+   one-time stderr hint so users learn the new name and learn that the
+   cross-host relay bridge is `c2c relay connect`. The hint goes to stderr so
+   `--json` stdout stays machine-parseable. Existing scripts keep working. *)
+let connect_deprecated_cmd =
+  let verify = Cmdliner.Arg.(value & flag & info ["verify"; "V"] ~doc:"(deprecated alias for --verify)") in
+  let timeout = Cmdliner.Arg.(value & opt int 5 & info ["timeout"; "t"] ~docv:"SECS" ~doc:"Seconds to wait for --verify delivery (default: 5).") in
+  let+ json = json_flag
+  and+ verify = verify
+  and+ timeout = timeout in
+  prerr_endline "note: 'c2c connect' is a deprecated alias for 'c2c ping' (local connection status / delivery probe).";
+  prerr_endline "      For the cross-host relay bridge, use 'c2c relay connect'.";
+  ping_run ~json ~verify ~timeout
 
 let read_managed_instances () =
   let base = C2c_start.instances_dir in
@@ -1206,4 +1227,5 @@ let host_id =
     host_id_cmd
 
 let health = Cmdliner.Cmd.v (Cmdliner.Cmd.info "health" ~doc:"Show broker health diagnostics.") health_cmd
-let connect = Cmdliner.Cmd.v (Cmdliner.Cmd.info "connect" ~doc:"Connection status dashboard and delivery verification.") connect_cmd
+let ping = Cmdliner.Cmd.v (Cmdliner.Cmd.info "ping" ~doc:"Local connection status dashboard and loopback delivery probe (--verify).") ping_cmd
+let connect = Cmdliner.Cmd.v (Cmdliner.Cmd.info "connect" ~doc:"DEPRECATED alias for 'ping' (local connection status / delivery probe). The cross-host relay bridge is 'relay connect'.") connect_deprecated_cmd

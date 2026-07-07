@@ -17,6 +17,7 @@ let commands_by_safety_cmd =
   and+ show_dev = show_dev in
   let reveal_dev = show_all || show_dev in
   let tier1 = [
+    ("ping", "Connection status dashboard + loopback delivery probe (--verify)");
     ("list", "List registered c2c peers");
     ("find", "Find a peer by alias substring or exact session ID (alive-first)");
     ("sessions", "List registered sessions (session_id, alias, client_type, liveness)");
@@ -197,6 +198,7 @@ let fast_path_commands () =
   done;
   let is_agent = is_agent_session () in
   let tier1 = [
+    ("ping", "Connection status dashboard + loopback delivery probe (--verify)");
     ("list", "List registered c2c peers");
     ("find", "Find a peer by alias substring or exact session ID (alive-first)");
     ("sessions", "List registered sessions (session_id, alias, client_type, liveness)");

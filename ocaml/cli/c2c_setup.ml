@@ -2046,7 +2046,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
     Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
     Printf.printf "  Monitor — receive: run \"c2c monitor\" in the Claude Code Monitor tool\n";
     Printf.printf "            (auto-resolves your alias + broker; zero flags).\n";
-    Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n";
+    Printf.printf "\nRun 'c2c ping --verify' to confirm delivery is live.\n";
     (* Polish: hint about faster message delivery if inotifywait is available *)
     let inotify_available =
       let path = try Sys.getenv "PATH" with Not_found -> "" in
@@ -2174,7 +2174,7 @@ let install_all_subcmd =
     if output_mode = Human then begin
       Printf.printf "\nDone.\n";
       Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
-      Printf.printf "\nRun 'c2c connect --verify' to confirm delivery is live.\n"
+      Printf.printf "\nRun 'c2c ping --verify' to confirm delivery is live.\n"
     end
   in
   Cmdliner.Cmd.v

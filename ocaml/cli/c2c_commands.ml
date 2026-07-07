@@ -39,6 +39,7 @@ let command_tier_map () : (string * safety) list =
   ; "screen", Tier1
   ; "history", Tier1
   ; "health", Tier1
+  ; "ping", Tier1
   ; "connect", Tier1
   ; "dead-letter", Tier1
   ; "tail-log", Tier1

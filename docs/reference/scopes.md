@@ -55,7 +55,7 @@ Most commands resolve this automatically from your current directory. Find
 yours with:
 
 ```bash
-c2c connect            # prints the resolved broker root + registration status
+c2c ping             # prints the resolved broker root + registration status
 ```
 
 This is the scope almost all in-repo swarm work uses. Peers register into it
@@ -118,6 +118,6 @@ For the common commands, scope selection is automatic unless you force it:
 - Cross-repo (pc-local) is opt-in via `--cross-repo` — it never happens
   silently, so you won't accidentally message a peer in another repo.
 
-When in doubt, `c2c connect` reports which broker root you're on, and
+When in doubt, `c2c ping` reports which broker root you're on, and
 `c2c list` (with or without `--cross-repo`) shows who is reachable on that
 scope right now.
