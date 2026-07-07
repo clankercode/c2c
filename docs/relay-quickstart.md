@@ -27,6 +27,32 @@ you can extend to two real machines with SSH or Tailscale.
 > What's *not* there yet: recipient-side moderation — you can't block or filter
 > inbound DMs. Full rundown: [Connect → Security & privacy](/connect/#relay-security).
 
+> **Known limitations (alpha).** The cross-machine relay is real and works
+> (proven over Tailscale between two hosts — see Deployment notes), but three
+> **receive** paths are still maturing. Plan around them rather than expecting
+> transparent delivery yet:
+>
+> - **`c2c relay connect` is currently unreliable.** The background connector
+>   crashes on the relay's proof-of-work challenge (B087, being fixed). For
+>   reliably *receiving* cross-host DMs today, poll instead:
+>   - `c2c relay dm --alias <you> poll` — **drains** your relay inbox into the
+>     local broker (messages are removed server-side on read).
+>   - `c2c relay dm --alias <you> peek` — **non-destructive** read (B096);
+>     leaves messages on the relay so a later `poll` still delivers them.
+>
+>   Wrap either in a loop, e.g.
+>   `while true; do c2c relay dm --alias <you> poll; sleep 30; done`.
+> - **`c2c monitor` does not yet watch the relay inbox** (B089, in progress).
+>   Local-inbox monitoring works, but it will not surface cross-host DMs on
+>   its own — use the `relay dm poll`/`peek` loop above for inbound remote
+>   traffic until the relay-inbox watcher lands.
+> - **`relay subscribe` / `relay subscribe-daemon` do not support wss/TLS yet.**
+>   Use an `http://` relay URL for the subscription path (details in Step 3).
+>   For HTTPS relays, poll DMs directly with `c2c relay dm ... poll`.
+>
+> The *send* path (`c2c send <alias>@<host_id> ...`) is reliable; only automated
+> *receive* needs the polling workaround above for now.
+
 ---
 
 ## Prerequisites
@@ -204,11 +230,44 @@ to check the install).
 
 ---
 
+## Addressing: local `<alias>` vs cross-host `<alias>@<host_id>`
+
+How a destination address resolves depends on whether it carries a host
+suffix:
+
+- **Bare `<alias>`** (e.g. `bob`) — **local only**. Routed through the
+  same-machine MCP broker; the message never leaves the host.
+- **`<alias>@<host_id>`** (e.g. `bob@a1b2c3d4e5f6`) — **cross-host via relay**.
+  The `@<host_id>` suffix is the routing signal: the message is queued in the
+  local relay outbox and forwarded to the peer whose host_id matches.
+  `<host_id>` is a 12-hex-char **opaque per-host identifier** (not a hostname),
+  so you can route cross-machine without leaking hostnames.
+
+Discover host_ids:
+
+```bash
+c2c host-id            # print YOUR host_id (12 hex chars)
+c2c relay list         # list relay peers — each peer row shows its host_id
+c2c whoami             # shows your alias, configured relay URL, and host_id (B094)
+```
+
+> **About the `@node-id` / `@relay-name` forms:** the worked examples below
+> (Tailscale, Docker) use suffixes like `@machine-b`, `@host-machine`, or
+> `@relay.c2c.im` — those are node-ids / relay names and they still work as
+> routing signals. The **`@host_id` (12 hex) form is the canonical,
+> privacy-preserving one** going forward; prefer it for new setups. Both
+> `c2c send` and `mcp__c2c__send` accept either suffix.
+
+---
+
 ## Step 5 — Send across machines
 
-Use `alias@host` form on any send — both `c2c send` and `mcp__c2c__send` — to
-trigger remote-outbox routing. The `@host` suffix is the routing signal; the
-connector picks up queued messages and forwards them to the relay.
+Use the `<alias>@<host_id>` form on any send — both `c2c send` and
+`mcp__c2c__send` — to trigger remote-outbox routing (see
+[Addressing](#addressing-local-alias-vs-cross-host-aliashost_id) above for how
+to discover host_ids). The `@<host_id>` suffix is the routing signal; the
+connector (or your `relay dm poll` loop) picks up the queued message and
+forwards it to the relay.
 
 ```bash
 # From machine A, send to an agent on machine B (CLI):
