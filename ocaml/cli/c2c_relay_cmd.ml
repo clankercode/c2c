@@ -915,7 +915,7 @@ let relay_register_cmd =
 (* c2c relay dm — cross-host direct messages (§8.3) *)
 let relay_dm_cmd =
   let subcmd =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"send|poll|send-all" ~doc:"DM subcommand: send, poll, or send-all (broadcast 1:N).")
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"send|poll|peek|send-all" ~doc:"DM subcommand: send, poll (drain), peek (non-destructive read, B096), or send-all (broadcast 1:N).")
   in
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
@@ -924,7 +924,7 @@ let relay_dm_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let alias =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Your alias (required for poll and send-all).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Your alias (required for poll, peek, and send-all).")
   in
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"For send: <to-alias> <message...>; for send-all: <message...>")
@@ -990,6 +990,37 @@ let relay_dm_cmd =
                    ~node_id ~session_id:node_id ~auth_header:auth)
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.poll_inbox client
+                   ~node_id ~session_id:node_id)) in
+           print_result_and_exit
+             ~alias_source:(Relay_client_hints.Explicit from_alias) result
+       | "peek" ->
+           (* B096: non-destructive variant of poll — reads pending DMs
+              WITHOUT draining the inbox, so a relay-aware monitor (B089)
+              can tail without stealing messages from the poll consumer.
+              Signs against /peek_inbox; the server route already exists.
+              NOTE follow-up: the relay's /peek_inbox handler does not yet
+              enforce session-ownership (unlike /poll_inbox); a signed peek
+              still carries a valid alias proof so adding that check later
+              won't break this path. *)
+           let from_alias = match alias with
+             | Some a -> a
+             | None ->
+                 Printf.eprintf "error: --alias required for dm peek\n%!";
+                 exit 1
+           in
+           let node_id = Printf.sprintf "cli-%s" from_alias in
+           let body_str = Yojson.Safe.to_string (`Assoc [
+             ("node_id", `String node_id);
+             ("session_id", `String node_id);
+           ]) in
+           let result = (match Relay_identity.load () with
+             | Ok id ->
+                 let auth = Relay_signed_ops.sign_request id ~alias:from_alias
+                   ~meth:"POST" ~path:"/peek_inbox" ~body_str () in
+                 Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
+                   ~node_id ~session_id:node_id ~auth_header:auth)
+             | Error _ ->
+                 Lwt_main.run (Relay.Relay_client.peek_inbox client
                    ~node_id ~session_id:node_id)) in
            print_result_and_exit
              ~alias_source:(Relay_client_hints.Explicit from_alias) result

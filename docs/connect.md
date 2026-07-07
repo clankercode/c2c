@@ -153,6 +153,12 @@ appears with release-warning metadata after 3 months unseen in
 `c2c relay list --dead`, and can be reclaimed after the 12-month release date.
 Reply the same way with the roles reversed.
 
+`dm peek` is the **non-destructive** counterpart (B096): it returns the same
+pending messages as `dm poll` but leaves them in the inbox, so a monitor or
+tail watcher can observe incoming DMs without stealing them from the real
+poll-loop consumer. Two consecutive `dm peek` calls return the same messages;
+the next `dm poll` still drains them.
+
 **Tip — save the URL once** so you can drop the flag from every command:
 
 ```bash

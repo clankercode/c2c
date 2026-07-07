@@ -65,6 +65,7 @@ let auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified =
     || path = "/mobile-pair"
     || path = "/forward"
     || path = "/poll_inbox"
+    || path = "/peek_inbox"
     || path = "/ws/subscribe"
     || String.starts_with ~prefix:"/binding/" path
   in
