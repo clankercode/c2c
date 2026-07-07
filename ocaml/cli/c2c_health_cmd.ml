@@ -776,8 +776,18 @@ let status_cmd =
       & info [ "min-messages" ] ~docv:"N"
           ~doc:"Minimum total messages (sent+received) to include a peer.")
   in
+  let check_relay =
+    Cmdliner.Arg.(
+      value
+      & flag
+      & info [ "relay" ]
+          ~doc:"Also query the relay (best-effort, ~4s) for the current \
+                alias's lease TTL/expiry. Default is offline-safe — no network \
+                round-trip unless this flag is passed.")
+  in
   let+ json = json_flag
-  and+ min_messages = min_messages in
+  and+ min_messages = min_messages
+  and+ check_relay = check_relay in
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
   let now = Unix.gettimeofday () in
@@ -916,6 +926,18 @@ let status_cmd =
     (visible, hidden)
   in
 
+  (* B094: relay state (URL configured, current alias, identity fingerprint,
+     host_id). Pure-local — no network. [check_relay] opts into a best-effort
+     signed /list round-trip for the current alias's lease TTL/expiry. *)
+  let relay_snap = C2c_relay_state.snapshot ~broker () in
+  let relay_lease =
+    if check_relay then
+      Some (C2c_relay_state.fetch_alias_lease
+              ~alias:relay_snap.C2c_relay_state.alias
+              ~relay_url:relay_snap.C2c_relay_state.relay_url
+              ~our_host_id:relay_snap.C2c_relay_state.host_id ())
+    else None
+  in
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -962,6 +984,7 @@ let status_cmd =
                     visible_instances) )
            ; ("stopped_hidden", `Int hidden_stopped_count)
            ; ("rooms", `List (List.map room_json rooms))
+           ; ("relay", C2c_relay_state.relay_json relay_snap relay_lease)
            ; ("overall_goal_met", `Bool overall_goal_met)
            ])
   | Human ->
@@ -1008,12 +1031,18 @@ let status_cmd =
       if hidden_stopped_count > 0 then
         Printf.printf "  (%d stopped instance(s) hidden; use 'c2c dev instances --all' or 'c2c dev instances gc')\n" hidden_stopped_count;
       Printf.printf "  Run 'c2c dev instances' for full detail (includes created_at, tmux, cwd, role).\n";
+      Printf.printf "\n";
+      C2c_relay_state.print_relay_section relay_snap relay_lease ~now ();
       Printf.printf "\nOverall goal_met: %s\n"
         (if overall_goal_met then "YES" else "NO")
 
 let status =
   Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "status" ~doc:"Show compact swarm overview.")
+    (Cmdliner.Cmd.info "status"
+      ~doc:"Show compact swarm overview (peers, rooms, instances, relay state). \
+            Addressing: bare <alias> = local; <alias>@<host_id> = cross-host \
+            via relay (use 'c2c relay list' for peer host_ids; 'c2c host-id' \
+            for your own). Pass --relay to query the live lease for your alias.")
     status_cmd
 
 (* --- subcommand: verify --------------------------------------------------- *)
