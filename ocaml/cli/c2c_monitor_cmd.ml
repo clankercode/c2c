@@ -77,8 +77,10 @@ let dedup_check ~from ~to_raw ~content =
   | Some ts when now -. ts < dedup_window_s -> false
   | _ -> Hashtbl.replace dedup_seen key now; true
 
-(* Emit one notification line per unique sender, collapsing bursts. *)
-let emit_messages ~my_alias ~all ~full_body msgs =
+(* Emit one notification line per unique sender, collapsing bursts.
+   [source] tags the message origin ("local" or "relay") so a relay-surfaced
+   cross-host DM is distinguishable from a local-broker one (B089). *)
+let emit_messages ~my_alias ~all ~full_body ~source msgs =
   (* Group messages by from_alias *)
   let by_sender = Hashtbl.create 4 in
   List.iter (fun msg ->
@@ -120,8 +122,12 @@ let emit_messages ~my_alias ~all ~full_body msgs =
         else
           Printf.sprintf "(%d msgs) \"%s\"" n (truncate body 60)
       in
-      Printf.printf "%s %s  %s→%s  %s\n%!"
-        (now_hms ()) icon from dest subject
+      (* B089: relay-sourced messages get a 🌐 origin marker so the operator
+         can tell a cross-host DM (peeked from the relay inbox) from a local
+         broker delivery. *)
+      let origin = if source = "relay" then "🌐" else "" in
+      Printf.printf "%s %s%s  %s→%s  %s\n%!"
+        (now_hms ()) origin icon from dest subject
     end
   ) by_sender
 
@@ -205,7 +211,34 @@ let monitor_cmd =
                  still-alive holder.")
   in
   let cross_repo = cross_repo_flag in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force drain cross_repo ->
+  (* B089: relay-inbox watcher source flags. *)
+  let no_relay =
+    Arg.(value & flag & info ["no-relay"]
+           ~doc:"Disable the relay-inbox watcher source. By default the monitor \
+                 also peeks (NON-draining) the relay inbox for the resolved alias \
+                 when a relay URL is configured, so cross-host DMs surface like \
+                 local ones. Use this flag to watch the local broker only.")
+  in
+  let relay_interval =
+    Arg.(value & opt float 5.0 & info ["relay-interval"] ~docv:"SECONDS"
+           ~doc:"Interval between non-draining relay inbox peeks (default 5.0). \
+                 Set to 0 to disable the relay watcher (same as --no-relay). The \
+                 relay is peeked, never polled, so a separate relay consumer \
+                 (connector / `relay dm poll`) still receives every message.")
+  in
+  let relay_node_id =
+    Arg.(value & opt (some string) None & info ["relay-node-id"] ~docv:"ID"
+           ~doc:"Relay node-id whose inbox to peek. Default: cli-<alias>, matching \
+                 `c2c relay register --alias <alias>`. Override for aliases \
+                 registered by the relay connector under the machine's node-id, \
+                 or set C2C_RELAY_NODE_ID.")
+  in
+  let relay_session_id =
+    Arg.(value & opt (some string) None & info ["relay-session-id"] ~docv:"ID"
+           ~doc:"Relay session-id whose inbox to peek (default: same as \
+                 --relay-node-id). Override or set C2C_RELAY_SESSION_ID.")
+  in
+  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force drain cross_repo no_relay relay_interval relay_node_id relay_session_id ->
     (* Resolve effective flags: --archive and --full-body are now defaults.
        --live reverts to inbox watching; --snippet reverts to 80-char preview. *)
     let full_body = full_body || not snippet in  (* full_body unless --snippet *)
@@ -563,8 +596,10 @@ let monitor_cmd =
       in
       C2c_monitor_logic.filter_unseen seen msgs
     in
-    (* Emit an already-filtered message list (json objects or human lines). *)
-    let emit ~is_mine msgs =
+    (* Emit an already-filtered message list (json objects or human lines).
+       [source] tags origin ("local"/"relay") for both JSON and human output
+       (B089). *)
+    let emit ~is_mine ~source msgs =
       match msgs with
       | [] -> ()
       | msgs ->
@@ -575,13 +610,140 @@ let monitor_cmd =
                   | `Assoc fields ->
                       let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
                       `Assoc (("event_type", `String "message")
-                              :: ("monitor_ts", `String ts) :: fields)
+                              :: ("monitor_ts", `String ts)
+                              :: ("source", `String source)
+                              :: fields)
                   | _ -> m
                 in
                 print_string (Yojson.Safe.to_string m_with_ts);
                 print_newline ()) msgs
           end else
-            emit_messages ~my_alias ~all ~full_body msgs
+            emit_messages ~my_alias ~all ~full_body ~source msgs
+    in
+    (* B089: the local (inotify) path and the relay-peek thread both feed the
+       shared [seen] dedup set and stdout. Serialize filter+emit under one mutex
+       so (a) the two sources can't both pass [filter_unseen] for the same
+       message and (b) output lines never interleave. Returns the filtered list
+       so the inbox-watch path can distinguish "nothing new" (-> DRAIN event)
+       from "surfaced messages". *)
+    let emit_mutex = Mutex.create () in
+    let emit_filtered ~is_mine ~source msgs =
+      Mutex.lock emit_mutex;
+      Fun.protect ~finally:(fun () -> Mutex.unlock emit_mutex) (fun () ->
+        let filtered = apply_filters msgs in
+        (match filtered with [] -> () | _ -> emit ~is_mine ~source filtered);
+        filtered)
+    in
+    (* B089: relay-inbox watcher source. Periodically peeks (NON-draining) the
+       resolved alias's relay inbox via POST /peek_inbox and surfaces newly-seen
+       cross-host DMs through the same emit path as local messages. Peek never
+       drains, so the real poll consumer (relay connector / `c2c relay dm poll`)
+       still receives every message; dedup against the local archive echo is
+       free because the connector preserves the relay message_id on local
+       delivery (see C2c_monitor_logic). Gated on relay registration (alias
+       resolved + relay URL configured). Runs in a background thread that
+       mirrors the existing _err_thread pattern; a stop flag + at_exit keep it
+       from outliving the monitor. *)
+    let relay_stop = Atomic.make false in
+    at_exit (fun () -> Atomic.set relay_stop true);
+    let alias_str = Option.value my_alias ~default:"" in
+    let node_id_override =
+      match relay_node_id with
+      | Some _ -> relay_node_id
+      | None ->
+          (match Sys.getenv_opt "C2C_RELAY_NODE_ID" with
+           | Some s when s <> "" -> Some s
+           | _ -> None)
+    in
+    let session_id_override =
+      match relay_session_id with
+      | Some _ -> relay_session_id
+      | None ->
+          (match Sys.getenv_opt "C2C_RELAY_SESSION_ID" with
+           | Some s when s <> "" -> Some s
+           | _ -> None)
+    in
+    let relay_url_resolved = C2c_relay_cmd.resolve_relay_url None in
+    let relay_token_resolved = C2c_relay_cmd.resolve_relay_token None in
+    let identity = match Relay_identity.load () with Ok id -> Some id | Error _ -> None in
+    let relay_status_label, _relay_thread =
+      if no_relay || relay_interval <= 0.0 then
+        ("off (--no-relay / --relay-interval 0)", None)
+      else if not archive then
+        (* --live (legacy) mode emits through its own inline path that does
+           not share the [seen] dedup set or [emit_mutex], so a relay-peeked
+           DM reappearing in a local live inbox would double-surface and output
+           could interleave. The relay watcher is gated to the default (archive)
+           mode where the B070 dedup integration is wired. *)
+        ("off (--live mode: relay watcher requires the default archive mode for dedup)",
+         None)
+      else
+        let decision =
+          C2c_monitor_logic.decide_relay_watch
+            ~my_alias ~relay_url:relay_url_resolved ~identity
+            ~node_id_override ~session_id_override ()
+        in
+        match decision with
+        | C2c_monitor_logic.Relay_watch_off reason ->
+            (Printf.sprintf "off (%s)" reason, None)
+        | C2c_monitor_logic.Relay_watch { node_id; session_id } ->
+            (* node_id/session_id guaranteed non-empty here by decide_relay_watch. *)
+            let url = Option.get relay_url_resolved in
+            let client = Relay.Relay_client.make ?token:relay_token_resolved url in
+            (* Sign against the EXACT body bytes peek_inbox_signed will send, so
+               the relay's signature verification matches (mirrors B096 `dm peek`). *)
+            let body_str = Yojson.Safe.to_string (`Assoc [
+              ("node_id", `String node_id);
+              ("session_id", `String session_id)]) in
+            let auth_header_opt =
+              match identity with
+              | Some id ->
+                  Some (Relay_signed_ops.sign_request id ~alias:alias_str
+                          ~meth:"POST" ~path:"/peek_inbox" ~body_str ())
+              | None -> None
+            in
+            let peek_once () =
+              (* Non-draining: peek_inbox* return pending messages WITHOUT
+                 clearing the relay inbox. Network/auth errors propagate to the
+                 caller, which logs+continues (the monitor never dies from a
+                 transient relay blip). *)
+              let resp =
+                match auth_header_opt with
+                | Some auth ->
+                    Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
+                                    ~node_id ~session_id ~auth_header:auth)
+                | None ->
+                    Lwt_main.run (Relay.Relay_client.peek_inbox client
+                                    ~node_id ~session_id)
+              in
+              C2c_monitor_logic.extract_relay_messages resp
+            in
+            let rec relay_loop last_tick =
+              if Atomic.get relay_stop || Unix.getppid () = 1 then ()
+              else begin
+                let now = Unix.gettimeofday () in
+                if now -. last_tick >= relay_interval then begin
+                  (try
+                     let msgs = peek_once () in
+                     ignore (emit_filtered ~is_mine:true ~source:"relay" msgs)
+                   with e ->
+                     Printf.eprintf
+                       "%s relay watch: peek failed (%s); will retry next cycle\n%!"
+                       (now_hms ()) (Printexc.to_string e));
+                  relay_loop now
+                end else begin
+                  (* Short sleep so the stop flag / parent-death is noticed
+                     within ~0.2s rather than waiting a full interval. *)
+                  Thread.delay 0.2;
+                  relay_loop last_tick
+                end
+              end
+            in
+            let th = Thread.create (fun () -> relay_loop (Unix.gettimeofday ())) () in
+            let id_tag = if identity = None then " (unsigned)" else "" in
+            (Printf.sprintf "peek %s/%s every %.1fs%s"
+               node_id session_id relay_interval id_tag,
+             Some th)
     in
     (* Belt-and-braces startup orphan check: if the parent already died before
        we enter the inotify loop, exit immediately rather than loop forever. *)
@@ -657,7 +819,8 @@ let monitor_cmd =
                 ; "alias", (match my_alias with Some a -> `String a | None -> `Null)
                 ; "session_id", (match resolved_sid with Some s -> `String s | None -> `Null)
                 ; "alias_source", `String (C2c_monitor_logic.source_label alias_source)
-                ; "inbox_watch", `Bool do_inbox_watch ]));
+                ; "inbox_watch", `Bool do_inbox_watch
+                ; "relay_watch", `String relay_status_label ]));
       print_newline ()
     end else begin
       (match my_alias with
@@ -673,7 +836,8 @@ let monitor_cmd =
              (now_hms ()) (C2c_monitor_logic.source_label alias_source));
       if do_inbox_watch then
         Printf.printf "%s watching live inbox (%s)\n%!"
-          (now_hms ()) (if drain then "drain" else "peek")
+          (now_hms ()) (if drain then "drain" else "peek");
+      Printf.printf "%s relay watch: %s\n%!" (now_hms ()) relay_status_label
     end;
     Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
       try while true do
@@ -702,7 +866,8 @@ let monitor_cmd =
                  C2c_monitor_logic.archive_owner_is_mine ~archive_id:sid
                    ~my_alias ~my_session_id:inbox_sid ()
                in
-               emit ~is_mine (apply_filters (read_new_archive_entries path))
+               ignore (emit_filtered ~is_mine ~source:"local"
+                         (read_new_archive_entries path))
              end else begin
                match inbox_filename with
                | Some ifn when filename = ifn ->
@@ -742,7 +907,7 @@ let monitor_cmd =
                           | None -> read_inbox_file inbox_path)
                        else read_inbox_file inbox_path
                      in
-                     (match apply_filters msgs with
+                     (match emit_filtered ~is_mine:true ~source:"local" msgs with
                       | [] ->
                           if drains then begin
                             if json then begin
@@ -756,7 +921,7 @@ let monitor_cmd =
                               Printf.printf "%s 📤  DRAIN  %s (inbox cleared)\n%!"
                                 (now_hms ()) label
                           end
-                      | msgs -> emit ~is_mine:true msgs)
+                      | _ -> ())
                    end
                | _ -> ()
              end
@@ -832,7 +997,7 @@ let monitor_cmd =
                             print_newline ()
                           ) msgs
                       end else
-                        emit_messages ~my_alias ~all ~full_body msgs)
+                        emit_messages ~my_alias ~all ~full_body ~source:"local" msgs)
                end
              end else if filename = "registry.json" && not archive then begin
                (* Registry changed — diff against snapshot and emit peer events. *)
@@ -952,7 +1117,7 @@ let monitor_cmd =
       done with End_of_file -> ())
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
-    $ force_flag $ drain_flag $ cross_repo
+    $ force_flag $ drain_flag $ cross_repo $ no_relay $ relay_interval $ relay_node_id $ relay_session_id
 
 (* --- monitor Cmd ---------------------------------------------------------- *)
 
@@ -982,10 +1147,18 @@ let monitor =
                   inbox write are collapsed to a single line with a count. \
                   Inbox-peek and archive-echo of the same message are deduped by \
                   message identity so it is not printed twice."
+            ; `P "Relay-inbox watcher (B089): when a relay URL is configured \
+                  ($(b,C2C_RELAY_URL) / $(b,c2c relay setup)) and an alias is resolved, \
+                  the monitor ALSO peeks (non-draining) the relay inbox on an interval \
+                  so cross-host DMs surface like local ones. The relay is peeked, never \
+                  polled, so a separate consumer (relay connector / $(b,c2c relay dm poll)) \
+                  still receives every message. Relay-sourced lines are tagged 🌐 (and \
+                  carry \"source\":\"relay\" in --json). $(b,--no-relay) disables; \
+                  $(b,--relay-node-id) overrides the peek key for connector-managed aliases."
             ; `S "OUTPUT FORMAT"
             ; `P "[HH:MM:SS] ICON  TYPE  from→to  \"subject…\""
             ; `P "ICON: 📬 = addressed to you, 💬 = peer traffic (--all), \
-                  📤 = drain (--drains), 🗑️ = sweep (--sweeps)"
+                  📤 = drain (--drains), 🗑️ = sweep (--sweeps), 🌐 = relay-sourced (B089)"
             ; `S "EXAMPLES"
             ; `P "$(b,c2c monitor)  — zero-flag form: auto-resolves alias + broker, watches archive with full body. Recommended."
             ; `P "$(b,c2c monitor --all)  — broad swarm monitor"
@@ -993,6 +1166,9 @@ let monitor =
             ; `P "$(b,c2c monitor --from coder1)  — only messages from coder1"
             ; `P "$(b,c2c monitor --drain)  — monitor is the inbox consumer (drains live inbox)"
             ; `P "$(b,c2c monitor --snippet)  — 80-char subject preview (legacy)"
+            ; `P "$(b,c2c monitor --no-relay)  — local broker only (disable relay watcher)"
+            ; `P "$(b,c2c monitor --relay-node-id machine-42)  — peek a relay inbox keyed machine-42/machine-42"
+            ; `P "$(b,c2c monitor --relay-node-id host-1 --relay-session-id <sid>)  — connector-managed inbox (needs both)"
             ; `P "$(b,c2c monitor --live)  — watch live inboxes instead of archive (legacy)"
             ; `P "$(b,c2c monitor --json)  — JSON output for programmatic parsing"
             ; `P "In Claude Code: Monitor({command: \"c2c monitor\", persistent: true})"

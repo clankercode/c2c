@@ -158,3 +158,108 @@ let archive_owner_is_mine ~archive_id ~my_alias ~my_session_id () =
       (match my_alias with
        | Some alias -> alias = archive_id
        | None -> true)
+
+(* ---------- B089: relay-inbox watcher source ---------- *)
+
+(* The relay-aware monitor (B089) periodically peeks (NON-draining) the
+   registered alias's relay inbox via `POST /peek_inbox`. The relay returns a
+   response of shape `{ ok = true, messages = [ ... ] }` where each message has
+   the SAME field shape as a local broker message (`message_id`, `from_alias`,
+   `to_alias`, `content`, `ts`). That shape parity is what lets the relay source
+   reuse the B070 [seen] dedup set verbatim: the connector's local-delivery path
+   (`append_to_local_inbox`) writes the relay message JSON — message_id included
+   — into the local inbox, so when the local archive/inbox echo of a relay DM
+   arrives it is suppressed by the SAME key the relay-peek just recorded.
+
+   These helpers are pure (no network, no broker, no threads) so the watcher
+   source's core behaviour — message extraction, dedup across peek cycles, and
+   cross-source dedup vs a local echo — is unit-testable in isolation. The
+   impure thread + HTTP peek lives in [c2c_monitor_cmd]. *)
+
+(* Pull the `messages` list out of a `/peek_inbox` (or `/poll_inbox`) relay
+   response. Tolerant: a missing/non-list `messages` field yields []. Never
+   raises — a malformed response just surfaces nothing (the caller logs the
+   raw response at debug if needed). *)
+let extract_relay_messages (resp : Yojson.Safe.t) : Yojson.Safe.t list =
+  match resp with
+  | `Assoc fields ->
+      (match List.assoc_opt "messages" fields with
+       | Some (`List msgs) -> msgs
+       | _ -> [])
+  | _ -> []
+
+(* Tag a surfaced message with its origin so the user can tell local vs relay.
+   Adds a `source` field to the assoc. Idempotent: if `source` is already
+   present it is overwritten (so a message never carries a stale tag). Does NOT
+   alter [msg_key] — `source` is not one of the identity fields, so the dedup
+   key is stable whether or not a message is tagged. Non-assoc JSON passes
+   through unchanged (uncomparable, kept by the caller). *)
+let tag_source (source : string) (m : Yojson.Safe.t) : Yojson.Safe.t =
+  match m with
+  | `Assoc fields ->
+      `Assoc (("source", `String source)
+              :: List.filter (fun (k, _) -> k <> "source") fields)
+  | other -> other
+
+(* Surface newly-seen relay messages: filter against the shared [seen] set
+   (marking each kept message seen, exactly like the local path's
+   [filter_unseen]) and tag each survivor `source:relay`. Order-preserving.
+
+   This is the pure heart of the relay watcher — the impure thread feeds it the
+   peek result and emits whatever it returns. Two consecutive calls with the
+   same peek result return the messages once then [] (peek does not drain, so
+   without this dedup every cycle would re-print the whole pending inbox). A
+   message that later echoes through the local path is also suppressed because
+   [seen] is shared and keyed on message identity. *)
+let relay_msgs_to_surface (seen : seen) (msgs : Yojson.Safe.t list)
+  : Yojson.Safe.t list =
+  filter_unseen seen msgs |> List.map (tag_source "relay")
+
+(* Decide whether the relay watcher should run, given the resolved inputs.
+   Pure so the gating logic (alias resolved? relay configured? identity
+   available?) is unit-testable. The watcher needs: an alias to peek as, a relay
+   URL, and (for production relays) the relay must be reachable — but identity
+   is OPTIONAL: an unsigned peek works against dev/no-auth relays just like
+   `relay dm peek` falls back to unsigned. Returns a reason label for the
+   startup banner so an operator can see WHY relay watch is off. *)
+type relay_watch_decision =
+  | Relay_watch of { node_id : string; session_id : string }
+  | Relay_watch_off of string
+
+let decide_relay_watch
+      ~my_alias
+      ~relay_url
+      ~identity:_
+      ~node_id_override
+      ~session_id_override
+      () : relay_watch_decision =
+  match relay_url with
+  | None -> Relay_watch_off "no relay URL configured (c2c relay setup / C2C_RELAY_URL)"
+  | Some _ ->
+      (match my_alias with
+       | None -> Relay_watch_off "no alias resolved (relay watch needs an alias to peek as)"
+       | Some alias ->
+           (* Default peek key matches the `c2c relay dm peek` / `c2c relay
+              register --alias` convention: node_id = session_id = "cli-<alias>".
+              Connector-managed aliases (registered by the relay connector under
+              the machine's node-id) need an explicit --relay-node-id override —
+              documented in --help. *)
+           let base = "cli-" ^ alias in
+           let node_id =
+             match node_id_override with
+             | Some n when n <> "" -> n
+             | _ -> base
+           in
+           (* session_id defaults to the node_id when only --relay-node-id is
+              overridden, so `--relay-node-id machine-42` peeks
+              machine-42/machine-42 (as documented in --help). An explicit
+              --relay-session-id always wins; connector-managed aliases
+              (per-session session-id under the machine node-id) usually need
+              BOTH overrides. *)
+           let session_id =
+             match session_id_override, node_id_override with
+             | (Some s, _) when s <> "" -> s
+             | (None, Some n) when n <> "" -> n
+             | _ -> base
+           in
+           Relay_watch { node_id; session_id })

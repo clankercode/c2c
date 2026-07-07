@@ -189,6 +189,130 @@ let test_archive_owner_uses_session_id () =
     (L.archive_owner_is_mine ~archive_id:"codex-local"
        ~my_alias:(Some "codex-local") ~my_session_id:None ())
 
+(* ---------- B089: relay-inbox watcher source ---------- *)
+
+(* A relay /peek_inbox response: { ok = true, messages = [...] }. Each message
+   has the same field shape as a local broker message (the connector writes
+   the relay JSON verbatim into the local inbox), which is what lets the relay
+   source reuse the B070 seen set. *)
+let relay_resp msgs = `Assoc [("ok", `Bool true); ("messages", `List msgs)]
+
+let source_of = function
+  | `Assoc f -> (match List.assoc_opt "source" f with Some (`String s) -> Some s | _ -> None)
+  | _ -> None
+
+let test_extract_relay_messages () =
+  let m1 = msg ~mid:"r1" ~from:"remote" ~to_:"me" "hi" in
+  let m2 = msg ~mid:"r2" ~from:"remote" ~to_:"me" "yo" in
+  Alcotest.(check (list string)) "extracts both in order"
+    ["hi"; "yo"] (contents (L.extract_relay_messages (relay_resp [m1; m2])));
+  Alcotest.(check (list string)) "empty messages -> []"
+    [] (contents (L.extract_relay_messages (relay_resp [])));
+  Alcotest.(check (list string)) "missing messages field -> []"
+    [] (contents (L.extract_relay_messages (`Assoc [("ok", `Bool true)])));
+  Alcotest.(check (list string)) "non-assoc resp -> []"
+    [] (contents (L.extract_relay_messages (`String "garbage")))
+
+let test_tag_source () =
+  let m = msg ~mid:"r1" ~from:"x" ~to_:"y" "hi" in
+  Alcotest.(check (option string)) "tagged relay" (Some "relay")
+    (source_of (L.tag_source "relay" m));
+  (* idempotent: re-tagging overwrites rather than duplicating the field *)
+  let double = L.tag_source "local" (L.tag_source "relay" m) in
+  Alcotest.(check (option string)) "retagged to local" (Some "local")
+    (source_of double);
+  let count = match double with
+    | `Assoc f -> List.length (List.filter (fun (k, _) -> k = "source") f)
+    | _ -> 0 in
+  Alcotest.(check int) "exactly one source field" 1 count;
+  (* key stability: tagging does not change the dedup key *)
+  Alcotest.(check string) "tag preserves msg_key"
+    (L.msg_key m) (L.msg_key (L.tag_source "relay" m));
+  Alcotest.(check bool) "non-assoc passes through unchanged" true
+    (L.tag_source "relay" (`String "x") = `String "x")
+
+(* Core B089 requirement: peek is NON-draining, so the same pending message
+   appears in every peek response. The watcher must surface it ONCE, then stay
+   quiet until a genuinely new message arrives. *)
+let test_relay_surface_dedup_across_cycles () =
+  let seen = L.create_seen () in
+  let m = msg ~mid:"r1" ~from:"remote" ~to_:"me" "cross-host hello" in
+  let resp = relay_resp [m] in
+  let first = L.relay_msgs_to_surface seen (L.extract_relay_messages resp) in
+  Alcotest.(check (list string)) "first peek surfaces the DM"
+    ["cross-host hello"] (contents first);
+  Alcotest.(check (option string)) "surfaced DM tagged relay"
+    (Some "relay") (source_of (List.hd first));
+  let second = L.relay_msgs_to_surface seen (L.extract_relay_messages resp) in
+  Alcotest.(check (list string)) "second peek does NOT re-surface (non-draining dedup)"
+    [] (contents second)
+
+(* A relay-peeked DM and its later LOCAL archive echo share message_id (the
+   connector preserves it on local delivery), so the SHARED seen set suppresses
+   the local echo — no double-surface across sources. This is the integration
+   with B070 the spec asked for. *)
+let test_relay_surface_cross_source_dedup () =
+  let seen = L.create_seen () in
+  let m = msg ~mid:"relay-uuid-9" ~from:"remote" ~to_:"me" "via relay" in
+  let relay_surfaced = L.relay_msgs_to_surface seen [m] in
+  Alcotest.(check (list string)) "relay surfaces" ["via relay"] (contents relay_surfaced);
+  (* The same message_id then arrives via the LOCAL path (inbox-watch/archive) *)
+  let local_echo = L.filter_unseen seen [m] in
+  Alcotest.(check (list string)) "local echo suppressed by shared seen set"
+    [] (contents local_echo)
+
+let test_relay_surface_order_preserving () =
+  let seen = L.create_seen () in
+  let msgs = [ msg ~mid:"a" ~from:"x" ~to_:"y" "1"
+             ; msg ~mid:"b" ~from:"x" ~to_:"y" "2"
+             ; msg ~mid:"c" ~from:"x" ~to_:"y" "3" ] in
+  let out = L.relay_msgs_to_surface seen msgs in
+  Alcotest.(check (list string)) "order preserved" ["1"; "2"; "3"] (contents out)
+
+let dec_node_id = function
+  | L.Relay_watch { node_id; _ } -> Some node_id
+  | L.Relay_watch_off _ -> None
+
+let dec_session_id = function
+  | L.Relay_watch { session_id; _ } -> Some session_id
+  | L.Relay_watch_off _ -> None
+
+let test_decide_relay_watch_gating () =
+  (* off: no relay URL configured *)
+  Alcotest.(check bool) "no URL -> off" true
+    (dec_node_id (L.decide_relay_watch ~my_alias:(Some "me")
+       ~relay_url:None ~identity:None ~node_id_override:None ~session_id_override:None ())
+     = None);
+  (* off: no alias resolved (can't peek as anyone) *)
+  Alcotest.(check bool) "no alias -> off" true
+    (dec_node_id (L.decide_relay_watch ~my_alias:None
+       ~relay_url:(Some "http://r") ~identity:None ~node_id_override:None ~session_id_override:None ())
+     = None);
+  (* on: default cli-<alias> convention (matches `relay register --alias`) *)
+  Alcotest.(check string) "default node_id = cli-<alias>" "cli-me"
+    (Option.get (dec_node_id (L.decide_relay_watch ~my_alias:(Some "me")
+       ~relay_url:(Some "http://r") ~identity:None ~node_id_override:None ~session_id_override:None ())));
+  (* on: explicit override for connector-managed aliases *)
+  Alcotest.(check string) "override honoured" "machine-node-42"
+    (Option.get (dec_node_id (L.decide_relay_watch ~my_alias:(Some "me")
+       ~relay_url:(Some "http://r") ~identity:None
+       ~node_id_override:(Some "machine-node-42") ~session_id_override:None ())));
+  (* node_id override implies session_id = node_id (matches --help: "defaults
+     to same as --relay-node-id"). *)
+  Alcotest.(check string) "node_id override => session_id = node_id" "machine-node-42"
+    (Option.get (dec_session_id (L.decide_relay_watch ~my_alias:(Some "me")
+       ~relay_url:(Some "http://r") ~identity:None
+       ~node_id_override:(Some "machine-node-42") ~session_id_override:None ())));
+  (* explicit session_id still wins over the node_id-derived default *)
+  Alcotest.(check string) "explicit session_id wins" "sess-7"
+    (Option.get (dec_session_id (L.decide_relay_watch ~my_alias:(Some "me")
+       ~relay_url:(Some "http://r") ~identity:None
+       ~node_id_override:(Some "machine-node-42") ~session_id_override:(Some "sess-7") ())));
+  (* neither overridden => both default to cli-<alias> (and are equal) *)
+  Alcotest.(check string) "default node_id = session_id = cli-<alias>" "cli-me"
+    (Option.get (dec_session_id (L.decide_relay_watch ~my_alias:(Some "me")
+       ~relay_url:(Some "http://r") ~identity:None ~node_id_override:None ~session_id_override:None ())))
+
 let () =
   Alcotest.run "c2c_monitor_logic"
     [ ( "alias-resolution-order",
@@ -210,5 +334,13 @@ let () =
         ; Alcotest.test_case "filter_unseen keeps non-objects" `Quick test_filter_unseen_keeps_nonobjects
         ; Alcotest.test_case "seen set bounded eviction" `Quick test_seen_bounded_eviction
         ; Alcotest.test_case "archive owner uses session id" `Quick test_archive_owner_uses_session_id
+        ] )
+    ; ( "relay-watcher-source",
+        [ Alcotest.test_case "extract_relay_messages" `Quick test_extract_relay_messages
+        ; Alcotest.test_case "tag_source adds source field" `Quick test_tag_source
+        ; Alcotest.test_case "relay surface dedup across peek cycles" `Quick test_relay_surface_dedup_across_cycles
+        ; Alcotest.test_case "relay surface cross-source dedup" `Quick test_relay_surface_cross_source_dedup
+        ; Alcotest.test_case "relay surface order preserving" `Quick test_relay_surface_order_preserving
+        ; Alcotest.test_case "decide_relay_watch gating" `Quick test_decide_relay_watch_gating
         ] )
     ]
