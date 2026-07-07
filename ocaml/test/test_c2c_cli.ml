@@ -1726,7 +1726,7 @@ let test_install_all_dry_run_epilog () =
         (fun () -> really_input_string ch (in_channel_length ch))
       in
       check bool "install all output contains canonical verify line" true
-        (string_contains content "Run 'c2c connect --verify'");
+        (string_contains content "Run 'c2c ping --verify'");
       check bool "install all output contains restart footer" true
         (string_contains content "restart your CLI client")))
 
@@ -2274,7 +2274,7 @@ let test_send_all_from_spoofing_rejected () =
               (string_contains err "refus")))
 
 (* ------------------------------------------------------------------------- *)
-(* c2c connect — dashboard + --verify probe                                  *)
+(* c2c ping — dashboard + --verify probe (connect is a deprecated alias; see test_connect_deprecated_* below)                                  *)
 (* ------------------------------------------------------------------------- *)
 
 let with_temp_broker f =
@@ -2286,7 +2286,7 @@ let with_temp_broker f =
 let test_connect_dashboard_exits_zero () =
   with_temp_broker (fun ~dir ~broker_root ->
     let env = Printf.sprintf "C2C_MCP_BROKER_ROOT=%s" broker_root in
-    let cmd = c2c_cmd (Printf.sprintf "%s c2c connect > /dev/null 2>&1" env) in
+    let cmd = c2c_cmd (Printf.sprintf "%s c2c ping > /dev/null 2>&1" env) in
     let rc = Sys.command cmd in
     check int "c2c connect exits 0" 0 rc)
 
@@ -2296,7 +2296,7 @@ let test_connect_dashboard_shows_broker_root () =
     let tmpfile = Filename.temp_file "c2c-connect" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
-        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect > %s 2>&1" env tmpfile)));
+        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c ping > %s 2>&1" env tmpfile)));
         let content = read_file tmpfile in
         check bool "output contains broker root" true
           (string_contains content broker_root);
@@ -2309,7 +2309,7 @@ let test_connect_dashboard_json_valid () =
     let tmpfile = Filename.temp_file "c2c-connect-json" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
-        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect --json > %s 2>&1" env tmpfile)));
+        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c ping --json > %s 2>&1" env tmpfile)));
         let content = read_file tmpfile in
         let json = Yojson.Safe.from_string content in
         check bool "JSON has broker_root" true
@@ -2325,7 +2325,7 @@ let test_connect_dashboard_next_action_not_installed () =
     let tmpfile = Filename.temp_file "c2c-connect-next" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
-        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect > %s 2>&1" env tmpfile)));
+        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c ping > %s 2>&1" env tmpfile)));
         let content = read_file tmpfile in
         check bool "next action mentions install" true
           (string_contains content "c2c install")))
@@ -2336,7 +2336,7 @@ let test_connect_verify_inconclusive () =
     let tmpfile = Filename.temp_file "c2c-connect-verify" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
-        let rc = Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect --verify --timeout 1 > %s 2>&1" env tmpfile)) in
+        let rc = Sys.command (c2c_cmd (Printf.sprintf "%s c2c ping --verify --timeout 1 > %s 2>&1" env tmpfile)) in
         let content = read_file tmpfile in
         check bool "output contains INCONCLUSIVE" true
           (string_contains content "INCONCLUSIVE");
@@ -2379,7 +2379,7 @@ let test_connect_verify_does_not_drain_real_inbox () =
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
         ignore (Sys.command (c2c_cmd (Printf.sprintf
-          "%s c2c connect --verify --timeout 1 > %s 2>&1" env tmpfile)));
+          "%s c2c ping --verify --timeout 1 > %s 2>&1" env tmpfile)));
         let inbox_after = C2c_mcp.Broker.read_inbox broker ~session_id in
         let has_real = List.exists (fun (m : C2c_mcp.message) -> m.content = real_msg) inbox_after in
         check bool "real inbox message survived verify probe" true has_real))
@@ -2398,7 +2398,7 @@ let test_connect_detects_codex () =
     let tmpfile = Filename.temp_file "c2c-connect-codex" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
-        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect > %s 2>&1" env tmpfile)));
+        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c ping > %s 2>&1" env tmpfile)));
         let content = read_file tmpfile in
         check bool "detects codex MCP server configured" true
           (string_contains content "codex: MCP server configured")))
@@ -2417,7 +2417,7 @@ let test_connect_detects_kimi () =
     let tmpfile = Filename.temp_file "c2c-connect-kimi" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
-        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect > %s 2>&1" env tmpfile)));
+        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c ping > %s 2>&1" env tmpfile)));
         let content = read_file tmpfile in
         check bool "detects kimi MCP server configured" true
           (string_contains content "kimi: MCP server configured")))
@@ -2473,7 +2473,7 @@ let test_connect_dashboard_next_action_partially_configured () =
     let tmpfile = Filename.temp_file "c2c-connect-partial" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
-        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect > %s 2>&1" env tmpfile)));
+        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c ping > %s 2>&1" env tmpfile)));
         let content = read_file tmpfile in
         check bool "next action mentions partially configured" true
           (string_contains content "partially configured")))
@@ -2513,11 +2513,49 @@ let test_connect_dashboard_next_action_all_installed_no_session () =
     let tmpfile = Filename.temp_file "c2c-connect-nosession" ".out" in
     Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
       (fun () ->
-        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect > %s 2>&1" env tmpfile)));
+        ignore (Sys.command (c2c_cmd (Printf.sprintf "%s c2c ping > %s 2>&1" env tmpfile)));
         let content = read_file tmpfile in
         check bool "next action mentions no live session" true
           (string_contains content "no live session"
            || string_contains content "partially configured")))
+
+(* --- deprecated alias: 'c2c connect' -> 'c2c ping' (B095) ------------------ *)
+(* The 'connect' alias must keep working (backward compat) and print a stderr
+   hint pointing users at 'c2c ping' and clarifying that 'c2c relay connect' is
+   the cross-host bridge. Hint goes to stderr so --json stdout stays clean. *)
+
+let test_connect_deprecated_alias_prints_hint () =
+  with_temp_broker (fun ~dir ~broker_root ->
+    let env = Printf.sprintf "C2C_MCP_BROKER_ROOT=%s" broker_root in
+    let tmpfile = Filename.temp_file "c2c-connect-deprecated" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+        let rc = Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect > %s 2>&1" env tmpfile)) in
+        let content = read_file tmpfile in
+        check int "deprecated connect alias exits 0" 0 rc;
+        check bool "alias prints deprecation hint" true
+          (string_contains content "deprecated alias");
+        check bool "alias clarifies relay connect is the cross-host bridge" true
+          (string_contains content "c2c relay connect");
+        (* alias still renders the dashboard (broker root + connection status header) *)
+        check bool "alias still shows broker root" true
+          (string_contains content broker_root);
+        check bool "alias still shows connection status header" true
+          (string_contains content "connection status")))
+
+let test_connect_deprecated_alias_verify_works () =
+  with_temp_broker (fun ~dir ~broker_root ->
+    let env = Printf.sprintf "C2C_MCP_BROKER_ROOT=%s" broker_root in
+    let tmpfile = Filename.temp_file "c2c-connect-deprecated-verify" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+        let rc = Sys.command (c2c_cmd (Printf.sprintf "%s c2c connect --verify --timeout 1 > %s 2>&1" env tmpfile)) in
+        let content = read_file tmpfile in
+        check bool "alias --verify still runs probe (INCONCLUSIVE)" true
+          (string_contains content "INCONCLUSIVE");
+        check bool "alias --verify prints deprecation hint" true
+          (string_contains content "deprecated alias");
+        check int "alias --verify inconclusive exits 0" 0 rc))
 
 (* ------------------------------------------------------------------------- *)
 (* Alcotest registry                                                         *)
@@ -3482,23 +3520,27 @@ let () =
         ; ( "send --from case variation spoofing rejected", `Quick, test_send_from_case_variation_rejected )
         ; ( "send-all --from spoofing rejected", `Quick, test_send_all_from_spoofing_rejected )
         ] )
-    ; ( "connect_dashboard",
-        [ ( "connect exits 0 with temp broker", `Quick, test_connect_dashboard_exits_zero )
-        ; ( "connect shows broker root", `Quick, test_connect_dashboard_shows_broker_root )
-        ; ( "connect --json is valid JSON", `Quick, test_connect_dashboard_json_valid )
-        ; ( "connect next action mentions install", `Quick, test_connect_dashboard_next_action_not_installed )
-        ; ( "connect next action mentions partially configured", `Quick, test_connect_dashboard_next_action_partially_configured )
-        ; ( "connect next action mentions no live session", `Quick, test_connect_dashboard_next_action_all_installed_no_session )
+    ; ( "ping_dashboard",
+        [ ( "ping exits 0 with temp broker", `Quick, test_connect_dashboard_exits_zero )
+        ; ( "ping shows broker root", `Quick, test_connect_dashboard_shows_broker_root )
+        ; ( "ping --json is valid JSON", `Quick, test_connect_dashboard_json_valid )
+        ; ( "ping next action mentions install", `Quick, test_connect_dashboard_next_action_not_installed )
+        ; ( "ping next action mentions partially configured", `Quick, test_connect_dashboard_next_action_partially_configured )
+        ; ( "ping next action mentions no live session", `Quick, test_connect_dashboard_next_action_all_installed_no_session )
         ] )
-    ; ( "connect_verify",
-        [ ( "connect --verify reports INCONCLUSIVE", `Quick, test_connect_verify_inconclusive )
-        ; ( "connect verify archive path works", `Quick, test_connect_verify_pass_via_drain )
-        ; ( "connect --verify does not drain real inbox", `Quick, test_connect_verify_does_not_drain_real_inbox )
-        ; ( "connect verify detects FAIL on broken broker", `Quick, test_connect_verify_fail_on_broken_broker )
+    ; ( "ping_verify",
+        [ ( "ping --verify reports INCONCLUSIVE", `Quick, test_connect_verify_inconclusive )
+        ; ( "ping verify archive path works", `Quick, test_connect_verify_pass_via_drain )
+        ; ( "ping --verify does not drain real inbox", `Quick, test_connect_verify_does_not_drain_real_inbox )
+        ; ( "ping verify detects FAIL on broken broker", `Quick, test_connect_verify_fail_on_broken_broker )
         ] )
-    ; ( "connect_client_detection",
-        [ ( "connect detects codex config", `Quick, test_connect_detects_codex )
-        ; ( "connect detects kimi config", `Quick, test_connect_detects_kimi )
+    ; ( "ping_client_detection",
+        [ ( "ping detects codex config", `Quick, test_connect_detects_codex )
+        ; ( "ping detects kimi config", `Quick, test_connect_detects_kimi )
+        ] )
+    ; ( "connect_deprecated_alias",
+        [ ( "connect alias prints deprecation hint + still works", `Quick, test_connect_deprecated_alias_prints_hint )
+        ; ( "connect alias --verify still runs probe", `Quick, test_connect_deprecated_alias_verify_works )
         ] )
     ; ( "init_name_hardening",
         [ ( "init --require-easy terminates with nonce", `Quick, test_init_require_easy_terminates_with_nonce )

@@ -29,7 +29,8 @@ let all_cmds =
   ; C2c_migrate_cmd.migrate_broker
   ; C2c_history_cmd.history
   ; C2c_health_cmd.health
-  ; C2c_health_cmd.connect
+  ; C2c_health_cmd.ping
+  ; C2c_health_cmd.connect (* deprecated alias for ping — B095 *)
   ; C2c_host_cmd.setcap
   ; C2c_health_cmd.status
   ; C2c_health_cmd.verify
