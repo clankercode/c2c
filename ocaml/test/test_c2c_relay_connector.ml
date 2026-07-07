@@ -357,6 +357,62 @@ let test_broadcast_reaches_all_sessions () =
     Alcotest.(check int) "bob got it" 1 (List.length (read_inbox_messages dir "sess-b"))
   )
 
+(* --- B087: response_difficulty must not crash on any input shape ---
+
+   [response_difficulty] previously did [member "difficulty" (member "required"
+   json)], and [Yojson.Safe.Util.member] RAISES Type_error on non-objects. A
+   normal success response has no [required] key, so [member "required"]
+   returned [Null] and the next [member "difficulty" Null] crashed on EVERY
+   success — taking down the whole sync pass. These fixtures must all return
+   None (or the correct int) without raising. *)
+let test_response_difficulty_no_crash () =
+  (* null / non-object top-level *)
+  Alcotest.(check (option int)) "null top-level -> None"
+    None (Conn.response_difficulty `Null);
+  Alcotest.(check (option int)) "string top-level -> None"
+    None (Conn.response_difficulty (`String "oops"));
+  Alcotest.(check (option int)) "int top-level -> None"
+    None (Conn.response_difficulty (`Int 5));
+  (* empty object *)
+  Alcotest.(check (option int)) "empty object -> None"
+    None (Conn.response_difficulty (`Assoc []));
+  (* success-shaped response: ok:true, no required field (the crash case) *)
+  let success = `Assoc [("ok", `Bool true); ("alias", `String "lyra-quill")] in
+  Alcotest.(check (option int)) "success body -> None"
+    None (Conn.response_difficulty success);
+  (* required present but null *)
+  Alcotest.(check (option int)) "required:null -> None"
+    None (Conn.response_difficulty (`Assoc [("required", `Null)]));
+  (* required present but wrong type *)
+  Alcotest.(check (option int)) "required:string -> None"
+    None (Conn.response_difficulty (`Assoc [("required", `String "nope")]));
+  (* required object missing difficulty *)
+  Alcotest.(check (option int)) "required without difficulty -> None"
+    None (Conn.response_difficulty
+            (`Assoc [("required", `Assoc [("epoch", `Int 1)])]));
+  (* valid required.difficulty (Int) *)
+  Alcotest.(check (option int)) "required.difficulty:Int -> Some 7"
+    (Some 7) (Conn.response_difficulty
+                (`Assoc [("required", `Assoc [("difficulty", `Int 7)])]));
+  (* valid required.difficulty (Float) *)
+  Alcotest.(check (option int)) "required.difficulty:Float -> Some 3"
+    (Some 3) (Conn.response_difficulty
+                (`Assoc [("required", `Assoc [("difficulty", `Float 3.0)])]));
+  (* pow_minted_difficulty annotation (success after minting) *)
+  Alcotest.(check (option int)) "pow_minted_difficulty -> Some 9"
+    (Some 9) (Conn.response_difficulty
+                (`Assoc [("ok", `Bool true); ("pow_minted_difficulty", `Int 9)]));
+  (* nested relay_response.required.difficulty (pow_retry_failed wraps it) *)
+  let nested = `Assoc [
+    ("error_code", `String "pow_retry_failed");
+    ("relay_response", `Assoc [("required", `Assoc [("difficulty", `Int 6)])])
+  ] in
+  Alcotest.(check (option int)) "relay_response.required.difficulty -> Some 6"
+    (Some 6) (Conn.response_difficulty nested);;
+  (* relay_response present but not an object *)
+  Alcotest.(check (option int)) "relay_response:string -> None"
+    None (Conn.response_difficulty (`Assoc [("relay_response", `String "garbage")]))
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_relay_connector" [
@@ -402,5 +458,8 @@ let () =
     "B010 alert delivery", [
       Alcotest.test_case "DLQ injects c2c-system DM to sender" `Quick test_dlq_injects_system_dm_to_sender;
       Alcotest.test_case "broadcast reaches all sessions" `Quick test_broadcast_reaches_all_sessions;
+    ];
+    "B087 response_difficulty", [
+      Alcotest.test_case "no crash on null/missing/wrong-type/valid" `Quick test_response_difficulty_no_crash;
     ];
   ]

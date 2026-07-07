@@ -413,7 +413,12 @@ let relay_connect_cmd =
   in
   let effective_node_id = match node_id with
     | Some n -> n
-    | None -> "unknown-node"
+    (* B087: derive a real opaque node id from the host (12-hex SHA256 of
+       product_uuid / machine-id / hostname via Host_id) instead of the
+       "unknown-node" placeholder, which made every relay registration
+       anonymous and unaddressable. Falls back to the "000000000000"
+       sentinel only when no host source is readable at all. *)
+    | None -> Host_id.compute_host_hash ()
   in
   let effective_token = match token, token_file with
     | Some t, _ when t <> "" -> Some t
