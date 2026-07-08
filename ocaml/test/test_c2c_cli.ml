@@ -1176,18 +1176,32 @@ let test_worktree_list_exits_zero () =
   check int "c2c worktree list exits 0" 0 rc
 
 let test_worktree_list_output_contains_refs_heads () =
-  let tmpfile = Filename.temp_file "c2c-worktree-list" ".out" in
-  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
-    (fun () ->
-      ignore (Sys.command (c2c_cmd (Printf.sprintf
-        "C2C_CLI_FORCE=1 c2c dev worktree list > %s 2>&1" tmpfile)));
-      let ch = open_in tmpfile in
-      let content = Fun.protect ~finally:(fun () -> close_in ch)
-        (fun () -> really_input_string ch (in_channel_length ch))
-      in
-      (* Worktree list shows "refs/heads/" for each entry *)
-      check bool "worktree list contains refs/heads entries" true
-        (string_contains content "refs/heads"))
+  (* Self-contained: run in a fresh temp git repo so HEAD is always on a
+     branch (refs/heads present), independent of the surrounding checkout.
+     CI tag/detached checkouts (e.g. the release ci-gate) have no local
+     branch, which would spuriously fail this assertion. *)
+  with_temp_dir (fun dir ->
+    let tmpfile = Filename.temp_file "c2c-worktree-list" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+        let orig = Sys.getcwd () in
+        Fun.protect ~finally:(fun () -> (try Sys.chdir orig with _ -> ()))
+          (fun () ->
+            Sys.chdir dir;
+            ignore (Sys.command "git init -q");
+            ignore (Sys.command "git config user.email t@t");
+            ignore (Sys.command "git config user.name t");
+            ignore (Sys.command "git commit --allow-empty -q -m init");
+            ignore (Sys.command (c2c_cmd (Printf.sprintf
+              "C2C_CLI_FORCE=1 c2c dev worktree list > %s 2>&1"
+              (Filename.quote tmpfile)))));
+        let ch = open_in tmpfile in
+        let content = Fun.protect ~finally:(fun () -> close_in ch)
+          (fun () -> really_input_string ch (in_channel_length ch))
+        in
+        (* Worktree list shows "refs/heads/" for each branch entry *)
+        check bool "worktree list contains refs/heads entries" true
+          (string_contains content "refs/heads")))
 
 (* ------------------------------------------------------------------------- *)
 (* c2c instances — verify managed-instance listing                           *)
