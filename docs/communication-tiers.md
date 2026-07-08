@@ -53,7 +53,7 @@ turn manually.
 |--------|--------|---------|-------|
 | **PostToolUse hook** (`c2c-inbox-check.sh`) | Working ✓ | Claude Code | Drains inbox after every tool call. Installed by `c2c install claude`. Fast path ~3ms (bash builtin). |
 | **Monitor tool + inotifywait** on broker dir | Working ✓ | Claude Code | `inotifywait -m -e close_write,modify,delete,moved_to "$BROKER_ROOT" --include '.*\.inbox\.json$'` (broker root resolves to `$HOME/.c2c/repos/<fp>/broker` by default; see root `CLAUDE.md`). Persistent. `moved_to` required for atomic writes (tmp+rename). Use `c2c monitor --all` instead of raw inotifywait. |
-| **Codex notify daemon** (`c2c-deliver-inbox --notify-only`, OCaml binary) | Working ✓ | Codex | Managed harness (`c2c start codex`) starts the OCaml daemon alongside Codex; legacy Python `c2c_deliver_inbox.py` is a fallback only when the binary is missing. PTY-injects a poll sentinel; message bodies stay in broker. |
+| **Codex hooks** (`c2c hook codex`) | Working ✓ | Codex | `c2c install codex` writes pre-trusted `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks into `~/.codex/config.toml`. The hooks drain the broker inbox and return messages as `additionalContext`; no XML sideband or PTY sentinel is required. |
 | **Pi Agent extension** (`pi-c2c`) | Documented ✓ | Pi Agent | Watches the broker inbox with `fs.watch`, drains with `c2c poll-inbox`, and injects transcript messages via `pi.sendMessage`. Installed with `pi install npm:pi-c2c`; not a `c2c install` target. |
 | **OpenCode native TypeScript plugin** (`.opencode/plugins/c2c.ts` under the target project; dev symlink or embedded binary-only file) | Proven ✓ | OpenCode | Background-polls broker every 2s, delivers via `client.session.promptAsync` — messages appear as first-class user turns. No PTY. Proven 2026-04-14. |
 | **Kimi notification-store push** (`C2c_kimi_notifier`, OCaml) | Working ✓ | Kimi | File-based delivery: writes notification JSON into kimi session's notifications/ directory. Kimi reads on its own cadence. tmux send-keys wake when idle. Replaced the deprecated wire-bridge path. |
@@ -71,7 +71,7 @@ primary delivery path.
 | Method | Status | Clients | Notes |
 |--------|--------|---------|-------|
 | **PTY injection** (`claude_send_msg.py` + `pty_inject`) | Legacy | Claude Code | Writes to PTY master fd via `pidfd_getfd()` with `cap_sys_ptrace=ep`. Fragile: needs terminal PID and master fd, goes stale on restart. Not used for new delivery paths. |
-| **`c2c_deliver_inbox.py`** (poll + PTY inject loop) | Legacy / deprecated | Claude Code | Polls inbox, delivers via PTY injection. Superseded by PostToolUse hook for Claude Code and by the OCaml `c2c-deliver-inbox` binary for Codex. |
+| **Codex notify / XML sideband delivery** (`c2c-deliver-inbox --notify-only`, XML fd, and Python PTY fallbacks) | Legacy / deprecated | Codex | Superseded by Codex hooks installed by `c2c install codex`. Current Codex builds are expected to lack the old XML sideband flag, and production delivery should not rely on PTY injection. |
 | **`send_to_session.py`** (history.jsonl injection) | Experimental | Claude Code | Appends directly to a session's `history.jsonl`. Recipient sees it on next reload — not real-time. |
 | **`notifications/claude/channel`** (MCP push) | Gated | Claude Code | Real push delivery into transcript. Requires `--dangerously-load-development-channels` and `experimental.claude/channel` in `initialize`. Standard Claude Code does not declare this; do NOT set `C2C_MCP_AUTO_DRAIN_CHANNEL=1`. |
 
@@ -99,7 +99,7 @@ coordinate cleanly.
 
 | Tool | Purpose | Clients |
 |------|---------|---------|
-| **`c2c start <client>`** | Unified managed launcher — starts MCP-managed clients with deliver daemon + poker. Replaces all `run-*-inst-outer` scripts. | Claude Code, Codex, OpenCode, Kimi |
+| **`c2c start <client>`** | Unified managed launcher — starts MCP-managed clients with each client's current delivery integration + poker where needed. Replaces all `run-*-inst-outer` scripts. | Claude Code, Codex, OpenCode, Kimi |
 | **`c2c instances`** | List running managed instances and their status. | Claude Code, Codex, OpenCode, Kimi |
 | **`c2c stop <name>`** | Stop a managed instance by name. | Claude Code, Codex, OpenCode, Kimi |
 | **`run-*-inst-outer`** | *(Deprecated)* Per-client outer restart loops. Replaced by `c2c start` for MCP-managed clients. | Claude Code, Codex, OpenCode, Kimi |
