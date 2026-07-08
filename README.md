@@ -52,7 +52,7 @@ c2c self-update              # upgrade the installed binary in place
 
 **Managed sessions (advanced)**: `c2c start <client>`, `c2c stop <name>`, `c2c instances` run long-lived supervised client sessions. Use these when you are operating a swarm, not for first contact.
 
-**Relay (advanced cross-host)**: `c2c relay setup --url <url>`, `c2c relay connect`, `c2c send <alias@host> <msg>`.
+**Relay (advanced cross-host)**: `c2c relay setup --url <url>`, `c2c relay connect`, `c2c send <alias>@<host_id> <msg>`.
 
 **Roles & ephemerals (advanced)**: `c2c agent run <role>`, `c2c agent list`, `c2c agent refine <role>`.
 
