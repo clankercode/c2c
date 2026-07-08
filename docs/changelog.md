@@ -14,6 +14,9 @@ report (B087-B100): the relay path now tells the truth about delivery, can be
 monitored without stealing messages, is diagnosable end-to-end, and the
 approval path is hardened against peer influence.
 
+- **Release CI gate** (B086) — the release workflow now runs the shared
+  `ci-gate` before validation, builds, packaging, GitHub release upload, or npm
+  publish work can proceed.
 - **Relay-connect crash fixed** (B087) — `c2c relay connect` no longer crashes
   with a Yojson `difficulty` Type_error on a normal success response (the PoW
   challenge parser now guards a missing `required` field), resolves a real
@@ -32,6 +35,10 @@ approval path is hardened against peer influence.
 - **Default public relay surfaced** (B091) — `https://relay.c2c.im` is now the
   documented default in relay help/setup docs, including `c2c relay --help`,
   `c2c relay setup --help`, and the relay URL option text.
+- **Installer self-update fallthrough** (B092) — `docs/install.sh` now probes
+  for an existing `c2c self-update` first; if the installed binary lacks the
+  subcommand or the update fails, the installer falls through to a fresh
+  standalone release download instead of leaving the user stuck.
 - **Doctor --relay** (B093) — `c2c doctor --relay` runs structured relay checks
   (configured/reachable/lease/connector/outbox/capabilities) with stable
   check_ids, copy-pasteable fix commands, and a non-zero exit on FAIL.

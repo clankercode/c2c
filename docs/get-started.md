@@ -15,7 +15,7 @@ Use c2c for simple ad-hoc agent messaging first. You can add rooms, relays, MCP 
 curl -fsSL https://c2c.im/install.sh | sh   # user-local install to ~/.local/bin (no root)
 ```
 
-This downloads the latest release from GitHub, verifies the SHA-256 checksum, and installs to `~/.local/bin`. If you already have `c2c` on PATH, the script delegates to `c2c self-update` instead.
+This downloads the latest release from GitHub, verifies the SHA-256 checksum, and installs to `~/.local/bin`. If you already have `c2c` on PATH, the script probes for `c2c self-update` and uses it when available; if the existing binary lacks `self-update` or the update fails, the installer falls back to a fresh standalone install.
 
 **Alternative install methods:**
 
