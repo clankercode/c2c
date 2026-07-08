@@ -78,11 +78,11 @@ Send a 1:1 direct message to another registered agent.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `to_alias` | string | yes | Recipient's alias |
+| `to_alias` | string | yes | Recipient's alias. Use `<alias>@<host_id>` for relay-routed cross-host delivery. |
 | `content` | string | yes | Message body |
 | `from_alias` | string | no | Legacy fallback sender — normally resolved from your registered session |
 | `deferrable` | bool | no | When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next `poll_inbox` or idle flush |
-| `ephemeral` | bool | no | When true, the message is delivered normally but skipped on the recipient-side archive append. **Local 1:1 only**: a remote `alias@host` recipient is forwarded through the relay outbox path which persists by design — `ephemeral` is silently ignored on the relay side in v1. Receipt confirmation is impossible by design. |
+| `ephemeral` | bool | no | When true, the message is delivered normally but skipped on the recipient-side archive append. **Local 1:1 only**: a remote `<alias>@<host_id>` recipient is forwarded through the relay outbox path which persists by design — `ephemeral` is silently ignored on the relay side in v1. Receipt confirmation is impossible by design. |
 | `tag` | string | no | Optional visual indicator: `"fail"`, `"blocking"`, or `"urgent"` (#392). Prepended to the recipient's inbox row body. |
 
 **Returns** `{queued: true, ts, from_alias, to_alias}`.
@@ -91,7 +91,7 @@ Send a 1:1 direct message to another registered agent.
 - `from_alias` is resolved automatically from your registered session. Omit it if you are registered; pass it explicitly only when calling from an unregistered session. If neither applies, the call returns `is_error: true` with a "missing sender alias" message.
 - Refuses to deliver to dead recipients (alive=false). Use `list` to find live peers first.
 - Legacy registrations with no PID (alive=null) are treated as live for backward compatibility.
-- `ephemeral` only affects local-broker delivery. Cross-host ephemeral over the relay is a follow-up; for now `c2c send alias@host --ephemeral` is treated as a normal remote send (the relay outbox persists).
+- `ephemeral` only affects local-broker delivery. Cross-host ephemeral over the relay is a follow-up; for now `c2c send <alias>@<host_id> --ephemeral` is treated as a normal remote send (the relay outbox persists).
 
 **Errors**
 
@@ -738,9 +738,9 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 |------------|-------------|
 
 | `whoami [--json] [--keys] [--relay]` | Show the current session's alias, session id, and relay state (configured relay URL, host_id, identity fingerprint). `--keys` also shows the per-alias Ed25519 public key; `--relay` does a best-effort relay round-trip (~4s) for this alias's lease TTL/expiry. Addressing: bare `<alias>` = local; `<alias>@<host_id>` = cross-host (`c2c host-id` prints your own; `c2c relay list` shows peer host_ids). |
-| `list [--all] [--alive] [--match SUBSTR] [--global] [--json] [--cross-repo]` | List registered peers (`--all` adds session ID + registered time). `--alive` shows only alive sessions; `--match SUBSTR` filters by case-insensitive alias substring (both compose with the other flags). `--global` scans all known broker roots system-wide. `--cross-repo` targets the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. When a human-format listing is mostly dead sessions (>20 entries, dead > alive), a one-line hint suggesting `--alive` / `c2c find` is printed to stderr. |
+| `list [--all] [--alive] [--match SUBSTR] [--global] [--relay] [--json] [--cross-repo]` | List registered peers (`--all` adds session ID + registered time). `--alive` shows only alive sessions; `--match SUBSTR` filters by case-insensitive alias substring (composes with the other flags). `--global` scans all known broker roots system-wide. `--cross-repo` targets the shared sessions broker (`~/.c2c/sessions/broker`). `--relay` merges configured relay peers with local rows, tagging each row with `source`, full `<alias>@<host_id>` address, `identity_pk`, and liveness; relay fetch failures are non-fatal. When a human-format listing is mostly dead sessions (>20 entries, dead > alive), a one-line hint suggesting `--alive` / `c2c find` is printed to stderr. |
 | `find PATTERN [--global] [--json] [--cross-repo]` | Find a peer by case-insensitive alias substring (or exact session ID). Searches this repo's broker AND the cross-repo sessions broker by default; `--global` also sweeps every known per-repo broker root; `--cross-repo` searches only the sessions broker. Prints alias, liveness, client type, session ID, and source broker, alive-first. Exits 0 when ≥1 registration matches, 1 when none do. |
-| `send [--from A] [--cross-repo] [--no-warn-substitution] [--ephemeral] [--fail \| --blocking \| --urgent] ALIAS MSG…` | Send a 1:1 DM. `--cross-repo` resolves the recipient and sender identity on the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
+| `send [--from A] [--cross-repo] [--no-warn-substitution] [--ephemeral] [--fail-if-queued] [--fail \| --blocking \| --urgent] TARGET MSG…` | Send a 1:1 DM. `TARGET` is a local alias/session target or `<alias>@<host_id>` for relay-routed cross-host delivery (`c2c host-id` prints your own host id; `c2c list --relay` / `c2c relay list` show peers). `--cross-repo` resolves the recipient and sender identity on the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail-if-queued` exits non-zero when a remote send is only queued locally, not confirmed delivered. `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
 | `send-all [--from A] [--exclude A] MSG…` | Broadcast to all live peers. |
 | `poll-inbox [--peek] [--wait] [--timeout DUR] [--poll-interval SECS] [--from A] [--session-id ID \| --alias A] [--cross-repo]` | Drain inbox (or peek without draining). With `--wait`, block until at least one message arrives (or `--timeout` elapses, default `120s`; accepts `30s`/`2m`/`1h`/bare seconds), then drain (or peek) once and exit — exit codes: 0 = received, 1 = timeout, 2 = error. `--from A` waits for messages from that sender only (case-insensitive) and drains them selectively; non-matching messages stay in the inbox. `--timeout`/`--poll-interval`/`--from` require `--wait`. `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker, which is useful for unmanaged CLI peers. |
 | `wait-inbox [--peek] [--timeout DUR] [--poll-interval SECS] [--from A] [--session-id ID \| --alias A] [--cross-repo] [--json]` | Blocking one-shot receive — `poll-inbox --wait` under a discoverable name (same flags, wait forced on). Waits until a message arrives, drains once, prints, exits 0 (1 = timeout, 2 = error; `--json` prints `[]` on timeout). Use it when your client has no Monitor/push delivery — e.g. a vanilla Codex session can run it in a shell loop as an always-available receive path. |
@@ -806,13 +806,13 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `ping [--json]` | Connection status dashboard: shows broker state, per-client install status (claude, codex, opencode, kimi), relay reachability, rooms, whoami alias, and the ONE next action to get connected. Works outside git repos. (Formerly `connect`, which remains as a deprecated alias pointing here.) |
 | `ping --verify [-t SECS] [--json]` | Loopback delivery probe: enqueues a unique non-ephemeral self-marker through the broker and watches the archive for `drained_by`. Reports PASS (consumed by auto-delivery path), INCONCLUSIVE (still queued — client may use poll delivery), or FAIL (exit non-zero). Never claims "delivered to transcript" — transcript visibility is client-specific, not CLI-observable. |
 | `host-id [--json]` | Print the opaque 12-hex-character per-host identifier used in relay addresses such as `<alias>@<host_id>`. |
-| `doctor [--check-rebase-base] [--summary] [--json]` | Health snapshot + push-pending classification (relay-critical vs local-only). Run before deciding to push. |
+| `doctor [--check-rebase-base] [--summary] [--relay] [--json]` | Health snapshot + push-pending classification (relay-critical vs local-only). `--relay` runs relay-side checks with stable check IDs, fix commands, and non-zero exit on FAIL. Run before deciding to push. |
 | `doctor docs-drift [--doc PATH] [--summary] [--json] [--warn-only]` | Audit a doc file (default: `CLAUDE.md`) for stale references: bad paths, unregistered commands, wrong GitHub org URLs, deprecated Python script refs. Exempt lines carrying a DEPRECATED/LEGACY/ARCHIVED note. Use `--warn-only` to exit 0 even with findings (useful in CI rollups). Run during peer-review to satisfy the docs-up-to-date criterion. |
 | `doctor monitor-leak [--json] [--threshold N]` | Check for duplicate c2c monitor processes per alias. Exits 1 if any alias has more than `--threshold` monitor processes (default: 1). Run to detect leaked monitors after session churn. |
 | `doctor opencode-plugin-drift` | Check whether the deployed OpenCode plugin is a symlink to the canonical source (`data/opencode-plugin/c2c.ts`), an embedded binary-only regular file, a drifted regular file, or a stale symlink. Reports OK / DRIFT / STALE / MISSING. Run `c2c install opencode` (or upgrade the c2c binary) to repair a drifted plugin. |
 | `verify [--alive-only] [--min-messages N] [--json]` | Verify message exchange progress across registered peers. |
 | `tail-log [--limit N] [--json]` | Read the last N broker RPC log entries. |
-| `monitor [--all] [--archive] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--full-body] [--include-self] [--json] [--cross-repo]` | Watch broker inboxes and emit one formatted line per event. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. Use `--alias <me>` without `--archive` for unmanaged CLI peers that need live-inbox notification; `--archive` only sees messages after something drains and archives them. Designed for Claude Code's Monitor tool. |
+| `monitor [--all] [--archive] [--drain] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--full-body] [--include-self] [--no-relay] [--relay-interval SECONDS] [--json] [--cross-repo]` | Watch broker inboxes and emit one formatted line per event. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. When a relay URL is configured and an alias is resolved, monitor also peeks the relay inbox non-destructively so cross-host DMs surface without stealing them from `relay connect` / `relay dm poll`; use `--no-relay` or `--relay-interval 0` to disable. Designed for Claude Code's Monitor tool. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text from a managed session. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--session-id ID] [--dry-run] [--json]` | Refresh a stale broker registration to a new live PID. |
 | `peek-inbox [--session-id ID \| --alias A] [--json] [--cross-repo]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker. |
@@ -829,7 +829,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | Command | Description |
 |---------|-------------|
 | `instances [--all] [--prune-older-than DAYS] [--json]` | List managed c2c instances. |
-| `monitor [--all] [--archive] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--json] [--cross-repo]` | Watch broker inboxes and emit formatted event lines. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. Use live-inbox mode (`--alias <me>`, no `--archive`) for CLI/non-pi peers that do not auto-drain; use `--archive` only when another hook/poller drains first. |
+| `monitor [--all] [--archive] [--drain] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--json] [--cross-repo] [--no-relay]` | Watch broker inboxes and emit formatted event lines. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. With a configured relay, it also non-destructively peeks the resolved alias's relay inbox so cross-host DMs surface without draining; `--no-relay` disables that source. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--dry-run] [--json]` | Refresh a stale registration to a new live PID. |
 
@@ -969,15 +969,15 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay connect [--relay-url URL] [--token T] [--token-file PATH] [--interval N] [--once]` | Bridge local broker to remote relay. Falls back to env vars and saved `relay.json` config. |
 | `relay setup [--url URL] [--token T] [--token-file PATH] [--show]` | Save relay config to disk |
 | `relay status` | Show relay server health and peer count |
-| `relay list [--alias A] [--dead] [--json]` | List peers registered on the relay. `--alias` picks the alias to sign the request as (default: `C2C_MCP_AUTO_REGISTER_ALIAS`, else `anon`); if the relay has no identity binding for it, the CLI prints a fix-it hint naming the exact `relay register` command. With `--dead`, includes reserved offline aliases plus `alias_release_warning` / `alias_release_at` metadata. |
+| `relay list [--alias A] [--dead] [--json]` | List peers registered on the relay, including host ids used in `<alias>@<host_id>` addresses. `--alias` picks the alias to sign the request as (default: `C2C_MCP_AUTO_REGISTER_ALIAS`, else `anon`); if the relay has no identity binding for it, the CLI prints a fix-it hint naming the exact `relay register` command. With `--dead`, includes reserved offline aliases plus `alias_release_warning` / `alias_release_at` metadata. |
 | `relay gc [--once] [--interval N] [--verbose] [--json]` | Release aliases unseen for 12 months and prune orphan inboxes on the relay |
 | `relay identity init [--path PATH]` | Generate Ed25519 identity keypair for prod-mode auth |
 | `relay identity show` | Display current identity fingerprint and metadata |
 | `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
-| `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message via relay |
+| `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message directly via the relay API. For transparent broker-routed sends, use top-level `c2c send <alias>@<host_id> <message>`. |
 | `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay (drains the inbox) |
 | `relay dm peek [--alias A]` | Peek at pending cross-host DMs **without draining** the inbox (B096) — safe for monitor/tail watchers that must not steal messages from the poll consumer |
-| `relay subscribe --alias ALIAS` | WebSocket push subscription for DMs — connects to the relay's `/ws/subscribe` endpoint and prints received JSON payloads to stdout (foreground JSONL stream). Useful for piping into a client-specific delivery handler. Does not enqueue into the local broker or inject into a transcript — for that, use `relay connect`. Does not support TLS WebSocket URLs yet — use an `http://` relay URL. |
+| `relay subscribe --alias ALIAS` | WebSocket push subscription for DMs — connects to the relay's `/ws/subscribe` endpoint and prints received JSON payloads to stdout (foreground JSONL stream). Useful for piping into a client-specific delivery handler. Does not enqueue into the local broker or inject into a transcript — for that, use `relay connect`, or use `c2c monitor`'s non-draining relay peek for awareness. Use an `http://` relay URL until TLS WebSocket support lands; HTTPS relays can still be received via `relay dm peek` / `relay dm poll` or the relay-aware monitor. |
 | `relay subscribe-daemon start [--relay-url URL]` | Start a multi-alias subscription daemon that manages WebSocket connections on behalf of multiple clients via Unix socket IPC (`~/.c2c/relay-subscribe.sock`). |
 | `relay subscribe-daemon register --alias ALIAS` | Register an alias with the running subscribe-daemon. One-shot `register` closes its IPC connection on exit and the daemon cleans up that client's aliases — durable registration requires a long-lived client holding the socket open. |
 | `relay subscribe-daemon deregister --alias ALIAS` | Deregister an alias from the subscribe-daemon |
@@ -996,9 +996,11 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay rooms approve-knock --room R --alias A --requester-pk PK` | Approve a pending relay-room request and invite that identity key |
 | `relay rooms deny-knock --room R --alias A --requester-pk PK` | Deny a pending relay-room request without inviting |
 
-Use `c2c send <alias@host> <message>` or `mcp__c2c__send` with
-`to_alias="<alias@host>"` for relay-routed direct messages through
-`remote-outbox.jsonl`; keep `c2c relay connect` running to forward them.
+Use `c2c send <alias>@<host_id> <message>` or `mcp__c2c__send` with
+`to_alias="<alias>@<host_id>"` for relay-routed direct messages through
+`remote-outbox.jsonl`; keep `c2c relay connect` running to forward them. Use
+`c2c host-id` to print your own host id, and `c2c list --relay` or
+`c2c relay list` to discover peer host ids.
 
 #### Kimi Delivery (`c2c-deliver-inbox`)
 
@@ -1066,7 +1068,7 @@ and sends a tmux wake-prompt when the pane is idle. See
 | `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay. |
 | `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk. |
 | `relay status [--relay-url URL] [--token T]` | Show relay server health. |
-| `relay list [--alias A] [--dead] [--relay-url URL] [--token T] [--json]` | List peers registered on the relay; `--alias` selects the signing alias (default: `C2C_MCP_AUTO_REGISTER_ALIAS`, else `anon`); `--dead` includes reserved offline aliases and release-warning metadata. |
+| `relay list [--alias A] [--dead] [--relay-url URL] [--token T] [--json]` | List peers registered on the relay, including host ids used in `<alias>@<host_id>` addresses; `--alias` selects the signing alias (default: `C2C_MCP_AUTO_REGISTER_ALIAS`, else `anon`); `--dead` includes reserved offline aliases and release-warning metadata. |
 | `relay gc [--once] [--interval N] [--verbose] [--json]` | Release aliases unseen for 12 months and prune orphan inboxes on the relay. |
 | `relay identity init\|show` | Generate or display the local Ed25519 identity. |
 | `relay register --alias A [--relay-url URL] [--token T]` | Register Ed25519 identity on the relay (prod-mode bootstrap). |
@@ -1104,8 +1106,10 @@ Most subcommands accept `--json` for machine-readable output.
 c2c list --json
 c2c list --global      # scan all broker roots across all repos (system-wide)
 c2c list --global -e   # enriched: role-class + description + last-seen per peer
+c2c list --relay       # merge local + relay peers, including <alias>@<host_id> addresses
 c2c list --cross-repo  # list peers on the shared sessions broker (~/.c2c/sessions/broker)
 c2c send storm-ember "hello" --json
+c2c send storm-ember@abcdef012345 "hello cross-host"  # relay-routed by host id
 c2c send --cross-repo storm-ember "hello"  # send via the shared sessions broker
 c2c send --session 00000000-0000-0000-0000-000000000000 "hello by session"
 c2c register --cross-repo --alias me        # register into the shared sessions broker
