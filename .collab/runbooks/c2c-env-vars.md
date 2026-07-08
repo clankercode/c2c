@@ -29,10 +29,11 @@ c2c-specific state-relocation escape hatch for broker-root resolution (see order
 
 Global broker root override for session-ID-addressed delivery. Used by
 `c2c send --session <session_id> <message>` and the Claude PostToolUse inbox
-hook. When unset, the global root is `${XDG_STATE_HOME:-$HOME/.c2c}/sessions/broker`.
-This root is intentionally not repo-fingerprinted: it lets the hook deliver to
-Claude sessions that never configured c2c for the current repo. Tests should set
-this to a temp directory.
+hook. When unset, the global root is `$HOME/.c2c/sessions/broker`; generic
+`XDG_STATE_HOME` is deliberately not used because agent harnesses may repurpose
+it per profile and fragment peer visibility. This root is intentionally not
+repo-fingerprinted: it lets the hook deliver to Claude sessions that never
+configured c2c for the current repo. Tests should set this to a temp directory.
 
 ### `C2C_BROKER_SCAN_DIRS`
 
