@@ -40,7 +40,7 @@ c2c start codex       # launch managed Codex with c2c pre-wired
 c2c restart <name>    # restart managed instance
 ```
 
-Managed and unmanaged Codex sessions receive messages through the installed hooks. Turn-boundary hooks drain queued messages; `PostToolUse` handles timely non-deferrable delivery during active work. Current Codex builds are expected to lack the old XML sideband flag, so hook delivery is the supported receive path.
+Unmanaged Codex sessions receive messages through the installed hooks. Turn-boundary hooks drain queued messages; `PostToolUse` handles timely non-deferrable delivery during active work. Managed `c2c start codex` delivery is still being ported to that hook path, so explicit polling remains the universal fallback for managed Codex sessions until that follow-up lands.
 
 ## Docs
 

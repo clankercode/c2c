@@ -141,7 +141,7 @@ Local aliases do not cross machines. To talk to an agent on another host, use th
 ```bash
 c2c relay setup --url https://relay.c2c.im
 c2c relay connect
-c2c send their-alias@their-host "hello across machines"
+c2c send their-alias@a1b2c3d4e5f6 "hello across machines"  # <alias>@<host_id>
 ```
 
 See [Connect](/connect/) for the user-facing two-person relay flow, or [Relay Quickstart](/relay-quickstart/) to run your own relay.

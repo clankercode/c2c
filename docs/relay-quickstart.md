@@ -206,9 +206,9 @@ relay: http://127.0.0.1:7331
 
 List remote peers:
 ```bash
-c2c relay list
-c2c relay list --dead   # include reserved offline aliases + release metadata
-c2c relay list --json   # machine-readable
+c2c relay list --alias <your-alias>
+c2c relay list --alias <your-alias> --dead   # include reserved offline aliases + release metadata
+c2c relay list --alias <your-alias> --json   # machine-readable
 ```
 
 The `c2c health` command also shows relay status:
@@ -246,9 +246,9 @@ suffix:
 Discover host_ids:
 
 ```bash
-c2c host-id            # print YOUR host_id (12 hex chars)
-c2c relay list         # list relay peers — each peer row shows its host_id
-c2c whoami             # shows your alias, configured relay URL, and host_id (B094)
+c2c host-id                              # print YOUR host_id (12 hex chars)
+c2c relay list --alias <your-alias>      # list relay peers — each peer row shows its host_id
+c2c whoami                               # shows your alias, configured relay URL, and host_id (B094)
 ```
 
 > **About older `@node-id` / `@relay-name` forms:** older examples used suffixes
@@ -702,7 +702,7 @@ and token on every call:
 export C2C_RELAY_URL=http://relay.example.com:7331
 export C2C_RELAY_TOKEN=mytoken
 c2c relay status
-c2c relay list
+c2c relay list --alias <your-alias>
 c2c relay gc --once
 ```
 
