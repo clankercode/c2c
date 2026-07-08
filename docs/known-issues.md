@@ -6,13 +6,11 @@ permalink: /known-issues/
 
 # Known Issues
 
-## Codex Auto-Delivery Uses Notify Daemon
+## Codex Auto-Delivery Uses Hooks
 
-Codex does not have a PostToolUse hook. Instead, the OCaml `c2c-deliver-inbox --notify-only --loop` binary watches the inbox file and PTY-injects a brief notification telling the agent to call `mcp__c2c__poll_inbox`. This is near-real-time but the message body travels broker-native (not in the PTY notification text). (The legacy Python `c2c_deliver_inbox.py` is used only as a fallback when the OCaml binary is missing from the broker root.)
+Codex delivery is hook-based, not XML sideband or PTY notify. `c2c install codex` writes `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks that run `c2c hook codex`. Those hooks can auto-register a vanilla Codex session, drain inbound broker messages, and surface them through `hookSpecificOutput.additionalContext`.
 
-`c2c start codex` (the managed session launcher) starts the deliver daemon automatically alongside each managed Codex instance. For non-managed Codex sessions, run the daemon manually or add `poll_inbox` to the startup prompt.
-
-**Fallback:** `c2c install codex` configures all tools with `approval_mode = "auto"` so polling is always frictionless when the daemon is not running.
+**Fallback:** explicit `mcp__c2c__poll_inbox {}` / `c2c poll-inbox` remains the portable path when hook output is unavailable or after config changes that have not been picked up by a restarted Codex session. `c2c install codex` also configures c2c tools with `approval_mode = "auto"` so polling stays frictionless.
 
 ---
 
@@ -46,7 +44,7 @@ The PostToolUse hook only fires when Claude Code is actively running tools. A tr
 
 PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_ptrace`. This path is **deprecated** — OpenCode uses the TypeScript plugin, Kimi uses notification-store delivery, Claude Code uses PostToolUse hook + `/loop`.
 
-**Current path:** Broker-native `poll_inbox` works everywhere without PTY. Only Codex managed sessions still use the PTY notify daemon.
+**Current path:** Broker-native `poll_inbox` works everywhere without PTY. Current production client integrations also avoid PTY injection: Claude Code uses PostToolUse hooks, Codex uses Codex hooks, OpenCode uses the TypeScript plugin, and Kimi uses notification-store delivery.
 
 ---
 
@@ -111,19 +109,11 @@ C2C_MCP_SESSION_ID=my-child-session c2c start opencode -n my-open
 
 The server default for `C2C_MCP_AUTO_DRAIN_CHANNEL` is `1` (ON) since #346. However, `c2c install` writes `C2C_MCP_AUTO_DRAIN_CHANNEL=0` into each client's MCP config to override this. Even when set to `1`, auto-drain only fires if the client declares `experimental.claude/channel` support in its `initialize` handshake — standard Claude Code does not — so in practice the drain has no effect there. Do not remove the `=0` override that install writes; the PostToolUse hook is the production auto-delivery path for Claude Code.
 
-### Codex PTY Notify Requires `CAP_SYS_PTRACE` on Python
+### Codex PTY Notify Capability Notes Are Historical
 
-Of the MCP-managed clients, only **Codex** still relies on PTY injection for the wake/notify path (the OCaml `c2c-deliver-inbox --notify-only` daemon under managed Codex). Claude Code uses the PostToolUse hook, OpenCode uses the TypeScript plugin, and Kimi uses the notification-store notifier (`C2c_kimi_notifier`) — none of those paths require `CAP_SYS_PTRACE`. Pi Agent uses the external `pi-c2c` extension and the `c2c` CLI rather than this PTY notify path.
+Codex no longer relies on the PTY notify path for production delivery. Use the Codex hooks installed by `c2c install codex`, plus explicit `poll_inbox` fallback, instead of granting `CAP_SYS_PTRACE` for Codex delivery.
 
-When the Codex notify daemon falls back to `c2c_pty_inject` (via `pidfd_getfd`), `kernel.yama.ptrace_scope >= 1` (the default on most distros) plus a Python interpreter lacking `CAP_SYS_PTRACE` causes every wake to return `EPERM`, and the Codex session silently misses new messages until it polls manually.
-
-**Fix:** grant the capability once per interpreter install:
-
-```bash
-sudo setcap cap_sys_ptrace=ep "$(command -v python3)"
-```
-
-`c2c health` and the bare `c2c` landing flag this case with the exact command to run.
+Historical PTY helpers such as `c2c_pty_inject` may still be useful for diagnostics or older experimental paths. If you deliberately run those legacy paths on Linux with `kernel.yama.ptrace_scope >= 1`, they can still require `CAP_SYS_PTRACE`; that requirement does not apply to current Codex hook delivery.
 
 ### tmux `extended-keys on` Breaks `send-keys Enter` Against Claude TUIs
 

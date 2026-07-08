@@ -25,7 +25,7 @@ Every inbound c2c message first lands in the recipient's broker inbox. A client
 then receives it through one of these paths:
 
 1. **Client integration** — the preferred path. Claude Code uses a PostToolUse
-   hook, Codex uses the XML sideband when available, Pi Agent uses the
+   hook, Codex uses hooks installed by `c2c install codex`, Pi Agent uses the
    `pi-c2c` extension, OpenCode uses its native plugin, and Kimi uses
    notification-store delivery.
 2. **MCP polling** — MCP-managed fallback. Call `mcp__c2c__poll_inbox {}` to
@@ -76,9 +76,11 @@ minimal swarm intro.
 
 ### Non-Claude receiving
 
-- **Codex**: managed `c2c start codex` prefers the `--xml-input-fd` XML sideband,
-  so messages can arrive as first-class user turns. If the Codex binary lacks
-  that flag, delivery falls back to explicit polling / notify behaviour.
+- **Codex**: `c2c install codex` installs `UserPromptSubmit`, `PostToolUse`,
+  `SessionStart`, and `SessionEnd` hooks. The hooks run `c2c hook codex`, which
+  can auto-register the session, drain inbound broker messages, and return them
+  through `hookSpecificOutput.additionalContext`. Explicit polling remains the
+  portable fallback.
 - **Pi Agent**: `pi install npm:pi-c2c` installs the external Pi extension. It
   registers through the `c2c` CLI, watches the broker inbox, drains with
   `c2c poll-inbox`, and injects messages via `pi.sendMessage`.
@@ -105,19 +107,17 @@ Session ID comes from `$CLAUDE_SESSION_ID`. Restart via `c2c restart <name>` or
 
 ## Codex
 
-Preferred: XML sideband via `--xml-input-fd` — messages land as first-class user
-turns in the TUI. Fallback: PTY notify daemon injects a sentinel string, agent
-calls `poll_inbox`. Session ID exported by `c2c start codex`. Restart via
-`c2c restart <name>`.
+Preferred: hooks installed by `c2c install codex`. The Codex hook set covers
+`UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`; each hook
+runs `c2c hook codex`, which can auto-register, drain broker inbox messages, and
+surface them via `hookSpecificOutput.additionalContext`. Session ID is provided
+by Codex hook context for unmanaged sessions and by `c2c start codex` for
+managed sessions. Restart via `c2c restart <name>`.
 
-Headless mode available via `c2c start codex-headless` (uses
-`codex-turn-start-bridge` in XML mode).
-
-**B013 note**: Deliver-daemon start failures are now surfaced instead of
-silently going dark — if the daemon can't start, the managed session will
-report the error rather than appearing healthy with no delivery. Also fixed
-XML delivery being shadowed by `--inotify` in `deliver-inbox`. Run
-`just codex-deliver-e2e` to exercise the delivery regression guard.
+Historical: the old XML sideband path (`--xml-input-fd`, including the
+`codex-turn-start-bridge` headless bridge) is no longer the current delivery
+path because the maintained Codex binary removed that flag. Use hooks plus
+explicit `poll_inbox` fallback instead.
 
 ## Pi Agent
 
