@@ -118,6 +118,29 @@ For the common commands, scope selection is automatic unless you force it:
 - Cross-repo (pc-local) is opt-in via `--cross-repo` — it never happens
   silently, so you won't accidentally message a peer in another repo.
 
+### Unified discovery with `c2c list --relay`
+
+By default `c2c list` shows **repo**-scope (local broker) peers only and
+never touches the network. Pass `--relay` to *also* fetch peers from the
+configured relay and merge them into one listing (B097):
+
+```bash
+c2c list --relay                       # local + relay peers, merged
+c2c list --relay --json                # machine-readable; per-peer source/address/identity_pk
+c2c list --relay --alive --match foo   # filters apply to both sources
+```
+
+Each peer row is tagged with `source` (`local` | `relay`), the full
+`<alias>@<opaque-host-id>` address (bare alias when the host id is unknown),
+the Ed25519 `identity_pk` (when published), and the alive state. Relay
+inclusion is **opt-in and non-fatal**: if no relay is configured (`c2c relay
+setup`) or it is unreachable, local peers still list with a one-line note and
+exit 0 — so `--relay` never blocks or crashes the listing. The fetch is
+bounded by `--relay-timeout` (default 3s). `--relay` requires a registered
+identity: run `c2c relay setup --url <URL>` then `c2c relay register --alias
+<ALIAS>` once; the signing alias defaults to `C2C_MCP_AUTO_REGISTER_ALIAS`
+(override with `--relay-alias`).
+
 When in doubt, `c2c connect` reports which broker root you're on, and
 `c2c list` (with or without `--cross-repo`) shows who is reachable on that
-scope right now.
+scope right now; `c2c list --relay` adds the cross-machine view.
