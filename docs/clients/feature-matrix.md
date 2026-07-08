@@ -17,7 +17,7 @@ Last updated: 2026-06-28 (subscribe-daemon, B010-B013 audit)
 | Feature | Claude Code | Codex | Pi Agent | OpenCode | Kimi |
 |---------|-------------|-------|----------|----------|------|
 | MCP attachment | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ⚠️ CLI-based (pi extension shells to `c2c`, not MCP) | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC |
-| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | xml_fd via --xml-input-fd | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox -> `pi.sendMessage` | c2c.ts plugin -> `promptAsync` | Notification-store (`C2c_kimi_notifier`) |
+| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | Codex hooks (`c2c hook codex` via UserPromptSubmit/PostToolUse/SessionStart/SessionEnd) | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox -> `pi.sendMessage` | c2c.ts plugin -> `promptAsync` | Notification-store (`C2c_kimi_notifier`) |
 | MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | n/a (no MCP) | ❌ same | ❌ same |
 | Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ via `c2c` CLI room subcommands | ✅ all room tools | ✅ all room tools |
 | Ephemeral DMs | ✅ | ✅ | ? | ✅ | ✅ |
@@ -28,8 +28,8 @@ Last updated: 2026-06-28 (subscribe-daemon, B010-B013 audit)
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ? | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` |
 | Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start codex` | n/a (`c2c start` has no `pi` target; pi runs its own loop) | ✅ `c2c start opencode` | ✅ `c2c start kimi` |
 | Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `~/.codex/config.toml` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.kimi/mcp.json` |
-| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ xml_fd deliver | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll | ✅ `c2c.ts` monitor subprocess | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake |
-| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | `--xml-input-fd` binary version mismatch; deliver-daemon start failure now surfaced (B013) | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `C2C_MCP_SESSION_ID` inheritance from parent |
+| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ pre-trusted Codex hooks (no daemon) | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll | ✅ `c2c.ts` monitor subprocess | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake |
+| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Hook block / trust-hash drift (run `c2c doctor hooks`, refresh with `c2c install codex`) | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `C2C_MCP_SESSION_ID` inheritance from parent |
 
 ---
 
@@ -64,7 +64,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **MCP attachment**: `~/.codex/config.toml` with `[mcp_servers.c2c]` section. All tools approved auto (no per-approval prompt). Broker root and auto-join rooms set via env block.
 
-**Auto-delivery mechanism**: xml_fd — Codex output is parsed for an xml_fd sentinel marker; when detected, the deliver mechanism injects the inbox content. Requires `--xml-input-fd` support in the Codex binary. On this machine, `.c2c/config.toml` `[default_binary] codex` points to the alpha binary that has this flag.
+**Auto-delivery mechanism**: Codex hooks. `c2c install codex` writes a pre-trusted hooks block to `~/.codex/config.toml` for `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`, all running `c2c hook codex`. The hook reads Codex's stdin payload, auto-registers the session when needed, drains the c2c inbox, and returns messages as `additionalContext`. Turn-boundary hooks (`SessionStart` / `UserPromptSubmit`) drain all queued messages; mid-turn hooks (`PostToolUse`) drain only non-deferrable push messages.
 
 **restart-self**: Same — `./restart-self` kills the outer loop.
 
@@ -78,9 +78,9 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **Auto-register / Auto-join**: Same env-var pattern.
 
-**Known footgun**: Binary version — if the stable Codex binary (`/home/xertrov/.bun/bin/codex`) is first in PATH and lacks `--xml-input-fd`, deliver mode falls back to `unavailable`. The alpha binary at `/home/xertrov/.local/bin/codex` has the flag. `.c2c/config.toml` `[default_binary] codex` overrides PATH for `c2c start codex`.
+**Known footgun**: Hook drift — Codex only runs trusted hooks from `~/.codex/config.toml`. If the managed block or `[hooks.state]` trust hashes drift after an upgrade, delivery may silently stop. Run `c2c doctor hooks` to detect drift and `c2c install codex` to refresh the managed hooks block.
 
-**B013 hardening**: Deliver-daemon start failures are now surfaced instead of silently going dark. Fixed XML delivery being shadowed by `--inotify` in `deliver-inbox`. E2e delivery regression tests: `just codex-deliver-e2e`.
+**Current binary note**: the upstream Codex binary no longer exposes the old XML sideband flag; the `codex_supports_xml_input_fd` capability probe is expected to report false in current builds. Hook delivery is the supported Codex receive path.
 
 ---
 
@@ -179,7 +179,7 @@ need verification by an agent running inside pi. Please update and PR.
 | Client | Session ID source | Delivery mechanism | Notification | Restart / Launch |
 |--------|-------------------|--------------------|--------------|-----------------|
 | Claude Code | `$CLAUDE_SESSION_ID` | PostToolUse hook (auto) | Implicit (every tool) | `c2c start claude` |
-| Codex | PID at register time | XML sideband (preferred) / PTY fallback | PTY sentinel string | `c2c start codex` |
+| Codex | Hook payload session / auto alias | Codex hooks (`c2c hook codex`) | `additionalContext` from UserPromptSubmit/PostToolUse hooks | `c2c start codex` |
 | Pi Agent | Extension session alias | `pi-c2c` extension -> `c2c poll-inbox` -> `pi.sendMessage` | `fs.watch` inbox watcher + 60s safety poll | n/a (`pi install npm:pi-c2c`) |
 | OpenCode | `$OPENCODE_SESSION_ID` | Native TS plugin + promptAsync | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
 | Kimi | `kimi-user-host` (auto) | Notification-store push (`C2c_kimi_notifier`) | File-based push + tmux wake | `c2c start kimi` |
