@@ -20,7 +20,7 @@ Messages.tsx renders message visibly in chat UI
 
 ## Implementation Status
 
-All server-side components are implemented and working. The remaining gap is on the client side: **standard Claude Code never declares `experimental.claude/channel` in its `initialize` request**. Both per-RPC auto-drain and the standalone continuous inbox watcher only drain/emits channel notifications after that capability is negotiated, so standard sessions leave messages for the PostToolUse hook or explicit polling.
+All server-side components are implemented and working. The remaining gap is on the client side: **standard Claude Code never declares `experimental.claude/channel` in its `initialize` request**. Both per-RPC auto-drain and the standalone continuous inbox watcher only drain and emit channel notifications after that capability is negotiated, so standard sessions leave messages for the PostToolUse hook or explicit polling.
 
 ### Implemented Components
 
@@ -53,7 +53,7 @@ The c2c MCP server runs in two modes with different behavior:
 | `C2C_MCP_CHANNEL_DELIVERY` default | `true` | N/A (no inbox watcher) |
 | `C2C_MCP_AUTO_DRAIN_CHANNEL` default | `true` (default ON, #346 flip) | `false` |
 
-The standalone server is what `c2c install claude` configures. It has the continuous inbox watcher, but that watcher only drains/emits when the client declares `experimental.claude/channel`; otherwise it leaves messages for hook/poll delivery. The standalone `C2C_MCP_AUTO_DRAIN_CHANNEL` default is independently ON for direct server use, but `c2c install` writes `C2C_MCP_AUTO_DRAIN_CHANNEL=0` for managed clients. In both server modes, per-RPC auto-drain still requires a channel-capable client that declares `experimental.claude/channel`, so standard Claude Code sessions are unaffected. The `c2c serve` command only has per-RPC auto-drain and keeps its separate default OFF.
+The standalone server is what `c2c install claude` configures. It has the continuous inbox watcher, but that watcher only drains and emits when the client declares `experimental.claude/channel`; otherwise it leaves messages for hook/poll delivery. The standalone `C2C_MCP_AUTO_DRAIN_CHANNEL` default is independently ON for direct server use, but `c2c install` writes `C2C_MCP_AUTO_DRAIN_CHANNEL=0` for managed clients. In both server modes, per-RPC auto-drain still requires a channel-capable client that declares `experimental.claude/channel`, so standard Claude Code sessions are unaffected. The `c2c serve` command only has per-RPC auto-drain and keeps its separate default OFF.
 
 ## Inbox Watcher Details
 
