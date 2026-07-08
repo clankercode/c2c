@@ -20,7 +20,7 @@ Messages.tsx renders message visibly in chat UI
 
 ## Implementation Status
 
-All server-side components are implemented and working. The one remaining gap is on the client side: **Claude Code never declares `experimental.claude/channel` in its `initialize` request**, so the per-RPC auto-drain path (which requires client capability) never fires for standard sessions. The continuous inbox watcher works regardless of client capability.
+All server-side components are implemented and working. The remaining gap is on the client side: **standard Claude Code never declares `experimental.claude/channel` in its `initialize` request**. Both per-RPC auto-drain and the standalone continuous inbox watcher only drain/emits channel notifications after that capability is negotiated, so standard sessions leave messages for the PostToolUse hook or explicit polling.
 
 ### Implemented Components
 
@@ -40,7 +40,7 @@ All server-side components are implemented and working. The one remaining gap is
 
 **Claude Code does not declare `experimental.claude/channel` support.** The client's `initialize` request never includes this capability, so the negotiated capability set does not include `Claude_channel`. This means the per-RPC auto-drain path (which gates on that negotiated capability) never fires in standard Claude Code sessions.
 
-The continuous inbox watcher in the standalone server does not gate on client capability — it fires whenever `C2C_MCP_CHANNEL_DELIVERY` is enabled and a session ID is set, which is the default for `c2c install claude` sessions. However, in standard Claude Code (without `--dangerously-load-development-channels`) the emitted notifications are not surfaced in the chat UI. The PostToolUse hook remains the production delivery path for Claude Code; channel notifications stay dormant until Claude Code ships native channel support.
+The continuous inbox watcher in the standalone server may run whenever `C2C_MCP_CHANNEL_DELIVERY` is enabled and a session ID is set, but it only drains the inbox and emits channel notifications after the client has negotiated `experimental.claude/channel`. In standard Claude Code (without `--dangerously-load-development-channels`), the watcher leaves messages in the inbox for the PostToolUse hook or explicit polling. The PostToolUse hook remains the production delivery path for Claude Code; channel notifications stay dormant until Claude Code ships native channel support.
 
 ## Standalone Server vs. `c2c serve` Command
 
@@ -53,7 +53,7 @@ The c2c MCP server runs in two modes with different behavior:
 | `C2C_MCP_CHANNEL_DELIVERY` default | `true` | N/A (no inbox watcher) |
 | `C2C_MCP_AUTO_DRAIN_CHANNEL` default | `true` (default ON, #346 flip) | `false` |
 
-The standalone server is what `c2c install claude` configures. It has the continuous inbox watcher that provides near-real-time delivery regardless of client capability. The standalone `C2C_MCP_AUTO_DRAIN_CHANNEL` default is independently ON for direct server use, but `c2c install` writes `C2C_MCP_AUTO_DRAIN_CHANNEL=0` for managed clients. In both server modes, per-RPC auto-drain still requires a channel-capable client that declares `experimental.claude/channel`, so standard Claude Code sessions are unaffected. The `c2c serve` command only has per-RPC auto-drain and keeps its separate default OFF.
+The standalone server is what `c2c install claude` configures. It has the continuous inbox watcher, but that watcher only drains/emits when the client declares `experimental.claude/channel`; otherwise it leaves messages for hook/poll delivery. The standalone `C2C_MCP_AUTO_DRAIN_CHANNEL` default is independently ON for direct server use, but `c2c install` writes `C2C_MCP_AUTO_DRAIN_CHANNEL=0` for managed clients. In both server modes, per-RPC auto-drain still requires a channel-capable client that declares `experimental.claude/channel`, so standard Claude Code sessions are unaffected. The `c2c serve` command only has per-RPC auto-drain and keeps its separate default OFF.
 
 ## Inbox Watcher Details
 
@@ -73,7 +73,7 @@ The following items were originally tracked as "Required Changes" and have all b
 
 2. **Channel delivery enabled by default** — `C2C_MCP_CHANNEL_DELIVERY` defaults to `true` in the standalone server implementation (`ocaml/server/c2c_mcp_server_inner.ml`). `c2c install claude` also explicitly sets `C2C_MCP_CHANNEL_DELIVERY=1` (`ocaml/cli/c2c_setup.ml`).
 
-3. **Continuous delivery** — The inbox watcher background thread provides near-real-time delivery without depending on RPC traffic or client capability. This is the primary delivery mechanism.
+3. **Continuous delivery** — The inbox watcher background thread provides near-real-time delivery for channel-capable clients without depending on RPC traffic. It still requires the client to negotiate `experimental.claude/channel`; non-capable clients keep hook/poll delivery as the production path.
 
 4. **Setup integration** — `c2c install claude` writes `C2C_MCP_CHANNEL_DELIVERY=1` and the managed-client override `C2C_MCP_AUTO_DRAIN_CHANNEL=0` into the MCP server environment configuration.
 
