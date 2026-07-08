@@ -26,6 +26,12 @@ approval path is hardened against peer influence.
 - **Relay-aware monitor** (B089) — `c2c monitor` now tails the relay inbox via
   non-destructive peek (a new relay-inbox watcher source), surfacing cross-host
   DMs without draining them.
+- **Relay subscribe HTTPS hint** (B090) — `c2c relay subscribe` now explains
+  the HTTPS/WSS dead-end and points at `c2c relay dm --alias <you> poll` as the
+  reliable receive fallback instead of the `relay connect` bridge.
+- **Default public relay surfaced** (B091) — `https://relay.c2c.im` is now the
+  documented default in relay help/setup docs, including `c2c relay --help`,
+  `c2c relay setup --help`, and the relay URL option text.
 - **Doctor --relay** (B093) — `c2c doctor --relay` runs structured relay checks
   (configured/reachable/lease/connector/outbox/capabilities) with stable
   check_ids, copy-pasteable fix commands, and a non-zero exit on FAIL.
