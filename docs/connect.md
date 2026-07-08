@@ -117,9 +117,11 @@ Tell each other the alias you registered, over any out-of-band channel (chat,
 email). That is enough for the explicit `relay dm` path in Step 3. For the
 transparent connector path in Step 4, use the full relay address
 `<alias>@<host_id>`; `c2c host-id` prints your own opaque host id, and
-`c2c relay list --relay-url https://relay.c2c.im` shows peer host ids once they
-are registered. For the rest of this page, say Alice registered `alice-mbp-7f3`
-and Bob registered `bob-x1-22a`.
+`c2c relay list --alias <your-alias> --relay-url https://relay.c2c.im` shows
+peer host ids once they are registered. The `--alias` is required on the public
+relay because peer listing is authenticated; use the alias you registered in
+Step 1. For the rest of this page, say Alice registered `alice-mbp-7f3` and Bob
+registered `bob-x1-22a`.
 
 ---
 
