@@ -12,11 +12,15 @@ root; see root `CLAUDE.md` "Key Architecture Notes" for the full resolution
 order). The cross-machine relay layer extends this without changing the agent
 tool surface.
 
-**Status: production-ready and live-proven.** The relay was tested end-to-end
-on 2026-04-14: Docker cross-machine test (separate Python runtime and filesystem
-over TCP) and a true two-machine Tailscale test (`x-game` ↔ `xsm`, ~6–21 ms
-RTT). DM in both directions, room join, and room fan-out all passed. See
-[Relay Quickstart](/relay-quickstart/) for the full operator guide.
+**Status: live-proven alpha.** The relay was tested end-to-end on 2026-04-14:
+Docker cross-machine test (separate Python runtime and filesystem over TCP) and
+a true two-machine Tailscale test (`x-game` ↔ `xsm`, ~6–21 ms RTT). DM in both
+directions, room join, and room fan-out all passed. It is useful today, but
+operator docs should still treat cross-host delivery as alpha: transparent
+remote sends are local-queue handoffs unless a connector forwards them, relay
+monitoring peeks are non-draining visibility, and some subscribe paths have
+transport limitations. See [Relay Quickstart](/relay-quickstart/) for the full
+operator guide and current limitations.
 
 **Remote Relay v1 (2026-04-23):** The relay can now poll a remote broker's
 inbox directory over SSH. Start it with `--remote-broker-ssh-target
@@ -97,13 +101,13 @@ Remote transport must preserve these local invariants:
 
 | Contract | Remote version |
 |----------|----------------|
-| Alias resolves to one current session | Alias resolves to `{node_id, session_id}` with a heartbeat lease |
+| Alias resolves to one current session | Alias resolves to `{host_id, session_id}` with a heartbeat lease |
 | `send` appends to one recipient inbox | Relay appends one message under a transaction or equivalent lock |
 | `send_all` skips sender and dead peers | Relay fans out to live leases and records skipped aliases |
 | `poll_inbox` drains the caller's inbox | Drain is atomic and returns each message at most once |
 | `peek_inbox` does not consume | Read-only snapshot with the same shape as local peek |
 | Room history is append-only | Relay assigns a monotonically increasing room sequence |
-| Room members are explicit | Relay stores `{room_id, alias, node_id, session_id}` membership |
+| Room members are explicit | Relay stores `{room_id, alias, host_id, session_id}` membership |
 | Dead recipients are not silently lost | Messages go to dead-letter or retry queue with inspectable cause |
 
 The MCP and CLI return shapes should stay source-compatible. When remote
@@ -111,21 +115,27 @@ metadata is useful, add fields rather than changing existing ones.
 
 ## Identity and Addressing
 
-Local aliases are human-friendly but not globally unique. The relay should add a
-stable `node_id` per machine or workspace. Operator-facing names can then be:
+Local aliases are human-friendly but not globally unique. Current relay-aware
+operator surfaces use a stable opaque `host_id` per machine or workspace. The
+user-facing address forms are:
 
-- `alias` when unique in the connected swarm.
-- `alias@node` when disambiguation is needed.
+- `<alias>` for local same-broker sends.
+- `<alias>@<host_id>` for cross-host relay sends, where `host_id` is the opaque
+  routing id printed by `c2c host-id` and shown by relay-aware `whoami` / status
+  surfaces.
 
-The first implementation can keep local aliases unique by convention and add
-`node_id` to registry rows immediately. That avoids a later data migration when
-two machines both register `codex`.
+Generated host IDs are 12 lowercase hex characters. Earlier design notes used
+`node_id` for the same routing concept; keep that term only when discussing
+historical design or internal storage migrations, not as the primary operator
+address. The current implementation records the host identity in relay metadata
+so two machines can both register a local alias such as `codex` without teaching
+operators friendly machine names as the canonical route.
 
 Remote liveness should use leases:
 
-- Each connector heartbeats `{node_id, session_id, alias, client_type}`.
+- Each connector heartbeats `{host_id, session_id, alias, client_type}`.
 - The relay treats entries as live until `last_seen + ttl`.
-- Local PIDs remain useful inside a node, but they are not a remote liveness
+- Local PIDs remain useful inside a host, but they are not a remote liveness
   primitive.
 
 ## Transport
@@ -166,7 +176,7 @@ single relay process:
 ```
 relay-root/
   registry.json
-  inboxes/<node_id>/<session_id>.json
+  inboxes/<host_id>/<session_id>.json
   rooms/<room_id>/history.jsonl
   rooms/<room_id>/members.json
   dead-letter.jsonl
@@ -192,14 +202,14 @@ hide:
   relay treat retries idempotently.
 - Clock skew: relay sequence numbers define order. Client timestamps are
   metadata only.
-- Alias conflict: relay rejects the second alias or requires `alias@node` for
-  disambiguation.
+- Alias conflict: relay rejects the second alias or requires `<alias>@<host_id>`
+  for disambiguation.
 - Partial room fanout: response reports `delivered_to`, `skipped`, and
   dead-letter entries per recipient.
 
 ## Implementation Phases (current shipped state)
 
-1. ✓ **Contracts and fixtures**: remote message/registry JSON shapes, `node_id`,
+1. ✓ **Contracts and fixtures**: remote message/registry JSON shapes, `host_id`,
    lease semantics, error codes, and two-machine unit fixtures.
 2. ✓ **Relay server**: `c2c relay serve` with InMemoryRelay and SQLite storage,
    token auth, `send` + `poll_inbox`.
@@ -237,13 +247,15 @@ c2c relay setup --url http://127.0.0.1:7331 --token-file ~/.config/c2c/relay.tok
 c2c relay connect
 
 # Cross-host send through the same local send surface:
-c2c send codex@laptop "hello from another machine"
+c2c send codex@a1b2c3d4e5f6 "hello from another machine"
 ```
 
-The `alias@host` target is the remote routing signal for both `c2c send` and
-`mcp__c2c__send`. The local broker writes the message to `remote-outbox.jsonl`;
-`c2c relay connect` forwards it to the relay, and the remote connector delivers
-it into the recipient's local inbox.
+The `<alias>@<host_id>` target is the remote routing signal for both `c2c send`
+and `mcp__c2c__send`. The local broker writes the message to
+`remote-outbox.jsonl`; `c2c relay connect` forwards it to the relay, and the
+remote connector delivers it into the recipient's local inbox. Without a running
+connector, transparent remote sends may remain locally queued; scripts that need
+to fail on that state can use `c2c send --fail-if-queued`.
 
 That keeps the north-star contract intact: agents message each other through
 c2c, regardless of host client or machine, and remote transport remains an
