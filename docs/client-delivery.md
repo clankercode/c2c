@@ -107,12 +107,13 @@ Session ID comes from `$CLAUDE_SESSION_ID`. Restart via `c2c restart <name>` or
 
 ## Codex
 
-Preferred: hooks installed by `c2c install codex`. The Codex hook set covers
-`UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`; each hook
-runs `c2c hook codex`, which can auto-register, drain broker inbox messages, and
-surface them via `hookSpecificOutput.additionalContext`. Session ID is provided
-by Codex hook context for unmanaged sessions and by `c2c start codex` for
-managed sessions. Restart via `c2c restart <name>`.
+Preferred for unmanaged sessions: hooks installed by `c2c install codex`. The
+Codex hook set covers `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and
+`SessionEnd`; each hook runs `c2c hook codex`, which can auto-register, drain
+broker inbox messages, and surface them via `hookSpecificOutput.additionalContext`.
+Managed `c2c start codex` delivery is still being ported to that hook path, so
+explicit polling remains the universal fallback for managed Codex sessions until
+that follow-up lands. Restart via `c2c restart <name>`.
 
 Historical: the old XML sideband path (`--xml-input-fd`, including the
 `codex-turn-start-bridge` headless bridge) is no longer the current delivery

@@ -17,7 +17,7 @@ Last updated: 2026-06-28 (subscribe-daemon, B010-B013 audit)
 | Feature | Claude Code | Codex | Pi Agent | OpenCode | Kimi |
 |---------|-------------|-------|----------|----------|------|
 | MCP attachment | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ⚠️ CLI-based (pi extension shells to `c2c`, not MCP) | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC |
-| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | Codex hooks (`c2c hook codex` via UserPromptSubmit/PostToolUse/SessionStart/SessionEnd) | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox -> `pi.sendMessage` | c2c.ts plugin -> `promptAsync` | Notification-store (`C2c_kimi_notifier`) |
+| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | Unmanaged Codex hooks (`c2c hook codex` via UserPromptSubmit/PostToolUse/SessionStart/SessionEnd); managed `c2c start codex` hook delivery pending, use explicit polling fallback | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox -> `pi.sendMessage` | c2c.ts plugin -> `promptAsync` | Notification-store (`C2c_kimi_notifier`) |
 | MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | n/a (no MCP) | ❌ same | ❌ same |
 | Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ via `c2c` CLI room subcommands | ✅ all room tools | ✅ all room tools |
 | Ephemeral DMs | ✅ | ✅ | ? | ✅ | ✅ |
@@ -28,7 +28,7 @@ Last updated: 2026-06-28 (subscribe-daemon, B010-B013 audit)
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ? | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` |
 | Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start codex` | n/a (`c2c start` has no `pi` target; pi runs its own loop) | ✅ `c2c start opencode` | ✅ `c2c start kimi` |
 | Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `~/.codex/config.toml` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.kimi/mcp.json` |
-| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ pre-trusted Codex hooks (no daemon) | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll | ✅ `c2c.ts` monitor subprocess | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake |
+| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ unmanaged pre-trusted Codex hooks; managed `c2c start codex` hook delivery still pending | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll | ✅ `c2c.ts` monitor subprocess | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake |
 | Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Hook block / trust-hash drift (run `c2c doctor hooks`, refresh with `c2c install codex`) | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `C2C_MCP_SESSION_ID` inheritance from parent |
 
 ---
@@ -64,7 +64,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **MCP attachment**: `~/.codex/config.toml` with `[mcp_servers.c2c]` section. All tools approved auto (no per-approval prompt). Broker root and auto-join rooms set via env block.
 
-**Auto-delivery mechanism**: Codex hooks. `c2c install codex` writes a pre-trusted hooks block to `~/.codex/config.toml` for `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`, all running `c2c hook codex`. The hook reads Codex's stdin payload, auto-registers the session when needed, drains the c2c inbox, and returns messages as `additionalContext`. Turn-boundary hooks (`SessionStart` / `UserPromptSubmit`) drain all queued messages; mid-turn hooks (`PostToolUse`) drain only non-deferrable push messages.
+**Auto-delivery mechanism**: Codex hooks for unmanaged sessions. `c2c install codex` writes a pre-trusted hooks block to `~/.codex/config.toml` for `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`, all running `c2c hook codex`. The hook reads Codex's stdin payload, auto-registers the session when needed, drains the c2c inbox, and returns messages as `additionalContext`. Turn-boundary hooks (`SessionStart` / `UserPromptSubmit`) drain all queued messages; mid-turn hooks (`PostToolUse`) drain only non-deferrable push messages. Managed `c2c start codex` hook delivery is still being ported, so explicit polling remains the universal fallback for managed Codex until that follow-up lands.
 
 **restart-self**: Same — `./restart-self` kills the outer loop.
 
@@ -80,7 +80,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **Known footgun**: Hook drift — Codex only runs trusted hooks from `~/.codex/config.toml`. If the managed block or `[hooks.state]` trust hashes drift after an upgrade, delivery may silently stop. Run `c2c doctor hooks` to detect drift and `c2c install codex` to refresh the managed hooks block.
 
-**Current binary note**: the upstream Codex binary no longer exposes the old XML sideband flag; the `codex_supports_xml_input_fd` capability probe is expected to report false in current builds. Hook delivery is the supported Codex receive path.
+**Current binary note**: the upstream Codex binary no longer exposes the old XML sideband flag; the `codex_supports_xml_input_fd` capability probe is expected to report false in current builds. Hook delivery is the supported Codex receive path for unmanaged sessions; managed `c2c start codex` hook delivery is still being ported, so explicit polling remains the managed-session fallback.
 
 ---
 
