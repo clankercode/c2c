@@ -28,6 +28,22 @@ let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
 
 (* --- subcommand: init ---------------------------------------------------- *)
 
+let native_client_type_from_env () =
+  match env_client_type () with
+  | Some _ as client -> client
+  | None ->
+      let has_nonempty_env key =
+        match Sys.getenv_opt key with
+        | Some value -> String.trim value <> ""
+        | None -> false
+      in
+      if has_nonempty_env "CODEX_THREAD_ID" then Some "codex"
+      else if has_nonempty_env "CLAUDE_SESSION_ID"
+              || has_nonempty_env "CLAUDE_CODE_SESSION_ID"
+      then Some "claude"
+      else if has_nonempty_env "C2C_OPENCODE_SESSION_ID" then Some "opencode"
+      else None
+
 let detect_client () =
   (* A shell commonly has several agent CLIs on PATH.  Picking the first one
      makes the result depend on an arbitrary list order (B102: a Claude Code
@@ -35,7 +51,7 @@ let detect_client () =
      Prefer the client process's explicit/native environment; only use a
      managed c2c session-id prefix next, and regard PATH as evidence when it
      identifies exactly one possible client. *)
-  match C2c_mcp.inferred_client_type_from_env () with
+  match native_client_type_from_env () with
   | Some _ as client -> client
   | None ->
       (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
