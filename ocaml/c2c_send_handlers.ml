@@ -208,19 +208,28 @@ let verify_peer_pass_dm ~broker ~from_alias ~to_alias ~content
 
 (** Build a send receipt JSON string from accumulated send state.
     Extracted from [send] for readability (#450 S8); no behavior change.
-    Updated to accept [pp_receipt_extras] from S9's [verify_peer_pass_dm]. *)
+    Updated to accept [pp_receipt_extras] from S9's [verify_peer_pass_dm].
+
+    J4: the receipt is now a canonical schema-v1 message document
+    (docs/reference/message-schema-v1) — {schema_version:1, type:"dm", ts,
+    from:{alias}, to, content, delivery:{state:"queued"}} — with every
+    legacy key ({queued:true, from_alias, to_alias} plus the conditional
+    extras) preserved alongside. [content] is the plaintext (tag-prefixed)
+    body the recipient will read, NOT the encrypted wire form. [source] is
+    omitted: the receipt does not claim a transport. [ts] is emitted once,
+    as the v1 field (same key/value the legacy receipt used). *)
 let build_send_receipt
       ~(pp_extras : pp_receipt_extras)
       ~ts
       ~from_alias
       ~to_alias
+      ~content
       ~recipient_dnd
       ~recipient_compacting
       ~deferrable
   : string =
   let receipt_fields = ref
     [ ("queued", `Bool true)
-    ; ("ts", `Float ts)
     ; ("from_alias", `String from_alias)
     ; ("to_alias", `String to_alias)
     ]
@@ -245,7 +254,21 @@ let build_send_receipt
        receipt_fields := !receipt_fields @ [("compacting_warning", `String warning)]
    | None -> ());
   if deferrable then receipt_fields := !receipt_fields @ [("deferrable", `Bool true)];
-  `Assoc !receipt_fields |> Yojson.Safe.to_string
+  let v1 : C2c_schema_v1.t =
+    { schema_version = C2c_schema_v1.schema_version
+    ; msg_type = C2c_schema_v1.Dm
+    ; message_id = None
+    ; ts = Some ts
+    ; from = { alias = from_alias; host_id = None; address = None }
+    ; to_ = to_alias
+    ; source = None
+    ; content
+    ; in_reply_to = None
+    ; delivery_state = Some C2c_schema_v1.Queued
+    }
+  in
+  C2c_schema_v1.serialize_with_legacy v1 ~legacy:!receipt_fields
+  |> Yojson.Safe.to_string
 
 let send ~broker ~session_id_override ~arguments =
       let to_alias = string_member_any [ "to_alias"; "alias" ] arguments in
@@ -354,6 +377,7 @@ let ts = Unix.gettimeofday () in
                                  ~ts
                                  ~from_alias
                                  ~to_alias
+                                 ~content
                                  ~recipient_dnd
                                  ~recipient_compacting
                                  ~deferrable

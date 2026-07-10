@@ -3220,6 +3220,229 @@ let test_tools_call_poll_inbox_empty_inbox_returns_empty_json_array () =
               in
               check string "empty array text" "[]" text))
 
+(* ---- J4: MCP send/poll/peek emit canonical schema-v1 message objects ----
+   Each row/receipt must (a) round-trip through C2c_schema_v1.validate
+   (schema equality) and (b) keep the legacy pre-J4 keys alongside the v1
+   fields (old-reader compatibility). *)
+
+let j4_call_tool ~broker_root ~id ~name ~arguments =
+  let request =
+    `Assoc
+      [ ("jsonrpc", `String "2.0")
+      ; ("id", `Int id)
+      ; ("method", `String "tools/call")
+      ; ("params", `Assoc [ ("name", `String name); ("arguments", arguments) ])
+      ]
+  in
+  match Lwt_main.run (C2c_mcp.handle_request ~broker_root request) with
+  | None -> fail ("expected " ^ name ^ " response")
+  | Some json ->
+      let open Yojson.Safe.Util in
+      json |> member "result" |> member "content" |> index 0
+      |> member "text" |> to_string
+
+let j4_require_schema_v1 ~label item =
+  match C2c_schema_v1.validate item with
+  | Ok t -> t
+  | Error e -> fail (Printf.sprintf "%s: not a valid schema-v1 document: %s" label e)
+
+let test_j4_poll_inbox_rows_are_schema_v1_with_legacy_keys () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-j4-poll";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-j4-from"
+            ~alias:"j4-from" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.register broker ~session_id:"session-j4-poll"
+            ~alias:"j4-poll" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"j4-from"
+            ~to_alias:"j4-poll" ~content:"v1 body" ();
+          let text = j4_call_tool ~broker_root:dir ~id:9401 ~name:"poll_inbox" ~arguments:(`Assoc []) in
+          let open Yojson.Safe.Util in
+          let items = Yojson.Safe.from_string text |> to_list in
+          check int "one message returned" 1 (List.length items);
+          let item = List.hd items in
+          (* Schema equality: the row parses via the canonical module. *)
+          let t = j4_require_schema_v1 ~label:"poll row" item in
+          check int "schema_version" C2c_schema_v1.schema_version t.C2c_schema_v1.schema_version;
+          check string "type is dm" "dm" (item |> member "type" |> to_string);
+          check string "from.alias" "j4-from" (item |> member "from" |> member "alias" |> to_string);
+          check string "to" "j4-poll" (item |> member "to" |> to_string);
+          check bool "ts is positive" true (item |> member "ts" |> to_number > 0.0);
+          check bool "message_id present (local enqueue assigns one)" true
+            (item |> member "message_id" |> to_string_option <> None);
+          check string "delivery.state is delivered (poll drains)" "delivered"
+            (item |> member "delivery" |> member "state" |> to_string);
+          (* Legacy old-reader vector: pre-J4 field names still readable. *)
+          check string "legacy from_alias" "j4-from" (item |> member "from_alias" |> to_string);
+          check string "legacy to_alias" "j4-poll" (item |> member "to_alias" |> to_string);
+          check string "legacy content" "v1 body" (item |> member "content" |> to_string)))
+
+let test_j4_peek_inbox_rows_are_schema_v1_queued () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-j4-peek";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-j4-peek"
+            ~alias:"j4-peek" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.enqueue_message broker ~from_alias:"j4-someone"
+            ~to_alias:"j4-peek" ~content:"still queued" ();
+          let text = j4_call_tool ~broker_root:dir ~id:9402 ~name:"peek_inbox" ~arguments:(`Assoc []) in
+          let open Yojson.Safe.Util in
+          let items = Yojson.Safe.from_string text |> to_list in
+          check int "one message returned" 1 (List.length items);
+          let item = List.hd items in
+          let _t = j4_require_schema_v1 ~label:"peek row" item in
+          check string "delivery.state is queued (peek does not drain)" "queued"
+            (item |> member "delivery" |> member "state" |> to_string);
+          (* Legacy old-reader vector. *)
+          check string "legacy from_alias" "j4-someone" (item |> member "from_alias" |> to_string);
+          check string "legacy to_alias" "j4-peek" (item |> member "to_alias" |> to_string);
+          check string "legacy content" "still queued" (item |> member "content" |> to_string);
+          (* Peek stays non-draining. *)
+          let still = C2c_mcp.Broker.read_inbox broker ~session_id:"session-j4-peek" in
+          check int "inbox untouched after peek" 1 (List.length still)))
+
+let test_j4_send_receipt_is_schema_v1_with_legacy_keys () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-j4-sender";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-j4-sender"
+            ~alias:"j4-sender" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.register broker ~session_id:"session-j4-recv"
+            ~alias:"j4-recv" ~pid:None ~pid_start_time:None ();
+          let text =
+            j4_call_tool ~broker_root:dir ~id:9403 ~name:"send"
+              ~arguments:(`Assoc
+                [ ("to_alias", `String "j4-recv")
+                ; ("content", `String "receipt body")
+                ])
+          in
+          let open Yojson.Safe.Util in
+          let receipt = Yojson.Safe.from_string text in
+          let t = j4_require_schema_v1 ~label:"send receipt" receipt in
+          check string "type is dm" "dm" (receipt |> member "type" |> to_string);
+          check string "from.alias" "j4-sender" (receipt |> member "from" |> member "alias" |> to_string);
+          check string "to" "j4-recv" (receipt |> member "to" |> to_string);
+          check string "content echoes plaintext body as queued" "receipt body"
+            t.C2c_schema_v1.content;
+          check string "delivery.state is queued" "queued"
+            (receipt |> member "delivery" |> member "state" |> to_string);
+          check bool "ts is positive" true (receipt |> member "ts" |> to_number > 0.0);
+          (* Legacy old-reader vector: pre-J4 receipt keys intact. *)
+          check bool "legacy queued=true" true (receipt |> member "queued" |> to_bool);
+          check string "legacy from_alias" "j4-sender" (receipt |> member "from_alias" |> to_string);
+          check string "legacy to_alias" "j4-recv" (receipt |> member "to_alias" |> to_string);
+          (* Behavior preserved: message actually enqueued, unchanged. *)
+          let inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"session-j4-recv" in
+          check int "one message enqueued" 1 (List.length inbox);
+          check string "queued content" "receipt body" (List.hd inbox).content))
+
+let test_j4_room_fanout_poll_row_classified_as_room () =
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-j4-rsend";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"session-j4-rsend"
+            ~alias:"j4-rsend" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.register broker ~session_id:"session-j4-rrecv"
+            ~alias:"j4-rrecv" ~pid:None ~pid_start_time:None ();
+          let _ = C2c_mcp.Broker.join_room broker ~room_id:"j4-room"
+              ~alias:"j4-rsend" ~session_id:"session-j4-rsend" in
+          let _ = C2c_mcp.Broker.join_room broker ~room_id:"j4-room"
+              ~alias:"j4-rrecv" ~session_id:"session-j4-rrecv" in
+          ignore (C2c_mcp.Broker.drain_inbox broker ~session_id:"session-j4-rrecv");
+          let _ =
+            j4_call_tool ~broker_root:dir ~id:9404 ~name:"send_room"
+              ~arguments:(`Assoc
+                [ ("room_id", `String "j4-room")
+                ; ("content", `String "room body")
+                ])
+          in
+          (* Poll as the recipient. *)
+          Unix.putenv "C2C_MCP_SESSION_ID" "session-j4-rrecv";
+          let text = j4_call_tool ~broker_root:dir ~id:9405 ~name:"poll_inbox" ~arguments:(`Assoc []) in
+          let open Yojson.Safe.Util in
+          let items = Yojson.Safe.from_string text |> to_list in
+          (* Every drained row must be a valid schema-v1 document (the inbox
+             may also contain the c2c-system room-join broadcast). *)
+          List.iter (fun i -> ignore (j4_require_schema_v1 ~label:"poll row" i)) items;
+          let item =
+            match
+              List.find_opt
+                (fun i -> (try i |> member "content" |> to_string with _ -> "") = "room body")
+                items
+            with
+            | Some i -> i
+            | None -> fail "room fan-out message not found in poll result"
+          in
+          check string "type is room (to_alias tagged <alias>#<room_id>)" "room"
+            (item |> member "type" |> to_string);
+          check string "to keeps tagged legacy value" "j4-rrecv#j4-room"
+            (item |> member "to" |> to_string);
+          check string "legacy to_alias identical" "j4-rrecv#j4-room"
+            (item |> member "to_alias" |> to_string);
+          check string "legacy content" "room body" (item |> member "content" |> to_string)))
+
+(* J4: tool-description pinning. send/poll/peek descriptions must reference
+   the canonical schema doc and accurately describe the returned shape
+   (delivery.state per surface, untrusted-content caveat on inbound
+   surfaces, peek parity with poll). Guards against description drift. *)
+let test_j4_tool_descriptions_reference_schema_v1 () =
+  let description_of name =
+    let td =
+      List.find
+        (fun td ->
+          match td with
+          | `Assoc pairs -> (match List.assoc_opt "name" pairs with
+                             | Some (`String n) -> n = name
+                             | _ -> false)
+          | _ -> false)
+        C2c_mcp.base_tool_definitions
+    in
+    match td with
+    | `Assoc pairs ->
+        (match List.assoc_opt "description" pairs with
+         | Some (`String d) -> d
+         | _ -> fail (name ^ ": missing description"))
+    | _ -> fail (name ^ ": tool definition not an object")
+  in
+  let send_d = description_of "send" in
+  let poll_d = description_of "poll_inbox" in
+  let peek_d = description_of "peek_inbox" in
+  List.iter
+    (fun (label, d) ->
+      check bool (label ^ " references message-schema-v1") true
+        (string_contains d "message-schema-v1"))
+    [ ("send", send_d); ("poll_inbox", poll_d); ("peek_inbox", peek_d) ];
+  (* send + poll spell the v1 shape inline; peek declares parity with poll. *)
+  List.iter
+    (fun (label, d) ->
+      check bool (label ^ " mentions schema_version") true
+        (string_contains d "schema_version"))
+    [ ("send", send_d); ("poll_inbox", poll_d) ];
+  check bool "send description states delivery.state queued" true
+    (string_contains send_d "queued");
+  check bool "poll description states delivery.state delivered" true
+    (string_contains poll_d "delivered");
+  check bool "peek description states delivery.state queued" true
+    (string_contains peek_d "queued");
+  check bool "peek description declares parity with poll_inbox" true
+    (string_contains peek_d "poll_inbox");
+  check bool "poll description flags content as untrusted" true
+    (string_contains poll_d "untrusted");
+  check bool "peek description flags content as untrusted" true
+    (string_contains peek_d "untrusted")
+
 let dead_pid () =
   match Unix.fork () with
   | 0 -> exit 0
@@ -14510,6 +14733,16 @@ let () =
              test_tools_call_poll_inbox_drains_messages_as_tool_result
          ; test_case "tools/call poll_inbox empty inbox returns empty json array" `Quick
              test_tools_call_poll_inbox_empty_inbox_returns_empty_json_array
+         ; test_case "J4 poll_inbox rows are schema-v1 with legacy keys" `Quick
+             test_j4_poll_inbox_rows_are_schema_v1_with_legacy_keys
+         ; test_case "J4 peek_inbox rows are schema-v1 with delivery.state=queued" `Quick
+             test_j4_peek_inbox_rows_are_schema_v1_queued
+         ; test_case "J4 send receipt is schema-v1 with legacy keys" `Quick
+             test_j4_send_receipt_is_schema_v1_with_legacy_keys
+         ; test_case "J4 room fan-out poll row classified as type=room" `Quick
+             test_j4_room_fanout_poll_row_classified_as_room
+         ; test_case "J4 send/poll/peek descriptions reference schema-v1" `Quick
+             test_j4_tool_descriptions_reference_schema_v1
          ; test_case "enqueue to dead peer raises" `Quick test_enqueue_to_dead_peer_raises
          ; test_case "enqueue picks live when zombie shares alias" `Quick
              test_enqueue_picks_live_when_zombie_shares_alias
