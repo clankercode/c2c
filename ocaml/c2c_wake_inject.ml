@@ -360,12 +360,26 @@ let inject_via_backend ~count = function
       then Ok ()
       else Error "herdr_pane_run_failed"
   | Tmux target ->
-      (* Mirror scripts/c2c_tmux.py `send`: literal text, then Enter as a
-         separate send-keys. *)
-      if
-        run_command [ "tmux"; "send-keys"; "-l"; "-t"; target; nudge_text ~count ]
-        && run_command [ "tmux"; "send-keys"; "-t"; target; "Enter" ]
-      then Ok ()
+      (* Mirror scripts/c2c_tmux.py `send` + `c2c-tmux-enter.sh`: literal
+         text, then Enter with `extended-keys` toggled off around it. With
+         `set -s extended-keys on` a plain send-keys Enter encodes as CSI-u
+         (^[[27;5;109~) which agent TUIs read as Ctrl+Shift+M — the nudge
+         then sits unsubmitted in the composer (live-caught 2026-07-10; see
+         .collab/findings/2026-04-19T06-22-47Z-opus-host-tmux-extended-keys-eats-enter.md).
+         Restore is best-effort: worst case extended-keys stays off, which
+         only disables CSI-u encoding for other panes until reset. *)
+      if run_command [ "tmux"; "send-keys"; "-l"; "-t"; target; nudge_text ~count ]
+      then begin
+        let prev =
+          match run_command_capture [ "tmux"; "show"; "-sv"; "extended-keys" ] with
+          | Some v when String.trim v <> "" -> String.trim v
+          | _ -> "off"
+        in
+        ignore (run_command [ "tmux"; "set"; "-s"; "extended-keys"; "off" ]);
+        let ok = run_command [ "tmux"; "send-keys"; "-t"; target; "Enter" ] in
+        ignore (run_command [ "tmux"; "set"; "-s"; "extended-keys"; prev ]);
+        if ok then Ok () else Error "tmux_send_keys_failed"
+      end
       else Error "tmux_send_keys_failed"
 
 (* One inject attempt. Read-only against the broker inbox (peek + count);
