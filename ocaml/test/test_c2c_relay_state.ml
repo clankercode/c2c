@@ -53,6 +53,7 @@ let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) () :
     cs_last_error_detail = None;
     cs_last_error_ts = None;
     cs_registered = [];
+    cs_node_id = None;  (* H3 cross-lane: field added by merge of 333923f2 *)
     cs_outbox_forwarded = 0;
     cs_outbox_failed = 0;
     cs_outbox_dlqed = 0;
