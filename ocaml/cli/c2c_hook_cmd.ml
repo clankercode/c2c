@@ -153,6 +153,58 @@ let hook_stop : unit Cmdliner.Cmd.t =
 let codex_context_events =
   [ "SessionStart"; "SessionEnd"; "UserPromptSubmit"; "PostToolUse"; "PreToolUse" ]
 
+(* Codex emits one PostToolUse event per tool call, often as a burst.  A short
+   fingerprint-aware debounce avoids redoing empty-inbox work for that burst.
+   The fingerprint covers both the repo and cross-repo inboxes: a newly queued
+   message always changes it and bypasses the debounce, so this is coalescing
+   only, never a reason to defer delivery. *)
+let codex_post_tool_debounce_s = 0.5
+
+let codex_inbox_fingerprint ~roots ~session_id =
+  List.map
+    (fun root ->
+      let path = Filename.concat root (session_id ^ ".inbox.json") in
+      try
+        let st = Unix.stat path in
+        Printf.sprintf "%s:%d:%.9f" path st.Unix.st_size st.Unix.st_mtime
+      with Unix.Unix_error _ -> path ^ ":missing")
+    roots
+  |> String.concat "|"
+
+let codex_debounce_state_path ~broker_root ~session_id =
+  let digest = Digestif.SHA256.digest_string session_id |> Digestif.SHA256.to_hex in
+  Filename.concat (Filename.concat broker_root ".codex-hook-debounce") digest
+
+let read_codex_debounce_state path =
+  try
+    match String.split_on_char '\t' (String.trim (C2c_io.read_file_opt path)) with
+    | [ ts; fingerprint ] -> Some (float_of_string ts, fingerprint)
+    | _ -> None
+  with _ -> None
+
+let codex_post_tool_is_debounced ~broker_root ~global_root ~session_id =
+  let fingerprint =
+    codex_inbox_fingerprint ~roots:[ broker_root; global_root ] ~session_id
+  in
+  let path = codex_debounce_state_path ~broker_root ~session_id in
+  let now = Unix.gettimeofday () in
+  match read_codex_debounce_state path with
+  | Some (last_ts, last_fingerprint) ->
+      now -. last_ts < codex_post_tool_debounce_s && fingerprint = last_fingerprint
+  | None -> false
+
+let record_codex_post_tool ~broker_root ~global_root ~session_id =
+  try
+    let dir = Filename.dirname (codex_debounce_state_path ~broker_root ~session_id) in
+    C2c_mcp.mkdir_p dir;
+    let fingerprint =
+      codex_inbox_fingerprint ~roots:[ broker_root; global_root ] ~session_id
+    in
+    ignore (C2c_io.write_file_atomic
+      (codex_debounce_state_path ~broker_root ~session_id)
+      (Printf.sprintf "%.9f\t%s\n" (Unix.gettimeofday ()) fingerprint))
+  with _ -> ()
+
 let read_stdin_all ~max_bytes =
   let chunk_size = 8192 in
   let chunk = Bytes.create chunk_size in
@@ -373,6 +425,12 @@ let hook_codex_cmd =
                          ~session_id:sid ~alias ~client:(Some "codex"));
                   (sid, Some alias))
        in
+       let global_root =
+         try C2c_repo_fp.resolve_sessions_broker_root () with _ -> ""
+       in
+       if event = "PostToolUse"
+          && codex_post_tool_is_debounced ~broker_root ~global_root ~session_id
+       then exit 0;
        (* Drain. Turn boundaries (SessionStart / UserPromptSubmit) deliver
           everything including deferrable messages; mid-turn events
           (PostToolUse / PreToolUse) deliver only push (non-deferrable)
@@ -439,6 +497,8 @@ let hook_codex_cmd =
          print_string (Yojson.Safe.to_string json);
          print_newline ()
        end;
+       if event = "PostToolUse" then
+         record_codex_post_tool ~broker_root ~global_root ~session_id;
        exit 0
      with
      | e ->

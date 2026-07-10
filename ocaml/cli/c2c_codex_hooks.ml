@@ -121,7 +121,8 @@ let hook_command = "c2c hook codex"
      user turn — a natural, non-disruptive delivery boundary.
    - PostToolUse (no matcher — every tool): timely mid-turn delivery of
      non-deferrable messages while the agent is actively working, mirroring
-     the Claude PostToolUse hook.
+     the Claude PostToolUse hook. The command coalesces unchanged empty-inbox
+     bursts, while any newly queued message bypasses that debounce.
    - SessionStart: onboarding/wake note (identity + key commands) so every
      fresh codex conversation knows it is on c2c.
    - SessionEnd: cleanup boundary for vanilla per-thread hook registrations.

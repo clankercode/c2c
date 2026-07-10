@@ -178,6 +178,28 @@ let test_registered_session_drains_message () =
     check int "second fire exit 0" 0 rc2;
     check string "second fire empty stdout" "" (String.trim stdout2))
 
+let test_post_tool_debounce_bypasses_new_message () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-debounce-0001" in
+    let b = register ctx ~session_id:sid ~alias:"zz-codex-debounce-recv" in
+    ignore (register ctx ~session_id:"codex-e2e-debounce-peer" ~alias:"zz-codex-debounce-peer");
+    (* An empty PostToolUse records the coalescing fingerprint. *)
+    let rc1, stdout1, _ = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "empty post-tool exits 0" 0 rc1;
+    check string "empty post-tool has no output" "" (String.trim stdout1);
+    (* A new message changes the inbox fingerprint, so the next rapid hook
+       must not be suppressed by the empty-inbox debounce. *)
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-debounce-peer"
+      ~to_alias:"zz-codex-debounce-recv" ~content:"deliver despite debounce" ();
+    let rc2, stdout2, stderr2 = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "message post-tool exits 0" 0 rc2;
+    match parse_context stdout2 with
+    | Some (_, context) ->
+        check bool "new message bypasses debounce" true
+          (contains ~haystack:context ~needle:"deliver despite debounce")
+    | None ->
+        failf "expected delivery after inbox change, got: %S (stderr: %S)" stdout2 stderr2)
+
 let test_empty_inbox_emits_nothing () =
   with_ctx (fun ctx ->
     let sid = "codex-e2e-session-0002" in
@@ -432,6 +454,8 @@ let () =
     [ ( "hook-codex"
       , [ test_case "registered session drains message" `Quick
             test_registered_session_drains_message
+        ; test_case "post-tool debounce bypasses new message" `Quick
+            test_post_tool_debounce_bypasses_new_message
         ; test_case "empty inbox emits nothing" `Quick test_empty_inbox_emits_nothing
         ; test_case "auto-register once + onboarding" `Quick
             test_unregistered_session_auto_registers_once
