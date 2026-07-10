@@ -1,6 +1,7 @@
 # B098 authority resolution
 
 Date: 2026-07-10
+Ledger: recorded as settled decision D2 in [`.collab/design/friction-cn-decision-ledger.md`](../design/friction-cn-decision-ledger.md) (ADR0).
 
 ## Decision
 

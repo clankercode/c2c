@@ -2,6 +2,7 @@
 
 Date: 2026-07-10
 Implementation base: `c8d5e7c93070058907fa5f342c23c45f63772b2e` (contains local-only B087-B100 prerequisite work)
+Decision ledger (ADR0): settled/deferred/open dispositions for C036-C046 and the authority table below are normalized in [`.collab/design/friction-cn-decision-ledger.md`](../design/friction-cn-decision-ledger.md).
 
 This artifact converts the complete T0 inventory plus reviewed T1-T3 gaps into
 bounded slices or explicit authority dispositions. It does not change code,
