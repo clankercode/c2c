@@ -29,21 +29,33 @@ let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
 (* --- subcommand: init ---------------------------------------------------- *)
 
 let detect_client () =
-   (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-    | Some sid ->
-        List.find_opt (fun c ->
-          let cl = String.length c in
-          String.length sid >= cl && String.sub sid 0 cl = c) C2c_setup.detect_client_prefixes
-    | None -> None)
-  |> (function
-      | Some _ as v -> v
-      | None ->
-          let has_bin name =
-            let path = try Sys.getenv "PATH" with Not_found -> "" in
-            List.exists (fun d -> Sys.file_exists (d // name))
-              (String.split_on_char ':' path)
-          in
-          List.find_opt has_bin [ "opencode"; "claude"; "codex"; "kimi" ])
+  (* A shell commonly has several agent CLIs on PATH.  Picking the first one
+     makes the result depend on an arbitrary list order (B102: a Claude Code
+     session was labelled opencode merely because both binaries were present).
+     Prefer the client process's explicit/native environment; only use a
+     managed c2c session-id prefix next, and regard PATH as evidence when it
+     identifies exactly one possible client. *)
+  match C2c_mcp.inferred_client_type_from_env () with
+  | Some _ as client -> client
+  | None ->
+      (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+       | Some sid ->
+           List.find_opt (fun c ->
+             let cl = String.length c in
+             String.length sid >= cl && String.sub sid 0 cl = c)
+             C2c_setup.detect_client_prefixes
+       | None -> None)
+      |> (function
+          | Some _ as client -> client
+          | None ->
+              let has_bin name =
+                let path = try Sys.getenv "PATH" with Not_found -> "" in
+                List.exists (fun d -> Sys.file_exists (d // name))
+                  (String.split_on_char ':' path)
+              in
+              match List.filter has_bin [ "opencode"; "claude"; "codex"; "kimi" ] with
+              | [ client ] -> Some client
+              | _ -> None)
 
 let init_cmd =
   let open Cmdliner in
@@ -545,7 +557,7 @@ let init =
        ~man:[ `S "DESCRIPTION"
             ; `P "$(b,c2c init) configures the current AI client for c2c messaging, registers \
                   the session, and joins swarm-lounge. Run once per project."
-            ; `P "Auto-detects the client from $(b,C2C_MCP_SESSION_ID) or installed binaries. \
+            ; `P "Auto-detects the client from explicit/native client environment, then $(b,C2C_MCP_SESSION_ID), or a single installed client binary. \
                   Override with $(b,--client)."
             ; `S "SESSION IDENTITY"
             ; `P "The session id is resolved from the environment first \
