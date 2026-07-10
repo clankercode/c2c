@@ -203,9 +203,7 @@ let () =
     | Ok sid -> sid
     | Error msg -> prerr_endline msg; exit 1
   in
-  let broker_root =
-    Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
-  in
+  let broker_root = C2c_hook_lib.resolve_hook_broker_root () in
 
   let now = iso8601_now () in
   (* PPID is the Claude Code process that spawned this hook *)

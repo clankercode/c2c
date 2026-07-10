@@ -199,6 +199,16 @@
  (libraries c2c_mcp alcotest yojson unix)
  (deps %{exe:../tools/c2c_inbox_hook.exe} %{exe:../tools/c2c_stop_hook.exe}))
 
+; hook-repo-broker slice: C2c_hook_lib.resolve_hook_broker_root — vanilla
+; hooks (no C2C_MCP_BROKER_ROOT env) fall back to the canonical repo-fp
+; broker and deliver repo-broker DMs. Links c2c_hook_lib for the resolver +
+; digestif to reproduce the repo-fingerprint deterministically in the E2E.
+(test
+ (name test_hook_broker_root)
+ (modules test_hook_broker_root)
+ (libraries c2c_hook_lib c2c_mcp alcotest yojson unix digestif.ocaml)
+ (deps %{exe:../tools/c2c_inbox_hook.exe}))
+
 (test
  (name test_c2c_relay_connector)
  (modules test_c2c_relay_connector)
