@@ -1,6 +1,6 @@
 {
   "assumptions": {},
-  "events_seen": 109,
+  "events_seen": 115,
   "issues": {},
   "protocol_version": "udwff/v1",
   "questions": {},
@@ -8,6 +8,27 @@
   "schema_version": "1.1.0",
   "status": "intake",
   "tasks": {
+    "D1-connect-golden": {
+      "history": [
+        {
+          "event_id": "evt_8f3316edbefcd1e5f64a898651cf55ff",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_05e855e3f66c0f14a7ce6ce31c495884",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_201594447c6632e27ced934b4fb404c8",
+          "event_type": "TaskStarted"
+        }
+      ],
+      "node_id": "impl-D1",
+      "owner": "fable-warden/D1-worker",
+      "status": "running",
+      "task_id": "D1-connect-golden",
+      "title": "Public-relay /connect golden-path doc + nav + command harness"
+    },
     "F101-self-update": {
       "artifact_path": "artifacts/F101-self-update/receipt.md",
       "history": [
@@ -382,6 +403,27 @@
       "status": "done",
       "task_id": "H4-doctor-truth",
       "title": "Doctor/capability truth: scheme/attempt-aware capabilities, connector detection, canonical capabilities surface, stale B087 subscribe claim removed"
+    },
+    "J1-schema-core": {
+      "history": [
+        {
+          "event_id": "evt_c0144cce9072b323ff1736a4d7998f26",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_364e7dfc90e2bfaf58d20339d585882c",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_c834aa1d8cdf84a075c314db970056da",
+          "event_type": "TaskStarted"
+        }
+      ],
+      "node_id": "impl-J1",
+      "owner": "fable-warden/J1-worker",
+      "status": "running",
+      "task_id": "J1-schema-core",
+      "title": "Shared lean v1 JSON schema module + published schema + vectors (additive)"
     },
     "T0-inventory": {
       "artifact_path": "artifacts/T0-inventory/envelope.json",
