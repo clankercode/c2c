@@ -117,9 +117,9 @@ flowchart TD
 
 Start the first wave now, each in its own worktree: **H0, H1, H2a**. These are
 the three unblocked security fixes and have exclusive production/test ownership.
-After that review gate, start H3, H4, F101, and J1. Sequence H5 then H6 after H4
-unless their implementation audits prove exclusive pre-existing test modules.
-Sequence F5a after J1 so their `ocaml/test/dune` edits cannot collide. D1 can
+After that review gate, start H3, H4, and F101. Serialize the shared
+`ocaml/test/dune` lane as H4 -> J1 -> H5 -> H6 -> F5a unless a slice review
+proves it uses no manifest edit. D1 can
 draft editorial structure independently but takes final command/output updates
 after H3/H4. Q1 and ADR0 are final-proof/decision-ledger gates described below.
 
@@ -145,9 +145,9 @@ after H3/H4. Q1 and ADR0 are final-proof/decision-ledger gates described below.
 | F5a | Extract reusable production `InMemoryRelay` loopback HTTP/fault test support; no competing relay. Own its new support modules and the next `ocaml/test/dune` manifest commit. | J1 first, solely to serialize the shared dune manifest | deterministic lifecycle/port cleanup; existing PoW/relay suites green. | B075/B082-B086/B192/B236; C024/C056 |
 | F5b | P0 process/adverse matrix: null/malformed PoW, 401/429/5xx, timeout, truncated JSON, doctor failures, and strict B098 vector. | F5a + completed H1 for B098 expectation | real process exit/stderr/retry/no-false-success, named regressions. | A006-A008/A083/A088; B027/B044-B045/B074/B080/B087-B092/B094-B101/B110/B113-B114/B119/B122-B129/B173/B185/B187/B189-B197/B211; C024/C047/C056 |
 | F5c | Schema-mismatch fault and shared semantic vectors. | J1 + F5a | fake/real vector equality where deterministic. | B093/B095/B120/B232/B238/B249; C024/C056 |
-| F5d | CI and scheduled real-relay evidence; no production push. | F5b/F5c; named owner, secrets/flakiness policy | hermetic every PR; bounded scheduled public-relay run with retained diagnostics. | B095/B101/B121/B173/B187/B193/B208/B212/B250; C024/C056 |
+| F5d | CI and scheduled real-relay evidence; no production push. | F5b/F5c; named owner, secrets/flakiness policy | hermetic every PR; bounded scheduled public-relay run with retained diagnostics, including a positive two-host connector bridge smoke proving the working/honest bridge. | B071/B095/B101/B121/B173/B187/B193/B208/B210/B212/B250; C024/C056 |
 | D1 | One public-relay `/connect` golden path; keep self-host relay quickstart as operator deep dive. Own `docs/connect.md`, navigation links, docs command harness. | command facts after H3/H4; can draft independently | install→local proof→setup/register/status→discover→send→peek/poll/monitor→reply/verify; normalized expected output; symptom/cause/fix; current two-host receipt. | A016-A018/A022-A023/A028/A089-A099; B055-B056/B130/B142-B144/B155/B162/B166/B168/B170/B173/B198-B201/B208; C056 |
-| Q1 | Command-wide parse/exit/error-message contract matrix. Own new `tests/test_c2c_cli_error_contract.py`; production fixes get new commits and avoid files still owned by unfinished H/J/F slices. | H3/H4/F5b behavior first | Per-command valid/invalid parse cases; success/failure exit taxonomy; relay errors never exit zero; clear stderr snapshots; connector live failure. | B071/B076-B077/B183-B184/B210; C047 broad principle |
+| Q1 | Command-wide parse/exit/error-message contract matrix. Own new `tests/test_c2c_cli_error_contract.py`; production fixes get new commits and avoid files still owned by unfinished H/J/F slices. | H3/H4/F5b behavior first | Per-command valid/invalid parse cases; success/failure exit taxonomy; relay errors never exit zero; clear stderr snapshots; connector negative live failure. Positive production/two-host connector proof belongs to F5d. | B076-B077/B183-B184; C047 broad principle |
 | ADR0 | Decision ledger linking settled identity, strict bus safety, current polling, and explicitly deferred transport/delivery choices. Own one new `.collab/design/friction-cn-decision-ledger.md` and backlog/doc cross-links only. | H1 decision recorded; before any irreversible I004 work | Link validation; no protocol change; open prototype gates and owners named. | C036-C046, especially C046 |
 
 ## Authority-backed deferrals and decisions
