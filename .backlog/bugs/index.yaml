@@ -101,3 +101,4 @@ bugs:
     - file: B102-auto-assigned-alias-misdetects.todo
     - file: B103-opencode-question-flow-inbound.todo
     - file: B104-reply-path-broken-successful-c.todo
+    - file: B105-peer-liveness-opaque-in-list-f.todo
