@@ -192,6 +192,56 @@ let resolve_binary_path () =
     else argv0
   end
 
+(* ---- npm package-manager updates ---------------------------------------- *)
+
+type package_manager = Npm | Pnpm | Bun
+
+let package_manager_of_string = function
+  | "npm" -> Some Npm
+  | "pnpm" -> Some Pnpm
+  | "bun" -> Some Bun
+  | _ -> None
+
+let package_manager_name = function
+  | Npm -> "npm"
+  | Pnpm -> "pnpm"
+  | Bun -> "bun"
+
+(* The JavaScript npm wrapper sets this only for commands it launches.  Do not
+   infer package ownership from the native binary path: the wrapper can fall
+   back to a system binary, and an arbitrary node_modules path is not evidence
+   that this invocation should mutate a global installation. *)
+let package_manager_from_env () =
+  match Sys.getenv_opt "C2C_SELF_UPDATE_PACKAGE_MANAGER" with
+  | Some manager -> package_manager_of_string (String.trim manager)
+  | None -> None
+
+let package_update_command manager pinned_version =
+  let package =
+    match pinned_version with
+    | None -> "@clanker-code/c2c@latest"
+    | Some version -> "@clanker-code/c2c@" ^ version
+  in
+  match manager with
+  | Npm -> ("npm", [| "npm"; "install"; "--global"; package |])
+  | Pnpm -> ("pnpm", [| "pnpm"; "add"; "--global"; package |])
+  | Bun -> ("bun", [| "bun"; "add"; "--global"; package |])
+
+let run_package_manager_update manager pinned_version =
+  let command, argv = package_update_command manager pinned_version in
+  try
+    let pid = Unix.create_process command argv Unix.stdin Unix.stdout Unix.stderr in
+    match Unix.waitpid [] pid with
+    | _, Unix.WEXITED 0 -> Ok ()
+    | _, Unix.WEXITED status ->
+        Error (Printf.sprintf "%s exited with status %d" command status)
+    | _, Unix.WSIGNALED signal ->
+        Error (Printf.sprintf "%s was terminated by signal %d" command signal)
+    | _, Unix.WSTOPPED signal ->
+        Error (Printf.sprintf "%s was stopped by signal %d" command signal)
+  with Unix.Unix_error (error, _, _) ->
+    Error (Printf.sprintf "could not run %s: %s" command (Unix.error_message error))
+
 (* ---- result types -------------------------------------------------------- *)
 
 type update_result =
@@ -204,6 +254,29 @@ type update_result =
 
 let run_self_update ~check_only ~pinned_version ~json_output ~verify_sig =
   let binary_path = resolve_binary_path () in
+
+  match package_manager_from_env () with
+  | Some manager when not check_only ->
+      let manager_name = package_manager_name manager in
+      if not json_output then
+        Printf.eprintf "Updating @clanker-code/c2c with %s...\n%!" manager_name;
+      (match run_package_manager_update manager pinned_version with
+       | Ok () ->
+           if json_output then
+             Printf.printf
+               "{\"status\":\"updated\",\"package_manager\":%s}\n"
+               (Yojson.Safe.to_string (`String manager_name))
+           else
+             Printf.eprintf "Updated c2c with %s. Restart active c2c sessions to use it.\n%!" manager_name;
+           Updated "package-manager"
+       | Error message ->
+           if json_output then
+             Printf.printf "{\"error\":%s,\"exit_code\":1}\n"
+               (Yojson.Safe.to_string (`String message))
+           else
+             Printf.eprintf "error: package-manager update failed: %s\n%!" message;
+           Update_error message)
+  | _ ->
 
   if is_system_path binary_path && not check_only then begin
     let msg = Printf.sprintf

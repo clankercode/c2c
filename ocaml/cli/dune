@@ -171,6 +171,11 @@
  (modules test_c2c_utils c2c_utils c2c_broker_root_check)
  (libraries c2c_mcp alcotest unix))
 
+(test
+ (name test_c2c_self_update)
+ (modules test_c2c_self_update c2c_self_update)
+ (libraries alcotest yojson unix lwt.unix cohttp-lwt-unix digestif.ocaml))
+
 ; Regression guard for #429 lazy-init (c2c --version <200ms median-of-5).
 ; Slate's follow-up suggestion to prevent silent regrowth of startup cost.
 (test
