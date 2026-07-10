@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B106
+priority: high
+status: pending
+tags: []
+title: Codex should not have mcp installed by default
+---
+
+Codex should not have mcp installed by default

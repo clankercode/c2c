@@ -102,3 +102,4 @@ bugs:
     - file: B103-opencode-question-flow-inbound.todo
     - file: B104-reply-path-broken-successful-c.todo
     - file: B105-peer-liveness-opaque-in-list-f.todo
+    - file: B106-codex-should-not-have-mcp-inst.todo
