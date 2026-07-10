@@ -60,15 +60,22 @@ Fields:
 
 A new message was written to a broker inbox/live-inbox watch, appended to the archive, or peeked from the relay inbox.
 
+Message events carry the [canonical message schema v1](/reference/message-schema-v1/) fields (`schema_version`, `type`, `message_id`, `ts`, `from`, `to`, `source`, `content`), **plus** the pre-v1 legacy keys (`from_alias`, `to_alias`, and any extra fields from the raw broker message) preserved additively so existing readers keep working unchanged. Each event is one compact JSON object on one line (the examples below are pretty-printed for readability):
+
 ```json
 {
-  "event_type":   "message",
-  "monitor_ts":   "1745241234.567",
-  "source":       "local",
-  "from_alias":   "coder1",
-  "to_alias":     "coordinator1",
-  "content":      "build green, ready to merge",
-  "ts":           "2026-04-21T14:02:00Z"
+  "event_type":     "message",
+  "monitor_ts":     "1745241234.567",
+  "schema_version": 1,
+  "type":           "dm",
+  "message_id":     "m-778",
+  "ts":             1745241234.5,
+  "from":           { "alias": "coder1" },
+  "to":             "coordinator1",
+  "source":         "local",
+  "content":        "build green, ready to merge",
+  "from_alias":     "coder1",
+  "to_alias":       "coordinator1"
 }
 ```
 
@@ -76,33 +83,42 @@ Relay-sourced messages use the same shape with `source: "relay"`:
 
 ```json
 {
-  "event_type":   "message",
-  "monitor_ts":   "1745241239.012",
-  "source":       "relay",
-  "from_alias":   "remote-coder",
-  "to_alias":     "coordinator1",
-  "content":      "cross-host DM surfaced by relay peek",
-  "ts":           "2026-07-08T09:12:00Z"
+  "event_type":     "message",
+  "monitor_ts":     "1745241239.012",
+  "schema_version": 1,
+  "type":           "dm",
+  "message_id":     "r-42",
+  "ts":             1751961120.0,
+  "from":           { "alias": "remote-coder" },
+  "to":             "coordinator1",
+  "source":         "relay",
+  "content":        "cross-host DM surfaced by relay peek",
+  "from_alias":     "remote-coder",
+  "to_alias":       "coordinator1"
 }
 ```
 
-Room messages carry additional fields:
+Room messages report `type: "room"` with `to` set to the room name; the raw fanout `to_alias` (`<alias>#<room>`) and any `room_id`/`event` fields from the raw message are preserved as legacy keys:
 
 ```json
 {
-  "event_type":   "message",
-  "monitor_ts":   "1745241234.567",
-  "source":       "local",
-  "from_alias":   "coder1",
-  "to_alias":     "swarm-lounge",
-  "content":      "joining the room",
-  "ts":           "2026-04-21T14:02:00Z",
-  "room_id":      "swarm-lounge",
-  "event":        "room_message"
+  "event_type":     "message",
+  "monitor_ts":     "1745241300.245",
+  "schema_version": 1,
+  "type":           "room",
+  "ts":             1745241300.0,
+  "from":           { "alias": "coder1" },
+  "to":             "swarm-lounge",
+  "source":         "local",
+  "content":        "joining the room",
+  "from_alias":     "coder1",
+  "to_alias":       "coordinator1#swarm-lounge"
 }
 ```
 
-`source` is `local` for local broker/archive/live-inbox events and `relay` for cross-host messages surfaced by the relay-inbox watcher. In human output, relay-sourced messages are marked with `🌐`. Caveat: the legacy `--live --json` inline path may omit `source`; the default archive-mode path and relay watcher include it.
+Optional v1 fields (`message_id`, `ts`) are omitted when the raw message does not carry them — absence, never `null`. A legacy `ts` that is not a number is left as-is under its legacy key rather than coerced.
+
+`source` is `local` for local broker/archive/live-inbox events and `relay` for cross-host messages surfaced by the relay-inbox watcher. In human output, relay-sourced messages are marked with `🌐`. Both the default archive-mode path and the legacy `--live --json` inline path include `source` (before schema-v1 adoption, `--live` omitted it).
 
 ### `drain`
 
@@ -209,10 +225,34 @@ Relay controls:
 
 - `--no-relay`: disable the relay-inbox watcher; local broker only.
 - `--relay-interval SECONDS`: interval between relay peeks; default `5.0`. `0` disables the relay watcher, equivalent to `--no-relay`.
-- `--relay-node-id ID`: relay node id whose inbox should be peeked. Default is `cli-<alias>`, matching `c2c relay register --alias <alias>`. `C2C_RELAY_NODE_ID` is the environment override.
-- `--relay-session-id ID`: relay session id whose inbox should be peeked. Default is the relay node id. `C2C_RELAY_SESSION_ID` is the environment override. Connector-managed aliases commonly need both `--relay-node-id` and `--relay-session-id`.
+- `--relay-node-id ID`: relay node id whose inbox should be peeked. Overrides the auto-resolved default (below). `C2C_RELAY_NODE_ID` is the environment override.
+- `--relay-session-id ID`: relay session id whose inbox should be peeked. Overrides the auto-resolved default. `C2C_RELAY_SESSION_ID` is the environment override.
+
+### Peek-key resolution
+
+The relay inbox to peek is resolved automatically, so a bare `c2c monitor` "just works" — you rarely need `--relay-node-id`/`--relay-session-id`:
+
+1. **Connector-managed** — when the relay connector (`c2c relay connect`) manages this broker, it registers your alias on the relay under the **machine node-id** with your **local broker session-id**, not the `cli-<alias>` convention. The monitor reads `connector-state.json`; if it lists your alias, the default peek key becomes `(connector node-id, your local session-id)`. This is what surfaces cross-host DMs on a connector-managed broker with no manual flags. The connector node-id is read from `connector-state.json` (honouring a `relay connect --node-id` override) and falls back to the same host hash the connector derives by default.
+2. **Direct-register fallback** — with no connector managing this alias, the default is `cli-<alias>` / `cli-<alias>`, matching `c2c relay register --alias <alias>`.
+3. **Explicit overrides always win** — `--relay-node-id X` alone peeks `X/X`; add `--relay-session-id S` for `X/S`.
 
 The relay watcher is gated to the default archive mode for deduplication. Under `--live`, `monitor.ready.relay_watch` reports it off.
+
+### Error honesty and exit status
+
+A relay error is never silently swallowed (the old behaviour surfaced nothing and spun forever against a dead relay stream — "misleading success"):
+
+- An `ok:false` relay response is surfaced on stderr with its `error_code` and message.
+- **Transient** errors (network blip, timeout, rate-limit, unrecognized code) are retried with exponential backoff (capped at 60s). On recovery the monitor prints a `reconnected` line.
+- **Terminal** errors (`unauthorized`, `signature_invalid`, `timestamp_out_of_window`, `missing_proof_field`, `not_found`, `unknown_node`, `not_registered`, `bad_request` — auth/identity/config, will not self-heal) print a clear message and **exit the monitor with a non-zero code** so a supervisor notices. The first peek fires immediately at startup, so a terminal auth failure surfaces right away rather than one interval late.
+
+Exit status:
+
+| Code | Meaning |
+|---|---|
+| `0` | Clean exit (parent process gone, or stop requested). |
+| `1` | Usage or startup error (broker root unresolved, lockfile conflict). |
+| `3` | Terminal relay failure (auth / identity / signature / bad request). |
 
 ---
 
@@ -221,4 +261,5 @@ The relay watcher is gated to the default archive mode for deduplication. Under 
 - `monitor_ts` is the wall-clock time the monitor process observed the event, not the message send time (`ts`). Use `ts` for message ordering; use `monitor_ts` for latency measurement.
 - In archive mode (`--archive`, now the default), `event_type: "message"` events are read from the append-only `archive/*.jsonl` files. This avoids racing with a PostToolUse hook that drains the live inbox. When a session inbox is resolved, archive mode also watches that session's live inbox and peeks it by default so messages can surface even before another consumer drains them to the archive.
 - Drain and sweep events can be emitted in either live mode or archive mode when a watched live inbox is touched or deleted. In a pure archive-only run with no resolved session inbox, there is no live inbox watch, so drain/sweep events will not fire.
-- All output is flushed immediately (`%!` / `print_newline`). Safe to consume line-by-line from a subprocess.
+- All output is flushed immediately (one compact JSON object per line, flushed after each event). Safe to consume line-by-line from a subprocess.
+- `event_type: "message"` events validate against [message schema v1](/reference/message-schema-v1/); the legacy `from_alias`/`to_alias` keys (and any extra raw-message fields) are carried additively for pre-v1 readers and will remain through v1's lifetime.
