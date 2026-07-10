@@ -1055,6 +1055,14 @@ let relay_dm_cmd =
                   | Error _ ->
                       Lwt_main.run (Relay.Relay_client.send client
                         ~from_alias ~to_alias ~content ())) in
+                (* J2: a relay ACK means the relay accepted the message —
+                   emit the canonical schema-v1 shape (delivery.state
+                   "accepted", source "relay") with the legacy ack keys
+                   (ok/ts/duplicate) preserved; errors pass through raw. *)
+                let result =
+                  C2c_utils.adapt_relay_dm_send_result ~from_alias ~to_alias
+                    ~content result
+                in
                 print_result_and_exit
                   ~alias_source:(Relay_client_hints.Explicit from_alias) result)
        | "poll" ->
@@ -1078,6 +1086,14 @@ let relay_dm_cmd =
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.poll_inbox client
                    ~node_id ~session_id:node_id)) in
+           (* J2: drained relay rows were delivered to this caller —
+              schema-v1 rows (delivery.state "delivered", source "relay")
+              with legacy row keys preserved; empty batches keep the
+              exact legacy shape. *)
+           let result =
+             C2c_utils.adapt_relay_dm_inbox_result
+               ~delivery_state:C2c_schema_v1.Delivered result
+           in
            print_result_and_exit
              ~alias_source:(Relay_client_hints.Explicit from_alias) result
        | "peek" ->
@@ -1109,6 +1125,13 @@ let relay_dm_cmd =
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.peek_inbox client
                    ~node_id ~session_id:node_id)) in
+           (* J2: peeked relay rows are NOT drained — schema-v1 rows with
+              delivery.state "queued", source "relay"; legacy row keys
+              preserved. *)
+           let result =
+             C2c_utils.adapt_relay_dm_inbox_result
+               ~delivery_state:C2c_schema_v1.Queued result
+           in
            print_result_and_exit
              ~alias_source:(Relay_client_hints.Explicit from_alias) result
        | "send-all" ->

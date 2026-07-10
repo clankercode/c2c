@@ -70,3 +70,243 @@ let atomic_write_json path json =
   match C2c_io.write_file_atomic path payload with
   | Ok () -> ()
   | Error _ -> ()
+
+(* ------------------------------------------------------------------ *)
+(* J2: canonical schema-v1 adaptation for CLI --json results.
+
+   These helpers migrate the CLI's send / poll-inbox / peek-inbox /
+   `relay dm send|poll|peek` JSON representations onto the canonical
+   v1 message schema (C2c_schema_v1, slice J1) while preserving every
+   pre-existing legacy key additively at its unchanged value.
+
+   MERGE-UNIFICATION TODO (J2 <-> J4): the parallel J4 branch
+   (friction-j4-mcp-schema) adds a shared
+   [C2c_schema_v1.serialize_with_legacy] helper for the MCP surfaces.
+   J2 deliberately does NOT touch c2c_schema_v1.ml (J4 owns edits to it
+   on its branch); once both branches land, unify these CLI-side
+   helpers onto the shared library helper. *)
+
+(** Classify a recipient string into the v1 [type] discriminator.
+    Delegates to the canonical [C2c_mcp_helpers.is_room_recipient]:
+    a `<alias>#<12-lowercase-hex>` host-hash suffix is a cross-host DM,
+    any other `#` suffix is a room delivery. Never hand-roll a bare
+    [String.contains '#'] check. *)
+let schema_v1_msg_type_of_recipient ~to_alias : C2c_schema_v1.msg_type =
+  if C2c_mcp_helpers.is_room_recipient ~to_alias then C2c_schema_v1.Room
+  else C2c_schema_v1.Dm
+
+(** [schema_v1_with_legacy t ?delivery_extra ~legacy ()] serializes [t]
+    via [C2c_schema_v1.serialize] and then appends:
+    - [delivery_extra] pairs INSIDE the [delivery] object (only when the
+      record carries a delivery state; extra keys are tolerated-unknown
+      per the v1 forward-compat contract), and
+    - [legacy] pairs at the top level, skipping any key the v1
+      serialization already emitted (so [ts] / [content] / [message_id]
+      appear exactly once — callers must only pass legacy values that
+      are identical to the v1-emitted ones for colliding keys).
+    Guarantees no duplicate JSON keys in the result. *)
+let schema_v1_with_legacy (t : C2c_schema_v1.t)
+    ?(delivery_extra : (string * Yojson.Safe.t) list = [])
+    ~(legacy : (string * Yojson.Safe.t) list) () : Yojson.Safe.t =
+  let fields =
+    match C2c_schema_v1.serialize t with
+    | `Assoc fields -> fields
+    | other -> [ ("value", other) ] (* unreachable: serialize returns `Assoc *)
+  in
+  let fields =
+    if delivery_extra = [] then fields
+    else
+      List.map
+        (fun (k, v) ->
+          if k = C2c_schema_v1.key_delivery then
+            match v with
+            | `Assoc dfields ->
+                let extra =
+                  List.filter
+                    (fun (dk, _) -> not (List.mem_assoc dk dfields))
+                    delivery_extra
+                in
+                (k, `Assoc (dfields @ extra))
+            | _ -> (k, v)
+          else (k, v))
+        fields
+  in
+  let legacy_new =
+    List.filter (fun (k, _) -> not (List.mem_assoc k fields)) legacy
+  in
+  `Assoc (fields @ legacy_new)
+
+(** One inbox message row for poll-inbox / peek-inbox / wait-inbox
+    [--json]: canonical v1 shape plus the legacy row keys
+    ([from_alias], [to_alias], [content], [ts]) at unchanged values.
+    [delivery_state] is [Delivered] for drained rows and [Queued] for
+    peeked (non-drained) rows. [source] is omitted: the local broker
+    does not reliably record transport origin (it assigns
+    [message_id]s locally too). *)
+let inbox_message_row_json ~(delivery_state : C2c_schema_v1.delivery_state)
+    (m : C2c_mcp.message) : Yojson.Safe.t =
+  let v1 : C2c_schema_v1.t =
+    { C2c_schema_v1.schema_version = C2c_schema_v1.schema_version
+    ; msg_type = schema_v1_msg_type_of_recipient ~to_alias:m.C2c_mcp.to_alias
+    ; message_id = m.C2c_mcp.message_id
+    ; ts = Some m.C2c_mcp.ts
+    ; from =
+        { C2c_schema_v1.alias = m.C2c_mcp.from_alias
+        ; host_id = None
+        ; address = None
+        }
+    ; to_ = m.C2c_mcp.to_alias
+    ; source = None
+    ; content = m.C2c_mcp.content
+    ; in_reply_to = None
+    ; delivery_state = Some delivery_state
+    }
+  in
+  schema_v1_with_legacy v1
+    ~legacy:
+      [ ("from_alias", `String m.C2c_mcp.from_alias)
+      ; ("to_alias", `String m.C2c_mcp.to_alias)
+      ; ("content", `String m.C2c_mcp.content)
+      ; ("ts", `Float m.C2c_mcp.ts)
+      ]
+    ()
+
+(** `c2c send --json` receipt: canonical v1 shape plus the legacy
+    receipt keys ([queued] bool, [ts], [from_alias],
+    [to_alias]/[target_session_id] via [legacy_target_fields],
+    [delivery.state] (+ optional [delivery.warning], B088), and optional
+    [compacting_warning]) at unchanged values. [content] is additive
+    (required by v1; the legacy receipt never carried it). [type] is
+    always [dm]: `c2c send` is the DM surface (rooms go via
+    `c2c rooms send`), and remote targets may embed `@host` which the
+    room classifier must not see. *)
+let cli_send_receipt_json ~ts ~from_alias ~to_ ~content
+    ~(delivery_state : C2c_schema_v1.delivery_state) ?delivery_warning
+    ~(legacy_target_fields : (string * Yojson.Safe.t) list)
+    ?compacting_warning () : Yojson.Safe.t =
+  let v1 : C2c_schema_v1.t =
+    { C2c_schema_v1.schema_version = C2c_schema_v1.schema_version
+    ; msg_type = C2c_schema_v1.Dm
+    ; message_id = None
+    ; ts = Some ts
+    ; from = { C2c_schema_v1.alias = from_alias; host_id = None; address = None }
+    ; to_
+    ; source = None
+    ; content
+    ; in_reply_to = None
+    ; delivery_state = Some delivery_state
+    }
+  in
+  let delivery_extra =
+    match delivery_warning with
+    | Some w -> [ ("warning", `String w) ]
+    | None -> []
+  in
+  let legacy =
+    [ ("queued", `Bool true); ("from_alias", `String from_alias) ]
+    @ legacy_target_fields
+    @ (match compacting_warning with
+       | Some w -> [ ("compacting_warning", `String w) ]
+       | None -> [])
+  in
+  schema_v1_with_legacy v1 ~delivery_extra ~legacy ()
+
+(** Adapt a `c2c relay dm send` relay ACK to the v1 shape. Only a
+    successful ACK ([ok:true]) is adapted — the relay accepted the
+    message, so [delivery.state] is [accepted] and [source] is [relay]
+    (the result demonstrably came from the relay). All legacy response
+    keys ([ok], [ts], [duplicate], ...) are preserved additively at
+    unchanged values. Error responses pass through untouched so
+    exit-code logic and alias hints keep working on the raw shape. *)
+let adapt_relay_dm_send_result ~from_alias ~to_alias ~content
+    (result : Yojson.Safe.t) : Yojson.Safe.t =
+  match result with
+  | `Assoc fields when List.assoc_opt "ok" fields = Some (`Bool true) ->
+      let ts =
+        match List.assoc_opt "ts" fields with
+        | Some (`Float f) -> Some f
+        | Some (`Int i) -> Some (float_of_int i)
+        | _ -> None
+      in
+      let v1 : C2c_schema_v1.t =
+        { C2c_schema_v1.schema_version = C2c_schema_v1.schema_version
+        ; msg_type = schema_v1_msg_type_of_recipient ~to_alias
+        ; message_id = None
+        ; ts
+        ; from =
+            { C2c_schema_v1.alias = from_alias; host_id = None; address = None }
+        ; to_ = to_alias
+        ; source = Some C2c_schema_v1.Relay
+        ; content
+        ; in_reply_to = None
+        ; delivery_state = Some C2c_schema_v1.Accepted
+        }
+      in
+      schema_v1_with_legacy v1 ~legacy:fields ()
+  | _ -> result
+
+(** Adapt a `c2c relay dm poll|peek` response: each row in [messages]
+    becomes the v1 shape ([source] = [relay]; [delivery.state] =
+    [Delivered] for poll (drained) rows, [Queued] for peek rows) with
+    the legacy row keys ([message_id], [from_alias], [to_alias],
+    [content], [ts]) preserved at unchanged values. An empty [messages]
+    batch keeps the exact legacy shape ([{"ok":true,"messages":[]}]).
+    Rows missing a v1-required field, non-list [messages], and error
+    responses pass through untouched. *)
+let adapt_relay_dm_inbox_result
+    ~(delivery_state : C2c_schema_v1.delivery_state)
+    (result : Yojson.Safe.t) : Yojson.Safe.t =
+  let adapt_row row =
+    match row with
+    | `Assoc kv -> (
+        match
+          ( List.assoc_opt "from_alias" kv
+          , List.assoc_opt "to_alias" kv
+          , List.assoc_opt "content" kv )
+        with
+        | Some (`String from_alias), Some (`String to_alias),
+          Some (`String content) ->
+            let message_id =
+              match List.assoc_opt "message_id" kv with
+              | Some (`String s) -> Some s
+              | _ -> None
+            in
+            let ts =
+              match List.assoc_opt "ts" kv with
+              | Some (`Float f) -> Some f
+              | Some (`Int i) -> Some (float_of_int i)
+              | _ -> None
+            in
+            let v1 : C2c_schema_v1.t =
+              { C2c_schema_v1.schema_version = C2c_schema_v1.schema_version
+              ; msg_type = schema_v1_msg_type_of_recipient ~to_alias
+              ; message_id
+              ; ts
+              ; from =
+                  { C2c_schema_v1.alias = from_alias
+                  ; host_id = None
+                  ; address = None
+                  }
+              ; to_ = to_alias
+              ; source = Some C2c_schema_v1.Relay
+              ; content
+              ; in_reply_to = None
+              ; delivery_state = Some delivery_state
+              }
+            in
+            schema_v1_with_legacy v1 ~legacy:kv ()
+        | _ -> row)
+    | _ -> row
+  in
+  match result with
+  | `Assoc fields when List.assoc_opt "ok" fields = Some (`Bool true) -> (
+      match List.assoc_opt "messages" fields with
+      | Some (`List rows) ->
+          `Assoc
+            (List.map
+               (fun (k, v) ->
+                 if k = "messages" then (k, `List (List.map adapt_row rows))
+                 else (k, v))
+               fields)
+      | _ -> result)
+  | _ -> result

@@ -24,8 +24,15 @@ is carried from day one so v2 is non-breaking.
 > Scope note: this page (slice J1) *publishes* the schema and its vectors.
 > The MCP tool surfaces (`send` / `poll_inbox` / `peek_inbox`) emit it as of
 > slice J4, with the legacy pre-v1 keys preserved alongside for existing
-> consumers. The remaining surfaces are migrated by their own slices (J2 CLI,
-> J3 monitor NDJSON); until then they keep their current shape unchanged.
+> consumers.
+>
+> J2 landed: the CLI `send` / `poll-inbox` / `wait-inbox` / `peek-inbox`
+> `--json` results and the `relay dm send|poll|peek` results now emit this
+> shape with all legacy keys preserved additively — see
+> [commands → JSON output](/commands/#json-output-message-schema-v1).
+>
+> J3 landed: the streaming `c2c monitor --json` NDJSON message events emit
+> this shape too (legacy keys preserved additively).
 
 ## Field contract
 
