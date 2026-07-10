@@ -395,6 +395,15 @@ check:
     # #442: enforce broker-log-events.md catalog completeness — any new
     # `"event", `String "<name>"` emitter in ocaml/ must be cataloged.
     ./scripts/check-broker-log-catalog.sh
+    # friction D1: every `c2c ...` in docs/connect.md must name a real
+    # subcommand/relay-subcommand/enum leaf (validated against the just-built
+    # binary's --help). Catches doc drift like `c2c relay rooms knock`.
+    python3 scripts/check-connect-commands.py --bin _build/default/ocaml/cli/c2c.exe
+
+# Validate the docs/connect.md golden-path commands against the built binary.
+check-connect-commands:
+    opam exec -- dune build --root "$PWD" ocaml/cli/c2c.exe
+    python3 scripts/check-connect-commands.py --bin _build/default/ocaml/cli/c2c.exe
 
 # Install repo git hooks (pre-commit: plugin syntax check).
 # Uses symlinks so edits in scripts/git-hooks/ apply immediately.
