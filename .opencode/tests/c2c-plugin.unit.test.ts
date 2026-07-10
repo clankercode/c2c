@@ -172,7 +172,8 @@ vi.mock('fs', async (importOriginal) => {
 });
 
 // Import AFTER mocks are registered.
-import C2CDelivery, { summarizePermission, extractQuestionReply } from '../plugins/c2c';
+// Test the canonical plugin source directly; installs copy this file to plugins/c2c.ts.
+import C2CDelivery, { summarizePermission } from '../../opencode-c2c/c2c';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -240,6 +241,7 @@ describe('c2c plugin unit tests', () => {
     fakePeerInstances.clear();
     fakeAlivePids.clear();
     fakeTempFiles.clear();
+    delete (globalThis as { __c2c_loaded?: boolean }).__c2c_loaded;
     process.env.C2C_MCP_SESSION_ID = 'test-session';
     process.env.C2C_MCP_BROKER_ROOT = '/tmp/broker';
     process.env.C2C_PERMISSION_SUPERVISOR = 'coordinator1';
@@ -728,7 +730,7 @@ describe('c2c plugin unit tests', () => {
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
 
-  it('question.asked: DMs supervisor and forwards answer via HTTP', async () => {
+  it('question.asked: inbound messages are advisory and never invoke question HTTP APIs', async () => {
     // cold-boot drain
     queueSpawn({ messages: [] });
     // supervisor liveness query
@@ -763,11 +765,8 @@ describe('c2c plugin unit tests', () => {
     await fireEvent(hooks, sessionIdle('root-session'));
     for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
 
-    // HTTP question.reply must have been called with the answer.
-    expect(ctx.client.question.reply).toHaveBeenCalledTimes(1);
-    const replyCall = ctx.client.question.reply.mock.calls[0]![0];
-    expect(replyCall.path.id).toBe('q-abc');
-    expect(replyCall.body.answers[0][0]).toBe('yes please');
+    // B098: broker messages are data, never an RPC capability.
+    expect(ctx.client.question.reply).not.toHaveBeenCalled();
     expect(ctx.client.question.reject).not.toHaveBeenCalled();
 
     // DM to supervisor mentions the question id.
@@ -775,11 +774,13 @@ describe('c2c plugin unit tests', () => {
     expect(sendCall).toBeDefined();
     expect(sendCall!.args[2]).toContain('q-abc');
     expect(sendCall!.args[2]).toContain('Confirm');
+    expect(sendCall!.args[2]).toContain('advisory only');
+    expect(sendCall!.args[2]).toContain('OpenCode TUI');
 
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
 
-  it('question.asked: resolves numeric index reply to option label', async () => {
+  it('question.asked: numeric inbound message cannot resolve a question', async () => {
     // cold-boot drain
     queueSpawn({ messages: [] });
     // supervisor liveness query
@@ -814,11 +815,8 @@ describe('c2c plugin unit tests', () => {
     await fireEvent(hooks, sessionIdle('root-session'));
     for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
 
-    // Numeric "2" should resolve to the second option label "no".
-    expect(ctx.client.question.reply).toHaveBeenCalledTimes(1);
-    const replyCall = ctx.client.question.reply.mock.calls[0]![0];
-    expect(replyCall.path.id).toBe('q-idx');
-    expect(replyCall.body.answers[0][0]).toBe('no');
+    // Even an exact numeric option reply is only an inbound message.
+    expect(ctx.client.question.reply).not.toHaveBeenCalled();
     expect(ctx.client.question.reject).not.toHaveBeenCalled();
 
     // DM should show numbered options (1. yes please, 2. no)
@@ -829,7 +827,7 @@ describe('c2c plugin unit tests', () => {
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
 
-  it('question.asked: snapshots pendingQuestion when opened and clears it after reply', async () => {
+  it('question.asked: keeps its advisory state after an inbound message', async () => {
     queueSpawn({ messages: [] });
     spawnQueue.push({
       stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
@@ -870,12 +868,14 @@ describe('c2c plugin unit tests', () => {
     for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
 
     const snapshots = stateEvents().filter((e) => e.event === 'state.snapshot');
-    expect(snapshots.at(-1)!.state.pendingQuestion).toBeNull();
+    expect(snapshots.at(-1)!.state.pendingQuestion?.id).toBe('q-state');
+    expect(ctx.client.question.reply).not.toHaveBeenCalled();
+    expect(ctx.client.question.reject).not.toHaveBeenCalled();
 
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
 
-  it('question.asked: auto-rejects via HTTP on timeout', async () => {
+  it('question.asked: timeout never rejects via HTTP', async () => {
     queueSpawn({ messages: [] }); // cold-boot
     spawnQueue.push({ // liveness query
       stdout: JSON.stringify({ sessions: [{ alias: 'coordinator1', alive: true, last_seen: Date.now() / 1000 }] }),
@@ -902,9 +902,8 @@ describe('c2c plugin unit tests', () => {
     vi.advanceTimersByTime(500);
     for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
 
-    expect(ctx.client.question.reject).toHaveBeenCalledTimes(1);
-    const rejectCall = ctx.client.question.reject.mock.calls[0]![0];
-    expect(rejectCall.path.id).toBe('q-timeout');
+    expect(ctx.client.question.reply).not.toHaveBeenCalled();
+    expect(ctx.client.question.reject).not.toHaveBeenCalled();
 
     delete process.env.C2C_PERMISSION_TIMEOUT_MS;
   });
@@ -1141,29 +1140,5 @@ describe('summarizePermission', () => {
 
   it('handles write permission with no patterns', () => {
     expect(summarizePermission({ permission: 'write' })).toBe('file access (unknown path)');
-  });
-});
-
-describe('extractQuestionReply', () => {
-  it('extracts answer from question reply', () => {
-    expect(extractQuestionReply('question:abc123:answer:yes please')).toEqual({
-      qId: 'abc123',
-      answer: 'yes please',
-      rejected: false,
-    });
-  });
-
-  it('extracts rejection', () => {
-    expect(extractQuestionReply('question:xyz789:reject')).toEqual({
-      qId: 'xyz789',
-      answer: null,
-      rejected: true,
-    });
-  });
-
-  it('returns null for non-reply content', () => {
-    expect(extractQuestionReply('hello world')).toBeNull();
-    expect(extractQuestionReply('question:abc123:answer:')).toBeNull();
-    expect(extractQuestionReply('question:')).toBeNull();
   });
 });
