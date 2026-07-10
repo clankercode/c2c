@@ -1885,6 +1885,13 @@ open C2c_mcp_helpers
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
 
+  (** Inspect whether an inbox still has a message eligible for push delivery.
+      Callers that need to compose this check with other inbox operations must
+      hold [with_inbox_lock] for the same [t]/[session_id]. *)
+  let inbox_has_push_messages_locked t ~session_id =
+    load_inbox t ~session_id
+    |> List.exists (fun (m : message) -> not m.deferrable)
+
   (* register, enqueue_message, and send_all all take the registry lock
      before touching inbox state. Lock order is consistently
      registry → inbox (matches sweep). Without this, a sender that resolved

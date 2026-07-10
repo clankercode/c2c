@@ -182,6 +182,30 @@ let read_codex_debounce_state path =
     | _ -> None
   with _ -> None
 
+let codex_brokers_for_debounce ~broker_root ~global_root =
+  [ broker_root; global_root ]
+  |> List.filter (fun root -> String.trim root <> "")
+  |> List.sort_uniq String.compare
+  |> List.map (fun root -> C2c_mcp.Broker.create ~root)
+
+let with_codex_debounce_locks ~broker_root ~global_root ~session_id f =
+  let rec lock locked = function
+    | [] -> f (List.rev locked)
+    | broker :: rest ->
+        C2c_mcp.Broker.with_inbox_lock broker ~session_id (fun () ->
+          lock (broker :: locked) rest)
+  in
+  lock [] (codex_brokers_for_debounce ~broker_root ~global_root)
+
+let codex_push_inboxes_empty ~broker_root ~global_root ~session_id =
+  with_codex_debounce_locks ~broker_root ~global_root ~session_id
+    (fun brokers ->
+       let empty = not (List.exists
+              (fun broker ->
+                 C2c_mcp.Broker.inbox_has_push_messages_locked broker ~session_id)
+              brokers) in
+       empty)
+
 let codex_post_tool_is_debounced ~broker_root ~global_root ~session_id =
   let fingerprint =
     codex_inbox_fingerprint ~roots:[ broker_root; global_root ] ~session_id
@@ -190,19 +214,36 @@ let codex_post_tool_is_debounced ~broker_root ~global_root ~session_id =
   let now = Unix.gettimeofday () in
   match read_codex_debounce_state path with
   | Some (last_ts, last_fingerprint) ->
-      now -. last_ts < codex_post_tool_debounce_s && fingerprint = last_fingerprint
+      now -. last_ts < codex_post_tool_debounce_s
+      && fingerprint = last_fingerprint
+      && codex_push_inboxes_empty ~broker_root ~global_root ~session_id
   | None -> false
 
 let record_codex_post_tool ~broker_root ~global_root ~session_id =
   try
-    let dir = Filename.dirname (codex_debounce_state_path ~broker_root ~session_id) in
-    C2c_mcp.mkdir_p dir;
-    let fingerprint =
-      codex_inbox_fingerprint ~roots:[ broker_root; global_root ] ~session_id
-    in
-    ignore (C2c_io.write_file_atomic
-      (codex_debounce_state_path ~broker_root ~session_id)
-      (Printf.sprintf "%.9f\t%s\n" (Unix.gettimeofday ()) fingerprint))
+    (* Enqueue and drain both use the same per-inbox lock.  Holding the locks
+       while taking the post-drain snapshot means a message cannot be inserted
+       between the empty check and state write.  Without this, a just-arrived
+       message could be recorded as an unchanged fingerprint and the next hook
+       would incorrectly suppress it. *)
+    with_codex_debounce_locks ~broker_root ~global_root ~session_id
+      (fun brokers ->
+         let no_push_messages =
+           not (List.exists
+                  (fun broker ->
+                     C2c_mcp.Broker.inbox_has_push_messages_locked broker ~session_id)
+                  brokers)
+         in
+         if no_push_messages then begin
+           let dir = Filename.dirname (codex_debounce_state_path ~broker_root ~session_id) in
+           C2c_mcp.mkdir_p dir;
+           let fingerprint =
+             codex_inbox_fingerprint ~roots:[ broker_root; global_root ] ~session_id
+           in
+           ignore (C2c_io.write_file_atomic
+             (codex_debounce_state_path ~broker_root ~session_id)
+             (Printf.sprintf "%.9f\t%s\n" (Unix.gettimeofday ()) fingerprint))
+         end)
   with _ -> ()
 
 let read_stdin_all ~max_bytes =
