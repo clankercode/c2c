@@ -1,0 +1,137 @@
+# `friction-points-cn.md` normative inventory — Part A
+
+**Scope:** source lines 1–966, fully read and audited.  
+**Date:** 2026-07-10.  
+**Row stability:** IDs `A001` onward are permanent; do not renumber. Repeated recommendations are normalized into one row when the requirement and disposition are identical, with all relevant source ranges retained.
+
+Closure vocabulary: `CLOSED` (implemented with repository evidence), `PARTIAL` (some required surface remains), `OPEN` (actionable and not intentionally deferred), `DEFERRED` (later authority explicitly postponed it), `SUPERSEDED` (later authority replaced the proposed design), `OBSERVATION` (material but non-normative).
+
+Evidence shorthand used below:
+
+- `B087`–`B100`: matching `.backlog/bugs/*.todo` entries are `done`; code/tests/docs are summarized in `docs/changelog.md:13-64`. Principal evidence: B087 `ocaml/c2c_relay_connector.ml:890,1203`; B088 `ocaml/cli/c2c_send_cmd.ml:131-162,458-507`; B089 `ocaml/cli/c2c_monitor_{logic,cmd}.ml`; B090 `ocaml/cli/c2c_relay_cmd.ml:1358-1365`; B092 `docs/install.sh:191+`; B093 `ocaml/cli/c2c_doctor_relay.ml`; B094 `c2c_{relay_state,whoami_cmd,health_cmd}.ml`; B095 `c2c_health_cmd.ml:609-640`; B096 `relay_client.ml:301-316`; B097 `c2c_list_cmd.ml:42-252`; B098 `CLAUDE.md:274` plus approval-path tests; B099 embedded skill/framing tests; B100 `docs/relay-quickstart.md` and `docs/connect.md`.
+- `B101`: pending package-manager-aware self-update follow-up.
+- `I002`: pending canonical versioned message JSON v1.
+- `I003`: explicitly deferred trust tiers/TOFU/priority gating.
+- `I004`: explicitly deferred cursors, delivery/read receipts, and `send --wait`.
+- `I005`: pending high-priority fake relay/adverse-fixture regression suite.
+- `I006`: explicitly deferred unknown-relay-peer discovery.
+- `I007`: explicitly deferred harness-adapter unification.
+- `I008`: later Max decision: machine relay key remains the trust anchor; optional per-agent key is machine-attested in-band. This supersedes the report's mandatory per-agent relay-key proposal.
+
+| ID | Source heading + line(s) | Normalized requirement / item | Evidence / backlog | Disposition + authority | Dependencies | Required tests / docs / live proof | Closure |
+|---|---|---|---|---|---|---|---|
+| A001 | INSTALL 8-11; RECOMMENDATIONS 75-76; Install quickstart 765-783 | Installer detects old `c2c` without `self-update` and falls through to standalone install or gives actionable guidance. | B092; installer probe + shell matrix | implemented — completed B092 | release download | old-npm-on-PATH CI test; install docs | CLOSED |
+| A002 | INSTALL 10-11; Install quickstart 780-783 | Steer users from nvm-fragile npm symlinks to standalone `~/.local/bin`. | B092/B100 docs | implemented — completed B092/B100 | docs | published install-page check | CLOSED |
+| A003 | INSTALL 8-11 | Modern self-update must preserve install method (standalone/npm/pnpm/bun) instead of silently installing elsewhere. | B101 pending | actionable — Max B101 follow-up | package-manager provenance | npm/pnpm/bun/standalone matrix | OPEN |
+| A004 | INIT 13-17 | Preserve smooth, clear, CLI-only-by-default init; MCP wiring remains opt-in. | positive report; current init | non-normative — source assessment | none | existing init regressions | OBSERVATION |
+| A005 | RELAY DISCOVERY 19-23; RECOMMENDATIONS 80 | Surface `https://relay.c2c.im` in relay help and docs, consistently with `setup --show`. | B091 | implemented — completed B091 | help/docs | help snapshot | CLOSED |
+| A006 | RELAY CONNECT 25-42; RECOMMENDATIONS 77-78 | Parse actual PoW response safely, including null/missing challenge fields. | B087 | implemented — completed B087 | relay wire contract | null/malformed PoW regression; prod live connect | CLOSED |
+| A007 | RELAY CONNECT 33-39; RECOMMENDATIONS 77-78 | Resolve a real node/host ID; never run as `unknown-node`. | B087 | implemented — completed B087 | host-id derivation | verbose-output test/live proof | CLOSED |
+| A008 | RELAY CONNECT 37-42; RECOMMENDATIONS 77-78 | Caught sync errors are human-readable and non-zero; no masked success. | B087 covers connector | implemented — completed B087 | exit discipline | caught-exception regression | CLOSED |
+| A009 | RELAY SUBSCRIBE 44-49; RECOMMENDATIONS 79 | Either support WSS or make HTTPS failure point at a working polling/monitor path. | B090 fixes hint; WSS still absent | implemented — completed B090 chose fallback | working relay poll | error/help snapshot | CLOSED |
+| A010 | WHAT WORKED 51-59 | Preserve working register, direct relay DM send, and draining poll primitives. | current relay commands/tests | non-normative — source assessment | relay auth/PoW | fake + nightly relay flow | OBSERVATION |
+| A011 | MISLEADING SUCCESS 61-65; RECOMMENDATIONS 81 | Remote top-level send distinguishes local queueing from delivery/relay acceptance. | B088 | implemented — completed B088 | remote-outbox classification | human/JSON/exit tests | CLOSED |
+| A012 | RECEIVE-PATH GAP 67-71; RECOMMENDATIONS 82 | Explicitly document that local monitor and relay inbox differ, while shipping a first-class HTTPS relay receive path. | B089/B100 | implemented — completed B089/B100 | relay identity | two-host monitor proof | CLOSED |
+| A013 | ADDITIONAL NOTE FROM MAX 85-97 | Claude/agents get a blocking/streaming relay-aware watcher in the same operational style as local monitor. | B089 | implemented — Max requirement, completed B089 | relay peek | live harness monitor proof | CLOSED |
+| A014 | ADDITIONAL NOTE FROM MAX 90-97 | Watcher works on public HTTPS relay and emits machine-routable output. | B089; monitor JSON exists | implemented — B089 | alias/auth | prod relay live test + JSON parse | PARTIAL |
+| A015 | ADDITIONAL NOTE FROM MAX 93-97 | Watch status includes relay URL, identity/address, mode, last successful poll, last error, and local-monitor-active state. | B093 exposes much via doctor, not one watcher status envelope | actionable — Max note | monitor/connector state | status schema test/docs | PARTIAL |
+| A016 | Website/docs/onboarding 105-109 | Publish a first-class cross-machine quickstart naming the relay and real send/receive path. | B100 | implemented — completed B100 | current CLI | verbatim two-host run | CLOSED |
+| A017 | Website/docs/onboarding 106-109 | Include one complete two-agent/two-host worked example. | B100 docs | implemented — completed B100 | relay access | docs execution | CLOSED |
+| A018 | Website/docs/onboarding 109 | Explain Ed25519 identity, PoW registration, 24h lease, and alias reservation. | `docs/connect.md`, relay quickstart | implemented — B100/docs | relay policy | docs-vs-help audit | CLOSED |
+| A019 | Command help 111-116 | Top-level help points cross-machine users to `c2c relay`; relay setup help shows default URL. | B091 | implemented — completed B091 | none | help snapshots | CLOSED |
+| A020 | Command help 115-116; status/help 141-149 | Everywhere explain local broker inbox vs relay inbox and bare alias vs `alias@hostid`. | B094/B100 | implemented — completed B094/B100 | none | help/docs search audit | CLOSED |
+| A021 | Command help 116 | Mark `relay dm poll` destructive and provide a non-destructive relay peek analogue. | B096 | implemented — completed B096 | relay endpoint | repeated peek then poll retains message | CLOSED |
+| A022 | Examples 118-127 | Ship copyable register, cross-host send, poll/monitor receive, and relay-list examples. | B100 | implemented — completed B100 | current CLI | docs command test | CLOSED |
+| A023 | Examples 126-127 | Proactively document the exact `relay list --alias` fix for anonymous/no-binding errors. | B100/current CLI fix-it | implemented — B100 | relay identity | error text/help test | CLOSED |
+| A024 | Diagnostics 129-139 | Doctor checks relay configuration, reachability, registration/lease, connector/last sync, and outbox backlog. | B093 | implemented — completed B093 | connector state | injected-failure matrix | CLOSED |
+| A025 | Diagnostics 133-139 | Rename local-only `c2c connect` or make it relay-aware to avoid collision with `relay connect`. | B095 (`ping`; deprecated alias) | implemented — completed B095 | compatibility | help/deprecation tests | CLOSED |
+| A026 | Diagnostics 136-139 | Surface remote-outbox depth in status/doctor. | B093 | implemented — completed B093 | broker state | depth/oldest-age test | CLOSED |
+| A027 | Status/whoami/help 141-149 | Status and whoami show relay connection/identity/registration/lease and explain how to obtain host suffixes. | B094 | implemented — completed B094 | optional relay probe | human/JSON tests | CLOSED |
+| A028 | Speed-to-peer 151-157 | Golden path states public URL, HTTPS polling reality, relay list discovery, and reliable one-shot direct relay DM fallback. | B090/B091/B100 | implemented — completed tasks | docs | golden-path live proof | CLOSED |
+| A029 | Relay receive summary 165-169; rationale 171-187 | Primary UX is unified `c2c monitor`, local+relay by default; separate relay monitor is only a low-level primitive. | B089 default relay inclusion | implemented — report decision/B089 | configured relay | local+relay one-stream test | CLOSED |
+| A030 | Concrete shape 181-187 | Monitor supports explicit local-only and relay-only scoping. | `--no-relay` gives local-only; no true relay-only evidence | actionable — report recommendation | source selection | CLI scope tests/docs | PARTIAL |
+| A031 | Concrete shape 181-187 | Monitor supports `--since <cursor>` and optional heartbeat interval. | No implementation; cursor portion deferred I004, heartbeat untracked | deferred/actionable — I004 only for cursor | schema/cursors | restart/heartbeat tests | PARTIAL |
+| A032 | Concrete shape 186-187 | Default output is non-destructive human tail over local+relay. | B089+B096 | implemented — completed B089/B096 | relay peek | watcher-vs-poll test | CLOSED |
+| A033 | NDJSON 189-208 | `--json` is line-buffered, immediately flushed NDJSON, one self-contained event per line. | current monitor JSON; I002 pending canonicalization | implemented — existing surface, I002 follow-up | schema | streaming flush/parse test | PARTIAL |
+| A034 | NDJSON fields 197-208 | Each event carries ts, source, full from address, to, message ID, content. | B089 has relay source; full canonical shape I002 | actionable — I002 | canonical schema | JSON Schema validator | PARTIAL |
+| A035 | Delivery semantics 210-219 | Relay watcher is non-destructive, not a second draining consumer. | B096 peek used by B089 | implemented — B096/B089 | peek endpoint | two-reader regression | CLOSED |
+| A036 | Delivery semantics 214-219 | Implement cursor/ack, restart offset, at-least-once delivery, and message-ID dedup. | I004 explicitly deferred | deferred — Max/I004 | relay cursor protocol | reconnect/dedup tests | DEFERRED |
+| A037 | Delivery semantics 212-219 | Multiple watchers must not race; independent readers need defined ownership/independent cursors. | Peek avoids draining but not durable independent cursors | deferred — I004 | A036 | two-subscriber test | DEFERRED |
+| A038 | Harness robustness 221-228 | Auth/connection loss exits non-zero with clear stderr; transient failures reconnect with backoff and emit reconnected. | B089/B093 partially; canonical reconnect event untracked | actionable — report | event schema | auth fail + drop/reconnect tests | PARTIAL |
+| A039 | Harness robustness 223-228 | Optional heartbeat event distinguishes healthy-idle from hung. | no issue/implementation evidence | actionable — report | event schema | cadence/JSON test/docs | OPEN |
+| A040 | Harness robustness 227-228 | Relay monitoring works against HTTPS out of box. | B089 polling | implemented — B089 | relay auth | prod HTTPS live proof | CLOSED |
+| A041 | Net recommendation 230-234 | Canonical receive combines unified scope, NDJSON, non-destructive cursor tail, honest failure. | B089/B096 complete immediate subset; I002/I004/open rows remain | implemented — report/B tasks | A030-A040 | aggregate conformance | PARTIAL |
+| A042 | Send summary 241-243; TLDR 312-318 | Default fire-and-forget is honest and exposes true state/metadata; optional blocking only when guarantees requested. | B088 immediate; I004 blocking deferred | implemented — B088/I004 | delivery protocol | state contract tests | PARTIAL |
+| A043 | Concrete trap 245-251 | Never print bare `ok` for remote queue-only send. | B088 | implemented — completed B088 | none | queued-not-ok regression | CLOSED |
+| A044 | Model states 253-262 | Keep queued, accepted, delivered, read distinct. | B088 current state; I004 later transitions | deferred in part — I004 | receipts/cursors | transition schema tests | PARTIAL |
+| A045 | Reporting 264-270 | Local synchronous send may truthfully say delivered. | B088 local regression | implemented — B088 | local broker | local delivered test | CLOSED |
+| A046 | Reporting 266-270 | Remote no-connector send says queued and warns with working connector/direct-send command. | B088 | implemented — B088 | connector detection | human output test | CLOSED |
+| A047 | Reporting 269-270 | Relay-acknowledged direct send says accepted-by-relay, not delivered. | direct relay success exists; canonical state is I002 | actionable — I002 | schema | direct-send JSON test/docs | PARTIAL |
+| A048 | Blocking 272-286 | Add `send --wait=accepted/delivered/read --timeout`; exit 0 only when requested state reached, non-zero otherwise. | I004 explicitly deferred; B088 only `--fail-if-queued` | deferred — Max/I004 | cursors/receipts | wait/timeout/non-hang matrix | DEFERRED |
+| A049 | Blocking 282-286 | Queued but undeliverable is script-detectable and never misrepresented. | B088 opt-in `--fail-if-queued` exit 3 | implemented — B088 design | none | exit test | CLOSED |
+| A050 | JSON metadata 288-304 | Send JSON includes message ID, original/resolved recipient, state, via, relay timestamp, connector presence. | only delivery state complete; I002 pending | actionable — I002 | canonical schema | schema validation | PARTIAL |
+| A051 | Read receipts 306-310 | Read receipt is opt-in per message and requires recipient consume ack/cooperation. | I004 explicitly deferred | deferred — Max/I004 | cursor/ack, identity | receipt roundtrip/security tests | DEFERRED |
+| A052 | TLDR 312-318 | Read receipts must not change default overhead/privacy; honest state and exit codes remain primary. | I004 preserves privacy model | deferred — I004 | A051 | privacy docs/tests | DEFERRED |
+| A053 | Identity summary 327-334 | Treat discovery and verification as separate problems; use cryptographic identity as trust basis. | B097 surfaces identity; I003/I008 defer verification | deferred in part — later decisions | I008/I003 | signature/pinning tests | PARTIAL |
+| A054 | `alias@hostid` 336-340 | Keep suffix for routing uniqueness but do not make opaque host ID primary human handle. | B094/B097 docs/list | implemented — B094/B097 | none | usability/help review | CLOSED |
+| A055 | Discovery 342-365 | Unified list shows local+relay with source/full address and JSON. | B097 opt-in `list --relay` | implemented — B097 | relay auth | merged human/JSON tests | PARTIAL |
+| A056 | Discovery JSON 348-365 | Peer row includes alias, host, address, identity key, display label, client, alive, last seen, source, verified. | B097 core fields; display/verified await I003/I008 | deferred in part — I003/I008 | trust store | schema row test | PARTIAL |
+| A057 | Addressing 367-374 | Bare alias resolves when unambiguous; require host suffix only on ambiguity. | no implementation; related unknown discovery I006 deferred | deferred — I006 | global discovery | resolution tests | DEFERRED |
+| A058 | Addressing 371-374 | Ambiguity errors list candidates and never silently select. | no direct issue; I006 umbrella | deferred — I006 | A057 | ambiguous-ref test | DEFERRED |
+| A059 | Addressing 375-380 | `whoami --card` and `peers add <token>` support copyable identity/address exchange; QR optional. | roadmap-only, no issue | actionable — report | I008/I003 | token validation/roundtrip/docs | OPEN |
+| A060 | Verification 382-400 | Trust binds to key, not alias; surface keys in whoami/list/incoming JSON; pin and warn loudly on key change. | keys surfaced B094/B097; pin/change warning deferred I003/I008 | deferred in part — I003/I008 | trust store/attestation | valid/mismatch/key-change tests | PARTIAL |
+| A061 | Observation 402-406 | Investigate shared `identity_pk` granularity and document it. | resolved: current key is machine-wide by design; I008 | implemented — Max I008 decision | none | formal ADR remains | PARTIAL |
+| A062 | Observation recommendation 402-406 | Early report preferred mandatory per-agent relay keys for colocated distinction. | superseded by I008 | superseded — later Max decision | none | retain as explicit historical conflict | SUPERSEDED |
+| A063 | Reconciliation of 402-406 with I008 | Controlling design: machine key is relay trust anchor; optional per-agent subordinate key is machine-signed in-band, message-1 verifiable, backward compatible. | I008 pending/ADR-worthy | deferred — Max I008 | envelope/schema, session key | cert verify/forgery/back-compat tests + ADR | DEFERRED |
+| A064 | What to avoid 408-416; proposed shape 418-425 | Keep display label, identity key, and routing address separate; eventual peers pin/allow/block/card commands operate on identity. | B097 partial; I003/I008 deferred | deferred in part — report/I003/I008 | identity schema | terminology/schema/docs review | PARTIAL |
+| A065 | Safety summary 433-437; Messages data 439-453 | Every delivery/harness frames peer content as untrusted third-party data, never operator instruction. | B099 skill framing; full adapter conformance I007 | implemented — B099, remainder I007 | adapter hooks | per-adapter presence/version test | PARTIAL |
+| A066 | Messages data 445-453 | Delivered metadata carries verified from, identity key, verified flag, trust tier; JSON marks body untrusted. | I002 deliberately defers trust fields to I003/I008 | deferred — lean-v1 decision | I002/I003/I008 | schema + forgery tests | DEFERRED |
+| A067 | Capability separation 455-461 | c2c is a message bus, never RPC; messages cannot directly cause actions. | B098; `CLAUDE.md:274` | implemented — B098 hard invariant | none | security review on new action paths | CLOSED |
+| A068 | Capability separation 459-461; What not 526-530 | Remote messages cannot trigger or answer local approval/PreToolUse; only local operator/configured supervisor authority. | B098 + two negative suites | implemented — B098 | local supervisor binding | remote-message approval regression | CLOSED |
+| A069 | Trust tiers 463-481 | Persist blocked/unknown/allowlisted/trusted tiers bound to key; provide allow/block commands. | I003 explicitly deferred | deferred — Max trusted-swarm-first | I008 | persistence/key mismatch tests | DEFERRED |
+| A070 | Priority 483-498 | Unknown capped at FYI/no interrupt/no blocking; only allowlisted/trusted can urgent/block; blocking has recipient timeout. | I003 deferred | deferred — I003 | trust tiers | downgrade/no-freeze tests | DEFERRED |
+| A071 | Rate limits 500-508 | Per-identity quota/backoff, inbox caps, flood quarantine/drop, visible dead letters, payload-size limits. | existing partial infra; no friction issue | actionable — report | identity/abuse policy | flood/backpressure/large payload tests | PARTIAL |
+| A072 | Rooms/broadcast 510-520 | Room roles govern join/post/mention; broadcasts hard-rate-limited; unknown public-room members FYI-only. | room roles partial; trust gating deferred I003 | deferred in part — I003 | room RBAC/trust | amplification/RBAC tests | PARTIAL |
+| A073 | Auditability 522-524 | Signed inbound messages and resulting privileged action are correlatable/auditable. | archives exist; action-causality link absent | actionable — report | verified identity/action hooks | audit correlation/redaction test | OPEN |
+| A074 | What not 526-530 | No remote auth prompt, no transitive trust, no alias-based security decision. | B098 immediate; I003 future trust | implemented in part — B098/I003 | I008 | alias-recycle/transitive negative tests | PARTIAL |
+| A075 | Meta-point 532-543 | Safe default combines provenance, limited unknown authority, and local authority before action. | B098/B099 immediate; I003/I008 later | implemented in part — safety roadmap | I003/I008 | aggregate security conformance | PARTIAL |
+| A076 | Doctor design goal 551-561 | `doctor --relay --json` diagnoses/routes around dogfood failures without broker grep/source reading; every failure offers `fix_command`. | B093 | implemented — B093 | relay probes | injected-failure matrix | CLOSED |
+| A077 | Doctor structure 563-571 | Layer checks local/relay/end-to-end; JSON for agents; add shareable debug bundle. | B093 layers/JSON; bundle absent | actionable — report | debug bundle design | output structure tests | PARTIAL |
+| A078 | Identity/config checks 573-583 | Report client, alias and resolution source, broker path/writability, effective relay/default, token presence without secrets. | B093/B094 partial | implemented in part — B093/B094 | env resolver | JSON/redaction tests | PARTIAL |
+| A079 | Relay block 585-604 | Report reachability/version/auth/PoW; lease TTL/expiry/reservation; identity; connector running/last success/last error. | B093 | implemented — B093 | connector state | healthy/expired/error fixtures | CLOSED |
+| A080 | Relay block 594-596 | Warn if identity key appears shared/non-unique. | proposal superseded by intentional machine anchor I008; docs should state granularity | superseded — Max I008 | identity docs | ADR/docs test | SUPERSEDED |
+| A081 | Capability matrix 606-625 | Truthful machine-readable send/subscribe/connect/poll matrix for configured scheme. | B093 doctor capabilities; separate command uncertain | implemented — B093 | real probes | matrix-vs-attempt test | PARTIAL |
+| A082 | Pipeline 627-643 | Report outbox depth, oldest age, dead-letter count/reasons. | B093 covers outbox; dead-letter detail partial | implemented in part — B093 | broker state | backlog/dead-letter fixtures | PARTIAL |
+| A083 | Pipeline 633-643 | Real relay self-marker probe confirms roundtrip and identifies failed leg; distinct from local loopback. | no evidence implemented | actionable — report | registered relay identity | fake + nightly real probe | OPEN |
+| A084 | Watchers 645-657 | Report active local/relay watchers and exact warning/fix when relay watcher absent. | B093 issue scope; runtime proof needed | implemented — B093 | process/state discovery | active/inactive watcher test | PARTIAL |
+| A085 | Output 660-707 | Human grouped PASS/WARN/FAIL with reason/fix; JSON stable IDs, detail, fix, docs URL, summary, capabilities; non-zero on FAIL. | B093 core; docs_url completeness uncertain | implemented — B093 | none | JSON Schema + worst-status exit | PARTIAL |
+| A086 | Debug bundle 709-737 | Add redacted artifact with doctor, versions, config, connector log/error, outbox/dead letters, peers, schedules; print share path. | no issue/implementation | actionable — report | redaction policy | golden bundle test | OPEN |
+| A087 | Debug bundle 727-735 | Redact home paths, tokens, private keys, bodies; retain public keys, aliases, host IDs, errors. | design only | actionable — report | A086 | secret-scan fixture | OPEN |
+| A088 | Meta recommendation 739-745 | Every FAIL supplies actionable `fix_command` and `docs_url`, encoding known workaround for operator-approved automation. | B093 partial | implemented — B093 | complete failure catalog/I005 | failure-catalog conformance | PARTIAL |
+| A089 | Quickstart summary 752-759 | Order local identity proof, relay setup/register/verify/discover, send, receive, verify; inline callouts plus final table and expected output. | B100 docs | implemented — B100 | current commands | verbatim docs run | PARTIAL |
+| A090 | Quickstart goal 761-763 | State outcome: two agents on different machines exchange DMs via public relay. | B100 | implemented — B100 | relay | page content check | CLOSED |
+| A091 | Install step 765-783 | Show curl/version, expected standalone path/output, PATH fix, and old npm workaround. | B092/B100 | implemented — B092/B100 | release artifacts | container docs test | CLOSED |
+| A092 | Local step 785-802 | Run init/whoami/list, show expected init/self-alive output, explain local-first rationale. | B100 docs | implemented — B100 | init | output snapshot | PARTIAL |
+| A093 | Relay connect step 804-836 | Show setup/register/status commands and expected config path/register/status JSON. | B100 docs | implemented — B100 | relay auth | fake/live docs run | CLOSED |
+| A094 | Discover step 838-875 | Show signed relay list, expected peer JSON, explain address, missing-alias error and exact fix. | B097/B100 | implemented — completed tasks | relay identity | docs/help test | CLOSED |
+| A095 | Send step 877-899 | Show direct relay DM send and expected accepted JSON; warn about plain-send queue semantics/current reliable path. | B088/B100 | implemented — completed tasks | relay | two-host send test | CLOSED |
+| A096 | Receive step 901-936 | Show relay poll/first-class watcher, expected message JSON, HTTPS limitations, local-monitor distinction, reliable supported path. | B089/B090/B100; hand loop should be retired from primary path | implemented — completed tasks | relay | two-host receive test | PARTIAL |
+| A097 | Verify 938-943 | Define end-to-end success as healthy relay plus observed real reply. | B100 | implemented — B100 | peer response | live proof | CLOSED |
+| A098 | Troubleshooting table 945-954 | Include old npm, missing alias, queue-only send, local monitor gap, TLS subscribe, stuck outbox symptoms with cause/fix. | B100 docs | implemented — B100 | current behavior | table completeness/link check | CLOSED |
+| A099 | Why order 956-964 | Explain identity-before-transport, transport-before-traffic, send-before-receive and map warnings to encountered walls. | B100 docs intent | implemented — B100 | none | editorial check | CLOSED |
+
+## Heading-coverage self-check
+
+All headings beginning in the requested range are accounted for:
+
+- `c2c Setup Friction Report` and INSTALL/INIT/RELAY DISCOVERY/CONNECT/SUBSCRIBE/WHAT WORKED/MISLEADING SUCCESS/RECEIVE GAP/RECOMMENDATIONS/MAX NOTE → `A001–A015`.
+- `c2c Broader UX and Docs Suggestions` and all six subsections → `A016–A028`.
+- `Relay Receive UX for Agent Harnesses` and all subsections → `A029–A041`.
+- ``c2c send` Reporting for Remote Targets` and all subsections → `A042–A052`.
+- `Identity and Discovery for Agents` and all subsections → `A053–A064`.
+- `Safety and Permission Model` and all subsections → `A065–A075`.
+- `Troubleshooting and Doctor UX` and all subsections → `A076–A088`.
+- `Golden-Path Quickstart` through its final line 964 → `A089–A099`.
+- Line 966 is the next top-level heading (`Agent-Harness Integration Contract`) and contains no normative body within this task's inclusive endpoint; it is recorded as the boundary, not silently omitted.
+
+Duplicate-ID check: `A001` through `A099` are contiguous and unique. Contradiction check: the only intentional conflict is the report's per-agent-key recommendation (`A062`) versus Max's later machine-anchor decision (`A063`); authority and supersession are explicit. No normative item in lines 1–966 remains unclassified.
