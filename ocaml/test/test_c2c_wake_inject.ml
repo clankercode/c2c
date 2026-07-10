@@ -165,6 +165,19 @@ let test_skips_without_wake_target () =
       (inject ctx ~session_id:sid);
     check string "no commands recorded" "" (String.trim (read_file ctx.fixture)))
 
+let test_skips_unbound_legacy_tmux_target_without_draining () =
+  with_ctx (fun ctx ->
+    let sid = "zw-wake-unbound" in
+    let b = register ctx ~session_id:sid ~alias:sid ~tmux_location:"%5" in
+    enqueue ctx ~to_alias:sid ~from_session:"zw-wake-peer-unbound"
+      ~from_alias:"zw-wake-peer-unbound" ~content:"must remain queued";
+    with_env [ ("C2C_WAKE_INJECT_BINDING_VALID", Some "0") ] (fun () ->
+      check outcome "unbound pane is never injected"
+        (Skipped "wake_target_unbound") (inject ctx ~session_id:sid));
+    check int "inbox remains queued" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid));
+    check string "no pane command issued" "" (String.trim (read_file ctx.fixture)))
+
 (* --- tmux backend --------------------------------------------------------- *)
 
 let test_tmux_command_sequence () =
@@ -640,6 +653,8 @@ let () =
       , [ test_case "skips without registration" `Quick test_skips_without_registration
         ; test_case "skips on empty inbox" `Quick test_skips_on_empty_inbox
         ; test_case "skips without wake target" `Quick test_skips_without_wake_target
+        ; test_case "unbound legacy tmux target stays queued" `Quick
+            test_skips_unbound_legacy_tmux_target_without_draining
         ; test_case "tmux: literal send-keys then Enter" `Quick test_tmux_command_sequence
         ; test_case "tmux: idle gate blocks recent activity" `Quick
             test_tmux_idle_gate_blocks_recent_activity

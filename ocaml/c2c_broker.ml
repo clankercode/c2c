@@ -2437,6 +2437,29 @@ open C2c_mcp_helpers
             if !changed then save_registrations t regs')
     with _ -> ()
 
+  (** Replace all wake-target metadata of an existing registration exactly.
+      Unlike [update_wake_targets], [None] clears a field. Session-boundary
+      hooks use this operation so a session that moved outside tmux/herdr
+      cannot retain a stale pane from an earlier process or environment. *)
+  let replace_wake_targets t ~session_id ~tmux_location ~herdr_pane
+      ~herdr_socket () =
+    try
+      with_registry_lock t (fun () ->
+          let regs = load_registrations t in
+          let changed = ref false in
+          let regs' =
+            List.map
+              (fun r ->
+                if r.session_id <> session_id then r
+                else
+                  let r' = { r with tmux_location; herdr_pane; herdr_socket } in
+                  if r' <> r then changed := true;
+                  r')
+              regs
+          in
+          if !changed then save_registrations t regs')
+    with _ -> ()
+
   (** True if [alias] contains '@' — indicating a remote alias that cannot be
       resolved via the local registry and must be sent via the relay outbox. *)
   let is_remote_alias alias =

@@ -556,10 +556,11 @@ let test_session_start_wake_note () =
    The hook runs with the codex process's env, so $TMUX/$TMUX_PANE and
    $HERDR_PANE_ID / $HERDR_SOCKET_PATH identify the pane. Captured on fresh
    auto-register and refreshed on SessionStart; mid-turn events never touch
-   the stored targets, and a fire from outside tmux/herdr preserves them. *)
+   the stored targets. A fire outside the bound process clears stale targets. *)
 
 let tmux_env pane =
-  [ ("TMUX", "/tmp/tmux-1000/default,1234,0"); ("TMUX_PANE", pane) ]
+  [ ("TMUX", "/tmp/tmux-1000/default,1234,0"); ("TMUX_PANE", pane)
+  ; ("C2C_WAKE_TARGET_OWNERSHIP_FIXTURE", "owned") ]
 
 let herdr_env ~pane ~socket =
   [ ("HERDR_PANE_ID", pane); ("HERDR_SOCKET_PATH", socket); ("HERDR_ENV", "1") ]
@@ -583,8 +584,8 @@ let test_auto_register_captures_wake_targets () =
     | Some r ->
         check (option string) "raw $TMUX_PANE captured" (Some "%7")
           r.tmux_location;
-        check (option string) "herdr pane captured" (Some "w1:p9") r.herdr_pane;
-        check (option string) "herdr socket captured" (Some "/tmp/h.sock")
+        check (option string) "outer herdr pane not retained" None r.herdr_pane;
+        check (option string) "outer herdr socket not retained" None
           r.herdr_socket)
 
 let test_session_start_refreshes_wake_targets () =
@@ -621,15 +622,91 @@ let test_session_start_refreshes_wake_targets () =
      | Some r -> check (option string) "mid-turn fire leaves target" (Some "%8")
                    r.tmux_location
      | None -> fail "registration vanished");
-    (* SessionStart from outside tmux/herdr preserves the stored target. *)
+    (* SessionStart from outside tmux/herdr clears the stored target: a
+       non-tmux/API continuation must not retain a stale pane. *)
     let rc4, _, _ =
       run_hook ctx ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
     in
     check int "bare SessionStart exit 0" 0 rc4;
     match find_reg ctx sid with
     | Some r ->
-        check (option string) "target never cleared" (Some "%8") r.tmux_location
+        check (option string) "stale target cleared" None r.tmux_location
     | None -> fail "registration vanished")
+
+let test_session_start_rejects_inherited_tmux_target () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-wake-inherited" in
+    let b = register ctx ~session_id:sid ~alias:"zz-codex-e2e-inherited" in
+    C2c_mcp.Broker.update_wake_targets b ~session_id:sid
+      ~tmux_location:(Some "%5") ();
+    let inherited =
+      [ ("TMUX", "/tmp/tmux-1000/default,1234,0"); ("TMUX_PANE", "%5")
+      ; ("HERDR_PANE_ID", "w2:p1")
+      ; ("C2C_WAKE_TARGET_OWNERSHIP_FIXTURE", "unowned") ]
+    in
+    let rc, _, _ =
+      run_hook ~extra_env:inherited ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "SessionStart exit 0" 0 rc;
+    match find_reg ctx sid with
+    | None -> fail "registration vanished"
+    | Some r ->
+        check (option string) "inherited tmux target rejected" None r.tmux_location;
+        check (option string) "inherited herdr target rejected" None r.herdr_pane)
+
+let test_post_tool_outside_bound_process_clears_target () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-wake-moved-api" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-e2e-moved-api");
+    let rc1, _, _ =
+      run_hook ~extra_env:(tmux_env "%6") ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "bound SessionStart exit 0" 0 rc1;
+    let inherited =
+      [ ("TMUX", "/tmp/tmux-1000/default,1234,0"); ("TMUX_PANE", "%6")
+      ; ("C2C_WAKE_TARGET_OWNERSHIP_FIXTURE", "unowned") ]
+    in
+    let rc2, _, _ =
+      run_hook ~extra_env:inherited ctx
+        ~payload:(payload ~event:"PostToolUse" ~session_id:sid ())
+    in
+    check int "API PostToolUse exit 0" 0 rc2;
+    match find_reg ctx sid with
+    | None -> fail "registration vanished"
+    | Some r ->
+        check (option string) "moved API session clears old pane" None
+          r.tmux_location)
+
+let test_wake_watch_unbound_target_keeps_inbox () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-wake-watch-unbound" in
+    let alias = "zz-codex-e2e-watch-unbound" in
+    let b = register ctx ~session_id:sid ~alias in
+    C2c_mcp.Broker.update_wake_targets b ~session_id:sid
+      ~tmux_location:(Some "%5") ();
+    ignore (register ctx ~session_id:"codex-e2e-wake-watch-peer"
+      ~alias:"zz-codex-e2e-watch-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-e2e-watch-peer"
+      ~to_alias:alias ~content:"must not be drained by another pane" ();
+    let dir = Filename.dirname ctx.home in
+    let fixture = dir // "wake-watch-fixture.jsonl" in
+    let out_path = dir // "wake-watch.out" in
+    let cmd =
+      Printf.sprintf
+        "env -i HOME=%s PATH=%s C2C_WAKE_INJECT_FIXTURE=%s C2C_WAKE_INJECT_BINDING_VALID=0 %s deliver wake-watch --broker-root %s --session-id %s --once > %s"
+        (Filename.quote ctx.home) (Filename.quote (Sys.getenv "PATH"))
+        (Filename.quote fixture) (Filename.quote c2c_binary)
+        (Filename.quote ctx.broker_root) (Filename.quote sid)
+        (Filename.quote out_path)
+    in
+    check int "wake-watch exits cleanly on safe skip" 0 (Sys.command cmd);
+    check bool "reports unbound target" true
+      (contains ~haystack:(read_file out_path) ~needle:"wake_target_unbound");
+    check int "message stays in target inbox" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid));
+    check string "no tmux command issued" "" (String.trim (read_file fixture)))
 
 let test_malformed_payloads_are_silent () =
   with_ctx (fun ctx ->
@@ -682,6 +759,12 @@ let () =
             test_auto_register_captures_wake_targets
         ; test_case "SessionStart refreshes wake targets" `Quick
             test_session_start_refreshes_wake_targets
+        ; test_case "SessionStart rejects inherited wake targets" `Quick
+            test_session_start_rejects_inherited_tmux_target
+        ; test_case "PostToolUse outside bound process clears target" `Quick
+            test_post_tool_outside_bound_process_clears_target
+        ; test_case "wake-watch unbound target keeps inbox" `Quick
+            test_wake_watch_unbound_target_keeps_inbox
         ; test_case "malformed payloads are silent" `Quick
             test_malformed_payloads_are_silent
         ] )

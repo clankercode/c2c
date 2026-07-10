@@ -429,15 +429,29 @@ let hook_codex_cmd =
           $HERDR_SOCKET_PATH identify this session's pane for BOTH vanilla
           and managed sessions. Refresh on session boundaries (SessionStart —
           sessions move panes) and on fresh auto-register so the wake
-          injector can nudge an idle session. update_wake_targets is
-          Some-overwrites / None-preserves and total. Must run before the
-          B107 debounce early-exit: a fresh auto-register can arrive on a
-          PostToolUse fire. *)
-       (if event = "SessionStart" || Option.is_some onboarded_alias then begin
+          injector can nudge an idle session. Capture binds the hook process
+          to the pane; exact replacement clears inherited/stale metadata when
+          no valid binding exists. Must run before the B107 debounce early-exit:
+          a fresh auto-register can arrive on a PostToolUse fire. *)
+       let stored_wake_target =
+         C2c_mcp.Broker.list_registrations broker
+         |> List.find_opt (fun (r : C2c_mcp.registration) ->
+                r.session_id = session_id)
+         |> Option.map (fun (r : C2c_mcp.registration) ->
+                r.tmux_location <> None || r.herdr_pane <> None)
+         |> Option.value ~default:false
+       in
+       let binding_moved =
+         stored_wake_target
+         && not (C2c_wake_inject.binding_owns_current_process
+                   ~broker_root ~session_id)
+       in
+       (if event = "SessionStart" || Option.is_some onboarded_alias
+           || binding_moved then begin
           let tmux_location, herdr_pane, herdr_socket =
-            C2c_wake_inject.wake_targets_from_env ()
+            C2c_wake_inject.refresh_wake_targets ~broker_root ~session_id ()
           in
-          C2c_mcp.Broker.update_wake_targets broker ~session_id
+          C2c_mcp.Broker.replace_wake_targets broker ~session_id
             ~tmux_location ~herdr_pane ~herdr_socket ()
         end);
        let global_root =

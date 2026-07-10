@@ -106,7 +106,7 @@ Legacy opt-in for full PostToolUse injection, from when the debounced nudge was 
 
 ## Codex wake-inject (codex-wake-inject slice)
 
-Idle wake for codex sessions in tmux/herdr panes: a watcher (`C2c_wake_inject` — the managed codex deliver sidecar, or `c2c deliver wake-watch` for vanilla sessions) peeks the inbox and types a one-line nudge into the pane when the session is idle; the injected turn's UserPromptSubmit hook does the actual drain. The injector never drains the inbox.
+Idle wake for codex sessions in tmux/herdr panes: a watcher (`C2c_wake_inject` — the managed codex deliver sidecar, or `c2c deliver wake-watch` for vanilla sessions) peeks the inbox and types a one-line nudge into the pane when the session is idle; the injected turn's UserPromptSubmit hook does the actual drain. The injector never drains the inbox. Wake metadata is usable only with a session binding captured by the Codex hook and revalidated immediately before injection; unbound/stale registrations are skipped without touching the inbox.
 
 ### `C2C_WAKE_IDLE_THRESHOLD_S`
 

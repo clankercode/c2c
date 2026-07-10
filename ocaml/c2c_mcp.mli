@@ -382,6 +382,9 @@ module Broker : sig
       previously captured pane. No-op when the session is not registered.
       Total: never raises. Used by `c2c hook codex` on SessionStart /
       auto-register to keep wake targets fresh as sessions move panes. *)
+  val replace_wake_targets : t -> session_id:string -> tmux_location:string option -> herdr_pane:string option -> herdr_socket:string option -> unit -> unit
+  (** Exact replacement used at a session boundary. [None] clears a stale
+      field; unlike [update_wake_targets], values are not preserved. *)
 
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit

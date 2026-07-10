@@ -141,7 +141,11 @@ supports an injection-based idle wake when the session runs inside tmux or
 herdr. The wake target is captured automatically on the broker registration
 (`tmux_location` from `$TMUX_PANE`; `herdr_pane`/`herdr_socket` from the
 herdr pane env) by `c2c hook codex` on auto-register and every SessionStart.
-A watcher monitors the session's inbox; on growth, if the session looks idle
+Capture must bind the hook process to that pane/session; an invalid or absent
+binding clears stale metadata. The watcher revalidates the binding before
+each injection, so a legacy, inherited, reused, or otherwise unbound pane is
+never typed into and the intended session's inbox remains queued. On growth,
+if the session looks idle
 (herdr `agent_status=idle`, or tmux `last_activity_ts` older than
 `C2C_WAKE_IDLE_THRESHOLD_S`, default 90s), it types a one-line nudge into the
 pane and submits it (herdr: `herdr pane run`; tmux: `send-keys -l` then

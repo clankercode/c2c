@@ -366,7 +366,7 @@ cross-session delivery, not as a default.
 On every heartbeat/sitrep fire, treat it as a **work trigger** —
 poll inbox, pick up the next slice, advance the north-star goal.
 Never "acknowledge the heartbeat and stop." If you've genuinely
-exhausted available work, ask coordinator1 (or `swarm-lounge`) for
+exhausted available work, ask in `swarm-lounge` for
 more — don't just sit polling empty inboxes indefinitely.
 
 ## Codex idle wake (tmux/herdr injection)
@@ -395,8 +395,12 @@ idle wake):
 Setup: nothing, usually. Wake targets (`tmux_location` from `$TMUX_PANE`,
 `herdr_pane`/`herdr_socket` from the herdr env) are captured on the broker
 registration automatically by `c2c hook codex` on auto-register and every
-SessionStart. Managed `c2c start codex` runs the watcher as its deliver
-sidecar; for a vanilla codex session run the watcher yourself:
+SessionStart, but only after binding the hook process to the tmux pane or the
+herdr-reported agent session. A SessionStart without a valid binding clears
+old targets. Before every injection the watcher revalidates that binding;
+legacy/unbound or stale targets are skipped and their inbox stays queued.
+Managed `c2c start codex` runs the watcher as its deliver sidecar; for a
+vanilla codex session run the watcher yourself:
 
 ```
 c2c deliver wake-watch --alias <codex-alias>
@@ -411,5 +415,5 @@ wake-inject.
 
 - `.collab/runbooks/c2c-delivery-smoke.md` — the smoke test you should
   run after touching broker/hook code.
-- `.collab/runbooks/coordinator-failover.md` — sitrep cadence + takeover
-  protocol if `coordinator1` goes offline.
+- `.collab/runbooks/coordinator-failover.md` — current no-fixed-coordinator
+  operating model and operator-gated deployment rule.

@@ -125,6 +125,275 @@ let wake_targets_from_env () :
   |> fun (pane, socket) -> (tmux_location, pane, socket)
 
 (* ---------------------------------------------------------------------------
+ * Session binding
+ * --------------------------------------------------------------------------- *)
+
+type proc_identity = { ppid : int; start_time : string }
+
+let binding_env_with_extra extras =
+  let keys = List.map fst extras in
+  let base =
+    Unix.environment () |> Array.to_list
+    |> List.filter (fun entry ->
+           let key =
+             try String.sub entry 0 (String.index entry '=')
+             with Not_found -> entry
+           in
+           not (List.mem key keys))
+  in
+  Array.of_list (base @ List.map (fun (k, v) -> k ^ "=" ^ v) extras)
+
+let binding_capture ?(env_extra = []) argv =
+  match argv with
+  | [] -> None
+  | cmd :: _ ->
+      (try
+         let stdout_r, stdout_w = Unix.pipe ~cloexec:false () in
+         let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
+         let pid =
+           Unix.create_process_env cmd (Array.of_list argv)
+             (binding_env_with_extra env_extra) devnull stdout_w devnull
+         in
+         Unix.close stdout_w;
+         Unix.close devnull;
+         let ic = Unix.in_channel_of_descr stdout_r in
+         let buf = Buffer.create 128 in
+         (try while true do Buffer.add_channel buf ic 1 done
+          with End_of_file -> ());
+         close_in ic;
+         match Unix.waitpid [] pid with
+         | _, Unix.WEXITED 0 -> Some (Buffer.contents buf)
+         | _ -> None
+       with _ -> None)
+
+let binding_herdr_env_extra socket =
+  match socket with Some s -> [ ("HERDR_SOCKET_PATH", s) ] | None -> []
+
+let binding_state_dir ~broker_root = broker_root // "wake-inject"
+
+let proc_identity pid : proc_identity option =
+  try
+    let ic = open_in (Printf.sprintf "/proc/%d/stat" pid) in
+    let raw =
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () -> input_line ic)
+    in
+    let close_paren = String.rindex raw ')' in
+    let rest =
+      String.sub raw (close_paren + 1) (String.length raw - close_paren - 1)
+      |> String.trim |> String.split_on_char ' '
+      |> List.filter (fun s -> s <> "")
+    in
+    (* /proc/<pid>/stat fields after comm begin at field 3 (state).
+       ppid is field 4 (index 1); starttime is field 22 (index 19). *)
+    Some
+      { ppid = int_of_string (List.nth rest 1)
+      ; start_time = List.nth rest 19
+      }
+  with _ -> None
+
+let rec immediate_child_below ~ancestor ~pid ~fuel =
+  if fuel <= 0 || pid <= 1 || pid = ancestor then None
+  else
+    match proc_identity pid with
+    | Some { ppid; _ } when ppid = ancestor -> Some pid
+    | Some { ppid; _ } -> immediate_child_below ~ancestor ~pid:ppid ~fuel:(fuel - 1)
+    | None -> None
+
+let process_is_below ~ancestor ~pid =
+  pid = ancestor
+  || Option.is_some (immediate_child_below ~ancestor ~pid ~fuel:256)
+
+let tmux_pane_pid target : int option =
+  match
+    binding_capture
+      [ "tmux"; "display-message"; "-t"; target; "-p"; "#{pane_pid}" ]
+  with
+  | Some out -> (try Some (int_of_string (String.trim out)) with _ -> None)
+  | None -> None
+
+let rec json_string_member name (j : Yojson.Safe.t) =
+  match j with
+  | `Assoc fields ->
+      (match List.assoc_opt name fields with
+       | Some (`String s) -> Some s
+       | _ -> List.find_map (fun (_, v) -> json_string_member name v) fields)
+  | `List items -> List.find_map (json_string_member name) items
+  | _ -> None
+
+let herdr_agent_session_id ~pane ~socket =
+  match
+    binding_capture ~env_extra:(binding_herdr_env_extra socket)
+      [ "herdr"; "agent"; "get"; pane ]
+  with
+  | Some out ->
+      (try json_string_member "agent_session_id"
+             (Yojson.Safe.from_string (String.trim out))
+       with _ -> None)
+  | None -> None
+
+type wake_binding =
+  | Bound_tmux of
+      { target : string
+      ; pane_pid : int
+      ; owner_pid : int
+      ; owner_start_time : string
+      }
+  | Bound_herdr of { pane : string; socket : string option; session_id : string }
+  | Bound_fixture of string
+
+let binding_path ~broker_root ~session_id =
+  binding_state_dir ~broker_root // (session_id ^ ".binding.json")
+
+let remove_binding ~broker_root ~session_id =
+  try Unix.unlink (binding_path ~broker_root ~session_id) with _ -> ()
+
+let write_binding ~broker_root ~session_id binding =
+  try
+    let dir = binding_state_dir ~broker_root in
+    (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+    let json =
+      match binding with
+      | Bound_tmux { target; pane_pid; owner_pid; owner_start_time } ->
+          `Assoc
+            [ ("backend", `String "tmux"); ("target", `String target)
+            ; ("pane_pid", `Int pane_pid); ("owner_pid", `Int owner_pid)
+            ; ("owner_start_time", `String owner_start_time) ]
+      | Bound_herdr { pane; socket; session_id } ->
+          `Assoc
+            ([ ("backend", `String "herdr"); ("pane", `String pane)
+             ; ("session_id", `String session_id) ]
+             @ match socket with
+               | Some s -> [ ("socket", `String s) ]
+               | None -> [])
+      | Bound_fixture kind ->
+          `Assoc [ ("backend", `String "fixture"); ("kind", `String kind) ]
+    in
+    let path = binding_path ~broker_root ~session_id in
+    let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+    Yojson.Safe.to_file tmp json;
+    Unix.rename tmp path
+  with _ -> ()
+
+let ownership_fixture () =
+  match Sys.getenv_opt "C2C_WAKE_TARGET_OWNERSHIP_FIXTURE" with
+  | Some "owned" -> Some true
+  | Some "unowned" -> Some false
+  | _ -> None
+
+(* Capture a target only when the hook process can be bound to it. For tmux,
+   the stable owner is the first process below the pane root in the current
+   hook's ancestry (normally codex). For herdr, the agent registry must report
+   this exact Codex session id. Invalid/inherited metadata clears the binding. *)
+let refresh_wake_targets ~broker_root ~session_id () =
+  let tmux, herdr_pane, herdr_socket = wake_targets_from_env () in
+  let captured =
+    match ownership_fixture () with
+    | Some false -> None
+    | Some true ->
+        (match tmux, herdr_pane with
+         | Some target, _ -> Some (Some target, None, None, Bound_fixture "tmux")
+         | None, Some pane ->
+             Some (None, Some pane, herdr_socket, Bound_fixture "herdr")
+         | None, None -> None)
+    | None ->
+        (match tmux with
+         | Some target ->
+             (match tmux_pane_pid target with
+              | Some pane_pid ->
+                  (match immediate_child_below ~ancestor:pane_pid
+                           ~pid:(Unix.getpid ()) ~fuel:256 with
+                   | Some owner_pid ->
+                       (match proc_identity owner_pid with
+                        | Some owner ->
+                            Some
+                              ( Some target, None, None
+                              , Bound_tmux
+                                  { target; pane_pid; owner_pid
+                                  ; owner_start_time = owner.start_time } )
+                        | None -> None)
+                   | None -> None)
+              | None -> None)
+         | None ->
+             (match herdr_pane with
+              | Some pane
+                when herdr_agent_session_id ~pane ~socket:herdr_socket
+                     = Some session_id ->
+                  Some
+                    ( None, Some pane, herdr_socket
+                    , Bound_herdr { pane; socket = herdr_socket; session_id } )
+              | _ -> None))
+  in
+  match captured with
+  | Some (tmux, pane, socket, binding) ->
+      write_binding ~broker_root ~session_id binding;
+      (tmux, pane, socket)
+  | None ->
+      remove_binding ~broker_root ~session_id;
+      (None, None, None)
+
+let read_binding ~broker_root ~session_id : Yojson.Safe.t option =
+  try Some (Yojson.Safe.from_file (binding_path ~broker_root ~session_id))
+  with _ -> None
+
+let int_member name fields =
+  match List.assoc_opt name fields with Some (`Int n) -> Some n | _ -> None
+
+let string_member name fields =
+  match List.assoc_opt name fields with Some (`String s) -> Some s | _ -> None
+
+let binding_matches ~broker_root ~session_id backend =
+  match fixture_path () with
+  | Some _ -> Sys.getenv_opt "C2C_WAKE_INJECT_BINDING_VALID" <> Some "0"
+  | None ->
+      (match read_binding ~broker_root ~session_id, backend with
+       | Some (`Assoc f), Tmux target
+         when string_member "backend" f = Some "tmux"
+              && string_member "target" f = Some target ->
+           (match int_member "pane_pid" f, int_member "owner_pid" f,
+                  string_member "owner_start_time" f, tmux_pane_pid target with
+            | Some pane_pid, Some owner_pid, Some owner_start, Some current_pane
+              when current_pane = pane_pid ->
+                (match proc_identity owner_pid with
+                 | Some owner ->
+                     owner.start_time = owner_start
+                     && process_is_below ~ancestor:pane_pid ~pid:owner_pid
+                 | None -> false)
+            | _ -> false)
+       | Some (`Assoc f), Herdr { pane; socket }
+         when string_member "backend" f = Some "herdr"
+              && string_member "pane" f = Some pane
+              && string_member "session_id" f = Some session_id ->
+           let stored_socket = string_member "socket" f in
+           stored_socket = socket
+           && herdr_agent_session_id ~pane ~socket = Some session_id
+       | _ -> false)
+
+(* Cheap hook-side ownership check. A session that continues outside its
+   previously bound tmux process must clear the target even when the host
+   reports PostToolUse without a fresh SessionStart. *)
+let binding_owns_current_process ~broker_root ~session_id =
+  match ownership_fixture () with
+  | Some owned -> owned
+  | None ->
+      (match read_binding ~broker_root ~session_id with
+       | Some (`Assoc f) when string_member "backend" f = Some "tmux" ->
+           (match int_member "owner_pid" f, string_member "owner_start_time" f with
+            | Some owner_pid, Some owner_start ->
+                (match proc_identity owner_pid with
+                 | Some owner ->
+                     owner.start_time = owner_start
+                     && process_is_below ~ancestor:owner_pid ~pid:(Unix.getpid ())
+                 | None -> false)
+            | _ -> false)
+       | Some (`Assoc f) when string_member "backend" f = Some "herdr" ->
+           let pane = string_member "pane" f in
+           let current_pane =
+             Sys.getenv_opt "HERDR_PANE_ID" |> Option.map String.trim
+           in
+           pane <> None && pane = current_pane
+       | _ -> false)
+
+(* ---------------------------------------------------------------------------
  * Command execution (fixture-gated)
  * --------------------------------------------------------------------------- *)
 
@@ -149,15 +418,7 @@ let record_fixture ~path ~(argv : string list) ~(env_extra : (string * string) l
         output_char oc '\n')
   with _ -> ()
 
-let env_with_extra (env_extra : (string * string) list) : string array =
-  let keys = List.map fst env_extra in
-  let base =
-    Array.to_list (Unix.environment ())
-    |> List.filter (fun e ->
-           let k = try String.sub e 0 (String.index e '=') with Not_found -> e in
-           not (List.mem k keys))
-  in
-  Array.of_list (base @ List.map (fun (k, v) -> k ^ "=" ^ v) env_extra)
+let env_with_extra = binding_env_with_extra
 
 (* Run argv; discard output; true iff exit 0. Fixture mode records instead. *)
 let run_command ?(env_extra = []) (argv : string list) : bool =
@@ -190,31 +451,7 @@ let run_command_capture ?(env_extra = []) (argv : string list) : string option =
   | Some path ->
       record_fixture ~path ~argv ~env_extra;
       None
-  | None -> (
-      match argv with
-      | [] -> None
-      | cmd :: _ -> (
-          try
-            let stdout_r, stdout_w = Unix.pipe ~cloexec:false () in
-            let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
-            let pid =
-              Unix.create_process_env cmd (Array.of_list argv)
-                (env_with_extra env_extra) devnull stdout_w devnull
-            in
-            Unix.close stdout_w;
-            (try Unix.close devnull with _ -> ());
-            let ic = Unix.in_channel_of_descr stdout_r in
-            let buf = Buffer.create 256 in
-            (try
-               while true do
-                 Buffer.add_channel buf ic 1
-               done
-             with End_of_file -> ());
-            (try close_in ic with _ -> ());
-            match Unix.waitpid [] pid with
-            | _, Unix.WEXITED 0 -> Some (Buffer.contents buf)
-            | _ -> None
-          with _ -> None))
+  | None -> binding_capture ~env_extra argv
 
 (* ---------------------------------------------------------------------------
  * herdr status
@@ -427,6 +664,9 @@ let maybe_inject ?now ~(broker_root : string) ~(session_id : string) () : outcom
               match backend_of_registration reg with
               | None -> Skipped "no_wake_target"
               | Some backend -> (
+                  if not (binding_matches ~broker_root ~session_id backend) then
+                    Skipped "wake_target_unbound"
+                  else
                   let idle_check =
                     match backend with
                     | Herdr { pane; socket } ->
