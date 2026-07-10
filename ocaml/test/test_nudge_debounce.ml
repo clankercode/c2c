@@ -240,7 +240,7 @@ let test_after_60s_nudge_can_fire_again () =
 let test_drain_inbox_resets_debounce_window () =
   with_temp_dir (fun dir ->
     let sid = "nudge-drain-reset" in
-    let inbox = seed_inbox ~dir ~sid 1 in
+    let _inbox = seed_inbox ~dir ~sid 1 in
     let payload = Printf.sprintf {|{"session_id":%S,"hook_event_name":"PostToolUse"}|} sid in
     let env = [ Unset "C2C_MCP_SESSION_ID"; Unset "C2C_MCP_BROKER_ROOT";
                 Set ("C2C_SESSIONS_BROKER_ROOT", dir);
