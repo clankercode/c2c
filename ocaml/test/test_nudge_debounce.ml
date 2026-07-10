@@ -437,6 +437,29 @@ let parse_stop_hook_reason result : string option =
       | _ -> None
     with _ -> None
 
+let test_stop_hook_delivers_deferrable_at_turn_boundary () =
+  with_temp_dir (fun dir ->
+    let sid = "stop-defer-boundary" in
+    let inbox_path = Filename.concat dir (sid ^ ".inbox.json") in
+    write_file inbox_path
+      (Printf.sprintf
+         {|[{"from_alias":"peer-a","to_alias":%S,"content":"stop push body","ts":1.0},{"from_alias":"peer-b","to_alias":%S,"content":"stop deferrable body","ts":2.0,"deferrable":true}]|}
+         sid sid);
+    let payload = Printf.sprintf {|{"session_id":%S,"hook_event_name":"Stop"}|} sid in
+    let env = [ Unset "C2C_MCP_SESSION_ID"; Unset "C2C_MCP_BROKER_ROOT";
+                Set ("C2C_SESSIONS_BROKER_ROOT", dir) ] in
+    (* Stop is a turn boundary: FULL drain — deferrable delivered too. *)
+    let r = run_hook ~env ~stdin_payload:payload ~hook_name:"c2c_stop_hook" () in
+    check int "stop hook exits 0" 0 r.rc;
+    (match parse_stop_hook_reason r with
+     | None -> Alcotest.fail "expected stop hook to block with messages"
+     | Some reason ->
+         check bool "stop delivers push message" true
+           (string_contains reason "stop push body");
+         check bool "stop delivers deferrable message (turn boundary)" true
+           (string_contains reason "stop deferrable body"));
+    check int "stop hook drains everything" 0 (json_list_length inbox_path))
+
 let test_stop_hook_still_emits_full_messages () =
   with_temp_dir (fun dir ->
     let sid = "nudge-stop-hook" in
@@ -525,6 +548,8 @@ let () =
             test_drain_inbox_resets_debounce_window )
         ; ( "stop hook still emits full messages", `Quick,
             test_stop_hook_still_emits_full_messages )
+        ; ( "stop hook delivers deferrable at turn boundary", `Quick,
+            test_stop_hook_delivers_deferrable_at_turn_boundary )
         ; ( "nudge format is short line", `Quick,
             test_nudge_format_is_short_line )
         ; ( "empty inbox no nudge", `Quick,

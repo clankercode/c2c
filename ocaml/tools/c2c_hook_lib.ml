@@ -188,7 +188,10 @@ let is_subagent_quiet () =
 let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 
-let drain_repo_messages ~broker_root ~session_id =
+(* [push_only:true] (mid-turn: PostToolUse) drains only non-deferrable
+   messages — deferrable ones stay queued for a turn boundary. Turn-boundary
+   hooks (Stop, SessionStart) pass [push_only:false] for the full drain. *)
+let drain_repo_messages ?(push_only = true) ~broker_root ~session_id () =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
     prerr_endline
@@ -199,14 +202,18 @@ let drain_repo_messages ~broker_root ~session_id =
     (broker, [])
   end else
     ( broker
-    , C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+    , (if push_only then C2c_mcp.Broker.drain_inbox_push
+       else C2c_mcp.Broker.drain_inbox)
+        ~drained_by:"hook" broker ~session_id
     )
 
-let drain_global_messages ~session_id =
+let drain_global_messages ?(push_only = true) ~session_id () =
   let root = C2c_repo_fp.resolve_sessions_broker_root () in
   if global_inbox_exists ~root ~session_id then
     let broker = C2c_mcp.Broker.create ~root in
-    C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+    (if push_only then C2c_mcp.Broker.drain_inbox_push
+     else C2c_mcp.Broker.drain_inbox)
+      ~drained_by:"hook" broker ~session_id
   else []
 
 (* Check if there are messages waiting in the inbox without draining.
@@ -252,16 +259,20 @@ let resolve_session_id () =
     | Error msg -> Error msg
 
 (* Drain all messages (repo + global) for the given session_id.
+   [push_only] defaults to true (mid-turn semantics); turn-boundary callers
+   (Stop hook) pass [push_only:false] to also deliver deferrable messages.
    Returns (repo_broker_opt, messages, alias). *)
-let drain_all_messages ~session_id ~broker_root =
+let drain_all_messages ?(push_only = true) ~session_id ~broker_root () =
   let repo_broker, repo_messages =
     match broker_root with
     | "" -> (None, [])
     | root ->
-        let broker, messages = drain_repo_messages ~broker_root:root ~session_id in
+        let broker, messages =
+          drain_repo_messages ~push_only ~broker_root:root ~session_id ()
+        in
         (Some broker, messages)
   in
-  let global_messages = drain_global_messages ~session_id in
+  let global_messages = drain_global_messages ~push_only ~session_id () in
   let messages = repo_messages @ global_messages in
   let alias =
     match repo_broker with
@@ -357,7 +368,7 @@ type post_tool_output =
    the standalone binary's statefile writer). *)
 let run_post_tool_full ~session_id ~broker_root =
   let repo_broker, messages, alias =
-    drain_all_messages ~session_id ~broker_root
+    drain_all_messages ~session_id ~broker_root ()
   in
   let messages_text = format_messages_as_text ~repo_broker messages in
   (* Cold-boot context (once per session). SessionStart normally handles

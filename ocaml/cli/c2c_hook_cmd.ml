@@ -69,7 +69,9 @@ let hook_stop_cmd =
     if session_id = "" then exit 0;
     try
       let repo_broker, messages, _alias =
-        C2c_hook_lib.drain_all_messages ~session_id ~broker_root
+        (* Stop is a turn boundary: full drain, deferrable included. *)
+        C2c_hook_lib.drain_all_messages ~push_only:false ~session_id
+          ~broker_root ()
       in
       if messages = [] then exit 0;
       let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
@@ -358,7 +360,7 @@ let hook_codex_cmd =
          end
          else
            let rb, msgs, _alias =
-             C2c_hook_lib.drain_all_messages ~session_id ~broker_root
+             C2c_hook_lib.drain_all_messages ~session_id ~broker_root ()
            in
            (rb, msgs)
        in
