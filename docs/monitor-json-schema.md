@@ -209,10 +209,34 @@ Relay controls:
 
 - `--no-relay`: disable the relay-inbox watcher; local broker only.
 - `--relay-interval SECONDS`: interval between relay peeks; default `5.0`. `0` disables the relay watcher, equivalent to `--no-relay`.
-- `--relay-node-id ID`: relay node id whose inbox should be peeked. Default is `cli-<alias>`, matching `c2c relay register --alias <alias>`. `C2C_RELAY_NODE_ID` is the environment override.
-- `--relay-session-id ID`: relay session id whose inbox should be peeked. Default is the relay node id. `C2C_RELAY_SESSION_ID` is the environment override. Connector-managed aliases commonly need both `--relay-node-id` and `--relay-session-id`.
+- `--relay-node-id ID`: relay node id whose inbox should be peeked. Overrides the auto-resolved default (below). `C2C_RELAY_NODE_ID` is the environment override.
+- `--relay-session-id ID`: relay session id whose inbox should be peeked. Overrides the auto-resolved default. `C2C_RELAY_SESSION_ID` is the environment override.
+
+### Peek-key resolution
+
+The relay inbox to peek is resolved automatically, so a bare `c2c monitor` "just works" — you rarely need `--relay-node-id`/`--relay-session-id`:
+
+1. **Connector-managed** — when the relay connector (`c2c relay connect`) manages this broker, it registers your alias on the relay under the **machine node-id** with your **local broker session-id**, not the `cli-<alias>` convention. The monitor reads `connector-state.json`; if it lists your alias, the default peek key becomes `(connector node-id, your local session-id)`. This is what surfaces cross-host DMs on a connector-managed broker with no manual flags. The connector node-id is read from `connector-state.json` (honouring a `relay connect --node-id` override) and falls back to the same host hash the connector derives by default.
+2. **Direct-register fallback** — with no connector managing this alias, the default is `cli-<alias>` / `cli-<alias>`, matching `c2c relay register --alias <alias>`.
+3. **Explicit overrides always win** — `--relay-node-id X` alone peeks `X/X`; add `--relay-session-id S` for `X/S`.
 
 The relay watcher is gated to the default archive mode for deduplication. Under `--live`, `monitor.ready.relay_watch` reports it off.
+
+### Error honesty and exit status
+
+A relay error is never silently swallowed (the old behaviour surfaced nothing and spun forever against a dead relay stream — "misleading success"):
+
+- An `ok:false` relay response is surfaced on stderr with its `error_code` and message.
+- **Transient** errors (network blip, timeout, rate-limit, unrecognized code) are retried with exponential backoff (capped at 60s). On recovery the monitor prints a `reconnected` line.
+- **Terminal** errors (`unauthorized`, `signature_invalid`, `timestamp_out_of_window`, `missing_proof_field`, `not_found`, `unknown_node`, `not_registered`, `bad_request` — auth/identity/config, will not self-heal) print a clear message and **exit the monitor with a non-zero code** so a supervisor notices. The first peek fires immediately at startup, so a terminal auth failure surfaces right away rather than one interval late.
+
+Exit status:
+
+| Code | Meaning |
+|---|---|
+| `0` | Clean exit (parent process gone, or stop requested). |
+| `1` | Usage or startup error (broker root unresolved, lockfile conflict). |
+| `3` | Terminal relay failure (auth / identity / signature / bad request). |
 
 ---
 
