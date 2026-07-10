@@ -13,6 +13,8 @@
 let format_envelope ?(sender_role : string option) ?ts
     ?(with_reply_hint = true) (msg : C2c_mcp.message) =
   let tag = C2c_mcp.extract_tag_from_content msg.content in
+  (* Keep peer-controlled body and metadata on the common hostile-safe
+     renderer; never reconstruct this envelope by interpolation here. *)
   C2c_mcp.format_c2c_envelope
     ~from_alias:msg.from_alias
     ~to_alias:msg.to_alias
