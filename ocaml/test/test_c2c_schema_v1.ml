@@ -364,6 +364,29 @@ let test_monitor_room_fanout_event () =
   Alcotest.(check bool) "raw to_alias preserved verbatim" true
     (field kvs "to_alias" = `String "coordinator1#swarm-lounge")
 
+(* J3 fix (peer-review, J4 finding-6 family): a "<alias>#<12hexhash>"
+   relay host-hash to_alias is a DM, never a room — classification is
+   gated by the canonical [C2c_mcp_helpers.is_room_recipient]. *)
+let test_monitor_host_hash_to_alias_is_dm () =
+  let raw =
+    `Assoc
+      [ ("from_alias", `String "coder1")
+      ; ("to_alias", `String "coordinator1#a1b2c3d4e5f6")
+      ; ("content", `String "relay-addressed dm")
+      ; ("ts", `Float 1745241234.5)
+      ]
+  in
+  let ev = N.message_event ~monitor_ts:"1745241234.567" ~source:"relay" raw in
+  (match S.validate ev with
+   | Error e -> Alcotest.failf "host-hash event failed v1 validation: %S" e
+   | Ok m ->
+       Alcotest.(check bool) "type=Dm (host-hash suffix is not a room)" true
+         (m.S.msg_type = S.Dm);
+       Alcotest.(check string) "to keeps full tagged value" "coordinator1#a1b2c3d4e5f6" m.S.to_);
+  let kvs = assoc_of ev in
+  Alcotest.(check bool) "raw to_alias preserved verbatim" true
+    (field kvs "to_alias" = `String "coordinator1#a1b2c3d4e5f6")
+
 (* Explicit room_id field (archive/room-history shape) wins over the
    to_alias heuristic and is itself preserved as a legacy key. *)
 let test_monitor_room_id_field_event () =
@@ -492,6 +515,7 @@ let () =
           Alcotest.test_case "relay event validates as v1" `Quick test_monitor_relay_event_validates;
           Alcotest.test_case "legacy old-reader vector" `Quick test_monitor_legacy_old_reader_vector;
           Alcotest.test_case "room fanout to_alias" `Quick test_monitor_room_fanout_event;
+          Alcotest.test_case "host-hash to_alias is DM" `Quick test_monitor_host_hash_to_alias_is_dm;
           Alcotest.test_case "explicit room_id field" `Quick test_monitor_room_id_field_event;
           Alcotest.test_case "non-object passthrough" `Quick test_monitor_non_object_passthrough;
           Alcotest.test_case "one object per line" `Quick test_monitor_ndjson_one_object_per_line;

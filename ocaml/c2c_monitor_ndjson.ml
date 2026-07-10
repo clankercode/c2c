@@ -36,14 +36,18 @@ let jnum fields key =
 (* Room detection for a raw monitor message. Two shapes exist in the wild:
    - archive/room-history entries carry an explicit "room_id" field;
    - room-fanout inbox copies tag to_alias per-peer as "<alias>#<room>"
-     (see C2c_monitor_logic.normalize_to / parse_to_alias). *)
+     (see C2c_monitor_logic.normalize_to / parse_to_alias).
+   The '#'-suffix path is gated by [C2c_mcp_helpers.is_room_recipient] —
+   the canonical classifier — so a "<alias>#<12hexhash>" relay host-hash
+   form is a DM, never a room (same fix family as J4's inbox rows). *)
 let room_of_fields fields to_alias =
   match jstr fields "room_id" with
   | Some r when r <> "" -> Some r
-  | _ -> (
+  | _ when C2c_mcp_helpers.is_room_recipient ~to_alias -> (
       match String.split_on_char '#' to_alias with
       | [ _alias; room ] when room <> "" -> Some room
       | _ -> None)
+  | _ -> None
 
 (* Shape one raw monitor message (legacy broker JSON: from_alias, to_alias,
    content, ts, message_id, ...) into the J3 NDJSON message-event object:
