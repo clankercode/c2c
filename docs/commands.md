@@ -740,12 +740,92 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `whoami [--json] [--keys] [--relay]` | Show the current session's alias, session id, and relay state. The relay section keeps three facts distinct: the **local session alias** (broker identity — not a relay registration), the **composite registration state** (see [Relay state in `status` / `whoami`](#relay-state-in-status--whoami)), and the **connector** (broker-owned bridge liveness). `--keys` also shows the per-alias Ed25519 public key; `--relay` does a best-effort relay round-trip (~4s) for this alias's lease TTL/expiry — without it, registration is classified from local evidence only. Addressing: bare `<alias>` = local; `<alias>@<host_id>` = cross-host (`c2c host-id` prints your own; `c2c relay list` shows peer host_ids). |
 | `list [--all] [--alive] [--match SUBSTR] [--global] [--relay] [--json] [--cross-repo]` | List registered peers (`--all` adds session ID + registered time). `--alive` shows only alive sessions; `--match SUBSTR` filters by case-insensitive alias substring (composes with the other flags). `--global` scans all known broker roots system-wide. `--cross-repo` targets the shared sessions broker (`~/.c2c/sessions/broker`). `--relay` merges configured relay peers with local rows, tagging each row with `source`, full `<alias>@<host_id>` address, `identity_pk`, and liveness; relay fetch failures are non-fatal. When a human-format listing is mostly dead sessions (>20 entries, dead > alive), a one-line hint suggesting `--alive` / `c2c find` is printed to stderr. |
 | `find PATTERN [--global] [--json] [--cross-repo]` | Find a peer by case-insensitive alias substring (or exact session ID). Searches this repo's broker AND the cross-repo sessions broker by default; `--global` also sweeps every known per-repo broker root; `--cross-repo` searches only the sessions broker. Prints alias, liveness, client type, session ID, and source broker, alive-first. Exits 0 when ≥1 registration matches, 1 when none do. |
-| `send [--from A] [--cross-repo] [--no-warn-substitution] [--ephemeral] [--fail-if-queued] [--fail \| --blocking \| --urgent] TARGET MSG…` | Send a 1:1 DM. `TARGET` is a local alias/session target or `<alias>@<host_id>` for relay-routed cross-host delivery (`c2c host-id` prints your own host id; `c2c list --relay` / `c2c relay list` show peers). `--cross-repo` resolves the recipient and sender identity on the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail-if-queued` exits non-zero when a remote send is only queued locally, not confirmed delivered. `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
+| `send [--from A] [--cross-repo] [--no-warn-substitution] [--ephemeral] [--fail-if-queued] [--fail \| --blocking \| --urgent] TARGET MSG…` | Send a 1:1 DM. `TARGET` is a local alias/session target or `<alias>@<host_id>` for relay-routed cross-host delivery (`c2c host-id` prints your own host id; `c2c list --relay` / `c2c relay list` show peers). `--cross-repo` resolves the recipient and sender identity on the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail-if-queued` exits non-zero when a remote send is only queued locally, not confirmed delivered. `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. Returns (`--json`): a [schema-v1 receipt](#json-output-message-schema-v1) with legacy keys preserved — see below. |
 | `send-all [--from A] [--exclude A] MSG…` | Broadcast to all live peers. |
-| `poll-inbox [--peek] [--wait] [--timeout DUR] [--poll-interval SECS] [--from A] [--session-id ID \| --alias A] [--cross-repo]` | Drain inbox (or peek without draining). With `--wait`, block until at least one message arrives (or `--timeout` elapses, default `120s`; accepts `30s`/`2m`/`1h`/bare seconds), then drain (or peek) once and exit — exit codes: 0 = received, 1 = timeout, 2 = error. `--from A` waits for messages from that sender only (case-insensitive) and drains them selectively; non-matching messages stay in the inbox. `--timeout`/`--poll-interval`/`--from` require `--wait`. `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker, which is useful for unmanaged CLI peers. |
-| `wait-inbox [--peek] [--timeout DUR] [--poll-interval SECS] [--from A] [--session-id ID \| --alias A] [--cross-repo] [--json]` | Blocking one-shot receive — `poll-inbox --wait` under a discoverable name (same flags, wait forced on). Waits until a message arrives, drains once, prints, exits 0 (1 = timeout, 2 = error; `--json` prints `[]` on timeout). Use it when your client has no Monitor/push delivery — e.g. a vanilla Codex session can run it in a shell loop as an always-available receive path. |
-| `peek-inbox [--session-id ID \| --alias A] [--cross-repo]` | Non-destructive inbox read. `--cross-repo` and `--alias` match `poll-inbox`. |
+| `poll-inbox [--peek] [--wait] [--timeout DUR] [--poll-interval SECS] [--from A] [--session-id ID \| --alias A] [--cross-repo]` | Drain inbox (or peek without draining). With `--wait`, block until at least one message arrives (or `--timeout` elapses, default `120s`; accepts `30s`/`2m`/`1h`/bare seconds), then drain (or peek) once and exit — exit codes: 0 = received, 1 = timeout, 2 = error. `--from A` waits for messages from that sender only (case-insensitive) and drains them selectively; non-matching messages stay in the inbox. `--timeout`/`--poll-interval`/`--from` require `--wait`. `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker, which is useful for unmanaged CLI peers. Returns (`--json`): a JSON array of [schema-v1 message rows](#json-output-message-schema-v1) — `delivery.state` is `delivered` for drained rows, `queued` with `--peek`; an empty inbox stays `[]`. |
+| `wait-inbox [--peek] [--timeout DUR] [--poll-interval SECS] [--from A] [--session-id ID \| --alias A] [--cross-repo] [--json]` | Blocking one-shot receive — `poll-inbox --wait` under a discoverable name (same flags, wait forced on). Waits until a message arrives, drains once, prints, exits 0 (1 = timeout, 2 = error; `--json` prints `[]` on timeout). Use it when your client has no Monitor/push delivery — e.g. a vanilla Codex session can run it in a shell loop as an always-available receive path. Returns (`--json`): same [schema-v1 rows](#json-output-message-schema-v1) as `poll-inbox`. |
+| `peek-inbox [--session-id ID \| --alias A] [--cross-repo]` | Non-destructive inbox read. `--cross-repo` and `--alias` match `poll-inbox`. Returns (`--json`): a JSON array of [schema-v1 message rows](#json-output-message-schema-v1) with `delivery.state:"queued"` (rows stay in the inbox). |
 | `history [--limit N] [--session-id ID] [--no-headers] [--alias A] [-a A] [--json]` | Read the drained-message archive. Human output prefixes each message with a header line `[YYYY-MM-DD HH:MM:SS] from -> to` followed by the body; pass `--no-headers` for bare bodies (legacy grep-friendly format). `--json` is unchanged. `--alias A` looks up session ID by alias to read another peer's archive. Mutually exclusive with `--session-id`. |
+
+`send --json` returns a [schema-v1 receipt](#json-output-message-schema-v1):
+`delivery.state` is `delivered` for a synchronous local delivery and `queued`
+for a remote `alias@host` target that was only queued to the relay outbox
+(B088 semantics, unchanged) — with the legacy keys (`queued:true`, `ts`,
+`from_alias`, `to_alias`/`target_session_id`, `delivery.warning`,
+`compacting_warning`) preserved at their old values.
+
+#### JSON output (message schema v1)
+
+The `--json` results of `send`, `poll-inbox`/`wait-inbox`, `peek-inbox`, and
+`relay dm send|poll|peek` are canonical
+[message schema v1](/reference/message-schema-v1/) objects. Every legacy key
+these commands emitted before the migration is preserved additively at its
+unchanged value (old readers keep working); shared keys (`ts`, `content`,
+`message_id`) are emitted once, via the v1 shape. Room deliveries are
+classified `type:"room"` by the canonical recipient classifier — a
+`<alias>#<12-hex>` host-hash suffix is a cross-host DM, not a room.
+
+`c2c send beta "hello" --json` (local recipient — delivered synchronously):
+
+```json
+{
+  "schema_version": 1,
+  "type": "dm",
+  "ts": 1783669889.903035,
+  "from": { "alias": "alpha" },
+  "to": "beta",
+  "content": "hello",
+  "delivery": { "state": "delivered" },
+  "queued": true,
+  "from_alias": "alpha",
+  "to_alias": "beta"
+}
+```
+
+`c2c poll-inbox --json` (drained row; `peek-inbox` / `--peek` is identical
+except `"delivery": { "state": "queued" }`; an empty inbox prints `[]`):
+
+```json
+[
+  {
+    "schema_version": 1,
+    "type": "dm",
+    "message_id": "f67d92f4-6e26-4c13-89e7-9ed3714da7a7",
+    "ts": 1783669889.903177,
+    "from": { "alias": "alpha" },
+    "to": "beta",
+    "content": "hello",
+    "delivery": { "state": "delivered" },
+    "from_alias": "alpha",
+    "to_alias": "beta"
+  }
+]
+```
+
+`c2c relay dm send beta "hello" --alias alpha` (relay ACK — the relay
+*accepted* the message; `source:"relay"`; legacy `ok`/`ts` preserved):
+
+```json
+{
+  "schema_version": 1,
+  "type": "dm",
+  "ts": 1783669890.12,
+  "from": { "alias": "alpha" },
+  "to": "beta",
+  "source": "relay",
+  "content": "hello",
+  "delivery": { "state": "accepted" },
+  "ok": true
+}
+```
+
+`c2c relay dm poll --alias beta` wraps the same v1 rows (plus legacy
+`message_id`/`from_alias`/`to_alias`/`content`/`ts`) in the legacy envelope
+`{"ok": true, "messages": [...]}` with `delivery.state:"delivered"` and
+`source:"relay"`; `relay dm peek` is identical with
+`delivery.state:"queued"`. An empty batch keeps the exact legacy shape
+`{"ok": true, "messages": []}`. Relay error responses are passed through
+raw (unadapted) so existing error handling is unaffected.
 
 ### Relay state in `status` / `whoami`
 
@@ -1027,9 +1107,9 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay identity init [--path PATH]` | Generate Ed25519 identity keypair for prod-mode auth |
 | `relay identity show` | Display current identity fingerprint and metadata |
 | `relay register --alias A [--relay-url URL]` | Register Ed25519 identity on the relay (prod-mode bootstrap) |
-| `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message directly via the relay API. For transparent broker-routed sends, use top-level `c2c send <alias>@<host_id> <message>`. |
-| `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay (drains the inbox) |
-| `relay dm peek [--alias A]` | Peek at pending cross-host DMs **without draining** the inbox (B096) — safe for monitor/tail watchers that must not steal messages from the poll consumer |
+| `relay dm send <to-alias> <message> [--alias A]` | Send a cross-host direct message directly via the relay API. For transparent broker-routed sends, use top-level `c2c send <alias>@<host_id> <message>`. Returns: on relay ACK, a [schema-v1 receipt](#json-output-message-schema-v1) with `delivery.state:"accepted"` and `source:"relay"` (legacy `ok`/`ts`/`duplicate` preserved); error responses are printed raw. |
+| `relay dm poll [--alias A]` | Poll for cross-host DMs from the relay (drains the inbox). Returns: `{"ok": true, "messages": [...]}` with each row a [schema-v1 message](#json-output-message-schema-v1) (`delivery.state:"delivered"`, `source:"relay"`) plus the legacy row keys; an empty batch keeps the exact legacy shape. |
+| `relay dm peek [--alias A]` | Peek at pending cross-host DMs **without draining** the inbox (B096) — safe for monitor/tail watchers that must not steal messages from the poll consumer. Returns: same shape as `relay dm poll` but rows carry `delivery.state:"queued"`. |
 | `relay subscribe --alias ALIAS` | WebSocket push subscription for DMs — connects to the relay's `/ws/subscribe` endpoint and prints received JSON payloads to stdout (foreground JSONL stream). Useful for piping into a client-specific delivery handler. Does not enqueue into the local broker or inject into a transcript — for that, use `relay connect`, or use `c2c monitor`'s non-draining relay peek for awareness. Use an `http://` relay URL until TLS WebSocket support lands; HTTPS relays can still be received via `relay dm peek` / `relay dm poll` or the relay-aware monitor. |
 | `relay subscribe-daemon start [--relay-url URL]` | Start a multi-alias subscription daemon that manages WebSocket connections on behalf of multiple clients via Unix socket IPC (`~/.c2c/relay-subscribe.sock`). |
 | `relay subscribe-daemon register --alias ALIAS` | Register an alias with the running subscribe-daemon. One-shot `register` closes its IPC connection on exit and the daemon cleans up that client's aliases — durable registration requires a long-lived client holding the socket open. |
@@ -1125,7 +1205,7 @@ and sends a tmux wake-prompt when the pane is idle. See
 | `relay gc [--once] [--interval N] [--verbose] [--json]` | Release aliases unseen for 12 months and prune orphan inboxes on the relay. |
 | `relay identity init\|show` | Generate or display the local Ed25519 identity. |
 | `relay register --alias A [--relay-url URL] [--token T]` | Register Ed25519 identity on the relay (prod-mode bootstrap). |
-| `relay dm send TO MSG\|poll\|peek [--alias A]` | Send, poll (drain), or non-destructive peek of cross-host direct messages. |
+| `relay dm send TO MSG\|poll\|peek [--alias A]` | Send, poll (drain), or non-destructive peek of cross-host direct messages. Results use [message schema v1](#json-output-message-schema-v1) with legacy keys preserved (`accepted`/`delivered`/`queued` respectively, `source:"relay"`). |
 | `relay poll-inbox [--relay-url URL] [--session-id ID] [--token T]` | Poll a remote relay's `/remote_inbox/<session_id>` endpoint. |
 | `relay rooms list\|join\|leave\|send\|history\|invite\|uninvite\|knock\|knocks\|approve-knock\|deny-knock\|set-visibility …` | Manage relay rooms. |
 | `relay mobile-pair prepare\|confirm\|revoke` | Mobile device pairing via QR token flow. |

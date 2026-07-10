@@ -25,6 +25,11 @@ is carried from day one so v2 is non-breaking.
 > individual output surfaces are migrated onto it by later slices (J2 CLI,
 > J3 monitor NDJSON, J4 MCP). Until then, existing surfaces keep their current
 > shape unchanged.
+>
+> J2 landed: the CLI `send` / `poll-inbox` / `wait-inbox` / `peek-inbox`
+> `--json` results and the `relay dm send|poll|peek` results now emit this
+> shape with all legacy keys preserved additively — see
+> [commands → JSON output](/commands/#json-output-message-schema-v1).
 
 ## Field contract
 
