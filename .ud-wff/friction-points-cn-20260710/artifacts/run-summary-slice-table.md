@@ -32,10 +32,10 @@ coordinator1 gates all pushes.
 | F5c schema faults | friction-f5c-schema-faults | fbb16453 | 812d7f34 | PASS first pass |
 | H7 status honesty (B090/C047) | friction-h7-status-honesty | 672bdae6 (chain F5b) | 5c2d79b1 | PASS first pass |
 | H9 connector row validation | friction-h9-connector-row-validation | 812d7f34 (chain F5c) | 051cf896 | PASS first pass |
+| J5 aggregate I002 gate | friction-j5-aggregate-gate | 812d7f34 + merges 333923f2/3a93bcd4/7917e363 | a9887a34 | PASS first pass |
 
-In flight: J5 aggregate gate (base 812d7f34 + merges 333923f2/3a93bcd4/
-7917e363, tip a9887a34, reviewer running), Q1 CLI error-contract matrix
-(worker running; base 5c2d79b1 + audited merge of 333923f2).
+In flight: Q1 CLI error-contract matrix (worker resumed after session-limit
+cut; base 5c2d79b1 + audited merge of 333923f2 = commit 806f0df9).
 
 ## Merge-order notes for coordinator
 
@@ -44,6 +44,21 @@ In flight: J5 aggregate gate (base 812d7f34 + merges 333923f2/3a93bcd4/
 - J3 contains H3 + the (H4+J1) lane via its audited integration merge
   (cs_node_id fixture fix inside merge commit 20258f5a).
 - F5b contains the lane + H1 via its integration merge (cfca0413).
+- **Simplified final merge plan (lanes already union most branches):**
+  J5 tip a9887a34 contains lane+F5c+J3(H3)+J4+J2+unification; H7 tip
+  5c2d79b1 contains lane+F5b+H1+H7; H9 tip 051cf896 contains lane+F5c+H9;
+  Q1 tip contains H7-lane + J3-lane. So master merge order: (1) J5 tip,
+  (2) H9 tip (shares F5c base — mostly fast-forward-ish union), (3) H7
+  tip (brings F5b+H1+H7; expect test_c2c_schema_v1/dune/docs context
+  conflicts vs J5 — reuse J5's audited union resolutions), (4) Q1 tip
+  (largely contained by then), (5) independent roots: H0 180eff1b,
+  H2a→H2b chain 39786891 (c2c.ts coupling with H1 — keep BOTH H2b's
+  escaped formatEnvelope+hints AND H1's trackPendingPermission/
+  surfaceAdvisoryMessage), F101 52fd2562, D1 43cac304, D1b dfae5aaf,
+  D1c 12119367, ADR0 5d7822b7. Approval/await_reply suite counts differ
+  between lanes (H1 present vs not) — after the H7-lane merge expect
+  approval 23(+H1 additions)/await_reply 7; run full just check after
+  EACH merge into master.
 - c2c.ts merge coupling: H1 (68124bdc) × H2b (39786891) touch adjacent
   regions — resolution MUST keep H2b's escaped formatEnvelope return + hint
   lines AND H1's trackPendingPermission/surfaceAdvisoryMessage (H2b receipt
