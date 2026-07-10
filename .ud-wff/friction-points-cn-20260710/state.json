@@ -1,6 +1,6 @@
 {
   "assumptions": {},
-  "events_seen": 81,
+  "events_seen": 85,
   "issues": {},
   "protocol_version": "udwff/v1",
   "questions": {},
@@ -30,11 +30,39 @@
         {
           "event_id": "evt_c04a49a539723cfb4ab68cfeea2c2f45",
           "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_7bbda844bddb0554ed8e016b799af36d",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_2a3bb4204a0abbac7f0a79081eb6263b",
+          "event_type": "TaskCompleted"
         }
       ],
       "node_id": "impl-H0",
       "owner": "H0-worker",
-      "status": "needs-review",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "peek guard might diverge from poll (alias form/case/host-id)",
+          "unsigned dev policy might have changed",
+          "owner-positive path might be untested (found: it was \u2014 fixed)",
+          "tests might not assert status codes or cover both backends"
+        ],
+        "evidence_path": "artifacts/H0-peek-auth/receipt.md",
+        "igc": "Signed relay /peek_inbox enforces the same session-ownership authorization as poll on both backends; unsigned policy unchanged.",
+        "remaining_uncertainty": "GET /remote_inbox/<session_id> (handle_remote_inbox) has no ownership binding \u2014 out of slice scope, follow-up recommended.",
+        "result": "PASS",
+        "review_id": "review-H0",
+        "reviewer": "fable-warden (live peer, not slice author); initial MAJOR fixed in new test-only commit 180eff1b, delta re-reviewed PASS; tip moved 299d90d7 -> 180eff1b",
+        "validators": [
+          "relay_remote_broker 9/9 rc=0 (attacker-403 x2, unsigned-200 x2, owner-200 x2)",
+          "just build rc=0 IN slice worktree",
+          "just check rc=0 IN slice worktree",
+          "signed peer-pass artifact 180eff1b-fable-warden (build_rc=0, all targets)"
+        ]
+      },
+      "status": "done",
       "task_id": "H0-peek-auth",
       "title": "Enforce verified relay peek inbox ownership"
     },
@@ -120,11 +148,40 @@
         {
           "event_id": "evt_401555d60350ebabe413942bae4b8868",
           "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_49b022749a986072b9a9f8016c9e9894",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_dd13da20e2ed31d3fe26a90c6bd06227",
+          "event_type": "TaskCompleted"
         }
       ],
       "node_id": "impl-H2a",
       "owner": "H2a-worker",
-      "status": "needs-review",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "case/whitespace/zero-width </c2c> variants might survive (no: structural-char escaping, not tag blocklist)",
+          "escape_content_for_xml:true callers might double-escape (no: flag now governs only reply-hint placeholder)",
+          "renderer might be dead code until H2b (no: live in wire-bridge, deliver-watch xml_fd, hook cmd/lib, pty-inject)",
+          "public .mli contract might be stale (found: it was \u2014 fixed doc-only)"
+        ],
+        "evidence_path": "artifacts/H2a-safe-renderer/receipt.md",
+        "igc": "One common renderer escapes peer bodies unconditionally at the format_c2c_envelope seam; envelope remains the authority boundary; reminder cannot be forged from body content.",
+        "remaining_uncertainty": "H2b carry-forwards: opencode embedded plugin raw ${msg.content} envelope interpolation (real bypass), c2c_broker.ml room-invite/knock builders raw interpolation, stale verbatim-body comment test_c2c_start.ml:3476.",
+        "result": "PASS",
+        "review_id": "review-H2a",
+        "reviewer": "fable-warden (live peer, not slice author); initial MAJOR .mli contract fixed in new doc-only commit 4df6f381, delta re-reviewed PASS; tip moved a270e533 -> 4df6f381",
+        "validators": [
+          "wire_bridge 20/20 rc=0 incl hostile exact-match golden",
+          "test_c2c_mcp 411/411 rc=0",
+          "just build rc=0 IN slice worktree",
+          "just check rc=0 IN slice worktree",
+          "signed peer-pass artifact 4df6f381-fable-warden (build_rc=0, all targets)"
+        ]
+      },
+      "status": "done",
       "task_id": "H2a-safe-renderer",
       "title": "Create hostile-content-safe inbound c2c renderer"
     },
