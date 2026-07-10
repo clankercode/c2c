@@ -11,7 +11,7 @@
    - tmux idle-gating on last_activity_ts
    - backoff + no-new-messages dedupe
    - injector never drains the inbox
-   - backend preference (herdr over tmux)
+   - backend preference (tmux over herdr — innermost surface wins)
    - wake_targets_from_env derivation *)
 
 open Alcotest
@@ -267,7 +267,11 @@ let test_parse_herdr_agent_status_real_shape () =
   check string "missing member is unknown" "unknown"
     (C2c_wake_inject.parse_herdr_agent_status {|{"result":{"type":"agent_info"}}|})
 
-let test_herdr_preferred_over_tmux () =
+(* Innermost surface wins: a session inside tmux captures its exact pane via
+   $TMUX_PANE; a herdr_pane seen alongside it is the OUTER herdr pane hosting
+   the tmux client (env leak) — injecting there would type into whatever tmux
+   window is active. Live-verified 2026-07-10. *)
+let test_tmux_preferred_over_herdr () =
   with_ctx (fun ctx ->
     let sid = "zw-wake-both" in
     ignore
@@ -276,7 +280,7 @@ let test_herdr_preferred_over_tmux () =
     enqueue ctx ~to_alias:sid ~from_session:"zw-wake-peer-f" ~from_alias:"zw-wake-peer-f"
       ~content:"hi";
     (match inject ctx ~session_id:sid with
-     | Injected { backend; _ } -> check string "herdr wins" "herdr" backend
+     | Injected { backend; _ } -> check string "tmux wins" "tmux" backend
      | o -> failf "expected Injected, got %s" (C2c_wake_inject.outcome_to_string o)))
 
 (* --- backoff / dedupe ------------------------------------------------------ *)
@@ -431,7 +435,7 @@ let () =
             test_herdr_done_status_injectable
         ; test_case "herdr: parse real agent-get JSON shape" `Quick
             test_parse_herdr_agent_status_real_shape
-        ; test_case "herdr preferred over tmux" `Quick test_herdr_preferred_over_tmux
+        ; test_case "tmux preferred over herdr (innermost wins)" `Quick test_tmux_preferred_over_herdr
         ; test_case "backoff + inbox-growth dedupe" `Quick
             test_backoff_and_new_message_dedupe
         ; test_case "backoff env-tunable" `Quick test_backoff_env_tunable
