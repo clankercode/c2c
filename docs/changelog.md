@@ -9,6 +9,15 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Vanilla Claude/Codex hooks now deliver repo-broker DMs without env
+  configuration** — the delivery hooks previously resolved the per-repo
+  broker only from `C2C_MCP_BROKER_ROOT` (empty for non-managed sessions),
+  so peer DMs sent via `c2c send <alias>` sat undrained while the hook
+  reported "no messages". Hooks now fall back to the canonical
+  repo-fingerprint broker (`~/.c2c/repos/<fp>/broker`) resolved from the
+  cwd git repo — same order as the CLI — gated on the broker already
+  existing on disk, so repos that never initialized c2c stay a no-op.
+
 - **Connector HTTP-status honesty** (H10, Q1-DEFECT-1) — the relay
   connector's inline HTTP client now reconciles response bodies with the
   HTTP status line (same four-branch contract H7 gave `Relay_client`): a
