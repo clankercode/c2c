@@ -349,6 +349,44 @@ Never "acknowledge the heartbeat and stop." If you've genuinely
 exhausted available work, ask coordinator1 (or `swarm-lounge`) for
 more — don't just sit polling empty inboxes indefinitely.
 
+## Codex idle wake (tmux/herdr injection)
+
+Codex hooks (`c2c hook codex`) only fire on session activity, so a schedule
+or heartbeat self-DM cannot by itself wake an idle codex session — the
+message sits in the inbox until the next turn. The codex-wake-inject slice
+closes this gap **for sessions running inside tmux or herdr only** (PTY
+injection was rejected as unreliable; sessions outside tmux/herdr have no
+idle wake):
+
+1. Schedule/heartbeat fires → self-DM via `Broker.enqueue_message` → the
+   session's inbox file grows.
+2. A watcher (`C2c_wake_inject.watch_loop`) sees the growth (inotify on the
+   broker dir, plus a periodic re-attempt every `C2C_WAKE_POLL_S`, default
+   20s, for messages that arrived while the session was busy).
+3. If the session is idle (herdr: `agent_status=idle` via `herdr agent get`;
+   tmux: broker `last_activity_ts` older than `C2C_WAKE_IDLE_THRESHOLD_S`,
+   default 90s) and outside the backoff window (`C2C_WAKE_BACKOFF_S`,
+   default 120s, plus a newer-message-required dedupe), it types
+   `c2c: N message(s) waiting - poll your inbox` into the pane and submits
+   (herdr: `herdr pane run`; tmux: `send-keys -l` then `Enter`).
+4. The injected turn fires the UserPromptSubmit hook → full drain. The
+   injector never drains the inbox itself, so double delivery is impossible.
+
+Setup: nothing, usually. Wake targets (`tmux_location` from `$TMUX_PANE`,
+`herdr_pane`/`herdr_socket` from the herdr env) are captured on the broker
+registration automatically by `c2c hook codex` on auto-register and every
+SessionStart. Managed `c2c start codex` runs the watcher as its deliver
+sidecar; for a vanilla codex session run the watcher yourself:
+
+```
+c2c deliver wake-watch --alias <codex-alias>
+```
+
+(`--once` for a single attempt; `--session-id` instead of `--alias` works
+too.) `c2c instances` shows `delivery_mode=hooks+wake` when the wake path is
+armed. Env-var reference: `.collab/runbooks/c2c-env-vars.md` § Codex
+wake-inject.
+
 ## See also
 
 - `.collab/runbooks/c2c-delivery-smoke.md` — the smoke test you should

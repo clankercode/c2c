@@ -119,6 +119,25 @@ the kickoff prompt as the positional `[PROMPT]` CLI argument on fresh starts
 polling (`poll_inbox` / `c2c wait-inbox`) remains the universal fallback.
 Restart via `c2c restart <name>`.
 
+**Idle wake (tmux/herdr only).** Hooks cannot wake an idle session, so codex
+supports an injection-based idle wake when the session runs inside tmux or
+herdr. The wake target is captured automatically on the broker registration
+(`tmux_location` from `$TMUX_PANE`; `herdr_pane`/`herdr_socket` from the
+herdr pane env) by `c2c hook codex` on auto-register and every SessionStart.
+A watcher monitors the session's inbox; on growth, if the session looks idle
+(herdr `agent_status=idle`, or tmux `last_activity_ts` older than
+`C2C_WAKE_IDLE_THRESHOLD_S`, default 90s), it types a one-line nudge into the
+pane and submits it (herdr: `herdr pane run`; tmux: `send-keys -l` then
+`Enter`) — the injected turn fires the UserPromptSubmit hook, which drains as
+usual. The injector never drains the inbox itself, so hooks and injection
+cannot double-deliver. Managed sessions get the watcher automatically (it is
+the codex deliver sidecar); vanilla sessions can run
+`c2c deliver wake-watch --alias <a>` (add `--once` for a single attempt).
+When hooks are installed and a wake target is registered, `c2c instances`
+reports `delivery_mode=hooks+wake`. Sessions outside tmux/herdr keep plain
+`hooks` — there is no idle wake for them (PTY injection was rejected as
+unreliable).
+
 Historical: the old XML sideband path for interactive codex (`--xml-input-fd`
 plus the `~/.c2c/clients/codex/deliver-watch.sh` supervisor scripts) is gone —
 the maintained Codex binary removed that flag, and `c2c install codex` no
