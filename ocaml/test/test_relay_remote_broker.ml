@@ -105,7 +105,7 @@ module Backend_http_tests (R : Relay.RELAY) = struct
      | `Ok _ -> ()
      | `Duplicate _ -> Alcotest.fail "unexpected duplicate message"
      | `Error (code, msg) -> failf "send failed: %s: %s" code msg);
-    attacker
+    (victim, attacker)
 
   let victim_body =
     `Assoc [
@@ -114,7 +114,7 @@ module Backend_http_tests (R : Relay.RELAY) = struct
     ]
 
   let test_verified_attacker_cannot_peek_victim relay =
-    let attacker = prime_victim_inbox relay in
+    let _victim, attacker = prime_victim_inbox relay in
     with_server relay (fun ~base_url ->
       let body_str = Yojson.Safe.to_string victim_body in
       let authorization =
@@ -130,13 +130,29 @@ module Backend_http_tests (R : Relay.RELAY) = struct
         (json_string_field "error_code" result.json))
 
   let test_unsigned_dev_request_keeps_existing_policy relay =
-    let _attacker = prime_victim_inbox relay in
+    let _victim, _attacker = prime_victim_inbox relay in
     with_server relay (fun ~base_url ->
       call_json ~base_url ~path:"/peek_inbox" victim_body >|= fun result ->
       Alcotest.(check int) "unsigned dev-mode peek remains allowed" 200
         (Cohttp.Code.code_of_status result.status);
       let messages = json_messages result.json in
       Alcotest.(check int) "victim inbox remains readable in dev mode" 1
+        (List.length messages))
+
+  let test_verified_owner_can_peek_own_inbox relay =
+    let victim, _attacker = prime_victim_inbox relay in
+    with_server relay (fun ~base_url ->
+      let body_str = Yojson.Safe.to_string victim_body in
+      let authorization =
+        Relay_signed_ops.sign_request victim ~alias:"victim" ~meth:"POST"
+          ~path:"/peek_inbox" ~body_str ()
+      in
+      call_json ~base_url ~path:"/peek_inbox" ~authorization victim_body
+      >|= fun result ->
+      Alcotest.(check int) "owner receives HTTP 200" 200
+        (Cohttp.Code.code_of_status result.status);
+      let messages = json_messages result.json in
+      Alcotest.(check int) "owner can still read own inbox" 1
         (List.length messages))
 end
 
@@ -174,6 +190,15 @@ let test_sqlite_unsigned_dev_request_keeps_existing_policy () =
   with_temp_dir "c2c-peek-unsigned" (fun persist_dir ->
     let relay = Relay.SqliteRelay.create ~persist_dir () in
     Sqlite_http.test_unsigned_dev_request_keeps_existing_policy relay)
+
+let test_in_memory_verified_owner_can_peek_own_inbox () =
+  let relay = Relay.InMemoryRelay.create () in
+  In_memory_http.test_verified_owner_can_peek_own_inbox relay
+
+let test_sqlite_verified_owner_can_peek_own_inbox () =
+  with_temp_dir "c2c-peek-owner" (fun persist_dir ->
+    let relay = Relay.SqliteRelay.create ~persist_dir () in
+    Sqlite_http.test_verified_owner_can_peek_own_inbox relay)
 
 let prefix_len = 14
 let prefix = "/remote_inbox/"
@@ -238,6 +263,10 @@ let tests = [
     test_sqlite_verified_attacker_cannot_peek_victim;
   "SQLite: unsigned dev request keeps policy", `Quick,
     test_sqlite_unsigned_dev_request_keeps_existing_policy;
+  "InMemory: verified owner can still peek own inbox", `Quick,
+    test_in_memory_verified_owner_can_peek_own_inbox;
+  "SQLite: verified owner can still peek own inbox", `Quick,
+    test_sqlite_verified_owner_can_peek_own_inbox;
 ]
 
 let () =
