@@ -794,7 +794,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 
 | Subcommand | Description |
 |------------|-------------|
-| `deliver watch --session-id ID [--broker-root DIR] [--interval SECS] [--xml-fd N]` | Poll a broker inbox continuously. Default output is `[from_alias] body`; `--xml-fd N` writes XML frames compatible with Codex `--xml-input-fd`. |
+| `deliver watch --session-id ID [--broker-root DIR] [--interval SECS] [--xml-fd N]` | Poll a broker inbox continuously. Default output is `[from_alias] body`; `--xml-fd N` writes XML frames in the legacy Codex sideband format (upstream `--xml-input-fd` was removed; the codex-headless bridge still reads this format). |
 
 ### Diagnostics & maintenance (Tier 1)
 
@@ -816,7 +816,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text from a managed session. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--session-id ID] [--dry-run] [--json]` | Refresh a stale broker registration to a new live PID. |
 | `peek-inbox [--session-id ID \| --alias A] [--json] [--cross-repo]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker. |
-| `deliver watch --session-id ID [--broker-root DIR] [--interval SECS] [--xml-fd N]` | Poll one broker inbox continuously. Default output is one line per message; `--xml-fd` emits Codex-compatible XML frames. |
+| `deliver watch --session-id ID [--broker-root DIR] [--interval SECS] [--xml-fd N]` | Poll one broker inbox continuously. Default output is one line per message; `--xml-fd` emits legacy Codex-format XML frames (headless bridge). |
 | `set-compact [--reason R] [--json]` | Mark this session as compacting. |
 | `clear-compact [--json]` | Clear the compacting flag. |
 | `open-pending-reply [--kind K] [--supervisors A,B] PERM_ID` | Open a pending permission reply slot. |

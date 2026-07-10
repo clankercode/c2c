@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# OBSOLETE (2026-07-10, codex-xmlfd-removal): this test exercised the managed
+# XML sideband path (codex --xml-input-fd + c2c-deliver-inbox --xml-output-fd).
+# Upstream codex removed the flag and the xml_fd plumbing was removed from
+# c2c; codex delivery is via config.toml hooks now (`c2c hook codex`,
+# delivery_mode=hooks). Kept for reference until a hooks-based tmux e2e
+# replaces it. Preflight/run below cannot succeed against current binaries.
+echo "OBSOLETE: the codex --xml-input-fd delivery path was removed;" >&2
+echo "codex delivery is via config.toml hooks now (see docs/client-delivery.md)." >&2
+exit 2
+
 # B013 e2e: codex inbound c2c delivery in a LIVE tmux session, driven via
 # scripts/c2c_tmux.py. Proves a peer -> codex send actually lands in the codex
 # session's transcript pane through the managed XML sideband path (the

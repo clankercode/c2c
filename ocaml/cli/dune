@@ -204,6 +204,14 @@
  (modules test_c2c_setup_codex c2c_setup c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded)
  (libraries c2c_mcp alcotest yojson unix digestif.ocaml))
 
+; codex-xmlfd-removal: manifest-less `c2c uninstall codex` recompute fallback
+; must strip the config.toml hooks block + AGENTS.md block (and legacy
+; deliver-watch scripts).
+(test
+ (name test_c2c_uninstall_codex)
+ (modules test_c2c_uninstall_codex c2c_uninstall c2c_setup c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded)
+ (libraries c2c_mcp alcotest cmdliner yojson unix str digestif.ocaml))
+
 ; #5 vanilla-codex: `c2c hook codex` end-to-end against a temp broker
 ; (payload -> drain -> hookSpecificOutput JSON; auto-register; malformed input).
 (test

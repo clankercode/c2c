@@ -153,14 +153,18 @@ now the canonical framing.)
 - **Single codex binary — hooks are the codex delivery path (2026-07-06).**
   `codex` is v0.142.5 at `/home/xertrov/.bun/bin/codex` (npm `@openai/codex`);
   the old `/home/xertrov/.local/bin/codex` alpha is GONE and `--xml-input-fd`
-  was removed upstream, so the managed xml_fd deliver mode is dead (the
-  `codex_supports_xml_input_fd` capability probe now always reports false).
-  Inbound delivery for codex uses **codex hooks**: `c2c install codex` writes
+  was removed upstream, so the managed xml_fd deliver mode is REMOVED (probe,
+  `codex_xml_fd` capability, fd pipe wiring, and the codex deliver-watch
+  supervisor scripts are all gone; the codex-headless bridge keeps its own
+  XML fifo path). Inbound delivery for codex — vanilla AND managed — uses
+  **codex hooks**: `c2c install codex` writes
   UserPromptSubmit/PostToolUse/SessionStart/SessionEnd hooks running `c2c hook codex`
   into `~/.codex/config.toml`, pre-trusted via `[hooks.state]` trust hashes
   (no `/hooks` approval prompt). Vanilla codex sessions self-onboard on the
-  first hook fire (auto-register + onboarding note). Follow-up: port managed
-  `c2c start codex` delivery to hooks too. Details:
+  first hook fire (auto-register + onboarding note). Managed `c2c start codex`
+  passes the kickoff prompt as the positional `[PROMPT]` arg on fresh starts
+  (suppressed on resume); `delivery_mode` reports `hooks`/`unavailable`.
+  Details:
   `.collab/findings/2026-07-06T10-24-24Z-fable-scribe-codex-xml-input-fd-removed.md`.
 - **Launch managed sessions via `c2c start <client>`** (claude / codex / opencode / kimi / gemini). `crush` is **DEPRECATED** — `c2c start crush` refuses (exit 1). Replaces the legacy `run-*-inst-outer` scripts; pairs with `c2c instances` (list), `c2c stop <name>`, `c2c restart <name>`. Exits when client exits (does NOT loop).
 - **Never call `mcp__c2c__sweep` during active swarm operation.** Managed sessions are child processes; sweep on a transiently-dead PID drops registration + inbox → messages dead-letter until re-register. Verify no outer loops first: `pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"`. Safe alternatives: `mcp__c2c__list` (liveness), `mcp__c2c__peek_inbox` (no drain). Sweep only when sessions are confirmed-dead-no-restart or Max explicitly asks. See `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`.

@@ -517,8 +517,11 @@ python3 -m pytest tests/test_c2c_kimi_e2e.py -q --force-test-env
 - Binaries:
   `tmux`, `codex`, `c2c`
 - Extra requirements:
-  Codex build with `--xml-input-fd`
-- Current assertions:
+  **OBSOLETE (2026-07-10)** — this test targeted the old codex fork's
+  `--xml-input-fd`; upstream codex removed the flag and the xml_fd plumbing
+  was removed from c2c (codex delivery is via config.toml hooks now,
+  `delivery_mode=hooks`). Skip until a hooks-based twin test replaces it.
+- Historical assertions:
   XML launch surface, XML delivery, `delivery_mode=xml_fd`
 
 ```bash
