@@ -341,3 +341,17 @@
  (modules test_c2c_relay_state)
  (libraries c2c_mcp alcotest yojson unix)
  (deps ../cli/c2c.exe))
+
+; H6 (friction-cn): relay-merged `c2c list --relay` + identity kind/scope
+; labeling (List_identity) — merged human/JSON, offline nonfatal
+; (relay_error + exit 0), --kind/--match/--alive filters, same-alias/
+; different-host disambiguation, self-identity fold (alias + this host's
+; host_id), default-path JSON additivity. Hermetic: relay paths run against
+; a forked loopback fake relay; no production relay is contacted. Appended
+; below H5's relay-state stanza to keep this shared manifest lane
+; append-only (next: F5a).
+(test
+ (name test_c2c_list_relay)
+ (modules test_c2c_list_relay)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps ../cli/c2c.exe))
