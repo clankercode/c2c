@@ -33,9 +33,12 @@ coordinator1 gates all pushes.
 | H7 status honesty (B090/C047) | friction-h7-status-honesty | 672bdae6 (chain F5b) | 5c2d79b1 | PASS first pass |
 | H9 connector row validation | friction-h9-connector-row-validation | 812d7f34 (chain F5c) | 051cf896 | PASS first pass |
 | J5 aggregate I002 gate | friction-j5-aggregate-gate | 812d7f34 + merges 333923f2/3a93bcd4/7917e363 | a9887a34 | PASS first pass |
+| Q1 CLI error contract | friction-q1-cli-error-contract | 5c2d79b1 + merge 333923f2 | 4e1665ed | PASS first pass |
 
-In flight: Q1 CLI error-contract matrix (worker resumed after session-limit
-cut; base 5c2d79b1 + audited merge of 333923f2 = commit 806f0df9).
+In flight: H10 connector inline-client status honesty (fixes Q1-DEFECT-1,
+the 4th discovered defect; base 051cf896, tip 798461c7, reviewer running).
+Q1's runtime FIXME cell auto-enforces once H10 + Q1 lanes merge — verify
+the flip post-merge on master.
 
 ## Merge-order notes for coordinator
 
