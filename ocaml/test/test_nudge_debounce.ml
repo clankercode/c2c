@@ -90,12 +90,23 @@ let json_list_length path =
 
 type env_op = Set of string * string | Unset of string
 
+(* GNU env requires all -u options BEFORE any NAME=VALUE assignment, so emit
+   unsets first regardless of input order. Later assignments override earlier
+   ones (and an earlier -u for the same key), so base env can be prepended and
+   still overridden by a caller that Sets the same key. *)
 let env_op_to_args ops =
-  List.map (function
-      | Set (k, v) ->
-          Printf.sprintf "%s=%s" k (Filename.quote v)
-      | Unset k -> Printf.sprintf "-u %s" k)
-    ops
+  let unsets =
+    List.filter_map
+      (function Unset k -> Some (Printf.sprintf "-u %s" k) | _ -> None) ops
+  in
+  let sets =
+    List.filter_map
+      (function
+        | Set (k, v) -> Some (Printf.sprintf "%s=%s" k (Filename.quote v))
+        | _ -> None)
+      ops
+  in
+  unsets @ sets
 
 type hook_result = {
   rc : int;
@@ -104,11 +115,36 @@ type hook_result = {
   elapsed_ms : float;
 }
 
+(* Hermetic sandbox for the hook subprocess — see the identical helper in
+   test_inbox_hook_harness.ml. C2c_hook_lib.resolve_hook_broker_root now falls
+   back to the canonical repo-fingerprint broker when C2C_MCP_BROKER_ROOT is
+   unset; pointing HOME + C2C_STATE_HOME at a fresh EMPTY temp tree keeps that
+   fallback off the developer's live ~/.c2c broker (fp path has no
+   registry.json -> helper returns "" -> repo drain skipped). *)
+let with_hermetic_home f =
+  let dir =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-nudge-hermetic-%08x" (Random.bits ()))
+  in
+  (try Unix.mkdir dir 0o700
+   with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () -> f dir)
+
 let run_hook ?(env=[]) ~stdin_payload ~hook_name () : hook_result =
   let hook = hook_bin ~name:hook_name () in
   let stdin_path = Filename.temp_file "c2c-nudge-test-in" ".json" in
   let out = Filename.temp_file "c2c-nudge-test-out" ".json" in
   let err = Filename.temp_file "c2c-nudge-test-err" ".txt" in
+  with_hermetic_home @@ fun hermetic ->
+  let base_env =
+    [ Unset "C2C_MCP_BROKER_ROOT"
+    ; Set ("HOME", hermetic)
+    ; Set ("C2C_STATE_HOME", hermetic)
+    ]
+  in
   Fun.protect
     ~finally:(fun () ->
       (try Sys.remove stdin_path with _ -> ());
@@ -116,7 +152,7 @@ let run_hook ?(env=[]) ~stdin_payload ~hook_name () : hook_result =
       (try Sys.remove err with _ -> ()))
     (fun () ->
       write_file stdin_path stdin_payload;
-      let env_args = env_op_to_args env in
+      let env_args = env_op_to_args (base_env @ env) in
       let env_str = String.concat " " env_args in
       let cmd =
         Printf.sprintf

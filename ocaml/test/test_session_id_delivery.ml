@@ -191,12 +191,18 @@ let test_hook_reads_stdin_session_and_drains_global_inbox () =
           Printf.sprintf {|{"session_id":%S,"hook_event_name":"PostToolUse"}|}
             sid
         in
+        (* Hermetic: C2C_STATE_HOME + HOME point at the empty temp dir so the
+           new repo-fingerprint fallback (C2C_MCP_BROKER_ROOT unset) resolves
+           to a path with no registry.json and never touches the real
+           ~/.c2c broker. *)
         let cmd =
           Printf.sprintf
             "printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
-             C2C_MCP_BROKER_ROOT C2C_POST_TOOL_FULL_INJECT=1 \
+             C2C_MCP_BROKER_ROOT C2C_STATE_HOME=%s HOME=%s \
+             C2C_POST_TOOL_FULL_INJECT=1 \
              C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
             (Filename.quote stdin_payload) (Filename.quote dir)
+            (Filename.quote dir) (Filename.quote dir)
             (Filename.quote built_inbox_hook) (Filename.quote out)
             (Filename.quote err)
         in
@@ -320,11 +326,14 @@ let test_hook_extracts_session_from_truncated_large_payload () =
           String.sub stdin_payload 0 (String.length stdin_payload - 8)
         in
         write_file input truncated;
+        (* Hermetic: C2C_STATE_HOME + HOME redirect the repo-fingerprint
+           fallback into the empty temp dir (see the sibling hook test). *)
         let cmd =
           Printf.sprintf
             "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
-             C2C_POST_TOOL_FULL_INJECT=1 \
+             C2C_STATE_HOME=%s HOME=%s C2C_POST_TOOL_FULL_INJECT=1 \
              C2C_SESSIONS_BROKER_ROOT=%s %s < %s > %s 2> %s"
+            (Filename.quote dir) (Filename.quote dir)
             (Filename.quote dir) (Filename.quote built_inbox_hook)
             (Filename.quote input) (Filename.quote out) (Filename.quote err)
         in
@@ -415,11 +424,16 @@ let test_hook_rejects_invalid_stdin_session_id () =
           Printf.sprintf {|{"session_id":%S,"hook_event_name":"PostToolUse"}|}
             ("../" ^ escaped_name)
         in
+        (* Hermetic: C2C_STATE_HOME + HOME redirect the repo-fingerprint
+           fallback into the empty temp dir (invalid session_id exits before
+           the drain, but keep the sandbox uniform + defensive). *)
         let cmd =
           Printf.sprintf
             "printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
-             C2C_MCP_BROKER_ROOT C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
+             C2C_MCP_BROKER_ROOT C2C_STATE_HOME=%s HOME=%s \
+             C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
             (Filename.quote stdin_payload) (Filename.quote dir)
+            (Filename.quote dir) (Filename.quote dir)
             (Filename.quote built_inbox_hook) (Filename.quote out)
             (Filename.quote err)
         in
