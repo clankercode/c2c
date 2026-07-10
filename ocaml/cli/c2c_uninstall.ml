@@ -161,7 +161,7 @@ let remove_shared_block ~dry_run ~begin_marker ~end_marker ?legacy_marker path =
 (* Claude settings.json hook cleanup *)
 (* -------------------------------------------------------------------------- *)
 
-let remove_claude_settings_hooks ~dry_run path hook_script stop_hook_script =
+let remove_claude_settings_hooks ~dry_run path c2c_scripts =
   if not (Sys.file_exists path) then None
   else
     match read_json_opt path with
@@ -181,7 +181,7 @@ let remove_claude_settings_hooks ~dry_run path hook_script stop_hook_script =
                                | `Assoc hf ->
                                    (match List.assoc_opt "command" hf with
                                     | Some (`String cmd) ->
-                                        cmd <> hook_script && cmd <> stop_hook_script
+                                        not (List.mem cmd c2c_scripts)
                                     | _ -> true)
                                | _ -> true)
                             hs
@@ -214,7 +214,7 @@ let remove_claude_settings_hooks ~dry_run path hook_script stop_hook_script =
                      List.map
                        (fun (k, v) ->
                           match k, v with
-                          | ("PostToolUse" | "Stop"), `List entries ->
+                          | ("PostToolUse" | "Stop" | "SessionStart" | "SessionEnd"), `List entries ->
                               let filtered = filter_hook_commands entries in
                               if List.length filtered <> List.length entries then changed := true;
                               (k, `List filtered)
@@ -368,6 +368,7 @@ let recompute_claude_artifacts ~target_dir =
   let settings = claude_dir // "settings.json" in
   let hook_script = claude_dir // "hooks" // "c2c-inbox-check.sh" in
   let stop_hook_script = claude_dir // "hooks" // "c2c-stop-deliver.sh" in
+  let session_hook_script = claude_dir // "hooks" // "c2c-session-hook.sh" in
   let skill_path = claude_dir // "skills" // "c2c" // "SKILL.md" in
   let shared =
     (if Sys.file_exists project_mcp then
@@ -380,6 +381,7 @@ let recompute_claude_artifacts ~target_dir =
   let owned =
     [ C2c_install_manifest.owned_file hook_script
     ; C2c_install_manifest.owned_file stop_hook_script
+    ; C2c_install_manifest.owned_file session_hook_script
     ; C2c_install_manifest.owned_file skill_path
     ]
   in
@@ -553,7 +555,9 @@ let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
           let claude_dir = C2c_setup.resolve_claude_dir () in
           let hook_script = claude_dir // "hooks" // "c2c-inbox-check.sh" in
           let stop_hook_script = claude_dir // "hooks" // "c2c-stop-deliver.sh" in
-          remove_claude_settings_hooks ~dry_run settings hook_script stop_hook_script
+          let session_hook_script = claude_dir // "hooks" // "c2c-session-hook.sh" in
+          remove_claude_settings_hooks ~dry_run settings
+            [ hook_script; stop_hook_script; session_hook_script ]
       | None -> None
     else None
   in

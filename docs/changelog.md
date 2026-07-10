@@ -9,6 +9,23 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Claude Code session-lifecycle hooks (`c2c hook claude`)** — closes four
+  codex/claude parity gaps at once. `c2c install claude` now writes
+  `~/.claude/hooks/c2c-session-hook.sh` and registers it under SessionStart +
+  SessionEnd in `~/.claude/settings.json` (no matcher, so every SessionStart
+  source — startup/resume/clear/compact — fires). On SessionStart the hook
+  resolves identity env-first (a managed session's `C2C_MCP_SESSION_ID`
+  registration always wins; vanilla sessions auto-register their claude UUID
+  with a generated `claude-*` alias and get onboarding text), refreshes the
+  `/c2c` skill from the embedded blob, injects cold-boot context (#317,
+  once-per-session marker) plus post-compact context when `source=compact`,
+  and drains queued messages (repo + global brokers; skipped for
+  channel-capable managed sessions). SessionEnd deregisters only
+  `claude-hook` auto-registrations — managed/MCP identities are never
+  touched. `c2c uninstall claude` strips the new script + settings entries;
+  `c2c doctor hooks` dangle-checks them automatically. Same safety contract
+  as `c2c hook codex`: alarm-capped, subagent-quiet guard, errors exit 0
+  with empty stdout.
 - **Codex /c2c skill install + auto-update** — `c2c install codex` now writes
   the embedded `/c2c` skill to `~/.codex/skills/c2c/SKILL.md` (same canonical
   blob as the Claude skill), records it in the install manifest so
