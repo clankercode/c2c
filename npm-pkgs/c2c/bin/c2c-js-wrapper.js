@@ -19,7 +19,7 @@ function packageManagerForWrapper(selfPath, env = process.env) {
     return "bun";
   }
 
-  const normalizedPath = selfPath.replace(/\\\\/g, "/").toLowerCase();
+  const normalizedPath = selfPath.replace(/\\/g, "/").toLowerCase();
   if (normalizedPath.includes("/.bun/install/global/")) {
     return "bun";
   }
@@ -64,4 +64,8 @@ function main() {
   process.exit(result.status === null ? 1 : result.status);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { executableForWrapper, packageManagerForWrapper, main };
