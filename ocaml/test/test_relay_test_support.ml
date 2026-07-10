@@ -458,24 +458,85 @@ let test_connector_poll_messages_wrong_type () =
             (Sys.file_exists
                (Filename.concat broker_root (sm_session ^ ".inbox.json")))))
 
-(* FIXME(F5c dishonest cell — rows B095/B238): poll_inbox rows that are
-   missing every required message key ({"bogus":1}) are accepted VERBATIM:
-   the connector appends them to <session>.inbox.json unvalidated and
-   counts them in inbound_delivered (garbage-as-success). Worse, the
-   poisoned inbox then makes C2c_broker's message parsing
-   (message_of_json: member "from_alias" |> to_string) raise Type_error
-   for the whole file on the next broker read. The connector's poll path
-   (c2c_relay_connector.ml, sync step 3) needs a per-row schema check
-   (drop-and-log or dead-letter) before append_to_local_inbox. Verified
-   dishonest on 2026-07-10 against fbb16453; skipped until the connector
-   validates rows — coordinator to slice the fix. *)
-let test_connector_poll_garbage_rows_SKIPPED_dishonest () =
-  (* Reproduce recipe (verified 2026-07-10 on fbb16453 base): scripted
-       /register -> {"ok":true,"result":"ok"}
-       /poll_inbox -> {"ok":true,"messages":[{"bogus":1}]}
-     then run_sync — observed: inbound_delivered=1, last_error=None, and
-     <session>.inbox.json contains [{"bogus":1}] verbatim. *)
-  Alcotest.skip ()
+(* H9 fix (rows B095/B238; closes the F5c dishonest cell): poll_inbox rows
+   that fail the minimum broker-inbox contract — string from_alias /
+   to_alias / content, exactly what C2c_broker.message_of_json REQUIRES —
+   are dropped BEFORE append_to_local_inbox, with the drop recorded as a
+   poll_inbox sync error. Valid rows in the same batch still deliver
+   (partial-batch delivery); dropped rows never count in
+   inbound_delivered; and the local inbox file stays parseable by the
+   broker layer. Pre-fix (verified dishonest 2026-07-10 on fbb16453),
+   garbage rows were appended verbatim, counted as delivered with
+   last_error=None, and one such row made C2c_broker.load_inbox raise
+   Yojson Type_error for the WHOLE inbox on every subsequent read. *)
+let h9_good_row =
+  `Assoc
+    [ ("from_alias", `String "f5c-sm-peer");
+      ("to_alias", `String sm_alias);
+      ("content", `String "valid-row");
+      ("ts", `Float 1700000003.0);
+      ("message_id", `String "m-h9-good") ]
+
+let test_connector_poll_garbage_rows_dropped () =
+  let poll_body =
+    Yojson.Safe.to_string
+      (`Assoc
+        [ ("ok", `Bool true);
+          ("messages",
+           `List
+             [ `Assoc [ ("bogus", `Int 1) ] (* no required key at all *);
+               h9_good_row;
+               `Assoc
+                 [ ("from_alias", `Int 7) (* wrong-typed sender *);
+                   ("to_alias", `String sm_alias);
+                   ("content", `String "wrong-typed from_alias") ];
+             ]) ])
+  in
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response {|{"ok":true,"result":"ok"}|} ];
+      S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response poll_body ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "registered" [ sm_alias ] r.registered;
+          check int "only the valid row delivered" 1 r.inbound_delivered;
+          check int "both garbage rows counted as rejected" 2
+            r.inbound_rejected;
+          (match r.last_error with
+           | Some e ->
+               check string "dropped rows recorded as poll_inbox error"
+                 "poll_inbox" e.C2c_relay_connector.err_op
+           | None -> fail "dropped rows must record a sync error");
+          let inbox_path =
+            Filename.concat broker_root (sm_session ^ ".inbox.json")
+          in
+          check bool "inbox file written for the valid row" true
+            (Sys.file_exists inbox_path);
+          (match Yojson.Safe.from_file inbox_path with
+           | `List [ row ] ->
+               check bool "inbox contains exactly the valid row verbatim"
+                 true (row = h9_good_row)
+           | other ->
+               fail
+                 ("inbox file must hold only the valid row, got: "
+                  ^ Yojson.Safe.to_string other));
+          (* End-to-end honesty: the file the connector wrote must be
+             readable by the broker layer (the pre-fix poisoned file made
+             this raise Yojson Type_error). *)
+          let broker = C2c_mcp.Broker.create ~root:broker_root in
+          match C2c_mcp.Broker.read_inbox broker ~session_id:sm_session with
+          | [ msg ] ->
+              check string "broker parses the delivered row" "valid-row"
+                msg.C2c_mcp.content
+          | msgs ->
+              fail
+                (Printf.sprintf "broker read %d messages, expected 1"
+                   (List.length msgs))))
 
 let test_connector_non_object_response_start_once () =
   (* B249/B093: a non-object JSON answer (here to /register) currently
@@ -867,9 +928,8 @@ let () =
           test_case "connector: poll messages wrong-typed -> zero delivered"
             `Quick test_connector_poll_messages_wrong_type;
           test_case
-            "connector: poll rows missing keys [SKIP: dishonest — delivered \
-             verbatim, poisons local inbox; see FIXME]"
-            `Quick test_connector_poll_garbage_rows_SKIPPED_dishonest;
+            "connector: poll garbage rows dropped, valid rows delivered (H9)"
+            `Quick test_connector_poll_garbage_rows_dropped;
           test_case "connector: non-object response -> start --once exit 1"
             `Quick test_connector_non_object_response_start_once ] );
       ( "fake/real equality (F5c)",

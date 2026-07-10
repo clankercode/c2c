@@ -50,6 +50,7 @@ type sync_result = {
   outbox_failed : int;
   outbox_dlqed : int;  (* entries moved to local DLQ this sync *)
   inbound_delivered : int;
+  inbound_rejected : int;  (* H9: schema-invalid poll rows dropped this sync *)
   alerts_emitted : int;  (* B010: c2c-system alert messages injected this sync *)
   last_error : sync_error option;
 }
@@ -428,6 +429,7 @@ type connector_state = {
   cs_outbox_failed : int;
   cs_outbox_dlqed : int;
   cs_inbound_delivered : int;
+  cs_inbound_rejected : int;  (* H9: schema-invalid poll rows dropped *)
 }
 
 let write_connector_state broker_root (result : sync_result) =
@@ -464,6 +466,7 @@ let write_connector_state broker_root (result : sync_result) =
     ; ("outbox_failed", `Int result.outbox_failed)
     ; ("outbox_dlqed", `Int result.outbox_dlqed)
     ; ("inbound_delivered", `Int result.inbound_delivered)
+    ; ("inbound_rejected", `Int result.inbound_rejected)
     ] @ err_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
@@ -503,6 +506,7 @@ let read_connector_state broker_root : connector_state option =
         cs_outbox_failed = get_int "outbox_failed";
         cs_outbox_dlqed = get_int "outbox_dlqed";
         cs_inbound_delivered = get_int "inbound_delivered";
+        cs_inbound_rejected = get_int "inbound_rejected";
       }
 
 (** Write a minimal connector-state.json recording that a sync raised an
@@ -528,6 +532,7 @@ let write_connector_state_error broker_root ~op ~detail =
     ; ("outbox_failed", `Int 0)
     ; ("outbox_dlqed", `Int 0)
     ; ("inbound_delivered", `Int 0)
+    ; ("inbound_rejected", `Int 0)
     ; ("last_error_op", `String op)
     ; ("last_error_detail", `String detail)
     ; ("last_error_ts", `Float now)
@@ -737,6 +742,31 @@ let json_list_member ~key json =
   match Yojson.Safe.Util.member key json with
   | `List lst -> lst
   | _ -> []
+
+(* H9 (rows B095/B238): minimum deliverable-row contract for relay-pulled
+   inbound rows. Mirrors exactly what [C2c_broker.message_of_json] REQUIRES:
+   string [from_alias] / [to_alias] / [content] ([member .. |> to_string]
+   raises Yojson Type_error on anything else); every other field is
+   optional-with-default there (ts/deferrable/ephemeral/reply_via/
+   enc_status/message_id). A row failing this check must never reach
+   [append_to_local_inbox] — pre-H9 one such row wedged EVERY broker-side
+   read of that session's inbox.
+
+   Design note (drop-and-log vs dead-letter): rejected rows are dropped
+   with a recorded [poll_inbox] sync error + [inbound_rejected] counter in
+   connector-state, NOT dead-lettered. The connector's existing DLQ
+   ([append_dlq_entry] / remote-outbox-dlq.jsonl) is typed for OUTBOUND
+   outbox entries (ob_from/ob_to/ob_content) and doesn't fit arbitrary
+   inbound JSON; a schema-invalid row also carries no trustworthy fields
+   to key a retry on. If forensics ever need the raw rows, the upgrade
+   path is a sibling inbound-DLQ jsonl file fed here. *)
+let inbound_row_is_deliverable = function
+  | `Assoc fields ->
+      let is_str k =
+        match List.assoc_opt k fields with Some (`String _) -> true | _ -> false
+      in
+      is_str "from_alias" && is_str "to_alias" && is_str "content"
+  | _ -> false
 
 
 
@@ -1056,23 +1086,48 @@ let sync (t : t) : sync_result Lwt.t =
   in
   write_outbox t.broker_root (List.rev remaining_outbox);
 
-  (* 3. Poll inbound for registered sessions *)
-  let inbound_delivered, poll_errors =
-    List.fold_left (fun (delivered, errs) (session_id, alias, _) ->
+  (* 3. Poll inbound for registered sessions. H9: validate each row against
+     the minimum broker-inbox contract BEFORE it touches the local inbox
+     file; drop-and-log invalid rows (see [inbound_row_is_deliverable]) so a
+     misbehaving relay can neither inflate [inbound_delivered] nor poison
+     the local inbox. Partial-batch delivery: valid rows in a batch with
+     invalid siblings still deliver. *)
+  let inbound_delivered, inbound_rejected, poll_errors =
+    List.fold_left (fun (delivered, rejected, errs) (session_id, alias, _) ->
       if List.mem session_id t.registered then
         let json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
         note_observation ~sender:None json;
         let msgs = json_list_member ~key:"messages" json in
-        if msgs <> [] then
-          delivered + append_to_local_inbox t.broker_root session_id msgs, errs
+        if msgs <> [] then begin
+          let deliverable, bad = List.partition inbound_row_is_deliverable msgs in
+          let errs =
+            if bad = [] then errs
+            else
+              let sample = Yojson.Safe.to_string (`List bad) in
+              let sample =
+                if String.length sample > 512 then String.sub sample 0 512 ^ "..."
+                else sample
+              in
+              let detail = Printf.sprintf
+                "dropped %d schema-invalid inbound row(s) of %d for %s: %s"
+                (List.length bad) (List.length msgs) alias sample
+              in
+              ("poll_inbox", detail) :: errs
+          in
+          let delivered =
+            if deliverable = [] then delivered
+            else delivered + append_to_local_inbox t.broker_root session_id deliverable
+          in
+          delivered, rejected + List.length bad, errs
+        end
         else if json_bool_member ~key:"ok" json then
-          delivered, errs
+          delivered, rejected, errs
         else
           let detail = Yojson.Safe.to_string json in
-          delivered, ("poll_inbox", detail) :: errs
+          delivered, rejected, ("poll_inbox", detail) :: errs
       else
-        delivered, errs
-    ) (0, []) regs
+        delivered, rejected, errs
+    ) (0, 0, []) regs
   in
 
   let last_error = match reg_errors @ send_errors @ poll_errors with
@@ -1104,6 +1159,7 @@ let sync (t : t) : sync_result Lwt.t =
     outbox_dlqed = dlqed;
     alerts_emitted;
     inbound_delivered;
+    inbound_rejected;
     last_error;
   }
 
@@ -1138,13 +1194,14 @@ let run (t : t) : unit =
                   String.sub e.err_detail 0 80 ^ "..."
                 else e.err_detail)
         in
-        Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d alerts=%d%s\n%!"
+        Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s\n%!"
           (List.length result.registered)
           (List.length result.heartbeated)
           result.outbox_forwarded
           result.outbox_failed
           result.outbox_dlqed
           result.inbound_delivered
+          result.inbound_rejected
           result.alerts_emitted
           err_str
       with exn ->
@@ -1191,13 +1248,14 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
             | None -> ""
             | Some e -> Printf.sprintf " [%s: %s]" e.err_op e.err_detail
           in
-          Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d alerts=%d%s\n%!"
+          Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s\n%!"
             (List.length result.registered)
             (List.length result.heartbeated)
             result.outbox_forwarded
             result.outbox_failed
             result.outbox_dlqed
             result.inbound_delivered
+            result.inbound_rejected
             result.alerts_emitted
             err_str;
           (* B087: never exit 0 when the sync pass recorded a relay-level
