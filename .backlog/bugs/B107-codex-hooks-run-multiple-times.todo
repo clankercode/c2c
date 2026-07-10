@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B107
+priority: high
+status: pending
+tags: []
+title: Codex hooks run multiple times per group of tool calls which is not ideal (since they all run in quick succession). it would be nice if they were debounced or sometihng.
+---
+
+Codex hooks run multiple times per group of tool calls which is not ideal (since they all run in quick succession). it would be nice if they were debounced or sometihng.
