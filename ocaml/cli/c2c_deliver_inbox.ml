@@ -588,6 +588,22 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
         ~watched_pid
         ~poll_interval:args.interval
         ~max_iterations:args.max_iterations
+  | C2c_pty_inject.Mode_wake_inject ->
+      (* codex-wake-inject: watch the inbox and nudge the session's tmux/herdr
+         pane when idle. NEVER drains — the codex UserPromptSubmit hook does
+         the actual delivery on the injected turn. When the session has no
+         registered wake target (not in tmux/herdr) the injector no-ops with
+         skip reasons; nothing else to do for idle codex. *)
+      Printf.printf
+        "[c2c-deliver-inbox] wake-inject: watching %s for %s (tmux/herdr \
+         nudge only; codex hooks deliver bodies)\n%!"
+        args.broker_root session_id;
+      C2c_wake_inject.watch_loop
+        ~broker_root:args.broker_root
+        ~session_id
+        ?watched_pid
+        ?max_iterations:args.max_iterations
+        ()
   | C2c_pty_inject.Mode_poll ->
             let iterations = ref 0 in
             let total_delivered = ref 0 in

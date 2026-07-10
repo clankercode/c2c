@@ -74,19 +74,25 @@ let with_ctx f =
 
 (* Run `c2c hook codex` hermetically: env -i wipes any ambient
    CLAUDE_*/C2C_* identity leaking in from the session running the tests. *)
-let run_hook ctx ~payload =
+let run_hook ?(extra_env = []) ctx ~payload =
   let dir = Filename.dirname ctx.home in
   let payload_path = dir // "payload.json" in
   let out_path = dir // "hook.out" in
   let err_path = dir // "hook.err" in
   write_file payload_path payload;
+  let extra =
+    String.concat " "
+      (List.map (fun (k, v) -> Printf.sprintf "%s=%s" k (Filename.quote v))
+         extra_env)
+  in
   let cmd =
     Printf.sprintf
-      "env -i HOME=%s PATH=%s C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s %s hook codex < %s > %s 2> %s"
+      "env -i HOME=%s PATH=%s C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s %s %s hook codex < %s > %s 2> %s"
       (Filename.quote ctx.home)
       (Filename.quote (Sys.getenv "PATH"))
       (Filename.quote ctx.broker_root)
       (Filename.quote ctx.global_root)
+      extra
       (Filename.quote c2c_binary)
       (Filename.quote payload_path)
       (Filename.quote out_path)
@@ -411,6 +417,86 @@ let test_session_start_wake_note () =
            (contains ~haystack:context ~needle:"zz-codex-e2e-wake")
      | None -> failf "expected SessionStart wake note, got: %S (stderr %S)" stdout stderr))
 
+(* --- wake-target capture (codex-wake-inject) ---------------------------------
+
+   The hook runs with the codex process's env, so $TMUX/$TMUX_PANE and
+   $HERDR_PANE_ID / $HERDR_SOCKET_PATH identify the pane. Captured on fresh
+   auto-register and refreshed on SessionStart; mid-turn events never touch
+   the stored targets, and a fire from outside tmux/herdr preserves them. *)
+
+let tmux_env pane =
+  [ ("TMUX", "/tmp/tmux-1000/default,1234,0"); ("TMUX_PANE", pane) ]
+
+let herdr_env ~pane ~socket =
+  [ ("HERDR_PANE_ID", pane); ("HERDR_SOCKET_PATH", socket); ("HERDR_ENV", "1") ]
+
+let find_reg ctx sid =
+  List.find_opt
+    (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+    (C2c_mcp.Broker.list_registrations (broker ctx))
+
+let test_auto_register_captures_wake_targets () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-wake-capture" in
+    let rc, _stdout, stderr =
+      run_hook
+        ~extra_env:(tmux_env "%7" @ herdr_env ~pane:"w1:p9" ~socket:"/tmp/h.sock")
+        ctx ~payload:(payload ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    match find_reg ctx sid with
+    | None -> failf "expected auto-registration for %s (stderr %S)" sid stderr
+    | Some r ->
+        check (option string) "raw $TMUX_PANE captured" (Some "%7")
+          r.tmux_location;
+        check (option string) "herdr pane captured" (Some "w1:p9") r.herdr_pane;
+        check (option string) "herdr socket captured" (Some "/tmp/h.sock")
+          r.herdr_socket)
+
+let test_session_start_refreshes_wake_targets () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-wake-refresh" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-e2e-wakereg");
+    (* SessionStart in a tmux pane captures the target. *)
+    let rc, _, _ =
+      run_hook ~extra_env:(tmux_env "%3") ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "first SessionStart exit 0" 0 rc;
+    (match find_reg ctx sid with
+     | Some r -> check (option string) "captured on SessionStart" (Some "%3")
+                   r.tmux_location
+     | None -> fail "registration vanished");
+    (* Session moved panes: next SessionStart updates the target. *)
+    let rc2, _, _ =
+      run_hook ~extra_env:(tmux_env "%8") ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "second SessionStart exit 0" 0 rc2;
+    (match find_reg ctx sid with
+     | Some r -> check (option string) "pane move tracked" (Some "%8")
+                   r.tmux_location
+     | None -> fail "registration vanished");
+    (* Mid-turn PostToolUse with a different pane env must NOT touch it. *)
+    let rc3, _, _ =
+      run_hook ~extra_env:(tmux_env "%9") ctx
+        ~payload:(payload ~session_id:sid ())
+    in
+    check int "PostToolUse exit 0" 0 rc3;
+    (match find_reg ctx sid with
+     | Some r -> check (option string) "mid-turn fire leaves target" (Some "%8")
+                   r.tmux_location
+     | None -> fail "registration vanished");
+    (* SessionStart from outside tmux/herdr preserves the stored target. *)
+    let rc4, _, _ =
+      run_hook ctx ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "bare SessionStart exit 0" 0 rc4;
+    match find_reg ctx sid with
+    | Some r ->
+        check (option string) "target never cleared" (Some "%8") r.tmux_location
+    | None -> fail "registration vanished")
+
 let test_malformed_payloads_are_silent () =
   with_ctx (fun ctx ->
     List.iter
@@ -448,6 +534,10 @@ let () =
         ; test_case "deferrable held until turn boundary" `Quick
             test_deferrable_held_until_turn_boundary
         ; test_case "session-start wake note" `Quick test_session_start_wake_note
+        ; test_case "auto-register captures wake targets" `Quick
+            test_auto_register_captures_wake_targets
+        ; test_case "SessionStart refreshes wake targets" `Quick
+            test_session_start_refreshes_wake_targets
         ; test_case "malformed payloads are silent" `Quick
             test_malformed_payloads_are_silent
         ] )

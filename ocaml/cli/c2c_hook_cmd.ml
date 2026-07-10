@@ -373,6 +373,20 @@ let hook_codex_cmd =
                          ~session_id:sid ~alias ~client:(Some "codex"));
                   (sid, Some alias))
        in
+       (* Wake-target capture (codex-wake-inject): the hook runs with the
+          codex process's env, so $TMUX/$TMUX_PANE and $HERDR_PANE_ID /
+          $HERDR_SOCKET_PATH identify this session's pane for BOTH vanilla
+          and managed sessions. Refresh on session boundaries (SessionStart —
+          sessions move panes) and on fresh auto-register so the wake
+          injector can nudge an idle session. update_wake_targets is
+          Some-overwrites / None-preserves and total. *)
+       (if event = "SessionStart" || Option.is_some onboarded_alias then begin
+          let tmux_location, herdr_pane, herdr_socket =
+            C2c_wake_inject.wake_targets_from_env ()
+          in
+          C2c_mcp.Broker.update_wake_targets broker ~session_id
+            ~tmux_location ~herdr_pane ~herdr_socket ()
+        end);
        (* Drain. Turn boundaries (SessionStart / UserPromptSubmit) deliver
           everything including deferrable messages; mid-turn events
           (PostToolUse / PreToolUse) deliver only push (non-deferrable)

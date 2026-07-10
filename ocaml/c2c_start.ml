@@ -3990,9 +3990,27 @@ let codex_hooks_installed ?config_path () : bool =
         !found)
     with _ -> false
 
+(* codex-wake-inject: true when the instance's broker registration carries a
+   wake target (tmux_location or herdr_pane) that the wake injector can nudge.
+   Managed instances register with session_id = name. Total: any failure
+   (no broker, no registration) reads as "no wake target". *)
+let codex_wake_target_registered ~(name : string) () : bool =
+  try
+    let root = C2c_repo_fp.resolve_broker_root () in
+    let broker = C2c_mcp.Broker.create ~root in
+    match
+      List.find_opt
+        (fun (r : C2c_mcp.registration) -> r.session_id = name)
+        (C2c_mcp.Broker.list_registrations broker)
+    with
+    | Some r -> r.tmux_location <> None || r.herdr_pane <> None
+    | None -> false
+  with _ -> false
+
 let delivery_mode ?(now = Unix.gettimeofday ()) ?(startup_grace_s = 60.0)
     ?(opencode_plugin_freshness_window_s = 60.0) ?available_capabilities
     ?codex_hooks_installed:codex_hooks_installed_override
+    ?codex_wake_target:codex_wake_target_override
     ~(client : string) ~(name : string) ~(binary_path : string)
     ~(start_time : float option) () : string =
   let caps =
@@ -4021,13 +4039,23 @@ let delivery_mode ?(now = Unix.gettimeofday ()) ?(startup_grace_s = 60.0)
   | "codex" ->
       (* Hooks (config.toml, `c2c hook codex`) are the codex delivery path;
          the old xml_fd sideband is gone (upstream removed --xml-input-fd)
-         and PTY notify was never actually wired for codex. *)
+         and PTY notify was never actually wired for codex.
+         "hooks+wake" (codex-wake-inject): hooks installed AND the broker
+         registration carries a tmux/herdr wake target — idle sessions get a
+         wake nudge from the sidecar watcher, then the hook drains. *)
       let hooks_present =
         match codex_hooks_installed_override with
         | Some b -> b
         | None -> codex_hooks_installed ()
       in
-      if hooks_present then "hooks" else "unavailable"
+      if not hooks_present then "unavailable"
+      else
+        let wake_target =
+          match codex_wake_target_override with
+          | Some b -> b
+          | None -> codex_wake_target_registered ~name ()
+        in
+        if wake_target then "hooks+wake" else "hooks"
   | "codex-headless" ->
       if has C2c_capability.Codex_headless_thread_id_fd then "xml_fifo"
       else "unavailable"
