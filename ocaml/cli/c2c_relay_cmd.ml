@@ -1353,16 +1353,16 @@ let relay_subscribe_cmd =
       exit 1
   | Some url ->
       let uri = Uri.of_string url in
-      let scheme = Uri.scheme uri in
-      if scheme = Some "https" || scheme = Some "wss" then begin
-        (* B090: the previous hint routed users at `relay connect` for HTTPS
-           fallback, but that connector is broken against the public HTTPS
-           relay (B087). Point users at the polling path that actually works
-           today. *)
+      (* Scheme support is decided by Relay_doctor.subscribe_url_supported — the
+         SAME predicate `c2c doctor --relay`'s capability matrix consults — so
+         the advertised `subscribe` capability always matches this actual
+         attempt (B090/B093 actual-attempt parity). TLS WebSocket (wss/https)
+         is not yet implemented. *)
+      if not (Relay_doctor.subscribe_url_supported url) then begin
         Printf.eprintf
           "error: c2c relay subscribe does not support TLS WebSocket URLs yet.\n\
            hint: use an http:// relay URL, or poll DMs via `c2c relay dm --alias <you> poll`.\n\
-           note: the `relay connect` bridge is broken against HTTPS relays (B087); polling is the reliable receive path today.\n%!";
+           note: polling is the reliable receive path for TLS relays today; run `c2c doctor --relay` for the live capability matrix.\n%!";
         exit 1
       end;
       (* Load identity for signing *)
