@@ -65,6 +65,14 @@ let backoff_s () = float_env "C2C_WAKE_BACKOFF_S" 120.0
    once the session goes idle). *)
 let watch_poll_s () = float_env "C2C_WAKE_POLL_S" 20.0
 
+(* Pause between typing the nudge text and sending Enter. Agent TUIs
+   paste-detect rapid input: text+Enter arriving in the same burst is
+   treated as a paste and the Enter becomes a newline instead of a submit
+   (live-caught 2026-07-10 — the nudge sat unsubmitted in the codex
+   composer; an Enter sent later submitted fine). Same reason the legacy
+   pty_inject path did "bracketed paste + delay + Enter". *)
+let enter_delay_s () = float_env "C2C_WAKE_ENTER_DELAY_S" 0.35
+
 (* ---------------------------------------------------------------------------
  * Wake-target selection
  * --------------------------------------------------------------------------- *)
@@ -370,6 +378,11 @@ let inject_via_backend ~count = function
          only disables CSI-u encoding for other panes until reset. *)
       if run_command [ "tmux"; "send-keys"; "-l"; "-t"; target; nudge_text ~count ]
       then begin
+        (* Let the TUI's paste-detection window expire before Enter, or the
+           Enter is coalesced into the text burst as a newline (see
+           enter_delay_s). Skipped in fixture mode — no real TUI. *)
+        (if fixture_path () = None then
+           try Unix.sleepf (enter_delay_s ()) with _ -> ());
         let prev =
           match run_command_capture [ "tmux"; "show"; "-sv"; "extended-keys" ] with
           | Some v when String.trim v <> "" -> String.trim v
