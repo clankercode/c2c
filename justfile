@@ -485,6 +485,7 @@ install-all: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
       cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server; \
       cp _build/default/ocaml/server/c2c_mcp_server_inner_bin.exe ~/.local/bin/c2c-mcp-inner; \
       cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml; \
+      cp _build/default/ocaml/tools/c2c_stop_hook.exe ~/.local/bin/c2c-stop-hook-ocaml; \
       cp _build/default/ocaml/tools/c2c_cold_boot_hook.exe ~/.local/bin/c2c-cold-boot-hook; \
       cp _build/default/ocaml/tools/c2c_post_compact_hook_bin.exe ~/.local/bin/c2c-post-compact-hook; \
       printf "#!/usr/bin/env bash\nset -euo pipefail\nexec \"%s/scripts/cc-quota\" \"\$@\"\n" "$PWD" > ~/.local/bin/cc-quota; \
