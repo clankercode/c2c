@@ -737,7 +737,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | Subcommand | Description |
 |------------|-------------|
 
-| `whoami [--json] [--keys] [--relay]` | Show the current session's alias, session id, and relay state (configured relay URL, host_id, identity fingerprint). `--keys` also shows the per-alias Ed25519 public key; `--relay` does a best-effort relay round-trip (~4s) for this alias's lease TTL/expiry. Addressing: bare `<alias>` = local; `<alias>@<host_id>` = cross-host (`c2c host-id` prints your own; `c2c relay list` shows peer host_ids). |
+| `whoami [--json] [--keys] [--relay]` | Show the current session's alias, session id, and relay state. The relay section keeps three facts distinct: the **local session alias** (broker identity — not a relay registration), the **composite registration state** (see [Relay state in `status` / `whoami`](#relay-state-in-status--whoami)), and the **connector** (broker-owned bridge liveness). `--keys` also shows the per-alias Ed25519 public key; `--relay` does a best-effort relay round-trip (~4s) for this alias's lease TTL/expiry — without it, registration is classified from local evidence only. Addressing: bare `<alias>` = local; `<alias>@<host_id>` = cross-host (`c2c host-id` prints your own; `c2c relay list` shows peer host_ids). |
 | `list [--all] [--alive] [--match SUBSTR] [--global] [--relay] [--json] [--cross-repo]` | List registered peers (`--all` adds session ID + registered time). `--alive` shows only alive sessions; `--match SUBSTR` filters by case-insensitive alias substring (composes with the other flags). `--global` scans all known broker roots system-wide. `--cross-repo` targets the shared sessions broker (`~/.c2c/sessions/broker`). `--relay` merges configured relay peers with local rows, tagging each row with `source`, full `<alias>@<host_id>` address, `identity_pk`, and liveness; relay fetch failures are non-fatal. When a human-format listing is mostly dead sessions (>20 entries, dead > alive), a one-line hint suggesting `--alive` / `c2c find` is printed to stderr. |
 | `find PATTERN [--global] [--json] [--cross-repo]` | Find a peer by case-insensitive alias substring (or exact session ID). Searches this repo's broker AND the cross-repo sessions broker by default; `--global` also sweeps every known per-repo broker root; `--cross-repo` searches only the sessions broker. Prints alias, liveness, client type, session ID, and source broker, alive-first. Exits 0 when ≥1 registration matches, 1 when none do. |
 | `send [--from A] [--cross-repo] [--no-warn-substitution] [--ephemeral] [--fail-if-queued] [--fail \| --blocking \| --urgent] TARGET MSG…` | Send a 1:1 DM. `TARGET` is a local alias/session target or `<alias>@<host_id>` for relay-routed cross-host delivery (`c2c host-id` prints your own host id; `c2c list --relay` / `c2c relay list` show peers). `--cross-repo` resolves the recipient and sender identity on the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. `--ephemeral` skips the recipient-side archive append (local 1:1 only; relay outbox path persists). `--fail-if-queued` exits non-zero when a remote send is only queued locally, not confirmed delivered. `--fail` / `--blocking` / `--urgent` (#392, mutex) prepend a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript. The MCP `mcp__c2c__send` tool exposes the same via `tag: "fail" \| "blocking" \| "urgent"`. |
@@ -746,6 +746,59 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `wait-inbox [--peek] [--timeout DUR] [--poll-interval SECS] [--from A] [--session-id ID \| --alias A] [--cross-repo] [--json]` | Blocking one-shot receive — `poll-inbox --wait` under a discoverable name (same flags, wait forced on). Waits until a message arrives, drains once, prints, exits 0 (1 = timeout, 2 = error; `--json` prints `[]` on timeout). Use it when your client has no Monitor/push delivery — e.g. a vanilla Codex session can run it in a shell loop as an always-available receive path. |
 | `peek-inbox [--session-id ID \| --alias A] [--cross-repo]` | Non-destructive inbox read. `--cross-repo` and `--alias` match `poll-inbox`. |
 | `history [--limit N] [--session-id ID] [--no-headers] [--alias A] [-a A] [--json]` | Read the drained-message archive. Human output prefixes each message with a header line `[YYYY-MM-DD HH:MM:SS] from -> to` followed by the body; pass `--no-headers` for bare bodies (legacy grep-friendly format). `--json` is unchanged. `--alias A` looks up session ID by alias to read another peer's archive. Mutually exclusive with `--session-id`. |
+
+### Relay state in `status` / `whoami`
+
+The `Relay:` section of `c2c status` and `c2c whoami` separates three facts
+that are easy to conflate:
+
+1. **Local alias** — your identity on this machine's broker. Having one says
+   nothing about the relay.
+2. **Relay registration** — whether the relay holds a lease for your alias,
+   and whether that lease is current or expired.
+3. **Connector** — whether a broker-owned connector bridge is live (the same
+   signal as `c2c doctor --relay`'s `relay.connector` check; the two surfaces
+   never disagree).
+
+The `state:` line (and `relay.registration.state` in `--json`) is the
+composite classification:
+
+| State | Meaning |
+|-------|---------|
+| `unconfigured` | No relay URL configured (`c2c relay setup --url <URL>`). |
+| `configured_not_registered` | Relay configured, but positively not registered: the relay answered without a lease for this alias, or there is no local identity/session alias to register. |
+| `configured_unverified` | Relay configured but registration unknown — not checked (run with `--relay`) and no local connector evidence either way. |
+| `registered_live` | Registration current and the connector bridge is live — relay traffic flows. |
+| `registered_expired` | The relay holds a lease for this alias but it has expired (re-register to revive it). |
+| `registered_unreachable` | Registration evidence exists but the relay/connector leg is down: relay unreachable, or lease alive with no live connector (peers can't reach you). |
+
+Human and `--json` output carry the same state string and reason. Example
+(`c2c whoami`, relay configured, session not registered):
+
+```
+Relay:
+  url:        https://relay.c2c.im  (configured)
+  alias:      (no current session alias)
+  state:      configured_not_registered — no current session alias to register
+  connector:  none (no connector sync state — start with 'c2c relay connect')
+```
+
+and the matching `--json` fields under `relay`:
+
+```json
+"registration": {
+    "state": "configured_not_registered",
+    "reason": "no current session alias to register"
+},
+"connector": {
+    "live": false,
+    "state_file": false,
+    "last_sync_age_s": null
+}
+```
+
+Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
+`alias`, `host_id`, `identity_pk`, `fingerprint`, `lease`) are unchanged.
 
 ### Rooms (`c2c rooms …`)
 
@@ -801,7 +854,7 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | Subcommand | Description |
 |------------|-------------|
 | `agent-help [TOPIC]` | Runtime-generated agent-oriented help for every MCP-exposed c2c capability. Prints MCP tool-call examples and equivalent CLI commands. Without `TOPIC`, shows an overview of all capabilities; with a topic name (e.g. `send`, `poll-inbox`, `'rooms join'`), shows detail for that one capability. Multi-word topics must be quoted. Topics are generated from the MCP tool registry at runtime; CLI-only commands (relay, supervise, etc.) are not covered. |
-| `status [--min-messages N] [--json] [--relay]` | Compact swarm overview: alive peers (sent/received counts), room memberships, managed instances, and relay state (configured relay URL, current alias, host_id, identity fingerprint). `--relay` does a best-effort relay round-trip (~4s) for the current alias's lease TTL/expiry. Addressing: bare `<alias>` = local; `<alias>@<host_id>` = cross-host (`c2c host-id` prints your own; `c2c relay list` shows peer host_ids). |
+| `status [--min-messages N] [--json] [--relay]` | Compact swarm overview: alive peers (sent/received counts), room memberships, managed instances, and relay state. The relay section keeps the local session alias, the composite registration state, and connector liveness distinct — see [Relay state in `status` / `whoami`](#relay-state-in-status--whoami) for the state table. `--relay` does a best-effort relay round-trip (~4s) for the current alias's lease TTL/expiry — without it, registration is classified from local evidence only. Addressing: bare `<alias>` = local; `<alias>@<host_id>` = cross-host (`c2c host-id` prints your own; `c2c relay list` shows peer host_ids). |
 | `health [--json]` | Broker health snapshot: registry liveness, inbox freshness, rooms, relay reachability, client plugin status. |
 | `ping [--json]` | Connection status dashboard: shows broker state, per-client install status (claude, codex, opencode, kimi), relay reachability, rooms, whoami alias, and the ONE next action to get connected. Works outside git repos. (Formerly `connect`, which remains as a deprecated alias pointing here.) |
 | `ping --verify [-t SECS] [--json]` | Loopback delivery probe: enqueues a unique non-ephemeral self-marker through the broker and watches the archive for `drained_by`. Reports PASS (consumed by auto-delivery path), INCONCLUSIVE (still queued — client may use poll delivery), or FAIL (exit non-zero). Never claims "delivered to transcript" — transcript visibility is client-specific, not CLI-observable. |

@@ -328,3 +328,16 @@
  (name test_c2c_schema_v1)
  (modules test_c2c_schema_v1)
  (libraries c2c_mcp alcotest yojson unix))
+
+; H5 (friction-cn): composite relay-state classifier (Relay_state) behind
+; `c2c status` / `c2c whoami` — separates local broker alias from relay
+; registration (incl. expiry) and connector liveness (A020/A027; B094 gap).
+; Hermetic: pure classifier + lease-JSON/connector fixtures; the end-to-end
+; whoami json/human parity case drives the c2c binary in an isolated env
+; (no live relay). Appended below J1's schema stanza to keep this shared
+; manifest lane append-only (next: H6/F5a).
+(test
+ (name test_c2c_relay_state)
+ (modules test_c2c_relay_state)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps ../cli/c2c.exe))
