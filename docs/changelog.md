@@ -9,6 +9,19 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Connector HTTP-status honesty** (H10, Q1-DEFECT-1) — the relay
+  connector's inline HTTP client now reconciles response bodies with the
+  HTTP status line (same four-branch contract H7 gave `Relay_client`): a
+  non-2xx response can never read as success, so a relay answering
+  HTTP 500 with a dishonest `{"ok":true}` body no longer makes
+  `c2c relay connect --once` report `registered=N` and exit 0 — the
+  failure is recorded per-op in `connector-state.json` and `--once`
+  exits 2. Honest non-2xx `ok:false` bodies pass through (own
+  `error_code` wins, `http_status` annotated), preserving the PoW-retry
+  and rate-limit flows. Response-classification helpers are also total
+  on non-object JSON now: a non-object relay response records a per-op
+  sync error instead of aborting the whole sync pass.
+
 - **Claude mid-turn delivery is now FULL-message by default** — the
   PostToolUse hook (standalone `c2c-inbox-hook-ocaml` and the
   `c2c hook post-tool` CLI fallback, now converged on shared

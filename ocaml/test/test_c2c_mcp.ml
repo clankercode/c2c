@@ -203,6 +203,60 @@ let test_read_inbox_is_non_destructive () =
       check string "second message content" "ping-two"
         (List.nth first 1).content)
 
+let test_load_inbox_skips_malformed_rows () =
+  (* H9 defense-in-depth: a poisoned inbox file (rows that fail
+     message_of_json — e.g. written by a pre-H9 relay connector, or by a
+     buggy/foreign writer) must degrade PER-ROW: bad rows are skipped and
+     logged, good rows still load. Pre-fix, load_inbox mapped
+     message_of_json over the whole file, so one bad row raised Yojson
+     Type_error through every broker-side inbox read for that session. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let path = Filename.concat dir "session-poisoned.inbox.json" in
+      let poisoned =
+        `List
+          [ `Assoc [ ("bogus", `Int 1) ];
+            `Assoc
+              [ ("from_alias", `String "alice");
+                ("to_alias", `String "bob");
+                ("content", `String "survivor");
+                ("ts", `Float 1700000000.0) ];
+            `Assoc
+              [ ("from_alias", `Int 7);
+                ("to_alias", `String "bob");
+                ("content", `String "wrong-typed sender") ];
+          ]
+      in
+      let oc = open_out path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+          Yojson.Safe.to_channel oc poisoned);
+      let inbox =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-poisoned"
+      in
+      check int "only the valid row loads" 1 (List.length inbox);
+      check string "valid row content intact" "survivor"
+        (List.hd inbox).content;
+      (* The skip is observable: broker.log records one event per bad row. *)
+      let log_path = Filename.concat dir "broker.log" in
+      check bool "broker.log written" true (Sys.file_exists log_path);
+      let ic = open_in log_path in
+      let log_text =
+        Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+            really_input_string ic (in_channel_length ic))
+      in
+      let count_occurrences needle haystack =
+        let nlen = String.length needle in
+        let hlen = String.length haystack in
+        let rec loop i acc =
+          if i + nlen > hlen then acc
+          else if String.sub haystack i nlen = needle then loop (i + 1) (acc + 1)
+          else loop (i + 1) acc
+        in
+        loop 0 0
+      in
+      check int "one inbox_row_skipped event per bad row" 2
+        (count_occurrences "inbox_row_skipped" log_text))
+
 (* ---------- inbox archive (v0.6.2) ---------- *)
 
 let test_drain_inbox_archives_messages_before_clearing () =
@@ -14711,6 +14765,8 @@ let () =
         ; test_case "blank inbox file treated as empty" `Quick test_blank_inbox_file_is_treated_as_empty
         ; test_case "read_inbox is non-destructive (gui --batch regression)" `Quick
             test_read_inbox_is_non_destructive
+        ; test_case "load_inbox skips malformed rows (H9 poisoned-inbox healing)" `Quick
+            test_load_inbox_skips_malformed_rows
          ; test_case "drain archives messages before clearing" `Quick
             test_drain_inbox_archives_messages_before_clearing
         ; test_case "empty drain does not create archive" `Quick
