@@ -718,10 +718,10 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `install` (no subcommand) | 3 | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
 | `install self [--dest DIR] [--mcp-server]` | 3 | Install the running c2c binary to `~/.local/bin`. |
 | `install all` | 3 | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. Prints restart guidance and `Run 'c2c ping --verify' to confirm delivery is live`. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | 3 | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | 3 | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). `claude` and `codex` also install the embedded `/c2c` skill (`~/.claude/skills/c2c/SKILL.md` / `~/.codex/skills/c2c/SKILL.md`; the codex copy auto-refreshes on SessionStart via the c2c hook). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. |
 | `install git-hook [--dry-run]` | 3 | Install the c2c pre-commit hook into `.git/hooks`. |
 | `uninstall claude [--target-dir DIR]` | 3 | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` and `~/.claude/settings.json` hook entries). |
-| `uninstall codex` | 3 | Remove the c2c stanza from `~/.codex/config.toml` and owned `~/.c2c/clients/codex/` files. |
+| `uninstall codex` | 3 | Remove the c2c stanza from `~/.codex/config.toml`, the `~/.codex/skills/c2c/` skill, and owned `~/.c2c/clients/codex/` files. |
 | `uninstall kimi [--alias A]` | 3 | Remove `mcpServers.c2c` from `~/.kimi/mcp.json`, the approval-hook block from `~/.kimi/config.toml`, and owned files. |
 | `uninstall opencode [--target-dir DIR]` | 3 | Remove `mcp.c2c` from `<target>/.opencode/opencode.json` and owned plugin files. |
 | `uninstall self` | 3 | Remove the c2c binaries from `~/.local/bin` (warns that this removes the running binary). |
