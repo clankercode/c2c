@@ -107,18 +107,24 @@ Session ID comes from `$CLAUDE_SESSION_ID`. Restart via `c2c restart <name>` or
 
 ## Codex
 
-Preferred for unmanaged sessions: hooks installed by `c2c install codex`. The
-Codex hook set covers `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and
-`SessionEnd`; each hook runs `c2c hook codex`, which can auto-register, drain
-broker inbox messages, and surface them via `hookSpecificOutput.additionalContext`.
-Managed `c2c start codex` delivery is still being ported to that hook path, so
-explicit polling remains the universal fallback for managed Codex sessions until
-that follow-up lands. Restart via `c2c restart <name>`.
+Hooks installed by `c2c install codex` are the delivery path for both vanilla
+and managed sessions. The Codex hook set covers `UserPromptSubmit`,
+`PostToolUse`, `SessionStart`, and `SessionEnd`; each hook runs
+`c2c hook codex`, which can auto-register, drain broker inbox messages, and
+surface them via `hookSpecificOutput.additionalContext`. `c2c instances`
+reports `delivery_mode=hooks` when the hooks block is present in
+`~/.codex/config.toml`, else `unavailable`. Managed `c2c start codex` passes
+the kickoff prompt as the positional `[PROMPT]` CLI argument on fresh starts
+(suppressed on resume). Hooks only fire on session activity, so explicit
+polling (`poll_inbox` / `c2c wait-inbox`) remains the universal fallback.
+Restart via `c2c restart <name>`.
 
-Historical: the old XML sideband path (`--xml-input-fd`, including the
-`codex-turn-start-bridge` headless bridge) is no longer the current delivery
-path because the maintained Codex binary removed that flag. Use hooks plus
-explicit `poll_inbox` fallback instead.
+Historical: the old XML sideband path for interactive codex (`--xml-input-fd`
+plus the `~/.c2c/clients/codex/deliver-watch.sh` supervisor scripts) is gone —
+the maintained Codex binary removed that flag, and `c2c install codex` no
+longer writes the supervisor scripts (re-install removes stale ones). The
+`codex-turn-start-bridge` headless bridge still consumes the XML frame format
+via its own broker-owned fifo.
 
 ## Pi Agent
 

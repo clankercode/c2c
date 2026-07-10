@@ -139,7 +139,9 @@ let deliver_watch_cmd =
     `P "c2c deliver --watch polls the broker inbox continuously.";
     `S "OUTPUT MODES";
     `P "Default: one line per message: [from_alias] body";
-    `P "--xml-fd N: XML frames matching Codex --xml-input-fd contract.";
+    `P "--xml-fd N: XML frames in the legacy Codex sideband format (the \
+        upstream --xml-input-fd consumer was removed; the codex-headless \
+        bridge still reads this frame format).";
   ] in
   let info = Cmdliner.Cmd.info "watch" ~doc:"Watch mode" ~man in
   let term =

@@ -290,7 +290,7 @@ let run_setup_codex ~alias_from_auto_gen ~alias_val ~home ~server_path () =
         ~output_mode:C2c_types.Human ~dry_run:false
         ~root:"/fake/broker/root" ~alias_val
         ~server_path ~mcp_command:"c2c-mcp-server"
-        ~client:"codex" ~deliver_watch:false
+        ~client:"codex"
         ~alias_from_auto_gen)
 
 let test_setup_codex_writes_env_marker_when_auto_gen () =

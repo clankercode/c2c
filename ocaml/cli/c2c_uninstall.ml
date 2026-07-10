@@ -387,8 +387,22 @@ let recompute_claude_artifacts ~target_dir =
 
 let recompute_codex_artifacts () =
   let config = home_dir () // ".codex" // "config.toml" in
+  let agents_md = home_dir () // ".codex" // "AGENTS.md" in
   let skill_path = home_dir () // ".codex" // "skills" // "c2c" // "SKILL.md" in
-  ([ C2c_install_manifest.shared_toml_section ~path:config ~section_prefix:"mcp_servers.c2c" ],
+  (* Shared blocks mirror what setup_codex declares: the config.toml hooks
+     block and the AGENTS.md orientation block, so a manifest-less
+     `c2c uninstall codex` strips them too. The deliver-watch owned files are
+     no longer written by install (hooks are the delivery path) but stay here
+     so uninstall can remove scripts from older installs; removal is a no-op
+     when the files are absent. *)
+  ([ C2c_install_manifest.shared_toml_section ~path:config ~section_prefix:"mcp_servers.c2c"
+   ; C2c_install_manifest.shared_block ~path:config
+       ~begin_marker:C2c_codex_hooks.config_begin_marker
+       ~end_marker:C2c_codex_hooks.config_end_marker ()
+   ; C2c_install_manifest.shared_block ~path:agents_md
+       ~begin_marker:C2c_codex_hooks.agents_md_begin_marker
+       ~end_marker:C2c_codex_hooks.agents_md_end_marker ()
+   ],
    C2c_install_manifest.owned_file skill_path :: deliver_watch_artifacts "codex",
    None)
 

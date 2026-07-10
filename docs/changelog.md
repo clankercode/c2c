@@ -9,6 +9,19 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Codex xml_fd plumbing removed; hooks are the delivery path** — upstream
+  codex (v0.142.x) removed `--xml-input-fd`, so the dead interactive-codex XML
+  sideband is gone: the capability probe + `codex_xml_fd` capability, the fd-3/
+  fd-4 pipe wiring in `c2c start codex`, and the `~/.c2c/clients/codex/`
+  deliver-watch supervisor scripts (`c2c install codex` no longer writes them
+  and removes stale ones; `c2c uninstall codex` still cleans them up). The
+  managed kickoff prompt is now passed as codex's positional `[PROMPT]` CLI
+  argument on fresh starts (suppressed on resume, matching claude/kimi/gemini).
+  `c2c instances` now reports codex `delivery_mode=hooks` when the c2c hooks
+  block is installed in `~/.codex/config.toml`, else `unavailable` (previously
+  claimed `xml_fd`/`pty_notify`). The manifest-less `c2c uninstall codex`
+  fallback now also strips the config.toml hooks block and the AGENTS.md
+  block. The codex-headless bridge path (XML fifo, thread-id fd) is unchanged.
 - **Codex /c2c skill install + auto-update** — `c2c install codex` now writes
   the embedded `/c2c` skill to `~/.codex/skills/c2c/SKILL.md` (same canonical
   blob as the Claude skill), records it in the install manifest so
