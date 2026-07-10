@@ -1291,6 +1291,169 @@ let test_tools_call_send_routes_message_through_broker () =
        let msg = List.hd inbox in
        check string "mcp routed content" "hello from mcp" msg.content)
 
+(* B104: a peer that received a cross-broker message must be able to reply
+   through its MCP [send] tool.  The sender stays registered only in its own
+   sibling broker; the reply handler must find that authoritative registration
+   rather than requiring a duplicate/global registration. *)
+let test_tools_call_send_replies_across_sibling_brokers () =
+  with_temp_dir (fun parent_dir ->
+      let sender_dir = Filename.concat parent_dir "sender-broker" in
+      let recipient_dir = Filename.concat parent_dir "recipient-broker" in
+      Unix.mkdir sender_dir 0o755;
+      Unix.mkdir recipient_dir 0o755;
+      let sender_broker = C2c_mcp.Broker.create ~root:sender_dir in
+      let recipient_broker = C2c_mcp.Broker.create ~root:recipient_dir in
+      C2c_mcp.Broker.register sender_broker ~session_id:"sender-session"
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register recipient_broker ~session_id:"recipient-session"
+        ~alias:"recipient" ~pid:None ~pid_start_time:None ();
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 104)
+          ; ("method", `String "tools/call")
+          ; ( "params"
+            , `Assoc
+                [ ("name", `String "send")
+                ; ( "arguments"
+                  , `Assoc
+                      [ ("from_alias", `String "recipient")
+                      ; ("to_alias", `String "sender")
+                      ; ("content", `String "reply across brokers")
+                      ] )
+                ] )
+          ]
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:recipient_dir request)
+      in
+      (match response with None -> fail "expected tools/call response" | Some _ -> ());
+      let inbox = C2c_mcp.Broker.read_inbox sender_broker ~session_id:"sender-session" in
+      check int "sender receives cross-broker MCP reply" 1 (List.length inbox);
+      let msg = List.hd inbox in
+      check string "reply preserves sender alias" "recipient" msg.from_alias;
+      check string "reply content" "reply across brokers" msg.content)
+
+let mcp_send_request ~from_alias ~to_alias ~content =
+  `Assoc
+    [ ("jsonrpc", `String "2.0")
+    ; ("id", `Int 104)
+    ; ("method", `String "tools/call")
+    ; ( "params"
+      , `Assoc
+          [ ("name", `String "send")
+          ; ( "arguments"
+            , `Assoc
+                [ ("from_alias", `String from_alias)
+                ; ("to_alias", `String to_alias)
+                ; ("content", `String content)
+                ] )
+          ] )
+    ]
+
+let test_tools_call_send_fails_closed_for_ambiguous_cross_broker_alias () =
+  with_temp_dir (fun parent_dir ->
+      let recipient_dir = Filename.concat parent_dir "recipient-broker" in
+      let sender_one_dir = Filename.concat parent_dir "sender-one" in
+      let sender_two_dir = Filename.concat parent_dir "sender-two" in
+      List.iter (fun dir -> Unix.mkdir dir 0o755)
+        [recipient_dir; sender_one_dir; sender_two_dir];
+      let recipient = C2c_mcp.Broker.create ~root:recipient_dir in
+      let sender_one = C2c_mcp.Broker.create ~root:sender_one_dir in
+      let sender_two = C2c_mcp.Broker.create ~root:sender_two_dir in
+      C2c_mcp.Broker.register recipient ~session_id:"recipient-session"
+        ~alias:"recipient" ~pid:None ~pid_start_time:None ();
+      List.iter (fun broker ->
+          C2c_mcp.Broker.register broker ~session_id:"sender-session"
+            ~alias:"duplicate-sender" ~pid:None ~pid_start_time:None ())
+        [sender_one; sender_two];
+      let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:recipient_dir
+        (mcp_send_request ~from_alias:"recipient" ~to_alias:"duplicate-sender"
+           ~content:"must not route")) in
+      let response_text = Option.fold ~none:"" ~some:Yojson.Safe.to_string response in
+      check bool "ambiguous aliases report a routing error" true
+        (string_contains response_text "multiple live registrations");
+      List.iter (fun (broker, sid) ->
+          check int "ambiguous aliases receive no message" 0
+            (List.length (C2c_mcp.Broker.read_inbox broker ~session_id:sid)))
+        [sender_one, "sender-session"; sender_two, "sender-session"])
+
+let test_tools_call_send_fails_closed_for_canonical_xdg_split_brain () =
+  with_temp_dir (fun base ->
+      let old_home = Sys.getenv_opt "HOME" in
+      let old_xdg = Sys.getenv_opt "XDG_STATE_HOME" in
+      let home = Filename.concat base "home" in
+      let xdg = Filename.concat base "xdg" in
+      let mkdir path = try Unix.mkdir path 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () in
+      let mk_broker root fp =
+        let c2c = Filename.concat root ".c2c" in
+        let c2c = if root = xdg then Filename.concat root "c2c" else c2c in
+        let repos = Filename.concat c2c "repos" in
+        let fp_dir = Filename.concat repos fp in
+        List.iter mkdir [root; c2c; repos; fp_dir];
+        let broker = Filename.concat fp_dir "broker" in
+        mkdir broker;
+        broker
+      in
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "HOME" (Option.value old_home ~default:"");
+          Unix.putenv "XDG_STATE_HOME" (Option.value old_xdg ~default:""))
+        (fun () ->
+          Unix.putenv "HOME" home;
+          Unix.putenv "XDG_STATE_HOME" xdg;
+          let fp = "same-fingerprint" in
+          let canonical_dir = mk_broker home fp in
+          let xdg_dir = mk_broker xdg fp in
+          let recipient_dir = Filename.concat base "recipient-broker" in
+          mkdir recipient_dir;
+          let recipient = C2c_mcp.Broker.create ~root:recipient_dir in
+          let canonical = C2c_mcp.Broker.create ~root:canonical_dir in
+          let xdg_broker = C2c_mcp.Broker.create ~root:xdg_dir in
+          C2c_mcp.Broker.register recipient ~session_id:"recipient-session"
+            ~alias:"recipient" ~pid:None ~pid_start_time:None ();
+          List.iter (fun broker ->
+              C2c_mcp.Broker.register broker ~session_id:"split-session"
+                ~alias:"split-sender" ~pid:None ~pid_start_time:None ())
+            [canonical; xdg_broker];
+          let response = Lwt_main.run (C2c_mcp.handle_request ~broker_root:recipient_dir
+            (mcp_send_request ~from_alias:"recipient" ~to_alias:"split-sender"
+               ~content:"must not route split brain")) in
+          let response_text = Option.fold ~none:"" ~some:Yojson.Safe.to_string response in
+          check bool "canonical/XDG duplicate is ambiguous" true
+            (string_contains response_text "multiple live registrations")))
+
+let test_tools_call_send_encrypts_for_cross_broker_target_key () =
+  with_temp_dir (fun parent_dir ->
+      let recipient_dir = Filename.concat parent_dir "recipient-broker" in
+      let sender_dir = Filename.concat parent_dir "sender-broker" in
+      let key_dir = Filename.concat parent_dir "keys" in
+      List.iter (fun dir -> Unix.mkdir dir 0o755) [recipient_dir; sender_dir; key_dir];
+      let old_key_dir = Sys.getenv_opt "C2C_KEY_DIR" in
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_KEY_DIR" (Option.value old_key_dir ~default:""))
+        (fun () ->
+          Unix.putenv "C2C_KEY_DIR" key_dir;
+          let recipient = C2c_mcp.Broker.create ~root:recipient_dir in
+          let sender = C2c_mcp.Broker.create ~root:sender_dir in
+          let recipient_key =
+            match Relay_enc.load_or_generate ~alias:"sender" () with
+            | Ok key -> Relay_enc.public_key_b64 key
+            | Error err -> failf "unable to create recipient key: %s" err
+          in
+          C2c_mcp.Broker.register recipient ~session_id:"recipient-session"
+            ~alias:"recipient" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.register sender ~session_id:"sender-session"
+            ~alias:"sender" ~pid:None ~pid_start_time:None ~enc_pubkey:(Some recipient_key) ();
+          ignore (Lwt_main.run (C2c_mcp.handle_request ~broker_root:recipient_dir
+            (mcp_send_request ~from_alias:"recipient" ~to_alias:"sender"
+               ~content:"cross-broker secret")));
+          let msg = List.hd (C2c_mcp.Broker.read_inbox sender ~session_id:"sender-session") in
+          check bool "cross-broker target key prevents plaintext" false
+            (msg.content = "cross-broker secret");
+          check bool "cross-broker payload is encrypted envelope" true
+            (string_contains msg.content "box-x25519-v1")))
+
 let test_tools_call_send_accepts_alias_as_to_alias_synonym () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -14359,6 +14522,14 @@ let () =
            ; test_case "tools/list schema types: send.deferrable+ephemeral bool, set_dnd.on bool, set_dnd.until_epoch number" `Quick
                test_send_and_set_dnd_schema_types_are_correct
           ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
+         ; test_case "tools/call send replies across sibling brokers (B104)" `Quick
+             test_tools_call_send_replies_across_sibling_brokers
+         ; test_case "tools/call send fails closed for ambiguous cross-broker aliases (B104)" `Quick
+             test_tools_call_send_fails_closed_for_ambiguous_cross_broker_alias
+         ; test_case "tools/call send fails closed for canonical/XDG split brain (B104)" `Quick
+             test_tools_call_send_fails_closed_for_canonical_xdg_split_brain
+         ; test_case "tools/call send encrypts for cross-broker target key (B104)" `Quick
+             test_tools_call_send_encrypts_for_cross_broker_target_key
          ; test_case "tools/call send accepts `alias` as to_alias synonym" `Quick
              test_tools_call_send_accepts_alias_as_to_alias_synonym
          ; test_case "tools/call send missing to_alias returns named error" `Quick
