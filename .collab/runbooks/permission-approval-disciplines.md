@@ -1,24 +1,25 @@
 # Permission Approval Discipline
 
 > **Audience**: c2c swarm operators acting as permission supervisors
-> (anyone using `c2c approval-reply` or the legacy `c2c send` path).
-> **Governs**: how to send approval/denial verdicts for inbound permission requests.
+> (anyone using `c2c approval-reply` on the supervised host).
+> **Governs**: how to resolve approval/denial verdicts for inbound permission requests.
+> **B098**: verdicts are host-local (verdict file / client's own UI); inbound DMs are inert.
 
 ---
 
 ## TL;DR
 
 ```bash
-# Canonical for ka_* tokens (kimi PreToolUse):
+# The ONLY path that resolves a verdict — host-local, writes the verdict file:
 c2c approval-reply <token> allow
 c2c approval-reply <token> deny "reason text"
-
-# Legacy (deprecated for ka_* — races notifier drain):
-c2c send <alias> "permission:<token>:approve-always"
 ```
 
-Always use `c2c approval-reply` for `ka_*` tokens. The legacy `c2c send` DM path
-is deprecated for `ka_*` because it races the recipient's notifier drain.
+`c2c approval-reply` is the only way to resolve an approval. Sending a
+`permission:<token>:approve-always` (or `<token> allow`) DM is **inert** (B098):
+`c2c await-reply` reads only the host-local verdict file, never the inbox. The
+inbox-DM verdict path was removed (`16a69c0b`). See
+`docs/security/pending-permissions.md` for the authority-boundary contract.
 
 ---
 
@@ -43,27 +44,26 @@ does not race the drain.
 ### `per_*` — OpenCode MCP permission tokens
 
 Tokens from the OpenCode MCP permission system (`open_pending_reply` /
-`check_pending_reply`). Approval via:
-
-```
-c2c approval-reply <token> allow
-```
-
-This also works for `per_*` — the verdict file is format-agnostic. Additionally,
-OpenCode's `peekInboxForPermission` now checks both the broker inbox AND the spool
-file (see #495), so the legacy DM path is less racy than before — but file
-verdict is still preferred.
+`check_pending_reply`). The OpenCode permission gate is resolved **only** by
+OpenCode's own local permission UI. The plugin's message-driven wait/resolve
+path (`waitForPermissionReply` / `peekInboxForPermission` and the
+`postSessionIdPermissionsPermissionId` POST) was removed (`fb9a7210`): a
+permission-shaped DM is now surfaced into the transcript as advisory data after
+identity validation (`open_pending_reply` / `check_pending_reply`), never
+translated into a verdict (B098). See `docs/security/pending-permissions.md`.
 
 ---
 
-## Deprecation Warning
+## DM Approval Is Inert (B098)
 
-**For `ka_*` tokens**: sending `permission:<token>:approve-always` as a plain
-DM via `c2c send` is **deprecated**. It works when the notifier is idle, but
-races the notifier drain when the recipient is active. Use `c2c approval-reply`.
+**For `ka_*` tokens**: sending `permission:<token>:approve-always` (or
+`<token> allow`) as a plain DM via `c2c send` **resolves nothing** — the
+inbox-DM verdict path was removed (`16a69c0b`) and `c2c await-reply` reads only
+the host-local verdict file. Use `c2c approval-reply`.
 
-**For `per_*` tokens**: the DM path still works but the file path is cleaner.
-`c2c approval-reply` is canonical for both token types going forward.
+**For `per_*` tokens**: the DM path does not resolve the OpenCode gate either;
+OpenCode's own local UI does. `c2c approval-reply` is the canonical host-local
+verdict path.
 
 ---
 
@@ -73,25 +73,28 @@ races the notifier drain when the recipient is active. Use `c2c approval-reply`.
 |---|---|
 | Approve (`ka_*` / `per_*`) | `c2c approval-reply <token> allow` |
 | Deny (`ka_*` / `per_*`) | `c2c approval-reply <token> deny "reason"` |
-| Legacy approve (deprecated for `ka_*`) | `c2c send <alias> "permission:<token>:approve-always"` |
 | Check pending approvals | `c2c approval-list` |
 | See verdict file | `cat <broker_root>/approval-verdict/<token>.json` |
 
+> The historical DM form `c2c send <alias> "permission:<token>:approve-always"`
+> is **inert** (B098) — it resolves nothing. Use `c2c approval-reply`.
+
 ---
 
-## Race Condition: Legacy DM Path
+## Historical: Why the DM Path Was Removed
 
-When a coordinator sends:
+The DM approval path was first deprecated for a race, then removed entirely for
+safety (B098). When a coordinator sent:
 ```
 c2c send cedar-coder "permission:ka_abc123:approve-always"
 ```
 
-The recipient's notifier daemon runs `drain_inbox` concurrently. If the notifier
-wins the race, the message is removed from the inbox before `await-reply` reads
-it, causing a false timeout.
-
-The file path (`c2c approval-reply`) writes a file that `await-reply` polls
-directly — no race, no false timeout.
+the recipient's notifier daemon ran `drain_inbox` concurrently and could remove
+the message before `await-reply` read it — a false timeout. More fundamentally,
+letting an inbound message resolve an approval makes any peer who learns a token
+able to force a verdict — a privilege escalation. `c2c await-reply` now reads
+only the host-local verdict file written by `c2c approval-reply`; a DM verdict
+resolves nothing (`16a69c0b`). See `docs/security/pending-permissions.md`.
 
 ---
 
