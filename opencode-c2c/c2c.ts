@@ -1959,9 +1959,10 @@ Do NOT reply in plain text — the peer will not see it.
         return;
       }
 
-      // Question flow: opencode emits "question.asked" when the agent needs
-      // human input (clarification, multiple-choice, free text). We notify the
-      // supervisor via DM and forward their reply through the HTTP API.
+      // Question flow: OpenCode emits "question.asked" when the agent needs
+      // human input (clarification, multiple-choice, free text). We notify
+      // supervisors via advisory DMs; only a local OpenCode TUI action may
+      // resolve the dialog (B098: bus, never RPC).
       if (event.type === "question.asked") {
         const qProps = (event as any).properties ?? {};
         const qId: string = qProps.id || "";
