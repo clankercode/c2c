@@ -47,6 +47,11 @@
  (libraries c2c_mcp alcotest))
 
 (test
+ (name test_c2c_wake_inject)
+ (modules test_c2c_wake_inject)
+ (libraries c2c_mcp alcotest yojson unix))
+
+(test
  (name test_c2c_kimi_notifier)
  (modules test_c2c_kimi_notifier)
  (libraries c2c_mcp alcotest str unix))

@@ -163,7 +163,11 @@ now the canonical framing.)
   (no `/hooks` approval prompt). Vanilla codex sessions self-onboard on the
   first hook fire (auto-register + onboarding note). Managed `c2c start codex`
   passes the kickoff prompt as the positional `[PROMPT]` arg on fresh starts
-  (suppressed on resume); `delivery_mode` reports `hooks`/`unavailable`.
+  (suppressed on resume); `delivery_mode` reports `hooks+wake`/`hooks`/`unavailable`.
+  **Idle wake is tmux/herdr-only**: the wake injector (`C2c_wake_inject`,
+  managed codex deliver sidecar / `c2c deliver wake-watch`) nudges an idle
+  session's pane on inbox growth — never drains; the hook delivers on the
+  injected turn. Runbook: `.collab/runbooks/agent-wake-setup.md` § Codex idle wake.
   Details:
   `.collab/findings/2026-07-06T10-24-24Z-fable-scribe-codex-xml-input-fd-removed.md`.
 - **Launch managed sessions via `c2c start <client>`** (claude / codex / opencode / kimi / gemini). `crush` is **DEPRECATED** — `c2c start crush` refuses (exit 1). Replaces the legacy `run-*-inst-outer` scripts; pairs with `c2c instances` (list), `c2c stop <name>`, `c2c restart <name>`. Exits when client exits (does NOT loop).

@@ -122,7 +122,7 @@ open C2c_mcp_helpers
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; ed25519_pubkey; pubkey_signed_at; pubkey_sig; compacting; last_activity_ts; role; compaction_count; automated_delivery; tmux_location = _; cwd; metadata_opt_out; registered_by; opaque_host_id = _ } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; ed25519_pubkey; pubkey_signed_at; pubkey_sig; compacting; last_activity_ts; role; compaction_count; automated_delivery; tmux_location; herdr_pane; herdr_socket; cwd; metadata_opt_out; registered_by; opaque_host_id = _ } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -222,10 +222,29 @@ open C2c_mcp_helpers
       | Some b -> with_compaction_count @ [ ("automated_delivery", `Bool b) ]
       | None -> with_compaction_count
     in
+    (* Wake-target metadata (codex-wake-inject slice). tmux_location was
+       declared persisted by #517 but the destructure silently dropped it
+       (warning-9 masked) — fixed here so `c2c list` and the wake injector
+       can read targets back from the registry across processes. *)
+    let with_tmux_location =
+      match tmux_location with
+      | Some loc -> with_automated_delivery @ [ ("tmux_location", `String loc) ]
+      | None -> with_automated_delivery
+    in
+    let with_herdr_pane =
+      match herdr_pane with
+      | Some p -> with_tmux_location @ [ ("herdr_pane", `String p) ]
+      | None -> with_tmux_location
+    in
+    let with_herdr_socket =
+      match herdr_socket with
+      | Some s -> with_herdr_pane @ [ ("herdr_socket", `String s) ]
+      | None -> with_herdr_pane
+    in
     let with_cwd =
       match cwd with
-      | Some c -> with_automated_delivery @ [ ("cwd", `String c) ]
-      | None -> with_automated_delivery
+      | Some c -> with_herdr_socket @ [ ("cwd", `String c) ]
+      | None -> with_herdr_socket
     in
     (* Only persist metadata_opt_out when true — keeps registry compact for normal case. *)
     let with_metadata_opt_out =
@@ -302,6 +321,8 @@ open C2c_mcp_helpers
              | _ -> None
          with _ -> None)
     ; tmux_location = str_opt "tmux_location" json
+    ; herdr_pane = str_opt "herdr_pane" json
+    ; herdr_socket = str_opt "herdr_socket" json
     ; cwd = str_opt "cwd" json
     ; metadata_opt_out = bool_member_default "metadata_opt_out" json false
     ; registered_by = str_opt "registered_by" json
@@ -2149,7 +2170,7 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(herdr_pane = None) ?(herdr_socket = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) () =
     if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -2185,8 +2206,9 @@ open C2c_mcp_helpers
            refresh): update in-place by replacing the old entry in [rest]. *)
         (* Look up old entry to preserve DND state + confirmed_at + client_type + plugin_version + compacting + role
            across re-registration. *)
+        let old_reg_opt = List.find_opt (fun reg -> reg.session_id = session_id) rest in
         let old_state =
-          match List.find_opt (fun reg -> reg.session_id = session_id) rest with
+          match old_reg_opt with
           | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery, r.tmux_location, r.cwd, r.metadata_opt_out, r.opaque_host_id)
           | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None, tmux_location, cwd, metadata_opt_out, opaque_host_id)
         in
@@ -2243,6 +2265,17 @@ open C2c_mcp_helpers
             | Some _ -> tmux_location
             | None -> old_tmux_location
           in
+          (* herdr wake targets: same preserve-on-None semantics as
+             tmux_location, sourced from old_reg_opt (the pre-existing
+             old_state tuple is wide enough already). *)
+          let effective_herdr_pane = match herdr_pane with
+            | Some _ -> herdr_pane
+            | None -> Option.bind old_reg_opt (fun r -> r.herdr_pane)
+          in
+          let effective_herdr_socket = match herdr_socket with
+            | Some _ -> herdr_socket
+            | None -> Option.bind old_reg_opt (fun r -> r.herdr_socket)
+          in
           { session_id; alias; pid; pid_start_time
           ; registered_at = Some (Unix.gettimeofday ())
           ; canonical_alias = Some (compute_canonical_alias ~deprecate_canonical_alias:t.deprecate_canonical_alias ~alias ~broker_root:(root t) ())
@@ -2260,6 +2293,8 @@ open C2c_mcp_helpers
           ; compaction_count = old_compaction_count
           ; automated_delivery = old_automated_delivery
           ; tmux_location = effective_tmux_location
+          ; herdr_pane = effective_herdr_pane
+          ; herdr_socket = effective_herdr_socket
           ; cwd
           ; metadata_opt_out
           ; registered_by
@@ -2360,6 +2395,40 @@ open C2c_mcp_helpers
               Unix.close fd;
               Unix.utimes path 0.0 (Unix.gettimeofday ()))
         with Unix.Unix_error _ -> ())
+
+  (** Update only the wake-target metadata of an existing registration.
+      [Some v] overwrites the stored value; [None] leaves it unchanged
+      (targets are never cleared here — a hook fire from outside tmux/herdr
+      must not erase a previously captured pane). No-op when [session_id]
+      has no registration. Total: never raises. *)
+  let update_wake_targets t ~session_id ?(tmux_location = None)
+      ?(herdr_pane = None) ?(herdr_socket = None) () =
+    try
+      if tmux_location = None && herdr_pane = None && herdr_socket = None then ()
+      else
+        with_registry_lock t (fun () ->
+            let regs = load_registrations t in
+            let changed = ref false in
+            let apply nu old = match nu with None -> old | Some _ -> nu in
+            let regs' =
+              List.map
+                (fun r ->
+                  if r.session_id <> session_id then r
+                  else begin
+                    let r' =
+                      { r with
+                        tmux_location = apply tmux_location r.tmux_location
+                      ; herdr_pane = apply herdr_pane r.herdr_pane
+                      ; herdr_socket = apply herdr_socket r.herdr_socket
+                      }
+                    in
+                    if r' <> r then changed := true;
+                    r'
+                  end)
+                regs
+            in
+            if !changed then save_registrations t regs')
+    with _ -> ()
 
   (** True if [alias] contains '@' — indicating a remote alias that cannot be
       resolved via the local registry and must be sent via the relay outbox. *)

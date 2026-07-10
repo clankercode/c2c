@@ -45,6 +45,30 @@ nav_label: Changelog
   canonical vanilla-claude Monitor recipe is unchanged:
   `Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })`.
 
+- **Codex idle wake via tmux/herdr injection (`hooks+wake`)** — an idle codex
+  session can now be woken: codex hooks only fire on activity, so
+  heartbeat/schedule self-DMs used to rot in the inbox until the operator
+  typed something. When the session runs inside tmux or herdr, c2c
+  auto-captures a wake target on the broker registration (`tmux_location`
+  from `$TMUX_PANE`, `herdr_pane`/`herdr_socket` from `$HERDR_PANE_ID` /
+  `$HERDR_SOCKET_PATH`; captured by `c2c hook codex` on auto-register + every
+  SessionStart, and by the MCP `register` tool env fallback). A watcher
+  (`C2c_wake_inject`) monitors the inbox and, on growth, types a one-line
+  nudge into the pane (herdr: `herdr pane run`; tmux: `send-keys -l` then
+  `Enter`) — the injected turn fires the UserPromptSubmit hook, which does
+  the actual drain. The injector **never drains the broker inbox itself**,
+  so double-delivery is impossible by construction. Idle-gated (herdr
+  `agent_status=idle`; tmux `last_activity_ts` older than
+  `C2C_WAKE_IDLE_THRESHOLD_S`, default 90s) with per-session backoff
+  (`C2C_WAKE_BACKOFF_S`, default 120s) and new-message dedupe. Managed
+  `c2c start codex` runs the watcher as its deliver sidecar (replacing the
+  log-only inotify mode); vanilla sessions can run
+  `c2c deliver wake-watch --alias <a>` (or `--once`). `c2c instances`
+  reports `delivery_mode=hooks+wake` when hooks are installed AND a wake
+  target is registered. Tests are fixture-gated via
+  `C2C_WAKE_INJECT_FIXTURE` (records exact argv; never touches a pane).
+  Also fixes a latent #517 bug: `tmux_location` was never actually
+  persisted to the registry (warning-9-masked destructure drop).
 - **Claude Code session-lifecycle hooks (`c2c hook claude`)** — closes four
   codex/claude parity gaps at once. `c2c install claude` now writes
   `~/.claude/hooks/c2c-session-hook.sh` and registers it under SessionStart +

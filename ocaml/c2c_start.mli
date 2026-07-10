@@ -567,12 +567,18 @@ val codex_hooks_installed : ?config_path:string -> unit -> bool
 (** True when the c2c-managed hooks block (`c2c hook codex` delivery) is
     present in ~/.codex/config.toml (or [config_path] when given). *)
 
+val codex_wake_target_registered : name:string -> unit -> bool
+(** True when the instance's broker registration carries a wake target
+    (tmux_location or herdr_pane) the codex wake injector can nudge.
+    Total: broker/registration failures read as false. *)
+
 val delivery_mode :
   ?now:float ->
   ?startup_grace_s:float ->
   ?opencode_plugin_freshness_window_s:float ->
   ?available_capabilities:string list ->
   ?codex_hooks_installed:bool ->
+  ?codex_wake_target:bool ->
   client:string ->
   name:string ->
   binary_path:string ->
@@ -581,7 +587,10 @@ val delivery_mode :
   string
 (** Return the currently selected delivery mode label for a managed instance,
     combining static launcher capabilities with runtime state such as the
-    OpenCode plugin heartbeat. *)
+    OpenCode plugin heartbeat. For codex: "hooks+wake" when hooks are
+    installed AND a tmux/herdr wake target is registered (idle wake via
+    C2c_wake_inject), "hooks" when hooks only, "unavailable" otherwise.
+    [codex_wake_target] overrides the broker lookup (tests). *)
 
 val missing_role_capabilities :
   client:string -> binary_path:string -> C2c_role.t -> string list

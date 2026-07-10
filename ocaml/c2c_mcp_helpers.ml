@@ -64,9 +64,19 @@ type registration =
        not yet handshaked). Set in the initialize handler; consumers
        treat [None] conservatively as "not push-capable". *)
     ; tmux_location : string option
-    (** Tmux session:window.pane target for the pane running this session.
-        Captured at registration time for managed sessions (c2c start);
-        None for unmanaged / foreign MCP clients. Format: "session:window.pane". *)
+    (** Tmux target for the pane running this session. Managed sessions
+        (c2c start) capture "session:window.pane"; hook-captured sessions
+        store the raw pane id from $TMUX_PANE (e.g. "%5") — both are valid
+        `tmux send-keys -t` targets. None for sessions outside tmux.
+        Wake-inject (codex idle wake) reads this as its tmux backend target. *)
+    ; herdr_pane : string option
+    (** herdr pane id for the pane running this session (e.g. "w1:p9"),
+        captured from $HERDR_PANE_ID. Wake-inject (codex idle wake) reads
+        this as its herdr backend target. None outside herdr. *)
+    ; herdr_socket : string option
+    (** herdr API socket path captured from $HERDR_SOCKET_PATH. Exported as
+        HERDR_SOCKET_PATH when the wake injector invokes the herdr CLI for
+        this session's pane. None outside herdr. *)
     ; cwd : string option
     (** Working directory of the session at registration time.
         Captured via Sys.getcwd () at register time. Used by Hardening B

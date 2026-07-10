@@ -1659,17 +1659,23 @@ let test_prepare_launch_args_codex_resume_omits_kickoff () =
   check (list string) "exact resume: no kickoff"
     [ "resume"; "thread-abc" ] resume_exact
 
-(* delivery_mode for interactive codex: "hooks" when the c2c hooks block is
-   installed in ~/.codex/config.toml, else "unavailable". xml_fd/pty_notify
+(* delivery_mode for interactive codex: "hooks+wake" when the c2c hooks
+   block is installed AND the broker registration carries a tmux/herdr wake
+   target (codex-wake-inject); "hooks" when hooks only; "unavailable" when
+   no hooks (a wake target alone cannot deliver bodies). xml_fd/pty_notify
    are gone. *)
-let test_delivery_mode_codex_reports_hooks_or_unavailable () =
-  let mode ~hooks =
+let test_delivery_mode_codex_reports_hooks_wake_or_unavailable () =
+  let mode ~hooks ~wake =
     C2c_start.delivery_mode ~client:"codex" ~name:"codex-proof"
       ~binary_path:"/bin/true" ~start_time:None
-      ~available_capabilities:[] ~codex_hooks_installed:hooks ()
+      ~available_capabilities:[] ~codex_hooks_installed:hooks
+      ~codex_wake_target:wake ()
   in
-  check string "hooks installed" "hooks" (mode ~hooks:true);
-  check string "no hooks" "unavailable" (mode ~hooks:false)
+  check string "hooks only" "hooks" (mode ~hooks:true ~wake:false);
+  check string "hooks + wake target" "hooks+wake" (mode ~hooks:true ~wake:true);
+  check string "no hooks" "unavailable" (mode ~hooks:false ~wake:false);
+  check string "wake target without hooks is still unavailable" "unavailable"
+    (mode ~hooks:false ~wake:true)
 
 (* codex_hooks_installed reads the managed-block BEGIN marker from a config
    file on disk. *)
@@ -4063,7 +4069,7 @@ let () =
         ; ( "prepare_launch_args_codex_resume_omits_kickoff",
             `Quick, test_prepare_launch_args_codex_resume_omits_kickoff )
         ; ( "delivery_mode_codex_reports_hooks_or_unavailable",
-            `Quick, test_delivery_mode_codex_reports_hooks_or_unavailable )
+            `Quick, test_delivery_mode_codex_reports_hooks_wake_or_unavailable )
         ; ( "codex_hooks_installed_detects_marker",
             `Quick, test_codex_hooks_installed_detects_marker )
         ; ( "codex_supports_server_request_fds_requires_both_flags",

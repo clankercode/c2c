@@ -1,0 +1,523 @@
+(* c2c_wake_inject — idle-wake nudge injector for codex sessions (codex-wake-inject slice).
+
+   Problem: an idle codex session cannot be woken — codex hooks only fire on
+   activity, so heartbeat/schedule self-DMs rot in the broker inbox until the
+   operator types something. PTY injection is unreliable and rejected.
+
+   Decision: idle wake for codex is supported ONLY when the session runs
+   inside tmux or herdr. This module injects a short wake nudge (plain text +
+   Enter) into the session's pane; submitting the nudge fires codex's
+   UserPromptSubmit hook, which performs the actual full inbox drain.
+
+   INVARIANT — the injector NEVER drains the broker inbox. It only peeks
+   (read-only) to count messages and types a one-line nudge into the pane.
+   Delivery of message bodies is exclusively the hook's job, which makes
+   double-delivery impossible by construction.
+
+   Backends:
+   - herdr: `herdr agent get <pane>` for a real idle/working status gate,
+     then `herdr pane run <pane> <text>` (documented as "command text plus
+     Enter" — see `herdr agent --help`: "agent send writes literal text;
+     use pane run when you want command text plus Enter").
+   - tmux: `tmux send-keys -l -t <target> <text>` then
+     `tmux send-keys -t <target> Enter` — the exact sequence
+     scripts/c2c_tmux.py `send` uses. Idle gate is the broker's
+     last_activity_ts (no true busy-signal in tmux).
+
+   Safety rails:
+   - Idle-gating: never inject into a herdr pane whose agent_status is not
+     "idle"; for tmux require last_activity_ts older than
+     C2C_WAKE_IDLE_THRESHOLD_S (default 90s).
+   - Backoff/dedupe: per-session state file <broker_root>/wake-inject/<sid>.json
+     records last inject time + newest message ts at inject time. No re-inject
+     within C2C_WAKE_BACKOFF_S (default 120s) and never unless a NEWER message
+     has arrived since the last inject.
+   - Fixture gate: C2C_WAKE_INJECT_FIXTURE=<path> records the exact command
+     argv (one JSON line per command, {"argv":[...],"env":{...}}) instead of
+     executing — all tests use this; no live pane is ever touched in CI.
+   - Total: maybe_inject never raises; failures are logged to broker.log via
+     Broker_log.append_json, not stdout. *)
+
+let ( // ) = Filename.concat
+
+(* ---------------------------------------------------------------------------
+ * Env knobs
+ * --------------------------------------------------------------------------- *)
+
+let fixture_path () =
+  match Sys.getenv_opt "C2C_WAKE_INJECT_FIXTURE" with
+  | Some p when String.trim p <> "" -> Some (String.trim p)
+  | _ -> None
+
+let float_env name default =
+  match Sys.getenv_opt name with
+  | Some s -> (try float_of_string (String.trim s) with _ -> default)
+  | None -> default
+
+(* Tmux idle gate: broker last_activity_ts must be older than this. *)
+let idle_threshold_s () = float_env "C2C_WAKE_IDLE_THRESHOLD_S" 90.0
+
+(* Minimum seconds between injects for the same session. *)
+let backoff_s () = float_env "C2C_WAKE_BACKOFF_S" 120.0
+
+(* Watch-loop periodic re-attempt cadence (also the inotify select timeout,
+   so a message that arrived while the session was busy still gets a nudge
+   once the session goes idle). *)
+let watch_poll_s () = float_env "C2C_WAKE_POLL_S" 20.0
+
+(* ---------------------------------------------------------------------------
+ * Wake-target selection
+ * --------------------------------------------------------------------------- *)
+
+type backend =
+  | Herdr of { pane : string; socket : string option }
+  | Tmux of string
+
+let backend_name = function Herdr _ -> "herdr" | Tmux _ -> "tmux"
+
+(* herdr preferred over tmux when both targets are registered: herdr exposes
+   a real agent_status idle/working signal; tmux only has the activity-age
+   heuristic. *)
+let backend_of_registration (r : C2c_mcp_helpers.registration) : backend option =
+  match r.herdr_pane with
+  | Some pane -> Some (Herdr { pane; socket = r.herdr_socket })
+  | None ->
+      (match r.tmux_location with
+       | Some target -> Some (Tmux target)
+       | None -> None)
+
+(* Env-derived wake targets, used at capture points (`c2c hook codex`, MCP
+   register fallback). Raw $TMUX_PANE pane id (e.g. "%5") is preferred for
+   the tmux target: it is stable across window renumbering and tmux
+   send-keys accepts it directly — no resolution shell-out needed. $TMUX is
+   also required so a pane id inherited from a dead tmux ancestor is not
+   trusted. *)
+let wake_targets_from_env () :
+    string option (* tmux_location *)
+    * string option (* herdr_pane *)
+    * string option (* herdr_socket *) =
+  let nonempty name =
+    match Sys.getenv_opt name with
+    | Some v when String.trim v <> "" -> Some (String.trim v)
+    | _ -> None
+  in
+  let tmux_location =
+    match nonempty "TMUX", nonempty "TMUX_PANE" with
+    | Some _, Some pane -> Some pane
+    | _ -> None
+  in
+  (nonempty "HERDR_PANE_ID", nonempty "HERDR_SOCKET_PATH")
+  |> fun (pane, socket) -> (tmux_location, pane, socket)
+
+(* ---------------------------------------------------------------------------
+ * Command execution (fixture-gated)
+ * --------------------------------------------------------------------------- *)
+
+let record_fixture ~path ~(argv : string list) ~(env_extra : (string * string) list) =
+  try
+    let json =
+      `Assoc
+        ([ ("argv", `List (List.map (fun a -> `String a) argv)) ]
+         @
+         match env_extra with
+         | [] -> []
+         | kvs ->
+             [ ("env", `Assoc (List.map (fun (k, v) -> (k, `String v)) kvs)) ])
+    in
+    let oc =
+      open_out_gen [ Open_wronly; Open_creat; Open_append ] 0o644 path
+    in
+    Fun.protect
+      ~finally:(fun () -> try close_out oc with _ -> ())
+      (fun () ->
+        output_string oc (Yojson.Safe.to_string json);
+        output_char oc '\n')
+  with _ -> ()
+
+let env_with_extra (env_extra : (string * string) list) : string array =
+  let keys = List.map fst env_extra in
+  let base =
+    Array.to_list (Unix.environment ())
+    |> List.filter (fun e ->
+           let k = try String.sub e 0 (String.index e '=') with Not_found -> e in
+           not (List.mem k keys))
+  in
+  Array.of_list (base @ List.map (fun (k, v) -> k ^ "=" ^ v) env_extra)
+
+(* Run argv; discard output; true iff exit 0. Fixture mode records instead. *)
+let run_command ?(env_extra = []) (argv : string list) : bool =
+  match fixture_path () with
+  | Some path ->
+      record_fixture ~path ~argv ~env_extra;
+      true
+  | None -> (
+      match argv with
+      | [] -> false
+      | cmd :: _ -> (
+          try
+            let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
+            Fun.protect
+              ~finally:(fun () -> try Unix.close devnull with _ -> ())
+              (fun () ->
+                let pid =
+                  Unix.create_process_env cmd (Array.of_list argv)
+                    (env_with_extra env_extra) devnull devnull devnull
+                in
+                match Unix.waitpid [] pid with
+                | _, Unix.WEXITED 0 -> true
+                | _ -> false)
+          with _ -> false))
+
+(* Run argv; capture stdout; Some output iff exit 0. Fixture mode records
+   the command and returns None (callers use their own fixture response). *)
+let run_command_capture ?(env_extra = []) (argv : string list) : string option =
+  match fixture_path () with
+  | Some path ->
+      record_fixture ~path ~argv ~env_extra;
+      None
+  | None -> (
+      match argv with
+      | [] -> None
+      | cmd :: _ -> (
+          try
+            let stdout_r, stdout_w = Unix.pipe ~cloexec:false () in
+            let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
+            let pid =
+              Unix.create_process_env cmd (Array.of_list argv)
+                (env_with_extra env_extra) devnull stdout_w devnull
+            in
+            Unix.close stdout_w;
+            (try Unix.close devnull with _ -> ());
+            let ic = Unix.in_channel_of_descr stdout_r in
+            let buf = Buffer.create 256 in
+            (try
+               while true do
+                 Buffer.add_channel buf ic 1
+               done
+             with End_of_file -> ());
+            (try close_in ic with _ -> ());
+            match Unix.waitpid [] pid with
+            | _, Unix.WEXITED 0 -> Some (Buffer.contents buf)
+            | _ -> None
+          with _ -> None))
+
+(* ---------------------------------------------------------------------------
+ * herdr status
+ * --------------------------------------------------------------------------- *)
+
+let herdr_env_extra ~(socket : string option) =
+  match socket with
+  | Some s -> [ ("HERDR_SOCKET_PATH", s) ]
+  | None -> []
+
+(* Parse `herdr agent get` stdout into an agent_status string. The CLI wraps
+   the payload: {"id":"cli:agent:get","result":{"agent":{"agent_status":...,
+   ...},"type":"agent_info"}} (verified live 2026-07-10). Search the JSON
+   tree for the first "agent_status" member so top-level, result.agent, and
+   future wrapper drift all resolve. Unparseable → "unknown" (never inject
+   blind). *)
+let parse_herdr_agent_status (out : string) : string =
+  let rec find (j : Yojson.Safe.t) : string option =
+    match j with
+    | `Assoc fields -> (
+        match List.assoc_opt "agent_status" fields with
+        | Some (`String s) -> Some s
+        | _ -> List.find_map (fun (_, v) -> find v) fields)
+    | `List items -> List.find_map find items
+    | _ -> None
+  in
+  try
+    match find (Yojson.Safe.from_string (String.trim out)) with
+    | Some s -> s
+    | None -> "unknown"
+  with _ -> "unknown"
+
+(* Statuses safe to inject into. herdr reports idle | working | blocked |
+   unknown | done; "done" is a pane whose agent finished its last turn and
+   is sitting at the composer (observed live for at-rest codex panes) —
+   exactly the state a wake nudge is for. working/blocked/unknown are never
+   injected. *)
+let herdr_status_injectable status = status = "idle" || status = "done"
+
+(* agent_status for the pane. Any failure (herdr missing, socket dead,
+   unparseable output) → "unknown", which the gate treats as not-injectable.
+   Fixture mode: the `herdr agent get` argv is recorded, and the status is
+   read from C2C_WAKE_INJECT_HERDR_STATUS (default "idle"). *)
+let herdr_agent_status ~(pane : string) ~(socket : string option) : string =
+  match fixture_path () with
+  | Some path ->
+      record_fixture ~path
+        ~argv:[ "herdr"; "agent"; "get"; pane ]
+        ~env_extra:(herdr_env_extra ~socket);
+      (match Sys.getenv_opt "C2C_WAKE_INJECT_HERDR_STATUS" with
+       | Some s when String.trim s <> "" -> String.trim s
+       | _ -> "idle")
+  | None -> (
+      match
+        run_command_capture
+          ~env_extra:(herdr_env_extra ~socket)
+          [ "herdr"; "agent"; "get"; pane ]
+      with
+      | None -> "unknown"
+      | Some out -> parse_herdr_agent_status out)
+
+(* ---------------------------------------------------------------------------
+ * Per-session inject state (backoff / dedupe)
+ * --------------------------------------------------------------------------- *)
+
+type state = { last_inject_ts : float; last_msg_ts : float }
+
+let empty_state = { last_inject_ts = 0.0; last_msg_ts = 0.0 }
+
+let state_dir ~broker_root = broker_root // "wake-inject"
+
+let state_path ~broker_root ~session_id =
+  state_dir ~broker_root // (session_id ^ ".json")
+
+let read_state ~broker_root ~session_id : state =
+  try
+    let path = state_path ~broker_root ~session_id in
+    if not (Sys.file_exists path) then empty_state
+    else
+      match Yojson.Safe.from_file path with
+      | `Assoc fields ->
+          let f name =
+            match List.assoc_opt name fields with
+            | Some (`Float x) -> x
+            | Some (`Int n) -> float_of_int n
+            | _ -> 0.0
+          in
+          { last_inject_ts = f "last_inject_ts"; last_msg_ts = f "last_msg_ts" }
+      | _ -> empty_state
+  with _ -> empty_state
+
+let write_state ~broker_root ~session_id (st : state) : unit =
+  try
+    let dir = state_dir ~broker_root in
+    (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+    let path = state_path ~broker_root ~session_id in
+    let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+    let oc = open_out tmp in
+    Fun.protect
+      ~finally:(fun () -> try close_out oc with _ -> ())
+      (fun () ->
+        Yojson.Safe.to_channel oc
+          (`Assoc
+            [ ("last_inject_ts", `Float st.last_inject_ts)
+            ; ("last_msg_ts", `Float st.last_msg_ts)
+            ]));
+    Unix.rename tmp path
+  with _ -> ()
+
+(* ---------------------------------------------------------------------------
+ * Broker log
+ * --------------------------------------------------------------------------- *)
+
+(* Call sites pass the event pair with a literal string so the #442
+   catalog gate's static scan can see every event name. *)
+let log_event ~broker_root ~session_id fields =
+  Broker_log.append_json ~broker_root
+    ~json:
+      (`Assoc
+        (("ts", `Float (Unix.gettimeofday ()))
+         :: fields
+        @ [ ("session_id", `String session_id) ]))
+
+(* ---------------------------------------------------------------------------
+ * The injector
+ * --------------------------------------------------------------------------- *)
+
+type outcome =
+  | Injected of { backend : string; message_count : int }
+  | Skipped of string
+  | Failed of string
+
+let outcome_to_string = function
+  | Injected { backend; message_count } ->
+      Printf.sprintf "injected backend=%s messages=%d" backend message_count
+  | Skipped reason -> "skipped: " ^ reason
+  | Failed reason -> "failed: " ^ reason
+
+(* Short and boring on purpose: the nudge only has to start a codex turn —
+   the UserPromptSubmit hook then delivers the actual message bodies. *)
+let nudge_text ~count =
+  Printf.sprintf "c2c: %d message(s) waiting - poll your inbox" count
+
+let inject_via_backend ~count = function
+  | Herdr { pane; socket } ->
+      (* `herdr pane run` = command text plus Enter (see module header). *)
+      if
+        run_command
+          ~env_extra:(herdr_env_extra ~socket)
+          [ "herdr"; "pane"; "run"; pane; nudge_text ~count ]
+      then Ok ()
+      else Error "herdr_pane_run_failed"
+  | Tmux target ->
+      (* Mirror scripts/c2c_tmux.py `send`: literal text, then Enter as a
+         separate send-keys. *)
+      if
+        run_command [ "tmux"; "send-keys"; "-l"; "-t"; target; nudge_text ~count ]
+        && run_command [ "tmux"; "send-keys"; "-t"; target; "Enter" ]
+      then Ok ()
+      else Error "tmux_send_keys_failed"
+
+(* One inject attempt. Read-only against the broker inbox (peek + count);
+   drains nothing. Total: never raises. *)
+let maybe_inject ?now ~(broker_root : string) ~(session_id : string) () : outcome =
+  try
+    let now = match now with Some t -> t | None -> Unix.gettimeofday () in
+    let broker = C2c_broker.create ~root:broker_root in
+    let reg_opt =
+      List.find_opt
+        (fun (r : C2c_mcp_helpers.registration) -> r.session_id = session_id)
+        (C2c_broker.list_registrations broker)
+    in
+    match reg_opt with
+    | None -> Skipped "no_registration"
+    | Some reg -> (
+        (* READ-ONLY peek — the injector must never drain (see header). *)
+        match C2c_broker.read_inbox broker ~session_id with
+        | [] -> Skipped "inbox_empty"
+        | msgs -> (
+            let count = List.length msgs in
+            let newest_ts =
+              List.fold_left
+                (fun acc (m : C2c_mcp_helpers.message) -> max acc m.ts)
+                0.0 msgs
+            in
+            let st = read_state ~broker_root ~session_id in
+            if newest_ts <= st.last_msg_ts then
+              Skipped "no_new_messages_since_last_inject"
+            else if now -. st.last_inject_ts < backoff_s () then Skipped "backoff"
+            else
+              match backend_of_registration reg with
+              | None -> Skipped "no_wake_target"
+              | Some backend -> (
+                  let idle_check =
+                    match backend with
+                    | Herdr { pane; socket } ->
+                        let status = herdr_agent_status ~pane ~socket in
+                        if herdr_status_injectable status then Ok ()
+                        else Error ("herdr_not_idle:" ^ status)
+                    | Tmux _ -> (
+                        match reg.last_activity_ts with
+                        | Some ts when now -. ts < idle_threshold_s () ->
+                            Error "recent_activity"
+                        | _ -> Ok ())
+                  in
+                  match idle_check with
+                  | Error reason -> Skipped reason
+                  | Ok () -> (
+                      match inject_via_backend ~count backend with
+                      | Ok () ->
+                          write_state ~broker_root ~session_id
+                            { last_inject_ts = now; last_msg_ts = newest_ts };
+                          log_event ~broker_root ~session_id
+                            [ ("event", `String "wake_inject")
+                            ; ("backend", `String (backend_name backend))
+                            ; ("message_count", `Int count)
+                            ];
+                          Injected
+                            { backend = backend_name backend
+                            ; message_count = count
+                            }
+                      | Error reason ->
+                          log_event ~broker_root ~session_id
+                            [ ("event", `String "wake_inject_error")
+                            ; ("backend", `String (backend_name backend))
+                            ; ("reason", `String reason)
+                            ];
+                          Failed reason))))
+  with e ->
+    (try
+       log_event ~broker_root ~session_id
+         [ ("event", `String "wake_inject_error")
+         ; ("reason", `String (Printexc.to_string e)) ]
+     with _ -> ());
+    Failed (Printexc.to_string e)
+
+(* ---------------------------------------------------------------------------
+ * Watch loop — inotify on the broker dir with periodic fallback attempts
+ * --------------------------------------------------------------------------- *)
+
+let pid_is_alive pid =
+  if pid <= 0 then false
+  else
+    try
+      Unix.kill pid 0;
+      true
+    with
+    | Unix.Unix_error (Unix.ESRCH, _, _) -> false
+    | Unix.Unix_error (Unix.EPERM, _, _) -> true
+
+(* Watch the broker dir for inbox growth of <session_id>.inbox.json and
+   attempt an inject on every event; ALSO re-attempt every C2C_WAKE_POLL_S
+   so a message that arrived while the session was busy still gets its nudge
+   once the session goes idle (the injector's own gates make the periodic
+   attempt cheap and safe). Falls back to pure polling when inotifywait is
+   unavailable. Stops when [watched_pid] exits or [max_iterations] attempts
+   have run (tests). *)
+let watch_loop ~(broker_root : string) ~(session_id : string)
+    ?(watched_pid : int option) ?(max_iterations : int option) () : unit =
+  let inbox_basename = session_id ^ ".inbox.json" in
+  let iterations = ref 0 in
+  let attempt () =
+    incr iterations;
+    match maybe_inject ~broker_root ~session_id () with
+    | Injected { backend; message_count } ->
+        Printf.printf "[c2c-wake-inject] injected via %s (%d message(s))\n%!"
+          backend message_count
+    | Skipped _ -> ()
+    | Failed reason ->
+        Printf.printf "[c2c-wake-inject] inject failed: %s\n%!" reason
+  in
+  let should_stop () =
+    (match max_iterations with Some m -> !iterations >= m | None -> false)
+    || (match watched_pid with Some p -> not (pid_is_alive p) | None -> false)
+  in
+  let rec poll_only () =
+    if should_stop () then ()
+    else begin
+      attempt ();
+      if should_stop () then ()
+      else begin
+        Unix.sleepf (max 0.01 (watch_poll_s ()));
+        poll_only ()
+      end
+    end
+  in
+  let inotify_loop () =
+    let cmd =
+      Printf.sprintf
+        "exec inotifywait -m -q -e close_write,modify,create,moved_to --format '%%f' %s 2>/dev/null"
+        (Filename.quote broker_root)
+    in
+    let ic = Unix.open_process_in cmd in
+    let fd = Unix.descr_of_in_channel ic in
+    Fun.protect
+      ~finally:(fun () -> try ignore (Unix.close_process_in ic) with _ -> ())
+      (fun () ->
+        (* Drain anything already queued before waiting on events. *)
+        attempt ();
+        let rec loop () =
+          if should_stop () then ()
+          else
+            let timeout = max 0.01 (watch_poll_s ()) in
+            match Unix.select [ fd ] [] [] timeout with
+            | [], _, _ ->
+                (* Periodic re-attempt: covers busy-at-arrival messages. *)
+                attempt ();
+                loop ()
+            | _ :: _, _, _ -> (
+                match input_line ic with
+                | line ->
+                    if String.trim line = inbox_basename then attempt ();
+                    loop ()
+                | exception (End_of_file | Sys_error _) ->
+                    (* inotifywait died — degrade to polling. *)
+                    poll_only ())
+            | exception _ -> poll_only ()
+        in
+        loop ())
+  in
+  try inotify_loop () with _ -> poll_only ()

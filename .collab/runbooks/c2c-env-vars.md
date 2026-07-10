@@ -61,7 +61,7 @@ Alias the broker auto-registers on startup, so you keep a stable alias across re
 
 ### `C2C_TMUX_LOCATION`
 
-Tmux `session:window.pane` target for managed sessions (set by `c2c start`). Used by the inner MCP server to include `tmux_location` in its broker registration, so `c2c list` shows which tmux pane each peer is running in. Format: `session:window.pane` (e.g. `0:0.0`). For managed sessions this is read from the per-instance `tmux.json` file at startup and passed via this env var. Unmanaged / foreign MCP clients do not set this.
+Tmux target for managed sessions (set by `c2c start`). Used by the inner MCP server to include `tmux_location` in its broker registration, so `c2c list` shows which tmux pane each peer is running in and the codex wake injector can target the pane. Format: `session:window.pane` (e.g. `0:0.0`) or a raw pane id (e.g. `%5` — what `c2c hook codex` captures from `$TMUX_PANE`); both are valid `tmux send-keys -t` targets. For managed sessions this is read from the per-instance `tmux.json` file at startup and passed via this env var. Unmanaged / foreign MCP clients do not set this. The MCP `register` tool also reads `$HERDR_PANE_ID` / `$HERDR_SOCKET_PATH` as fallbacks for the analogous `herdr_pane` / `herdr_socket` registration fields.
 
 ### `C2C_MCP_AUTO_JOIN_ROOMS`
 
@@ -86,6 +86,32 @@ Legacy opt-in for full PostToolUse injection, from when the debounced nudge was 
 ### `deferrable` (MCP send flag)
 
 `deferrable=true` means no push (#303): the MCP `send` tool's `deferrable` flag (and the equivalent `~deferrable:true` on `Broker.enqueue_message`) marks a message as low-priority. `drain_inbox_push` filters deferrable messages out, so neither the watcher nor the PostToolUse hook will surface them. The recipient only sees them on their next explicit `poll_inbox` (or the deliver daemon's idle flush). Rooms NEVER use `deferrable` (`fan_out_room_message` hardcodes `false`), which is why room broadcasts always push. Production opter-in: `relay_nudge.ml` (intentionally — its job is "nudge a poll-late agent without pushing again"). User opt-in: `mcp__c2c__send` with `deferrable: true`. If you actually want a DM to surface promptly, omit the flag. See `.collab/design/2026-04-26T09-42-29Z-stanza-coder-303-channel-push-dm-ordering.md` for full investigation + probe data; #307b dropped `deferrable` from the send-memory handoff. **Visibility tool (#307a)**: `c2c doctor delivery-mode --alias <a> [--since 1h] [--last N]` prints a histogram of recent archived inbound messages by deferrable flag, broken down by sender. Counts measure sender INTENT (the flag at write time), not delivery actuals — see the doctor subcommand's NOTE footer.
+
+---
+
+## Codex wake-inject (codex-wake-inject slice)
+
+Idle wake for codex sessions in tmux/herdr panes: a watcher (`C2c_wake_inject` — the managed codex deliver sidecar, or `c2c deliver wake-watch` for vanilla sessions) peeks the inbox and types a one-line nudge into the pane when the session is idle; the injected turn's UserPromptSubmit hook does the actual drain. The injector never drains the inbox.
+
+### `C2C_WAKE_IDLE_THRESHOLD_S`
+
+Float seconds (default `90`). Tmux-backend idle gate: inject only when the broker `last_activity_ts` is at least this old. (The herdr backend uses `herdr agent get` `agent_status=idle` instead — a real busy signal.)
+
+### `C2C_WAKE_BACKOFF_S`
+
+Float seconds (default `120`). Minimum time between injects for the same session. Independent of the backoff, a re-inject also requires a message NEWER than the newest one seen at the last inject (per-session state under `<broker_root>/wake-inject/<session_id>.json`).
+
+### `C2C_WAKE_POLL_S`
+
+Float seconds (default `20`). Watch-loop periodic re-attempt cadence (also the inotify select timeout), so a message that arrived while the session was busy still gets its nudge once the session goes idle. Attempts are cheap: the injector's own gates (empty inbox, backoff, dedupe, idle) short-circuit.
+
+### `C2C_WAKE_INJECT_FIXTURE`
+
+Test fixture gate. When set to a path, the injector records every external command it would run (one JSON line per command: `{"argv": [...], "env": {...}}`) to that file instead of executing — no tmux/herdr pane is ever touched. All wake-inject tests use this.
+
+### `C2C_WAKE_INJECT_HERDR_STATUS`
+
+Test-only companion to the fixture gate: the `agent_status` value the herdr idle probe reports in fixture mode (default `idle`; set `working` to test the never-inject-into-working-pane gate). Ignored outside fixture mode.
 
 ---
 

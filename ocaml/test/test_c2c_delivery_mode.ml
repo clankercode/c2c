@@ -14,6 +14,7 @@ let mode_to_string = function
   | Mode_xml_fd fd -> Printf.sprintf "Mode_xml_fd %d" fd
   | Mode_inotify_drain -> "Mode_inotify_drain"
   | Mode_inotify_print -> "Mode_inotify_print"
+  | Mode_wake_inject -> "Mode_wake_inject"
   | Mode_poll -> "Mode_poll"
 
 let check_mode expected actual =
@@ -52,6 +53,26 @@ let nongeneric_inotify_no_xml_picks_print () =
     (select_delivery_mode ~pty_master_fd:None ~xml_output_fd:None
        ~use_inotify:true ~client:"claude")
 
+(* codex-wake-inject: interactive codex with no fds routes to the wake-inject
+   watcher (tmux/herdr nudge; hooks deliver) regardless of --inotify — the
+   watcher handles its own inotify/poll fallback. Replaces the useless
+   log-only Mode_inotify_print routing post-xmlfd-removal. *)
+let codex_no_fds_picks_wake_inject () =
+  check_mode Mode_wake_inject
+    (select_delivery_mode ~pty_master_fd:None ~xml_output_fd:None
+       ~use_inotify:true ~client:"codex")
+
+let codex_no_fds_no_inotify_picks_wake_inject () =
+  check_mode Mode_wake_inject
+    (select_delivery_mode ~pty_master_fd:None ~xml_output_fd:None
+       ~use_inotify:false ~client:"codex")
+
+(* codex-headless keeps its own paths — never wake-inject. *)
+let codex_headless_not_wake_inject () =
+  check_mode Mode_inotify_print
+    (select_delivery_mode ~pty_master_fd:None ~xml_output_fd:None
+       ~use_inotify:true ~client:"codex-headless")
+
 (* No fds, no inotify → polling loop (generic/kimi single-loop fallback). *)
 let no_fd_no_inotify_picks_poll () =
   check_mode Mode_poll
@@ -69,6 +90,9 @@ let suite = [
   "pty fd wins over xml+inotify", `Quick, pty_fd_wins;
   "generic + inotify picks drain", `Quick, generic_inotify_picks_drain;
   "non-generic + inotify, no xml picks print", `Quick, nongeneric_inotify_no_xml_picks_print;
+  "codex, no fds, inotify picks wake-inject", `Quick, codex_no_fds_picks_wake_inject;
+  "codex, no fds, no inotify picks wake-inject", `Quick, codex_no_fds_no_inotify_picks_wake_inject;
+  "codex-headless not wake-inject", `Quick, codex_headless_not_wake_inject;
   "no fd, no inotify picks poll", `Quick, no_fd_no_inotify_picks_poll;
   "generic, no inotify picks poll", `Quick, generic_no_inotify_picks_poll;
 ]

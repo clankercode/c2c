@@ -73,9 +73,11 @@ let pid_is_alive pid =
 
 type delivery_mode =
   | Mode_pty of int            (* PTY master fd (S4) *)
-  | Mode_xml_fd of int         (* XML sideband to fd — codex managed path *)
+  | Mode_xml_fd of int         (* XML sideband to fd — codex-headless bridge path *)
   | Mode_inotify_drain         (* generic client: event-driven destructive drain *)
   | Mode_inotify_print         (* non-generic, non-xml, --inotify: log-only (manual/debug) *)
+  | Mode_wake_inject           (* codex: tmux/herdr wake-nudge watcher — never drains;
+                                  codex hooks deliver bodies on the injected turn *)
   | Mode_poll                  (* generic/kimi polling loop *)
 
 let select_delivery_mode
@@ -89,7 +91,15 @@ let select_delivery_mode
       (match xml_output_fd with
        | Some fd -> Mode_xml_fd fd        (* precedence over --inotify *)
        | None ->
-           if use_inotify then
+           (* codex-wake-inject: interactive codex delivery is owned by the
+              config.toml hooks; the sidecar daemon's only job is to WAKE an
+              idle session (tmux/herdr nudge) when the inbox grows. The old
+              routing sent codex to the log-only Mode_inotify_print, which
+              did nothing useful post-xmlfd-removal. C2c_wake_inject handles
+              its own inotify/poll fallback, so use_inotify is irrelevant
+              here. codex-headless is NOT affected (matches "codex" only). *)
+           if client = "codex" then Mode_wake_inject
+           else if use_inotify then
              if client = "generic" then Mode_inotify_drain
              else Mode_inotify_print
            else Mode_poll)
