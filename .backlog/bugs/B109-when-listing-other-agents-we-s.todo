@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B109
+priority: high
+status: pending
+tags: []
+title: when listing other agents, we should not show long dead agents, and we should group them by repository and show them in those groups. this should also be done for pi-c2c
+---
+
+when listing other agents, we should not show long dead agents, and we should group them by repository and show them in those groups. this should also be done for pi-c2c
