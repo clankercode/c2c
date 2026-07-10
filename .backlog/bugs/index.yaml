@@ -100,3 +100,4 @@ bugs:
     - file: B101-c2c-self-update-must-support-n.todo
     - file: B102-auto-assigned-alias-misdetects.todo
     - file: B103-opencode-question-flow-inbound.todo
+    - file: B104-reply-path-broken-successful-c.todo
