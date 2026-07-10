@@ -239,6 +239,84 @@ let test_of_string_parse_error () =
   Alcotest.(check bool) "of_string returns Error on bad JSON" true
     (is_err (S.of_string "{not json"))
 
+(* ---- SCHEMA-MISMATCH (F5c): wrong JSON *kinds* must fail honestly ----
+
+   J1 covered wrong *values* (version 2, unknown enums) and missing
+   requireds. F5c adds the wrong-KIND axis: every field served as a
+   well-formed JSON value of the wrong type must yield [Error _] — never an
+   exception, never a false Ok. These are the pure counterparts of the
+   relay-response schema-mismatch faults in test_relay_test_support.ml
+   (rows B232/B238; C056). *)
+
+let mismatch_doc ~field ~value =
+  (* full valid minimal doc with one field overridden to a wrong-kind value *)
+  let base =
+    [ ("schema_version", `Int 1)
+    ; ("type", `String "dm")
+    ; ("from", `Assoc [ ("alias", `String "a") ])
+    ; ("to", `String "b")
+    ; ("content", `String "c")
+    ]
+  in
+  let fields =
+    if List.mem_assoc field base then
+      List.map (fun (k, v) -> if k = field then (k, value) else (k, v)) base
+    else base @ [ (field, value) ]
+  in
+  Yojson.Safe.to_string (`Assoc fields)
+
+let check_mismatch label ~field ~value =
+  let s = mismatch_doc ~field ~value in
+  match S.validate (Yojson.Safe.from_string s) with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.failf "%s: expected Error on wrong-kind %s, got Ok" label field
+  | exception e ->
+      Alcotest.failf "%s: validate raised %s (must return Error, not raise)"
+        label (Printexc.to_string e)
+
+let test_mismatch_version_kinds () =
+  check_mismatch "version as float" ~field:"schema_version" ~value:(`Float 1.0);
+  check_mismatch "version as bool" ~field:"schema_version" ~value:(`Bool true);
+  check_mismatch "version as null" ~field:"schema_version" ~value:`Null;
+  check_mismatch "version as list" ~field:"schema_version" ~value:(`List [ `Int 1 ]);
+  (* an out-of-native-int JSON integer parses as `Intlit — not `Int 1 *)
+  check_err "version as bignum rejected"
+    {|{"schema_version":99999999999999999999999999,"type":"dm","from":{"alias":"a"},"to":"b","content":"c"}|}
+
+let test_mismatch_required_kinds () =
+  check_mismatch "from as string" ~field:"from" ~value:(`String "a");
+  check_mismatch "from as list" ~field:"from" ~value:(`List [ `String "a" ]);
+  check_mismatch "to as int" ~field:"to" ~value:(`Int 42);
+  check_mismatch "content as int" ~field:"content" ~value:(`Int 42);
+  check_mismatch "content as null" ~field:"content" ~value:`Null;
+  check_mismatch "type as int" ~field:"type" ~value:(`Int 1);
+  (* from.alias wrong kind *)
+  check_err "from.alias as int rejected"
+    {|{"schema_version":1,"type":"dm","from":{"alias":7},"to":"b","content":"c"}|}
+
+let test_mismatch_optional_kinds () =
+  (* optional fields, when PRESENT with the wrong kind, must reject — not be
+     silently treated as absent *)
+  check_mismatch "ts as string" ~field:"ts" ~value:(`String "yesterday");
+  check_mismatch "message_id as int" ~field:"message_id" ~value:(`Int 7);
+  check_mismatch "in_reply_to as int" ~field:"in_reply_to" ~value:(`Int 7);
+  check_mismatch "source as int" ~field:"source" ~value:(`Int 3);
+  check_mismatch "delivery as string" ~field:"delivery" ~value:(`String "delivered");
+  check_mismatch "delivery as list" ~field:"delivery" ~value:(`List []);
+  check_err "delivery.state as int rejected"
+    {|{"schema_version":1,"type":"dm","from":{"alias":"a"},"to":"b","content":"c","delivery":{"state":7}}|}
+
+let test_validate_total_on_junk () =
+  (* validate must be total: arbitrary well-formed JSON never raises *)
+  List.iter
+    (fun s ->
+      match S.validate (parse s) with
+      | Ok _ | Error _ -> ()
+      | exception e ->
+          Alcotest.failf "validate raised on %s: %s" s (Printexc.to_string e))
+    [ {|null|}; {|true|}; {|42|}; {|3.14|}; {|"str"|}; {|[]|}; {|{}|};
+      {|[[[[1]]]]|}; {|{"from":{"from":{"from":{}}}}|} ]
+
 let () =
   Alcotest.run "c2c_schema_v1"
     [ ( "valid",
@@ -273,4 +351,9 @@ let () =
         [ Alcotest.test_case "serialize omits None" `Quick test_serialize_omits_none;
           Alcotest.test_case "full roundtrip" `Quick test_serialize_full_roundtrip;
           Alcotest.test_case "of_string parse error" `Quick test_of_string_parse_error ] );
+      ( "schema-mismatch (F5c)",
+        [ Alcotest.test_case "schema_version wrong JSON kinds" `Quick test_mismatch_version_kinds;
+          Alcotest.test_case "required fields wrong JSON kinds" `Quick test_mismatch_required_kinds;
+          Alcotest.test_case "optional fields wrong JSON kinds" `Quick test_mismatch_optional_kinds;
+          Alcotest.test_case "validate total on junk documents" `Quick test_validate_total_on_junk ] );
     ]
