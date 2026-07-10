@@ -497,6 +497,14 @@ let claude_wake_text ~alias =
 let hook_claude_cmd =
   let open Cmdliner.Term in
   const (fun () ->
+    let start_time = Unix.gettimeofday () in
+    (* Fast exits must still hold the min-runtime floor: Claude Code's
+       waitpid() hits ECHILD when a hook is reaped too quickly (same race
+       sleep_to_min_runtime guards in hook_post_tool_cmd / hook_stop_cmd). *)
+    let exit_floored code =
+      (try sleep_to_min_runtime start_time with _ -> ());
+      exit code
+    in
     (* Hard runtime cap: exit cleanly well before the hook timeout so a
        wedged broker dir can never stall a claude session start. *)
     (try
@@ -506,7 +514,7 @@ let hook_claude_cmd =
     (try
        (* Subagent guard (B042): spawned Claude subagents inherit the parent
           env and must never be registered or drained. *)
-       if C2c_hook_lib.is_subagent_quiet () then exit 0;
+       if C2c_hook_lib.is_subagent_quiet () then exit_floored 0;
        let raw = read_stdin_all ~max_bytes:(1024 * 1024) in
        let payload =
          try Yojson.Safe.from_string (String.trim raw) with _ -> `Null
@@ -514,9 +522,9 @@ let hook_claude_cmd =
        let event =
          match payload_string_field payload "hook_event_name" with
          | Some e -> e
-         | None -> exit 0
+         | None -> exit_floored 0
        in
-       if not (List.mem event claude_session_events) then exit 0;
+       if not (List.mem event claude_session_events) then exit_floored 0;
        (* Auto-update the /c2c claude skill from the embedded blob on session
           start, so sessions pick up skill changes from a new binary without
           re-running `c2c install claude`. Best-effort, never prints. *)
@@ -554,7 +562,7 @@ let hook_claude_cmd =
           with
           | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
           | None -> ());
-         exit 0
+         exit_floored 0
        end;
        (* SessionStart identity resolution, env first:
           1. C2C_MCP_SESSION_ID env has a registration (managed session, or
@@ -585,9 +593,9 @@ let hook_claude_cmd =
          match resolved with
          | Some sid -> (sid, None)
          | None ->
-             if Option.is_some env_sid then exit 0;
+             if Option.is_some env_sid then exit_floored 0;
              (match payload_sid with
-              | None -> exit 0
+              | None -> exit_floored 0
               | Some sid ->
                   (* Auto-register: zero-setup onboarding for vanilla claude.
                      The payload UUID is stable for the conversation, so the
@@ -608,7 +616,7 @@ let hook_claude_cmd =
                           ("c2c hook claude: auto-register failed: "
                            ^ Printexc.to_string e)
                       with _ -> ());
-                     exit 0);
+                     exit_floored 0);
                   (* Persist the identity for plain `c2c` CLI calls from this
                      claude session, but never steal a statefile that still
                      points at a live identity. *)
@@ -702,12 +710,12 @@ let hook_claude_cmd =
          print_string (Yojson.Safe.to_string json);
          print_newline ()
        end;
-       exit 0
+       exit_floored 0
      with
      | e ->
          (* Never break the claude turn: swallow everything, exit 0. *)
          (try prerr_endline ("c2c hook claude: " ^ Printexc.to_string e) with _ -> ());
-         exit 0)) $ const ()
+         exit_floored 0)) $ const ()
 
 let hook_claude : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
