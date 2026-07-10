@@ -1009,8 +1009,21 @@ let auto_register_impl ~broker_root ?session_id_override () =
               None
         in
         let cwd = try Some (Sys.getcwd ()) with Sys_error _ -> None in
+        (* Wake-target capture (codex-wake-inject): managed sessions set
+           C2C_TMUX_LOCATION via `c2c start` build_env; herdr pane env is
+           inherited from the launching pane. Mirrors the register-tool
+           fallbacks so startup auto-registration carries the targets too
+           (the codex SessionStart hook refreshes them later regardless). *)
+        let nonempty_env name =
+          match Sys.getenv_opt name with
+          | Some v when String.trim v <> "" -> Some (String.trim v)
+          | _ -> None
+        in
         Broker.register broker ~session_id ~alias ~pid ~pid_start_time ~client_type
           ~plugin_version ~enc_pubkey ~cwd
+          ~tmux_location:(nonempty_env "C2C_TMUX_LOCATION")
+          ~herdr_pane:(nonempty_env "HERDR_PANE_ID")
+          ~herdr_socket:(nonempty_env "HERDR_SOCKET_PATH")
           ~from_auto_gen:(auto_register_alias_from_auto_gen ()) ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end else begin
