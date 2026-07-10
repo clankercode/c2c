@@ -202,13 +202,23 @@ let list_cmd =
       | Some n -> with_repo @ [ ("pid", `Int n) ]
       | None -> with_repo
     in
+    let liveness = C2c_mcp.Broker.registration_liveness_state r in
     let alive_val : Yojson.Safe.t =
-      match C2c_mcp.Broker.registration_liveness_state r with
+      match liveness with
       | C2c_mcp.Broker.Alive -> `Bool true
       | C2c_mcp.Broker.Dead -> `Bool false
       | C2c_mcp.Broker.Unknown -> `Null
     in
-    let with_alive = with_pid @ [ ("alive", alive_val) ] in
+    let state =
+      match liveness with
+      | C2c_mcp.Broker.Alive -> "alive"
+      | C2c_mcp.Broker.Dead -> "dead"
+      | C2c_mcp.Broker.Unknown -> "unknown"
+    in
+    (* Keep the machine-readable liveness shape aligned with [c2c find]:
+       [alive] is tri-state for existing consumers and [state] is the
+       explicit, script-friendly label. *)
+    let with_alive = with_pid @ [ ("alive", alive_val); ("state", `String state) ] in
     (* B097: surface the local Ed25519 identity key as identity_pk so callers
        can verify senders / cross-reference relay peers. Mirrors the relay
        lease field name for a uniform per-peer shape. *)

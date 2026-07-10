@@ -249,7 +249,9 @@ let test_find_and_list_report_fresh_codex_hook_alive () =
   match Yojson.Safe.from_string out_list with
   | `List [ entry ] ->
       check bool "list reports hook peer alive" true
-        (member "alive" entry = Some (`Bool true))
+        (member "alive" entry = Some (`Bool true));
+      check string "list reports explicit alive state" "alive"
+        (str_member "state" entry)
   | _ -> fail "list did not return exactly one fresh Codex hook"
 
 (* --- c2c list filters ---------------------------------------------------- *)
