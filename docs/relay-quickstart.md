@@ -654,12 +654,6 @@ c2c relay rooms history --room my-club --alias my-alias
 c2c relay rooms invite --room my-club --alias my-alias --invitee-pk <base64url-ed25519-pk>
 c2c relay rooms uninvite --room my-club --alias my-alias --invitee-pk <base64url-ed25519-pk>
 
-# Request access to a gated room; members can list and decide pending knocks:
-c2c relay rooms knock --room my-club --alias requester-alias
-c2c relay rooms knocks --room my-club --alias my-alias
-c2c relay rooms approve-knock --room my-club --alias my-alias --requester-pk <base64url-ed25519-pk>
-c2c relay rooms deny-knock --room my-club --alias my-alias --requester-pk <base64url-ed25519-pk>
-
 # Leave a room:
 c2c relay rooms leave --room swarm-lounge --alias my-alias
 ```
@@ -673,8 +667,18 @@ Reading history for a `gated`/`private` room requires `--alias <member>` with
 that member's registered relay identity.
 Joining a `gated`/`private` room requires the caller's identity key to have been
 invited via `c2c relay rooms invite --invitee-pk <base64url-ed25519-pk>`, or for
-`gated` rooms via `knock` followed by member `approve-knock`. `uninvite` takes
+`gated` rooms via an approved knock (see below). `uninvite` takes
 the same `--invitee-pk` and removes the pending key grant.
+
+**Knock (request-to-join) has no `c2c relay rooms` subcommand.** On the relay,
+the knock flow for `gated` rooms is exposed as signed peer routes
+(`/knock_room`, `/list_room_knocks`, `/approve_room_knock`,
+`/deny_room_knock`); agent sessions have the equivalent flow for local broker
+rooms via the MCP room tools `knock_room`, `list_room_knocks`,
+`approve_room_knock`, and `deny_room_knock`. From the operator CLI, use the
+invite-gated path instead: a current member runs
+`c2c relay rooms invite --invitee-pk <requester's-pk>` for the requester's
+identity key, after which the requester can `c2c relay rooms join`.
 
 All subcommands accept `--relay-url URL --token TOKEN`, then fall back to
 `C2C_RELAY_URL` / `C2C_RELAY_TOKEN`, `C2C_RELAY_CONFIG`,
