@@ -45,7 +45,7 @@ let test_classify_bun () =
 
 (* ---- detect: method + package ownership ---------------------------------- *)
 
-let detect p = P.detect ~binary_path:p ~resolved_on_path:None
+let detect p = P.detect ~binary_path:p ~resolved_on_path:None ()
 
 let test_detect_standalone () =
   let t = detect (List.hd standalone_paths) in
@@ -66,17 +66,32 @@ let test_detect_unknown_foreign_store () =
   let foreign = "/home/u/node_modules/some-other-tool/bin/c2c" in
   Alcotest.check method_t "unknown" P.Unknown (detect foreign).P.method_
 
+(* M3: a custom BUN_INSTALL prefix has no ".bun" segment, so without the hint a
+   bun-managed binary under it misclassifies as Npm; the injected prefix fixes it. *)
+let test_detect_bun_install_custom_prefix () =
+  let custom =
+    "/home/u/bunroot/install/global/node_modules/@clanker-code/c2c-linux-x64/bin/c2c"
+  in
+  Alcotest.check method_t "npm without hint" P.Npm (detect custom).P.method_;
+  Alcotest.check method_t "bun with BUN_INSTALL hint" P.Bun
+    (P.detect ~bun_install:"/home/u/bunroot" ~binary_path:custom
+       ~resolved_on_path:None ()).P.method_;
+  (* An unrelated BUN_INSTALL prefix must NOT hijack a real npm install. *)
+  Alcotest.check method_t "npm unaffected by unrelated prefix" P.Npm
+    (P.detect ~bun_install:"/home/u/elsewhere"
+       ~binary_path:(List.hd npm_paths) ~resolved_on_path:None ()).P.method_
+
 (* ---- detect: PATH shadow ------------------------------------------------- *)
 
 let test_detect_shadow () =
   let running = "/home/u/.local/bin/c2c" in
   let on_path = "/usr/local/bin/c2c" in
-  let t = P.detect ~binary_path:running ~resolved_on_path:(Some on_path) in
+  let t = P.detect ~binary_path:running ~resolved_on_path:(Some on_path) () in
   Alcotest.(check (option string)) "shadowed_by" (Some on_path) t.P.shadowed_by
 
 let test_detect_no_shadow_same_path () =
   let p = "/home/u/.local/bin/c2c" in
-  let t = P.detect ~binary_path:p ~resolved_on_path:(Some p) in
+  let t = P.detect ~binary_path:p ~resolved_on_path:(Some p) () in
   Alcotest.(check (option string)) "not shadowed" None t.P.shadowed_by
 
 (* ---- delegate_command ---------------------------------------------------- *)
@@ -106,6 +121,15 @@ let test_delegate_command_none_for_standalone () =
     (P.delegate_command P.Standalone ~pinned:None);
   Alcotest.(check (option string)) "unknown" None
     (P.delegate_command P.Unknown ~pinned:None)
+
+(* M5: a blank / whitespace pin resolves to @latest, never a bare "@". *)
+let test_delegate_command_blank_pin_latest () =
+  Alcotest.(check (option string)) "empty pin -> latest"
+    (Some "npm install -g @clanker-code/c2c@latest")
+    (P.delegate_command P.Npm ~pinned:(Some ""));
+  Alcotest.(check (option string)) "whitespace pin -> latest"
+    (Some "npm install -g @clanker-code/c2c@latest")
+    (P.delegate_command P.Npm ~pinned:(Some "   "))
 
 (* ---- plan: the decision matrix ------------------------------------------- *)
 
@@ -169,7 +193,7 @@ let test_plan_shadow_refuses_standalone () =
   (* PATH-shadow (F101): the standalone binary that would be updated is not the
      c2c that runs from PATH -> refuse. *)
   let t = P.detect ~binary_path:"/home/u/.local/bin/c2c"
-            ~resolved_on_path:(Some "/usr/local/bin/c2c") in
+            ~resolved_on_path:(Some "/usr/local/bin/c2c") () in
   Alcotest.(check bool) "shadow refuses" true
     (is_refuse (P.plan t ~check_only:false ~pinned:None ~manager_available:false))
 
@@ -177,7 +201,7 @@ let test_plan_shadow_check_only_ok () =
   (* --check never mutates, so a shadowed standalone still reports in-place
      (no refusal) under check. *)
   let t = P.detect ~binary_path:"/home/u/.local/bin/c2c"
-            ~resolved_on_path:(Some "/usr/local/bin/c2c") in
+            ~resolved_on_path:(Some "/usr/local/bin/c2c") () in
   Alcotest.check action_t "check ignores shadow"
     P.In_place_standalone
     (P.plan t ~check_only:true ~pinned:None ~manager_available:false)
@@ -199,21 +223,66 @@ let test_delegate_outcome () =
      && (try ignore (Str.search_forward (Str.regexp_string "7") bad 0); true
          with Not_found -> false))
 
-(* ---- JSON / human rendering (no env leak) -------------------------------- *)
+(* ---- shipped delegate JSON (the REAL emitter, not a parallel one) --------- *)
 
-let test_to_json_states_method () =
-  let t = detect (List.hd npm_paths) in
-  let j = P.to_json t ~pinned:None in
+let keys_of = function `Assoc kv -> List.map fst kv | _ -> []
+
+let delegate_keys =
+  [ "install_method"; "delegate_command"; "check_only"; "executed"; "exit_code" ]
+
+(* (i) delegate-report / check: exec suppressed -> executed=false, exit_code=null *)
+let test_delegate_json_report () =
+  let j =
+    P.delegate_json ~method_:P.Npm
+      ~command:"npm install -g @clanker-code/c2c@latest"
+      ~check_only:true ~executed:false ~exit_code:None
+  in
   let open Yojson.Safe.Util in
+  Alcotest.(check (list string)) "exactly the five stable keys" delegate_keys (keys_of j);
   Alcotest.(check string) "method" "npm" (j |> member "install_method" |> to_string);
   Alcotest.(check string) "command"
     "npm install -g @clanker-code/c2c@latest"
     (j |> member "delegate_command" |> to_string);
-  (* only the five decision keys — no environment data leaked. *)
-  let keys = match j with `Assoc kv -> List.map fst kv | _ -> [] in
-  Alcotest.(check (list string)) "exactly the decision keys"
-    ["install_method"; "binary_path"; "package_name"; "delegate_command"; "shadowed_by"]
-    keys
+  Alcotest.(check bool) "check_only" true (j |> member "check_only" |> to_bool);
+  Alcotest.(check bool) "not executed" false (j |> member "executed" |> to_bool);
+  Alcotest.(check bool) "exit_code null" true (j |> member "exit_code" = `Null)
+
+(* (ii) delegate-execute success: executed=true, exit_code=0 *)
+let test_delegate_json_exec_success () =
+  let j =
+    P.delegate_json ~method_:P.Pnpm
+      ~command:"pnpm add -g @clanker-code/c2c@latest"
+      ~check_only:false ~executed:true ~exit_code:(Some 0)
+  in
+  let open Yojson.Safe.Util in
+  Alcotest.(check (list string)) "keys" delegate_keys (keys_of j);
+  Alcotest.(check bool) "executed" true (j |> member "executed" |> to_bool);
+  Alcotest.(check int) "exit_code 0" 0 (j |> member "exit_code" |> to_int)
+
+(* (iii) delegate-execute failure: executed=true, exit_code=<rc> *)
+let test_delegate_json_exec_failure () =
+  let j =
+    P.delegate_json ~method_:P.Bun
+      ~command:"bun add -g @clanker-code/c2c@latest"
+      ~check_only:false ~executed:true ~exit_code:(Some 7)
+  in
+  let open Yojson.Safe.Util in
+  Alcotest.(check (list string)) "keys" delegate_keys (keys_of j);
+  Alcotest.(check string) "method" "bun" (j |> member "install_method" |> to_string);
+  Alcotest.(check bool) "executed" true (j |> member "executed" |> to_bool);
+  Alcotest.(check int) "exit_code 7" 7 (j |> member "exit_code" |> to_int)
+
+(* (iv) refuse paths: single error object, error + exit_code *)
+let test_error_json_refuse () =
+  let j = P.error_json "refusing to self-update: shadowed" in
+  let open Yojson.Safe.Util in
+  Alcotest.(check (list string)) "exactly error+exit_code"
+    [ "error"; "exit_code" ] (keys_of j);
+  Alcotest.(check string) "error message"
+    "refusing to self-update: shadowed" (j |> member "error" |> to_string);
+  Alcotest.(check int) "exit_code 1" 1 (j |> member "exit_code" |> to_int);
+  Alcotest.(check int) "override exit_code"
+    2 (P.error_json ~exit_code:2 "x" |> member "exit_code" |> to_int)
 
 let test_describe_human () =
   let t = detect (List.hd npm_paths) in
@@ -234,11 +303,13 @@ let () =
          Alcotest.test_case "pnpm" `Quick test_detect_pnpm;
          Alcotest.test_case "bun" `Quick test_detect_bun;
          Alcotest.test_case "unknown-foreign-store" `Quick test_detect_unknown_foreign_store;
+         Alcotest.test_case "bun-install-custom-prefix" `Quick test_detect_bun_install_custom_prefix;
          Alcotest.test_case "shadow" `Quick test_detect_shadow;
          Alcotest.test_case "no-shadow-same-path" `Quick test_detect_no_shadow_same_path ]);
       ("delegate_command",
        [ Alcotest.test_case "latest" `Quick test_delegate_command_latest;
          Alcotest.test_case "pinned" `Quick test_delegate_command_pinned;
+         Alcotest.test_case "blank-pin-latest" `Quick test_delegate_command_blank_pin_latest;
          Alcotest.test_case "none-for-standalone" `Quick test_delegate_command_none_for_standalone ]);
       ("plan",
        [ Alcotest.test_case "standalone-in-place" `Quick test_plan_standalone_in_place;
@@ -252,5 +323,8 @@ let () =
       ("outcome",
        [ Alcotest.test_case "delegate-outcome" `Quick test_delegate_outcome ]);
       ("render",
-       [ Alcotest.test_case "to_json-method" `Quick test_to_json_states_method;
+       [ Alcotest.test_case "delegate-json-report" `Quick test_delegate_json_report;
+         Alcotest.test_case "delegate-json-exec-success" `Quick test_delegate_json_exec_success;
+         Alcotest.test_case "delegate-json-exec-failure" `Quick test_delegate_json_exec_failure;
+         Alcotest.test_case "error-json-refuse" `Quick test_error_json_refuse;
          Alcotest.test_case "describe-human" `Quick test_describe_human ]) ]

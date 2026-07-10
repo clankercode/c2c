@@ -202,6 +202,8 @@ type update_result =
 
 (* ---- provenance helpers (B101 / A003 / F101) ----------------------------- *)
 
+module Prov = C2c_self_update_provenance
+
 (* Does an external command exist on PATH? Injectable for tests via
    C2C_SELF_UPDATE_MANAGER_AVAILABLE. *)
 let command_exists cmd =
@@ -229,8 +231,7 @@ let resolve_c2c_on_path () =
 
 let emit_error ~json_output msg =
   if json_output then
-    Printf.printf "{\"error\":%s,\"exit_code\":1}\n"
-      (Yojson.Safe.to_string (`String msg))
+    Printf.printf "%s\n%!" (Yojson.Safe.to_string (Prov.error_json msg))
   else Printf.eprintf "error: %s\n%!" msg
 
 (* ---- standalone (in-place) flow ------------------------------------------ *)
@@ -438,9 +439,12 @@ let run_standalone_update ~check_only ~pinned_version ~json_output ~verify_sig =
      C2C_SELF_UPDATE_PROVENANCE_PATH   override the running-binary realpath
      C2C_SELF_UPDATE_ON_PATH           override the PATH-resolved realpath ("" = none)
      C2C_SELF_UPDATE_MANAGER_AVAILABLE 1/0 override manager-on-PATH probe
-     C2C_SELF_UPDATE_EXEC=0            report the delegate command, do not run it *)
-
-module Prov = C2c_self_update_provenance
+     C2C_SELF_UPDATE_EXEC=0            report the delegate command, do not run it
+     C2C_SELF_UPDATE_EXEC_CMD          override the command actually exec'd on
+                                       the delegate path (test seam; the shipped
+                                       JSON still reports the real delegate cmd)
+     BUN_INSTALL                       custom bun prefix consulted during
+                                       provenance classification *)
 
 let detect_provenance () =
   let real_binary =
@@ -455,7 +459,12 @@ let detect_provenance () =
     | Some p -> if String.trim p = "" then None else Some p
     | None -> resolve_c2c_on_path ()
   in
-  Prov.detect ~binary_path:real_binary ~resolved_on_path
+  let bun_install =
+    match Sys.getenv_opt "BUN_INSTALL" with
+    | Some s when String.trim s <> "" -> Some s
+    | _ -> None
+  in
+  Prov.detect ?bun_install ~binary_path:real_binary ~resolved_on_path ()
 
 let manager_available prov =
   match Sys.getenv_opt "C2C_SELF_UPDATE_MANAGER_AVAILABLE" with
@@ -483,33 +492,51 @@ let run_self_update ~check_only ~pinned_version ~json_output ~verify_sig =
       run_standalone_update ~check_only ~pinned_version ~json_output ~verify_sig
   | Prov.Delegate { method_; command } ->
       let suppressed = exec_suppressed ~check_only in
-      if json_output then
-        Printf.printf "%s\n%!"
-          (Yojson.Safe.to_string
-             (`Assoc
-                [ ("install_method", `String (Prov.string_of_method method_));
-                  ("delegate_command", `String command);
-                  ("check_only", `Bool check_only);
-                  ("executed", `Bool (not suppressed)) ]))
+      if suppressed then begin
+        (* Report-only: never runs the manager. Emit exactly one JSON document
+           (executed=false, exit_code=null) or the human report. *)
+        if json_output then
+          Printf.printf "%s\n%!"
+            (Yojson.Safe.to_string
+               (Prov.delegate_json ~method_ ~command ~check_only ~executed:false
+                  ~exit_code:None))
+        else begin
+          Printf.printf "Detected %s.\n" (Prov.describe prov);
+          Printf.printf "To update, run:\n  %s\n%!" command
+        end;
+        if check_only then
+          Check_only
+            { current = current_version (); latest = ""; asset_available = true }
+        else Already_latest
+      end
       else begin
-        Printf.printf "Detected %s-managed c2c (%s).\n"
-          (Prov.string_of_method method_) prov.Prov.package_name;
-        Printf.printf "%s:\n  %s\n%!"
-          (if suppressed then "To update, run" else "Delegating to the owning package manager")
-          command
-      end;
-      if suppressed then
-        (if check_only then
-           Check_only { current = current_version (); latest = ""; asset_available = true }
-         else Already_latest)
-      else begin
-        let rc = Sys.command command in
-        let msg = Prov.delegate_outcome_message method_ ~command ~rc in
-        if rc = 0 then begin
-          if not json_output then Printf.eprintf "%s\n%!" msg;
-          Updated command
-        end else begin
-          emit_error ~json_output msg;
-          Update_error msg
-        end
+        (* Human report goes to stdout BEFORE the manager runs (fine for humans).
+           In --json mode nothing precedes the manager: it must not pollute the
+           single-document stdout contract, so its stdout is redirected to
+           stderr and the ONE JSON document is emitted AFTER it completes. *)
+        if not json_output then begin
+          Printf.printf "Detected %s.\n" (Prov.describe prov);
+          Printf.printf "Delegating to the owning package manager:\n  %s\n%!"
+            command
+        end;
+        (* Test seam: exercise the exec success/failure paths hermetically
+           without a real package manager. The shipped JSON still reports the
+           real [command]; only what is actually run is overridden. *)
+        let to_run =
+          match Sys.getenv_opt "C2C_SELF_UPDATE_EXEC_CMD" with
+          | Some c when String.trim c <> "" -> c
+          | _ -> command
+        in
+        let shell_cmd = if json_output then to_run ^ " 1>&2" else to_run in
+        let rc = Sys.command shell_cmd in
+        if json_output then
+          Printf.printf "%s\n%!"
+            (Yojson.Safe.to_string
+               (Prov.delegate_json ~method_ ~command ~check_only ~executed:true
+                  ~exit_code:(Some rc)))
+        else
+          Printf.eprintf "%s\n%!"
+            (Prov.delegate_outcome_message method_ ~command ~rc);
+        if rc = 0 then Updated command
+        else Update_error (Prov.delegate_outcome_message method_ ~command ~rc)
       end

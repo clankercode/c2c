@@ -43,6 +43,20 @@ let segments path =
 
 let has_segment path seg = List.mem seg (segments path)
 
+(* [is_under ~prefix path]: is [path] the directory [prefix] or a descendant of
+   it? Trailing-slash tolerant, case-insensitive (matches the rest of this
+   module). Used to honour a custom BUN_INSTALL prefix during classification. *)
+let is_under ~prefix path =
+  let strip_trail s =
+    let n = String.length s in
+    if n > 1 && s.[n - 1] = '/' then String.sub s 0 (n - 1) else s
+  in
+  let prefix = strip_trail (lower prefix) and path = lower path in
+  prefix <> ""
+  && (path = prefix
+     || (String.length path > String.length prefix
+        && String.sub path 0 (String.length prefix + 1) = prefix ^ "/"))
+
 (* ---- classification ------------------------------------------------------ *)
 
 (* Precedence matters: a pnpm/bun store also contains a `node_modules` segment,
@@ -68,8 +82,17 @@ type t = {
   shadowed_by : string option;
 }
 
-let detect ~binary_path ~resolved_on_path =
+let detect ?bun_install ~binary_path ~resolved_on_path () =
   let base = classify_path binary_path in
+  (* A custom BUN_INSTALL prefix need not contain a ".bun" path segment, so a
+     bun-managed binary under it would otherwise fall through node_modules ->
+     Npm and get the wrong manager command. When BUN_INSTALL is known (injected)
+     and the binary lives under it, prefer Bun. *)
+  let base =
+    match (base, bun_install) with
+    | Npm, Some prefix when is_under ~prefix binary_path -> Bun
+    | _ -> base
+  in
   let method_ =
     match base with
     | Standalone -> Standalone
@@ -85,10 +108,6 @@ let detect ~binary_path ~resolved_on_path =
   in
   { method_; binary_path; package_name; shadowed_by }
 
-let is_package_managed = function
-  | Npm | Pnpm | Bun -> true
-  | Standalone | Unknown -> false
-
 (* ---- delegation ---------------------------------------------------------- *)
 
 let strip_prefix_v s =
@@ -98,7 +117,11 @@ let strip_prefix_v s =
 
 let version_selector = function
   | None -> "@latest"
-  | Some v -> "@" ^ strip_prefix_v (String.trim v)
+  | Some v ->
+      (* A blank/whitespace pin (e.g. `--target ""`) means "no pin" -> latest,
+         never a bare `@` selector. *)
+      let v = String.trim v in
+      if v = "" then "@latest" else "@" ^ strip_prefix_v v
 
 let delegate_command method_ ~pinned =
   let sel = version_selector pinned in
@@ -174,17 +197,25 @@ let describe t =
   | Unknown ->
       Printf.sprintf "unrecognised package store at %s" t.binary_path
 
-let to_json t ~pinned =
+(* Single source of truth for the JSON document emitted on stdout by the
+   dispatcher's delegate path — the real shipped shape, unit-tested here.
+   Exactly five stable keys across every delegate case:
+     - report/check (exec suppressed): [executed=false], [exit_code=null]
+     - execute success:                [executed=true],  [exit_code=0]
+     - execute failure:                [executed=true],  [exit_code=<rc>] *)
+let delegate_json ~method_ ~command ~check_only ~executed ~exit_code =
   `Assoc
-    [ ("install_method", `String (string_of_method t.method_));
-      ("binary_path", `String t.binary_path);
-      ("package_name", `String t.package_name);
-      ( "delegate_command",
-        (match delegate_command t.method_ ~pinned with
-         | Some c -> `String c
-         | None -> `Null) );
-      ( "shadowed_by",
-        (match t.shadowed_by with Some p -> `String p | None -> `Null) ) ]
+    [ ("install_method", `String (string_of_method method_));
+      ("delegate_command", `String command);
+      ("check_only", `Bool check_only);
+      ("executed", `Bool executed);
+      ( "exit_code",
+        (match exit_code with Some c -> `Int c | None -> `Null) ) ]
+
+(* Single source of truth for the error JSON document (refuse paths). One
+   object on stdout: an [error] message plus [exit_code]. *)
+let error_json ?(exit_code = 1) msg =
+  `Assoc [ ("error", `String msg); ("exit_code", `Int exit_code) ]
 
 let delegate_outcome_message method_ ~command ~rc =
   if rc = 0 then

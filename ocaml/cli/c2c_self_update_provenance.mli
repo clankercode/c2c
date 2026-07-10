@@ -33,17 +33,17 @@ type t = {
     Looks only at path segments — no filesystem access. *)
 val classify_path : string -> install_method
 
-(** True when [path] contains this package's identifier (npm/bun keep the
-    scoped dir, pnpm mangles [/] to [+]). *)
-val owns_our_package : string -> bool
-
 (** Detect provenance of the running binary.
     [binary_path] is its realpath; [resolved_on_path] is the realpath of the
-    first [c2c] found on PATH ([None] when PATH has none). *)
-val detect : binary_path:string -> resolved_on_path:string option -> t
-
-(** [true] for the managers we delegate to (npm/pnpm/bun). *)
-val is_package_managed : install_method -> bool
+    first [c2c] found on PATH ([None] when PATH has none). [bun_install] is the
+    value of BUN_INSTALL (injected): a custom bun prefix need not contain a
+    [.bun] segment, so a binary under it is reclassified from Npm to Bun. *)
+val detect :
+  ?bun_install:string ->
+  binary_path:string ->
+  resolved_on_path:string option ->
+  unit ->
+  t
 
 (** Exact command to update via the owning manager, or [None] for
     standalone/unknown. [pinned] selects a version ([@latest] by default). *)
@@ -73,9 +73,22 @@ val plan :
 (** One-line human description of the detected method (no environment leak). *)
 val describe : t -> string
 
-(** JSON object describing the decision (method / path / package / command /
-    shadow only — no unrelated environment data). *)
-val to_json : t -> pinned:string option -> Yojson.Safe.t
+(** The single stdout JSON document for the dispatcher's delegate path (the
+    real shipped shape). Five stable keys: [install_method], [delegate_command],
+    [check_only], [executed], [exit_code] ([null] until the command runs).
+    [executed] is [false] for the report/check path, [true] once the delegate
+    command has run; [exit_code] is [Some rc] only then. *)
+val delegate_json :
+  method_:install_method ->
+  command:string ->
+  check_only:bool ->
+  executed:bool ->
+  exit_code:int option ->
+  Yojson.Safe.t
+
+(** The single stdout JSON document for the refuse paths: an [error] message
+    plus [exit_code] (default [1]). *)
+val error_json : ?exit_code:int -> string -> Yojson.Safe.t
 
 (** Message classifying the result of an executed delegate command. *)
 val delegate_outcome_message :
