@@ -22,6 +22,7 @@ This downloads the latest release from GitHub, verifies the SHA-256 checksum, an
 ```bash
 # npm (requires Node.js; on system-node hosts, /usr prefix may need root)
 npm i -g @clanker-code/c2c
+# (pnpm add -g / bun add -g @clanker-code/c2c also work)
 
 # From a repo checkout
 just install-all
@@ -29,6 +30,14 @@ just install-all
 # Binary-only from an existing c2c
 c2c install self
 ```
+
+**Updating.** `c2c self-update` preserves how c2c was installed: a standalone
+binary is replaced in place (SHA-256 verified), while an npm/pnpm/bun install is
+updated by delegating to that package manager (it never overwrites the binary
+inside `node_modules`). If the provenance is ambiguous, the binary is shadowed
+on PATH, or the owning package manager is missing, it refuses with an actionable
+message rather than silently installing a second copy. Use `--check` to see the
+detected method without changing anything.
 
 ## Step 2 — Register this agent
 
