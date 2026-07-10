@@ -12,85 +12,45 @@ let sleep_to_min_runtime start_time =
   if sleep_s > 0.0 then Unix.sleepf sleep_s
 
 let hook_post_tool_cmd =
-  (* No arguments - reads env vars C2C_MCP_SESSION_ID and C2C_MCP_BROKER_ROOT *)
+  (* Claude PostToolUse hook — CLI fallback for the standalone
+     c2c-inbox-hook-ocaml binary (`~/.claude/hooks/c2c-inbox-check.sh` runs
+     whichever is found first). Delivery semantics are shared through
+     C2c_hook_lib.run_post_tool so both paths behave identically
+     (claude-full-delivery slice): full message delivery by default with a
+     push-only drain (deferrable messages wait for the next turn boundary,
+     mirroring codex PostToolUse), the #387 A2 channel-capable skip (the MCP
+     watcher owns delivery for managed claude — no dual-drain), the B042
+     subagent guard, cold-boot fallback context, and the
+     C2C_POST_TOOL_NUDGE_ONLY=1 legacy debounced-nudge opt-out. Session id
+     resolves from the hook's stdin JSON first, then C2C_MCP_SESSION_ID. *)
   let open Cmdliner.Term in
   const (fun () ->
     let start_time = Unix.gettimeofday () in
+    let exit_floored code =
+      sleep_to_min_runtime start_time;
+      exit code
+    in
+    if C2c_hook_lib.is_subagent_quiet () then exit_floored 0;
     let session_id =
-      try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
+      match C2c_hook_lib.resolve_session_id () with
+      | Ok "" -> exit_floored 0
+      | Ok sid -> sid
+      | Error msg -> prerr_endline msg; exit_floored 1
     in
     let broker_root =
-      try Sys.getenv "C2C_MCP_BROKER_ROOT" with Not_found -> ""
+      Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
     in
-    if session_id = "" || broker_root = "" then begin
-      sleep_to_min_runtime start_time;
-      exit 0
-    end;
     try
-      let broker = C2c_mcp.Broker.create ~root:broker_root in
-      (* #387 A2: skip drain for channel-capable sessions so the MCP
-         server's watcher can own delivery (avoids the dual-drainer race
-         where hook stdout displaces the `<channel>` notification). *)
-      let messages =
-        if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
-          prerr_endline
-            (Printf.sprintf
-               "[hook] skipping drain — session %s is channel-capable; \
-                watcher owns delivery"
-               session_id);
-          []
-        end else
-          C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id
-      in
-      (match messages with
-       | [] -> ()
-       | _ ->
-         let buf = Buffer.create 256 in
-         let lookup_role from_alias =
-           match C2c_mcp.Broker.list_registrations broker
-                 |> List.find_opt (fun r -> r.C2c_mcp.alias = from_alias) with
-           | Some reg -> reg.C2c_mcp.role
-           | None     -> None
-         in
-         List.iter
-           (fun (m : C2c_mcp.message) ->
-              let tag = C2c_mcp.extract_tag_from_content m.content in
-              let role = lookup_role m.from_alias in
-               let envelope =
-                 C2c_mcp.format_c2c_envelope
-                   ~from_alias:m.from_alias
-                   ~to_alias:m.to_alias
-                   ?tag
-                   ?role
-                   ?reply_via:m.reply_via
-                   ~ts:m.ts
-                   ~with_reply_hint:true
-                   ~content:m.content
-                   ()
-               in
-              Buffer.add_string buf envelope;
-              Buffer.add_char buf '\n')
-           messages;
-         let json : Yojson.Safe.t =
-           `Assoc [
-             ("hookSpecificOutput", `Assoc [
-               ("hookEventName", `String "PostToolUse");
-               ("additionalContext", `String (Buffer.contents buf));
-             ])
-           ]
-         in
-         print_string (Yojson.Safe.to_string json);
-         print_newline ());
-      sleep_to_min_runtime start_time;
-      exit 0
+      let output, _alias = C2c_hook_lib.run_post_tool ~session_id ~broker_root in
+      C2c_hook_lib.print_post_tool_output output;
+      exit_floored 0
     with e ->
       prerr_endline (Printexc.to_string e);
-      sleep_to_min_runtime start_time;
-      exit 1) $ const ()
+      exit_floored 1) $ const ()
 
 let hook_post_tool : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "post-tool" ~doc:"PostToolUse hook: drain inbox and emit messages.")
+    (Cmdliner.Cmd.info "post-tool" ~doc:"PostToolUse hook: full-delivery drain (push-only; deferrable waits for the turn boundary) and emit messages. C2C_POST_TOOL_NUDGE_ONLY=1 restores the legacy debounced nudge line.")
     hook_post_tool_cmd
 
 let hook_stop_cmd =

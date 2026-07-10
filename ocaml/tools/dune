@@ -4,7 +4,7 @@
  (name c2c_hook_lib)
  (wrapped false)
  (modules c2c_hook_lib)
- (libraries c2c_mcp unix yojson))
+ (libraries c2c_mcp c2c_cold_boot_context_lib unix yojson))
 
 (executable
  (name c2c_inbox_hook)

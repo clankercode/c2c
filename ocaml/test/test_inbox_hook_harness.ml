@@ -205,8 +205,7 @@ let test_drains_single_message_and_destructive_drain () =
     let inbox = seed_inbox ~dir ~sid 1 in
     let payload = Printf.sprintf {|{"session_id":%S,"hook_event_name":"PostToolUse"}|} sid in
     let r = run_hook ~env:[Unset "C2C_MCP_SESSION_ID"; Unset "C2C_MCP_BROKER_ROOT";
-                           Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                           Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -226,8 +225,7 @@ let test_drains_multiple_messages_in_one_call () =
     let sid = "harness-multi" in
     let inbox = seed_inbox ~dir ~sid 3 in
     let payload = Printf.sprintf {|{"session_id":%S}|} sid in
-    let r = run_hook ~env:[Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+    let r = run_hook ~env:[Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -261,8 +259,7 @@ let test_env_fallback_when_stdin_malformed () =
     let payload = {|this is not valid json at all {[|} in
     let r = run_hook ~env:[Unset "C2C_MCP_BROKER_ROOT";
                            Set ("C2C_MCP_SESSION_ID", sid);
-                           Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                           Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0 via env fallback" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -278,8 +275,7 @@ let test_env_fallback_when_stdin_empty () =
     let sid = "harness-stdin-empty" in
     let inbox = seed_inbox ~dir ~sid 1 in
     let r = run_hook ~env:[Set ("C2C_MCP_SESSION_ID", sid);
-                           Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                           Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:"" () in
     check int "hook exits 0 via env fallback" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -314,8 +310,7 @@ let test_session_id_at_start_of_large_payload_extracts () =
       Printf.sprintf {|{"session_id":%S,"tool_response":%S}|}
         sid (String.make pad_len 'x')
     in
-    let r = run_hook ~env:[Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+    let r = run_hook ~env:[Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -342,8 +337,7 @@ let test_session_id_beyond_scan_bound_uses_env () =
     check bool "payload exceeds bound" true
       (String.length payload > pad_len);
     let r = run_hook ~env:[Set ("C2C_MCP_SESSION_ID", sid);
-                           Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                           Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0 via env fallback" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -390,8 +384,7 @@ let test_cold_boot_marker_persists_across_invocations () =
       (* First call: drains message + emits cold-boot context + writes marker. *)
       let r1 = run_hook ~env:[Set ("C2C_MCP_SESSION_ID", sid);
                               Set ("C2C_MCP_BROKER_ROOT", repo_dir);
-                              Set ("C2C_SESSIONS_BROKER_ROOT", global_dir);
-                              Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                              Set ("C2C_SESSIONS_BROKER_ROOT", global_dir)]
                    ~stdin_payload:payload () in
       check int "first call exits 0" 0 r1.rc;
       let ctx1 = match parse_additional_context r1 with
@@ -410,8 +403,7 @@ let test_cold_boot_marker_persists_across_invocations () =
       let _ = seed_inbox ~dir:global_dir ~sid 1 in
       let r2 = run_hook ~env:[Set ("C2C_MCP_SESSION_ID", sid);
                               Set ("C2C_MCP_BROKER_ROOT", repo_dir);
-                              Set ("C2C_SESSIONS_BROKER_ROOT", global_dir);
-                              Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                              Set ("C2C_SESSIONS_BROKER_ROOT", global_dir)]
                    ~stdin_payload:payload () in
       check int "second call exits 0" 0 r2.rc;
       let ctx2 = match parse_additional_context r2 with
@@ -474,7 +466,6 @@ let time_hook_invocations ~n_messages () : float list =
     let env = [ Unset "C2C_MCP_BROKER_ROOT"
               ; Unset "C2C_MCP_SESSION_ID"
               ; Set ("C2C_SESSIONS_BROKER_ROOT", dir)
-              ; Set ("C2C_POST_TOOL_FULL_INJECT", "1")
               ] in
     let results = ref [] in
     for _i = 1 to speed_iterations do

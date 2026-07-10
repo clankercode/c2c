@@ -159,6 +159,36 @@ let archive_owner_is_mine ~archive_id ~my_alias ~my_session_id () =
        | Some alias -> alias = archive_id
        | None -> true)
 
+(* ---------- claude-full-delivery: full-body burst rendering ---------- *)
+
+(* Truncate a subject to [max_len], appending "…" if clipped. Mirrors the
+   monitor command's legacy snippet behaviour. *)
+let truncate_subject s max_len =
+  let s = String.trim s in
+  if String.length s > max_len then String.sub s 0 max_len ^ "…" else s
+
+(* Render the subject strings for one sender's burst of messages.
+
+   Full-body mode (the monitor default): one subject per message,
+   untruncated. The Monitor is a first-class full-delivery surface for
+   vanilla claude, so bodies must arrive whole — the legacy burst collapse
+   truncated the first body to 60 chars and dropped bodies 2..N entirely.
+
+   Snippet mode (--snippet) keeps the legacy shape: a single message gets an
+   80-char preview; a burst collapses to a count + 60-char preview of the
+   first message. *)
+let burst_subjects ~full_body (bodies : string list) : string list =
+  match bodies with
+  | [] -> []
+  | [ body ] ->
+      [ Printf.sprintf "\"%s\""
+          (if full_body then String.trim body else truncate_subject body 80) ]
+  | bodies when full_body ->
+      List.map (fun b -> Printf.sprintf "\"%s\"" (String.trim b)) bodies
+  | first :: _ ->
+      [ Printf.sprintf "(%d msgs) \"%s\""
+          (List.length bodies) (truncate_subject first 60) ]
+
 (* ---------- B089: relay-inbox watcher source ---------- *)
 
 (* The relay-aware monitor (B089) periodically peeks (NON-draining) the

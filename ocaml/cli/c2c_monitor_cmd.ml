@@ -41,11 +41,6 @@ let message_record_to_json (m : message) : Yojson.Safe.t =
 let jstr fields key def =
   match List.assoc_opt key fields with Some (`String s) -> s | _ -> def
 
-(* Truncate a string to max_len, appending "…" if clipped. *)
-let truncate s max_len =
-  let s = String.trim s in
-  if String.length s > max_len then String.sub s 0 max_len ^ "…" else s
-
 (* Current time as [HH:MM:SS] *)
 let now_hms () =
   let t = Unix.localtime (Unix.gettimeofday ()) in
@@ -77,9 +72,13 @@ let dedup_check ~from ~to_raw ~content =
   | Some ts when now -. ts < dedup_window_s -> false
   | _ -> Hashtbl.replace dedup_seen key now; true
 
-(* Emit one notification line per unique sender, collapsing bursts.
-   [source] tags the message origin ("local" or "relay") so a relay-surfaced
-   cross-host DM is distinguishable from a local-broker one (B089). *)
+(* Emit notification lines per unique sender. In full-body mode (the
+   default) every message in a burst is emitted whole — one line per
+   message, untruncated (claude-full-delivery: the Monitor is a first-class
+   full-delivery surface, so bodies must arrive complete). In --snippet
+   mode bursts collapse to a count + preview (legacy). [source] tags the
+   message origin ("local" or "relay") so a relay-surfaced cross-host DM is
+   distinguishable from a local-broker one (B089). *)
 let emit_messages ~my_alias ~all ~full_body ~source msgs =
   (* Group messages by from_alias *)
   let by_sender = Hashtbl.create 4 in
@@ -92,43 +91,48 @@ let emit_messages ~my_alias ~all ~full_body ~source msgs =
     | _ -> ()
   ) msgs;
   Hashtbl.iter (fun from sender_msgs ->
-    let n = List.length sender_msgs in
-    let first = List.hd sender_msgs in
-    let to_raw = jstr first "to_alias" "" in
-    let is_mine = match my_alias with
-      | None -> true
-      | Some me -> to_raw = me || String.length to_raw > String.length me + 1
-                   && String.sub to_raw 0 (String.length me) = me
+    (* Room-fanout dedup, per message (was per-burst on the first message
+       only). Normalize room fanouts: each peer's archive tags to_alias
+       with their own alias prefix (coder1#swarm-lounge vs
+       planner1#swarm-lounge) so dedup sees them as distinct. Strip alias,
+       keep just #<room>. *)
+    let kept =
+      List.filter (fun fields ->
+        let to_raw = jstr fields "to_alias" "" in
+        let body = jstr fields "content" "" in
+        let dedup_to = match parse_to_alias to_raw with
+          | `Room room -> "#" ^ room
+          | `Direct d -> d
+        in
+        dedup_check ~from ~to_raw:dedup_to ~content:body)
+        sender_msgs
     in
-    let body = jstr first "content" "" in
-    (* Normalize room fanouts: each peer's archive tags to_alias with their
-       own alias prefix (coder1#swarm-lounge vs planner1#swarm-lounge) so
-       dedup sees them as distinct. Strip alias, keep just #<room>. *)
-    let dedup_to = match parse_to_alias to_raw with
-      | `Room room -> "#" ^ room
-      | `Direct d -> d
-    in
-    let keep = dedup_check ~from ~to_raw:dedup_to ~content:body in
-    if keep && (all || is_mine) then begin
-      let icon = if is_mine then "📬" else "💬" in
-      let dest = match parse_to_alias to_raw with
-        | `Room room -> "@" ^ room
-        | `Direct d -> if is_mine then "you" else d
-      in
-      let subject =
-        if n = 1 then
-          if full_body then Printf.sprintf "\"%s\"" body
-          else Printf.sprintf "\"%s\"" (truncate body 80)
-        else
-          Printf.sprintf "(%d msgs) \"%s\"" n (truncate body 60)
-      in
-      (* B089: relay-sourced messages get a 🌐 origin marker so the operator
-         can tell a cross-host DM (peeked from the relay inbox) from a local
-         broker delivery. *)
-      let origin = if source = "relay" then "🌐" else "" in
-      Printf.printf "%s %s%s  %s→%s  %s\n%!"
-        (now_hms ()) origin icon from dest subject
-    end
+    match kept with
+    | [] -> ()
+    | first :: _ ->
+        let to_raw = jstr first "to_alias" "" in
+        let is_mine = match my_alias with
+          | None -> true
+          | Some me -> to_raw = me || String.length to_raw > String.length me + 1
+                       && String.sub to_raw 0 (String.length me) = me
+        in
+        if all || is_mine then begin
+          let icon = if is_mine then "📬" else "💬" in
+          let dest = match parse_to_alias to_raw with
+            | `Room room -> "@" ^ room
+            | `Direct d -> if is_mine then "you" else d
+          in
+          (* B089: relay-sourced messages get a 🌐 origin marker so the
+             operator can tell a cross-host DM (peeked from the relay inbox)
+             from a local broker delivery. *)
+          let origin = if source = "relay" then "🌐" else "" in
+          let bodies = List.map (fun fields -> jstr fields "content" "") kept in
+          List.iter
+            (fun subject ->
+              Printf.printf "%s %s%s  %s→%s  %s\n%!"
+                (now_hms ()) origin icon from dest subject)
+            (C2c_monitor_logic.burst_subjects ~full_body bodies)
+        end
   ) by_sender
 
 (* --- Cmdliner args -------------------------------------------------------- *)
@@ -1143,10 +1147,13 @@ let monitor =
                   session with no hook/poll consumer still sees incoming messages \
                   (peeked, not drained). Pass $(b,--drain) to make the monitor the \
                   inbox consumer (archive-append preserved)."
-            ; `P "Burst deduplication: multiple messages from the same sender in one \
-                  inbox write are collapsed to a single line with a count. \
-                  Inbox-peek and archive-echo of the same message are deduped by \
-                  message identity so it is not printed twice."
+            ; `P "Full delivery by default: every message is emitted with its \
+                  complete body, one line per message — a burst from one sender \
+                  is NOT collapsed or truncated (each body arrives whole). Only \
+                  legacy $(b,--snippet) mode collapses bursts to a count + \
+                  truncated preview. Inbox-peek and archive-echo of the same \
+                  message are deduped by message identity so it is not printed \
+                  twice."
             ; `P "Relay-inbox watcher (B089): when a relay URL is configured \
                   ($(b,C2C_RELAY_URL) / $(b,c2c relay setup)) and an alias is resolved, \
                   the monitor ALSO peeks (non-draining) the relay inbox on an interval \

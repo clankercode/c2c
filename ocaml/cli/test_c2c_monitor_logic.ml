@@ -313,6 +313,49 @@ let test_decide_relay_watch_gating () =
     (Option.get (dec_session_id (L.decide_relay_watch ~my_alias:(Some "me")
        ~relay_url:(Some "http://r") ~identity:None ~node_id_override:None ~session_id_override:None ())))
 
+(* ---------- claude-full-delivery: full-body burst rendering ---------- *)
+
+let long_body = String.concat " " (List.init 40 (fun i -> Printf.sprintf "w%d" i))
+
+let test_burst_full_body_one_line_per_message () =
+  (* Full-body mode must emit every body in a burst, whole — no collapse,
+     no truncation (the old collapse truncated the first body to 60 chars
+     and dropped bodies 2..N entirely). *)
+  let bodies = [ long_body; "second full body"; "third full body" ] in
+  Alcotest.(check (list string)) "one full subject per message"
+    [ Printf.sprintf "\"%s\"" long_body
+    ; "\"second full body\""
+    ; "\"third full body\"" ]
+    (L.burst_subjects ~full_body:true bodies)
+
+let test_burst_full_body_single_untruncated () =
+  Alcotest.(check (list string)) "single full body untruncated"
+    [ Printf.sprintf "\"%s\"" long_body ]
+    (L.burst_subjects ~full_body:true [ long_body ])
+
+let test_burst_snippet_single_truncates_80 () =
+  match L.burst_subjects ~full_body:false [ long_body ] with
+  | [ s ] ->
+      Alcotest.(check bool) "shorter than the full body" true
+        (String.length s < String.length long_body);
+      Alcotest.(check bool) "carries truncation marker" true
+        (let n = String.length s in
+         n > 4 && String.sub s (n - 4) 4 = "\xE2\x80\xA6\"")
+  | other ->
+      Alcotest.failf "expected one subject, got %d" (List.length other)
+
+let test_burst_snippet_collapses_with_count () =
+  match L.burst_subjects ~full_body:false [ long_body; "b2"; "b3" ] with
+  | [ s ] ->
+      Alcotest.(check bool) "has (3 msgs) count" true
+        (String.length s >= 8 && String.sub s 0 8 = "(3 msgs)")
+  | other ->
+      Alcotest.failf "expected collapsed subject, got %d" (List.length other)
+
+let test_burst_empty () =
+  Alcotest.(check (list string)) "empty burst -> no subjects" []
+    (L.burst_subjects ~full_body:true [])
+
 let () =
   Alcotest.run "c2c_monitor_logic"
     [ ( "alias-resolution-order",
@@ -342,5 +385,12 @@ let () =
         ; Alcotest.test_case "relay surface cross-source dedup" `Quick test_relay_surface_cross_source_dedup
         ; Alcotest.test_case "relay surface order preserving" `Quick test_relay_surface_order_preserving
         ; Alcotest.test_case "decide_relay_watch gating" `Quick test_decide_relay_watch_gating
+        ] )
+    ; ( "full-body-burst",
+        [ Alcotest.test_case "full body: one line per message" `Quick test_burst_full_body_one_line_per_message
+        ; Alcotest.test_case "full body: single untruncated" `Quick test_burst_full_body_single_untruncated
+        ; Alcotest.test_case "snippet: single truncates at 80" `Quick test_burst_snippet_single_truncates_80
+        ; Alcotest.test_case "snippet: burst collapses with count" `Quick test_burst_snippet_collapses_with_count
+        ; Alcotest.test_case "empty burst" `Quick test_burst_empty
         ] )
     ]
