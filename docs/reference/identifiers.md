@@ -111,3 +111,79 @@ suffix is preserved in delivered message JSON as the concrete reply route.
 
 See [Reference: scopes](/reference/scopes/) for when a relay-routed address is
 used versus a local (repo / pc-local) send.
+
+---
+
+## Identity kind and scope in the merged listing
+
+`c2c list --relay` shows two *different kinds* of identifier side by side
+and labels them instead of flattening them into one namespace:
+
+- **`identity_kind: "local"`** — a **session alias** on this machine's
+  broker. Broker-scoped: it exists because a session registered here, and it
+  needs no cryptographic anchor to appear in the listing.
+- **`identity_kind: "relay"`** — a **relay registration**: an
+  `<alias>@<opaque_host_id>` address whose alias is pinned to a machine
+  identity key and anchored to a host id.
+
+**`identity_scope`** says where that identity is registered: `"local"`
+(this broker only), `"relay"` (relay only), or `"both"`.
+
+**Self-identity match rule**: a local row and a relay lease are the *same
+identity* iff the aliases match case-insensitively **and** the lease's
+`opaque_host_id` equals this machine's host id (`c2c host-id`). A matched
+lease is **folded** into its local row — one identity, one row — with
+`identity_scope: "both"` and the lease nested under `relay_lease`. A lease
+with no `opaque_host_id` never matches (no host anchor, no claim). The same
+alias on a **different** host is a distinct identity and stays a distinct
+row, disambiguated by its address:
+
+```
+relay peers (2 alive / 3 total; 1 also local (scope both)):
+  ADDRESS                            STATE    SCOPE  IDENTITY_PK
+  lyra-quill@3d08761ae3f3            alive    both   pk:Gl5uyc0u…  (= local 'lyra-quill')
+  lyra-quill@9f2c11d4a0b7            alive    relay  pk:Qw8hZk2m…
+  pi-8391d3@9f2c11d4a0b7             dead     relay  pk:Ay3nBv7c…
+```
+
+The two `lyra-quill` rows are **different identities** (different machine
+anchors); the first is *this* machine's own relay registration, cross-
+referenced to the local row above it rather than duplicated anonymously.
+In `--json`, the same fold looks like:
+
+```json
+{
+  "source": "local",
+  "alias": "lyra-quill",
+  "address": "lyra-quill@3d08761ae3f3",
+  "alive": true,
+  "identity_kind": "local",
+  "identity_scope": "both",
+  "relay_lease": {
+    "alias": "lyra-quill",
+    "address": "lyra-quill@3d08761ae3f3",
+    "alive": true,
+    "identity_pk": "Gl5uyc0uNqK4x1o",
+    "opaque_host_id": "3d08761ae3f3"
+  }
+}
+```
+
+Two honesty rules bound this surface:
+
+- **Labels are descriptive, not attestation.** Kind/scope record where an
+  entry came from — they say nothing about how much to trust it. There are
+  deliberately no trust tiers, verified badges, or signature checks here;
+  per-agent attestation (I008) is a separate, unbuilt layer.
+- **The default view stays local-only.** `c2c list` without `--relay` never
+  touches the network and its JSON stays a bare array. Flipping the default
+  to the merged view is an **open, operator-owned product gate** — recorded
+  in the friction-cn decision ledger
+  (`.collab/design/friction-cn-decision-ledger.md`, on the
+  `friction-adr0-decision-ledger` branch).
+
+Filter the merged view by kind/scope with `--kind local|relay`. Scope-both
+rows pass **both** filters (the filter is by where the identity is
+registered, not by which source produced the row): `--kind local` keeps
+every local-broker row; `--kind relay` keeps relay-only rows *plus* local
+rows with scope `both`.
