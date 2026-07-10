@@ -1291,6 +1291,49 @@ let test_tools_call_send_routes_message_through_broker () =
        let msg = List.hd inbox in
        check string "mcp routed content" "hello from mcp" msg.content)
 
+(* B104: a peer that received a cross-broker message must be able to reply
+   through its MCP [send] tool.  The sender stays registered only in its own
+   sibling broker; the reply handler must find that authoritative registration
+   rather than requiring a duplicate/global registration. *)
+let test_tools_call_send_replies_across_sibling_brokers () =
+  with_temp_dir (fun parent_dir ->
+      let sender_dir = Filename.concat parent_dir "sender-broker" in
+      let recipient_dir = Filename.concat parent_dir "recipient-broker" in
+      Unix.mkdir sender_dir 0o755;
+      Unix.mkdir recipient_dir 0o755;
+      let sender_broker = C2c_mcp.Broker.create ~root:sender_dir in
+      let recipient_broker = C2c_mcp.Broker.create ~root:recipient_dir in
+      C2c_mcp.Broker.register sender_broker ~session_id:"sender-session"
+        ~alias:"sender" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register recipient_broker ~session_id:"recipient-session"
+        ~alias:"recipient" ~pid:None ~pid_start_time:None ();
+      let request =
+        `Assoc
+          [ ("jsonrpc", `String "2.0")
+          ; ("id", `Int 104)
+          ; ("method", `String "tools/call")
+          ; ( "params"
+            , `Assoc
+                [ ("name", `String "send")
+                ; ( "arguments"
+                  , `Assoc
+                      [ ("from_alias", `String "recipient")
+                      ; ("to_alias", `String "sender")
+                      ; ("content", `String "reply across brokers")
+                      ] )
+                ] )
+          ]
+      in
+      let response =
+        Lwt_main.run (C2c_mcp.handle_request ~broker_root:recipient_dir request)
+      in
+      (match response with None -> fail "expected tools/call response" | Some _ -> ());
+      let inbox = C2c_mcp.Broker.read_inbox sender_broker ~session_id:"sender-session" in
+      check int "sender receives cross-broker MCP reply" 1 (List.length inbox);
+      let msg = List.hd inbox in
+      check string "reply preserves sender alias" "recipient" msg.from_alias;
+      check string "reply content" "reply across brokers" msg.content)
+
 let test_tools_call_send_accepts_alias_as_to_alias_synonym () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -14359,6 +14402,8 @@ let () =
            ; test_case "tools/list schema types: send.deferrable+ephemeral bool, set_dnd.on bool, set_dnd.until_epoch number" `Quick
                test_send_and_set_dnd_schema_types_are_correct
           ; test_case "tools/call send routes through broker" `Quick test_tools_call_send_routes_message_through_broker
+         ; test_case "tools/call send replies across sibling brokers (B104)" `Quick
+             test_tools_call_send_replies_across_sibling_brokers
          ; test_case "tools/call send accepts `alias` as to_alias synonym" `Quick
              test_tools_call_send_accepts_alias_as_to_alias_synonym
          ; test_case "tools/call send missing to_alias returns named error" `Quick

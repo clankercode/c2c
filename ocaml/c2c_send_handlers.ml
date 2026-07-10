@@ -22,6 +22,73 @@ open C2c_mcp_helpers
 open C2c_mcp_helpers_post_broker
 module Broker = C2c_broker
 
+(* B104: MCP send must resolve replies across the same broker roots as the
+   CLI.  A cross-broker CLI send records the sender alias in the delivered
+   message, but it does not copy that registration into the recipient's
+   broker.  Looking up the target's real registration and enqueueing there
+   keeps the registration authoritative and makes a successful A -> B send
+   replyable as B -> A. *)
+let find_live_alias_in_other_broker ~primary_root alias =
+  let target = Broker.alias_casefold alias in
+  let sibling_roots () =
+    let parent = Filename.dirname primary_root in
+    if not (Sys.file_exists parent && Sys.is_directory parent) then []
+    else
+      Sys.readdir parent
+      |> Array.to_list
+      |> List.map (Filename.concat parent)
+      |> List.filter (fun root ->
+             root <> primary_root
+             && Sys.is_directory root
+             && Sys.file_exists (Filename.concat root "registry.json"))
+  in
+  let configured_roots =
+    match Sys.getenv_opt "C2C_BROKER_SCAN_DIRS" with
+    | Some dirs when String.trim dirs <> "" ->
+        String.split_on_char ':' (String.trim dirs)
+        |> List.map String.trim
+        |> List.filter (fun root -> root <> "")
+    | _ -> []
+  in
+  let roots =
+    C2c_repo_fp.resolve_sessions_broker_root ()
+    :: (C2c_repo_fp.list_all_broker_roots () |> List.map snd)
+    @ configured_roots @ sibling_roots ()
+  in
+  let seen = Hashtbl.create 8 in
+  List.find_map
+      (fun root ->
+         if root = primary_root || Hashtbl.mem seen root then None
+         else begin
+           Hashtbl.add seen root ();
+         try
+           let broker = Broker.create ~root in
+           Broker.list_registrations broker
+           |> List.find_opt (fun reg ->
+                  Broker.alias_casefold reg.alias = target
+                  && Broker.registration_is_alive reg)
+           |> Option.map (fun _ -> broker)
+         with _ -> None
+         end)
+      roots
+
+let enqueue_message_with_reply_fallback ~broker ~from_alias ~to_alias ~content
+    ~deferrable ~ephemeral =
+  try
+    Broker.enqueue_message broker ~from_alias ~to_alias ~content ~deferrable
+      ~ephemeral ()
+  with Invalid_argument msg when not (String.contains to_alias '@') ->
+    (* Only route the ordinary local-target registration failure.  Other
+       Invalid_argument errors (including reserved-sender spoof guards) must
+       retain their existing safety semantics. *)
+    if not (String.starts_with ~prefix:"enqueue_message rejected" msg) then
+      raise (Invalid_argument msg);
+    match find_live_alias_in_other_broker ~primary_root:(Broker.root broker) to_alias with
+    | Some target_broker ->
+        Broker.enqueue_message target_broker ~from_alias ~to_alias ~content
+          ~deferrable ~ephemeral ()
+    | None -> raise (Invalid_argument msg)
+
 (* #450 S7: encryption helper — mechanically hoisted from [send] lines 60-131.
    Free vars lifted to named parameters: broker, from_alias, to_alias, content, ts.
    No behavior change. *)
@@ -313,7 +380,9 @@ let ts = Unix.gettimeofday () in
                         Lwt.return (tool_err msg)
                     | `Warn _ | `Allow ->
                         match
-                           try Some (Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ~ephemeral ())
+                           try Some (enqueue_message_with_reply_fallback
+                                       ~broker ~from_alias ~to_alias ~content:s
+                                       ~deferrable ~ephemeral)
                            with Invalid_argument _ -> None
                          with
                          | None ->
