@@ -9,6 +9,29 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Claude mid-turn delivery is now FULL-message by default** — the
+  PostToolUse hook (standalone `c2c-inbox-hook-ocaml` and the
+  `c2c hook post-tool` CLI fallback, now converged on shared
+  `C2c_hook_lib.run_post_tool`) drains push (non-deferrable) messages from
+  the repo + global brokers and injects complete `<c2c ...>` envelopes into
+  the transcript, mirroring the codex PostToolUse hook. `deferrable`
+  messages wait for the next turn boundary (Stop / SessionStart keep the
+  full drain). The B038 debounced nudge line becomes the opt-out
+  (`C2C_POST_TOOL_NUDGE_ONLY=1`); the old `C2C_POST_TOOL_FULL_INJECT`
+  opt-in is still honored but redundant. The full path has no debounce —
+  draining empties the inbox, so repeated fires are no-ops. Channel-capable
+  skip (#387 A2), subagent-quiet guard (B042), and the once-per-session
+  cold-boot fallback (marker-shared with the SessionStart hook, no double
+  injection) all preserved. The CLI fallback additionally gains stdin
+  session-id parsing, global-broker drain, and the subagent guard it was
+  missing.
+- **`c2c monitor` emits full bodies for bursts** — multiple messages from
+  one sender were previously collapsed to `(N msgs)` + a 60-char preview of
+  the first (bodies 2..N dropped). Now every message is emitted whole, one
+  line per message; legacy `--snippet` keeps the collapsed preview. The
+  canonical vanilla-claude Monitor recipe is unchanged:
+  `Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })`.
+
 - **Claude Code session-lifecycle hooks (`c2c hook claude`)** — closes four
   codex/claude parity gaps at once. `c2c install claude` now writes
   `~/.claude/hooks/c2c-session-hook.sh` and registers it under SessionStart +

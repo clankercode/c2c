@@ -44,21 +44,27 @@ Claude Code has three relevant receive mechanisms:
 - **PostToolUse hook**: `c2c install claude` installs
   `~/.claude/hooks/c2c-inbox-check.sh` and registers it in
   `~/.claude/settings.json`. After each non-MCP tool call, the hook runs
-  `c2c-inbox-hook-ocaml`, drains the session inbox, and returns
-  `hookSpecificOutput.additionalContext` so messages appear in the transcript.
-  Restart Claude Code after install, or run `/reload-plugins`, before expecting
-  this to work.
-- **Monitor tool awareness**: for long-running Claude sessions, run a persistent
-  Monitor with the current recommended command:
+  `c2c-inbox-hook-ocaml` (falling back to `c2c hook post-tool` — both share
+  the same delivery core) and delivers **full message bodies** as
+  `hookSpecificOutput.additionalContext` in the transcript. The mid-turn
+  drain is push-only: `deferrable` messages wait for a turn boundary (the
+  Stop and SessionStart hooks do the full drain). Set
+  `C2C_POST_TOOL_NUDGE_ONLY=1` to opt back into the legacy debounced
+  "N message(s) waiting" nudge line. Restart Claude Code after install, or
+  run `/reload-plugins`, before expecting this to work.
+- **Monitor tool full-body receive**: for long-running Claude sessions, run a
+  persistent Monitor with the canonical recipe:
 
   ```text
-  Monitor({command: "c2c monitor --archive --all", persistent: true})
+  Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
   ```
 
-  `--archive` avoids racing the PostToolUse hook after it drains the live inbox,
-  and `--all` gives swarm-wide visibility instead of only your alias. Treat
-  monitor ticks as prompts to call `poll_inbox` or act on visible archive events;
-  the monitor line itself is not the durable message store.
+  `c2c monitor` defaults to archive mode (no race with the PostToolUse hook
+  drain), also peeks your live inbox non-destructively, and emits **full
+  message bodies** — one line per message, bursts never collapsed or
+  truncated (`--snippet` restores the legacy preview). Add `--all` only for
+  swarm-wide situational awareness. The monitor line is delivery-grade
+  content but not the durable message store — the archive is.
 - **Claude MCP channel notifications**: `notifications/claude/channel` remains
   experimental. It only fires when the client declares the
   `experimental.claude/channel` capability; standard Claude Code builds do not.
@@ -100,8 +106,11 @@ minimal swarm intro.
 
 ## Claude Code
 
-PostToolUse hook fires after every tool call, drains inboxes, and emits
-`hookSpecificOutput.additionalContext` into the transcript. No separate daemon.
+PostToolUse hook fires after every tool call, drains push (non-deferrable)
+messages from the repo + global brokers, and emits their full bodies as
+`hookSpecificOutput.additionalContext` into the transcript (deferrable
+messages wait for the Stop/SessionStart full drain; `C2C_POST_TOOL_NUDGE_ONLY=1`
+restores the legacy nudge line). No separate daemon.
 Session ID comes from `$CLAUDE_SESSION_ID`. Restart via `c2c restart <name>` or
 `/reload-plugins` in Claude Code.
 

@@ -99,6 +99,17 @@ you on incoming mail without manual polling:
 Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
 ```
 
+`c2c monitor` emits **full message bodies** by default — one line per message,
+never collapsed or truncated (legacy `--snippet` restores the short preview).
+It peeks without draining, so it never steals messages from another consumer.
+
+**Hooks deliver full messages too:** with `c2c install claude` (or `codex`),
+inbound messages arrive in your transcript automatically with their complete
+bodies — mid-turn via PostToolUse (push-only: `deferrable` messages wait for
+the next turn boundary), and at turn boundaries via the Stop / SessionStart
+hooks (full drain). No polling needed. Set `C2C_POST_TOOL_NUDGE_ONLY=1` to
+restore the legacy "N message(s) waiting" nudge line instead.
+
 Use `c2c monitor --all` only for situational awareness across the whole swarm;
 it is not your normal personal inbox watcher. Use `--archive` only when you
 explicitly want archive-tail behaviour.

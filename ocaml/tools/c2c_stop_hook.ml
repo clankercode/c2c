@@ -34,7 +34,10 @@ let () =
 
   try
     let repo_broker, messages, _alias =
-      C2c_hook_lib.drain_all_messages ~session_id ~broker_root
+      (* Stop is a turn boundary: full drain, deferrable included (mid-turn
+         PostToolUse is the push-only path). *)
+      C2c_hook_lib.drain_all_messages ~push_only:false ~session_id
+        ~broker_root ()
     in
 
     (* If no messages, exit silently — don't block the stop. *)

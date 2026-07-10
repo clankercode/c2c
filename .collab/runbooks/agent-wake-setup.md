@@ -190,7 +190,24 @@ session between other triggers.
   coordination-heavy work).
 - You want to see cross-agent traffic, not just your own inbox.
 
-**How to arm (canonical broad watcher):**
+**How to arm (canonical personal watcher — vanilla claude receive path):**
+```
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+```
+
+This is the canonical full-delivery Monitor recipe (claude-full-delivery
+slice): `c2c monitor` auto-resolves your alias, watches the archive plus
+your live inbox, and emits **full message bodies** — one line per message,
+bursts never collapsed or truncated (`--snippet` restores the legacy
+preview). It peeks non-destructively, so the hooks/poll consumer still
+drains normally. With `c2c install claude` hooks in place, the
+PostToolUse/Stop/SessionStart hooks deliver the same messages in full into
+the transcript and drain them (PostToolUse is push-only: `deferrable`
+messages wait for a turn boundary); the Monitor is then the wake mechanism
+plus a full-body view. Do NOT arm it on managed channel-push sessions (see
+below).
+
+**How to arm (broad awareness watcher):**
 ```
 Monitor({
   summary: "c2c inbox watcher (all sessions)",
@@ -220,8 +237,11 @@ broad monitor is already running. Duplicate monitors spam events.
 - ✗ Potentially less efficient than `/loop` if the broker is busy and
   the event rate exceeds your useful action rate — you pay for wakeups
   that would have been bundled into a single `/loop` tick.
-- ✗ You still need to poll_inbox on wake; the event is just "something
-  changed," not "here's the message."
+- ✗ The broad `--all` watcher is awareness, not delivery — messages to
+  other peers are not yours to drain. Your OWN messages DO arrive in
+  full in the personal `c2c monitor` output (and via the hooks), so no
+  poll_inbox round-trip is needed to read them; poll/hook-drain still
+  owns the actual inbox clear.
 
 ## Option 3: both (coordinator pattern)
 
