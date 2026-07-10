@@ -1605,6 +1605,19 @@ open C2c_mcp_helpers
   type liveness_state = Alive | Dead | Unknown
 
   let registration_liveness_state reg =
+    (* Vanilla Codex sessions are registered by short-lived hooks, so they
+       deliberately have no stable process PID to inspect.  Their bounded
+       hook-activity lease is nevertheless the delivery signal: while it is
+       fresh the next Codex hook can drain a queued message.  Do not leave
+       these peers as [Unknown] in discovery output when we have that signal. *)
+    if is_codex_hook_auto_registration reg && reg.pid = None then
+      match codex_hook_activity_anchor reg with
+      | Some ts
+        when Unix.gettimeofday () -. ts <= codex_hook_auto_registration_ttl_s ->
+          Alive
+      | Some _ -> Dead
+      | None -> Unknown
+    else
     if in_docker_mode () then
       match reg.pid with
       | None -> Unknown

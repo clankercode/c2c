@@ -114,6 +114,14 @@ let register_dead broker ~session_id ~alias ~client_type =
   C2c_mcp.Broker.register broker ~session_id ~alias ~pid:(Some dead_pid)
     ~pid_start_time:(Some 1) ~client_type:(Some client_type) ()
 
+(* Vanilla Codex hook registrations have no durable process PID. A fresh
+   hook-activity lease is the available delivery signal and must appear as
+   alive in both discovery commands. *)
+let register_fresh_codex_hook broker ~session_id ~alias =
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None
+    ~pid_start_time:None ~client_type:(Some "codex")
+    ~registered_by:(Some "codex-hook") ()
+
 (* Seed a standard fixture: repo broker with one alive + one dead peer,
    sessions broker with one alive peer. Returns env bindings for run_c2c. *)
 let seed_std dir =
@@ -214,6 +222,38 @@ let test_find_json_no_match () =
   let json = Yojson.Safe.from_string out in
   check bool "empty JSON list" true (json = `List [])
 
+let test_find_and_list_report_fresh_codex_hook_alive () =
+  with_temp_dir @@ fun dir ->
+  let repo_root = dir // "repo" in
+  Unix.mkdir repo_root 0o755;
+  let broker = C2c_mcp.Broker.create ~root:repo_root in
+  register_fresh_codex_hook broker ~session_id:"sid-codex-hook-fresh"
+    ~alias:"zzqfind-codex-hook-fresh";
+  let env = [ ("C2C_MCP_BROKER_ROOT", repo_root) ] in
+  let rc_find, out_find, _ =
+    run_c2c ~env [ "find"; "codex-hook-fresh"; "--json" ]
+  in
+  check int "find fresh Codex hook exits 0" 0 rc_find;
+  let find_entry =
+    match Yojson.Safe.from_string out_find with
+    | `List [ entry ] -> entry
+    | _ -> fail "find did not return exactly one fresh Codex hook"
+  in
+  check bool "find reports hook peer alive" true
+    (member "alive" find_entry = Some (`Bool true));
+  check string "find reports alive state" "alive" (str_member "state" find_entry);
+  let rc_list, out_list, _ =
+    run_c2c ~env [ "list"; "--match"; "codex-hook-fresh"; "--json" ]
+  in
+  check int "list fresh Codex hook exits 0" 0 rc_list;
+  match Yojson.Safe.from_string out_list with
+  | `List [ entry ] ->
+      check bool "list reports hook peer alive" true
+        (member "alive" entry = Some (`Bool true));
+      check string "list reports explicit alive state" "alive"
+        (str_member "state" entry)
+  | _ -> fail "list did not return exactly one fresh Codex hook"
+
 (* --- c2c list filters ---------------------------------------------------- *)
 
 let test_list_alive_filter () =
@@ -298,6 +338,7 @@ let () =
         ; test_case "sessions broker searched by default" `Quick test_find_covers_sessions_broker_by_default
         ; test_case "--json shape + alive-first sort" `Quick test_find_json_shape_and_alive_first
         ; test_case "--json no match → [] + exit 1" `Quick test_find_json_no_match
+        ; test_case "fresh Codex hook is alive in find and list" `Quick test_find_and_list_report_fresh_codex_hook_alive
         ] )
     ; ( "list_filters",
         [ test_case "--alive suppresses dead" `Quick test_list_alive_filter

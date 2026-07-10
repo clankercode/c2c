@@ -4027,6 +4027,35 @@ let registry_json_for_hook_expiry ?pid ?(registered_by = Some "codex-hook")
   in
   `Assoc fields
 
+let stale_codex_hook_registration ~now : C2c_mcp.registration =
+  { session_id = "codex-hook-old"
+  ; alias = "codex-old-hook"
+  ; pid = None
+  ; pid_start_time = None
+  ; registered_at = Some (now -. (25.0 *. 3600.0))
+  ; canonical_alias = None
+  ; dnd = false
+  ; dnd_since = None
+  ; dnd_until = None
+  ; client_type = Some "codex"
+  ; plugin_version = None
+  ; confirmed_at = None
+  ; enc_pubkey = None
+  ; ed25519_pubkey = None
+  ; pubkey_signed_at = None
+  ; pubkey_sig = None
+  ; compacting = None
+  ; last_activity_ts = Some (now -. (25.0 *. 3600.0))
+  ; role = None
+  ; compaction_count = 0
+  ; automated_delivery = None
+  ; tmux_location = None
+  ; cwd = None
+  ; metadata_opt_out = false
+  ; registered_by = Some "codex-hook"
+  ; opaque_host_id = None
+  }
+
 let write_registry_json dir regs =
   write_file (Filename.concat dir "registry.json")
     (Yojson.Safe.to_string (`List regs))
@@ -4050,6 +4079,10 @@ let test_list_skips_expired_codex_hook_auto_registration () =
             ~last_activity_ts:(now -. (25.0 *. 3600.0)) ()
         ];
       let broker = C2c_mcp.Broker.create ~root:dir in
+      let stale_hook = stale_codex_hook_registration ~now in
+      check bool "expired hook liveness is dead before list filtering" true
+        (C2c_mcp.Broker.registration_liveness_state stale_hook
+         = C2c_mcp.Broker.Dead);
       let regs = C2c_mcp.Broker.list_registrations broker in
       check bool "expired hook auto-registration hidden" false
         (List.exists
