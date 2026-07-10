@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H2a-safe-renderer",
+  "node_id": "impl-H2a",
+  "kind": "output",
+  "summary_path": "artifacts/H2a-safe-renderer/summary.md",
+  "raw_path": "artifacts/H2a-safe-renderer/receipt.md",
+  "hash": "sha256:de3328e7a7727620869a3d236fb777148106a7c143d3097f284ab4c8c7f86d5f",
+  "bytes": 711,
+  "created_by": "H2a-worker",
+  "created_at": "2026-07-10T04:39:32Z",
+  "redaction_status": "none"
+}

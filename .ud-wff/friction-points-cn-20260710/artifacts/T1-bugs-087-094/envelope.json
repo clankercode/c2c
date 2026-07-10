@@ -1,0 +1,13 @@
+{
+  "artifact_id": "artifact-T1-bugs-087-094",
+  "node_id": "audit-bugs",
+  "kind": "output",
+  "summary_path": "artifacts/T1-bugs-087-094/summary.md",
+  "raw_path": "/home/xertrov/src/c2c/.worktrees/friction-cn-audit-bugs/.collab/research/friction-cn-b087-b094-audit.md",
+  "hash": "sha256:32e9eea587b740bceab931073deac14f6198fe21adc1caa4814fe2244aa6ec3f",
+  "bytes": 18676,
+  "created_by": "audit-bugs-worker",
+  "created_at": "2026-07-10T03:48:37Z",
+  "redaction_status": "none"
+}
+
