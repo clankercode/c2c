@@ -317,3 +317,14 @@
  (name test_c2c_doctor_capabilities)
  (modules test_c2c_doctor_capabilities)
  (libraries c2c_mcp alcotest yojson unix lwt.unix cohttp-lwt-unix))
+
+; J1 (friction-cn): canonical lean v1 message/event JSON schema
+; (C2c_schema_v1) conformance vectors — valid/invalid version, valid/invalid
+; state, forward-compatibility, optionality. Additive: this slice publishes
+; the schema + vectors only and migrates no output surface (J2/J3/J4 adopt
+; it). Appended below H4's doctor-capabilities stanza to keep this shared
+; manifest lane append-only (next: H5/H6/F5a).
+(test
+ (name test_c2c_schema_v1)
+ (modules test_c2c_schema_v1)
+ (libraries c2c_mcp alcotest yojson unix))
