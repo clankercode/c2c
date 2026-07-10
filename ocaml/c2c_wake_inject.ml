@@ -313,15 +313,15 @@ let write_state ~broker_root ~session_id (st : state) : unit =
  * Broker log
  * --------------------------------------------------------------------------- *)
 
-let log_event ~broker_root ~session_id ~event fields =
+(* Call sites pass the event pair with a literal string so the #442
+   catalog gate's static scan can see every event name. *)
+let log_event ~broker_root ~session_id fields =
   Broker_log.append_json ~broker_root
     ~json:
       (`Assoc
-        ([ ("ts", `Float (Unix.gettimeofday ()))
-         ; ("event", `String event)
-         ; ("session_id", `String session_id)
-         ]
-         @ fields))
+        (("ts", `Float (Unix.gettimeofday ()))
+         :: fields
+        @ [ ("session_id", `String session_id) ]))
 
 (* ---------------------------------------------------------------------------
  * The injector
@@ -412,8 +412,9 @@ let maybe_inject ?now ~(broker_root : string) ~(session_id : string) () : outcom
                       | Ok () ->
                           write_state ~broker_root ~session_id
                             { last_inject_ts = now; last_msg_ts = newest_ts };
-                          log_event ~broker_root ~session_id ~event:"wake_inject"
-                            [ ("backend", `String (backend_name backend))
+                          log_event ~broker_root ~session_id
+                            [ ("event", `String "wake_inject")
+                            ; ("backend", `String (backend_name backend))
                             ; ("message_count", `Int count)
                             ];
                           Injected
@@ -422,15 +423,16 @@ let maybe_inject ?now ~(broker_root : string) ~(session_id : string) () : outcom
                             }
                       | Error reason ->
                           log_event ~broker_root ~session_id
-                            ~event:"wake_inject_error"
-                            [ ("backend", `String (backend_name backend))
+                            [ ("event", `String "wake_inject_error")
+                            ; ("backend", `String (backend_name backend))
                             ; ("reason", `String reason)
                             ];
                           Failed reason))))
   with e ->
     (try
-       log_event ~broker_root ~session_id ~event:"wake_inject_error"
-         [ ("reason", `String (Printexc.to_string e)) ]
+       log_event ~broker_root ~session_id
+         [ ("event", `String "wake_inject_error")
+         ; ("reason", `String (Printexc.to_string e)) ]
      with _ -> ());
     Failed (Printexc.to_string e)
 
