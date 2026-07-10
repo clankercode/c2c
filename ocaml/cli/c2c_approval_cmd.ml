@@ -316,8 +316,9 @@ let resolve_authorizer_cmd =
 (* [#490 slice 5b] Bash-callable companion to approval-reply: lets the
    embedded kimi PreToolUse hook record what's pending before the
    awareness DM goes out. Reviewers can then run `c2c approval-list`
-   independently of receiving the DM. Failure here is non-fatal in the
-   hook — the legacy DM path still delivers the awareness body. *)
+   independently of receiving the DM. Failure here is non-fatal because the
+   advisory DM can still deliver the awareness body; it cannot carry a
+   verdict. *)
 let approval_pending_write_cmd =
   let token =
     Cmdliner.Arg.(required & opt (some string) None
