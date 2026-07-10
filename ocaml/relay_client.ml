@@ -19,8 +19,33 @@ module Relay_client : sig
     t -> meth:Cohttp.Code.meth -> path:string -> ?body:Yojson.Safe.t ->
     ?auth_override:string -> unit -> Yojson.Safe.t Lwt.t
   (** Low-level primitive: issue [meth path] with optional JSON body.
-      Returns the parsed JSON response dict. On network / parse error returns
-      ["ok": false, "error_code": "connection_error", "error": <msg>]. *)
+      Returns the parsed JSON response dict, reconciled with the HTTP
+      status line (H7 status-honesty contract):
+
+      - 2xx: the parsed body is returned untouched — ["ok": true] is
+        possible ONLY here.
+      - non-2xx with an honest ["ok": false] object body: the body passes
+        through (its own [error_code]/[error] win) annotated with
+        ["http_status": <code>].
+      - non-2xx whose body does NOT report ["ok": false] (claims success,
+        lacks [ok], or is not an object): overridden with ["ok": false,
+        "error_code": "http_error_<code>", "http_status": <code>] and the
+        offending body preserved under ["relay_response"] — the status
+        line always wins over a dishonest body.
+      - transport failure (connection refused, timeout, TLS error,
+        unparseable response body): a locally-synthesized ["ok": false,
+        "error_code": "connection_error", "error": <msg>,
+        "transport": true]. The ["transport": true] marker distinguishes
+        "could not get a coherent response" from "the relay responded
+        with an error" — see [is_transport_error]. Never raises. *)
+
+  val is_transport_error : Yojson.Safe.t -> bool
+  (** True iff [json] is a client-synthesized transport failure (carries
+      ["transport": true]) — i.e. the relay never produced a coherent
+      HTTP/JSON response. False for every genuine relay response,
+      including non-2xx / ok:false ones. Consumers that must distinguish
+      "relay unreachable" from "relay responded with an error" (e.g.
+      `c2c doctor --relay` relay.reachable) key off this. *)
 
   val health : t -> Yojson.Safe.t Lwt.t
   val register :
@@ -131,12 +156,44 @@ end = struct
     Conduit_lwt_unix.init ~tls_authenticator:auth () >>= fun conduit_ctx ->
     Lwt.return (Cohttp_lwt_unix.Client.custom_ctx ~ctx:conduit_ctx ())
 
+  (* Client-synthesized transport failure: the relay never produced a
+     coherent HTTP/JSON response. [transport: true] is the marker that
+     lets consumers (doctor reachable check) tell this apart from a
+     genuine relay error response — see the [request] contract above. *)
   let connection_error msg =
     `Assoc [
       ("ok", `Bool false);
       ("error_code", `String "connection_error");
       ("error", `String msg);
+      ("transport", `Bool true);
     ]
+
+  let is_transport_error = function
+    | `Assoc fields -> List.assoc_opt "transport" fields = Some (`Bool true)
+    | _ -> false
+
+  (* Reconcile the parsed body with the HTTP status line (H7): a non-2xx
+     status can NEVER yield ok:true. An honest ok:false object body passes
+     through (its own error_code wins — the fault matrix pins 401/429/500
+     cells on the body's code) annotated with http_status; anything else on
+     a non-2xx is overridden, preserving the body under relay_response. *)
+  let reconcile_status ~status body =
+    if status >= 200 && status < 300 then body
+    else
+      match body with
+      | `Assoc fields when List.assoc_opt "ok" fields = Some (`Bool false) ->
+          let fields = List.filter (fun (k, _) -> k <> "http_status") fields in
+          `Assoc (fields @ [ ("http_status", `Int status) ])
+      | dishonest ->
+          `Assoc [
+            ("ok", `Bool false);
+            ("error_code", `String (Printf.sprintf "http_error_%d" status));
+            ("error", `String (Printf.sprintf
+              "relay answered HTTP %d but the body did not report ok:false"
+              status));
+            ("http_status", `Int status);
+            ("relay_response", dishonest);
+          ]
 
   let request t ~meth ~path ?body ?auth_override () =
     let uri = Uri.of_string (t.base_url ^ path) in
@@ -165,9 +222,10 @@ end = struct
           (Lwt_unix.sleep t.timeout >>= fun () ->
            Lwt.fail (Failure "request_timeout"));
         ]
-        >>= fun (_resp, resp_body) ->
+        >>= fun (resp, resp_body) ->
+        let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
         Cohttp_lwt.Body.to_string resp_body >>= fun text ->
-        try Lwt.return (Yojson.Safe.from_string text)
+        try Lwt.return (reconcile_status ~status (Yojson.Safe.from_string text))
         with _ -> Lwt.return (connection_error "invalid_json_response"))
       (fun exn ->
         Lwt.return (connection_error (Printexc.to_string exn)))

@@ -392,3 +392,21 @@
  (modules test_relay_test_support)
  (libraries relay_test_support relay_test_support_real c2c_mcp alcotest
    yojson unix lwt.unix))
+
+; F5b (friction-cn): P0 process/adverse fault matrix. Drives the compiled
+; c2c binary as a SUBPROCESS against the F5a scripted fault server
+; (Relay_test_support): relay register / dm send / dm poll / status vs
+; 401/429/5xx, truncated + malformed JSON, connection refused, empty
+; response, client timeout; PoW adverse challenges (garbage/wrong-ctx/
+; accept-then-401/endless) pinning the single-minted-retry bound; doctor
+; --relay exit contract vs a refused relay; and the strict B098 vector
+; (relay-delivered verdict -> real `relay connect --once` -> inert at
+; `await-reply`; host-local verdict file still resolves). Two known
+; defects are documented as skipped FIXME cases (5xx ok:true false
+; success; doctor relay.reachable false PASS). Appended LAST per the
+; serialized manifest-lane discipline (H4->J1->H5->H6->F5a->F5b).
+(test
+ (name test_relay_fault_matrix)
+ (modules test_relay_fault_matrix)
+ (libraries c2c_mcp relay_test_support alcotest yojson unix)
+ (deps ../cli/c2c.exe))

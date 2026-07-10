@@ -67,7 +67,8 @@ val run_once :
     managed kimi sessions. Returns the number of messages delivered.
 
     Uses drain_inbox (destructive) since the global broker is separate from the
-    per-repo broker — no risk of double-delivery or await-reply races.
+    per-repo broker — no risk of double-delivery. await-reply never reads an
+    inbox; approval resolution is host-local and file-only.
     Exposed for unit tests + dogfood smokes. *)
 val poll_once_global :
   session_id:string ->
@@ -96,14 +97,6 @@ val atomic_write_string : string -> string -> unit
     would otherwise surface as user-turn input and cause identity-
     confusion. See #475. *)
 val is_system_event : from_alias:string -> bool
-
-(** [is_approval_verdict_body body] returns [true] iff the message body
-    matches the legacy slice-1 verdict shape `^\s*ka_<id>\s+(allow|deny)\b`.
-    Used by [run_once] to suppress chat-log + notification + wake for
-    approval-verdict backchannel DMs (#490 slice 5c). The slice-5a
-    verdict-file side-channel is the canonical reply path; legacy DMs
-    are noise once they land. Exposed for unit tests. *)
-val is_approval_verdict_body : string -> bool
 
 (** [write_chat_log ~session_dir ~from_alias ~body] appends a human-readable
     entry to [<session_dir>/c2c-chat-log.md>]. Logs ALL messages including
