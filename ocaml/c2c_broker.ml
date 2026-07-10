@@ -3916,6 +3916,28 @@ open C2c_mcp_helpers
           files;
         try Unix.rmdir dir with Unix.Unix_error _ -> ()))
 
+  (* Room-event auto-DM envelopes route peer-controlled alias/room values
+     through [xml_escape] (the canonical H2a untrusted-data renderer) so a
+     hostile alias or room id cannot inject a closing [</c2c>], a forged
+     [<system-reminder>], or an attribute breakout into the delivered
+     envelope. Aliases and room ids are charset-validated at their entry
+     points, so this is defence-in-depth — but it keeps every string-into-
+     markup site on the same escaping contract as [format_c2c_envelope]. *)
+  let render_room_invite_envelope ~from_alias ~room_id =
+    let f = xml_escape from_alias and r = xml_escape room_id in
+    Printf.sprintf
+      "<c2c event=\"room-invite\" from=\"%s\" room=\"%s\">You've been \
+       invited to room %s by %s. Run `c2c rooms join %s` to accept.</c2c>"
+      f r r f r
+
+  let render_room_knock_envelope ~requester_alias ~room_id =
+    let q = xml_escape requester_alias and r = xml_escape room_id in
+    Printf.sprintf
+      "<c2c event=\"room-knock\" from=\"%s\" room=\"%s\">%s wants \
+       to join room %s. Run `c2c rooms approve-knock %s %s` to \
+       approve, or `c2c rooms deny-knock %s %s` to deny.</c2c>"
+      q r q r r q r q
+
   let send_room_invite t ~room_id ~from_alias ~invitee_alias =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
@@ -3934,12 +3956,7 @@ open C2c_mcp_helpers
        it distinctly from ordinary message DMs. We re-DM even on duplicate
        invites: a duplicate invite is a deliberate nudge and should reach
        the invitee (cheap; ACL itself stays idempotent). *)
-    let envelope =
-      Printf.sprintf
-        "<c2c event=\"room-invite\" from=\"%s\" room=\"%s\">You've been \
-         invited to room %s by %s. Run `c2c rooms join %s` to accept.</c2c>"
-        from_alias room_id room_id from_alias room_id
-    in
+    let envelope = render_room_invite_envelope ~from_alias ~room_id in
     (* Sender is the inviter (real alias) rather than the reserved
        [room_system_alias], because [enqueue_message] rejects
        reserved system aliases as a spoof guard (see
@@ -4021,14 +4038,7 @@ open C2c_mcp_helpers
            save_room_meta t ~room_id
              { meta with pending_knocks = meta.pending_knocks @ [ knock ] };
            let notified = ref [] in
-           let envelope =
-             Printf.sprintf
-               "<c2c event=\"room-knock\" from=\"%s\" room=\"%s\">%s wants \
-                to join room %s. Run `c2c rooms approve-knock %s %s` to \
-                approve, or `c2c rooms deny-knock %s %s` to deny.</c2c>"
-               requester_alias room_id requester_alias room_id room_id
-               requester_alias room_id requester_alias
-           in
+           let envelope = render_room_knock_envelope ~requester_alias ~room_id in
            List.iter
              (fun (m : room_member) ->
                 if alias_casefold m.rm_alias = alias_casefold requester_alias

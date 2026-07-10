@@ -55,9 +55,14 @@ val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string ->
     2026-06-18 follow-up section in
     [docs/superpowers/specs/2026-04-22-reply-via-envelope-design.md].
 
-    [{!escape_content_for_xml}] (default [false]) XML-escapes the
-    message body and the reply-hint placeholder examples for nested
-    XML transports such as the codex-headless XML fifo. *)
+    The message body is ALWAYS XML-escaped as untrusted peer data
+    (the [<c2c>] envelope is the authority boundary; escaping keeps
+    closing tags, reminder-like text, and entity-shaped strings
+    visible as data), regardless of [{!escape_content_for_xml}].
+    [{!escape_content_for_xml}] (default [false]) governs ONLY the
+    reply-hint placeholder examples (e.g. [<your reply>] rendered as
+    [&lt;your reply&gt;]) for nested XML transports such as the
+    codex-headless XML fifo. *)
 
 val format_reply_hint : ?escape_text_for_xml:bool -> from:string -> to_alias:string -> unit -> string
 (** Build the [<system-reminder>] reply hint block. Sibling of the
