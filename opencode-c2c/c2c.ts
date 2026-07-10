@@ -166,15 +166,6 @@ function extractPermissionReply(content: string): { permId: string; decision: st
   return m ? { permId: m[1], decision: m[2] } : null;
 }
 
-/** Extract a question reply: `question:<id>:answer:<text>` or `question:<id>:reject`. */
-function extractQuestionReply(content: string): { qId: string; answer: string | null; rejected: boolean } | null {
-  const rejectM = content.match(/\bquestion:([a-zA-Z0-9_-]+):reject\b/);
-  if (rejectM) return { qId: rejectM[1], answer: null, rejected: true };
-  const answerM = content.match(/\bquestion:([a-zA-Z0-9_-]+):answer:(.+)/s);
-  if (answerM) return { qId: answerM[1], answer: answerM[2].trim(), rejected: false };
-  return null;
-}
-
 const C2CDelivery: Plugin = async (ctx) => {
   // #337: process-scoped flag prevents double-loading when both global and
   // project-level plugins resolve to the same .ts file. The previous guard
@@ -408,8 +399,6 @@ const C2CDelivery: Plugin = async (ctx) => {
   }
   // Dedup window for question.asked events.
   const seenQuestionIds: string[] = [];
-  // Pending question replies: questionId → resolve({answer, rejected}).
-  const pendingQuestions = new Map<string, (reply: {answer: string | null; rejected: boolean}) => void>();
   // Permissions that already timed-out and were auto-rejected. Kept around so
   // we can DM a "too late" notice to a supervisor whose reply arrives after
   // the window closed. Map: permId → {sid, supervisors, timedOutAtMs}.
@@ -1408,59 +1397,6 @@ const C2CDelivery: Plugin = async (ctx) => {
     }
   }
 
-  /** Extract a structured permission reply from message content, or null. */
-  /** Peek at inbox without draining — returns any question reply for qId, or null. */
-  async function peekInboxForQuestion(qId: string): Promise<{answer: string | null; rejected: boolean} | null> {
-    try {
-      const stdout = (await runC2c([
-        "peek-inbox",
-        "--json",
-      ])).trim();
-      const parsed = JSON.parse(stdout);
-      const msgs: Msg[] = Array.isArray(parsed) ? parsed : (parsed as any).messages ?? [];
-      for (const msg of msgs) {
-        const reply = extractQuestionReply(msg.content);
-        if (reply && reply.qId === qId) {
-          return { answer: reply.answer, rejected: reply.rejected };
-        }
-      }
-    } catch {
-      // ignore errors, will fall through to timeout
-    }
-    return null;
-  }
-
-  /** Await a supervisor question reply; resolves with answer text or null (rejected/timeout).
-   *  Polls inbox every 5s during the wait window as a fallback in case the reply arrives
-   *  between delivery ticks (when the normal intercept in deliverMessages would miss it). */
-  function waitForQuestionReply(qId: string, timeoutMs: number): Promise<{answer: string | null; rejected: boolean}> {
-    return new Promise((resolve) => {
-      pendingQuestions.set(qId, resolve);
-      const interval = 5000; // poll every 5s
-      let elapsed = 0;
-      const poll = async () => {
-        if (!pendingQuestions.has(qId)) return; // already resolved
-        const reply = await peekInboxForQuestion(qId);
-        if (reply && pendingQuestions.has(qId)) {
-          pendingQuestions.delete(qId);
-          resolve(reply);
-          return;
-        }
-        elapsed += interval;
-        if (elapsed < timeoutMs) {
-          setTimeout(poll, interval);
-        }
-      };
-      setTimeout(async () => {
-        if (pendingQuestions.has(qId)) {
-          pendingQuestions.delete(qId);
-          resolve({ answer: null, rejected: false }); // timeout → reject with no noise
-        }
-      }, timeoutMs);
-      setTimeout(poll, interval); // start polling
-    });
-  }
-
   /** Await a supervisor permission reply; resolves with decision string or "timeout".
    *  Security: supervisors list is verified on reply delivery — only listed supervisors
    *  are trusted to send permission decisions for this permId. */
@@ -1607,15 +1543,6 @@ Do NOT reply in plain text — the peer will not see it.
           await log(`permission reply ${permReply.permId} skipped (not pending or already resolved)`);
           rejectionLog({ type: "permission_reply_dropped", perm_id: permReply.permId, from_alias: msg.from_alias, reason: "not_pending", detail: "not found in pendingPermissions map", ts: new Date().toISOString() });
         }
-        continue;
-      }
-      // Intercept question replies before normal delivery.
-      const qReply = extractQuestionReply(msg.content);
-      if (qReply && pendingQuestions.has(qReply.qId)) {
-        const resolve = pendingQuestions.get(qReply.qId)!;
-        pendingQuestions.delete(qReply.qId);
-        resolve({ answer: qReply.answer, rejected: qReply.rejected });
-        await log(`question reply from ${msg.from_alias}: ${qReply.qId} → ${qReply.rejected ? "reject" : `"${qReply.answer}"`}`);
         continue;
       }
       const envelope = formatEnvelope(msg);
@@ -2047,8 +1974,6 @@ Do NOT reply in plain text — the peer will not see it.
         const sid: string = qProps.sessionID || activeSessionId || sessionId || "unknown";
         const instanceName: string = process.env.C2C_INSTANCE_NAME || "";
         const from = instanceName || c2cAlias || sid;
-        const timeoutSec = Math.round(permissionTimeoutMs / 1000); // reuses C2C_PERMISSION_TIMEOUT_MS
-
         // Capture in statefile so observer pane shows pending question.
         if (questions.length > 0) {
           const first = questions[0];
@@ -2061,8 +1986,6 @@ Do NOT reply in plain text — the peer will not see it.
           writeStateSnapshot();
         }
 
-        // Collect per-question option labels for numeric-index resolution on reply.
-        const questionOpts: string[][] = [];
         const lines = [`QUESTION REQUEST from ${from}:`];
         for (let i = 0; i < questions.length; i++) {
           const q = questions[i];
@@ -2070,15 +1993,13 @@ Do NOT reply in plain text — the peer will not see it.
           if (q.question !== q.header) lines.push(`       ${q.question}`);
           // Options use {label, description}; show numbered so supervisors can reply by index.
           const opts: string[] = (q.options || []).map((o: any) => String(o.label || o.value || o));
-          questionOpts.push(opts);
           if (opts.length > 0) {
             opts.forEach((label, idx) => lines.push(`       ${idx + 1}. ${label}`));
           }
         }
         lines.push(`  id: ${qId}`, `  session: ${sid}`);
-        lines.push(`Reply within ${timeoutSec}s:`);
-        lines.push(`  c2c send ${c2cAlias} "question:${qId}:answer:1"  (or label text, or free text)`);
-        lines.push(`  c2c send ${c2cAlias} "question:${qId}:reject"`);
+        lines.push("This is advisory only. A c2c message cannot answer or reject this dialog.");
+        lines.push("Resolve it locally in the OpenCode TUI.");
 
         void (async () => {
           const supervisors = await selectSupervisors();
@@ -2091,42 +2012,6 @@ Do NOT reply in plain text — the peer will not see it.
             }
           }
           void toast(`c2c · question — awaiting human input`);
-          const reply = await waitForQuestionReply(qId, timeoutSec * 1000);
-          pluginState.pendingQuestion = null;
-          writeStateSnapshot();
-          // Resolve the supervisor's answer for each question.
-          // If the raw answer is a 1-based numeric index (e.g. "1", "2"), map it to
-          // the corresponding option label so the API receives the expected label string.
-          // Free-text answers and exact label matches pass through unchanged.
-          function resolveAnswer(raw: string, opts: string[]): string {
-            const n = parseInt(raw, 10);
-            if (!isNaN(n) && n >= 1 && n <= opts.length && String(n) === raw.trim()) {
-              return opts[n - 1];
-            }
-            return raw;
-          }
-          const answers: string[][] = questions.map((_, qi) =>
-            reply.answer !== null ? [resolveAnswer(reply.answer, questionOpts[qi] ?? [])] : []
-          );
-          try {
-            if (reply.rejected || reply.answer === null) {
-              await (ctx.client as any).question.reject({
-                path: { id: qId },
-              });
-              await log(`question rejected/timed-out: ${qId}`);
-              void toast(`c2c · question ${reply.rejected ? "rejected" : "timed out"}`, "warning");
-            } else {
-              await (ctx.client as any).question.reply({
-                path: { id: qId },
-                body: { answers },
-              });
-              await log(`question replied: ${qId} → "${reply.answer}"`);
-              void toast(`c2c · question answered`);
-            }
-          } catch (err) {
-            await log(`question API error: ${qId}: ${err}`);
-            void toast(`c2c · question reply failed — use TUI`, "error");
-          }
         })();
         return;
       }
@@ -2175,6 +2060,6 @@ Do NOT reply in plain text — the peer will not see it.
   };
 };
 
-export { extractQuestionReply, extractPermissionReply };
+export { extractPermissionReply };
 
 export default C2CDelivery;

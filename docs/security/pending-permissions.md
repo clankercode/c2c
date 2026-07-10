@@ -14,7 +14,12 @@ permalink: /security/pending-permissions/
 
 ## Overview
 
-M2/M4 add broker-side tracking for permission/question request-reply cycles. The broker maintains a registry of open pending slots, validates supervisor replies, and guards against alias reuse during live permission state.
+M2/M4 add broker-side tracking for permission request-reply cycles. The broker maintains a registry of open pending slots, validates supervisor replies, and guards against alias reuse during live permission state.
+
+Question dialogs are deliberately outside this authority path. Under B098's strict
+"bus, never RPC" contract, a broker-inbox or relay-delivered message is advisory
+data only and cannot call OpenCode's `question.reply` or `question.reject` APIs.
+Operators must resolve question dialogs locally in the OpenCode TUI.
 
 This closes a gap in M3's plugin-side supervisor check: M3 stops external alias spoofing but cannot stop orphaned replies delivered to a new alias owner after the original owner died. M4 addresses this with broker-enforced semantics.
 
@@ -74,7 +79,9 @@ This closes a gap in M3's plugin-side supervisor check: M3 stops external alias 
 - TTL is **lazy** — expired entries are filtered on every read, not eagerly deleted.
 - Default TTL: 600s. Override via `C2C_PERMISSION_TTL` env var.
 
-**When to call**: Before sending permission/question requests to supervisors.
+**When to call**: Before sending permission requests to supervisors. A `question`
+slot, where used by a non-host-action consumer, grants no authority to resolve an
+OpenCode dialog; the OpenCode plugin does not open one.
 
 ---
 
@@ -113,7 +120,8 @@ This closes a gap in M3's plugin-side supervisor check: M3 stops external alias 
 - Returns the original `requester_session_id` on success so the plugin knows where to deliver the resolved decision.
 - Marks the slot resolved for fallthrough scheduling; callers should treat the first valid reply as winning.
 
-**When to call**: On receipt of a permission/question reply, before resolving the pending promise.
+**When to call**: On receipt of a permission reply, before resolving the pending
+promise. Question messages remain advisory and cannot resolve an OpenCode dialog.
 
 ---
 
