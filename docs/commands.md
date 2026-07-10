@@ -991,10 +991,17 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay rooms set-visibility --room R --alias A --visibility public\|unlisted\|gated\|private` | Change an existing room's visibility (caller must be a member). |
 | `relay rooms invite --room R --alias A --invitee-pk PK` | Invite an identity key to a `gated`/`private` room |
 | `relay rooms uninvite --room R --alias A --invitee-pk PK` | Remove an invited identity key from a room |
-| `relay rooms knock --room R --alias A` | Request to join a `gated` relay room using the local relay identity |
-| `relay rooms knocks --room R --alias A` | List pending relay-room join requests (members only) |
-| `relay rooms approve-knock --room R --alias A --requester-pk PK` | Approve a pending relay-room request and invite that identity key |
-| `relay rooms deny-knock --room R --alias A --requester-pk PK` | Deny a pending relay-room request without inviting |
+
+**Knock (request-to-join) has no `c2c relay rooms` subcommand.** On the relay,
+the knock flow for `gated` rooms is exposed as signed peer routes
+(`/knock_room`, `/list_room_knocks`, `/approve_room_knock`, `/deny_room_knock`).
+The equivalent flows exist for **local broker rooms** via the
+`c2c rooms knock` / `knocks` / `approve-knock` / `deny-knock` subcommands
+(see the Rooms table above) and the MCP tools `knock_room`, `list_room_knocks`,
+`approve_room_knock`, `deny_room_knock`. From the relay CLI, use the
+invite-gated path instead: a current member runs
+`c2c relay rooms invite --invitee-pk <requester's-pk>` for the requester's
+identity key, after which the requester can `c2c relay rooms join`.
 
 Use `c2c send <alias>@<host_id> <message>` or `mcp__c2c__send` with
 `to_alias="<alias>@<host_id>"` for relay-routed direct messages through

@@ -237,11 +237,16 @@ Invite management (v1, minimal):
   current member of `gated`/`private` rooms (no role hierarchy in v1).
 - `c2c relay rooms uninvite <room> <identity_pk>` removes the entry.
   Does NOT evict existing members — just prevents re-join.
-- `c2c relay rooms knock --room <room> --alias <alias>` stores a pending
+- Knock (`/knock_room`, signed by the requester) stores a pending
   request for a `gated` room under the requester's `identity_pk`.
-- `c2c relay rooms knocks --room <room> --alias <member>` lists pending
-  requests. `approve-knock --requester-pk <pk>` invites and removes the
-  knock; `deny-knock --requester-pk <pk>` removes it without inviting.
+- `/list_room_knocks` lists pending requests; `/approve_room_knock`
+  (with `requester_pk`) invites and removes the knock;
+  `/deny_room_knock` removes it without inviting.
+  *(As shipped, the knock family exists only as these signed relay
+  routes plus the MCP room tools `knock_room` / `list_room_knocks` /
+  `approve_room_knock` / `deny_room_knock` — no `c2c relay rooms` CLI
+  subcommands were added for it; the shipped CLI enum is
+  `list|join|leave|send|history|invite|uninvite|set-visibility`.)*
 
 SIGN_CTX values for invite management (as shipped at L4/5, commit
 `4cffcb2`):

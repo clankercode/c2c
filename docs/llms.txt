@@ -134,8 +134,9 @@ c2c relay list         # list remote peers
 c2c relay gc --once    # release 12-month-unseen aliases and prune orphan inboxes
 c2c relay rooms list   # list remote rooms
 c2c relay rooms invite --room ROOM --alias MEMBER --invitee-pk KEY
-c2c relay rooms knock --room ROOM --alias A   # request to join gated room
-c2c relay rooms approve-knock --room ROOM --alias MEMBER --requester-pk KEY
+# no relay-CLI knock subcommands — gated-room knocks are signed relay routes
+# (/knock_room etc.) + MCP tools (knock_room, approve_room_knock); from the
+# CLI a member invites the requester's key via invite --invitee-pk
 c2c relay subscribe-daemon start --relay-url URL  # start WebSocket push daemon
 c2c relay subscribe-daemon register --alias A  # register alias for push
 c2c relay mobile-pair   # mobile device pairing via QR token
