@@ -3182,14 +3182,22 @@ end = struct
         let msgs = R.poll_inbox relay ~node_id ~session_id in
         respond_ok (json_ok [ ("messages", `List msgs) ])
 
-  let handle_peek_inbox relay body =
+  let handle_peek_inbox relay ~verified_alias body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     if node_id = "" || session_id = "" then
       respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
     else
-      let msgs = R.peek_inbox relay ~node_id ~session_id in
-      respond_ok (json_ok [ ("messages", `List msgs) ])
+      match verified_alias with
+      | Some v ->
+        (match R.alias_of_session relay ~node_id ~session_id with
+         | Some owner when owner = v ->
+           let msgs = R.peek_inbox relay ~node_id ~session_id in
+           respond_ok (json_ok [ ("messages", `List msgs) ])
+         | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
+      | None ->
+        let msgs = R.peek_inbox relay ~node_id ~session_id in
+        respond_ok (json_ok [ ("messages", `List msgs) ])
 
   let handle_remote_inbox session_id =
     let msgs = Relay_remote_broker.get_messages ~session_id in
@@ -4452,7 +4460,7 @@ end = struct
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_peek_inbox relay j)
+         | Ok j -> handle_peek_inbox relay ~verified_alias j)
 
       | `POST, "/join_room" ->
         let json = parse_body () in
