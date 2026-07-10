@@ -164,14 +164,27 @@ let test_tmux_command_sequence () =
          check int "counts both messages" 2 message_count
      | o -> failf "expected Injected, got %s" (C2c_wake_inject.outcome_to_string o));
     let lines = fixture_lines ctx in
-    check int "exactly two commands" 2 (List.length lines);
+    (* literal text; then Enter wrapped in an extended-keys off/restore
+       toggle (c2c-tmux-enter.sh parity — a CSI-u encoded Enter is not a
+       submit). In fixture mode the `show` capture returns no output, so
+       the restore arm re-sets "off". *)
+    check int "exactly five commands" 5 (List.length lines);
     let nudge = "c2c: 2 message(s) waiting - poll your inbox" in
     check (list string) "literal send-keys first"
       [ "tmux"; "send-keys"; "-l"; "-t"; "%7"; nudge ]
       (argv_of (List.nth lines 0));
+    check (list string) "read extended-keys"
+      [ "tmux"; "show"; "-sv"; "extended-keys" ]
+      (argv_of (List.nth lines 1));
+    check (list string) "extended-keys off before Enter"
+      [ "tmux"; "set"; "-s"; "extended-keys"; "off" ]
+      (argv_of (List.nth lines 2));
     check (list string) "then Enter"
       [ "tmux"; "send-keys"; "-t"; "%7"; "Enter" ]
-      (argv_of (List.nth lines 1)))
+      (argv_of (List.nth lines 3));
+    check (list string) "extended-keys restored"
+      [ "tmux"; "set"; "-s"; "extended-keys"; "off" ]
+      (argv_of (List.nth lines 4)))
 
 let test_tmux_idle_gate_blocks_recent_activity () =
   with_ctx (fun ctx ->
@@ -310,7 +323,8 @@ let test_backoff_and_new_message_dedupe () =
      | o -> failf "expected re-inject, got %s" (C2c_wake_inject.outcome_to_string o));
     let lines = fixture_lines ctx in
     (* 2 tmux commands per successful inject, 2 injects. *)
-    check int "four commands total" 4 (List.length lines))
+    (* two injects x 5 tmux commands (text, show, set off, Enter, restore) *)
+    check int "ten commands total" 10 (List.length lines))
 
 let test_backoff_env_tunable () =
   with_ctx (fun ctx ->
