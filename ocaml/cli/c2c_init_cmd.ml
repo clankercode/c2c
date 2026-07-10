@@ -637,16 +637,29 @@ let self_update =
     ~doc:"Update c2c to the latest (or pinned) release."
     ~man:
       [ `S "DESCRIPTION"
-      ; `P "For standalone installs, $(b,c2c self-update) downloads the latest release \
-            from GitHub, verifies the SHA-256 checksum, and atomically replaces the running binary."
-      ; `P "When launched through the @clanker-code/c2c npm package, it upgrades that \
-            package with its owning package manager (npm, pnpm, or Bun) instead."
-      ; `P "Asset naming convention (shared with install.sh): \
+      ; `P "$(b,c2c self-update) updates the running c2c in a way that preserves how it \
+            was installed. It first detects the install method, then behaves honestly:"
+      ; `P "$(b,standalone) — downloads the latest (or pinned) release from GitHub, \
+            verifies the SHA-256 checksum, and atomically replaces the running binary in place."
+      ; `P "$(b,npm / pnpm / bun) — delegates to the owning package manager (e.g. \
+            $(b,npm install -g @clanker-code/c2c@latest)) instead of overwriting the binary \
+            inside $(b,node_modules) or a content-addressed store. Pass $(b,--target <ver>) \
+            to select a specific package version."
+      ; `P "Asset naming convention for standalone installs (shared with install.sh): \
             $(b,c2c-<version>-<os>-<arch>.tar.gz) where os ∈ {linux, darwin}, arch ∈ {x64, arm64}."
-      ; `P "Refuses to touch system paths (/usr, /usr/local, /bin). Advises using a \
-            package manager or the curl bootstrap at https://c2c.im/install.sh."
+      ; `S "PROVENANCE & REFUSALS"
+      ; `P "The updater refuses rather than acting dishonestly when: the running binary is \
+            $(b,shadowed) on PATH (a different c2c runs when you type $(b,c2c), so updating \
+            the running one would not help); the install provenance is $(b,unknown/ambiguous) \
+            (a package store this updater does not recognise); or the owning package manager \
+            is $(b,not installed). Each case exits non-zero with an actionable message and \
+            never silently drops a standalone copy elsewhere."
+      ; `P "Still refuses to touch system paths (/usr, /usr/local, /bin) for standalone \
+            installs. Advises the curl bootstrap at https://c2c.im/install.sh."
       ; `P "Exit codes: 0 = updated or check-only OK; 1 = error; the JSON output \
-            distinguishes $(b,already_latest) vs $(b,updated) vs $(b,error)."
+            distinguishes $(b,already_latest) vs $(b,updated) vs $(b,error), and for \
+            package-managed installs reports $(b,install_method) plus the \
+            $(b,delegate_command) that runs."
       ; `S "SECURITY"
       ; `P "SHA-256 checksum verification is always performed against the published \
             SHA256SUMS file. Signature verification (cosign/sigstore) is a TODO — \

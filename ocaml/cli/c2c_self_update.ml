@@ -250,9 +250,43 @@ type update_result =
   | Check_only of { current: string; latest: string; asset_available: bool }
   | Update_error of string
 
-(* ---- main logic ---------------------------------------------------------- *)
+(* ---- provenance helpers (B101 / A003 / F101) ----------------------------- *)
 
-let run_self_update ~check_only ~pinned_version ~json_output ~verify_sig =
+module Prov = C2c_self_update_provenance
+
+(* Does an external command exist on PATH? Injectable for tests via
+   C2C_SELF_UPDATE_MANAGER_AVAILABLE. *)
+let command_exists cmd =
+  Sys.command (Printf.sprintf "command -v %s >/dev/null 2>&1" (Filename.quote cmd)) = 0
+
+(* Realpath of the first `c2c` reachable on PATH (None when absent). Used to
+   detect the PATH-shadow case where the binary that would be updated is not
+   the one users actually run. *)
+let resolve_c2c_on_path () =
+  match Sys.getenv_opt "PATH" with
+  | None -> None
+  | Some path ->
+      let dirs = String.split_on_char ':' path in
+      let rec find = function
+        | [] -> None
+        | "" :: rest -> find rest
+        | d :: rest ->
+            let cand = Filename.concat d "c2c" in
+            if Sys.file_exists cand
+               && (try Unix.access cand [ Unix.X_OK ]; true with _ -> false)
+            then Some (try Unix.realpath cand with _ -> cand)
+            else find rest
+      in
+      find dirs
+
+let emit_error ~json_output msg =
+  if json_output then
+    Printf.printf "%s\n%!" (Yojson.Safe.to_string (Prov.error_json msg))
+  else Printf.eprintf "error: %s\n%!" msg
+
+(* ---- standalone (in-place) flow ------------------------------------------ *)
+
+let run_standalone_update ~check_only ~pinned_version ~json_output ~verify_sig =
   let binary_path = resolve_binary_path () in
 
   match package_manager_from_env () with
@@ -459,3 +493,123 @@ let run_self_update ~check_only ~pinned_version ~json_output ~verify_sig =
                end
              end)
   end
+
+(* ---- provenance-aware dispatcher (B101 / A003 / F101) -------------------- *)
+
+(* `c2c self-update` must behave honestly about how the running binary was
+   installed:
+     - standalone binary  -> verified in-place replacement (run_standalone_update)
+     - npm / pnpm / bun    -> delegate to the owning package manager; never
+                              overwrite a binary inside node_modules or a
+                              content-addressed store
+     - PATH-shadowed       -> refuse: the binary that would be updated is not
+                              the c2c that runs from PATH
+     - unknown provenance  -> refuse with an actionable message, never silently
+                              install a standalone copy
+   `--check` never mutates anything.
+
+   External inputs are injectable so the path is exercisable hermetically:
+     C2C_SELF_UPDATE_PROVENANCE_PATH   override the running-binary realpath
+     C2C_SELF_UPDATE_ON_PATH           override the PATH-resolved realpath ("" = none)
+     C2C_SELF_UPDATE_MANAGER_AVAILABLE 1/0 override manager-on-PATH probe
+     C2C_SELF_UPDATE_EXEC=0            report the delegate command, do not run it
+     C2C_SELF_UPDATE_EXEC_CMD          override the command actually exec'd on
+                                       the delegate path (test seam; the shipped
+                                       JSON still reports the real delegate cmd)
+     BUN_INSTALL                       custom bun prefix consulted during
+                                       provenance classification *)
+
+let detect_provenance () =
+  let real_binary =
+    match Sys.getenv_opt "C2C_SELF_UPDATE_PROVENANCE_PATH" with
+    | Some p when String.trim p <> "" -> p
+    | _ ->
+        let bp = resolve_binary_path () in
+        (try Unix.realpath bp with _ -> bp)
+  in
+  let resolved_on_path =
+    match Sys.getenv_opt "C2C_SELF_UPDATE_ON_PATH" with
+    | Some p -> if String.trim p = "" then None else Some p
+    | None -> resolve_c2c_on_path ()
+  in
+  let bun_install =
+    match Sys.getenv_opt "BUN_INSTALL" with
+    | Some s when String.trim s <> "" -> Some s
+    | _ -> None
+  in
+  Prov.detect ?bun_install ~binary_path:real_binary ~resolved_on_path ()
+
+let manager_available prov =
+  match Sys.getenv_opt "C2C_SELF_UPDATE_MANAGER_AVAILABLE" with
+  | Some "1" -> true
+  | Some _ -> false
+  | None ->
+      (match Prov.manager_binary prov.Prov.method_ with
+       | Some mgr -> command_exists mgr
+       | None -> false)
+
+let exec_suppressed ~check_only =
+  check_only
+  || (match Sys.getenv_opt "C2C_SELF_UPDATE_EXEC" with Some "0" -> true | _ -> false)
+
+let run_self_update ~check_only ~pinned_version ~json_output ~verify_sig =
+  let prov = detect_provenance () in
+  match
+    Prov.plan prov ~check_only ~pinned:pinned_version
+      ~manager_available:(manager_available prov)
+  with
+  | Prov.Refuse msg ->
+      emit_error ~json_output msg;
+      Update_error msg
+  | Prov.In_place_standalone ->
+      run_standalone_update ~check_only ~pinned_version ~json_output ~verify_sig
+  | Prov.Delegate { method_; command } ->
+      let suppressed = exec_suppressed ~check_only in
+      if suppressed then begin
+        (* Report-only: never runs the manager. Emit exactly one JSON document
+           (executed=false, exit_code=null) or the human report. *)
+        if json_output then
+          Printf.printf "%s\n%!"
+            (Yojson.Safe.to_string
+               (Prov.delegate_json ~method_ ~command ~check_only ~executed:false
+                  ~exit_code:None))
+        else begin
+          Printf.printf "Detected %s.\n" (Prov.describe prov);
+          Printf.printf "To update, run:\n  %s\n%!" command
+        end;
+        if check_only then
+          Check_only
+            { current = current_version (); latest = ""; asset_available = true }
+        else Already_latest
+      end
+      else begin
+        (* Human report goes to stdout BEFORE the manager runs (fine for humans).
+           In --json mode nothing precedes the manager: it must not pollute the
+           single-document stdout contract, so its stdout is redirected to
+           stderr and the ONE JSON document is emitted AFTER it completes. *)
+        if not json_output then begin
+          Printf.printf "Detected %s.\n" (Prov.describe prov);
+          Printf.printf "Delegating to the owning package manager:\n  %s\n%!"
+            command
+        end;
+        (* Test seam: exercise the exec success/failure paths hermetically
+           without a real package manager. The shipped JSON still reports the
+           real [command]; only what is actually run is overridden. *)
+        let to_run =
+          match Sys.getenv_opt "C2C_SELF_UPDATE_EXEC_CMD" with
+          | Some c when String.trim c <> "" -> c
+          | _ -> command
+        in
+        let shell_cmd = if json_output then to_run ^ " 1>&2" else to_run in
+        let rc = Sys.command shell_cmd in
+        if json_output then
+          Printf.printf "%s\n%!"
+            (Yojson.Safe.to_string
+               (Prov.delegate_json ~method_ ~command ~check_only ~executed:true
+                  ~exit_code:(Some rc)))
+        else
+          Printf.eprintf "%s\n%!"
+            (Prov.delegate_outcome_message method_ ~command ~rc);
+        if rc = 0 then Updated command
+        else Update_error (Prov.delegate_outcome_message method_ ~command ~rc)
+      end
