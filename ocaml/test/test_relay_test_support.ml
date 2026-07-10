@@ -539,13 +539,16 @@ let test_connector_poll_garbage_rows_dropped () =
                    (List.length msgs))))
 
 let test_connector_non_object_response_start_once () =
-  (* B249/B093: a non-object JSON answer (here to /register) currently
-     makes the sync pass raise (Yojson Type_error via member on a list)
-     rather than record a per-op error. The OPERATOR surface stays honest:
-     start --once catches it, writes the failure into
-     connector-state.json (last_error_op="sync") and exits nonzero. Pin
-     that surface. (The in-sync crash aborting the whole pass — including
-     other sessions' work — is noted as an out-of-scope hardening item.) *)
+  (* B249/B093 — repinned by H10 item 5 (non-object hardening): a
+     non-object JSON answer (here to /register) used to make the sync
+     pass raise (Yojson Type_error via [member] on a list) and abort the
+     WHOLE pass — start --once exited 1 with last_error_op="sync". The
+     response helpers ([json_bool_member], [json_list_member],
+     [response_is_rate_limited], [response_is_pow_retry_failed],
+     [classify_error]) are now total on non-objects, so the non-object
+     response records a normal PER-OP error instead: registered stays
+     empty, last_error_op="register", and --once exits 2 via the B087
+     completed-with-errors path. *)
   let routes =
     [ S.route ~meth:"POST" ~path:"/register" [ S.response {|[1,2,3]|} ] ]
   in
@@ -557,16 +560,214 @@ let test_connector_non_object_response_start_once () =
               ~identity:None ~broker_root ~node_id:"n-f5c-sm"
               ~heartbeat_ttl:60.0 ~interval:1.0 ~verbose:false ~once:true
           in
-          check int "start --once exits 1 (exception surface)" 1 rc;
+          check int "start --once exits 2 (per-op error, not exception)" 2 rc;
           match C2c_relay_connector.read_connector_state broker_root with
           | None -> fail "connector-state.json must be written on failure"
           | Some st ->
-              check (option string) "last_error_op recorded" (Some "sync")
-                st.C2c_relay_connector.cs_last_error_op;
+              check (list string) "nothing registered" []
+                st.C2c_relay_connector.cs_registered;
+              check (option string) "failure recorded as a register op error"
+                (Some "register") st.C2c_relay_connector.cs_last_error_op;
               check bool "last_error_detail non-empty" true
                 (match st.C2c_relay_connector.cs_last_error_detail with
                  | Some d -> String.length d > 0
                  | None -> false)))
+
+(* ======================================================================== *)
+(* H10: connector inline Relay_client HTTP-status honesty (Q1-DEFECT-1)     *)
+(*                                                                          *)
+(* The connector has its own inline Relay_client whose [request] used to    *)
+(* bind [(_resp, resp_body)] — discarding the HTTP status line entirely     *)
+(* (same defect class as H7 in ocaml/relay_client.ml, B090). A relay        *)
+(* answering HTTP 500 with a dishonest {"ok":true,...} body made            *)
+(* `c2c relay connect --once` report FALSE SUCCESS: exit 0, registered      *)
+(* counted, no last_error. Finding:                                         *)
+(* .collab/findings/2026-07-10T12-17-07Z-q1-worker-connector-dishonest-     *)
+(* 500-false-success.md                                                     *)
+(*                                                                          *)
+(* Contract under test (port of H7's four branches):                        *)
+(*   2xx                        -> parsed body passthrough (unchanged);     *)
+(*   non-2xx + honest ok:false  -> passthrough, own error_code wins,        *)
+(*                                 http_status:<code> annotated;            *)
+(*   non-2xx + NOT ok:false     -> overridden ok:false /                    *)
+(*                                 error_code=http_error_<code> /           *)
+(*                                 http_status, body under relay_response;  *)
+(*   transport failure          -> existing connection_error (unchanged).   *)
+(* Consequence: dishonest non-2xx on register/send/poll paths records a     *)
+(* per-op sync error (never counted registered/delivered) and --once        *)
+(* exits 2 via the existing B087 sync-with-errors path.                     *)
+(* ======================================================================== *)
+
+let contains_substr ~sub s =
+  let n = String.length sub and m = String.length s in
+  let rec go i = i + n <= m && (String.sub s i n = sub || go (i + 1)) in
+  n = 0 || go 0
+
+let last_error_detail (r : C2c_relay_connector.sync_result) =
+  match r.C2c_relay_connector.last_error with
+  | Some e -> e.C2c_relay_connector.err_detail
+  | None -> ""
+
+let test_connector_register_dishonest_500_ok_true () =
+  (* The Q1 finding's exact repro: every /register answers HTTP 500 with a
+     body claiming {"ok":true}. Pre-H10 this was a FALSE SUCCESS (alias
+     counted registered, last_error=None, --once exit 0). *)
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response ~status:500 {|{"ok":true,"result":"ok"}|} ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          (* no-false-success trap *)
+          check (list string) "dishonest 500 must never count as registered"
+            [] r.registered;
+          check bool "session not remembered as registered" true
+            (t.C2c_relay_connector.registered = []);
+          (* failure named per-op *)
+          (match r.last_error with
+           | Some e ->
+               check string "error op is register" "register"
+                 e.C2c_relay_connector.err_op;
+               check bool "detail carries http_error_500" true
+                 (contains_substr ~sub:"http_error_500"
+                    e.C2c_relay_connector.err_detail);
+               check bool "detail preserves the dishonest body" true
+                 (contains_substr ~sub:"relay_response"
+                    e.C2c_relay_connector.err_detail)
+           | None ->
+               fail "dishonest 500 must record a sync error, got last_error=None"));
+      (* operator surface: --once exits 2 (B087 completed-with-errors),
+         connector-state records the per-op failure *)
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let rc =
+            C2c_relay_connector.start ~relay_url:(S.url srv) ~token:None
+              ~identity:None ~broker_root ~node_id:"n-f5c-sm"
+              ~heartbeat_ttl:60.0 ~interval:1.0 ~verbose:false ~once:true
+          in
+          check int "start --once exits 2 on dishonest 500" 2 rc;
+          match C2c_relay_connector.read_connector_state broker_root with
+          | None -> fail "connector-state.json must be written"
+          | Some st ->
+              check (list string) "state records nothing registered" []
+                st.C2c_relay_connector.cs_registered;
+              check (option string) "state names the register failure"
+                (Some "register") st.C2c_relay_connector.cs_last_error_op))
+
+let test_connector_poll_dishonest_500_ok_true () =
+  (* poll_inbox answers HTTP 500 with a dishonest ok:true body CARRYING
+     schema-valid message rows. The status line wins: nothing may be
+     delivered off a 500, no inbox file appears, and the failure is
+     recorded as a poll_inbox per-op error. *)
+  let poll_body =
+    Yojson.Safe.to_string
+      (`Assoc
+        [ ("ok", `Bool true);
+          ("messages", `List [ h9_good_row ]) ])
+  in
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response {|{"ok":true,"result":"ok"}|} ];
+      S.route ~meth:"POST" ~path:"/poll_inbox"
+        [ S.response ~status:500 poll_body ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "register (200 ok) still succeeds" [ sm_alias ]
+            r.registered;
+          (* no-false-success trap: rows riding a 500 never deliver *)
+          check int "nothing delivered off a dishonest 500" 0
+            r.inbound_delivered;
+          check int "nothing counted rejected (whole response refused)" 0
+            r.inbound_rejected;
+          check bool "no inbox file materialized" false
+            (Sys.file_exists
+               (Filename.concat broker_root (sm_session ^ ".inbox.json")));
+          match r.last_error with
+          | Some e ->
+              check string "error op is poll_inbox" "poll_inbox"
+                e.C2c_relay_connector.err_op;
+              check bool "detail carries http_error_500" true
+                (contains_substr ~sub:"http_error_500"
+                   e.C2c_relay_connector.err_detail)
+          | None ->
+              fail "dishonest 500 poll must record a sync error"))
+
+let test_connector_register_honest_503_passthrough () =
+  (* Honest-error branch: non-2xx whose body already reports ok:false
+     passes through — its OWN error_code wins (never rewritten to
+     http_error_503) and the http_status annotation is added. *)
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response ~status:503
+            {|{"ok":false,"error_code":"maintenance_mode","error":"relay down for maintenance"}|} ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "nothing registered" [] r.registered;
+          let detail = last_error_detail r in
+          check bool "own error_code wins (maintenance_mode)" true
+            (contains_substr ~sub:"maintenance_mode" detail);
+          check bool "http_status:503 annotated" true
+            (contains_substr ~sub:{|"http_status":503|} detail);
+          check bool "honest body never rewritten to http_error_503" false
+            (contains_substr ~sub:"http_error_503" detail)))
+
+let test_connector_pow_and_rate_limit_flows_preserved () =
+  (* Guard for the PoW/rate-limit helpers that key on HONEST non-2xx
+     bodies — the honest-passthrough branch must keep them working.
+     (a) An honest 429 pow_required challenge still enters the
+         Pow_client retry path: with no identity the mint attempt fails
+         as pow_actor_id_missing — proof the challenge was RECOGNIZED
+         (a broken passthrough would surface raw pow_required instead).
+     (b) An honest 429 rate_limit_exceeded still trips
+         response_is_rate_limited -> a Broadcast alert is emitted. *)
+  let pow_challenge =
+    {|{"ok":false,"error_code":"pow_required","error":"pow required",|}
+    ^ {|"required":{"difficulty":8,"epoch":1,"server_nonce":"sn","ctx":"c2c-relay-pow-v1"}}|}
+  in
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response ~status:429 pow_challenge ] ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "nothing registered" [] r.registered;
+          let detail = last_error_detail r in
+          check bool "pow challenge recognized (mint attempted)" true
+            (contains_substr ~sub:"pow_actor_id_missing" detail)));
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response ~status:429
+            {|{"ok":false,"error_code":"rate_limit_exceeded","error":"rate_limit_exceeded"}|} ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "nothing registered" [] r.registered;
+          check bool "honest 429 still detected as rate-limited (alert)" true
+            (r.alerts_emitted >= 1);
+          let detail = last_error_detail r in
+          check bool "own error_code wins (rate_limit_exceeded)" true
+            (contains_substr ~sub:"rate_limit_exceeded" detail)))
 
 (* --- pure classifier/hint surfaces vs schema-wrong inputs --- *)
 
@@ -930,8 +1131,18 @@ let () =
           test_case
             "connector: poll garbage rows dropped, valid rows delivered (H9)"
             `Quick test_connector_poll_garbage_rows_dropped;
-          test_case "connector: non-object response -> start --once exit 1"
+          test_case
+            "connector: non-object response -> per-op error, --once exit 2"
             `Quick test_connector_non_object_response_start_once ] );
+      ( "connector status honesty (H10)",
+        [ test_case "register: dishonest 500+ok:true -> error, --once exit 2"
+            `Quick test_connector_register_dishonest_500_ok_true;
+          test_case "poll: dishonest 500+ok:true delivers nothing" `Quick
+            test_connector_poll_dishonest_500_ok_true;
+          test_case "register: honest 503 body passes through annotated"
+            `Quick test_connector_register_honest_503_passthrough;
+          test_case "PoW + rate-limit flows preserved on honest 429" `Quick
+            test_connector_pow_and_rate_limit_flows_preserved ] );
       ( "fake/real equality (F5c)",
         [ test_case "shared semantic vectors match after normalization"
             `Quick test_fake_real_vector_equality ] );

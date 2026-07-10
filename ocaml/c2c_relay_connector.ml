@@ -394,13 +394,22 @@ let append_dlq_entry broker_root entry ~reason =
   Fun.protect ~finally:(fun () -> close_out oc)
     (fun () -> output_string oc line)
 
+(* H10 item-5 hardening (B249): [Yojson.Safe.Util.member] RAISES Type_error
+   on non-object JSON. The helpers below classify RELAY RESPONSES, which a
+   misbehaving relay can make any JSON value — they must be total so a
+   non-object response records a per-op sync error instead of aborting the
+   whole sync pass (pre-fix, one non-object register response crashed sync
+   for EVERY session; see test_connector_non_object_response_start_once). *)
+let member_or_null key = function
+  | `Assoc fields -> Option.value (List.assoc_opt key fields) ~default:`Null
+  | _ -> `Null
+
 (** Classify an error response from the relay/client.
     The relay's send error response is {{"ok":false,"error_code":"<code>","error":"<msg>"}}.
     HTTP-level connection failures produce {{"ok":false,"error_code":"connection_error","error":"<msg>"}}.
     We check error_code first; unknown codes fall through to "other". *)
 let classify_error json =
-  let open Yojson.Safe.Util in
-  match json |> member "error_code" with
+  match member_or_null "error_code" json with
   | `String "unknown_alias" -> "unknown_alias"
   | `String "recipient_dead" -> "recipient_dead"
   | `String "connection_error" -> "connection_error"
@@ -603,6 +612,35 @@ module Relay_client = struct
       ("error", `String msg);
     ]
 
+  (* H10 (Q1-DEFECT-1): reconcile the parsed body with the HTTP status
+     line — port of the H7 contract from relay_client.ml. A non-2xx status
+     can NEVER yield ok:true (pre-fix, an HTTP 500 with a dishonest
+     {"ok":true} body made `relay connect --once` report success/exit 0).
+     An honest ok:false object body passes through — its own error_code
+     wins, which is what keeps the PoW/rate-limit helpers working: an
+     honest 429 pow_required / rate_limit_exceeded body reaches
+     Pow_client.is_pow_required and response_is_rate_limited unchanged
+     apart from the appended http_status annotation. Anything else on a
+     non-2xx is overridden with http_error_<code>, preserving the
+     offending body under relay_response. 2xx bodies are untouched. *)
+  let reconcile_status ~status body =
+    if status >= 200 && status < 300 then body
+    else
+      match body with
+      | `Assoc fields when List.assoc_opt "ok" fields = Some (`Bool false) ->
+          let fields = List.filter (fun (k, _) -> k <> "http_status") fields in
+          `Assoc (fields @ [ ("http_status", `Int status) ])
+      | dishonest ->
+          `Assoc [
+            ("ok", `Bool false);
+            ("error_code", `String (Printf.sprintf "http_error_%d" status));
+            ("error", `String (Printf.sprintf
+              "relay answered HTTP %d but the body did not report ok:false"
+              status));
+            ("http_status", `Int status);
+            ("relay_response", dishonest);
+          ]
+
   let admin_paths = ["/gc"; "/dead_letter"; "/admin/unbind"]
 
   let is_admin_path path =
@@ -653,9 +691,10 @@ module Relay_client = struct
     Lwt.catch
       (fun () ->
         Cohttp_lwt_unix.Client.call ~headers ~body:body_payload meth uri
-        >>= fun (_resp, resp_body) ->
+        >>= fun (resp, resp_body) ->
+        let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
         Cohttp_lwt.Body.to_string resp_body >>= fun text ->
-        try Lwt.return (Yojson.Safe.from_string text)
+        try Lwt.return (reconcile_status ~status (Yojson.Safe.from_string text))
         with _ -> Lwt.return (connection_error "invalid_json_response"))
       (fun exn -> Lwt.return (connection_error (Printexc.to_string exn)))
 
@@ -733,13 +772,14 @@ end
  * Sync (slice 2)
  * --------------------------------------------------------------------------- *)
 
+(* Total on non-object responses (H10 item 5) via [member_or_null]. *)
 let json_bool_member ~key json =
-  match Yojson.Safe.Util.member key json with
+  match member_or_null key json with
   | `Bool b -> b
   | _ -> false
 
 let json_list_member ~key json =
-  match Yojson.Safe.Util.member key json with
+  match member_or_null key json with
   | `List lst -> lst
   | _ -> []
 
@@ -943,13 +983,13 @@ let response_difficulty json =
        | Some n -> Some n
        | None -> required_difficulty (member_opt "relay_response" json))
 
+(* Total on non-object responses (H10 item 5) via [member_or_null]. *)
 let response_is_rate_limited json =
-  let open Yojson.Safe.Util in
   let is_rl = function `String "rate_limit_exceeded" -> true | _ -> false in
-  is_rl (json |> member "error") || is_rl (json |> member "error_code")
+  is_rl (member_or_null "error" json) || is_rl (member_or_null "error_code" json)
 
 let response_is_pow_retry_failed json =
-  match Yojson.Safe.Util.member "error_code" json with
+  match member_or_null "error_code" json with
   | `String "pow_retry_failed" -> true
   | _ -> false
 
