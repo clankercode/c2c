@@ -60,15 +60,22 @@ Fields:
 
 A new message was written to a broker inbox/live-inbox watch, appended to the archive, or peeked from the relay inbox.
 
+Message events carry the [canonical message schema v1](/reference/message-schema-v1/) fields (`schema_version`, `type`, `message_id`, `ts`, `from`, `to`, `source`, `content`), **plus** the pre-v1 legacy keys (`from_alias`, `to_alias`, and any extra fields from the raw broker message) preserved additively so existing readers keep working unchanged. Each event is one compact JSON object on one line (the examples below are pretty-printed for readability):
+
 ```json
 {
-  "event_type":   "message",
-  "monitor_ts":   "1745241234.567",
-  "source":       "local",
-  "from_alias":   "coder1",
-  "to_alias":     "coordinator1",
-  "content":      "build green, ready to merge",
-  "ts":           "2026-04-21T14:02:00Z"
+  "event_type":     "message",
+  "monitor_ts":     "1745241234.567",
+  "schema_version": 1,
+  "type":           "dm",
+  "message_id":     "m-778",
+  "ts":             1745241234.5,
+  "from":           { "alias": "coder1" },
+  "to":             "coordinator1",
+  "source":         "local",
+  "content":        "build green, ready to merge",
+  "from_alias":     "coder1",
+  "to_alias":       "coordinator1"
 }
 ```
 
@@ -76,33 +83,42 @@ Relay-sourced messages use the same shape with `source: "relay"`:
 
 ```json
 {
-  "event_type":   "message",
-  "monitor_ts":   "1745241239.012",
-  "source":       "relay",
-  "from_alias":   "remote-coder",
-  "to_alias":     "coordinator1",
-  "content":      "cross-host DM surfaced by relay peek",
-  "ts":           "2026-07-08T09:12:00Z"
+  "event_type":     "message",
+  "monitor_ts":     "1745241239.012",
+  "schema_version": 1,
+  "type":           "dm",
+  "message_id":     "r-42",
+  "ts":             1751961120.0,
+  "from":           { "alias": "remote-coder" },
+  "to":             "coordinator1",
+  "source":         "relay",
+  "content":        "cross-host DM surfaced by relay peek",
+  "from_alias":     "remote-coder",
+  "to_alias":       "coordinator1"
 }
 ```
 
-Room messages carry additional fields:
+Room messages report `type: "room"` with `to` set to the room name; the raw fanout `to_alias` (`<alias>#<room>`) and any `room_id`/`event` fields from the raw message are preserved as legacy keys:
 
 ```json
 {
-  "event_type":   "message",
-  "monitor_ts":   "1745241234.567",
-  "source":       "local",
-  "from_alias":   "coder1",
-  "to_alias":     "swarm-lounge",
-  "content":      "joining the room",
-  "ts":           "2026-04-21T14:02:00Z",
-  "room_id":      "swarm-lounge",
-  "event":        "room_message"
+  "event_type":     "message",
+  "monitor_ts":     "1745241300.245",
+  "schema_version": 1,
+  "type":           "room",
+  "ts":             1745241300.0,
+  "from":           { "alias": "coder1" },
+  "to":             "swarm-lounge",
+  "source":         "local",
+  "content":        "joining the room",
+  "from_alias":     "coder1",
+  "to_alias":       "coordinator1#swarm-lounge"
 }
 ```
 
-`source` is `local` for local broker/archive/live-inbox events and `relay` for cross-host messages surfaced by the relay-inbox watcher. In human output, relay-sourced messages are marked with `🌐`. Caveat: the legacy `--live --json` inline path may omit `source`; the default archive-mode path and relay watcher include it.
+Optional v1 fields (`message_id`, `ts`) are omitted when the raw message does not carry them — absence, never `null`. A legacy `ts` that is not a number is left as-is under its legacy key rather than coerced.
+
+`source` is `local` for local broker/archive/live-inbox events and `relay` for cross-host messages surfaced by the relay-inbox watcher. In human output, relay-sourced messages are marked with `🌐`. Both the default archive-mode path and the legacy `--live --json` inline path include `source` (before schema-v1 adoption, `--live` omitted it).
 
 ### `drain`
 
@@ -245,4 +261,5 @@ Exit status:
 - `monitor_ts` is the wall-clock time the monitor process observed the event, not the message send time (`ts`). Use `ts` for message ordering; use `monitor_ts` for latency measurement.
 - In archive mode (`--archive`, now the default), `event_type: "message"` events are read from the append-only `archive/*.jsonl` files. This avoids racing with a PostToolUse hook that drains the live inbox. When a session inbox is resolved, archive mode also watches that session's live inbox and peeks it by default so messages can surface even before another consumer drains them to the archive.
 - Drain and sweep events can be emitted in either live mode or archive mode when a watched live inbox is touched or deleted. In a pure archive-only run with no resolved session inbox, there is no live inbox watch, so drain/sweep events will not fire.
-- All output is flushed immediately (`%!` / `print_newline`). Safe to consume line-by-line from a subprocess.
+- All output is flushed immediately (one compact JSON object per line, flushed after each event). Safe to consume line-by-line from a subprocess.
+- `event_type: "message"` events validate against [message schema v1](/reference/message-schema-v1/); the legacy `from_alias`/`to_alias` keys (and any extra raw-message fields) are carried additively for pre-v1 readers and will remain through v1's lifetime.

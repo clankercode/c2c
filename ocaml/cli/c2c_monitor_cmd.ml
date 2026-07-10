@@ -600,7 +600,9 @@ let monitor_cmd =
     in
     (* Emit an already-filtered message list (json objects or human lines).
        [source] tags origin ("local"/"relay") for both JSON and human output
-       (B089). *)
+       (B089). JSON message events are shaped to the canonical v1 schema via
+       C2c_monitor_ndjson (J3) — legacy keys preserved additively — and
+       written one compact object per line, flushed per event. *)
     let emit ~is_mine ~source msgs =
       match msgs with
       | [] -> ()
@@ -608,17 +610,10 @@ let monitor_cmd =
           if json then begin
             if all || is_mine then
               List.iter (fun m ->
-                let m_with_ts = match m with
-                  | `Assoc fields ->
-                      let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
-                      `Assoc (("event_type", `String "message")
-                              :: ("monitor_ts", `String ts)
-                              :: ("source", `String source)
-                              :: fields)
-                  | _ -> m
-                in
-                print_string (Yojson.Safe.to_string m_with_ts);
-                print_newline ()) msgs
+                let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                C2c_monitor_ndjson.emit_line stdout
+                  (C2c_monitor_ndjson.message_event ~monitor_ts:ts ~source m))
+                msgs
           end else
             emit_messages ~my_alias ~all ~full_body ~source msgs
     in
@@ -1057,16 +1052,15 @@ let monitor_cmd =
                         let is_mine = match my_alias with
                           | None -> true | Some me -> alias = me in
                         if all || is_mine then
+                          (* J3: canonical v1 shape (legacy keys additive).
+                             The live path is always local-sourced; pre-J3 it
+                             omitted `source` — the v1 face now carries
+                             source:"local" (additive). *)
                           List.iter (fun m ->
-                            let m_with_ts = match m with
-                              | `Assoc fields ->
-                                  let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
-                                  `Assoc (("event_type", `String "message")
-                                          :: ("monitor_ts", `String ts) :: fields)
-                              | _ -> m
-                            in
-                            print_string (Yojson.Safe.to_string m_with_ts);
-                            print_newline ()
+                            let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                            C2c_monitor_ndjson.emit_line stdout
+                              (C2c_monitor_ndjson.message_event
+                                 ~monitor_ts:ts ~source:"local" m)
                           ) msgs
                       end else
                         emit_messages ~my_alias ~all ~full_body ~source:"local" msgs)
@@ -1261,7 +1255,10 @@ let monitor =
             ; `P "$(b,c2c monitor --relay-node-id machine-42)  — peek a relay inbox keyed machine-42/machine-42"
             ; `P "$(b,c2c monitor --relay-node-id host-1 --relay-session-id <sid>)  — connector-managed inbox (needs both)"
             ; `P "$(b,c2c monitor --live)  — watch live inboxes instead of archive (legacy)"
-            ; `P "$(b,c2c monitor --json)  — JSON output for programmatic parsing"
+            ; `P "$(b,c2c monitor --json)  — NDJSON output for programmatic parsing \
+                  (one object per line, flushed per event; message events carry the \
+                  canonical message schema v1 fields plus the legacy \
+                  from_alias/to_alias keys — see docs/monitor-json-schema.md)"
             ; `P "In Claude Code: Monitor({command: \"c2c monitor\", persistent: true})"
             ; `P "Per-alias lockfile prevents duplicate monitors; use $(b,--force) to displace a live holder."
             ])
