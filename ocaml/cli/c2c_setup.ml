@@ -62,9 +62,10 @@ let write_c2c_skill ~skill_dir ~output_mode ~dry_run () =
      | Json -> ());
     None, skill_path
 
+let claude_skill_dir () = resolve_claude_dir () // "skills" // "c2c"
+
 let write_claude_skill ~output_mode ~dry_run () =
-  let skill_dir = resolve_claude_dir () // "skills" // "c2c" in
-  write_c2c_skill ~skill_dir ~output_mode ~dry_run ()
+  write_c2c_skill ~skill_dir:(claude_skill_dir ()) ~output_mode ~dry_run ()
 
 let codex_skill_dir () =
   Filename.concat (Sys.getenv "HOME") (".codex" // "skills" // "c2c")
@@ -76,13 +77,14 @@ let codex_skill_dir () =
 let write_codex_skill ~output_mode ~dry_run () =
   write_c2c_skill ~skill_dir:(codex_skill_dir ()) ~output_mode ~dry_run ()
 
-(* Best-effort auto-update for the codex skill, called from the codex
-   SessionStart hook. Rewrites only when missing or drifted from the embedded
-   content, so the common case is a single read + compare. Never raises and
-   never prints — the hook contract forbids breaking the codex turn. *)
-let refresh_codex_skill_if_stale () =
+(* Best-effort auto-update for the /c2c skill in a per-client skills dir,
+   called from SessionStart hooks (`c2c hook codex` / `c2c hook claude`).
+   Rewrites only when missing or drifted from the embedded content, so the
+   common case is a single read + compare. Never raises and never prints —
+   the hook contract forbids breaking the host turn. *)
+let refresh_skill_if_stale ~skill_dir =
   try
-    let skill_path = codex_skill_dir () // "SKILL.md" in
+    let skill_path = skill_dir // "SKILL.md" in
     let existing =
       if Sys.file_exists skill_path then
         let ic = open_in_bin skill_path in
@@ -91,8 +93,14 @@ let refresh_codex_skill_if_stale () =
       else None
     in
     if existing <> Some C2c_claude_skill_embedded.content then
-      ignore (write_codex_skill ~output_mode:C2c_types.Json ~dry_run:false ())
+      ignore (write_c2c_skill ~skill_dir ~output_mode:C2c_types.Json ~dry_run:false ())
   with _ -> ()
+
+let refresh_codex_skill_if_stale () =
+  refresh_skill_if_stale ~skill_dir:(codex_skill_dir ())
+
+let refresh_claude_skill_if_stale () =
+  refresh_skill_if_stale ~skill_dir:(claude_skill_dir ())
 
 let current_c2c_command () =
   let fallback =
@@ -1146,6 +1154,92 @@ else
 fi
 |}
 
+(* SessionStart/SessionEnd hook (claude-session-hooks slice). One script serves
+   both events: `c2c hook claude` dispatches on the payload's hook_event_name.
+   SessionStart delivers onboarding/wake text + cold-boot / post-compact
+   context + queued messages; SessionEnd deregisters hook auto-registrations. *)
+let claude_session_hook_script = {|
+#!/bin/bash
+# c2c-session-hook.sh — SessionStart/SessionEnd hook for c2c in Claude Code
+#
+# Runs `c2c hook claude`, which reads the Claude hook payload (JSON) on stdin
+# (hook_event_name selects SessionStart vs SessionEnd), resolves this
+# session's c2c identity (env-first: a managed session's C2C_MCP_SESSION_ID
+# wins; vanilla sessions auto-register on first fire), refreshes the /c2c
+# skill, drains queued messages, and emits
+# hookSpecificOutput.additionalContext. SessionEnd deregisters hook
+# auto-registrations. Never fails the turn: errors exit 0, empty stdout.
+#
+# IMPORTANT: do NOT use `exec` for hook binaries. Claude Code's Node.js hook
+# runner tracks the initially-spawned bash PID; exec-ing confuses its
+# waitpid() bookkeeping and surfaces ECHILD errors (same reason as
+# c2c-inbox-check.sh).
+
+REPO_ROOT="$(git rev-parse --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null)"
+
+if command -v c2c >/dev/null 2>&1; then
+    c2c hook claude
+elif [ -x "$HOME/.local/bin/c2c" ]; then
+    "$HOME/.local/bin/c2c" hook claude
+elif [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/_build/default/ocaml/cli/c2c.exe" ]; then
+    "$REPO_ROOT/_build/default/ocaml/cli/c2c.exe" hook claude
+else
+    # No c2c binary found: sleep to avoid fast-exit ECHILD race, then exit.
+    sleep 0.05
+fi
+exit 0
+|}
+
+(* Ensure settings.json `hooks.<event>` contains an entry whose hooks[] runs
+   [command]. No matcher key is written: for SessionStart the matcher filters
+   by source (startup|resume|clear|compact) and omitting it fires on every
+   source (compact included); SessionEnd ignores matchers entirely.
+   Returns (updated_json, changed). *)
+let ensure_settings_event_hook ~event ~command json =
+  let fields = match json with `Assoc f -> f | _ -> [] in
+  let hooks =
+    match List.assoc_opt "hooks" fields with
+    | Some (`Assoc h) -> h
+    | _ -> []
+  in
+  let entries =
+    match List.assoc_opt event hooks with
+    | Some (`List es) -> es
+    | _ -> []
+  in
+  let entry_has_hook entry =
+    match entry with
+    | `Assoc e ->
+        (match List.assoc_opt "hooks" e with
+         | Some (`List hs) ->
+             List.exists
+               (fun h ->
+                  match h with
+                  | `Assoc hf ->
+                      (match List.assoc_opt "command" hf with
+                       | Some (`String cmd) -> cmd = command
+                       | _ -> false)
+                  | _ -> false)
+               hs
+         | _ -> false)
+    | _ -> false
+  in
+  if List.exists entry_has_hook entries then (json, false)
+  else
+    let new_entry =
+      `Assoc
+        [ ( "hooks"
+          , `List [ `Assoc [ ("type", `String "command"); ("command", `String command) ] ] )
+        ]
+    in
+    let new_hooks =
+      List.filter (fun (k, _) -> k <> event) hooks @ [ (event, `List (entries @ [ new_entry ])) ]
+    in
+    let new_fields =
+      List.filter (fun (k, _) -> k <> "hooks") fields @ [ ("hooks", `Assoc new_hooks) ]
+    in
+    (`Assoc new_fields, true)
+
 let configure_claude_hook () =
   let home = Sys.getenv "HOME" in
   let hooks_dir = home // ".claude" // "hooks" in
@@ -1332,14 +1426,16 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
   (try mkdir_p dry_run (Filename.dirname mcp_config_path)
    with Unix.Unix_error _ -> ());
   json_write_file_or_dryrun dry_run mcp_config_path config;
-  let hook_status, stop_hook_status, preauth_status, hook_artifacts, hook_extra_json =
-    if skip_hooks then ("skipped", "skipped", "skipped", [], [])
+  let hook_status, stop_hook_status, session_hook_status, preauth_status, hook_artifacts, hook_extra_json =
+    if skip_hooks then ("skipped", "skipped", "skipped", "skipped", [], [])
     else
     let settings_path = Filename.concat claude_dir "settings.json" in
     let hook_script = Filename.concat claude_dir "hooks" // "c2c-inbox-check.sh" in
     let stop_hook_script = Filename.concat claude_dir "hooks" // "c2c-stop-deliver.sh" in
+    let session_hook_script = Filename.concat claude_dir "hooks" // "c2c-session-hook.sh" in
     let script_changed = ref false in
     let stop_script_changed = ref false in
+    let session_script_changed = ref false in
     (* Install PostToolUse hook script *)
    (try
       let dir = Filename.dirname hook_script in
@@ -1386,6 +1482,30 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
         output_string oc hook_content;
         close_out oc;
         Unix.chmod stop_hook_script 0o755
+      end
+    with Unix.Unix_error _ -> ());
+   (* Install SessionStart/SessionEnd hook script (claude-session-hooks) *)
+   (try
+      let dir = Filename.dirname session_hook_script in
+      if not (Sys.file_exists dir) then mkdir_p dry_run dir;
+      let hook_content = claude_session_hook_script in
+      let existing =
+        if Sys.file_exists session_hook_script then
+          try
+            let ic = open_in session_hook_script in
+            Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+              really_input_string ic (in_channel_length ic))
+          with _ -> ""
+        else ""
+      in
+      if existing <> hook_content then session_script_changed := true;
+      if dry_run then
+        Printf.printf "[DRY-RUN] would write session hook script to %s\n%!" session_hook_script
+      else begin
+        let oc = open_out session_hook_script in
+        output_string oc hook_content;
+        close_out oc;
+        Unix.chmod session_hook_script 0o755
       end
     with Unix.Unix_error _ -> ());
   let hook_registered = ref false in
@@ -1554,7 +1674,21 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     else if !preauth_hook_registered then "already registered"
     else "registered")
   in
-  if !settings_changed || !preauth_settings_changed then json_write_file_or_dryrun dry_run settings_path !settings_ref;
+  (* SessionStart + SessionEnd hook registration (claude-session-hooks).
+     Both events run the same script; `c2c hook claude` dispatches on the
+     payload's hook_event_name. No matcher so every SessionStart source
+     (startup|resume|clear|compact) fires. *)
+  let session_hooks_changed = ref false in
+  List.iter
+    (fun event ->
+       let json, changed =
+         ensure_settings_event_hook ~event ~command:session_hook_script !settings_ref
+       in
+       settings_ref := json;
+       if changed then session_hooks_changed := true)
+    [ "SessionStart"; "SessionEnd" ];
+  if !settings_changed || !preauth_settings_changed || !session_hooks_changed then
+    json_write_file_or_dryrun dry_run settings_path !settings_ref;
   let hook_status =
     (if !hook_registered && not !settings_changed && not !script_changed then "already registered"
     else if !hook_registered && !script_changed && not !settings_changed then "script updated"
@@ -1564,6 +1698,11 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
   let stop_hook_status =
     (if !hook_registered && not !settings_changed && not !script_changed && not !stop_script_changed then "already registered"
     else if !stop_script_changed && not !settings_changed then "script updated"
+    else "registered")
+  in
+  let session_hook_status =
+    (if not !session_hooks_changed && not !session_script_changed then "already registered"
+    else if not !session_hooks_changed && !session_script_changed then "script updated"
     else "registered")
   in
   (* B035 post-install check: verify hook binaries are reachable. Warn loudly
@@ -1598,10 +1737,11 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
              Printf.eprintf "{\"warning\": \"hook binary %s not found\"}\n%!" bin_name)
     ) hook_binaries
   end;
-  (hook_status, stop_hook_status, preauth_status,
+  (hook_status, stop_hook_status, session_hook_status, preauth_status,
    [ C2c_install_manifest.shared_key ~path:mcp_config_path ~key:"mcpServers.c2c" ~format:"json"
    ; C2c_install_manifest.owned_file hook_script
    ; C2c_install_manifest.owned_file stop_hook_script
+   ; C2c_install_manifest.owned_file session_hook_script
    ],
    [ ("client", `String "claude")
    ; ("alias", `String alias_val)
@@ -1610,6 +1750,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
    ; ("scope", `String (if global then "global" else "project"))
    ; ("hook_status", `String hook_status)
    ; ("stop_hook_status", `String stop_hook_status)
+   ; ("session_hook_status", `String session_hook_status)
    ; ("preauth_hook_status", `String preauth_status)
    ])
   in
