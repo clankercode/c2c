@@ -122,6 +122,32 @@ let parse_context stdout =
   | _ -> None
   | exception _ -> None
 
+let debounce_state_path ctx =
+  let dir = ctx.broker_root // ".codex-hook-debounce" in
+  match Array.to_list (Sys.readdir dir) with
+  | [ name ] -> dir // name
+  | names -> failf "expected one debounce state file, got %d" (List.length names)
+
+let inbox_fingerprint ~roots ~session_id =
+  roots
+  |> List.map (fun root ->
+         let path = root // (session_id ^ ".inbox.json") in
+         try
+           let st = Unix.stat path in
+           Printf.sprintf "%s:%d:%.9f" path st.Unix.st_size st.Unix.st_mtime
+         with Unix.Unix_error _ -> path ^ ":missing")
+  |> String.concat "|"
+
+(* Model the precise bad interleaving B107 must reject: an empty hook drains,
+   a message arrives just before the old recorder snapshots the inbox, and the
+   stale implementation writes that nonempty fingerprint as debounced. *)
+let write_debounce_state_for_current_inboxes ctx ~session_id =
+  let fingerprint =
+    inbox_fingerprint ~roots:[ ctx.broker_root; ctx.global_root ] ~session_id
+  in
+  write_file (debounce_state_path ctx)
+    (Printf.sprintf "%.9f\t%s\n" (Unix.gettimeofday ()) fingerprint)
+
 let broker ctx = C2c_mcp.Broker.create ~root:ctx.broker_root
 
 let register ?(pid = Some (Unix.getpid ())) ?(from_auto_gen = false) ctx
@@ -177,6 +203,81 @@ let test_registered_session_drains_message () =
     let rc2, stdout2, _ = run_hook ctx ~payload:(payload ~session_id:sid ()) in
     check int "second fire exit 0" 0 rc2;
     check string "second fire empty stdout" "" (String.trim stdout2))
+
+let test_post_tool_debounce_bypasses_new_message () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-debounce-0001" in
+    let b = register ctx ~session_id:sid ~alias:"zz-codex-debounce-recv" in
+    ignore (register ctx ~session_id:"codex-e2e-debounce-peer" ~alias:"zz-codex-debounce-peer");
+    (* An empty PostToolUse records the coalescing fingerprint. *)
+    let rc1, stdout1, _ = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "empty post-tool exits 0" 0 rc1;
+    check string "empty post-tool has no output" "" (String.trim stdout1);
+    (* A new message changes the inbox fingerprint, so the next rapid hook
+       must not be suppressed by the empty-inbox debounce. *)
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-debounce-peer"
+      ~to_alias:"zz-codex-debounce-recv" ~content:"deliver despite debounce" ();
+    let rc2, stdout2, stderr2 = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "message post-tool exits 0" 0 rc2;
+    match parse_context stdout2 with
+    | Some (_, context) ->
+        check bool "new message bypasses debounce" true
+          (contains ~haystack:context ~needle:"deliver despite debounce")
+    | None ->
+        failf "expected delivery after inbox change, got: %S (stderr: %S)" stdout2 stderr2)
+
+let test_post_tool_debounce_coalesces_unchanged_empty_burst () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-debounce-empty-burst" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-empty-burst");
+    ignore (run_hook ctx ~payload:(payload ~session_id:sid ()));
+    let state_path = debounce_state_path ctx in
+    let recorded = read_file state_path in
+    let _, stdout, _ = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check string "unchanged empty burst emits nothing" "" (String.trim stdout);
+    check string "unchanged empty burst retains debounce state" recorded
+      (read_file state_path))
+
+let test_post_tool_debounce_rechecks_message_queued_during_record () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-debounce-record-race" in
+    let b = register ctx ~session_id:sid ~alias:"zz-codex-record-race-recv" in
+    ignore (register ctx ~session_id:"codex-e2e-record-race-peer" ~alias:"zz-codex-record-race-peer");
+    ignore (run_hook ctx ~payload:(payload ~session_id:sid ()));
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-record-race-peer"
+      ~to_alias:"zz-codex-record-race-recv" ~content:"repo message during record" ();
+    check int "race fixture queues a push message" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid));
+    write_debounce_state_for_current_inboxes ctx ~session_id:sid;
+    let _, stdout, stderr = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    match parse_context stdout with
+    | Some (_, context) ->
+        check bool "repo message is not suppressed by nonempty debounce state" true
+          (contains ~haystack:context ~needle:"repo message during record")
+    | None ->
+        failf "expected repo message after record race, got: %S (stderr: %S)" stdout stderr)
+
+let test_post_tool_debounce_bypasses_new_global_message () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-debounce-global" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-global-recv");
+    let global = C2c_mcp.Broker.create ~root:ctx.global_root in
+    C2c_mcp.Broker.register global ~session_id:sid ~alias:"zz-codex-global-recv"
+      ~pid:(Some (Unix.getpid ()))
+      ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time (Some (Unix.getpid ()))) ();
+    C2c_mcp.Broker.register global ~session_id:"codex-e2e-global-peer"
+      ~alias:"zz-codex-global-peer" ~pid:(Some (Unix.getpid ()))
+      ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time (Some (Unix.getpid ()))) ();
+    ignore (run_hook ctx ~payload:(payload ~session_id:sid ()));
+    C2c_mcp.Broker.enqueue_message global ~from_alias:"zz-codex-global-peer"
+      ~to_alias:"zz-codex-global-recv" ~content:"global message despite debounce" ();
+    let _, stdout, stderr = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    match parse_context stdout with
+    | Some (_, context) ->
+        check bool "global message bypasses debounce" true
+          (contains ~haystack:context ~needle:"global message despite debounce")
+    | None ->
+        failf "expected global delivery after inbox change, got: %S (stderr: %S)" stdout stderr)
 
 let test_empty_inbox_emits_nothing () =
   with_ctx (fun ctx ->
@@ -432,6 +533,14 @@ let () =
     [ ( "hook-codex"
       , [ test_case "registered session drains message" `Quick
             test_registered_session_drains_message
+        ; test_case "post-tool debounce bypasses new message" `Quick
+            test_post_tool_debounce_bypasses_new_message
+        ; test_case "post-tool debounce coalesces unchanged empty burst" `Quick
+            test_post_tool_debounce_coalesces_unchanged_empty_burst
+        ; test_case "post-tool debounce rechecks record-race message" `Quick
+            test_post_tool_debounce_rechecks_message_queued_during_record
+        ; test_case "post-tool debounce bypasses new global message" `Quick
+            test_post_tool_debounce_bypasses_new_global_message
         ; test_case "empty inbox emits nothing" `Quick test_empty_inbox_emits_nothing
         ; test_case "auto-register once + onboarding" `Quick
             test_unregistered_session_auto_registers_once

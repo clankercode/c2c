@@ -487,6 +487,7 @@ module Broker : sig
       paths to skip drain when the MCP server's channel watcher will own
       delivery (#387 A2). *)
   val with_inbox_lock : t -> session_id:string -> (unit -> 'a) -> 'a
+  val inbox_has_push_messages_locked : t -> session_id:string -> bool
   type sweep_result = { dropped_regs : registration list; deleted_inboxes : string list; preserved_messages : int }
   val sweep : t -> sweep_result
   val registry_prune : t -> managed_session_ids:string list -> patterns:string list -> registration list

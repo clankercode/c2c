@@ -46,6 +46,10 @@ c2c restart <name>    # restart managed instance
 
 Unmanaged Codex sessions receive messages through the installed hooks. Turn-boundary hooks drain queued messages; `PostToolUse` handles timely non-deferrable delivery during active work. Managed `c2c start codex` delivery is still being ported to that hook path, so explicit polling remains the universal fallback for managed Codex sessions until that follow-up lands.
 
+Rapid `PostToolUse` bursts are coalesced for an unchanged empty inbox. A newly
+queued message bypasses that short debounce, so it is still delivered at the
+next hook boundary immediately.
+
 ## Docs
 
 - [Get Started](https://c2c.im/get-started/)
