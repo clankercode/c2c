@@ -129,9 +129,19 @@ type registration =
       support. [None] = unknown / pre-Phase compat. Conservative
       consumers treat [None] as "not push-capable". *)
   ; tmux_location : string option
-  (** Tmux session:window.pane target for the pane running this session.
-      Captured at registration time for managed sessions (c2c start);
-      None for unmanaged / foreign MCP clients. Format: "session:window.pane". *)
+  (** Tmux target for the pane running this session. Managed sessions
+      (c2c start) capture "session:window.pane"; hook-captured sessions
+      store the raw pane id from $TMUX_PANE (e.g. "%5") — both are valid
+      `tmux send-keys -t` targets. None for sessions outside tmux.
+      Wake-inject (codex idle wake) reads this as its tmux backend target. *)
+  ; herdr_pane : string option
+  (** herdr pane id for the pane running this session (e.g. "w1:p9"),
+      captured from $HERDR_PANE_ID. Wake-inject (codex idle wake) reads
+      this as its herdr backend target. None outside herdr. *)
+  ; herdr_socket : string option
+  (** herdr API socket path captured from $HERDR_SOCKET_PATH. Exported as
+      HERDR_SOCKET_PATH when the wake injector invokes the herdr CLI for
+      this session's pane. None outside herdr. *)
   ; cwd : string option
   (** Working directory of the session at registration time.
       Captured via Sys.getcwd () at register time. Used by Hardening B
@@ -351,7 +361,18 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> ?cwd:string option -> ?metadata_opt_out:bool -> ?registered_by:string option -> ?opaque_host_id:string option -> ?from_auto_gen:bool -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> ?herdr_pane:string option -> ?herdr_socket:string option -> ?cwd:string option -> ?metadata_opt_out:bool -> ?registered_by:string option -> ?opaque_host_id:string option -> ?from_auto_gen:bool -> unit -> unit
+
+  val update_wake_targets : t -> session_id:string -> ?tmux_location:string option -> ?herdr_pane:string option -> ?herdr_socket:string option -> unit -> unit
+  (** [update_wake_targets t ~session_id ...] updates only the wake-target
+      metadata (tmux_location / herdr_pane / herdr_socket) of an existing
+      registration, in place under the registry lock. [Some v] overwrites;
+      [None] (the default) leaves the stored value unchanged — targets are
+      never cleared here, so a fire from outside tmux/herdr cannot erase a
+      previously captured pane. No-op when the session is not registered.
+      Total: never raises. Used by `c2c hook codex` on SessionStart /
+      auto-register to keep wake targets fresh as sessions move panes. *)
+
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a

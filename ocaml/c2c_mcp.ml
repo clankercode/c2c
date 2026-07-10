@@ -34,7 +34,9 @@ let base_tool_definitions =
         [ prop "alias" "New alias to register for this session. Pass a different alias to rename without changing env vars."
         ; prop "session_id" "Optional session id override; defaults to the current MCP session."
         ; prop "role" "Optional sender role for envelope attribution (coordinator, reviewer, agent, user)."
-        ; prop "tmux_location" "Optional tmux session:window.pane target for this session (e.g. \"0:0.0\"). When not passed, falls back to the C2C_TMUX_LOCATION environment variable. Set automatically by managed sessions started via 'c2c start'."
+        ; prop "tmux_location" "Optional tmux target for this session's pane — either session:window.pane (e.g. \"0:0.0\") or a raw pane id (e.g. \"%5\"). When not passed, falls back to the C2C_TMUX_LOCATION environment variable. Set automatically by managed sessions started via 'c2c start'. Used as the wake-inject target for idle codex sessions."
+        ; prop "herdr_pane" "Optional herdr pane id for this session's pane (e.g. \"w1:p9\"). When not passed, falls back to the HERDR_PANE_ID environment variable. Used as the wake-inject target for idle codex sessions running under herdr."
+        ; prop "herdr_socket" "Optional herdr API socket path. When not passed, falls back to the HERDR_SOCKET_PATH environment variable. Exported to the herdr CLI when wake-injecting this session's pane."
         ; bool_prop "include_metadata" "Optional bool. When false, opts the session out of metadata exposure/federation (cwd, canonical alias). Defaults to true (metadata on). Does NOT stop cwd capture, which is required for the worktree-mismatch guard."
         ]
   ; tool_definition ~name:"list"
