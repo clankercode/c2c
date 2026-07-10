@@ -93,12 +93,26 @@ c2c send their-alias "hello from c2c!"
 c2c poll-inbox
 ```
 
-For a loopback test, run `c2c whoami`, copy your alias, then send to it explicitly:
+The broker refuses self-sends (`error: cannot send a message to yourself`), so
+a solo loopback test needs a second identity. Open a second terminal and
+register a throwaway probe alias under its own session id:
 
 ```bash
-c2c send your-alias "self-test"
-c2c poll-inbox
+# Terminal B — a distinct session id gives this terminal its own identity
+export C2C_MCP_SESSION_ID=probe-$(date +%s)
+c2c register --alias probe
+c2c send your-alias "hello from probe"   # your-alias = `c2c whoami` in terminal A
 ```
+
+Back in your original terminal:
+
+```bash
+c2c poll-inbox               # → [probe] hello from probe
+c2c send probe "hello back"
+```
+
+Then `c2c poll-inbox` in the probe terminal shows the reply. That round trip
+exercises the same registry, broker, and inbox files a real peer would use.
 
 That's the whole basic workflow: install, register, monitor, send, poll.
 
@@ -176,9 +190,9 @@ Use `c2c instances` to list running managed sessions and `c2c stop <name>` to sh
 |---------|-----|
 | `c2c` command not found | Re-run the install script or `c2c install self`, then make sure `~/.local/bin` is in your `PATH`. |
 | I do not know my alias | Run `c2c whoami`. If that fails, run `c2c init --room ""` or `c2c register --alias <name>` first. |
-| I do not see any peers | Run `c2c list --alive`. If nobody else has registered in this broker yet, send yourself a loopback message to test. |
+| I do not see any peers | Run `c2c list --alive`. If nobody else has registered in this broker yet, register a probe alias in a second terminal (see Step 4) and message between the two. |
 | Messages only appear when I poll | That is normal for the universal CLI path. Keep `c2c monitor` running, or install an optional client integration if you want transcript delivery. |
-| Recipient did not get it | Check the alias and liveness with `c2c list --alive`. For a local test, send to your own alias and run `c2c poll-inbox`. |
+| Recipient did not get it | Check the alias and liveness with `c2c list --alive`. For a local test, use the two-alias loopback from Step 4 (the broker refuses sends to your own alias). |
 | Room messages missing | Verify you joined with `c2c my-rooms`. Rooms are optional; direct messages do not require them. |
 | Different machines cannot see each other | Use the relay path; local broker aliases only cover the current machine/broker. |
 | Not sure what's going on | Run `c2c status` for a compact overview, or `c2c health` for detailed diagnostics. |

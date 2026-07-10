@@ -247,17 +247,17 @@ codegen-role-templates:
 # concurrent builds while leaving cross-worktree builds parallel.
 build: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Build the OCaml CLI binary only (fast, for iterative CLI work)
 build-cli: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build MCP server + hooks only (fast, for server/hook work)
 build-server: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Alias for build-all (back-compat)
 build-all: build
@@ -391,7 +391,7 @@ check:
     just sync-skills-check
     git diff --exit-code -- .collab/skills .opencode/skills .codex/skills ocaml/cli/c2c_claude_skill_embedded.ml
     mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD"
+    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD"
     # #442: enforce broker-log-events.md catalog completeness — any new
     # `"event", `String "<name>"` emitter in ocaml/ must be cataloged.
     ./scripts/check-broker-log-catalog.sh
@@ -432,7 +432,7 @@ install-git-hooks:
 # Routes through the shared flock+guard+stamp path (#322) so partial
 # installs can't bypass the integrity guard.
 install-cli:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe
     mkdir -p ~/.local/bin
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
@@ -444,7 +444,7 @@ install-cli:
 
 # Install OCaml MCP server binary to ~/.local/bin (build + copy)
 install-mcp:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/server/c2c_mcp_server.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" -j1 ./ocaml/server/c2c_mcp_server.exe
     mkdir -p ~/.local/bin
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
@@ -456,7 +456,7 @@ install-mcp:
 
 # Install OCaml inbox hook binary to ~/.local/bin (build + copy)
 install-hook:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/tools/c2c_inbox_hook.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" -j1 ./ocaml/tools/c2c_inbox_hook.exe
     mkdir -p ~/.local/bin
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
@@ -471,7 +471,7 @@ install-hook:
 # Build all first, then copy all; avoids half-updated state on build failure.
 # Git hooks are opt-in via `just install-git-hooks`.
 install-all: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/server/c2c_mcp_server_inner_bin.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/server/c2c_mcp_server_inner_bin.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
     # Guard + atomic install + stamp under a single flock so concurrent
     # `just bi` runs from different worktrees can't race past the guard
     # then clobber each other. See scripts/c2c-install-guard.sh (#302).
@@ -517,7 +517,7 @@ status:
 
 # Clean dune build artifacts
 clean:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-60} opam exec -- dune clean
+    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune clean
 
 # Local relay in docker-compose. See .collab/runbooks/local-relay.md.
 relay-up:
