@@ -197,8 +197,17 @@ let check_status_fault ~what ~args_of_url ~path ~status ~error_code () =
   with_fault ~meth:"POST" ~path
     [ json_response ~status (err_body ~error_code ~error:(error_code ^ " from relay")) ]
     (fun srv url ->
-      let res = run_c2c ~tmp (args_of_url ~url) in
+      let ((_, out, _) as res) = run_c2c ~tmp (args_of_url ~url) in
       assert_honest_failure ~what ~needle:error_code res;
+      (* H7 annotation half of the contract: an honest ok:false body keeps
+         its own error_code (asserted above) and gains an http_status field
+         matching the actual status line. *)
+      (match member "http_status" (Yojson.Safe.from_string out) with
+       | `Int s when s = status -> ()
+       | other ->
+           Alcotest.fail
+             (Printf.sprintf "%s: http_status must be %d, got %s" what status
+                (Yojson.Safe.to_string other)));
       Alcotest.(check int) (what ^ ": exactly one request (single-shot, no blind retry)")
         1 (List.length (requests_for ~path srv)))
 
