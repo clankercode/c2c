@@ -1,0 +1,29 @@
+{
+  "assumptions": [],
+  "capability_records": [],
+  "child_runs": [],
+  "comms_records": [],
+  "created_at": "2026-07-10T02:47:14Z",
+  "events_path": ".ud-wff/friction-points-cn-20260710/events.jsonl",
+  "extension_records": [],
+  "issues": [],
+  "mode": "autonomous",
+  "model_policy_records": [],
+  "policies": {
+    "comms": "policies/comms-policy.md",
+    "escalation": "policies/escalation-policy.md",
+    "model": "policies/model-policy.md",
+    "safety": "policies/safety-core.md"
+  },
+  "protocol_version": "udwff/v1",
+  "questions": [],
+  "run_id": "friction-points-cn-20260710",
+  "run_status": "intake",
+  "run_taint": "untainted",
+  "safety_core_hash": "sha256:9de171756ae593fbeb6b5b8291e4d122e69f06bb5cacaa60d9b0bb1cc1d6d7c3",
+  "schema_version": "1.1.0",
+  "state_dir": ".ud-wff/friction-points-cn-20260710",
+  "status": "intake",
+  "tasks": [],
+  "updated_at": "2026-07-10T02:47:14Z"
+}

@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H2a-safe-renderer",
+  "node_id": "impl-H2a",
+  "kind": "output",
+  "summary_path": "artifacts/H2a-safe-renderer/summary.md",
+  "raw_path": "artifacts/H2a-safe-renderer/receipt.md",
+  "hash": "sha256:59873f371e10da6358e4cb01b1f70990b8031c6cd88c3c188e9feae970b81d92",
+  "bytes": 1405,
+  "created_by": "H2a-worker+refresh:fable-warden",
+  "created_at": "2026-07-10T12:55:34Z",
+  "redaction_status": "none"
+}

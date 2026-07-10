@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-T3-futures",
+  "node_id": "audit-futures",
+  "kind": "output",
+  "summary_path": "artifacts/T3-futures/summary.md",
+  "raw_path": "artifacts/T3-futures/friction-cn-pending-futures-audit.md",
+  "hash": "sha256:b2e1ccadc8eb73ac94201552449a88ae4ab3d71ea327ef3d3ffd48faa6f7b2da",
+  "bytes": 25199,
+  "created_by": "audit-futures-worker",
+  "created_at": "2026-07-10T12:55:50Z",
+  "redaction_status": "none"
+}

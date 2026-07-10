@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H0-peek-auth",
+  "node_id": "impl-H0",
+  "kind": "output",
+  "summary_path": "artifacts/H0-peek-auth/summary.md",
+  "raw_path": "artifacts/H0-peek-auth/receipt.md",
+  "hash": "sha256:34eeff77e9364a12bc6da4562c3f77771b636e480eca21d0c587d6b5db935f8f",
+  "bytes": 1140,
+  "created_by": "H0-worker+refresh:fable-warden",
+  "created_at": "2026-07-10T12:55:34Z",
+  "redaction_status": "none"
+}

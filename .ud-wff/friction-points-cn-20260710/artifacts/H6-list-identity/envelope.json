@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H6-list-identity",
+  "node_id": "impl-H6",
+  "kind": "output",
+  "summary_path": "artifacts/H6-list-identity/summary.md",
+  "raw_path": "artifacts/H6-list-identity/receipt.md",
+  "hash": "sha256:1f3e3eaa1c4b9af017e5d1bcb6ae12219761f36ef347ba85f0b6a60d5daf7e17",
+  "bytes": 2958,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

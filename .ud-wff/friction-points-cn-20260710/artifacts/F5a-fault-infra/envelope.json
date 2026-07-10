@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-F5a-fault-infra",
+  "node_id": "impl-F5a",
+  "kind": "output",
+  "summary_path": "artifacts/F5a-fault-infra/summary.md",
+  "raw_path": "artifacts/F5a-fault-infra/receipt.md",
+  "hash": "sha256:f53b2fb85dfa205ec28429a4b4c99eb459f1c74ef12226f6029bcf93e18e4282",
+  "bytes": 2523,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

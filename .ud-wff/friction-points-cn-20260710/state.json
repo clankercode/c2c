@@ -1,0 +1,719 @@
+{
+  "assumptions": {},
+  "events_seen": 115,
+  "issues": {},
+  "protocol_version": "udwff/v1",
+  "questions": {},
+  "run_id": "friction-points-cn-20260710",
+  "schema_version": "1.1.0",
+  "status": "intake",
+  "tasks": {
+    "D1-connect-golden": {
+      "history": [
+        {
+          "event_id": "evt_8f3316edbefcd1e5f64a898651cf55ff",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_05e855e3f66c0f14a7ce6ce31c495884",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_201594447c6632e27ced934b4fb404c8",
+          "event_type": "TaskStarted"
+        }
+      ],
+      "node_id": "impl-D1",
+      "owner": "fable-warden/D1-worker",
+      "status": "running",
+      "task_id": "D1-connect-golden",
+      "title": "Public-relay /connect golden-path doc + nav + command harness"
+    },
+    "F101-self-update": {
+      "artifact_path": "artifacts/F101-self-update/receipt.md",
+      "history": [
+        {
+          "event_id": "evt_a537be69b0d1058d6da45941eb6014a5",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_56fccb68173af90bc5fc84d34b2c315b",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_e10d05bf0682f2b9137bdc8bff487ab2",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_9b0bc3a255a8bd96bcb0474138311c5f",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_df21b7c0f2434f7aa589abd8e0a3d419",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_f7c7e38226e4a5f17c6e3c17932473cf",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_b31d339d85366ce35b58b4f954b68ad5",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "impl-F101",
+      "owner": "fable-warden/F101-worker",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "wrong provenance guess might overwrite manager store (no: Standalone requires no store segment; realpath resolves shims)",
+          "--json might emit multiple docs on delegate exec (found MAJOR: it did \u2014 fixed 52fd2562 with 1>&2 + single post-run doc)",
+          "tested render surface might not be shipped (found MAJOR: to_json unused \u2014 fixed: delegate_json/error_json sole emitters)",
+          "fixture seams might leak into production (no: unset -> identical behavior; --check short-circuits before seam; touch-seam no-run verified)"
+        ],
+        "evidence_path": "artifacts/F101-self-update/receipt.md",
+        "igc": "Self-update detects install provenance honestly (standalone/npm/pnpm/bun/BUN_INSTALL), delegates to the owning manager, refuses shadow/unknown, never mutates in check mode, and emits exactly one unit-tested JSON document.",
+        "remaining_uncertainty": "B116 container install matrix is CI/infra follow-up; cosign signature verification pre-existing TODO; failure JSON signals via exit_code only.",
+        "result": "PASS",
+        "review_id": "review-F101",
+        "reviewer": "fable-warden (live peer, not slice author); tips f21f1c6b -> 832af28c -> 52fd2562",
+        "validators": [
+          "provenance 30/30 rc=0",
+          "just build rc=0 IN slice worktree",
+          "just check rc=0 IN slice worktree",
+          "coordinator smoke: delegate-failure single valid JSON doc rc=1",
+          "signed peer-pass artifact 52fd2562-fable-warden (build_rc=0, all targets)"
+        ]
+      },
+      "status": "done",
+      "task_id": "F101-self-update",
+      "title": "Package-manager provenance/delegation for modern self-update"
+    },
+    "H0-peek-auth": {
+      "artifact_path": "artifacts/H0-peek-auth/envelope.json",
+      "history": [
+        {
+          "event_id": "evt_9114a1ad2b9365d5b8b8435ae4ec242a",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_2d819181737c1c7f184d0c3373da3127",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_5e07bd62e04afa1ed756e539de968606",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_4ce66a40773f6dc8b5751abb0017a998",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_c04a49a539723cfb4ab68cfeea2c2f45",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_7bbda844bddb0554ed8e016b799af36d",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_2a3bb4204a0abbac7f0a79081eb6263b",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "impl-H0",
+      "owner": "H0-worker",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "peek guard might diverge from poll (alias form/case/host-id)",
+          "unsigned dev policy might have changed",
+          "owner-positive path might be untested (found: it was \u2014 fixed)",
+          "tests might not assert status codes or cover both backends"
+        ],
+        "evidence_path": "artifacts/H0-peek-auth/receipt.md",
+        "igc": "Signed relay /peek_inbox enforces the same session-ownership authorization as poll on both backends; unsigned policy unchanged.",
+        "remaining_uncertainty": "GET /remote_inbox/<session_id> (handle_remote_inbox) has no ownership binding \u2014 out of slice scope, follow-up recommended.",
+        "result": "PASS",
+        "review_id": "review-H0",
+        "reviewer": "fable-warden (live peer, not slice author); initial MAJOR fixed in new test-only commit 180eff1b, delta re-reviewed PASS; tip moved 299d90d7 -> 180eff1b",
+        "validators": [
+          "relay_remote_broker 9/9 rc=0 (attacker-403 x2, unsigned-200 x2, owner-200 x2)",
+          "just build rc=0 IN slice worktree",
+          "just check rc=0 IN slice worktree",
+          "signed peer-pass artifact 180eff1b-fable-warden (build_rc=0, all targets)"
+        ]
+      },
+      "status": "done",
+      "task_id": "H0-peek-auth",
+      "title": "Enforce verified relay peek inbox ownership"
+    },
+    "H1-strict-approval": {
+      "artifact_path": "artifacts/H1-strict-approval/envelope.json",
+      "history": [
+        {
+          "event_id": "evt_f3240deb4ac4a7c6728d4ce113c4e35f",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_e6e786cbf017624e6ea14ca288c7a51d",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_f4cc47f9fd2dce5350dfe9f734ba7760",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_09eb6c255e986ac104aa8eac2272a55e",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_2c81816e3f91fdadf860b0d818f54ce9",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_261f604635c02c7c9ba5dab20636708a",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_bb571710431d0f623cbbb8a79480491c",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "impl-H1",
+      "owner": "H1-worker",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "stale supervisor inbox path might remain",
+          "notifier/helper comments might retain fallback semantics",
+          "local CLI/file flow might regress",
+          "rendered help might still advertise inbox sender/session options"
+        ],
+        "evidence_path": "artifacts/H1-strict-approval/receipt.md",
+        "igc": "Only host-local verdict file/CLI resolves approval; peer inbox messages are inert.",
+        "remaining_uncertainty": "Later I005 process suite should preserve the strict regression.",
+        "result": "PASS",
+        "review_id": "review-H1",
+        "validators": [
+          "await 6/6",
+          "approval_paths 23/23",
+          "notifier 23/23",
+          "embedded hook 27/27",
+          "shell hook 14/14",
+          "fresh build rc=0",
+          "just check rc=0"
+        ]
+      },
+      "status": "done",
+      "task_id": "H1-strict-approval",
+      "title": "Remove inbox-DM approval verdict path"
+    },
+    "H2a-safe-renderer": {
+      "artifact_path": "artifacts/H2a-safe-renderer/envelope.json",
+      "history": [
+        {
+          "event_id": "evt_c5c3eac3c7053d1a0c5633b350c94289",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_d38f2b656ef63e9e4fcc73c3592f7311",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_1be296d4ce39e1d412c47d617fa7964a",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_603ad9291367fd3e0fd29b47e6e8561a",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_401555d60350ebabe413942bae4b8868",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_49b022749a986072b9a9f8016c9e9894",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_dd13da20e2ed31d3fe26a90c6bd06227",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "impl-H2a",
+      "owner": "H2a-worker",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "case/whitespace/zero-width </c2c> variants might survive (no: structural-char escaping, not tag blocklist)",
+          "escape_content_for_xml:true callers might double-escape (no: flag now governs only reply-hint placeholder)",
+          "renderer might be dead code until H2b (no: live in wire-bridge, deliver-watch xml_fd, hook cmd/lib, pty-inject)",
+          "public .mli contract might be stale (found: it was \u2014 fixed doc-only)"
+        ],
+        "evidence_path": "artifacts/H2a-safe-renderer/receipt.md",
+        "igc": "One common renderer escapes peer bodies unconditionally at the format_c2c_envelope seam; envelope remains the authority boundary; reminder cannot be forged from body content.",
+        "remaining_uncertainty": "H2b carry-forwards: opencode embedded plugin raw ${msg.content} envelope interpolation (real bypass), c2c_broker.ml room-invite/knock builders raw interpolation, stale verbatim-body comment test_c2c_start.ml:3476.",
+        "result": "PASS",
+        "review_id": "review-H2a",
+        "reviewer": "fable-warden (live peer, not slice author); initial MAJOR .mli contract fixed in new doc-only commit 4df6f381, delta re-reviewed PASS; tip moved a270e533 -> 4df6f381",
+        "validators": [
+          "wire_bridge 20/20 rc=0 incl hostile exact-match golden",
+          "test_c2c_mcp 411/411 rc=0",
+          "just build rc=0 IN slice worktree",
+          "just check rc=0 IN slice worktree",
+          "signed peer-pass artifact 4df6f381-fable-warden (build_rc=0, all targets)"
+        ]
+      },
+      "status": "done",
+      "task_id": "H2a-safe-renderer",
+      "title": "Create hostile-content-safe inbound c2c renderer"
+    },
+    "H2b-client-activation": {
+      "history": [
+        {
+          "event_id": "evt_590c28f8716de374a878844d68c60001",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_9a9a4b88f218dabc06966cf008743ac5",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_63d752137b5ea4aa56985e2d9c866b6a",
+          "event_type": "TaskStarted"
+        }
+      ],
+      "node_id": "impl-H2b",
+      "owner": "fable-warden/H2b-worker",
+      "status": "running",
+      "task_id": "H2b-client-activation",
+      "title": "Activate hostile-safe renderer/framing in Codex, OpenCode, Kimi, Claude adapters"
+    },
+    "H3-monitor-truth": {
+      "artifact_path": "artifacts/H3-monitor-truth/receipt.md",
+      "history": [
+        {
+          "event_id": "evt_6fba34fb01c34b3cbeae96a74901bb6b",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_209167d92409e3763c541f764cc85155",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_627aec78ef66395377181a9e1ef2a127",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_bafc2f703df7bf43da6e5dcf1a547fdb",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_4ea9afbd073f2cffba50995d54f1fb95",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_135528e47ad8672c9bc7838b3dcc8d5b",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_f5c1f2c401a576d0ca891ea466800e3d",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "impl-H3",
+      "owner": "fable-warden/H3-monitor-truth-worker",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "stale connector-state might cause wrong-identity peek (no: node_id machine-stable, session_id is monitor-local)",
+          "terminal codes might be misspelled vs relay constants (verified all against relay_common/relay_server_auth/relay.ml)",
+          "whole-exit on terminal might be wrong reading (judged honest per A038/B182, documented, --no-relay escape)",
+          "silent-failure path might remain (none: classify wrapped, ok:false surfaced, first peek immediate)"
+        ],
+        "evidence_path": "artifacts/H3-monitor-truth/receipt.md",
+        "igc": "Monitor peeks the connector-managed inbox by default with correct precedence, surfaces relay failures honestly (terminal exit 3 / transient backoff / reconnected), and changes no J3-owned representation.",
+        "remaining_uncertainty": "Follow-ups: connector-state error-writer drops node_id/registered (narrow startup mis-resolution window; monitor reads state once); subscribe-daemon surface not routed through subscribe_url_supported (H4 reviewer observation).",
+        "result": "PASS",
+        "review_id": "review-H3",
+        "reviewer": "fable-warden (live peer, not slice author); first-try PASS at tip 5fae138d",
+        "validators": [
+          "monitor_logic 36/36 rc=0",
+          "connector 24/24 rc=0",
+          "just build rc=0 IN slice worktree",
+          "just check rc=0 IN slice worktree",
+          "signed peer-pass artifact 5fae138d-fable-warden (build_rc=0, all targets)"
+        ]
+      },
+      "status": "done",
+      "task_id": "H3-monitor-truth",
+      "title": "Monitor identity/error honesty: connector-managed relay key, ok:false surfacing, transient/terminal exit semantics"
+    },
+    "H4-doctor-truth": {
+      "artifact_path": "artifacts/H4-doctor-truth/receipt.md",
+      "history": [
+        {
+          "event_id": "evt_b61ddf48083981087610c3e7a3d228fa",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_210bd8e94b801a5ec6f971fbf538d251",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_742337eab5da5d78f069ae85aab5fc5f",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_70a20a051fc21afd4a0d2f0f88f9905e",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_af563f4cb6be419bcb2d5f2b319660fa",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_d7e8fd34d9247160a25c2a67b2f60a9b",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_06f1f438eccea2d979fb9f2b10a8c07c",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "impl-H4",
+      "owner": "fable-warden/H4-doctor-truth-worker",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "subscribe predicate might diverge between doctor and command (no: single Relay_doctor.subscribe_url_supported at the only scheme decision)",
+          "connector scoping might misattribute (found BLOCKER: argv scoping false-negatived canonical in-process connector -> contradictory output; fixed 43fbd5c2 state-file-authoritative)",
+          "offline smoke might be vacuous (no: offline branch asserts subscribe=no/poll=yes)",
+          "docs link might still 404 (no: relay-quickstart 200, old link 404 curl-verified)"
+        ],
+        "evidence_path": "artifacts/H4-doctor-truth/receipt.md",
+        "igc": "Doctor reports only true relay capabilities with actual-attempt parity; connector and capabilities checks consume one broker-owned running signal and cannot contradict; lane-head test extraction isolated.",
+        "remaining_uncertainty": "Follow-ups: scoped-proc+stale-state PASS could be Inconclusive; relay subscribe-daemon surface bypasses subscribe_url_supported; connector --interval > 120s flaps freshness window.",
+        "result": "PASS",
+        "review_id": "review-H4",
+        "reviewer": "fable-warden (live peer, not slice author); BLOCKER fixed in new commit 43fbd5c2; tips 40097cdd -> 4ee8f047 -> 43fbd5c2",
+        "validators": [
+          "doctor_capabilities 23/23 rc=0 offline AND C2C_DOCTOR_LIVE_SMOKE=1",
+          "relay_connector 24/24 rc=0",
+          "just build rc=0 IN slice worktree",
+          "just check rc=0 IN slice worktree",
+          "signed peer-pass artifact 43fbd5c2-fable-warden (build_rc=0, all targets)"
+        ]
+      },
+      "status": "done",
+      "task_id": "H4-doctor-truth",
+      "title": "Doctor/capability truth: scheme/attempt-aware capabilities, connector detection, canonical capabilities surface, stale B087 subscribe claim removed"
+    },
+    "J1-schema-core": {
+      "history": [
+        {
+          "event_id": "evt_c0144cce9072b323ff1736a4d7998f26",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_364e7dfc90e2bfaf58d20339d585882c",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_c834aa1d8cdf84a075c314db970056da",
+          "event_type": "TaskStarted"
+        }
+      ],
+      "node_id": "impl-J1",
+      "owner": "fable-warden/J1-worker",
+      "status": "running",
+      "task_id": "J1-schema-core",
+      "title": "Shared lean v1 JSON schema module + published schema + vectors (additive)"
+    },
+    "T0-inventory": {
+      "artifact_path": "artifacts/T0-inventory/envelope.json",
+      "history": [
+        {
+          "event_id": "evt_faf7319d73dee7c33803c3eec796282c",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_4887f624160d5db1da4730f8efd702dc",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_11950d1ca68c23e37ff7071b72a0100f",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_c47bad05c390cdcbb9877b1184b63bbf",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_b50e7c96492582d30ca4919879f954d7",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_85d922db74459c954dd0e85fc17aeb60",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_2d32218c876032f41bcecd9025bd1bce",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "inventory",
+      "owner": "inventory-worker",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "A/B seam might omit or double-count line 966",
+          "B/C seam might lose the M2 tail",
+          "per-agent-key proposal might improperly outrank I008",
+          "B089 might falsely close I002",
+          "B096 might falsely close I004",
+          "unowned open items might disappear in aggregation",
+          "status totals might conceal row loss or table corruption"
+        ],
+        "evidence_path": "/home/xertrov/src/c2c/.worktrees/friction-cn-inventory/.collab/research/friction-cn-inventory-review.md",
+        "igc": "T0 is a lossless authority-aware source-to-evidence inventory suitable for reconciliation.",
+        "remaining_uncertainty": "TR must deduplicate 406 rows without losing row-to-AC traceability; Part B stable IDs must be labeled to avoid confusion with backlog B IDs.",
+        "result": "PASS",
+        "review_commit": "7c669915",
+        "review_id": "review-T0-inventory",
+        "validators": [
+          "2836-line partition arithmetic",
+          "A/B/C contiguous ID checks",
+          "A/B column and C field validators",
+          "heading boundary samples",
+          "authority and open-item checks",
+          "git diff --check"
+        ]
+      },
+      "status": "done",
+      "task_id": "T0-inventory",
+      "title": "Complete source-to-evidence inventory for friction-points-cn.md"
+    },
+    "T1-bugs-087-094": {
+      "artifact_path": "artifacts/T1-bugs-087-094/envelope.json",
+      "history": [
+        {
+          "event_id": "evt_8d908bd89c90397e09d6775ae4eaa95c",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_844d198563258c603794d0739ea92152",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_b022ef75752317b2513318f8abfac12b",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_a23ab0f39af0c05306590c76c675e96d",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_2dcf0af5c6089ef60f75f8099ef6c985",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_e44e87fe66430b9d5bb2db2c34836936",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_942c250dbe54fc57a9c650533c41db32",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "audit-bugs",
+      "owner": "audit-bugs-worker",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "monitor overrides might make B089 complete",
+          "B090 working fallback might justify PASS",
+          "doctor capability might mean theoretical support",
+          "global connector discovery might be intentional",
+          "registered might mean local registration"
+        ],
+        "evidence_path": "/home/xertrov/src/c2c/.worktrees/friction-cn-reconcile/.collab/research/friction-cn-audits-review.md",
+        "igc": "T1 audit truthfully identifies B087-B094 closure and gaps.",
+        "remaining_uncertainty": "Public live proof remains an implementation gate.",
+        "result": "PASS",
+        "review_id": "review-T1"
+      },
+      "status": "done",
+      "task_id": "T1-bugs-087-094",
+      "title": "Verify historical bug closure B087-B094"
+    },
+    "T2-contract-095-100": {
+      "artifact_path": "artifacts/T2-contract-095-100/envelope.json",
+      "history": [
+        {
+          "event_id": "evt_d1afdb82dcd7c3006f8c993932010117",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_072106fd6536303045eee1dada9c460b",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_0b8946f8f530f1ce54a8ce685e4527b4",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_602607adce64b70b7b6b309ebe4a4d1f",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_abdfb62c8a8608d6177406f902b3b78d",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_b8abc8fdfb22d3e12ff2d67500886c5f",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_33924afe57ee3279a06bc0d8b4c8b405",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "audit-contract",
+      "owner": "audit-contract-worker",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "peek might inherit route authorization",
+          "configured supervisors might satisfy strict B098",
+          "cursor absence might reopen deferred I004",
+          "static skill copies might close B099",
+          "B100 bar might exceed backlog"
+        ],
+        "evidence_path": "/home/xertrov/src/c2c/.worktrees/friction-cn-reconcile/.collab/research/friction-cn-audits-review.md",
+        "igc": "T2 factual findings are accepted after reconciliation corrects B096 deferral and selects strict B098.",
+        "remaining_uncertainty": "Implementation slices H0/H1/H2/D1 must prove the corrected contracts.",
+        "result": "PASS",
+        "review_id": "review-T2"
+      },
+      "status": "done",
+      "task_id": "T2-contract-095-100",
+      "title": "Verify safety, discovery, and docs closure B095-B100"
+    },
+    "T3-futures": {
+      "artifact_path": "artifacts/T3-futures/envelope.json",
+      "history": [
+        {
+          "event_id": "evt_256c40aa06cb1d7bef0bae81f4392854",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_06bd51f7edd66a083491c6f23b493fc5",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_c79945a85e62d86f7da4245610e4c155",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_c8d967510b4c73d64ffaf4b544a6a817",
+          "event_type": "TaskBlocked"
+        },
+        {
+          "event_id": "evt_4bc92db9ae7aac22f6c92d2ac622e181",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_8589ba84491f3e4d4375e07ff3be5da0",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_be6c97636ca671e0bf7f99a5e7cb1a4e",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_6ab551845cb106be013f0fe8527b21b9",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_230d68f3343d7e3e58cb71a246ff9f3e",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_5a3f1ed82b1c9789b62ee3f7c4e8dd19",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "audit-futures",
+      "owner": "audit-futures-worker-reused-thread",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "I006 premise might remain true",
+          "production in-memory relay might be insufficient fake",
+          "I002 might need trust fields now",
+          "I005 B098 vector might be immediately defined",
+          "T3 start set might omit audit hotfixes"
+        ],
+        "evidence_path": "/home/xertrov/src/c2c/.worktrees/friction-cn-reconcile/.collab/research/friction-cn-audits-review.md",
+        "igc": "T3 accurately separates actionable B101/I002/I005 from deferrals and stale I006.",
+        "remaining_uncertainty": "F5d live-relay owner/secrets policy remains external.",
+        "result": "PASS",
+        "review_id": "review-T3"
+      },
+      "status": "done",
+      "task_id": "T3-futures",
+      "title": "Audit pending and deferred work B101 and I002-I008"
+    },
+    "TR-reconcile": {
+      "artifact_path": "artifacts/TR-reconcile/envelope.json",
+      "history": [
+        {
+          "event_id": "evt_edd45175b15c63992e3a46ad34063075",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_e60549c1914441876b4f4e2a08f1378a",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_d0a866b1f2c06d28072d6924f3774707",
+          "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_dba72b43badd9e3d98a366ae40bff09e",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_ffc4140329558617bf2759459148a663",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_ce6839933574743c08c143dbdee7dbd9",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_15f6fbd5d3836acfd6dae6565d6f7f62",
+          "event_type": "TaskCompleted"
+        }
+      ],
+      "node_id": "reconciliation",
+      "owner": "reconciliation-reviewer",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "seven nonclosed rows might lack owners",
+          "parallel slices might collide on dune/test files",
+          "B098 finding might remain stale",
+          "B071 positive and B210 negative bridge proofs might be conflated",
+          "strict authority might activate deferred programs"
+        ],
+        "evidence_path": "/home/xertrov/src/c2c/.worktrees/friction-cn-reconcile/.collab/research/friction-cn-reconciliation-review-v2.md",
+        "igc": "Reconciliation completely owns/dispositions all 406 rows with safe sequencing.",
+        "remaining_uncertainty": "Product-only proposals and live-relay proofs remain explicit gates, not omissions.",
+        "result": "PASS",
+        "review_commit": "050fd96ce8bfcc261d9d9f12e221ca2650aa9799",
+        "review_id": "review-TR-v2",
+        "validators": [
+          "all 285 nonclosed rows mechanically mapped",
+          "H4-J1-H5-H6-F5a manifest lane serialized",
+          "H0 no manifest",
+          "B098 finding linked to strict decision"
+        ]
+      },
+      "status": "done",
+      "task_id": "TR-reconcile",
+      "title": "Review T1-T3 and reconcile all inventory gaps into ordered slices/dispositions"
+    }
+  }
+}
