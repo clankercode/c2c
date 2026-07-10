@@ -1837,6 +1837,52 @@ let test_install_all_dry_run_shows_dry_run_markers () =
       check bool "output contains [DRY-RUN] marker" true
         (string_contains content "[DRY-RUN]")))
 
+let test_install_all_dry_run_skips_codex_by_default () =
+  with_temp_dir (fun home ->
+    let fake_clients = fake_client_path_env home [ "codex"; "opencode" ] in
+    let tmpfile = Filename.temp_file "c2c-install-all-codex-opt-in" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+      let cmd = c2c_cmd (Printf.sprintf
+        "%s %s c2c install all --dry-run > %s 2>&1 < /dev/null"
+        fake_clients (isolated_home_env home) tmpfile) in
+      let rc = Sys.command cmd in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      debug_install_failure "all-codex-opt-in" cmd rc content;
+      check int "install all exits 0" 0 rc;
+      check bool "codex is explicitly skipped" true
+        (string_contains content "codex: [skipped by default");
+      check bool "codex setup is not previewed" false
+        (string_contains content "Configuring codex")))
+
+let test_interactive_install_default_skips_codex () =
+  with_temp_dir (fun home ->
+    let fake_clients = fake_client_path_env home [ "codex" ] in
+    let tmpfile = Filename.temp_file "c2c-install-tui-codex-opt-in" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+      (* [c2c_cmd] prefixes its command with PATH changes. That prefix would
+         apply only to the left side of this pipe, so invoke the freshly-built
+         binary directly on the right side instead. *)
+      let cmd = Printf.sprintf
+        "printf '\\n' | %s %s %s install --dry-run > %s 2>&1"
+        fake_clients (isolated_home_env home) (Filename.quote c2c_binary)
+        (Filename.quote tmpfile) in
+      let rc = Sys.command cmd in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      debug_install_failure "tui-codex-opt-in" cmd rc content;
+      check int "interactive install exits 0" 0 rc;
+      check bool "Codex is unchecked in the default plan" true
+        (string_contains content "[ ] configure codex");
+      check bool "Codex setup is not previewed" false
+        (string_contains content "Configuring codex")))
+
 let test_install_all_dry_run_epilog () =
   with_temp_dir (fun home ->
     let tmpfile = Filename.temp_file "c2c-install-all-epilog" ".out" in
@@ -3689,6 +3735,8 @@ let () =
     ; ( "install_dry_run",
         [ ( "install all --dry-run exits 0", `Quick, test_install_all_dry_run_exits_zero )
         ; ( "install all --dry-run shows [DRY-RUN] markers", `Quick, test_install_all_dry_run_shows_dry_run_markers )
+        ; ( "install all --dry-run skips Codex by default", `Quick, test_install_all_dry_run_skips_codex_by_default )
+        ; ( "interactive install default skips Codex", `Quick, test_interactive_install_default_skips_codex )
         ; ( "install all --dry-run shows canonical epilog", `Quick, test_install_all_dry_run_epilog )
         ; ( "install gemini --dry-run refuses (deprecated)", `Quick, test_install_gemini_dry_run_refuses )
         ; ( "install gemini --dry-run shows deprecation", `Quick, test_install_gemini_dry_run_shows_deprecation )

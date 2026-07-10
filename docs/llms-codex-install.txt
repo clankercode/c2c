@@ -14,6 +14,10 @@ npm i -g @clanker-code/c2c
 c2c install codex              # writes ~/.codex/config.toml
 ```
 
+Codex is deliberately never configured by the default `c2c install` or
+`c2c install all` paths. Use this explicit command when you want the MCP and
+hook integration.
+
 Or with explicit options:
 ```bash
 c2c install codex --alias your-alias
