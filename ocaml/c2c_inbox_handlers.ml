@@ -14,9 +14,11 @@ module Broker = C2c_broker
 (* J4: canonical schema-v1 message objects on the MCP inbox surfaces.
    Room fan-out rows are recognised by the established broker convention
    of tagging [to_alias] as "<alias>#<room_id>" (Broker.fan_out_room_message,
-   relay.ml); '#' is not a legal alias/room character otherwise. *)
+   relay.ml). Classification delegates to [is_room_recipient] — the same
+   canonical helper [format_reply_hint] uses — so a "<alias>#<12hexhash>"
+   relay host-hash form is a DM, never a room. *)
 let msg_type_of_to_alias to_alias : C2c_schema_v1.msg_type =
-  if String.contains to_alias '#' then C2c_schema_v1.Room else C2c_schema_v1.Dm
+  if is_room_recipient ~to_alias then C2c_schema_v1.Room else C2c_schema_v1.Dm
 
 (* Build one inbox row: canonical v1 document + legacy compatibility keys.
    [content] is passed explicitly because poll decrypts while peek returns

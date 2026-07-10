@@ -3393,6 +3393,17 @@ let test_j4_room_fanout_poll_row_classified_as_room () =
             (item |> member "to_alias" |> to_string);
           check string "legacy content" "room body" (item |> member "content" |> to_string)))
 
+(* J4 fix (peer-review finding 6): classification must agree with the
+   canonical [C2c_mcp_helpers.is_room_recipient] — a "<alias>#<12hexhash>"
+   relay host-hash suffix is a DM, never a room. *)
+let test_j4_host_hash_to_alias_classified_as_dm () =
+  check bool "host-hash suffix is a DM" true
+    (C2c_inbox_handlers.msg_type_of_to_alias "peer#0123456789ab" = C2c_schema_v1.Dm);
+  check bool "room-id suffix is a room" true
+    (C2c_inbox_handlers.msg_type_of_to_alias "peer#j4-room" = C2c_schema_v1.Room);
+  check bool "plain alias is a DM" true
+    (C2c_inbox_handlers.msg_type_of_to_alias "peer" = C2c_schema_v1.Dm)
+
 (* J4: tool-description pinning. send/poll/peek descriptions must reference
    the canonical schema doc and accurately describe the returned shape
    (delivery.state per surface, untrusted-content caveat on inbound
@@ -14741,6 +14752,8 @@ let () =
              test_j4_send_receipt_is_schema_v1_with_legacy_keys
          ; test_case "J4 room fan-out poll row classified as type=room" `Quick
              test_j4_room_fanout_poll_row_classified_as_room
+         ; test_case "J4 host-hash to_alias classified as DM (is_room_recipient)" `Quick
+             test_j4_host_hash_to_alias_classified_as_dm
          ; test_case "J4 send/poll/peek descriptions reference schema-v1" `Quick
              test_j4_tool_descriptions_reference_schema_v1
          ; test_case "enqueue to dead peer raises" `Quick test_enqueue_to_dead_peer_raises
