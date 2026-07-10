@@ -239,6 +239,243 @@ let test_of_string_parse_error () =
   Alcotest.(check bool) "of_string returns Error on bad JSON" true
     (is_err (S.of_string "{not json"))
 
+(* ==== J3: monitor NDJSON message events (C2c_monitor_ndjson) ============
+
+   `c2c monitor --json` message events converge on this v1 schema while
+   preserving every pre-J3 legacy key additively. These vectors live here
+   (not in the cli-side test_c2c_monitor_logic suite) because the shaping
+   goes through C2c_schema_v1 in the c2c_mcp library, which that pure-logic
+   test executable does not link. Acceptance (reconciliation row J3):
+   local/relay source, one object per line, immediate flush, schema
+   validation, legacy old-reader vector. *)
+
+module N = C2c_monitor_ndjson
+
+(* A raw broker message exactly as the monitor reads it from an inbox /
+   archive line (legacy shape). *)
+let raw_local_msg =
+  `Assoc
+    [ ("from_alias", `String "coder1")
+    ; ("to_alias", `String "coordinator1")
+    ; ("content", `String "build green, ready to merge")
+    ; ("ts", `Float 1745241234.5)
+    ; ("message_id", `String "m-778")
+    ]
+
+let assoc_of = function
+  | `Assoc kvs -> kvs
+  | _ -> Alcotest.fail "expected a JSON object"
+
+let field kvs k =
+  match List.assoc_opt k kvs with
+  | Some v -> v
+  | None -> Alcotest.failf "missing field %S" k
+
+(* J3 AC: a local-source monitor message event validates against v1. *)
+let test_monitor_local_event_validates () =
+  let ev = N.message_event ~monitor_ts:"1745241234.567" ~source:"local" raw_local_msg in
+  match S.validate ev with
+  | Error e -> Alcotest.failf "local monitor event failed v1 validation: %S" e
+  | Ok m ->
+      Alcotest.(check bool) "source=Local" true (m.S.source = Some S.Local);
+      Alcotest.(check bool) "type=Dm" true (m.S.msg_type = S.Dm);
+      Alcotest.(check string) "from.alias" "coder1" m.S.from.S.alias;
+      Alcotest.(check string) "to" "coordinator1" m.S.to_;
+      Alcotest.(check string) "content" "build green, ready to merge" m.S.content;
+      Alcotest.(check bool) "message_id" true (m.S.message_id = Some "m-778");
+      Alcotest.(check bool) "ts" true (m.S.ts = Some 1745241234.5)
+
+(* J3 AC: a relay-source monitor message event validates against v1 —
+   both transport sources flow through the same shaping in one stream. *)
+let test_monitor_relay_event_validates () =
+  (* Relay-peeked messages arrive already tagged source:"relay" by
+     C2c_monitor_logic.tag_source; the shaping must not duplicate the key. *)
+  let raw =
+    `Assoc
+      [ ("source", `String "relay")
+      ; ("from_alias", `String "remote-coder")
+      ; ("to_alias", `String "coordinator1")
+      ; ("content", `String "cross-host DM surfaced by relay peek")
+      ; ("ts", `Float 1751961120.0)
+      ; ("message_id", `String "r-42")
+      ]
+  in
+  let ev = N.message_event ~monitor_ts:"1745241239.012" ~source:"relay" raw in
+  (match S.validate ev with
+   | Error e -> Alcotest.failf "relay monitor event failed v1 validation: %S" e
+   | Ok m ->
+       Alcotest.(check bool) "source=Relay" true (m.S.source = Some S.Relay);
+       Alcotest.(check string) "from.alias" "remote-coder" m.S.from.S.alias);
+  let kvs = assoc_of ev in
+  Alcotest.(check int) "source key appears exactly once" 1
+    (List.length (List.filter (fun (k, _) -> k = "source") kvs))
+
+(* J3 AC (legacy old-reader vector): every pre-J3 field name is still
+   present with its pre-J3 value — the exact keys gui/src/types.ts
+   MessageEvent and tests/test_c2c_monitor.py consume. Unknown extra
+   fields (e.g. "deferrable") survive verbatim. *)
+let test_monitor_legacy_old_reader_vector () =
+  let raw =
+    `Assoc
+      [ ("from_alias", `String "sender1")
+      ; ("to_alias", `String "receiver1")
+      ; ("content", `String "hello from monitor test")
+      ; ("deferrable", `Bool false)
+      ]
+  in
+  let ev = N.message_event ~monitor_ts:"1745241234.567" ~source:"local" raw in
+  let kvs = assoc_of ev in
+  Alcotest.(check bool) "event_type=message" true
+    (field kvs "event_type" = `String "message");
+  Alcotest.(check bool) "monitor_ts preserved" true
+    (field kvs "monitor_ts" = `String "1745241234.567");
+  Alcotest.(check bool) "from_alias preserved" true
+    (field kvs "from_alias" = `String "sender1");
+  Alcotest.(check bool) "to_alias preserved" true
+    (field kvs "to_alias" = `String "receiver1");
+  Alcotest.(check bool) "content preserved" true
+    (field kvs "content" = `String "hello from monitor test");
+  Alcotest.(check bool) "unknown extra field preserved" true
+    (field kvs "deferrable" = `Bool false);
+  (* and the v1 face is present too *)
+  Alcotest.(check bool) "schema_version=1" true
+    (field kvs "schema_version" = `Int 1);
+  Alcotest.(check bool) "validates as v1" true (is_ok (S.validate ev))
+
+(* Room fanout: per-peer inbox copies tag to_alias "<alias>#<room>"; the
+   v1 face reports type=room / to=<room> while the raw to_alias survives
+   for old readers. *)
+let test_monitor_room_fanout_event () =
+  let raw =
+    `Assoc
+      [ ("from_alias", `String "coder1")
+      ; ("to_alias", `String "coordinator1#swarm-lounge")
+      ; ("content", `String "joining the room")
+      ; ("ts", `Float 1745241234.5)
+      ]
+  in
+  let ev = N.message_event ~monitor_ts:"1745241234.567" ~source:"local" raw in
+  (match S.validate ev with
+   | Error e -> Alcotest.failf "room fanout event failed v1 validation: %S" e
+   | Ok m ->
+       Alcotest.(check bool) "type=Room" true (m.S.msg_type = S.Room);
+       Alcotest.(check string) "to=room name" "swarm-lounge" m.S.to_);
+  let kvs = assoc_of ev in
+  Alcotest.(check bool) "raw to_alias preserved verbatim" true
+    (field kvs "to_alias" = `String "coordinator1#swarm-lounge")
+
+(* J3 fix (peer-review, J4 finding-6 family): a "<alias>#<12hexhash>"
+   relay host-hash to_alias is a DM, never a room — classification is
+   gated by the canonical [C2c_mcp_helpers.is_room_recipient]. *)
+let test_monitor_host_hash_to_alias_is_dm () =
+  let raw =
+    `Assoc
+      [ ("from_alias", `String "coder1")
+      ; ("to_alias", `String "coordinator1#a1b2c3d4e5f6")
+      ; ("content", `String "relay-addressed dm")
+      ; ("ts", `Float 1745241234.5)
+      ]
+  in
+  let ev = N.message_event ~monitor_ts:"1745241234.567" ~source:"relay" raw in
+  (match S.validate ev with
+   | Error e -> Alcotest.failf "host-hash event failed v1 validation: %S" e
+   | Ok m ->
+       Alcotest.(check bool) "type=Dm (host-hash suffix is not a room)" true
+         (m.S.msg_type = S.Dm);
+       Alcotest.(check string) "to keeps full tagged value" "coordinator1#a1b2c3d4e5f6" m.S.to_);
+  let kvs = assoc_of ev in
+  Alcotest.(check bool) "raw to_alias preserved verbatim" true
+    (field kvs "to_alias" = `String "coordinator1#a1b2c3d4e5f6")
+
+(* Explicit room_id field (archive/room-history shape) wins over the
+   to_alias heuristic and is itself preserved as a legacy key. *)
+let test_monitor_room_id_field_event () =
+  let raw =
+    `Assoc
+      [ ("from_alias", `String "coder1")
+      ; ("to_alias", `String "swarm-lounge")
+      ; ("content", `String "hi room")
+      ; ("room_id", `String "swarm-lounge")
+      ; ("event", `String "room_message")
+      ]
+  in
+  let ev = N.message_event ~monitor_ts:"1745241234.567" ~source:"local" raw in
+  (match S.validate ev with
+   | Error e -> Alcotest.failf "room_id event failed v1 validation: %S" e
+   | Ok m ->
+       Alcotest.(check bool) "type=Room" true (m.S.msg_type = S.Room);
+       Alcotest.(check string) "to=room_id" "swarm-lounge" m.S.to_);
+  let kvs = assoc_of ev in
+  Alcotest.(check bool) "room_id preserved" true
+    (field kvs "room_id" = `String "swarm-lounge");
+  Alcotest.(check bool) "event preserved" true
+    (field kvs "event" = `String "room_message")
+
+(* Pre-J3 behaviour: a non-object inbox entry passes through unshaped. *)
+let test_monitor_non_object_passthrough () =
+  let raw = `String "not an object" in
+  Alcotest.(check bool) "non-object unchanged" true
+    (N.message_event ~monitor_ts:"1.000" ~source:"local" raw = raw)
+
+(* J3 AC (one object per line): consecutive emit_line writes produce
+   exactly one compact JSON object per '\n'-terminated line — no
+   pretty-printing, no embedded newlines, no blank separator lines. *)
+let test_monitor_ndjson_one_object_per_line () =
+  let path = Filename.temp_file "j3-ndjson" ".out" in
+  Fun.protect ~finally:(fun () -> try Sys.remove path with _ -> ()) (fun () ->
+    let oc = open_out path in
+    let ev1 = N.message_event ~monitor_ts:"1.000" ~source:"local" raw_local_msg in
+    let ev2 = N.message_event ~monitor_ts:"2.000" ~source:"relay" raw_local_msg in
+    N.emit_line oc ev1;
+    N.emit_line oc ev2;
+    close_out oc;
+    let ic = open_in path in
+    let contents =
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        really_input_string ic (in_channel_length ic))
+    in
+    Alcotest.(check bool) "stream ends with newline" true
+      (String.length contents > 0 && contents.[String.length contents - 1] = '\n');
+    let lines =
+      String.split_on_char '\n' contents
+      |> List.filter (fun l -> l <> "")
+    in
+    Alcotest.(check int) "two events -> two lines" 2 (List.length lines);
+    (* every line is a complete JSON object that validates as v1 *)
+    List.iter
+      (fun line ->
+        match S.of_string line with
+        | Ok _ -> ()
+        | Error e -> Alcotest.failf "line is not a valid v1 object: %S (%s)" line e)
+      lines;
+    (* no blank lines / pretty-printing: raw split yields exactly 3 parts
+       (two lines + trailing ""), so there are no interior empty lines *)
+    Alcotest.(check int) "no interior blank lines" 3
+      (List.length (String.split_on_char '\n' contents)))
+
+(* J3 AC (immediate flush): the line is readable from the file BEFORE the
+   channel is closed — emit_line flushes after every event, so a
+   line-by-line subprocess consumer never waits on a buffered line. *)
+let test_monitor_ndjson_immediate_flush () =
+  let path = Filename.temp_file "j3-flush" ".out" in
+  Fun.protect ~finally:(fun () -> try Sys.remove path with _ -> ()) (fun () ->
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      let ev = N.message_event ~monitor_ts:"1.000" ~source:"local" raw_local_msg in
+      N.emit_line oc ev;
+      (* read back while oc is STILL OPEN: only a flushed write is visible *)
+      let ic = open_in path in
+      let contents =
+        Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+          really_input_string ic (in_channel_length ic))
+      in
+      Alcotest.(check bool) "flushed line visible before close" true
+        (String.length contents > 0
+         && contents.[String.length contents - 1] = '\n');
+      match S.of_string (String.trim contents) with
+      | Ok _ -> ()
+      | Error e -> Alcotest.failf "flushed line not a valid v1 object: %s" e))
+
 let () =
   Alcotest.run "c2c_schema_v1"
     [ ( "valid",
@@ -273,4 +510,14 @@ let () =
         [ Alcotest.test_case "serialize omits None" `Quick test_serialize_omits_none;
           Alcotest.test_case "full roundtrip" `Quick test_serialize_full_roundtrip;
           Alcotest.test_case "of_string parse error" `Quick test_of_string_parse_error ] );
+      ( "monitor-ndjson (J3)",
+        [ Alcotest.test_case "local event validates as v1" `Quick test_monitor_local_event_validates;
+          Alcotest.test_case "relay event validates as v1" `Quick test_monitor_relay_event_validates;
+          Alcotest.test_case "legacy old-reader vector" `Quick test_monitor_legacy_old_reader_vector;
+          Alcotest.test_case "room fanout to_alias" `Quick test_monitor_room_fanout_event;
+          Alcotest.test_case "host-hash to_alias is DM" `Quick test_monitor_host_hash_to_alias_is_dm;
+          Alcotest.test_case "explicit room_id field" `Quick test_monitor_room_id_field_event;
+          Alcotest.test_case "non-object passthrough" `Quick test_monitor_non_object_passthrough;
+          Alcotest.test_case "one object per line" `Quick test_monitor_ndjson_one_object_per_line;
+          Alcotest.test_case "immediate flush" `Quick test_monitor_ndjson_immediate_flush ] );
     ]

@@ -424,13 +424,14 @@ type connector_state = {
   cs_last_error_detail : string option;
   cs_last_error_ts : float option;
   cs_registered : string list;
+  cs_node_id : string option;  (* H3: connector node-id for monitor peek-key resolution *)
   cs_outbox_forwarded : int;
   cs_outbox_failed : int;
   cs_outbox_dlqed : int;
   cs_inbound_delivered : int;
 }
 
-let write_connector_state broker_root (result : sync_result) =
+let write_connector_state ?node_id broker_root (result : sync_result) =
   let now = Unix.gettimeofday () in
   let ok = result.last_error = None in
   let last_ok_ts = if ok then now else 0.0 in
@@ -456,6 +457,14 @@ let write_connector_state broker_root (result : sync_result) =
         ; ("last_error_detail", `Null)
         ; ("last_error_ts", `Null) ]
   in
+  (* H3: record the connector's node_id so a `c2c monitor` on this broker can
+     resolve the connector-managed relay peek key (node_id + local session-id)
+     instead of the cli-<alias> convention. Additive/optional — older readers
+     and connector-state files without it fall back to Host_id.compute_host_hash. *)
+  let node_id_assoc = match node_id with
+    | Some n when n <> "" -> [ ("node_id", `String n) ]
+    | _ -> []
+  in
   let json = `Assoc (
     [ ("last_sync_ts", `Float now)
     ; ("last_ok_ts", `Float last_ok_ts)
@@ -464,7 +473,7 @@ let write_connector_state broker_root (result : sync_result) =
     ; ("outbox_failed", `Int result.outbox_failed)
     ; ("outbox_dlqed", `Int result.outbox_dlqed)
     ; ("inbound_delivered", `Int result.inbound_delivered)
-    ] @ err_assoc) in
+    ] @ node_id_assoc @ err_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
   let oc = open_out tmp in
@@ -499,6 +508,7 @@ let read_connector_state broker_root : connector_state option =
         cs_last_error_detail = get_str "last_error_detail";
         cs_last_error_ts = get_float "last_error_ts";
         cs_registered = registered;
+        cs_node_id = get_str "node_id";
         cs_outbox_forwarded = get_int "outbox_forwarded";
         cs_outbox_failed = get_int "outbox_failed";
         cs_outbox_dlqed = get_int "outbox_dlqed";
@@ -1129,7 +1139,7 @@ let run (t : t) : unit =
     ) else (
       (try
         let result = Lwt_main.run (sync t) in
-        write_connector_state t.broker_root result;
+        write_connector_state ~node_id:t.node_id t.broker_root result;
         let err_str = match result.last_error with
           | None -> ""
           | Some e ->
@@ -1186,7 +1196,7 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
     if once then begin
       match Lwt_main.run (sync t) with
       | result ->
-          write_connector_state t.broker_root result;
+          write_connector_state ~node_id:t.node_id t.broker_root result;
           let err_str = match result.last_error with
             | None -> ""
             | Some e -> Printf.sprintf " [%s: %s]" e.err_op e.err_detail
