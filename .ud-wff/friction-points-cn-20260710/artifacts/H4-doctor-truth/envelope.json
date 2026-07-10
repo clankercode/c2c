@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H4-doctor-truth",
+  "node_id": "impl-H4",
+  "kind": "output",
+  "summary_path": "artifacts/H4-doctor-truth/summary.md",
+  "raw_path": "artifacts/H4-doctor-truth/receipt.md",
+  "hash": "sha256:06d1c6d02e0f483a8ec3448a8a1fc84eca56e8b2a09c742accc83be792e9515a",
+  "bytes": 1240,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

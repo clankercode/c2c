@@ -4,10 +4,9 @@
   "kind": "output",
   "summary_path": "artifacts/H1-strict-approval/summary.md",
   "raw_path": "artifacts/H1-strict-approval/receipt.md",
-  "hash": "sha256:1868a2a10274f20165d805794e0d1480688bfaefc90f3503ac2d1d316b169229",
-  "bytes": 685,
-  "created_by": "H1-worker",
-  "created_at": "2026-07-10T04:39:32Z",
+  "hash": "sha256:f780646a39c572dbe5a5b3b7c8783f4249a82c42f749eb07b6dd4ea455bb944f",
+  "bytes": 1841,
+  "created_by": "H1-worker+refresh:fable-warden",
+  "created_at": "2026-07-10T12:55:34Z",
   "redaction_status": "none"
 }
-

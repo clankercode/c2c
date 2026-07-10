@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-J4-mcp-schema",
+  "node_id": "impl-J4",
+  "kind": "output",
+  "summary_path": "artifacts/J4-mcp-schema/summary.md",
+  "raw_path": "artifacts/J4-mcp-schema/receipt.md",
+  "hash": "sha256:b8d863ba2a70de6e57ef191d717031314af48fd3c9f29d6268c186986fcb6b1e",
+  "bytes": 2577,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

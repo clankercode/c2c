@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-F101-self-update",
+  "node_id": "impl-F101",
+  "kind": "output",
+  "summary_path": "artifacts/F101-self-update/summary.md",
+  "raw_path": "artifacts/F101-self-update/receipt.md",
+  "hash": "sha256:6204058cc99acd21dc626e64ce8db6c3dfcc0e0df55b1ee04e4729823b7a5c64",
+  "bytes": 1110,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

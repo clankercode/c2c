@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-D1b-followups",
+  "node_id": "impl-D1b",
+  "kind": "output",
+  "summary_path": "artifacts/D1b-followups/summary.md",
+  "raw_path": "artifacts/D1b-followups/receipt.md",
+  "hash": "sha256:f4d1c4ee286ebb267aa38bf38ec8498c688c8b675b7addb19dbf6087946ba78c",
+  "bytes": 1969,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:53:36Z",
+  "redaction_status": "none"
+}
