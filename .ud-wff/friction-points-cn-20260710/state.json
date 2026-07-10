@@ -1,6 +1,6 @@
 {
   "assumptions": {},
-  "events_seen": 102,
+  "events_seen": 109,
   "issues": {},
   "protocol_version": "udwff/v1",
   "questions": {},
@@ -9,6 +9,7 @@
   "status": "intake",
   "tasks": {
     "F101-self-update": {
+      "artifact_path": "artifacts/F101-self-update/receipt.md",
       "history": [
         {
           "event_id": "evt_a537be69b0d1058d6da45941eb6014a5",
@@ -21,11 +22,48 @@
         {
           "event_id": "evt_e10d05bf0682f2b9137bdc8bff487ab2",
           "event_type": "TaskStarted"
+        },
+        {
+          "event_id": "evt_9b0bc3a255a8bd96bcb0474138311c5f",
+          "event_type": "TaskOutputWritten"
+        },
+        {
+          "event_id": "evt_df21b7c0f2434f7aa589abd8e0a3d419",
+          "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_f7c7e38226e4a5f17c6e3c17932473cf",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_b31d339d85366ce35b58b4f954b68ad5",
+          "event_type": "TaskCompleted"
         }
       ],
       "node_id": "impl-F101",
       "owner": "fable-warden/F101-worker",
-      "status": "running",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "wrong provenance guess might overwrite manager store (no: Standalone requires no store segment; realpath resolves shims)",
+          "--json might emit multiple docs on delegate exec (found MAJOR: it did \u2014 fixed 52fd2562 with 1>&2 + single post-run doc)",
+          "tested render surface might not be shipped (found MAJOR: to_json unused \u2014 fixed: delegate_json/error_json sole emitters)",
+          "fixture seams might leak into production (no: unset -> identical behavior; --check short-circuits before seam; touch-seam no-run verified)"
+        ],
+        "evidence_path": "artifacts/F101-self-update/receipt.md",
+        "igc": "Self-update detects install provenance honestly (standalone/npm/pnpm/bun/BUN_INSTALL), delegates to the owning manager, refuses shadow/unknown, never mutates in check mode, and emits exactly one unit-tested JSON document.",
+        "remaining_uncertainty": "B116 container install matrix is CI/infra follow-up; cosign signature verification pre-existing TODO; failure JSON signals via exit_code only.",
+        "result": "PASS",
+        "review_id": "review-F101",
+        "reviewer": "fable-warden (live peer, not slice author); tips f21f1c6b -> 832af28c -> 52fd2562",
+        "validators": [
+          "provenance 30/30 rc=0",
+          "just build rc=0 IN slice worktree",
+          "just check rc=0 IN slice worktree",
+          "coordinator smoke: delegate-failure single valid JSON doc rc=1",
+          "signed peer-pass artifact 52fd2562-fable-warden (build_rc=0, all targets)"
+        ]
+      },
+      "status": "done",
       "task_id": "F101-self-update",
       "title": "Package-manager provenance/delegation for modern self-update"
     },
@@ -205,6 +243,27 @@
       "status": "done",
       "task_id": "H2a-safe-renderer",
       "title": "Create hostile-content-safe inbound c2c renderer"
+    },
+    "H2b-client-activation": {
+      "history": [
+        {
+          "event_id": "evt_590c28f8716de374a878844d68c60001",
+          "event_type": "TaskPlanned"
+        },
+        {
+          "event_id": "evt_9a9a4b88f218dabc06966cf008743ac5",
+          "event_type": "TaskAssigned"
+        },
+        {
+          "event_id": "evt_63d752137b5ea4aa56985e2d9c866b6a",
+          "event_type": "TaskStarted"
+        }
+      ],
+      "node_id": "impl-H2b",
+      "owner": "fable-warden/H2b-worker",
+      "status": "running",
+      "task_id": "H2b-client-activation",
+      "title": "Activate hostile-safe renderer/framing in Codex, OpenCode, Kimi, Claude adapters"
     },
     "H3-monitor-truth": {
       "artifact_path": "artifacts/H3-monitor-truth/receipt.md",
