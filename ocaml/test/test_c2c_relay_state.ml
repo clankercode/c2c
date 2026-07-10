@@ -52,6 +52,9 @@ let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) () :
     cs_last_error_op = None;
     cs_last_error_detail = None;
     cs_last_error_ts = None;
+    (* H3 added cs_node_id to connector_state; this H5 fixture predates it.
+       None = no node-id recorded, the pre-H3 behaviour. *)
+    cs_node_id = None;
     cs_registered = [];
     cs_outbox_forwarded = 0;
     cs_outbox_failed = 0;
