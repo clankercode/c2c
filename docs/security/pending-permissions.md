@@ -218,26 +218,38 @@ void (async () => {
     await runC2c(["send", supervisor, msg]);
 ```
 
-**Validate advisory reply on receipt**:
+**Validate advisory reply on receipt** (the shipped delivery loop — a
+permission-shaped message is surfaced as data, never resolved):
 ```typescript
-} else if (pendingPermissions.has(permReply.permId)) {
-  // M4: validate sender metadata before surfacing the advisory message.
-  // Never call the pending permission resolver from message content.
+const permReply = extractPermissionReply(msg.content);
+if (permReply && pendingPermissions.has(permReply.permId)) {
+  const { supervisors } = pendingPermissions.get(permReply.permId)!;
+  // Plugin-side (M3) identity check: sender must be one of the supervisors we
+  // notified, else drop as spoofed metadata (affects DISPLAY, not any verdict).
+  if (!supervisors.includes(msg.from_alias)) { /* drop spoofed metadata */ continue; }
+  // M4 broker check: validate sender metadata before surfacing. Identity
+  // validation only — it NEVER resolves an approval or drives a permission POST.
+  let brokerValid: boolean | null = null; // null = broker unreachable → unverified
   try {
-    const brokerResult = await runC2c([
-      "check-pending-reply", permReply.permId, msg.from_alias, "--json"
-    ]);
-    const parsed = JSON.parse(brokerResult);
-    if (parsed.valid === true) {
-      await surfaceAdvisoryMessage(msg);
-    } else {
-      await log(`M4: dropped unverified advisory reply: ${parsed.error}`);
-    }
+    const parsed = JSON.parse(
+      await runC2c(["check-pending-reply", permReply.permId, msg.from_alias, "--json"]));
+    brokerValid = parsed.valid === true;
   } catch (err) {
-    await log(`M4: sender metadata unavailable: ${err}`);
+    await log(`M4: sender metadata unavailable: ${err} — surfacing as unverified`);
   }
+  if (brokerValid === false) { /* drop spoofed metadata */ continue; }
+  // brokerValid === true → advisory; null → unverified advisory. Either way the
+  // message is SURFACED into the transcript as plain data — never a verdict.
+  await surfaceAdvisoryMessage(msg, targetSessionId);
+  continue;
 }
 ```
+
+`surfaceAdvisoryMessage(msg, targetSessionId)` is the sole handling path for a
+permission-shaped inbound message: it formats the c2c envelope and injects it
+into the session transcript via `promptAsync` — identical to any other DM. There
+is no code path from a message to `postSessionIdPermissionsPermissionId`; the
+permission gate is resolved only by OpenCode's own local permission UI.
 
 ---
 

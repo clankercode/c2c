@@ -151,6 +151,16 @@ let test_peer_allow_messages_are_inert () =
 let test_peer_deny_messages_are_inert () =
   check_peer_messages_are_inert "deny"
 
+(* Canonical B098 regression name referenced verbatim by CLAUDE.md
+   ("SAFETY: bus, never RPC"): a broker-inbox / relay-delivered message — even
+   from a configured supervisor, even carrying the exact token plus allow/deny —
+   can NEVER reach the approval path. Aliased onto the most representative
+   CLI-seam inert-message case (supervisor + relay-form + attacker senders, both
+   verdicts). If this name disappears, the invariant's traceability breaks. *)
+let test_remote_message_cannot_reach_approval_path () =
+  check_peer_messages_are_inert "allow";
+  check_peer_messages_are_inert "deny"
+
 let check_unbound_peer_message_is_inert ~with_empty_binding =
   let root = mk_tmp_broker_root () in
   let session_id = "kimi-test-session-unbound" in
@@ -202,6 +212,8 @@ let () =
         test_host_local_cli_verdict_succeeds;
     ];
     "B098 safety", [
+      Alcotest.test_case "remote message cannot reach approval path" `Quick
+        test_remote_message_cannot_reach_approval_path;
       Alcotest.test_case "peer allow messages are inert" `Quick
         test_peer_allow_messages_are_inert;
       Alcotest.test_case "peer deny messages are inert" `Quick
