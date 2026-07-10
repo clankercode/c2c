@@ -53,6 +53,7 @@ they don't regress silently.
 | `alias_casefold_invariant_violated` | CRIT | alias / TOFU | #432 §3 |
 | `alias_resolve_multi_match` | LOW | alias-resolution diagnostic | #432 follow-up |
 | `dead_letter_write` | MED | delivery diagnostic | #433 |
+| `inbox_row_skipped` | MED | poisoned-inbox row skipped on read | H9 (friction-h9-connector-row-validation) |
 | `json_cap_exceeded` | MED | JSON read-cap triggered | Slice F follow-up |
 | `relay_e2e_pin_first_seen` | MED | relay-crypto TOFU | CRIT-1 Slice B follow-up |
 | `send_memory_handoff` | MED | feature audit | #286 |
@@ -176,6 +177,45 @@ Pairs with the `remote-outbox-dlq.jsonl` file (#379 outbox DLQ)
 when the dead letter is on the relay side.
 
 **Cross-link**: #433.
+
+---
+
+### `inbox_row_skipped`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "event": "inbox_row_skipped",
+  "ts": <float>,
+  "session_id": "<inbox-owner-session>",
+  "row": "<truncated-JSON-string-of-the-rejected-row>"
+}
+```
+
+**Fires when**: `Broker.load_inbox` encounters an inbox row that
+`message_of_json` rejects (missing/wrong-typed `from_alias`, `to_alias`,
+or `content`). The row is skipped so the rest of the inbox still loads;
+pre-H9 one such row raised Yojson `Type_error` through every broker-side
+read of that session's inbox. The `row` field is a *string* (truncated to
+256 chars), not embedded JSON, so a hostile row cannot shape the log
+entry.
+
+**File**: `ocaml/c2c_broker.ml` `log_inbox_row_skipped` (used by
+`load_inbox`).
+
+**Operational meaning**: someone wrote a schema-invalid row into
+`<session>.inbox.json` — most likely a pre-H9 relay connector delivering
+garbage relay `/poll_inbox` rows verbatim (the connector now validates
+per-row and records `inbound_rejected` in connector-state instead), or a
+buggy/foreign writer. Fires on every read of the poisoned file until a
+drain/save rewrites it from parsed rows; repeated bursts for one session
+mean the file is not being drained. Inspect the file and the writer.
+
+**Cross-link**:
+`.collab/findings/2026-07-10T08-29-20Z-f5c-worker-connector-garbage-inbox-rows.md`.
 
 ---
 

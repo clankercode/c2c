@@ -1846,12 +1846,48 @@ open C2c_mcp_helpers
                else
                  age < pidless_keep_window_s)
 
+  (* H9: emit a structured `inbox_row_skipped` line in broker.log whenever
+     [load_inbox] drops a row that [message_of_json] rejects. Best-effort:
+     any failure is swallowed — logging must never block an inbox read.
+     The row is embedded as a (truncated) string, not verbatim JSON, so a
+     hostile row can't shape the log entry itself. *)
+  let log_inbox_row_skipped t ~session_id ~row =
+    (try
+       let row_str = Yojson.Safe.to_string row in
+       let row_sample =
+         if String.length row_str > 256 then String.sub row_str 0 256 ^ "..."
+         else row_str
+       in
+       log_broker_event ~broker_root:t.root "inbox_row_skipped"
+         [ ("ts", `Float (Unix.gettimeofday ()))
+         ; ("session_id", `String session_id)
+         ; ("row", `String row_sample)
+         ]
+     with _ -> ())
+
   let load_inbox t ~session_id =
     ensure_root t;
     let path = inbox_path t ~session_id in
     let result =
       match read_json_file ~broker_root:t.root path ~default:(`List []) with
-      | `List items -> List.map message_of_json items
+      | `List items ->
+          (* H9 defense-in-depth: total PER-ROW. A row that fails
+             [message_of_json] (e.g. written by a pre-H9 relay connector
+             from a schema-garbage /poll_inbox response, or any buggy/
+             foreign writer) is skipped + logged instead of raising
+             Yojson Type_error through the whole read — one poisoned row
+             used to wedge every broker-side inbox read for the session.
+             Read-only healing: the file itself is left as-is; the next
+             drain/save rewrites it from parsed rows, dropping the bad
+             ones permanently. *)
+          List.filter_map
+            (fun item ->
+              match message_of_json item with
+              | msg -> Some msg
+              | exception _ ->
+                  log_inbox_row_skipped t ~session_id ~row:item;
+                  None)
+            items
       | _ -> []
     in
     if debug_enabled then Printf.eprintf "[DEBUG load_inbox] session_id=%s path=%s msgs=%d\n%!"
