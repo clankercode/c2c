@@ -1081,7 +1081,7 @@ and sends a tmux wake-prompt when the pane is idle. See
 | `relay register --alias A [--relay-url URL] [--token T]` | Register Ed25519 identity on the relay (prod-mode bootstrap). |
 | `relay dm send TO MSG\|poll\|peek [--alias A]` | Send, poll (drain), or non-destructive peek of cross-host direct messages. |
 | `relay poll-inbox [--relay-url URL] [--session-id ID] [--token T]` | Poll a remote relay's `/remote_inbox/<session_id>` endpoint. |
-| `relay rooms list\|join\|leave\|send\|history\|invite\|uninvite\|knock\|knocks\|approve-knock\|deny-knock\|set-visibility …` | Manage relay rooms. |
+| `relay rooms list\|join\|leave\|send\|history\|invite\|uninvite\|set-visibility …` | Manage relay rooms. Knock (request-to-join) has no relay-CLI form — see the note below the room-management table. |
 | `relay mobile-pair prepare\|confirm\|revoke` | Mobile device pairing via QR token flow. |
 
 ### Other / internal
