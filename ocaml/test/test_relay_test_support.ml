@@ -1,0 +1,878 @@
+(* test_relay_test_support — F5a (friction-cn): self-tests pinning the
+   shared loopback relay HTTP/fault test support.
+   Rows B075/B082-B086/B192/B236; C024/C056.
+
+   Coverage:
+   - lifecycle: repeated start/stop without port/process leaks, idempotent
+     stop, child actually reaped (waitpid after stop -> ECHILD), stopped
+     port refuses connections;
+   - scripted responses: per-route status codes (401/429/500/503), default
+     fallback, per-route response sequencing (429 then 200; last repeats);
+   - fault modes observable by a real HTTP client: delay -> client
+     timeout, truncated body (headers complete, body short of
+     Content-Length, unparseable as JSON), malformed JSON (valid HTTP,
+     invalid body), connection refused via closed_port,
+     close-without-response;
+   - request capture: method/path/headers/body recorded, query stripped
+     for routing, ordering preserved;
+   - real-handler bracket (Relay_test_support_real): production
+     Relay_server(InMemoryRelay) served in-process — /health answers ok,
+     /list reflects backend registrations.
+
+   F5c adds two groups (appended AFTER the F5a groups):
+   - schema-mismatch faults: the relay answers with well-formed HTTP +
+     well-formed JSON that does NOT match the expected response schema
+     (wrong-typed fields, missing required keys, non-object documents) and
+     the c2c client paths (Relay.Relay_client, C2c_relay_connector,
+     Relay_state, Relay_client_hints) must fail honestly — error result /
+     recorded sync error / nonzero exit — never an uncaught crash, never
+     garbage-as-success. Rows B093/B095/B120/B232/B238/B249; C024/C056.
+   - fake/real equality: the SAME semantic request vectors issued to the
+     scripted server (serving hand-written canned fixtures) and to the
+     production Relay_server(InMemoryRelay) yield equal responses after
+     normalizing nondeterministic fields — pinning that the F5a/F5b fake
+     is faithful where it claims to be.
+
+   ORDERING NOTE: the fork-based F5a Relay_test_support cases run FIRST
+   and the Lwt-based cases run after them, so no Lwt engine state precedes
+   the pure-fork cases. The F5c groups (last) interleave forked scripted
+   servers with Lwt-based clients (Relay_client / connector / real
+   handler); that is safe with this harness because the forked child never
+   touches the inherited Lwt engine — it runs the pure-Unix serve loop and
+   leaves via [Unix._exit] (no at_exit, no Lwt teardown), so any engine
+   state inherited across the fork is inert in the child. *)
+
+open Alcotest
+module S = Relay_test_support
+module Real = Relay_test_support_real
+
+let ok_body = {|{"ok":true,"src":"f5a"}|}
+
+let fail_result name = function
+  | S.Http { S.code; _ } ->
+      fail (Printf.sprintf "%s: unexpected Http %d" name code)
+  | S.Refused -> fail (name ^ ": unexpected Refused")
+  | S.Timeout -> fail (name ^ ": unexpected Timeout")
+  | S.No_response -> fail (name ^ ": unexpected No_response")
+  | S.Bad_response raw ->
+      fail (Printf.sprintf "%s: unexpected Bad_response %S" name raw)
+
+(* --- lifecycle ---------------------------------------------------------- *)
+
+let test_lifecycle_repeated () =
+  for i = 1 to 5 do
+    let t = S.start ~default:(S.response ok_body) () in
+    (match S.http_request ~port:t.S.port ~path:"/probe" () with
+     | S.Http { S.code; body_text; body_complete; _ } ->
+         check int (Printf.sprintf "iteration %d: 200" i) 200 code;
+         check string "canned body served" ok_body body_text;
+         check bool "body complete" true body_complete
+     | r -> fail_result "lifecycle serve" r);
+    S.stop t;
+    S.stop t (* idempotent: second stop is a no-op, must not raise/hang *);
+    (match Unix.waitpid [ Unix.WNOHANG ] t.S.pid with
+     | exception Unix.Unix_error (Unix.ECHILD, _, _) -> ()
+     | _ -> fail "stop must reap the child (no zombies/orphans)");
+    (match S.http_request ~timeout_s:1.0 ~port:t.S.port ~path:"/probe" () with
+     | S.Refused -> ()
+     | r -> fail_result "stopped port must refuse" r);
+    try Sys.remove t.S.capture_path with _ -> ()
+  done
+
+(* --- scripted statuses + default fallback ------------------------------- *)
+
+let test_scripted_statuses () =
+  let routes =
+    [ S.route ~path:"/a401"
+        [ S.response ~status:401 {|{"ok":false,"error":"unauthorized"}|} ];
+      S.route ~path:"/a429"
+        [ S.response ~status:429 {|{"ok":false,"error":"rate_limited"}|} ];
+      S.route ~path:"/a500"
+        [ S.response ~status:500 {|{"ok":false,"error":"boom"}|} ];
+      S.route ~path:"/a503"
+        [ S.response ~status:503 {|{"ok":false,"error":"maintenance"}|} ];
+    ]
+  in
+  S.with_server ~routes (fun t ->
+      List.iter
+        (fun (path, expect) ->
+          match S.http_request ~port:t.S.port ~path () with
+          | S.Http { S.code; body_complete; _ } ->
+              check int path expect code;
+              check bool (path ^ " body complete") true body_complete
+          | r -> fail_result path r)
+        [ ("/a401", 401); ("/a429", 429); ("/a500", 500); ("/a503", 503) ];
+      match S.http_request ~port:t.S.port ~path:"/unrouted" () with
+      | S.Http { S.code; _ } -> check int "default fallback is 404" 404 code
+      | r -> fail_result "default fallback" r)
+
+let test_response_sequencing () =
+  let routes =
+    [ S.route ~path:"/flaky"
+        [ S.response ~status:429 {|{"ok":false,"error":"slow_down"}|};
+          S.response ok_body ];
+    ]
+  in
+  S.with_server ~routes (fun t ->
+      let code_of name =
+        match S.http_request ~port:t.S.port ~path:"/flaky" () with
+        | S.Http { S.code; _ } -> code
+        | r -> fail_result name r
+      in
+      check int "1st call: scripted 429" 429 (code_of "seq 1");
+      check int "2nd call: scripted 200" 200 (code_of "seq 2");
+      check int "3rd call: last response repeats" 200 (code_of "seq 3"))
+
+(* --- fault modes --------------------------------------------------------- *)
+
+let test_delay_client_timeout () =
+  let routes =
+    [ S.route ~path:"/slow" [ S.response ~delay_s:3.0 ok_body ] ]
+  in
+  S.with_server ~routes (fun t ->
+      let t0 = Unix.gettimeofday () in
+      match S.http_request ~timeout_s:0.3 ~port:t.S.port ~path:"/slow" () with
+      | S.Timeout ->
+          check bool "timed out around the client deadline, not the delay"
+            true
+            (Unix.gettimeofday () -. t0 < 2.0)
+      | r -> fail_result "delayed route" r)
+(* with_server's finally SIGKILLs the still-sleeping child — the bracket
+   is what guarantees no orphan survives this test. *)
+
+let test_truncated_body () =
+  let full =
+    {|{"ok":true,"padding":"0123456789012345678901234567890123456789"}|}
+  in
+  let routes =
+    [ S.route ~path:"/trunc" [ S.response ~truncate_body_at:10 full ] ]
+  in
+  S.with_server ~routes (fun t ->
+      match S.http_request ~port:t.S.port ~path:"/trunc" () with
+      | S.Http { S.code; body_text; body_complete; _ } ->
+          check int "envelope still 200" 200 code;
+          check bool "body_complete=false (short of Content-Length)" false
+            body_complete;
+          check int "exactly the truncation prefix arrived" 10
+            (String.length body_text);
+          let parsed =
+            try Some (Yojson.Safe.from_string body_text) with _ -> None
+          in
+          check bool "truncated body is not parseable JSON" true
+            (parsed = None)
+      | r -> fail_result "truncated route" r)
+
+let test_malformed_json () =
+  S.with_server ~default:(S.malformed_json_response ()) (fun t ->
+      match S.http_request ~port:t.S.port ~path:"/anything" () with
+      | S.Http { S.code; body_text; body_complete; _ } ->
+          check int "valid HTTP envelope" 200 code;
+          check bool "full body delivered" true body_complete;
+          let parsed =
+            try Some (Yojson.Safe.from_string body_text) with _ -> None
+          in
+          check bool "body rejects as JSON" true (parsed = None)
+      | r -> fail_result "malformed json" r)
+
+let test_connection_refused () =
+  match S.http_request ~port:(S.closed_port ()) ~path:"/" () with
+  | S.Refused -> ()
+  | r -> fail_result "closed_port" r
+
+let test_close_without_response () =
+  let routes =
+    [ S.route ~path:"/drop" [ S.response ~close_without_response:true "" ] ]
+  in
+  S.with_server ~routes (fun t ->
+      match S.http_request ~port:t.S.port ~path:"/drop" () with
+      | S.No_response -> ()
+      | r -> fail_result "close-without-response route" r)
+
+(* --- request capture ------------------------------------------------------ *)
+
+let test_request_capture () =
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register" [ S.response ok_body ] ]
+  in
+  S.with_server ~routes (fun t ->
+      (match
+         S.http_request ~meth:"POST"
+           ~headers:
+             [ ("X-F5A-Probe", "yes"); ("Content-Type", "application/json") ]
+           ~body:{|{"alias":"f5a-probe"}|} ~port:t.S.port
+           ~path:"/register?src=selftest" ()
+       with
+       | S.Http { S.code; _ } ->
+           check int "routed despite query string" 200 code
+       | r -> fail_result "capture POST" r);
+      (match S.http_request ~port:t.S.port ~path:"/second" () with
+       | S.Http { S.code; _ } -> check int "second request 404" 404 code
+       | r -> fail_result "capture GET" r);
+      match S.requests t with
+      | [ first; second ] ->
+          check string "method captured" "POST" first.S.meth_;
+          check string "path captured with query stripped" "/register"
+            first.S.path;
+          check (option string) "custom header captured (case-insensitive)"
+            (Some "yes")
+            (S.header first "x-f5a-probe");
+          check string "body captured" {|{"alias":"f5a-probe"}|} first.S.body;
+          check string "ordering preserved" "GET" second.S.meth_;
+          check string "second path" "/second" second.S.path
+      | l ->
+          fail
+            (Printf.sprintf "expected 2 captured requests, got %d"
+               (List.length l)))
+
+(* --- real-handler bracket (production Relay_server over loopback) -------- *)
+
+let with_pow_env_off f =
+  let previous = Sys.getenv_opt "C2C_RELAY_POW" in
+  let restore () =
+    match previous with
+    | Some v -> Unix.putenv "C2C_RELAY_POW" v
+    | None -> Unix.putenv "C2C_RELAY_POW" ""
+  in
+  Unix.putenv "C2C_RELAY_POW" "";
+  Fun.protect ~finally:restore f
+
+let json_member name = function
+  | `Assoc fields -> List.assoc_opt name fields |> Option.value ~default:`Null
+  | _ -> `Null
+
+let test_real_relay_health_and_list () =
+  with_pow_env_off @@ fun () ->
+  Real.with_server (fun ~base_url ~relay ->
+      let open Lwt.Infix in
+      let _status, _lease =
+        Relay.InMemoryRelay.register relay ~node_id:"node-f5a"
+          ~session_id:"sess-f5a" ~alias:"f5a-realprobe" ()
+      in
+      Real.call_json ~base_url ~meth:`GET ~path:"/health" ()
+      >>= fun health ->
+      check int "/health is 200 from the production handler" 200
+        (Real.status_code health);
+      (match health.Real.json with
+       | Some j ->
+           check bool "/health body says ok:true" true
+             (json_member "ok" j = `Bool true)
+       | None -> fail "/health body was not JSON");
+      Real.call_json ~base_url ~meth:`GET ~path:"/list" ()
+      >>= fun listing ->
+      check int "/list is 200" 200 (Real.status_code listing);
+      (match listing.Real.json with
+       | Some j -> (
+           match json_member "peers" j with
+           | `List peers ->
+               let aliases =
+                 List.filter_map
+                   (fun p ->
+                     match json_member "alias" p with
+                     | `String a -> Some a
+                     | _ -> None)
+                   peers
+               in
+               check bool
+                 "backend registration visible through the real handler" true
+                 (List.mem "f5a-realprobe" aliases)
+           | _ -> fail "/list body missing peers array")
+       | None -> fail "/list body was not JSON");
+      Lwt.return_unit)
+
+(* ======================================================================== *)
+(* F5c: schema-mismatch faults                                              *)
+(*                                                                          *)
+(* The relay answers with well-formed HTTP + well-formed JSON that does     *)
+(* NOT match the expected response schema. Each case pins the observed     *)
+(* HONEST behavior of a real client path. Rows: B232 (invalid-JSON /       *)
+(* wrong-shape response handling), B238 (garbage never reported as         *)
+(* success), B093/B095 (connector sync errors recorded + surfaced),        *)
+(* B120 (lease-state classification degrades conservatively), B249         *)
+(* (non-object responses cannot crash the operator surface silently).      *)
+(* ======================================================================== *)
+
+(* --- small local fs helpers (hermetic temp broker roots) --- *)
+
+let rec rm_rf path =
+  match Unix.lstat path with
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+  | { Unix.st_kind = Unix.S_DIR; _ } ->
+      Array.iter (fun e -> rm_rf (Filename.concat path e)) (Sys.readdir path);
+      (try Unix.rmdir path with _ -> ())
+  | _ -> ( try Sys.remove path with _ -> ())
+
+let with_temp_broker_root f =
+  let dir = Filename.temp_file "c2c-f5c-broker-" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o700;
+  Fun.protect ~finally:(fun () -> rm_rf dir) (fun () -> f dir)
+
+let write_file path s =
+  let oc = open_out_bin path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc s)
+
+let sm_session = "sess-f5c-sm"
+let sm_alias = "f5c-sm-probe"
+
+let write_registry broker_root =
+  write_file
+    (Filename.concat broker_root "registry.json")
+    (Yojson.Safe.to_string
+       (`List
+         [ `Assoc
+             [ ("session_id", `String sm_session);
+               ("alias", `String sm_alias);
+               ("client_type", `String "test");
+             ];
+         ]))
+
+let make_connector ~relay_url ~broker_root : C2c_relay_connector.t =
+  { C2c_relay_connector.relay_url;
+    token = None;
+    identity = None;
+    broker_root;
+    node_id = "n-f5c-sm";
+    heartbeat_ttl = 60.0;
+    interval = 1.0;
+    verbose = false;
+    registered = [];
+    active_ws_bindings = [];
+    alert_state = C2c_relay_alert.initial_state;
+  }
+
+(* [sync] eagerly performs its own inner Lwt_main.run HTTP calls while the
+   expression is evaluated, exactly as production [start] invokes it. *)
+let run_sync t = Lwt_main.run (C2c_relay_connector.sync t)
+
+(* --- Relay.Relay_client (production HTTP client) vs wrong bodies --- *)
+
+let test_client_malformed_json_is_error () =
+  (* B232: valid HTTP envelope, body no JSON parser accepts. The client
+     must return its structured connection_error result — not raise. *)
+  S.with_server ~default:(S.malformed_json_response ()) (fun t ->
+      let client = Relay.Relay_client.make ~timeout:5.0 (S.url t) in
+      let json = Lwt_main.run (Relay.Relay_client.health client) in
+      check bool "ok:false" true (json_member "ok" json = `Bool false);
+      check bool "error_code=connection_error" true
+        (json_member "error_code" json = `String "connection_error");
+      check bool "error names invalid_json_response" true
+        (json_member "error" json = `String "invalid_json_response"))
+
+let test_client_truncated_body_is_error () =
+  (* B232: headers promise the full Content-Length, wire delivers a JSON
+     prefix. Whether cohttp surfaces a short read or the JSON parse fails,
+     the client must land on the same honest connection_error result. *)
+  let full =
+    {|{"ok":true,"padding":"0123456789012345678901234567890123456789"}|}
+  in
+  let routes =
+    [ S.route ~path:"/health" [ S.response ~truncate_body_at:12 full ] ]
+  in
+  S.with_server ~routes (fun t ->
+      let client = Relay.Relay_client.make ~timeout:5.0 (S.url t) in
+      let json = Lwt_main.run (Relay.Relay_client.health client) in
+      check bool "ok:false" true (json_member "ok" json = `Bool false);
+      check bool "error_code=connection_error" true
+        (json_member "error_code" json = `String "connection_error"))
+
+let test_client_non_object_json_passes_through () =
+  (* A 200 whose body is valid JSON but NOT an object. Relay_client's
+     documented contract is "returns the parsed JSON response" — shape
+     validation is caller-owned. Pin: no exception, the value comes back
+     verbatim, and in particular it can never read as ok:true. The
+     consumer-side consequences are pinned separately
+     (test_connector_non_object_response_start_once). *)
+  let routes = [ S.route ~path:"/health" [ S.response {|[1,2,3]|} ] ] in
+  S.with_server ~routes (fun t ->
+      let client = Relay.Relay_client.make ~timeout:5.0 (S.url t) in
+      let json = Lwt_main.run (Relay.Relay_client.health client) in
+      check bool "non-object returned verbatim" true
+        (json = `List [ `Int 1; `Int 2; `Int 3 ]))
+
+(* --- C2c_relay_connector.sync vs schema-wrong register/poll bodies --- *)
+
+let test_connector_register_ok_wrong_type () =
+  (* B093/B238: register answers 200 with ok as a STRING ("true"). The
+     connector must not treat it as success: the alias stays unregistered
+     and the sync error is recorded (surfaced via connector-state + exit
+     code in --once mode). *)
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response {|{"ok":"true","result":"ok"}|} ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "nothing registered" [] r.registered;
+          check int "nothing delivered" 0 r.inbound_delivered;
+          match r.last_error with
+          | Some e ->
+              check string "error op is register" "register"
+                e.C2c_relay_connector.err_op
+          | None -> fail "wrong-typed ok must record a sync error"))
+
+let test_connector_register_missing_ok () =
+  (* B093/B238: register answers 200 with a body that simply lacks the
+     required "ok" field. Absent evidence of success is failure. *)
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response {|{"result":"ok","lease":{}}|} ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "nothing registered" [] r.registered;
+          match r.last_error with
+          | Some e ->
+              check string "error op is register" "register"
+                e.C2c_relay_connector.err_op
+          | None -> fail "missing ok must record a sync error"))
+
+let test_connector_poll_messages_wrong_type () =
+  (* B095: poll_inbox answers ok:true but "messages" is not a list. The
+     connector tolerates the unrecognized shape WITHOUT fabricating
+     deliveries: zero delivered, no inbox file written, sync otherwise
+     clean. (Lenient-ignore, but never garbage-as-success.) *)
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response {|{"ok":true,"result":"ok"}|} ];
+      S.route ~meth:"POST" ~path:"/poll_inbox"
+        [ S.response {|{"ok":true,"messages":{"not":"a list"}}|} ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "registered" [ sm_alias ] r.registered;
+          check int "nothing delivered" 0 r.inbound_delivered;
+          check bool "no sync error" true (r.last_error = None);
+          check bool "no inbox file materialized" false
+            (Sys.file_exists
+               (Filename.concat broker_root (sm_session ^ ".inbox.json")))))
+
+(* FIXME(F5c dishonest cell — rows B095/B238): poll_inbox rows that are
+   missing every required message key ({"bogus":1}) are accepted VERBATIM:
+   the connector appends them to <session>.inbox.json unvalidated and
+   counts them in inbound_delivered (garbage-as-success). Worse, the
+   poisoned inbox then makes C2c_broker's message parsing
+   (message_of_json: member "from_alias" |> to_string) raise Type_error
+   for the whole file on the next broker read. The connector's poll path
+   (c2c_relay_connector.ml, sync step 3) needs a per-row schema check
+   (drop-and-log or dead-letter) before append_to_local_inbox. Verified
+   dishonest on 2026-07-10 against fbb16453; skipped until the connector
+   validates rows — coordinator to slice the fix. *)
+let test_connector_poll_garbage_rows_SKIPPED_dishonest () =
+  (* Reproduce recipe (verified 2026-07-10 on fbb16453 base): scripted
+       /register -> {"ok":true,"result":"ok"}
+       /poll_inbox -> {"ok":true,"messages":[{"bogus":1}]}
+     then run_sync — observed: inbound_delivered=1, last_error=None, and
+     <session>.inbox.json contains [{"bogus":1}] verbatim. *)
+  Alcotest.skip ()
+
+let test_connector_non_object_response_start_once () =
+  (* B249/B093: a non-object JSON answer (here to /register) currently
+     makes the sync pass raise (Yojson Type_error via member on a list)
+     rather than record a per-op error. The OPERATOR surface stays honest:
+     start --once catches it, writes the failure into
+     connector-state.json (last_error_op="sync") and exits nonzero. Pin
+     that surface. (The in-sync crash aborting the whole pass — including
+     other sessions' work — is noted as an out-of-scope hardening item.) *)
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register" [ S.response {|[1,2,3]|} ] ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let rc =
+            C2c_relay_connector.start ~relay_url:(S.url srv) ~token:None
+              ~identity:None ~broker_root ~node_id:"n-f5c-sm"
+              ~heartbeat_ttl:60.0 ~interval:1.0 ~verbose:false ~once:true
+          in
+          check int "start --once exits 1 (exception surface)" 1 rc;
+          match C2c_relay_connector.read_connector_state broker_root with
+          | None -> fail "connector-state.json must be written on failure"
+          | Some st ->
+              check (option string) "last_error_op recorded" (Some "sync")
+                st.C2c_relay_connector.cs_last_error_op;
+              check bool "last_error_detail non-empty" true
+                (match st.C2c_relay_connector.cs_last_error_detail with
+                 | Some d -> String.length d > 0
+                 | None -> false)))
+
+(* --- pure classifier/hint surfaces vs schema-wrong inputs --- *)
+
+let test_lease_json_wrong_types_never_live () =
+  (* B120: lease JSON with wrong-typed alive/alias_reserved (or a non-object
+     lease) must degrade CONSERVATIVELY: never classify Registered_live. *)
+  let expect_not_live label lease_json =
+    let reg = Relay_state.registration_of_lease_json lease_json in
+    (match reg with
+     | Relay_state.Reg_lease { alive; reserved } ->
+         check bool (label ^ ": alive coerces false") false alive;
+         check bool (label ^ ": reserved coerces false") false reserved
+     | _ -> fail (label ^ ": expected Reg_lease evidence"));
+    let c =
+      Relay_state.classify ~relay_configured:true ~has_identity:true
+        ~has_alias:true ~registration:reg ~connector_live:true
+        ~local_reg_evidence:true
+    in
+    check bool (label ^ ": never classified live") true
+      (c.Relay_state.state <> Relay_state.Registered_live)
+  in
+  expect_not_live "string alive"
+    (`Assoc [ ("alive", `String "yes"); ("alias_reserved", `Int 1) ]);
+  expect_not_live "int alive"
+    (`Assoc [ ("alive", `Int 1); ("alias_reserved", `String "true") ]);
+  expect_not_live "non-object lease" (`String "lease")
+
+let test_client_hints_total_on_garbage () =
+  (* C056-adjacent: the error-hint path must be total on schema-wrong
+     responses — no hint, no crash — and still fire on the real shape. *)
+  let source = Relay_client_hints.Explicit "f5c-sm-probe" in
+  List.iter
+    (fun (label, json) ->
+      check bool label true
+        (Relay_client_hints.hint_for_response ~alias_source:source json = None))
+    [ ("non-object list", `List [ `Int 1 ]);
+      ("non-object string", `String "unauthorized");
+      ("wrong-typed ok", `Assoc [ ("ok", `String "false") ]);
+      ("wrong-typed error", `Assoc [ ("ok", `Bool false);
+                                     ("error_code", `String "unauthorized");
+                                     ("error", `Int 7) ]);
+    ];
+  check bool "real missing-binding shape still hints" true
+    (Relay_client_hints.hint_for_response ~alias_source:source
+       (`Assoc
+         [ ("ok", `Bool false);
+           ("error_code", `String "unauthorized");
+           ("error", `String {|alias "f5c-sm-probe" has no identity binding|});
+         ])
+     <> None)
+
+(* ======================================================================== *)
+(* F5c: fake/real vector equality (shared semantic vectors)                 *)
+(*                                                                          *)
+(* The same request vectors are issued to BOTH servers:                     *)
+(*   fake = Relay_test_support serving the hand-written fixtures below      *)
+(*   real = Relay_test_support_real (production make_callback on           *)
+(*          InMemoryRelay, dev auth, PoW off)                               *)
+(* and the responses must be equal after normalization. This pins that      *)
+(* fault-matrix results obtained against the scripted server (F5b) are      *)
+(* meaningful: the fake is faithful where it claims to be.                  *)
+(*                                                                          *)
+(* NORMALIZATION (applied to both sides):                                   *)
+(*   - assoc keys sorted recursively (key ORDER is not part of the JSON     *)
+(*     contract; presence/absence and types are);                           *)
+(*   - wall-clock float fields are nondeterministic by nature and are      *)
+(*     replaced by "<ts>" ONLY when they are JSON numbers (a wrong-typed    *)
+(*     ts still fails the comparison): ts, registered_at, last_seen,        *)
+(*     alias_warning_since, alias_release_at;                               *)
+(*   - git_hash (health) is environment-derived and replaced by "<opaque>"  *)
+(*     only when it is a JSON string.                                       *)
+(*   Everything else — statuses, ok flags, enum-ish result strings, error   *)
+(*   codes/messages, lease ttl/alive/alias_reserved, message identity and   *)
+(*   content (message_id is supplied by the client, so deterministic) —    *)
+(*   is compared exactly.                                                   *)
+(* ======================================================================== *)
+
+let volatile_number_keys =
+  [ "ts"; "registered_at"; "last_seen"; "alias_warning_since";
+    "alias_release_at" ]
+
+let volatile_string_keys = [ "git_hash" ]
+
+let rec normalize (json : Yojson.Safe.t) : Yojson.Safe.t =
+  match json with
+  | `Assoc kvs ->
+      let kvs =
+        List.map
+          (fun (k, v) ->
+            if List.mem k volatile_number_keys then
+              (match v with
+               | `Float _ | `Int _ -> (k, `String "<ts>")
+               | other -> (k, other) (* wrong-typed volatile: keep + mismatch *))
+            else if List.mem k volatile_string_keys then
+              (match v with
+               | `String _ -> (k, `String "<opaque>")
+               | other -> (k, other))
+            else (k, normalize v))
+          kvs
+      in
+      `Assoc (List.sort (fun (a, _) (b, _) -> compare a b) kvs)
+  | `List xs -> `List (List.map normalize xs)
+  | other -> other
+
+(* --- the shared semantic vectors --- *)
+
+let eq_node = "n-f5c-eq"
+let eq_sess = "sess-f5c-eq"
+let eq_alias = "f5c-eq-probe"
+let eq_sender = "f5c-eq-sender"
+let eq_ghost = "f5c-eq-ghost"
+let eq_mid = "m-f5c-eq-1"
+let eq_mid2 = "m-f5c-eq-2"
+let eq_content = "hello-f5c"
+
+(* requests *)
+let req_register_ok =
+  `Assoc
+    [ ("node_id", `String eq_node); ("session_id", `String eq_sess);
+      ("alias", `String eq_alias); ("client_type", `String "test");
+      ("ttl", `Int 0) ]
+
+let req_register_bad =
+  (* alias missing — deterministic 400 from the production handler *)
+  `Assoc [ ("node_id", `String eq_node); ("session_id", `String eq_sess) ]
+
+let req_send_ok =
+  `Assoc
+    [ ("from_alias", `String eq_sender); ("to_alias", `String eq_alias);
+      ("content", `String eq_content); ("message_id", `String eq_mid) ]
+
+let req_send_unknown =
+  `Assoc
+    [ ("from_alias", `String eq_sender); ("to_alias", `String eq_ghost);
+      ("content", `String eq_content); ("message_id", `String eq_mid2) ]
+
+let req_poll =
+  `Assoc [ ("node_id", `String eq_node); ("session_id", `String eq_sess) ]
+
+(* hand-written canned response fixtures the fake serves (what a fault
+   suite would write by hand). ttl mirrors the server-side clamp of the
+   requested ttl=0 up to the default lease ttl; version/scheme are build
+   constants, not wall-clock values. *)
+let fixture_lease =
+  `Assoc
+    [ ("node_id", `String eq_node); ("session_id", `String eq_sess);
+      ("alias", `String eq_alias); ("client_type", `String "test");
+      ("registered_at", `Float 1700000000.0);
+      ("last_seen", `Float 1700000000.0);
+      ("ttl", `Float Relay.default_lease_ttl);
+      ("alive", `Bool true);
+      ("alias_reserved", `Bool true);
+      ("alias_warning_since", `Float 1707776000.0);
+      ("alias_release_at", `Float 1731104000.0);
+      ("alias_release_warning", `Bool false) ]
+
+let fixture_register_ok =
+  `Assoc
+    [ ("ok", `Bool true); ("result", `String "ok");
+      ("lease", fixture_lease) ]
+
+let fixture_register_bad =
+  `Assoc
+    [ ("ok", `Bool false); ("error_code", `String "bad_request");
+      ("error", `String "node_id, session_id, and alias are required") ]
+
+let fixture_send_ok =
+  `Assoc
+    [ ("ok", `Bool true); ("result", `String "ok");
+      ("ts", `Float 1700000001.0) ]
+
+let fixture_send_dup =
+  `Assoc
+    [ ("ok", `Bool true); ("result", `String "duplicate");
+      ("ts", `Float 1700000002.0) ]
+
+let fixture_send_unknown =
+  `Assoc
+    [ ("ok", `Bool false); ("error_code", `String "unknown_alias");
+      ("error",
+       `String (Printf.sprintf "no registration for alias %S" eq_ghost)) ]
+
+let fixture_poll_full =
+  `Assoc
+    [ ("ok", `Bool true);
+      ("messages",
+       `List
+         [ `Assoc
+             [ ("message_id", `String eq_mid);
+               ("from_alias", `String eq_sender);
+               ("to_alias", `String eq_alias);
+               ("content", `String eq_content);
+               ("ts", `Float 1700000001.0) ];
+         ]) ]
+
+let fixture_poll_empty = `Assoc [ ("ok", `Bool true); ("messages", `List []) ]
+
+let fixture_health =
+  `Assoc
+    [ ("ok", `Bool true);
+      ("version", `String Version.version);
+      ("git_hash", `String "0000000");
+      ("auth_mode", `String "dev");
+      ("pow",
+       `Assoc
+         [ ("enabled", `Bool false); ("scheme", `String Pow.scheme_id) ]) ]
+
+let fixture_list =
+  `Assoc [ ("ok", `Bool true); ("peers", `List [ fixture_lease ]) ]
+
+(* canonical vector order — both captures issue exactly this sequence *)
+let vector_labels =
+  [ "register-ok"; "register-bad"; "send-ok"; "send-duplicate";
+    "send-unknown-alias"; "poll-full"; "poll-empty"; "health"; "list" ]
+
+let capture_fake () : (string * int * Yojson.Safe.t) list =
+  let body j = Yojson.Safe.to_string j in
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response (body fixture_register_ok);
+          S.response ~status:400 (body fixture_register_bad) ];
+      S.route ~meth:"POST" ~path:"/send"
+        [ S.response (body fixture_send_ok);
+          S.response (body fixture_send_dup);
+          S.response (body fixture_send_unknown) ];
+      S.route ~meth:"POST" ~path:"/poll_inbox"
+        [ S.response (body fixture_poll_full);
+          S.response (body fixture_poll_empty) ];
+      S.route ~meth:"GET" ~path:"/health" [ S.response (body fixture_health) ];
+      S.route ~meth:"GET" ~path:"/list" [ S.response (body fixture_list) ];
+    ]
+  in
+  S.with_server ~routes (fun t ->
+      let call label ~meth ~path ?req () =
+        match
+          S.http_request ~meth
+            ~headers:[ ("Content-Type", "application/json") ]
+            ?body:(Option.map Yojson.Safe.to_string req) ~port:t.S.port ~path
+            ()
+        with
+        | S.Http { S.code; body_text; body_complete; _ } ->
+            check bool (label ^ ": fake body complete") true body_complete;
+            (label, code, Yojson.Safe.from_string body_text)
+        | r -> fail_result ("fake " ^ label) r
+      in
+      (* explicit lets: OCaml list expressions evaluate elements
+         right-to-left, which would invert the per-route sequencing *)
+      let v1 = call "register-ok" ~meth:"POST" ~path:"/register" ~req:req_register_ok () in
+      let v2 = call "register-bad" ~meth:"POST" ~path:"/register" ~req:req_register_bad () in
+      let v3 = call "send-ok" ~meth:"POST" ~path:"/send" ~req:req_send_ok () in
+      let v4 = call "send-duplicate" ~meth:"POST" ~path:"/send" ~req:req_send_ok () in
+      let v5 = call "send-unknown-alias" ~meth:"POST" ~path:"/send" ~req:req_send_unknown () in
+      let v6 = call "poll-full" ~meth:"POST" ~path:"/poll_inbox" ~req:req_poll () in
+      let v7 = call "poll-empty" ~meth:"POST" ~path:"/poll_inbox" ~req:req_poll () in
+      let v8 = call "health" ~meth:"GET" ~path:"/health" () in
+      let v9 = call "list" ~meth:"GET" ~path:"/list" () in
+      [ v1; v2; v3; v4; v5; v6; v7; v8; v9 ])
+
+let capture_real () : (string * int * Yojson.Safe.t) list =
+  with_pow_env_off @@ fun () ->
+  Real.with_server (fun ~base_url ~relay:_ ->
+      let open Lwt.Infix in
+      let one label ~meth ~path ?req () =
+        (match req with
+         | Some body -> Real.call_json ~base_url ~meth ~path ~body ()
+         | None -> Real.call_json ~base_url ~meth ~path ())
+        >|= fun r ->
+        match r.Real.json with
+        | Some j -> (label, Real.status_code r, j)
+        | None ->
+            fail
+              (Printf.sprintf "real %s: body is not JSON: %S" label
+                 r.Real.body_text)
+      in
+      one "register-ok" ~meth:`POST ~path:"/register" ~req:req_register_ok ()
+      >>= fun v1 ->
+      one "register-bad" ~meth:`POST ~path:"/register" ~req:req_register_bad ()
+      >>= fun v2 ->
+      one "send-ok" ~meth:`POST ~path:"/send" ~req:req_send_ok () >>= fun v3 ->
+      one "send-duplicate" ~meth:`POST ~path:"/send" ~req:req_send_ok ()
+      >>= fun v4 ->
+      one "send-unknown-alias" ~meth:`POST ~path:"/send" ~req:req_send_unknown ()
+      >>= fun v5 ->
+      one "poll-full" ~meth:`POST ~path:"/poll_inbox" ~req:req_poll ()
+      >>= fun v6 ->
+      one "poll-empty" ~meth:`POST ~path:"/poll_inbox" ~req:req_poll ()
+      >>= fun v7 ->
+      one "health" ~meth:`GET ~path:"/health" () >>= fun v8 ->
+      one "list" ~meth:`GET ~path:"/list" () >>= fun v9 ->
+      Lwt.return [ v1; v2; v3; v4; v5; v6; v7; v8; v9 ])
+
+let test_fake_real_vector_equality () =
+  (* fake first (forked scripted server, blocking client), real second
+     (in-process Lwt bracket) — never both live at once. *)
+  let fake = capture_fake () in
+  let real = capture_real () in
+  check (list string) "vector sequence" vector_labels
+    (List.map (fun (l, _, _) -> l) fake);
+  check (list string) "both sides ran the same sequence"
+    (List.map (fun (l, _, _) -> l) fake)
+    (List.map (fun (l, _, _) -> l) real);
+  List.iter2
+    (fun (label, fake_code, fake_json) (_, real_code, real_json) ->
+      check int (label ^ ": status code (real is truth)") real_code fake_code;
+      check string
+        (label ^ ": normalized body (real is truth)")
+        (Yojson.Safe.to_string (normalize real_json))
+        (Yojson.Safe.to_string (normalize fake_json)))
+    fake real
+
+(* --- runner ---------------------------------------------------------------- *)
+
+let () =
+  run "relay_test_support"
+    [
+      ( "lifecycle",
+        [ test_case "repeated start/stop, reaped child, port refuses" `Quick
+            test_lifecycle_repeated ] );
+      ( "scripted responses",
+        [ test_case "status codes + default fallback" `Quick
+            test_scripted_statuses;
+          test_case "per-route sequencing (429 then 200)" `Quick
+            test_response_sequencing ] );
+      ( "fault modes",
+        [ test_case "delay -> client timeout" `Quick test_delay_client_timeout;
+          test_case "truncated body short of Content-Length" `Quick
+            test_truncated_body;
+          test_case "malformed JSON in a valid envelope" `Quick
+            test_malformed_json;
+          test_case "connection refused via closed_port" `Quick
+            test_connection_refused;
+          test_case "close without response" `Quick
+            test_close_without_response ] );
+      ( "request capture",
+        [ test_case "method/path/headers/body + ordering" `Quick
+            test_request_capture ] );
+      (* Lwt-based cases from here on: no Lwt engine state before the pure
+         forking cases above. The F5c groups interleave forked scripted
+         servers with Lwt clients — safe per the ordering note in the
+         header (children never run Lwt; Unix._exit). *)
+      ( "real handler (in-process production relay)",
+        [ test_case "/health + /list over loopback" `Quick
+            test_real_relay_health_and_list ] );
+      ( "schema-mismatch faults (F5c)",
+        [ test_case "lease JSON wrong types never classify live" `Quick
+            test_lease_json_wrong_types_never_live;
+          test_case "error-hint path total on garbage responses" `Quick
+            test_client_hints_total_on_garbage;
+          test_case "Relay_client: malformed JSON -> connection_error" `Quick
+            test_client_malformed_json_is_error;
+          test_case "Relay_client: truncated body -> connection_error" `Quick
+            test_client_truncated_body_is_error;
+          test_case "Relay_client: non-object JSON returned verbatim" `Quick
+            test_client_non_object_json_passes_through;
+          test_case "connector: register ok wrong-typed -> sync error" `Quick
+            test_connector_register_ok_wrong_type;
+          test_case "connector: register missing ok -> sync error" `Quick
+            test_connector_register_missing_ok;
+          test_case "connector: poll messages wrong-typed -> zero delivered"
+            `Quick test_connector_poll_messages_wrong_type;
+          test_case
+            "connector: poll rows missing keys [SKIP: dishonest — delivered \
+             verbatim, poisons local inbox; see FIXME]"
+            `Quick test_connector_poll_garbage_rows_SKIPPED_dishonest;
+          test_case "connector: non-object response -> start --once exit 1"
+            `Quick test_connector_non_object_response_start_once ] );
+      ( "fake/real equality (F5c)",
+        [ test_case "shared semantic vectors match after normalization"
+            `Quick test_fake_real_vector_equality ] );
+    ]

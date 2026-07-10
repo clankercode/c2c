@@ -245,13 +245,65 @@ let relay_msgs_to_surface (seen : seen) (msgs : Yojson.Safe.t list)
   : Yojson.Safe.t list =
   filter_unseen seen msgs |> List.map (tag_source "relay")
 
+(* ---------- H3: connector-managed relay peek key resolution ---------- *)
+
+(* The relay CONNECTOR (`c2c relay connect`) registers every local broker
+   session on the relay under the MACHINE node-id with that session's OWN
+   session-id — NOT the `cli-<alias>` convention that `c2c relay register
+   --alias` uses. A cross-host DM to `alias@host` therefore lands in the relay
+   inbox keyed (connector_node_id, local_session_id). A monitor that peeks
+   `cli-<alias>/cli-<alias>` would see an empty inbox forever while messages
+   pile up under the connector's key — a silent receive black hole (A014/A015).
+
+   [connector_key] is [Some { node_id; session_id }] when a connector is known
+   to manage the resolved alias (the impure caller reads connector-state.json +
+   the alias's local session-id). When present it becomes the DEFAULT peek key,
+   so a bare `c2c monitor` on a connector-managed broker "just works" without
+   the operator hand-supplying --relay-node-id / --relay-session-id. Explicit
+   overrides always win over the connector-managed default. *)
+type relay_key = { node_id : string; session_id : string }
+
+let resolve_relay_peek_key
+      ~alias
+      ~node_id_override
+      ~session_id_override
+      ~connector_key
+      () : relay_key =
+  let base = "cli-" ^ alias in
+  (* Default (no operator override): connector-managed key when a connector
+     manages this alias, else the cli-<alias> direct-register convention. *)
+  let default_node, default_session =
+    match connector_key with
+    | Some k -> k.node_id, k.session_id
+    | None -> base, base
+  in
+  let node_id =
+    match node_id_override with
+    | Some n when n <> "" -> n
+    | _ -> default_node
+  in
+  (* session_id: explicit --relay-session-id wins; else `--relay-node-id X`
+     alone implies X/X (documented in --help); else the resolved default
+     (connector session-id, or cli-<alias>). *)
+  let session_id =
+    match session_id_override, node_id_override with
+    | (Some s, _) when s <> "" -> s
+    | (None, Some n) when n <> "" -> n
+    | _ -> default_session
+  in
+  { node_id; session_id }
+
 (* Decide whether the relay watcher should run, given the resolved inputs.
    Pure so the gating logic (alias resolved? relay configured? identity
    available?) is unit-testable. The watcher needs: an alias to peek as, a relay
    URL, and (for production relays) the relay must be reachable — but identity
    is OPTIONAL: an unsigned peek works against dev/no-auth relays just like
    `relay dm peek` falls back to unsigned. Returns a reason label for the
-   startup banner so an operator can see WHY relay watch is off. *)
+   startup banner so an operator can see WHY relay watch is off.
+
+   [connector_key] (H3) is the connector-managed peek key for [my_alias] when a
+   relay connector manages this broker; it becomes the default peek key over the
+   `cli-<alias>` convention (see [resolve_relay_peek_key]). *)
 type relay_watch_decision =
   | Relay_watch of { node_id : string; session_id : string }
   | Relay_watch_off of string
@@ -262,6 +314,7 @@ let decide_relay_watch
       ~identity:_
       ~node_id_override
       ~session_id_override
+      ?(connector_key = None)
       () : relay_watch_decision =
   match relay_url with
   | None -> Relay_watch_off "no relay URL configured (c2c relay setup / C2C_RELAY_URL)"
@@ -269,27 +322,79 @@ let decide_relay_watch
       (match my_alias with
        | None -> Relay_watch_off "no alias resolved (relay watch needs an alias to peek as)"
        | Some alias ->
-           (* Default peek key matches the `c2c relay dm peek` / `c2c relay
-              register --alias` convention: node_id = session_id = "cli-<alias>".
-              Connector-managed aliases (registered by the relay connector under
-              the machine's node-id) need an explicit --relay-node-id override —
-              documented in --help. *)
-           let base = "cli-" ^ alias in
-           let node_id =
-             match node_id_override with
-             | Some n when n <> "" -> n
-             | _ -> base
-           in
-           (* session_id defaults to the node_id when only --relay-node-id is
-              overridden, so `--relay-node-id machine-42` peeks
-              machine-42/machine-42 (as documented in --help). An explicit
-              --relay-session-id always wins; connector-managed aliases
-              (per-session session-id under the machine node-id) usually need
-              BOTH overrides. *)
-           let session_id =
-             match session_id_override, node_id_override with
-             | (Some s, _) when s <> "" -> s
-             | (None, Some n) when n <> "" -> n
-             | _ -> base
+           let { node_id; session_id } =
+             resolve_relay_peek_key ~alias ~node_id_override
+               ~session_id_override ~connector_key ()
            in
            Relay_watch { node_id; session_id })
+
+(* ---------- H3: relay /peek_inbox response classification ---------- *)
+
+(* The friction report's core receive-honesty defect (B027/B181/B182/B190,
+   A038): the relay watcher extracted `messages` and threw away the `ok` flag,
+   so an `{ ok:false, error_code, error }` response — an auth/identity failure,
+   a bad request, a connection error — surfaced NOTHING and the monitor spun
+   forever reporting a healthy-looking but dead relay stream ("misleading
+   success"). Classify every response so the caller can surface the error and
+   distinguish a transient blip (retry, may recover) from a terminal failure
+   (auth/identity — will not self-heal, exit non-zero so a supervisor notices).
+
+   The relay's own JSON contract (relay_server_json.ml): success is
+   `{ ok:true, ... }`; every error is `{ ok:false, error_code, error }`. The
+   client wrapper (relay_client.ml [connection_error]) maps network/timeout/
+   invalid-JSON to `{ ok:false, error_code:"connection_error", error }`. A
+   legacy relay that omits `ok` entirely is treated as success (messages are
+   data) for backward compatibility. *)
+type relay_peek_outcome =
+  | Peek_ok of Yojson.Safe.t list  (* ok:true / legacy: pending messages *)
+  | Peek_transient of string       (* retry, may recover (network/5xx/rate-limit) *)
+  | Peek_terminal of string        (* auth/identity — exit non-zero *)
+
+(* Error codes that mean the peek can NEVER succeed by retrying with the same
+   identity/key: the operator must re-register, fix the clock, fix the key, or
+   fix the request. These make the monitor exit non-zero (honest terminal
+   failure) rather than spin forever swallowing the error. Anything not listed
+   defaults to transient — better to keep retrying an unrecognized/blip error
+   than to kill a monitor on a code we did not anticipate. *)
+let is_terminal_error_code = function
+  | "unauthorized"
+  | "signature_invalid"
+  | "timestamp_out_of_window"
+  | "missing_proof_field"
+  | "not_found"
+  | "unknown_node"
+  | "not_registered"
+  | "bad_request" -> true
+  | _ -> false
+
+let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
+  match resp with
+  | `Assoc fields ->
+      let ok =
+        match List.assoc_opt "ok" fields with
+        | Some (`Bool b) -> Some b
+        | _ -> None
+      in
+      (match ok with
+       | Some false ->
+           let code = jstr fields "error_code" "" in
+           let emsg = jstr fields "error" "" in
+           let detail =
+             match code, emsg with
+             | "", "" -> "unknown relay error"
+             | "", m -> m
+             | c, "" -> c
+             | c, m -> Printf.sprintf "%s: %s" c m
+           in
+           if is_terminal_error_code code then Peek_terminal detail
+           else Peek_transient detail
+       | Some true | None ->
+           (* ok:true, or a legacy relay with no `ok` field — messages are
+              data. Absent `messages` yields [] (nothing new this cycle). *)
+           Peek_ok (extract_relay_messages resp))
+  | _ -> Peek_transient "malformed relay response (non-object)"
+
+(* Exit codes for `c2c monitor` terminal conditions. Distinct from the generic
+   usage/startup exit 1 so a supervisor can tell an auth/identity relay failure
+   apart from a bad-invocation or broker-root error (A038/B182/B196). *)
+let exit_relay_terminal = 3

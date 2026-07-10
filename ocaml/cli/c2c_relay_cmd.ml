@@ -1055,6 +1055,14 @@ let relay_dm_cmd =
                   | Error _ ->
                       Lwt_main.run (Relay.Relay_client.send client
                         ~from_alias ~to_alias ~content ())) in
+                (* J2: a relay ACK means the relay accepted the message —
+                   emit the canonical schema-v1 shape (delivery.state
+                   "accepted", source "relay") with the legacy ack keys
+                   (ok/ts/duplicate) preserved; errors pass through raw. *)
+                let result =
+                  C2c_utils.adapt_relay_dm_send_result ~from_alias ~to_alias
+                    ~content result
+                in
                 print_result_and_exit
                   ~alias_source:(Relay_client_hints.Explicit from_alias) result)
        | "poll" ->
@@ -1078,6 +1086,14 @@ let relay_dm_cmd =
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.poll_inbox client
                    ~node_id ~session_id:node_id)) in
+           (* J2: drained relay rows were delivered to this caller —
+              schema-v1 rows (delivery.state "delivered", source "relay")
+              with legacy row keys preserved; empty batches keep the
+              exact legacy shape. *)
+           let result =
+             C2c_utils.adapt_relay_dm_inbox_result
+               ~delivery_state:C2c_schema_v1.Delivered result
+           in
            print_result_and_exit
              ~alias_source:(Relay_client_hints.Explicit from_alias) result
        | "peek" ->
@@ -1109,6 +1125,13 @@ let relay_dm_cmd =
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.peek_inbox client
                    ~node_id ~session_id:node_id)) in
+           (* J2: peeked relay rows are NOT drained — schema-v1 rows with
+              delivery.state "queued", source "relay"; legacy row keys
+              preserved. *)
+           let result =
+             C2c_utils.adapt_relay_dm_inbox_result
+               ~delivery_state:C2c_schema_v1.Queued result
+           in
            print_result_and_exit
              ~alias_source:(Relay_client_hints.Explicit from_alias) result
        | "send-all" ->
@@ -1353,16 +1376,16 @@ let relay_subscribe_cmd =
       exit 1
   | Some url ->
       let uri = Uri.of_string url in
-      let scheme = Uri.scheme uri in
-      if scheme = Some "https" || scheme = Some "wss" then begin
-        (* B090: the previous hint routed users at `relay connect` for HTTPS
-           fallback, but that connector is broken against the public HTTPS
-           relay (B087). Point users at the polling path that actually works
-           today. *)
+      (* Scheme support is decided by Relay_doctor.subscribe_url_supported — the
+         SAME predicate `c2c doctor --relay`'s capability matrix consults — so
+         the advertised `subscribe` capability always matches this actual
+         attempt (B090/B093 actual-attempt parity). TLS WebSocket (wss/https)
+         is not yet implemented. *)
+      if not (Relay_doctor.subscribe_url_supported url) then begin
         Printf.eprintf
           "error: c2c relay subscribe does not support TLS WebSocket URLs yet.\n\
            hint: use an http:// relay URL, or poll DMs via `c2c relay dm --alias <you> poll`.\n\
-           note: the `relay connect` bridge is broken against HTTPS relays (B087); polling is the reliable receive path today.\n%!";
+           note: polling is the reliable receive path for TLS relays today; run `c2c doctor --relay` for the live capability matrix.\n%!";
         exit 1
       end;
       (* Load identity for signing *)

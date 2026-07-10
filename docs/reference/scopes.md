@@ -128,18 +128,32 @@ configured relay and merge them into one listing (B097):
 c2c list --relay                       # local + relay peers, merged
 c2c list --relay --json                # machine-readable; per-peer source/address/identity_pk
 c2c list --relay --alive --match foo   # filters apply to both sources
+c2c list --relay --kind relay          # only relay-registered identities (incl. scope both)
 ```
 
 Each peer row is tagged with `source` (`local` | `relay`), the full
 `<alias>@<opaque-host-id>` address (bare alias when the host id is unknown),
-the Ed25519 `identity_pk` (when published), and the alive state. Relay
-inclusion is **opt-in and non-fatal**: if no relay is configured (`c2c relay
-setup`) or it is unreachable, local peers still list with a one-line note and
-exit 0 — so `--relay` never blocks or crashes the listing. The fetch is
-bounded by `--relay-timeout` (default 3s). `--relay` requires a registered
-identity: run `c2c relay setup --url <URL>` then `c2c relay register --alias
-<ALIAS>` once; the signing alias defaults to `C2C_MCP_AUTO_REGISTER_ALIAS`
-(override with `--relay-alias`).
+the Ed25519 `identity_pk` (when published), the alive state, and — under
+`--relay` — the identity labels `identity_kind` (`local` | `relay`) and
+`identity_scope` (`local` | `relay` | `both`). A relay lease that *is* this
+machine's own registration (same alias + this host's host id) is folded into
+its local row as one scope-`both` identity; the same alias on a different
+host stays a distinct row, disambiguated by address. See
+[Reference: identifiers](/reference/identifiers/#identity-kind-and-scope-in-the-merged-listing)
+for the identity model. Relay inclusion is **opt-in and non-fatal**: if no
+relay is configured (`c2c relay setup`) or it is unreachable, local peers
+still list — with a one-line stderr note in human mode and a `relay_error`
+field in the `--json` envelope (`{"peers": [...], "relay_error": null |
+"..."}`) — and the exit code stays 0: the local listing is a partial
+success, so `--relay` never blocks or crashes it. The fetch is bounded by
+`--relay-timeout` (default 3s). `--relay` requires a registered identity:
+run `c2c relay setup --url <URL>` then `c2c relay register --alias <ALIAS>`
+once; the signing alias defaults to `C2C_MCP_AUTO_REGISTER_ALIAS` (override
+with `--relay-alias`). The default (no `--relay`) listing stays local-only
+and its JSON stays a bare array; flipping the default to the merged view is
+an open, operator-owned product gate recorded in the friction-cn decision
+ledger (`.collab/design/friction-cn-decision-ledger.md`, on the
+`friction-adr0-decision-ledger` branch).
 
 When in doubt, `c2c ping` reports which broker root you're on, and
 `c2c list` (with or without `--cross-repo`) shows who is reachable on that

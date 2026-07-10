@@ -307,3 +307,88 @@
  (name test_broker_root_resolution)
  (modules test_broker_root_resolution)
  (libraries c2c_mcp alcotest unix))
+
+; H4 (friction-cn): scheme/attempt-aware relay capabilities + broker-owned
+; connector attribution (Relay_doctor). Head of the serialized doctor/capability
+; test lane in this manifest — J1/H5/H6/F5a add sibling modules after this.
+; lwt.unix/cohttp for the env-gated (C2C_DOCTOR_LIVE_SMOKE=1) public read-only
+; relay probe; hermetic by default (probe skipped unless the env var is set).
+(test
+ (name test_c2c_doctor_capabilities)
+ (modules test_c2c_doctor_capabilities)
+ (libraries c2c_mcp alcotest yojson unix lwt.unix cohttp-lwt-unix))
+
+; J1 (friction-cn): canonical lean v1 message/event JSON schema
+; (C2c_schema_v1) conformance vectors — valid/invalid version, valid/invalid
+; state, forward-compatibility, optionality. Additive: this slice publishes
+; the schema + vectors only and migrates no output surface (J2/J3/J4 adopt
+; it). Appended below H4's doctor-capabilities stanza to keep this shared
+; manifest lane append-only (next: H5/H6/F5a).
+(test
+ (name test_c2c_schema_v1)
+ (modules test_c2c_schema_v1)
+ (libraries c2c_mcp alcotest yojson unix))
+
+; H5 (friction-cn): composite relay-state classifier (Relay_state) behind
+; `c2c status` / `c2c whoami` — separates local broker alias from relay
+; registration (incl. expiry) and connector liveness (A020/A027; B094 gap).
+; Hermetic: pure classifier + lease-JSON/connector fixtures; the end-to-end
+; whoami json/human parity case drives the c2c binary in an isolated env
+; (no live relay). Appended below J1's schema stanza to keep this shared
+; manifest lane append-only (next: H6/F5a).
+(test
+ (name test_c2c_relay_state)
+ (modules test_c2c_relay_state)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps ../cli/c2c.exe))
+
+; H6 (friction-cn): relay-merged `c2c list --relay` + identity kind/scope
+; labeling (List_identity) — merged human/JSON, offline nonfatal
+; (relay_error + exit 0), --kind/--match/--alive filters, same-alias/
+; different-host disambiguation, self-identity fold (alias + this host's
+; host_id), default-path JSON additivity. Hermetic: relay paths run against
+; a forked loopback fake relay; no production relay is contacted. Appended
+; below H5's relay-state stanza to keep this shared manifest lane
+; append-only (next: F5a). F5a: the hand-rolled fake-relay fixture moved
+; into the shared relay_test_support library (proof migration).
+(test
+ (name test_c2c_list_relay)
+ (modules test_c2c_list_relay)
+ (libraries c2c_mcp relay_test_support alcotest yojson unix)
+ (deps ../cli/c2c.exe))
+
+; F5a (friction-cn): reusable loopback relay HTTP/fault test support.
+; `relay_test_support` is the scripted fault server — bound-before-fork
+; loopback child; canned statuses (200/401/429/5xx), per-route response
+; sequencing, delays (client-timeout tests), truncated bodies, malformed
+; JSON, close-without-response, connection-refused helper, request
+; capture; idempotent SIGKILL+waitpid stop. Generalized from H6's
+; hand-rolled fake relay (test_c2c_list_relay is the proof migration).
+; It serves canned/scripted responses ONLY — it is not a second relay.
+; `relay_test_support_real` serves the PRODUCTION Relay_server
+; (InMemoryRelay) callback over a pre-bound loopback socket (the
+; test_pow_relay pattern) for suites that need real relay semantics.
+; This F5a append COMPLETES the serialized H4->J1->H5->H6->F5a manifest
+; lane: F5b/F5c adopt these libraries from existing stanzas (or
+; coordinate a new lane).
+(library
+ (name relay_test_support)
+ (modules relay_test_support)
+ (libraries yojson unix))
+
+(library
+ (name relay_test_support_real)
+ (modules relay_test_support_real)
+ (libraries c2c_mcp relay_test_support yojson lwt.unix cohttp-lwt-unix))
+
+; F5a self-tests: pin the support surface — lifecycle (repeated
+; start/stop, idempotent stop, reaped child, stopped port refuses),
+; scripted statuses + sequencing, delay->client-timeout, truncated body,
+; malformed JSON, connection-refused, close-without-response, request
+; capture, and the real-handler loopback bracket (/health + /list against
+; Relay_server(InMemoryRelay)). Fork-based cases run before the Lwt case.
+(test
+ (name test_relay_test_support)
+ (modules test_relay_test_support)
+ (libraries relay_test_support relay_test_support_real c2c_mcp alcotest
+   yojson unix lwt.unix))
