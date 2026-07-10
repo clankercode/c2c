@@ -10,6 +10,25 @@ function executableForWrapper(argv1) {
   return basename.startsWith("c2c-deliver-inbox") ? "c2c-deliver-inbox" : "c2c";
 }
 
+function packageManagerForWrapper(selfPath, env = process.env) {
+  const userAgent = env.npm_config_user_agent || "";
+  if (userAgent.startsWith("pnpm/")) {
+    return "pnpm";
+  }
+  if (userAgent.startsWith("bun/")) {
+    return "bun";
+  }
+
+  const normalizedPath = selfPath.replace(/\\/g, "/").toLowerCase();
+  if (normalizedPath.includes("/.bun/install/global/")) {
+    return "bun";
+  }
+  if (normalizedPath.includes("/pnpm/global/")) {
+    return "pnpm";
+  }
+  return "npm";
+}
+
 function main() {
   const executable = executableForWrapper(process.argv[1]);
   let binary;
@@ -22,7 +41,14 @@ function main() {
 
   const result = childProcess.spawnSync(binary, process.argv.slice(2), {
     stdio: "inherit",
-    env: process.env,
+    // The native binary cannot otherwise tell that it was launched by this
+    // npm package wrapper.  Preserve the owning package manager so
+    // `c2c self-update` upgrades the package instead of replacing the bundled
+    // binary under node_modules.
+    env: {
+      ...process.env,
+      C2C_SELF_UPDATE_PACKAGE_MANAGER: packageManagerForWrapper(__filename),
+    },
   });
 
   if (result.error) {
@@ -38,4 +64,8 @@ function main() {
   process.exit(result.status === null ? 1 : result.status);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { executableForWrapper, packageManagerForWrapper, main };

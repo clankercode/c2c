@@ -25,6 +25,11 @@ function loadResolver() {
   return require("../index.js");
 }
 
+function loadWrapper() {
+  delete require.cache[require.resolve("../bin/c2c-js-wrapper.js")];
+  return require("../bin/c2c-js-wrapper.js");
+}
+
 test("C2C_BIN wins over PATH and platform package fallback", () => {
   const dir = tempDir();
   const explicit = makeExecutable(path.join(dir, "custom-c2c"));
@@ -208,4 +213,46 @@ test("wrapper forwards arguments and exits with child status", () => {
 
   assert.equal(result.status, 17);
   assert.equal(fs.readFileSync(log, "utf8"), "--version\n--probe\n");
+});
+
+test("wrapper selects npm, pnpm, and Bun package managers", () => {
+  const { packageManagerForWrapper } = loadWrapper();
+  const wrapper = "/opt/lib/node_modules/@clanker-code/c2c/bin/c2c-js-wrapper.js";
+
+  assert.equal(packageManagerForWrapper(wrapper, { npm_config_user_agent: "npm/11.0.0 node/v22" }), "npm");
+  assert.equal(packageManagerForWrapper(wrapper, { npm_config_user_agent: "pnpm/10.0.0 npm/?" }), "pnpm");
+  assert.equal(packageManagerForWrapper(wrapper, { npm_config_user_agent: "bun/1.2.0 npm/?" }), "bun");
+});
+
+test("wrapper recognizes a Windows Bun global-install path", () => {
+  const { packageManagerForWrapper } = loadWrapper();
+  assert.equal(
+    packageManagerForWrapper(
+      "C:\\Users\\agent\\.bun\\install\\global\\node_modules\\@clanker-code\\c2c\\bin\\c2c-js-wrapper.js",
+      {}
+    ),
+    "bun"
+  );
+});
+
+test("wrapper passes selected package manager to the native c2c process", () => {
+  const dir = tempDir();
+  const log = path.join(dir, "package-manager.log");
+  const fakeC2c = makeExecutable(
+    path.join(dir, "fake-c2c"),
+    `#!/bin/sh\nprintf '%s' "$C2C_SELF_UPDATE_PACKAGE_MANAGER" > "${log}"\n`
+  );
+
+  const result = childProcess.spawnSync(process.execPath, [wrapperPath, "self-update"], {
+    env: {
+      ...process.env,
+      C2C_BIN: fakeC2c,
+      PATH: "",
+      npm_config_user_agent: "pnpm/10.0.0 npm/?",
+    },
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(fs.readFileSync(log, "utf8"), "pnpm");
 });

@@ -38,6 +38,9 @@ just install-all
 # Binary-only from an existing c2c
 c2c install self
 c2c self-update              # upgrade the installed binary in place
+
+# npm, pnpm, or Bun package install
+c2c self-update              # upgrades @clanker-code/c2c with the owning package manager
 ```
 
 ## Core Workflows

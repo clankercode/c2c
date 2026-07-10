@@ -606,11 +606,13 @@ let self_update_cmd =
 
 let self_update =
   let info = Cmdliner.Cmd.info "self-update"
-    ~doc:"Update the running c2c binary to the latest (or pinned) release."
+    ~doc:"Update c2c to the latest (or pinned) release."
     ~man:
       [ `S "DESCRIPTION"
-      ; `P "$(b,c2c self-update) downloads the latest release from GitHub, verifies the \
-            SHA-256 checksum, and atomically replaces the running binary."
+      ; `P "For standalone installs, $(b,c2c self-update) downloads the latest release \
+            from GitHub, verifies the SHA-256 checksum, and atomically replaces the running binary."
+      ; `P "When launched through the @clanker-code/c2c npm package, it upgrades that \
+            package with its owning package manager (npm, pnpm, or Bun) instead."
       ; `P "Asset naming convention (shared with install.sh): \
             $(b,c2c-<version>-<os>-<arch>.tar.gz) where os ∈ {linux, darwin}, arch ∈ {x64, arm64}."
       ; `P "Refuses to touch system paths (/usr, /usr/local, /bin). Advises using a \
