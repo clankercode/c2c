@@ -32,7 +32,13 @@ is carried from day one so v2 is non-breaking.
 > [commands → JSON output](/commands/#json-output-message-schema-v1).
 >
 > J3 landed: the streaming `c2c monitor --json` NDJSON message events emit
-> this shape too (legacy keys preserved additively).
+> this shape too (legacy keys preserved additively) — see the
+> [monitor `--json` event schema](/monitor-json-schema/).
+>
+> J5 landed (aggregate I002 closure gate): all adapted surfaces are swept
+> in one aggregate conformance test (see "Surface coverage" below), and
+> the CLI/MCP legacy-append implementations were unified onto the single
+> `C2c_schema_v1.serialize_with_legacy` helper.
 
 ## Field contract
 
@@ -70,6 +76,39 @@ v1 validator until v2 defines it.
 
 Any *other* unknown key at the top level, inside `from`, or inside `delivery`
 is also tolerated and ignored (forward-compatibility).
+
+## Surface coverage
+
+Which JSON output surfaces emit this shape, and — explicitly — which do
+not yet. Per ADR0, absence of a decision is never permission: a surface
+missing from the ADAPTED table below is NOT adapted, and each exclusion
+names the gate that owns adapting (or permanently exempting) it.
+
+### Adapted (emit v1 + legacy keys additively)
+
+| Surface | Producer | Slice | Gate (conformance test) |
+|---|---|---|---|
+| MCP `send` receipt | `C2c_send_handlers.build_send_receipt` | J4 | `test_c2c_schema_v1` aggregate-gate + `test_c2c_mcp` J4 vectors |
+| MCP `poll_inbox` / `peek_inbox` rows | `C2c_inbox_handlers.inbox_row_json` | J4 | `test_c2c_schema_v1` aggregate-gate + `test_c2c_mcp` J4 vectors |
+| CLI `send --json` receipt | `C2c_utils.cli_send_receipt_json` | J2 | `test_c2c_utils` aggregate-gate (CLI half) |
+| CLI `poll-inbox` / `wait-inbox` / `peek-inbox --json` rows | `C2c_utils.inbox_message_row_json` | J2 | `test_c2c_utils` aggregate-gate (CLI half) |
+| CLI `relay dm send\|poll\|peek` results | `C2c_utils.adapt_relay_dm_*` | J2 | `test_c2c_utils` aggregate-gate (CLI half) |
+| `monitor --json` NDJSON message events | `C2c_monitor_ndjson.message_event` | J3 | `test_c2c_schema_v1` aggregate-gate + monitor-ndjson group |
+
+The aggregate gate (slice J5, closing I002) constructs every row above
+via its real production builder and asserts v1 validation, round-trip
+stability, and no duplicate JSON keys — any surface drifting off v1
+fails the suite.
+
+### Explicitly NOT adapted (and who owns the gate)
+
+| Surface | Why excluded | Owning gate |
+|---|---|---|
+| MCP `history` tool rows | Archive-inspection shape (`archived_at`, drain metadata) predates v1 and has GUI readers; adapting needs its own old-reader vector. | future slice on the I002 family — until then rows stay pre-v1 verbatim |
+| Broker inbox JSON at rest | Storage format, not an output surface — deliberately excluded by J4; v1 is applied at the emit boundary. | permanent exemption (re-open only with a broker storage-migration slice) |
+| `c2c_deliver_inbox` NDJSON | Deliver-watch daemon log lines are operator diagnostics, not message documents. | future slice if a machine consumer appears; #482 owns the daemon surface |
+| `relay poll-inbox` prober raw JSON | Doctor/prober output reports relay HTTP responses verbatim for diagnosis; reshaping would hide wire truth. | permanent exemption for diagnostics; relay wire format itself is a relay-protocol concern |
+| MCP `send_all` broadcast envelope | Fan-out receipt aggregates per-recipient results; not a single message document. | future slice — needs a v1 batch/receipt-list convention first |
 
 ## Optionality
 

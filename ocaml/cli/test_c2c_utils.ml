@@ -304,6 +304,98 @@ let test_relay_dm_malformed_row_passthrough () =
   | [ row ] -> Alcotest.(check bool) "malformed row unchanged" true (row = bad)
   | _ -> Alcotest.fail "expected exactly one row"
 
+(* ==== J5: aggregate I002 closure gate (CLI half) =========================
+
+   One sweep over every v1-adapted CLI surface in one place, each row
+   constructed via its REAL production builder and gate-checked:
+   validates as v1, round-trips (validate -> serialize -> validate to
+   the same record), and carries no duplicate JSON keys.
+
+   Surfaces swept here:
+     - CLI send --json receipt          (C2c_utils.cli_send_receipt_json)
+     - CLI poll-inbox / peek-inbox rows (C2c_utils.inbox_message_row_json)
+     - CLI relay dm send ack            (C2c_utils.adapt_relay_dm_send_result)
+     - CLI relay dm poll/peek rows      (C2c_utils.adapt_relay_dm_inbox_result)
+
+   The library-half of the same gate (MCP poll/peek/send receipt rows and
+   monitor NDJSON events) is the "aggregate-gate (J5/I002)" group in
+   ocaml/test/test_c2c_schema_v1.ml — the CLI builders are modules of the
+   c2c executable, not linkable from ocaml/test/, hence this split.
+   Together the two tests close I002: if any adapted surface drifts off
+   v1, one of them fails. *)
+
+let gate_roundtrip ~what json =
+  match C2c_schema_v1.validate json with
+  | Error e -> Alcotest.failf "%s: failed v1 validation: %s" what e
+  | Ok m ->
+      (match C2c_schema_v1.validate (C2c_schema_v1.serialize m) with
+       | Ok m' ->
+           if m <> m' then
+             Alcotest.failf "%s: validate/serialize round-trip not stable" what
+       | Error e ->
+           Alcotest.failf "%s: round-trip re-validation failed: %s" what e)
+
+let gate_check ~what json =
+  check_no_dup_keys json;
+  (match get json "delivery" with
+   | exception _ -> ()
+   | d -> check_no_dup_keys d);
+  gate_roundtrip ~what json
+
+let test_aggregate_gate_cli_surfaces () =
+  (* CLI poll-inbox (drained) + peek-inbox (queued) rows *)
+  gate_check ~what:"cli poll-inbox row"
+    (C2c_utils.inbox_message_row_json
+       ~delivery_state:C2c_schema_v1.Delivered (mk_msg ~message_id:"m-g1" ()));
+  gate_check ~what:"cli peek-inbox row"
+    (C2c_utils.inbox_message_row_json
+       ~delivery_state:C2c_schema_v1.Queued (mk_msg ()));
+  gate_check ~what:"cli inbox row (room fanout)"
+    (C2c_utils.inbox_message_row_json
+       ~delivery_state:C2c_schema_v1.Delivered
+       (mk_msg ~to_alias:"zz-j2recv#zz-lounge" ()));
+  gate_check ~what:"cli inbox row (host-hash dm)"
+    (C2c_utils.inbox_message_row_json
+       ~delivery_state:C2c_schema_v1.Queued
+       (mk_msg ~to_alias:"zz-j2recv#0123456789ab" ()));
+  (* CLI send --json receipt: local-delivered and remote-queued+warnings *)
+  gate_check ~what:"cli send receipt (local delivered)"
+    (C2c_utils.cli_send_receipt_json ~ts:1700000001.0 ~from_alias:"zz-j2send"
+       ~to_:"zz-j2recv" ~content:"hello j2"
+       ~delivery_state:C2c_schema_v1.Delivered
+       ~legacy_target_fields:[ ("to_alias", `String "zz-j2recv") ]
+       ());
+  gate_check ~what:"cli send receipt (remote queued + warnings)"
+    (C2c_utils.cli_send_receipt_json ~ts:1700000001.0 ~from_alias:"zz-j2send"
+       ~to_:"zz-j2recv@deadbeef1234" ~content:"hello j2"
+       ~delivery_state:C2c_schema_v1.Queued
+       ~delivery_warning:"queued locally; no relay connector detected"
+       ~legacy_target_fields:
+         [ ("to_alias", `String "zz-j2recv@deadbeef1234") ]
+       ~compacting_warning:"recipient compacting for 12s"
+       ());
+  (* CLI relay dm send ack *)
+  gate_check ~what:"cli relay dm send ack"
+    (C2c_utils.adapt_relay_dm_send_result ~from_alias:"zz-j2send"
+       ~to_alias:"zz-j2recv" ~content:"hi relay"
+       (`Assoc
+          [ ("ok", `Bool true); ("ts", `Float 1700000002.0)
+          ; ("duplicate", `Bool true) ]));
+  (* CLI relay dm poll (delivered) + peek (queued) rows *)
+  let gate_relay_rows ~what ~delivery_state =
+    let adapted =
+      C2c_utils.adapt_relay_dm_inbox_result ~delivery_state
+        (relay_inbox_result [ relay_row () ])
+    in
+    match messages_of adapted with
+    | [ row ] -> gate_check ~what row
+    | _ -> Alcotest.failf "%s: expected exactly one adapted row" what
+  in
+  gate_relay_rows ~what:"cli relay dm poll row"
+    ~delivery_state:C2c_schema_v1.Delivered;
+  gate_relay_rows ~what:"cli relay dm peek row"
+    ~delivery_state:C2c_schema_v1.Queued
+
 let () =
   Alcotest.run "c2c_utils" [
     "alias_from_env_only", [
@@ -332,5 +424,8 @@ let () =
       Alcotest.test_case "relay dm peek rows queued"            `Quick test_relay_dm_peek_queued;
       Alcotest.test_case "relay dm empty batch shape kept"      `Quick test_relay_dm_poll_empty_batch_shape;
       Alcotest.test_case "relay dm malformed row passthrough"   `Quick test_relay_dm_malformed_row_passthrough;
+    ];
+    "aggregate-gate (J5/I002)", [
+      Alcotest.test_case "cli surfaces sweep" `Quick test_aggregate_gate_cli_surfaces;
     ]
   ]

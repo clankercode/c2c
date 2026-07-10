@@ -586,6 +586,203 @@ let test_serialize_with_legacy () =
   Alcotest.(check bool) "document with legacy keys still validates" true
     (is_ok (S.validate json))
 
+(* J5 unification: the shared helper carries J2's dedup + delivery_extra
+   semantics (formerly the CLI-side C2c_utils.schema_v1_with_legacy).
+   - a legacy key already emitted by the v1 serialization is skipped, so
+     the result never carries a duplicate JSON key;
+   - [?delivery_extra] pairs merge INSIDE the delivery object, after
+     [state], skipping keys already present. *)
+let test_serialize_with_legacy_dedup_and_delivery_extra () =
+  let m : S.t =
+    { schema_version = S.schema_version
+    ; msg_type = S.Dm
+    ; message_id = None
+    ; ts = Some 1700000000.0
+    ; from = { alias = "lyra-quill"; host_id = None; address = None }
+    ; to_ = "storm-ember"
+    ; source = None
+    ; content = "hi"
+    ; in_reply_to = None
+    ; delivery_state = Some S.Queued
+    }
+  in
+  let json =
+    S.serialize_with_legacy m
+      ~delivery_extra:
+        [ ("warning", `String "recipient last seen 120s ago")
+        ; ("state", `String "MUST-NOT-CLOBBER") ]
+      ~legacy:
+        [ ("ts", `Float 1700000000.0) (* collides with v1 ts — must dedup *)
+        ; ("content", `String "hi")   (* collides with v1 content — dedup *)
+        ; ("queued", `Bool true) ]
+  in
+  let fields = assoc_of json in
+  let count k = List.length (List.filter (fun (k', _) -> k' = k) fields) in
+  Alcotest.(check int) "ts appears exactly once" 1 (count "ts");
+  Alcotest.(check int) "content appears exactly once" 1 (count "content");
+  Alcotest.(check bool) "legacy queued appended" true
+    (List.assoc_opt "queued" fields = Some (`Bool true));
+  (match List.assoc_opt "delivery" fields with
+   | Some (`Assoc d) ->
+       Alcotest.(check bool) "delivery.state preserved (extra must not clobber)"
+         true (List.assoc_opt "state" d = Some (`String "queued"));
+       Alcotest.(check bool) "delivery.warning merged inside delivery" true
+         (List.assoc_opt "warning" d
+          = Some (`String "recipient last seen 120s ago"));
+       Alcotest.(check int) "delivery.state appears exactly once" 1
+         (List.length (List.filter (fun (k, _) -> k = "state") d))
+   | _ -> Alcotest.fail "expected a delivery object");
+  Alcotest.(check bool) "document still validates" true (is_ok (S.validate json))
+
+(* ==== J5: aggregate I002 closure gate ====================================
+
+   One sweep over every v1-adapted surface whose production builder is
+   reachable from the c2c_mcp library — each row constructed via its REAL
+   builder, then gate-checked: validates as v1, round-trips (validate ->
+   serialize -> validate to the same record), and carries no duplicate
+   JSON keys (top level and inside delivery).
+
+   Surfaces swept here:
+     - MCP poll_inbox / peek_inbox rows   (C2c_inbox_handlers.inbox_row_json)
+     - MCP send receipt                   (C2c_send_handlers.build_send_receipt)
+     - monitor NDJSON message events      (C2c_monitor_ndjson.message_event)
+
+   The CLI-side builders (C2c_utils.inbox_message_row_json /
+   cli_send_receipt_json / adapt_relay_dm_send_result /
+   adapt_relay_dm_inbox_result) are modules of the CLI executable and are
+   not linkable from this directory; the SAME gate for those surfaces is
+   the "aggregate I002 gate (J5)" test in ocaml/cli/test_c2c_utils.ml.
+   Together the two tests close I002: if any adapted surface drifts off
+   v1 (missing required key, wrong enum, wrong version, duplicate key),
+   one of them fails. *)
+
+let gate_dup_keys ~what fields =
+  let keys = List.map fst fields in
+  if List.length (List.sort_uniq compare keys) <> List.length keys then
+    Alcotest.failf "%s: duplicate JSON keys in %s" what
+      (String.concat "," keys)
+
+let gate_check ~what json =
+  (match json with
+   | `Assoc fields ->
+       gate_dup_keys ~what fields;
+       (match List.assoc_opt "delivery" fields with
+        | Some (`Assoc d) -> gate_dup_keys ~what:(what ^ ".delivery") d
+        | _ -> ())
+   | _ -> Alcotest.failf "%s: not a JSON object" what);
+  match S.validate json with
+  | Error e -> Alcotest.failf "%s: failed v1 validation: %s" what e
+  | Ok m ->
+      (match S.validate (S.serialize m) with
+       | Ok m' ->
+           if m <> m' then
+             Alcotest.failf "%s: validate/serialize round-trip not stable" what
+       | Error e -> Alcotest.failf "%s: round-trip re-validation failed: %s" what e)
+
+let gate_mcp_message ?message_id ?(to_alias = "zz-gate-recv") ?(deferrable = false) () :
+    C2c_mcp_helpers.message =
+  { C2c_mcp_helpers.from_alias = "zz-gate-send"
+  ; to_alias
+  ; content = "aggregate gate probe"
+  ; deferrable
+  ; reply_via = None
+  ; enc_status = None
+  ; ts = 1700000001.25
+  ; ephemeral = false
+  ; message_id
+  }
+
+let test_aggregate_gate_mcp_inbox_rows () =
+  (* poll (drained) row *)
+  gate_check ~what:"mcp poll_inbox row"
+    (C2c_inbox_handlers.inbox_row_json
+       ~m:(gate_mcp_message ~message_id:"m-1" ())
+       ~content:"aggregate gate probe"
+       ~delivery_state:S.Delivered ~enc_status:None);
+  (* peek (queued) row *)
+  gate_check ~what:"mcp peek_inbox row"
+    (C2c_inbox_handlers.inbox_row_json
+       ~m:(gate_mcp_message ())
+       ~content:"aggregate gate probe"
+       ~delivery_state:S.Queued ~enc_status:None);
+  (* deferrable + enc_status legacy extras *)
+  gate_check ~what:"mcp poll_inbox row (deferrable+enc)"
+    (C2c_inbox_handlers.inbox_row_json
+       ~m:(gate_mcp_message ~deferrable:true ())
+       ~content:"aggregate gate probe"
+       ~delivery_state:S.Delivered ~enc_status:(Some "decrypted"));
+  (* room fan-out tagged to_alias *)
+  gate_check ~what:"mcp inbox row (room fanout)"
+    (C2c_inbox_handlers.inbox_row_json
+       ~m:(gate_mcp_message ~to_alias:"zz-gate-recv#swarm-lounge" ())
+       ~content:"aggregate gate probe"
+       ~delivery_state:S.Delivered ~enc_status:None);
+  (* relay host-hash to_alias (DM, not room) *)
+  gate_check ~what:"mcp inbox row (host-hash)"
+    (C2c_inbox_handlers.inbox_row_json
+       ~m:(gate_mcp_message ~to_alias:"zz-gate-recv#a1b2c3d4e5f6" ())
+       ~content:"aggregate gate probe"
+       ~delivery_state:S.Queued ~enc_status:None)
+
+let test_aggregate_gate_mcp_send_receipt () =
+  let base_extras : C2c_send_handlers.pp_receipt_extras =
+    { pp_verification = None; pp_self_pass_warning = None }
+  in
+  let receipt ?(pp_extras = base_extras) ?(recipient_dnd = false)
+      ?recipient_compacting ?(deferrable = false) () =
+    Yojson.Safe.from_string
+      (C2c_send_handlers.build_send_receipt ~pp_extras ~ts:1700000002.5
+         ~from_alias:"zz-gate-send" ~to_alias:"zz-gate-recv"
+         ~content:"aggregate gate probe" ~recipient_dnd ~recipient_compacting
+         ~deferrable)
+  in
+  gate_check ~what:"mcp send receipt (plain)" (receipt ());
+  gate_check ~what:"mcp send receipt (dnd+deferrable)"
+    (receipt ~recipient_dnd:true ~deferrable:true ());
+  gate_check ~what:"mcp send receipt (compacting warning)"
+    (receipt ~recipient_compacting:(120.0, Some "auto-compact") ());
+  gate_check ~what:"mcp send receipt (peer-pass extras)"
+    (receipt
+       ~pp_extras:
+         { pp_verification = Some (`Ok "verified zz-gate-recv sig")
+         ; pp_self_pass_warning = Some (`Warn "self-pass detected") }
+       ())
+
+let test_aggregate_gate_monitor_events () =
+  let shape ~source raw =
+    C2c_monitor_ndjson.message_event ~monitor_ts:"1700000003.000" ~source raw
+  in
+  gate_check ~what:"monitor event (local dm)"
+    (shape ~source:"local"
+       (`Assoc
+          [ ("from_alias", `String "zz-gate-send")
+          ; ("to_alias", `String "zz-gate-recv")
+          ; ("content", `String "aggregate gate probe")
+          ; ("ts", `Float 1700000003.5)
+          ; ("message_id", `String "m-gate") ]));
+  gate_check ~what:"monitor event (relay dm)"
+    (shape ~source:"relay"
+       (`Assoc
+          [ ("source", `String "relay")
+          ; ("from_alias", `String "zz-gate-remote")
+          ; ("to_alias", `String "zz-gate-recv")
+          ; ("content", `String "aggregate gate probe")
+          ; ("ts", `Float 1700000004.0) ]));
+  gate_check ~what:"monitor event (room fanout)"
+    (shape ~source:"local"
+       (`Assoc
+          [ ("from_alias", `String "zz-gate-send")
+          ; ("to_alias", `String "zz-gate-recv#swarm-lounge")
+          ; ("content", `String "aggregate gate probe")
+          ; ("ts", `Float 1700000005.0) ]));
+  gate_check ~what:"monitor event (explicit room_id)"
+    (shape ~source:"local"
+       (`Assoc
+          [ ("from_alias", `String "zz-gate-send")
+          ; ("to_alias", `String "swarm-lounge")
+          ; ("room_id", `String "swarm-lounge")
+          ; ("content", `String "aggregate gate probe") ]))
+
 let () =
   Alcotest.run "c2c_schema_v1"
     [ ( "valid",
@@ -620,7 +817,9 @@ let () =
         [ Alcotest.test_case "serialize omits None" `Quick test_serialize_omits_none;
           Alcotest.test_case "full roundtrip" `Quick test_serialize_full_roundtrip;
           Alcotest.test_case "of_string parse error" `Quick test_of_string_parse_error;
-          Alcotest.test_case "serialize_with_legacy appends + validates" `Quick test_serialize_with_legacy ] );
+          Alcotest.test_case "serialize_with_legacy appends + validates" `Quick test_serialize_with_legacy;
+          Alcotest.test_case "serialize_with_legacy dedup + delivery_extra (J5)" `Quick
+            test_serialize_with_legacy_dedup_and_delivery_extra ] );
       ( "schema-mismatch (F5c)",
         [ Alcotest.test_case "schema_version wrong JSON kinds" `Quick test_mismatch_version_kinds;
           Alcotest.test_case "required fields wrong JSON kinds" `Quick test_mismatch_required_kinds;
@@ -636,4 +835,8 @@ let () =
           Alcotest.test_case "non-object passthrough" `Quick test_monitor_non_object_passthrough;
           Alcotest.test_case "one object per line" `Quick test_monitor_ndjson_one_object_per_line;
           Alcotest.test_case "immediate flush" `Quick test_monitor_ndjson_immediate_flush ] );
+      ( "aggregate-gate (J5/I002)",
+        [ Alcotest.test_case "mcp poll/peek inbox rows" `Quick test_aggregate_gate_mcp_inbox_rows;
+          Alcotest.test_case "mcp send receipt" `Quick test_aggregate_gate_mcp_send_receipt;
+          Alcotest.test_case "monitor ndjson events" `Quick test_aggregate_gate_monitor_events ] );
     ]

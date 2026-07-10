@@ -155,9 +155,33 @@ let serialize (m : t) : Yojson.Safe.t =
 
 let to_string m = Yojson.Safe.to_string (serialize m)
 
-let serialize_with_legacy m ~legacy =
+let serialize_with_legacy ?(delivery_extra = []) m ~legacy =
   match serialize m with
-  | `Assoc fields -> `Assoc (fields @ legacy)
+  | `Assoc fields ->
+      let fields =
+        if delivery_extra = [] then fields
+        else
+          List.map
+            (fun (k, v) ->
+              if k = key_delivery then
+                match v with
+                | `Assoc dfields ->
+                    let extra =
+                      List.filter
+                        (fun (dk, _) -> not (List.mem_assoc dk dfields))
+                        delivery_extra
+                    in
+                    (k, `Assoc (dfields @ extra))
+                | _ -> (k, v)
+              else (k, v))
+            fields
+      in
+      (* Dedup guarantee: skip legacy keys the v1 serialization already
+         emitted, so the result never carries a duplicate JSON key. *)
+      let legacy_new =
+        List.filter (fun (k, _) -> not (List.mem_assoc k fields)) legacy
+      in
+      `Assoc (fields @ legacy_new)
   | j -> j (* unreachable: [serialize] always returns [`Assoc] *)
 
 (* ---- Validate ---- *)

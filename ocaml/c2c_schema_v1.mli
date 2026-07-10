@@ -116,14 +116,28 @@ val serialize : t -> Yojson.Safe.t
 val to_string : t -> string
 (** [serialize] then compact-print. *)
 
-val serialize_with_legacy : t -> legacy:(string * Yojson.Safe.t) list -> Yojson.Safe.t
+val serialize_with_legacy :
+  ?delivery_extra:(string * Yojson.Safe.t) list ->
+  t -> legacy:(string * Yojson.Safe.t) list -> Yojson.Safe.t
 (** [serialize] the v1 document, then append the [legacy] key/value pairs
     after the canonical fields. This is the single supported way for
-    migrating surfaces (J2 CLI / J3 monitor / J4 MCP) to keep legacy
-    duplicate keys (e.g. [from_alias], [to_alias], [queued]) alongside the
-    v1 fields during the compatibility window. Callers must not pass a
-    legacy key that collides with an emitted v1 key (e.g. [content], [ts]);
-    duplicate keys in a JSON object are undefined behavior for consumers. *)
+    migrating surfaces (J2 CLI / J4 MCP; the J3 monitor keeps its own
+    shaping in [C2c_monitor_ndjson] because it prepends
+    [event_type]/[monitor_ts] BEFORE the v1 fields) to keep legacy
+    duplicate keys (e.g. [from_alias], [to_alias], [queued]) alongside
+    the v1 fields during the compatibility window.
+
+    Dedup guarantee (J5 unification of the J2 CLI helper onto this one):
+    any [legacy] key already emitted by the v1 serialization is skipped,
+    so the result never contains a duplicate JSON key. For colliding keys
+    (e.g. [content], [ts]) callers must only pass legacy values identical
+    to the v1-emitted ones, since the v1 rendering wins.
+
+    [delivery_extra] pairs are merged INSIDE the [delivery] object (only
+    when the record carries a delivery state; keys already present in the
+    object are skipped). Extra delivery keys are tolerated-unknown per
+    the v1 forward-compat contract — used by the CLI send receipt to
+    carry the legacy [delivery.warning] (B088) beside [delivery.state]. *)
 
 val validate : Yojson.Safe.t -> (t, string) result
 (** Parse and check a JSON value against the v1 schema.

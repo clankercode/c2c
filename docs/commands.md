@@ -764,6 +764,9 @@ unchanged value (old readers keep working); shared keys (`ts`, `content`,
 `message_id`) are emitted once, via the v1 shape. Room deliveries are
 classified `type:"room"` by the canonical recipient classifier — a
 `<alias>#<12-hex>` host-hash suffix is a cross-host DM, not a room.
+The streaming counterpart, `c2c monitor --json`, emits the same v1 message
+shape per NDJSON event — see the
+[monitor `--json` event schema](/monitor-json-schema/).
 
 `c2c send beta "hello" --json` (local recipient — delivered synchronously):
 

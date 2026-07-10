@@ -60,7 +60,7 @@ Fields:
 
 A new message was written to a broker inbox/live-inbox watch, appended to the archive, or peeked from the relay inbox.
 
-Message events carry the [canonical message schema v1](/reference/message-schema-v1/) fields (`schema_version`, `type`, `message_id`, `ts`, `from`, `to`, `source`, `content`), **plus** the pre-v1 legacy keys (`from_alias`, `to_alias`, and any extra fields from the raw broker message) preserved additively so existing readers keep working unchanged. Each event is one compact JSON object on one line (the examples below are pretty-printed for readability):
+Message events carry the [canonical message schema v1](/reference/message-schema-v1/) fields (`schema_version`, `type`, `message_id`, `ts`, `from`, `to`, `source`, `content`), — the same v1 contract the CLI `--json` results use (see [commands → JSON output](/commands/#json-output-message-schema-v1)) — **plus** the pre-v1 legacy keys (`from_alias`, `to_alias`, and any extra fields from the raw broker message) preserved additively so existing readers keep working unchanged. Each event is one compact JSON object on one line (the examples below are pretty-printed for readability):
 
 ```json
 {

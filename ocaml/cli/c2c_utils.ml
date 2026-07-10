@@ -79,12 +79,13 @@ let atomic_write_json path json =
    v1 message schema (C2c_schema_v1, slice J1) while preserving every
    pre-existing legacy key additively at its unchanged value.
 
-   MERGE-UNIFICATION TODO (J2 <-> J4): the parallel J4 branch
-   (friction-j4-mcp-schema) adds a shared
-   [C2c_schema_v1.serialize_with_legacy] helper for the MCP surfaces.
-   J2 deliberately does NOT touch c2c_schema_v1.ml (J4 owns edits to it
-   on its branch); once both branches land, unify these CLI-side
-   helpers onto the shared library helper. *)
+   J5 unification (the former MERGE-UNIFICATION TODO, J2 <-> J4): the
+   CLI-side legacy-append implementation was folded onto the shared
+   [C2c_schema_v1.serialize_with_legacy] (introduced by J4 for the MCP
+   surfaces). The shared helper carries J2's semantics — dedup of
+   colliding legacy keys, and [?delivery_extra] merged inside the
+   [delivery] object — so there is exactly ONE legacy-append
+   implementation across the CLI and MCP surfaces. *)
 
 (** Classify a recipient string into the v1 [type] discriminator.
     Delegates to the canonical [C2c_mcp_helpers.is_room_recipient]:
@@ -94,47 +95,6 @@ let atomic_write_json path json =
 let schema_v1_msg_type_of_recipient ~to_alias : C2c_schema_v1.msg_type =
   if C2c_mcp_helpers.is_room_recipient ~to_alias then C2c_schema_v1.Room
   else C2c_schema_v1.Dm
-
-(** [schema_v1_with_legacy t ?delivery_extra ~legacy ()] serializes [t]
-    via [C2c_schema_v1.serialize] and then appends:
-    - [delivery_extra] pairs INSIDE the [delivery] object (only when the
-      record carries a delivery state; extra keys are tolerated-unknown
-      per the v1 forward-compat contract), and
-    - [legacy] pairs at the top level, skipping any key the v1
-      serialization already emitted (so [ts] / [content] / [message_id]
-      appear exactly once — callers must only pass legacy values that
-      are identical to the v1-emitted ones for colliding keys).
-    Guarantees no duplicate JSON keys in the result. *)
-let schema_v1_with_legacy (t : C2c_schema_v1.t)
-    ?(delivery_extra : (string * Yojson.Safe.t) list = [])
-    ~(legacy : (string * Yojson.Safe.t) list) () : Yojson.Safe.t =
-  let fields =
-    match C2c_schema_v1.serialize t with
-    | `Assoc fields -> fields
-    | other -> [ ("value", other) ] (* unreachable: serialize returns `Assoc *)
-  in
-  let fields =
-    if delivery_extra = [] then fields
-    else
-      List.map
-        (fun (k, v) ->
-          if k = C2c_schema_v1.key_delivery then
-            match v with
-            | `Assoc dfields ->
-                let extra =
-                  List.filter
-                    (fun (dk, _) -> not (List.mem_assoc dk dfields))
-                    delivery_extra
-                in
-                (k, `Assoc (dfields @ extra))
-            | _ -> (k, v)
-          else (k, v))
-        fields
-  in
-  let legacy_new =
-    List.filter (fun (k, _) -> not (List.mem_assoc k fields)) legacy
-  in
-  `Assoc (fields @ legacy_new)
 
 (** One inbox message row for poll-inbox / peek-inbox / wait-inbox
     [--json]: canonical v1 shape plus the legacy row keys
@@ -162,14 +122,13 @@ let inbox_message_row_json ~(delivery_state : C2c_schema_v1.delivery_state)
     ; delivery_state = Some delivery_state
     }
   in
-  schema_v1_with_legacy v1
+  C2c_schema_v1.serialize_with_legacy v1
     ~legacy:
       [ ("from_alias", `String m.C2c_mcp.from_alias)
       ; ("to_alias", `String m.C2c_mcp.to_alias)
       ; ("content", `String m.C2c_mcp.content)
       ; ("ts", `Float m.C2c_mcp.ts)
       ]
-    ()
 
 (** `c2c send --json` receipt: canonical v1 shape plus the legacy
     receipt keys ([queued] bool, [ts], [from_alias],
@@ -209,7 +168,7 @@ let cli_send_receipt_json ~ts ~from_alias ~to_ ~content
        | Some w -> [ ("compacting_warning", `String w) ]
        | None -> [])
   in
-  schema_v1_with_legacy v1 ~delivery_extra ~legacy ()
+  C2c_schema_v1.serialize_with_legacy ~delivery_extra v1 ~legacy
 
 (** Adapt a `c2c relay dm send` relay ACK to the v1 shape. Only a
     successful ACK ([ok:true]) is adapted — the relay accepted the
@@ -242,7 +201,7 @@ let adapt_relay_dm_send_result ~from_alias ~to_alias ~content
         ; delivery_state = Some C2c_schema_v1.Accepted
         }
       in
-      schema_v1_with_legacy v1 ~legacy:fields ()
+      C2c_schema_v1.serialize_with_legacy v1 ~legacy:fields
   | _ -> result
 
 (** Adapt a `c2c relay dm poll|peek` response: each row in [messages]
@@ -294,7 +253,7 @@ let adapt_relay_dm_inbox_result
               ; delivery_state = Some delivery_state
               }
             in
-            schema_v1_with_legacy v1 ~legacy:kv ()
+            C2c_schema_v1.serialize_with_legacy v1 ~legacy:kv
         | _ -> row)
     | _ -> row
   in
