@@ -1,6 +1,8 @@
 # friction-points-cn closure — reviewed slice table (living doc)
 
-Status as of 2026-07-10T18:25+10:00. All slices below have a REAL live
+Status as of 2026-07-10T19:15+10:00. Max instructed (mid-run): merge
+peer-PASSed slices back into LOCAL master when done (push still gated —
+flag readiness, don't push). All slices below have a REAL live
 peer-PASS (independent opus reviewer, not the author or its subagent) with
 `build-clean-IN-slice-worktree-rc=0` in the signed artifact
 (`.c2c/peer-passes/<sha>-fable-warden.json`). No branch pushed —
@@ -26,10 +28,14 @@ coordinator1 gates all pushes.
 | D1b review follow-ups | friction-d1b-followups | c8d5e7c9 | dfae5aaf | PASS first pass |
 | D1c knock residue | friction-d1c-knock-residue | c8d5e7c9 | 12119367 | FAIL→fix→delta PASS |
 | ADR0 decision ledger | friction-adr0-decision-ledger | 050fd96c (reconcile) | 5d7822b7 | PASS first pass |
+| F5b adverse matrix | friction-f5b-adverse-matrix | fbb16453 + merge 68124bdc | 672bdae6 | PASS first pass |
+| F5c schema faults | friction-f5c-schema-faults | fbb16453 | 812d7f34 | PASS first pass |
+| H7 status honesty (B090/C047) | friction-h7-status-honesty | 672bdae6 (chain F5b) | 5c2d79b1 | PASS first pass |
+| H9 connector row validation | friction-h9-connector-row-validation | 812d7f34 (chain F5c) | 051cf896 | PASS first pass |
 
-In flight (workers running): F5b adverse matrix (base fbb16453 + merge
-68124bdc), F5c schema faults (base fbb16453). Queued: J5 aggregate gate
-(needs J2✓/J3✓/J4✓/F5c), Q1 CLI error-contract matrix (needs F5b).
+In flight: J5 aggregate gate (base 812d7f34 + merges 333923f2/3a93bcd4/
+7917e363, tip a9887a34, reviewer running), Q1 CLI error-contract matrix
+(worker running; base 5c2d79b1 + audited merge of 333923f2).
 
 ## Merge-order notes for coordinator
 
