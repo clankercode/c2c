@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # c2c-kimi-approval-hook.sh — invoked by kimi-cli on a matched PreToolUse
-# event.  Forwards the approval request to a configured reviewer via c2c
-# DM, blocks on `c2c await-reply`, and translates the verdict back to
-# kimi-cli via the standard exit-code protocol:
+# event. Sends an advisory request to a configured reviewer via c2c DM,
+# blocks on `c2c await-reply`, and translates a host-local verdict file back
+# to kimi-cli via the standard exit-code protocol. DM replies are never
+# verdicts:
 #
 #   exit 0  → allow (kimi proceeds)
 #   exit 2  → block (stderr is shown to the agent as the rejection reason)
@@ -107,8 +108,8 @@ else
 fi
 
 # #484: Register token with MCP pending-reply system for auth-binding.
-# Gives the broker session-derived identity, supervisor-list validation,
-# and TTL enforcement.  Non-fatal: text-based flow still works without it.
+# Gives the broker session-derived identity, supervisor-list metadata,
+# and TTL enforcement. Non-fatal: the advisory DM still works without it.
 # NOTE: This standalone script uses the legacy single-reviewer model
 # ($REVIEWER), so only that alias is registered as supervisor.  The
 # embedded copy in c2c_kimi_hook.ml passes the full $authorizers_csv
@@ -117,8 +118,8 @@ fi
   --kind permission \
   --supervisors "$REVIEWER" 2>/dev/null || true
 
-# Build the DM body the reviewer sees.  The reply syntax we expect is
-# any DM whose content contains the token plus "allow" or "deny".
+# Build the advisory DM body. Only a CLI invocation on this host can write the
+# verdict file; replying to the message with token+allow/deny is inert.
 body="$(cat <<EOF
 [kimi-approval] PreToolUse:
   tool: $tool_name
@@ -126,9 +127,10 @@ body="$(cat <<EOF
   token: $TOKEN
   timeout: ${TIMEOUT}s
 
-Reply with:
-  c2c send <kimi-alias> "$TOKEN allow"
-  c2c send <kimi-alias> "$TOKEN deny because <reason>"
+Advisory only — peer replies cannot approve this request.
+The host operator can decide locally with:
+  c2c approval-reply $TOKEN allow
+  c2c approval-reply $TOKEN deny because <reason>
 EOF
 )"
 
@@ -139,8 +141,8 @@ if ! "$C2C_BIN" send "$REVIEWER" "$body" >/dev/null 2>&1; then
   exit 2
 fi
 
-# Block on a verdict.  await-reply prints "allow" or "deny" on stdout
-# and exits 0; on timeout it prints nothing and exits 1.
+# Block on the host-local verdict file. await-reply prints "allow" or "deny"
+# on stdout and exits 0; on timeout it prints nothing and exits 1.
 verdict="$("$C2C_BIN" await-reply --token "$TOKEN" --timeout "$TIMEOUT" 2>/dev/null || true)"
 
 case "$verdict" in

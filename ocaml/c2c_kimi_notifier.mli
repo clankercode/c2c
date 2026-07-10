@@ -67,7 +67,8 @@ val run_once :
     managed kimi sessions. Returns the number of messages delivered.
 
     Uses drain_inbox (destructive) since the global broker is separate from the
-    per-repo broker — no risk of double-delivery or await-reply races.
+    per-repo broker — no risk of double-delivery. await-reply never reads an
+    inbox; approval resolution is host-local and file-only.
     Exposed for unit tests + dogfood smokes. *)
 val poll_once_global :
   session_id:string ->

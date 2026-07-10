@@ -130,7 +130,7 @@ let is_system_event ~from_alias = from_alias = "c2c-system"
    which lands in kimi's broker inbox + gets drained by this notifier
    daemon. With the slice-5a verdict-file side-channel as the canonical
    reply path, those legacy DMs are noise: they don't drive the hook
-   (await-reply reads the verdict file first), and pushing them as
+   (await-reply reads only the verdict file), and pushing them as
    notification-store entries / chat-log lines clutters operator
    scrollback with structured-control-traffic.
 
@@ -393,17 +393,16 @@ let write_inbox_file ~broker_root ~session_id messages =
 
 (* ─── Drain + deliver loop ───────────────────────────────────────────────── *)
 
-(* [#484 S1] Eliminate the inbox-drain race that was starving await-reply.
-   Previously run_once called Broker.drain_inbox which REMOVED every message
-   from the broker inbox before await-reply could see it — a race the notifier
-   won every time, causing approval-verdict DMs to vanish.
-   Fix:
+(* [#484 S1] Peek before delivery so failed deliveries remain retryable.
+   This originally also avoided a race with the now-removed inbox-DM approval
+   fallback. Current approval resolution is host-local and file-only; retained
+   peer messages are advisory data. Flow:
    1. read_inbox (peek, no side effects)
    2. Partition: to_deliver (non-system), to_skip (system events)
    3. Deliver to_deliver to kimi; track which deliveries succeeded
    4. write_inbox_file: write back to_skip + any to_deliver that failed delivery
-      This means approval verdicts stay in the broker inbox if kimi delivery
-      failed or session dir is missing — await-reply can still find them.
+      This means undelivered advisory messages stay in the broker inbox if kimi
+      delivery failed or the session dir is missing.
    5. Return count of successful kimi deliveries (for logging). *)
 
 let run_once ~broker_root ~alias ~session_id ~tmux_pane =
@@ -466,9 +465,8 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
           Printf.eprintf
             "[kimi-notifier] no kimi session-id resolved; message archived but undelivered\n%!")
       to_deliver;
-    (* Write back to_skip (system events) + any undelivered non-system messages.
-       This keeps approval verdicts in the broker inbox if kimi delivery failed —
-       await-reply will find them on the next poll. *)
+    (* Write back to_skip (system events) + any undelivered non-system messages
+       so delivery can retry. await-reply never reads this inbox. *)
     let to_keep = to_skip @ !undelivered in
     write_inbox_file ~broker_root ~session_id:drain_sid to_keep;
     let n = List.length !delivered in
@@ -491,7 +489,7 @@ let global_inbox_exists ~root ~session_id =
    delivery: `c2c send --session <kimi-session-id>` reaches kimi sessions.
 
    Uses drain_inbox (destructive) since the global broker is separate from the
-   per-repo broker — no risk of double-delivery or await-reply races.
+   per-repo broker — no risk of double-delivery.
    System events are logged to chat-log but not delivered to kimi. *)
 
 let poll_once_global ~session_id ~alias ~tmux_pane =
