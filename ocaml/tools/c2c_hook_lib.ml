@@ -188,6 +188,36 @@ let is_subagent_quiet () =
 let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 
+(* Repo broker for hook delivery: explicit env wins; otherwise resolve the
+   canonical repo-fingerprint broker from cwd. Returns "" when resolution
+   fails (not in a git repo, etc.) — callers treat "" as no-repo-broker.
+
+   Why this exists: vanilla (non-managed) Claude/Codex hook processes have
+   no C2C_MCP_BROKER_ROOT in their env, so the old `env-or-""` derivation
+   never drained the per-repo broker — peer DMs sent via `c2c send <alias>`
+   sat undrained while the hook reported "no messages". Resolving the
+   canonical `$HOME/.c2c/repos/<fp>/broker` (fp from remote.origin.url of
+   the cwd's git repo, same order as `C2c_repo_fp.resolve_broker_root`)
+   closes that gap so hooks deliver repo-broker DMs with zero env config.
+
+   IMPORTANT: only return the resolved root when its broker already exists
+   on disk (registry.json present). Hooks must NOT create broker directories
+   as a side effect for repos that never initialized c2c; returning ""
+   preserves the old no-op behavior for non-c2c repos. The env-override
+   branch is intentionally NOT existence-gated — the broker dir is created
+   lazily on first use for that path (managed sessions), matching the
+   pre-existing `env-or-""` contract. *)
+let resolve_hook_broker_root () =
+  match env_nonempty "C2C_MCP_BROKER_ROOT" with
+  | Some root -> root
+  | None ->
+      (match (try Some (C2c_repo_fp.resolve_broker_root ()) with _ -> None) with
+       | Some root
+         when root <> ""
+              && Sys.file_exists (Filename.concat root "registry.json") ->
+           root
+       | _ -> "")
+
 (* [push_only:true] (mid-turn: PostToolUse) drains only non-deferrable
    messages — deferrable ones stay queued for a turn boundary. Turn-boundary
    hooks (Stop, SessionStart) pass [push_only:false] for the full drain. *)

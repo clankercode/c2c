@@ -26,9 +26,7 @@ let () =
     | Ok sid -> sid
     | Error _ -> exit 0
   in
-  let broker_root =
-    Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
-  in
+  let broker_root = C2c_hook_lib.resolve_hook_broker_root () in
   (* Fast path: if no session can be resolved, exit silently. *)
   if session_id = "" then exit 0;
 

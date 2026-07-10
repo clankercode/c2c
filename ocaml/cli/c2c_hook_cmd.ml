@@ -37,9 +37,7 @@ let hook_post_tool_cmd =
       | Ok sid -> sid
       | Error msg -> prerr_endline msg; exit_floored 1
     in
-    let broker_root =
-      Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
-    in
+    let broker_root = C2c_hook_lib.resolve_hook_broker_root () in
     try
       let output, _alias = C2c_hook_lib.run_post_tool ~session_id ~broker_root in
       C2c_hook_lib.print_post_tool_output output;
@@ -63,9 +61,7 @@ let hook_stop_cmd =
       | Ok sid -> sid
       | Error _ -> exit 0
     in
-    let broker_root =
-      Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
-    in
+    let broker_root = C2c_hook_lib.resolve_hook_broker_root () in
     if session_id = "" then exit 0;
     try
       let repo_broker, messages, _alias =
