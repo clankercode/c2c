@@ -108,85 +108,15 @@ let test_kind_filter_predicates () =
 
 (* --- fake relay fixture -------------------------------------------------------
 
-   A forked child process serving a canned HTTP response on a loopback port.
-   The socket is bound + listening BEFORE the fork, so there is no
-   accept-readiness race. GET /list is the only route `c2c list --relay`
-   uses (unsigned here: the isolated HOME has no relay identity). *)
+   F5a: the hand-rolled forked loopback server this suite introduced in H6
+   now lives in the shared Relay_test_support harness (bound-before-fork
+   loopback child, SIGKILL+waitpid stop — same guarantees, one canonical
+   implementation). GET /list is the only route `c2c list --relay` uses
+   (unsigned here: the isolated HOME has no relay identity), so a single
+   default canned 200 JSON response is all the scripting this suite needs. *)
 
-let start_fake_relay ~(body : string) () : int * int =
-  let sock = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-  Unix.setsockopt sock Unix.SO_REUSEADDR true;
-  Unix.bind sock (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
-  Unix.listen sock 8;
-  let port =
-    match Unix.getsockname sock with
-    | Unix.ADDR_INET (_, p) -> p
-    | _ -> failwith "fake relay: expected INET socket"
-  in
-  match Unix.fork () with
-  | 0 ->
-      (* child: serve the canned body forever; parent kills us. *)
-      let serve_one client =
-        let buf = Bytes.create 4096 in
-        (* read until the end of the request headers (bounded best-effort) *)
-        let seen = Buffer.create 256 in
-        let rec drain n =
-          if n <= 0 then ()
-          else
-            let got = try Unix.read client buf 0 4096 with _ -> 0 in
-            if got <= 0 then ()
-            else begin
-              Buffer.add_subbytes seen buf 0 got;
-              let s = Buffer.contents seen in
-              let done_ =
-                let rec find i =
-                  i + 3 < String.length s
-                  && ((s.[i] = '\r' && s.[i + 1] = '\n' && s.[i + 2] = '\r'
-                       && s.[i + 3] = '\n')
-                     || find (i + 1))
-                in
-                find 0
-              in
-              if not done_ then drain (n - 1)
-            end
-        in
-        drain 16;
-        let resp =
-          Printf.sprintf
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s"
-            (String.length body) body
-        in
-        (try ignore (Unix.write_substring client resp 0 (String.length resp))
-         with _ -> ());
-        try Unix.close client with _ -> ()
-      in
-      let rec loop () =
-        (match Unix.accept sock with
-         | client, _ -> serve_one client
-         | exception _ -> ());
-        loop ()
-      in
-      (try loop () with _ -> ());
-      Stdlib.exit 0
-  | pid ->
-      Unix.close sock;
-      (port, pid)
-
-let stop_fake_relay pid =
-  (try Unix.kill pid Sys.sigkill with _ -> ());
-  try ignore (Unix.waitpid [] pid) with _ -> ()
-
-(* A loopback port with nothing listening: bind, read the port, close. *)
-let closed_port () =
-  let sock = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-  Unix.bind sock (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
-  let port =
-    match Unix.getsockname sock with
-    | Unix.ADDR_INET (_, p) -> p
-    | _ -> failwith "closed_port: expected INET socket"
-  in
-  Unix.close sock;
-  port
+(* A loopback port with nothing listening: connections are refused. *)
+let closed_port () = Relay_test_support.closed_port ()
 
 (* --- e2e fixture: temp HOME + broker with two local registrations ------------ *)
 
@@ -288,10 +218,9 @@ let run_c2c ~tmp args =
   (code, slurp out_path, slurp err_path)
 
 let with_fake_relay f =
-  let port, pid = start_fake_relay ~body:relay_body () in
-  Fun.protect
-    ~finally:(fun () -> stop_fake_relay pid)
-    (fun () -> f (Printf.sprintf "http://127.0.0.1:%d" port))
+  Relay_test_support.with_server
+    ~default:(Relay_test_support.response relay_body)
+    (fun srv -> f (Relay_test_support.url srv))
 
 let string_contains ~needle haystack = Relay_doctor.string_contains ~needle haystack
 
