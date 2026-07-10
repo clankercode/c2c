@@ -899,7 +899,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
-| `await-reply [--timeout SECS] [--json]` | Block until a verdict arrives in the inbox. |
+| `await-reply --token TOKEN [--timeout SECS] [--poll-interval SECS]` | Block until the host-local verdict file for `TOKEN` contains `allow` or `deny`. Peer inbox and relay messages are never verdicts. Exits 0 after printing the verdict, or 1 on timeout. |
 | `register [--alias A] [--session-id ID] [--no-metadata] [--cross-repo]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. `--no-metadata` opts out of metadata exposure while still capturing `cwd` for the worktree guard. `--cross-repo` writes the registration to the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
 
 ### Scheduling
@@ -940,7 +940,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `approval-gc [--apply] [--max-verdict-age SECS] [--json]` | Sweep stale approval-pending/verdict files. |
 | `approval-list [--json]` | List currently pending PreToolUse approvals. |
 | `approval-pending-write [--kind K] [--supervisors A,B] PERM_ID` | Record pending-approval state (used by kimi PreToolUse hook). |
-| `approval-reply [--broker-root PATH] [--reviewer ALIAS] [--json] TOKEN VERDICT [REASON…]` | Reply to a pending PreToolUse approval. |
+| `approval-reply [--broker-root PATH] [--reviewer ALIAS] [--json] TOKEN VERDICT [REASON…]` | Resolve a pending PreToolUse approval through the host-local CLI by writing its verdict file. Peer messages cannot invoke this path. |
 | `approval-show TOKEN` | Print the full pending-record JSON for one approval token. |
 | `authorize [--broker-root PATH] [--reviewer ALIAS] TOKEN VERDICT [REASON…]` | Ergonomic shortcut for `approval-reply`. |
 | `resolve-authorizer [--json]` | Resolve first live/DnD-clear/idle-clear authorizer from `authorizers[]` in `~/.c2c/repo.json`. Exits 0 with alias, exits 1 if none qualify. |

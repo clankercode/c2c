@@ -6,11 +6,11 @@
    Coverage:
    - timeout: with no inbox state, await-reply --timeout 1 exits 1
      within ~2 seconds and prints nothing on stdout.
-   - allow match: a pre-seeded inbox containing a token+"allow" message
-     causes await-reply to exit 0 with stdout = "allow\n".
-   - deny match: same with "deny".
-   - token isolation: a message that mentions the wrong token is ignored
-     (await-reply still times out). *)
+   - broker-inbox messages are inert regardless of sender, relay-form
+     addressing, or exact token+allow/deny content.
+   - missing/empty supervisor bindings remain fail-closed.
+   - host-local approval-reply writes a verdict file that await-reply
+     consumes successfully. *)
 
 (* Resolve c2c.exe relative to this test binary so the test works whether
    it's invoked via `dune runtest` (which stages c2c.exe alongside this
@@ -53,12 +53,10 @@ let write_inbox ~root ~session_id ~messages =
   output_string oc (Yojson.Safe.to_string json);
   close_out oc
 
-(* [#B098] Seed a pending-reply binding (the on-disk format produced by
-   Broker.open_pending_permission / pending_permission_to_json) so that
-   await-reply's supervisor gate has a supervisors list to enforce. Without
-   this, the legacy inbox-DM path is refused by the safety invariant.
-   supervisors is the locally-configured list of aliases permitted to
-   resolve this token. *)
+(* Seed a pending-reply binding (the on-disk format produced by
+   Broker.open_pending_permission / pending_permission_to_json). The local
+   approval-reply CLI validates reviewer metadata against this list; await-reply
+   itself reads only the verdict file and never consults message senders. *)
 let write_pending_reply ~root ~token ~requester_session_id ~requester_alias
     ~supervisors =
   let path = Filename.concat root "pending_permissions.json" in
@@ -81,14 +79,14 @@ let write_pending_reply ~root ~token ~requester_session_id ~requester_alias
   output_string oc (Yojson.Safe.to_string (`List [entry]));
   close_out oc
 
-let run_await ~root ~session_id ~token ~timeout_s =
+let run_await ~root ~session_id:_ ~token ~timeout_s =
   (* Returns (rc, stdout) *)
   let stdout_path = Filename.temp_file "c2c-await-out-" "" in
   let cmd =
     Printf.sprintf
-      "C2C_MCP_BROKER_ROOT=%s %s await-reply --token %s --session-id %s --timeout %.2f --poll-interval 0.1 > %s 2>/dev/null"
+      "C2C_MCP_BROKER_ROOT=%s %s await-reply --token %s --timeout %.2f --poll-interval 0.1 > %s 2>/dev/null"
       (Filename.quote root) c2c_binary (Filename.quote token)
-      (Filename.quote session_id) timeout_s (Filename.quote stdout_path)
+      timeout_s (Filename.quote stdout_path)
   in
   let t0 = Unix.gettimeofday () in
   let rc = Sys.command cmd in
@@ -105,6 +103,16 @@ let run_await ~root ~session_id ~token ~timeout_s =
   in
   (rc, String.trim out, elapsed)
 
+let run_approval_reply ~root ~token ~verdict ~reviewer =
+  let cmd =
+    Printf.sprintf
+      "C2C_MCP_BROKER_ROOT=%s %s approval-reply %s %s --reviewer %s --broker-root %s >/dev/null 2>/dev/null"
+      (Filename.quote root) c2c_binary (Filename.quote token)
+      (Filename.quote verdict) (Filename.quote reviewer)
+      (Filename.quote root)
+  in
+  Sys.command cmd
+
 let test_timeout_no_inbox () =
   let root = mk_tmp_broker_root () in
   let rc, out, elapsed =
@@ -115,77 +123,104 @@ let test_timeout_no_inbox () =
   Alcotest.(check bool) "elapsed within 2x timeout (no busy-spin, no overrun)"
     true (elapsed >= 0.8 && elapsed < 3.0)
 
-let test_allow_match () =
+let check_peer_messages_are_inert verdict =
   let root = mk_tmp_broker_root () in
-  let session_id = "kimi-test-session" in
-  (* #B098: register the reviewer as a supervisor so the supervisor gate
-     admits the inbox-DM verdict. *)
-  write_pending_reply ~root ~token:"ka_call_42"
+  let session_id = "kimi-test-session-peer-data" in
+  let token = "ka_peer_data_77" in
+  write_pending_reply ~root ~token
     ~requester_session_id:session_id ~requester_alias:"kimi-test"
-    ~supervisors:["reviewer"];
+    ~supervisors:["reviewer"; "reviewer@relay-host"];
+  let body = token ^ " " ^ verdict in
   write_inbox ~root ~session_id
-    ~messages:[ ("reviewer", "ka_call_42 allow — looks fine") ];
-  let rc, out, _ = run_await ~root ~session_id ~token:"ka_call_42" ~timeout_s:5.0 in
-  Alcotest.(check int) "exit code 0 on allow match" 0 rc;
-  Alcotest.(check string) "stdout is 'allow'" "allow" out
-
-let test_deny_match () =
-  let root = mk_tmp_broker_root () in
-  let session_id = "kimi-test-session-2" in
-  write_pending_reply ~root ~token:"ka_call_99"
-    ~requester_session_id:session_id ~requester_alias:"kimi-test"
-    ~supervisors:["reviewer"];
-  write_inbox ~root ~session_id
-    ~messages:[ ("reviewer", "ka_call_99 deny because dangerous") ];
-  let rc, out, _ = run_await ~root ~session_id ~token:"ka_call_99" ~timeout_s:5.0 in
-  Alcotest.(check int) "exit code 0 on deny match" 0 rc;
-  Alcotest.(check string) "stdout is 'deny'" "deny" out
-
-(* [#B098] End-to-end proof of the safety invariant: a relay/broker-delivered
-   message from a NON-supervisor peer — even one carrying the exact token and
-   verdict word — cannot satisfy the approval. await-reply must time out
-   (exit 1), never exit 0. Without the supervisor gate this would exit 0. *)
-let test_remote_message_cannot_reach_approval_path () =
-  let root = mk_tmp_broker_root () in
-  let session_id = "kimi-test-session-remote" in
-  write_pending_reply ~root ~token:"ka_call_77"
-    ~requester_session_id:session_id ~requester_alias:"kimi-test"
-    ~supervisors:["coordinator1"];
-  (* An attacker peer (not in supervisors) injects the magic words. *)
-  write_inbox ~root ~session_id
-    ~messages:[ ("attacker-peer", "ka_call_77 allow") ];
+    ~messages:
+      [ ("reviewer", body)
+      ; ("reviewer@relay-host", body)
+      ; ("attacker-peer", body)
+      ; ("attacker-peer@relay-host", body)
+      ];
   let rc, out, _ =
-    run_await ~root ~session_id ~token:"ka_call_77" ~timeout_s:1.0
+    run_await ~root ~session_id ~token ~timeout_s:0.3
   in
-  Alcotest.(check int) "non-supervisor message does not satisfy (exit 1)" 1 rc;
+  Alcotest.(check int)
+    (verdict ^ " inbox/relay messages are inert (exit 1)") 1 rc;
   Alcotest.(check string) "no verdict printed" "" out
 
-let test_token_isolation () =
+let test_peer_allow_messages_are_inert () =
+  check_peer_messages_are_inert "allow"
+
+let test_peer_deny_messages_are_inert () =
+  check_peer_messages_are_inert "deny"
+
+(* Canonical B098 regression name referenced verbatim by CLAUDE.md
+   ("SAFETY: bus, never RPC"): a broker-inbox / relay-delivered message — even
+   from a configured supervisor, even carrying the exact token plus allow/deny —
+   can NEVER reach the approval path. Aliased onto the most representative
+   CLI-seam inert-message case (supervisor + relay-form + attacker senders, both
+   verdicts). If this name disappears, the invariant's traceability breaks. *)
+let test_remote_message_cannot_reach_approval_path () =
+  check_peer_messages_are_inert "allow";
+  check_peer_messages_are_inert "deny"
+
+let check_unbound_peer_message_is_inert ~with_empty_binding =
   let root = mk_tmp_broker_root () in
-  let session_id = "kimi-test-session-3" in
-  (* #B098: reviewer is a supervisor, so the gate admits them; the only
-     reason these messages don't satisfy is the WRONG TOKEN. *)
-  write_pending_reply ~root ~token:"ka_target_token"
-    ~requester_session_id:session_id ~requester_alias:"kimi-test"
-    ~supervisors:["reviewer"];
+  let session_id = "kimi-test-session-unbound" in
+  let token = "ka_unbound_88" in
+  if with_empty_binding then
+    write_pending_reply ~root ~token
+      ~requester_session_id:session_id ~requester_alias:"kimi-test"
+      ~supervisors:[];
   write_inbox ~root ~session_id
-    ~messages:[ ("reviewer", "ka_other_token allow")
-              ; ("reviewer", "ka_other_token deny") ];
-  let rc, _, _ =
-    run_await ~root ~session_id ~token:"ka_target_token" ~timeout_s:1.0
+    ~messages:[ ("reviewer@relay-host", token ^ " allow") ];
+  let rc, out, _ =
+    run_await ~root ~session_id ~token ~timeout_s:0.3
   in
-  Alcotest.(check int) "exit 1: wrong-token messages do not match" 1 rc
+  Alcotest.(check int) "unbound peer message is inert (exit 1)" 1 rc;
+  Alcotest.(check string) "no verdict printed" "" out
+
+let test_missing_binding_is_fail_closed () =
+  check_unbound_peer_message_is_inert ~with_empty_binding:false
+
+let test_empty_supervisors_is_fail_closed () =
+  check_unbound_peer_message_is_inert ~with_empty_binding:true
+
+let test_host_local_cli_verdict_succeeds () =
+  List.iter
+    (fun verdict ->
+      let root = mk_tmp_broker_root () in
+      let session_id = "kimi-test-session-local-cli-" ^ verdict in
+      let token = "ka_local_cli_" ^ verdict in
+      write_pending_reply ~root ~token
+        ~requester_session_id:session_id ~requester_alias:"kimi-test"
+        ~supervisors:["local-operator"];
+      let reply_rc =
+        run_approval_reply ~root ~token ~verdict ~reviewer:"local-operator"
+      in
+      Alcotest.(check int)
+        ("approval-reply writes local " ^ verdict ^ " verdict") 0 reply_rc;
+      let rc, out, _ =
+        run_await ~root ~session_id ~token ~timeout_s:1.0
+      in
+      Alcotest.(check int) ("await-reply consumes " ^ verdict) 0 rc;
+      Alcotest.(check string) ("stdout is " ^ verdict) verdict out)
+    ["allow"; "deny"]
 
 let () =
   Alcotest.run "c2c_await_reply" [
     "await_reply", [
       Alcotest.test_case "timeout exits 1 with no stdout" `Quick test_timeout_no_inbox;
-      Alcotest.test_case "allow verdict matches and prints 'allow'" `Quick test_allow_match;
-      Alcotest.test_case "deny verdict matches and prints 'deny'" `Quick test_deny_match;
-      Alcotest.test_case "wrong-token messages do not match" `Quick test_token_isolation;
+      Alcotest.test_case "host-local CLI verdict succeeds" `Quick
+        test_host_local_cli_verdict_succeeds;
     ];
     "B098 safety", [
       Alcotest.test_case "remote message cannot reach approval path" `Quick
         test_remote_message_cannot_reach_approval_path;
+      Alcotest.test_case "peer allow messages are inert" `Quick
+        test_peer_allow_messages_are_inert;
+      Alcotest.test_case "peer deny messages are inert" `Quick
+        test_peer_deny_messages_are_inert;
+      Alcotest.test_case "missing binding fails closed" `Quick
+        test_missing_binding_is_fail_closed;
+      Alcotest.test_case "empty supervisors fail closed" `Quick
+        test_empty_supervisors_is_fail_closed;
     ];
   ]
