@@ -11,8 +11,10 @@ mean **inventory rows** unless prefixed `backlog B###`.
 ## Reconciled result
 
 The report is not completely addressed. Two critical security findings and
-several truthfulness gaps are immediately actionable. B098 is blocked by a
-real contract conflict. I002, I005, and backlog B101 remain actionable. Max's
+several truthfulness gaps are immediately actionable. The coordinator resolved
+the B098 conflict in favor of the strict source/backlog contract: no inbox or
+relay message, including a configured-supervisor DM, may resolve an approval.
+I002, I005, and backlog B101 remain actionable. Max's
 I003/I004/I007/I008 implementation deferrals remain intact. Stale I006 is split
 rather than implemented as written. Product/IA proposals are not silently
 promoted into commitments.
@@ -52,18 +54,21 @@ Authoritative evidence conflicts:
   has no transport provenance.
 - AGENTS/CLAUDE/changelog prose contains both absolute wording and the carve-out.
 
-No implementation slice may silently choose. Operator/security authority must
-select one:
+The coordinator has selected option 1 below. Authority is the operator's direct
+request to make `friction-points-cn.md` completely addressed, combined with the
+explicit critical B098 backlog requirement. The current AGENTS/implementation
+carve-out is therefore stale behavior/documentation to remove in H1, not an
+authority to weaken B098.
 
 1. **Recommended strict contract:** remove inbox-DM verdict resolution; only the
    host-local verdict file/CLI resolves approval; even configured-supervisor
    messages are inert data.
-2. **Weaker configured-supervisor contract:** preserve RPC-like DM approval, but
+2. **Rejected weaker configured-supervisor contract:** preserve RPC-like DM approval, but
    explicitly revise B098, the test names, and every absolute bus-never-RPC /
    local-operator-only / unreachable-from-relay claim.
 
-H1 is blocked until that decision. The shared safety and peek-auth hotfixes do
-not depend on H1.
+H1 is unblocked and must implement the strict contract. The shared safety and
+peek-auth hotfixes remain independently parallelizable.
 
 ## Ordered dependency graph
 
@@ -83,7 +88,7 @@ flowchart TD
   BASE --> F5a[I005 reusable relay fault server]
   BASE --> D1[B100 single public golden path]
 
-  DEC{Operator B098 contract} --> H1[H1 approval implementation/docs/tests]
+  DEC[Strict B098 contract selected] --> H1[H1 remove inbox-DM approval path + docs/tests]
   J1 --> J2[I002 CLI send/poll/direct-relay]
   J1 --> J3[I002 monitor NDJSON]
   J1 --> J4[I002 MCP send/poll/peek]
@@ -110,10 +115,10 @@ flowchart TD
 
 ## Ordered parallel start set
 
-Start now, each in its own worktree: **H0, H2a, H3, H4, H5, H6, F101, J1,
+Start now, each in its own worktree: **H0, H1, H2a, H3, H4, H5, H6, F101, J1,
 F5a**. D1 can start editorial structure in parallel but should take final
-command/output updates after H3/H4. H1 is blocked. This set prioritizes the two
-unblocked security fixes (H0/H2a) before futures without serializing unrelated
+command/output updates after H3/H4. This set prioritizes the three
+unblocked security fixes (H0/H1/H2a) before futures without serializing unrelated
 truthfulness and schema work.
 
 ## Bounded implementation slices
@@ -121,7 +126,7 @@ truthfulness and schema work.
 | Slice | Scope / owned files | Base / prerequisites | Tests, docs, and live proof | Inventory rows |
 |---|---|---|---|---|
 | H0 | Pass verified identity into peek and enforce inbox ownership. Own `ocaml/relay.ml` and focused relay HTTP ownership tests only. | `c8d5e7c9`; independent | Signed victim/attacker, unsigned-policy, InMemory+SQLite; `just check`; security note if behavior changes. | A021/A035; B111; C019 constraint; T2 audit gap |
-| H1 | Apply the operator-selected B098 contract. Own `ocaml/cli/c2c_approval_paths.ml`, `c2c_approval_cmd.ml`, both approval suites, AGENTS/CLAUDE/changelog/security ADR. | Blocked on explicit decision | Configured supervisor, non-supervisor, exact token, relay-form sender, local verdict-file; build in slice. | A067-A068/A074-A075; B030/B049-B050/B070/B108/B129; C002/C008/C013/C038/C043/C050/C052/C057 |
+| H1 | Remove inbox-DM verdict resolution and implement the selected strict B098 contract. Own `ocaml/cli/c2c_approval_paths.ml`, `c2c_approval_cmd.ml`, both approval suites, AGENTS/CLAUDE/changelog/security ADR. | `c8d5e7c9`; strict decision recorded | Configured supervisor and non-supervisor inbox messages both inert; exact token and relay-form sender inert; local verdict-file/CLI still works; build in slice. | A067-A068/A074-A075; B030/B049-B050/B070/B108/B129; C002/C008/C013/C038/C043/C050/C052/C057 |
 | H2a | One hostile-content-safe envelope renderer plus compact delivery-time data/authority reminder. Own `ocaml/c2c_mcp_helpers.ml`, `ocaml/c2c_wire_bridge.ml`, focused golden tests. | independent | `</c2c>`, reminder/tag forgery, multiline/Unicode, faithful visible body; docs threat note. | A065/A074-A075; B014-B015/B019/B048/B104/B107; C012/C043/C050 |
 | H2b | Activate canonical safety fragment/renderer in Codex, OpenCode, Kimi and current Claude installer; regenerate embedded OpenCode artifact. Own client installer/hook/plugin/notifier files and client-focused tests. | H2a | Source/generated equality, clean-install session-start assertions, hostile vectors, tmux live proof for four clients. | B016-B020/B104/B107-B108; C012-C013/C016; backlog B099 gap |
 | H2c | Coordinate Pi equivalent in `pi-c2c`; keep the c2c-side conformance receipt. | H2b; cross-repo owner | Pi hostile vector and real tmux send/receive. | B105/B107-B108; C012/C016 |
@@ -136,7 +141,7 @@ truthfulness and schema work.
 | J4 | Adapt MCP send/poll/peek and shared tool descriptions. | J1 + H2a | schema equality, legacy compatibility, generated description drift. | B009/B012-B013/B028/B102/B109/B215/B229; C011/C042/C053 |
 | J5 | Aggregate I002 closure gate and cross-links only. | J2/J3/J4/F5c | all JSON surfaces validate; reserved v2 fields explicit; docs drift. | B075/B120/B158/B164/B238/B247; C042/C053 |
 | F5a | Extract reusable production `InMemoryRelay` loopback HTTP/fault test support; no competing relay. | independent | deterministic lifecycle/port cleanup; existing PoW/relay suites green. | B075/B082-B086/B192/B236; C024/C056 |
-| F5b | P0 process/adverse matrix: null/malformed PoW, 401/429/5xx, timeout, truncated JSON, doctor failures; B098 vector waits for H1. | F5a + H1 only for B098 expectation | real process exit/stderr/retry/no-false-success, named regressions. | A006-A008/A083/A088; B027/B044-B045/B074/B080/B087-B092/B094-B101/B110/B113-B114/B119/B122-B129/B173/B185/B187/B189-B197/B211; C024/C047/C056 |
+| F5b | P0 process/adverse matrix: null/malformed PoW, 401/429/5xx, timeout, truncated JSON, doctor failures, and strict B098 vector. | F5a + completed H1 for B098 expectation | real process exit/stderr/retry/no-false-success, named regressions. | A006-A008/A083/A088; B027/B044-B045/B074/B080/B087-B092/B094-B101/B110/B113-B114/B119/B122-B129/B173/B185/B187/B189-B197/B211; C024/C047/C056 |
 | F5c | Schema-mismatch fault and shared semantic vectors. | J1 + F5a | fake/real vector equality where deterministic. | B093/B095/B120/B232/B238/B249; C024/C056 |
 | F5d | CI and scheduled real-relay evidence; no production push. | F5b/F5c; named owner, secrets/flakiness policy | hermetic every PR; bounded scheduled public-relay run with retained diagnostics. | B095/B101/B121/B173/B187/B193/B208/B212/B250; C024/C056 |
 | D1 | One public-relay `/connect` golden path; keep self-host relay quickstart as operator deep dive. Own `docs/connect.md`, navigation links, docs command harness. | command facts after H3/H4; can draft independently | install→local proof→setup/register/status→discover→send→peek/poll/monitor→reply/verify; normalized expected output; symptom/cause/fix; current two-host receipt. | A016-A018/A022-A023/A028/A089-A099; B055-B056/B130/B142-B144/B155/B162/B166/B168/B170/B173/B198-B201/B208; C056 |
@@ -195,7 +200,7 @@ and non-overlapping; slice tables above provide the finer implementation mapping
 ## Completion gate
 
 “Completely addressed” requires: all unblocked H/F/J/D slices integrated with
-peer-PASS and in-worktree build receipts; H1 authority selected and implemented;
+peer-PASS and in-worktree build receipts; strict H1 implemented;
 live/tmux/public-relay proofs retained where named; every source-only proposal
 given an operator/product disposition; and deferred rows left visibly deferred,
 not relabeled complete. No push is implied—coordinator remains the deploy gate.
