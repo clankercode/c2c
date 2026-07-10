@@ -2804,6 +2804,40 @@ let test_init_rejects_banned_alias () =
       check bool "error mentions blocked" true
         (string_contains content "blocked"))
 
+let test_init_prefers_claude_environment_over_ambiguous_path () =
+  with_temp_dir (fun dir ->
+      let home = Filename.concat dir "home" in
+      let fake_bin = Filename.concat dir "fake-bin" in
+      Unix.mkdir home 0o755;
+      Unix.mkdir fake_bin 0o755;
+      List.iter
+        (fun client ->
+          let path = Filename.concat fake_bin client in
+          write_file path "#!/bin/sh\nexit 0\n";
+          Unix.chmod path 0o755)
+        [ "claude"; "opencode" ];
+      let tmpfile = Filename.temp_file "c2c-init-client-detect" ".out" in
+      Fun.protect
+        ~finally:(fun () -> Sys.remove tmpfile)
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "env -i HOME=%s PATH=%s CLAUDE_CODE_SESSION_ID=claude-b102-session C2C_MCP_BROKER_ROOT=%s %s init --no-setup > %s 2>&1"
+              (Filename.quote home)
+              (Filename.quote fake_bin)
+              (Filename.quote dir)
+              (Filename.quote c2c_binary)
+              (Filename.quote tmpfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file tmpfile in
+          check int "init exits 0" 0 rc;
+          match extract_alias_line content with
+          | Some alias ->
+              check bool "native Claude environment wins over PATH ambiguity" true
+                (String.starts_with ~prefix:"claude-" alias)
+          | None -> fail "no alias line in init output"))
+
 (* B046: init should reuse existing alias for the same session_id *)
 let test_init_reuses_alias_for_same_session_id () =
   with_temp_dir (fun dir ->
@@ -3724,6 +3758,8 @@ let () =
         ; ( "init --no-nonce keeps default entropy", `Quick, test_init_no_nonce_keeps_default_entropy )
         ; ( "init --alias foo is not nonce'd", `Quick, test_init_explicit_alias_not_nonced )
         ; ( "init --alias codex is rejected", `Quick, test_init_rejects_banned_alias )
+        ; ( "init prefers Claude environment over ambiguous PATH", `Quick
+          , test_init_prefers_claude_environment_over_ambiguous_path )
         ; ( "init reuses alias for same session_id", `Quick, test_init_reuses_alias_for_same_session_id )
         ] )
     ]
