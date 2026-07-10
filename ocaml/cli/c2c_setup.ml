@@ -35,14 +35,13 @@ let resolve_claude_dir () =
          resolve_link dot_claude 10
        with _ -> dot_claude)
 
-(* B033: Write the /c2c skill into the Claude skills dir. Standalone so both
-   setup_claude (MCP/hooks path) and init's CLI-only branch can call it — the
-   skill is a static CLI+Monitor reference with no MCP dependency, so it must
-   be written even when init runs CLI-only (the default per B049). Returns the
-   owned_file artifact, or None on failure (warning printed in Human mode). *)
-let write_claude_skill ~output_mode ~dry_run () =
-  let claude_dir = resolve_claude_dir () in
-  let skill_dir = claude_dir // "skills" // "c2c" in
+(* B033: Write the /c2c skill (embedded canonical .collab/skills/c2c.md) into
+   a per-client skills dir. Standalone so both setup_claude (MCP/hooks path)
+   and init's CLI-only branch can call it — the skill is a static CLI+Monitor
+   reference with no MCP dependency, so it must be written even when init runs
+   CLI-only (the default per B049). Returns the owned_file artifact, or None
+   on failure (warning printed in Human mode). *)
+let write_c2c_skill ~skill_dir ~output_mode ~dry_run () =
   let skill_path = skill_dir // "SKILL.md" in
   try
     C2c_io.mkdir_p_dryrun dry_run skill_dir;
@@ -62,6 +61,38 @@ let write_claude_skill ~output_mode ~dry_run () =
            skill_path (Printexc.to_string e)
      | Json -> ());
     None, skill_path
+
+let write_claude_skill ~output_mode ~dry_run () =
+  let skill_dir = resolve_claude_dir () // "skills" // "c2c" in
+  write_c2c_skill ~skill_dir ~output_mode ~dry_run ()
+
+let codex_skill_dir () =
+  Filename.concat (Sys.getenv "HOME") (".codex" // "skills" // "c2c")
+
+(* Codex reads skills from ~/.codex/skills/<name>/SKILL.md — same canonical
+   c2c skill blob as Claude. Written by `c2c install codex` and refreshed by
+   the SessionStart hook (refresh_codex_skill_if_stale) so vanilla sessions
+   pick up new binaries without re-running install. *)
+let write_codex_skill ~output_mode ~dry_run () =
+  write_c2c_skill ~skill_dir:(codex_skill_dir ()) ~output_mode ~dry_run ()
+
+(* Best-effort auto-update for the codex skill, called from the codex
+   SessionStart hook. Rewrites only when missing or drifted from the embedded
+   content, so the common case is a single read + compare. Never raises and
+   never prints — the hook contract forbids breaking the codex turn. *)
+let refresh_codex_skill_if_stale () =
+  try
+    let skill_path = codex_skill_dir () // "SKILL.md" in
+    let existing =
+      if Sys.file_exists skill_path then
+        let ic = open_in_bin skill_path in
+        Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+          Some (really_input_string ic (in_channel_length ic)))
+      else None
+    in
+    if existing <> Some C2c_claude_skill_embedded.content then
+      ignore (write_codex_skill ~output_mode:C2c_types.Json ~dry_run:false ())
+  with _ -> ()
 
 let current_c2c_command () =
   let fallback =
@@ -609,6 +640,10 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
       output_string oc agents_md_new);
     Unix.rename tmp agents_md_path
   end;
+  (* Install /c2c skill into the codex skills directory (same embedded blob
+     as the Claude skill; refreshed on SessionStart via
+     refresh_codex_skill_if_stale). *)
+  let skill_artifact, skill_path = write_codex_skill ~output_mode ~dry_run () in
   (* Write deliver-watch supervisor scripts for non-MCP clients. *)
   let home = Sys.getenv "HOME" in
   let client_dir = home // ".c2c" // "clients" // client in
@@ -637,6 +672,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
           ~begin_marker:C2c_codex_hooks.agents_md_begin_marker
           ~end_marker:C2c_codex_hooks.agents_md_end_marker ()
       ]
+      @ (match skill_artifact with Some a -> [ a ] | None -> [])
       @ deliver_watch_artifacts
   ; extra_json =
       [ ("client", `String client)
@@ -647,6 +683,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
       ; ("deliver_watch", `Bool deliver_watch)
       ; ("hooks", `String "UserPromptSubmit+PostToolUse+SessionStart+SessionEnd -> c2c hook codex (pre-trusted)")
       ; ("agents_md", `String agents_md_path)
+      ; ("skill", `String skill_path)
       ]
   }
 

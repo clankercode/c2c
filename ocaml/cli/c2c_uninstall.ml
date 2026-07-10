@@ -387,8 +387,9 @@ let recompute_claude_artifacts ~target_dir =
 
 let recompute_codex_artifacts () =
   let config = home_dir () // ".codex" // "config.toml" in
+  let skill_path = home_dir () // ".codex" // "skills" // "c2c" // "SKILL.md" in
   ([ C2c_install_manifest.shared_toml_section ~path:config ~section_prefix:"mcp_servers.c2c" ],
-   deliver_watch_artifacts "codex",
+   C2c_install_manifest.owned_file skill_path :: deliver_watch_artifacts "codex",
    None)
 
 let recompute_kimi_artifacts () =

@@ -155,6 +155,45 @@ let test_preserves_user_hooks_and_offsets_indices () =
       (count_occurrences ~haystack:again
          ~needle:C2c_codex_hooks.config_begin_marker))
 
+(* c2c install codex writes the embedded /c2c skill to
+   ~/.codex/skills/c2c/SKILL.md and reports it as an owned manifest artifact
+   so `c2c uninstall codex` removes it. *)
+let test_install_writes_codex_skill () =
+  with_temp_home (fun home ->
+    let result = run_setup () in
+    let skill_path = home // ".codex" // "skills" // "c2c" // "SKILL.md" in
+    check bool "skill file exists" true (Sys.file_exists skill_path);
+    check bool "skill content is the embedded blob" true
+      (read_file skill_path = C2c_claude_skill_embedded.content);
+    check bool "skill owned-file artifact present" true
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "owned-file" && a.path = skill_path)
+         result.C2c_setup.artifacts))
+
+(* refresh_codex_skill_if_stale: creates when missing, rewrites when drifted,
+   leaves an up-to-date file alone (mtime unchanged). *)
+let test_refresh_codex_skill_if_stale () =
+  with_temp_home (fun home ->
+    let skill_path = home // ".codex" // "skills" // "c2c" // "SKILL.md" in
+    (* missing -> created *)
+    C2c_setup.refresh_codex_skill_if_stale ();
+    check bool "created when missing" true (Sys.file_exists skill_path);
+    check bool "created with embedded content" true
+      (read_file skill_path = C2c_claude_skill_embedded.content);
+    (* drifted -> rewritten *)
+    write_file skill_path "stale old skill\n";
+    C2c_setup.refresh_codex_skill_if_stale ();
+    check bool "drifted content refreshed" true
+      (read_file skill_path = C2c_claude_skill_embedded.content);
+    (* fresh -> untouched (no rewrite when content already matches) *)
+    let mtime_before = (Unix.stat skill_path).Unix.st_mtime in
+    Unix.sleepf 0.05;
+    C2c_setup.refresh_codex_skill_if_stale ();
+    let mtime_after = (Unix.stat skill_path).Unix.st_mtime in
+    check bool "up-to-date skill not rewritten" true
+      (mtime_before = mtime_after))
+
 let test_preserves_user_agents_md () =
   with_temp_home (fun home ->
     let codex_dir = home // ".codex" in
@@ -177,5 +216,7 @@ let () =
         ; test_case "user hooks preserved + indices offset" `Quick
             test_preserves_user_hooks_and_offsets_indices
         ; test_case "user AGENTS.md preserved" `Quick test_preserves_user_agents_md
+        ; test_case "install writes codex skill" `Quick test_install_writes_codex_skill
+        ; test_case "refresh codex skill if stale" `Quick test_refresh_codex_skill_if_stale
         ] )
     ]

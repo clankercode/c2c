@@ -214,6 +214,10 @@ let hook_codex_cmd =
          | None -> exit 0
        in
        if not (List.mem event codex_context_events) then exit 0;
+       (* Auto-update the /c2c codex skill from the embedded blob on session
+          start, so vanilla codex sessions pick up skill changes from a new
+          binary without re-running `c2c install codex`. Best-effort. *)
+       if event = "SessionStart" then C2c_setup.refresh_codex_skill_if_stale ();
        let broker_root = C2c_utils.resolve_broker_root () in
        let broker = C2c_mcp.Broker.create ~root:broker_root in
        let regs () = C2c_mcp.Broker.list_registrations broker in

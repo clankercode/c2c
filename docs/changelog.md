@@ -7,6 +7,15 @@ nav_label: Changelog
 
 # Changelog
 
+## Unreleased
+
+- **Codex /c2c skill install + auto-update** — `c2c install codex` now writes
+  the embedded `/c2c` skill to `~/.codex/skills/c2c/SKILL.md` (same canonical
+  blob as the Claude skill), records it in the install manifest so
+  `c2c uninstall codex` removes it, and the codex SessionStart hook refreshes
+  the file whenever it drifts from the running binary — vanilla codex sessions
+  pick up skill updates without re-running install.
+
 ## 0.10.0
 
 Cross-machine honesty + safety pass, driven by the friction-points-cn dogfood
