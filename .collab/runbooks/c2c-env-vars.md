@@ -105,6 +105,10 @@ Float seconds (default `120`). Minimum time between injects for the same session
 
 Float seconds (default `20`). Watch-loop periodic re-attempt cadence (also the inotify select timeout), so a message that arrived while the session was busy still gets its nudge once the session goes idle. Attempts are cheap: the injector's own gates (empty inbox, backoff, dedupe, idle) short-circuit.
 
+### `C2C_WAKE_ENTER_DELAY_S`
+
+Float seconds (default `0.35`). Tmux backend only: pause between typing the nudge text and sending the submit Enter. Agent TUIs paste-detect rapid input — text+Enter in the same burst is treated as a paste and the Enter becomes a newline, leaving the nudge unsubmitted in the composer (live-caught 2026-07-10; same reason the legacy pty_inject path did "bracketed paste + delay + Enter"). Skipped in fixture mode.
+
 ### `C2C_WAKE_INJECT_FIXTURE`
 
 Test fixture gate. When set to a path, the injector records every external command it would run (one JSON line per command: `{"argv": [...], "env": {...}}`) to that file instead of executing — no tmux/herdr pane is ever touched. All wake-inject tests use this.
