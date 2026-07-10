@@ -682,14 +682,16 @@ let install =
       ; `P "With no subcommand, $(b,c2c install) runs an interactive TUI that \
             detects which clients are on PATH and offers to configure each. \
             Press $(b,Enter) to accept the defaults (install c2c binary + \
-            configure every detected client that isn't already set up), \
+            configure detected clients that aren't already set up; Codex is \
+            opt-in), \
             $(b,c) to customize, or $(b,n) to abort."
       ; `P
           ("Use the subcommands for scriptable (non-interactive) installs: \
             $(b,c2c install self) installs only the binary; \
             $(b,c2c install " ^ C2c_setup.install_client_pipe_list ^ ") configures one \
             client; $(b,c2c install all) does the same as the TUI's default \
-            path without prompting.")
+            path without prompting. Codex is always explicit: use \
+            $(b,c2c install codex).")
       ]
   in
   Cmdliner.Cmd.group ~default:C2c_setup.install_default_term info

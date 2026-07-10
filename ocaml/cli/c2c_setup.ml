@@ -1850,6 +1850,11 @@ let canonical_install_client client =
 (* pi is NOT here: pi agents use the npm:pi-c2c extension, not `c2c install`.
    pi is shown in the landing page via a synthetic entry (print_enriched_landing). *)
 let known_clients = [ "claude"; "codex"; "opencode"; "kimi" ]
+(* Codex integration changes the user's global config.toml and is therefore
+   deliberately opt-in. Keep it in [known_clients] so explicit
+   [c2c install codex] continues to work, but exclude it from convenience
+   defaults. *)
+let install_by_default client = client <> "codex"
 (* crush + gemini remain recognized subcommands so they route to the
    deprecation guard (helpful banner) instead of a generic unknown-command error. *)
 let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "crush"; "gemini" ]
@@ -2127,7 +2132,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
   Printf.printf "Here's the plan — press [Enter] to proceed with defaults.\n\n";
   let self_default = not self in
   let client_defaults = List.map (fun (c, on_path, configured) ->
-    let do_it = on_path && not configured in
+    let do_it = install_by_default c && on_path && not configured in
     (c, on_path, configured, do_it)
   ) clients in
   let mark b = if b then "[x]" else "[ ]" in
@@ -2141,6 +2146,8 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
     let suffix =
       if not on_path then "→ not on PATH, skipping"
       else if configured then "→ already configured"
+      else if not (install_by_default c) then
+        "→ detected; opt in with c2c install codex"
       else "→ detected"
     in
     Printf.printf "  %s %-22s %s\n" (mark do_it) label suffix
@@ -2172,7 +2179,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
             then Printf.sprintf "  Reconfigure %s?" c
             else Printf.sprintf "  Configure %s?" c
           in
-          let default = not configured in
+          let default = install_by_default c && not configured in
           (c, prompt_yn ~default_yes:default q)
       ) client_defaults in
       (s, cs)
@@ -2324,6 +2331,9 @@ let install_all_subcmd =
         if output_mode = Human then Printf.printf "  %s: [not on PATH]\n" c
       end else if configured then begin
         if output_mode = Human then Printf.printf "  %s: [configured — up-to-date]\n" c
+      end else if not (install_by_default c) then begin
+        if output_mode = Human then
+          Printf.printf "  %s: [skipped by default; run 'c2c install codex' to opt in]\n" c
       end else begin
         if output_mode = Human then Printf.printf "\n→ Configuring %s...\n" c;
         do_install_client ~global ~output_mode ~dry_run ~client:c ~alias_opt ~no_nonce ~broker_root_opt
@@ -2338,7 +2348,7 @@ let install_all_subcmd =
   in
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "all"
-       ~doc:"Install c2c binary and auto-configure every detected client (scriptable, no prompts).")
+       ~doc:"Install c2c binary and auto-configure detected clients by default (Codex remains opt-in; scriptable, no prompts).")
     term
 
 let do_install_git_hook ~output_mode ~dry_run =
