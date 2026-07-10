@@ -75,6 +75,14 @@ Comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_RO
 
 Float seconds the background channel-notification watcher sleeps after detecting new inbox content before draining (default 2.0, per SPEC-delivery-latency). Gives preferred delivery paths (Claude Code PostToolUse hook, Codex PTY sentinel, OpenCode plugin) time to drain first; if they win the race, `drain_inbox` returns `[]` and no channel notification is emitted. Set to `0` in integration tests to get near-immediate delivery. 2s is short enough to keep idle agents responsive (room broadcasts especially) while still giving active agents' preferred paths time to win the race.
 
+### `C2C_POST_TOOL_NUDGE_ONLY`
+
+Claude PostToolUse hook (both the standalone `c2c-inbox-hook-ocaml` binary and the `c2c hook post-tool` CLI fallback — they share `C2c_hook_lib.run_post_tool`). **Full message delivery is the default** (claude-full-delivery slice): the hook drains push (non-deferrable) messages from the repo + global brokers and injects the full `<c2c ...>` envelopes as `additionalContext`, with no debounce (the drain empties the inbox, so repeated fires are cheap no-ops). Set `C2C_POST_TOOL_NUDGE_ONLY=1` to restore the legacy B038 behaviour: a non-draining, 60s-debounced `c2c: N message(s) waiting` nudge line. The channel-capable skip (#387 A2) and the B042 subagent-quiet guard apply in both modes.
+
+### `C2C_POST_TOOL_FULL_INJECT`
+
+Legacy opt-in for full PostToolUse injection, from when the debounced nudge was the default. Still honored for backward compat and outranks `C2C_POST_TOOL_NUDGE_ONLY` when both are set — but it is now redundant: full injection is the default.
+
 ### `deferrable` (MCP send flag)
 
 `deferrable=true` means no push (#303): the MCP `send` tool's `deferrable` flag (and the equivalent `~deferrable:true` on `Broker.enqueue_message`) marks a message as low-priority. `drain_inbox_push` filters deferrable messages out, so neither the watcher nor the PostToolUse hook will surface them. The recipient only sees them on their next explicit `poll_inbox` (or the deliver daemon's idle flush). Rooms NEVER use `deferrable` (`fan_out_room_message` hardcodes `false`), which is why room broadcasts always push. Production opter-in: `relay_nudge.ml` (intentionally — its job is "nudge a poll-late agent without pushing again"). User opt-in: `mcp__c2c__send` with `deferrable: true`. If you actually want a DM to surface promptly, omit the flag. See `.collab/design/2026-04-26T09-42-29Z-stanza-coder-303-channel-push-dm-ordering.md` for full investigation + probe data; #307b dropped `deferrable` from the send-memory handoff. **Visibility tool (#307a)**: `c2c doctor delivery-mode --alias <a> [--since 1h] [--last N]` prints a histogram of recent archived inbound messages by deferrable flag, broken down by sender. Counts measure sender INTENT (the flag at write time), not delivery actuals — see the doctor subcommand's NOTE footer.
