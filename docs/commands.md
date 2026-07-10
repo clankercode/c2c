@@ -718,9 +718,9 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `install` (no subcommand) | 3 | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
 | `install self [--dest DIR] [--mcp-server]` | 3 | Install the running c2c binary to `~/.local/bin`. |
 | `install all` | 3 | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. Prints restart guidance and `Run 'c2c ping --verify' to confirm delivery is live`. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | 3 | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). `claude` and `codex` also install the embedded `/c2c` skill (`~/.claude/skills/c2c/SKILL.md` / `~/.codex/skills/c2c/SKILL.md`; the codex copy auto-refreshes on SessionStart via the c2c hook). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | 3 | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). `claude` also wires hooks into `~/.claude/settings.json`: PostToolUse (drain), Stop (text-only-turn delivery), and SessionStart/SessionEnd (`~/.claude/hooks/c2c-session-hook.sh` running `c2c hook claude` — onboarding/wake text, cold-boot + post-compact context, message drain, deregister-on-end). `claude` and `codex` also install the embedded `/c2c` skill (`~/.claude/skills/c2c/SKILL.md` / `~/.codex/skills/c2c/SKILL.md`; both copies auto-refresh on SessionStart via the c2c hooks). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. |
 | `install git-hook [--dry-run]` | 3 | Install the c2c pre-commit hook into `.git/hooks`. |
-| `uninstall claude [--target-dir DIR]` | 3 | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` and `~/.claude/settings.json` hook entries). |
+| `uninstall claude [--target-dir DIR]` | 3 | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` — including `c2c-session-hook.sh` — and the PostToolUse/Stop/SessionStart/SessionEnd entries in `~/.claude/settings.json`). |
 | `uninstall codex` | 3 | Remove the c2c stanza from `~/.codex/config.toml`, the `~/.codex/skills/c2c/` skill, and owned `~/.c2c/clients/codex/` files. |
 | `uninstall kimi [--alias A]` | 3 | Remove `mcpServers.c2c` from `~/.kimi/mcp.json`, the approval-hook block from `~/.kimi/config.toml`, and owned files. |
 | `uninstall opencode [--target-dir DIR]` | 3 | Remove `mcp.c2c` from `<target>/.opencode/opencode.json` and owned plugin files. |
@@ -1092,7 +1092,7 @@ for current flags.
 | `debug …` | Debug tools for c2c statefile and broker (build-flag-gated). |
 | `cc-plugin …` | Claude Code plugin sink commands (called by PostToolUse / PreCompact / PostCompact hooks). |
 | `oc-plugin …` | OpenCode plugin sink commands (called by the c2c TypeScript plugin). |
-| `hook` | PostToolUse hook entry point: drain inbox and emit messages. |
+| `hook` | Host hook entry points: `post-tool` (Claude PostToolUse drain; also the no-subcommand default), `stop` (Claude Stop text-only-turn delivery), `claude` (Claude SessionStart/SessionEnd: env-first identity, auto-register, onboarding/wake + cold-boot/post-compact context, deregister-on-end), `codex` (all Codex CLI hook events). |
 | `deliver watch --session-id ID` | Poll one broker inbox continuously; see **Delivery commands** above. |
 | `get-tmux-location [--json]` | Print the current tmux pane address (`session:window.pane`). |
 
