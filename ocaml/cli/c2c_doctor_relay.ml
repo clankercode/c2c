@@ -183,10 +183,32 @@ let probe_relay ~url ~token ~identity ~signing_alias =
           let peers = extract_peers list_resp in
           let na = needs_auth list_resp in
           let list_error = if na then None else list_error_of list_resp in
+          (* H7: Relay_client never raises — transport failures (connection
+             refused, timeout, unparseable response) come back as a locally
+             SYNTHESIZED ok:false JSON carrying transport:true. Fold those
+             back into the unreachable branch (health = None + health_error)
+             so relay.reachable / relay.lease / relay.capabilities judge a
+             dead relay honestly instead of treating the client's own error
+             object as proof the relay responded (C047 false PASS). *)
+          let health, health_error =
+            if Relay.Relay_client.is_transport_error health then
+              let err =
+                match health with
+                | `Assoc fs ->
+                    (match List.assoc_opt "error" fs with
+                     | Some (`String s) -> s
+                     | _ -> "connection_error")
+                | _ -> "connection_error"
+              in
+              (None, Some err)
+            else (Some health, None)
+          in
           Lwt.return
-            { url; url_source = ""; health = Some health; health_error = None;
+            { url; url_source = ""; health; health_error;
               peers; list_error; list_needs_auth = na })
        (fun e ->
+          (* Defensive only: with the H7 contract Relay_client no longer
+             raises, so this branch should be dead — kept as a safety net. *)
           Lwt.return
             { url; url_source = ""; health = None;
               health_error = Some (Printexc.to_string e);
@@ -242,7 +264,9 @@ let check_reachable ~probe =
            (e.g. "unknown endpoint /health" on an older relay version).
            Receiving a coherent HTTP/JSON reply PROVES reachability; ok=false
            here is an endpoint/detail nuance, NOT an unreachability condition.
-           The genuine unreachable path is the exception handler (health_error). *)
+           Client-synthesized transport errors never reach this branch:
+           probe_relay folds them (via Relay_client.is_transport_error) into
+           health = None, which lands in the FAIL branch above (H7). *)
         { check_id = "relay.reachable"
         ; status = Pass
         ; message =

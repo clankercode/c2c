@@ -1,4 +1,4 @@
-(* test_relay_fault_matrix — F5b (friction-cn): P0 process/adverse fault
+(* test_relay_fault_matrix — F5b + H7 (friction-cn): P0 process/adverse fault
    matrix. Rows A006-A008/A083/A088; B027/B044-B045/B074/B080/B087-B092/
    B094-B101/B110/B113-B114/B119/B122-B129/B173/B185/B187/B189-B197/B211;
    C024/C047/C056 (row-ID tags below are best-effort mappings from the
@@ -19,18 +19,24 @@
        single-shot, pinned here),
      - NO FALSE SUCCESS: a faulted request never prints ok:true / exits 0.
 
-   KNOWN DEFECTS FOUND BY THIS MATRIX (pinned as skipped FIXME tests so the
-   suite documents them without going red; each needs its own fix slice):
-     1. Relay_client.request IGNORES the HTTP status line: a 5xx response
-        whose body says {"ok":true} is treated as SUCCESS (exit 0, ok
-        printed). Body-over-status. See `fixme_5xx_ok_body_false_success`.
-     2. `c2c doctor --relay` reports relay.reachable = PASS when the relay
-        is CONNECTION-REFUSED: Relay_client swallows the network error into
-        a {"ok":false,"error_code":"connection_error"} JSON, and
-        check_reachable treats ANY parsed JSON as proof of reachability
-        ("responded; ok=false"). The relay.capabilities matrix inherits the
-        same `reachable := health <> None` false positive. See
-        `fixme_doctor_reachable_false_pass`.
+   KNOWN DEFECTS FOUND BY THIS MATRIX — both FIXED by the H7
+   status-honesty slice; the fixed contract is pinned green below:
+     1. (was) Relay_client.request IGNORED the HTTP status line: a 5xx
+        response whose body said {"ok":true} was treated as SUCCESS.
+        Now the status is reconciled with the body: a non-2xx can never
+        yield ok:true — an honest ok:false body passes through (annotated
+        with http_status), anything else is overridden with
+        error_code=http_error_<status>. See
+        `http_5xx_ok_body_never_success`.
+     2. (was) `c2c doctor --relay` reported relay.reachable = PASS when
+        the relay was CONNECTION-REFUSED (Relay_client swallows the
+        network error into a synthesized connection_error JSON, and
+        check_reachable treated ANY parsed JSON as proof of
+        reachability). Now client-synthesized transport errors carry
+        transport:true and probe_relay folds them back into the
+        health=None unreachable branch, so relay.reachable FAILs and
+        relay.lease / relay.capabilities inherit the honest verdict. See
+        `doctor_refused_reachable_fails`.
 
    Hermetic: kernel-assigned loopback ports only, isolated $HOME and broker
    root per test, no production relay, no external network. No
@@ -181,9 +187,11 @@ let dm_send_args ~url =
 
 (* Status-code faults where the relay still answers well-formed JSON
    {"ok":false,...}: the client's honesty comes from the ok-field contract.
-   The HTTP status itself is ignored by Relay_client (see KNOWN DEFECT 1);
-   these rows are honest ONLY because real relays pair 4xx/5xx with
-   ok:false bodies. *)
+   Since H7 the HTTP status is also reconciled: an honest ok:false body
+   keeps its own error_code (asserted here — the needle must stay the
+   body's code, NOT http_error_<status>) and gains an http_status
+   annotation; a non-2xx body claiming success is overridden (pinned by
+   `http_5xx_ok_body_never_success`). *)
 let check_status_fault ~what ~args_of_url ~path ~status ~error_code () =
   let tmp = mkdtemp () in
   with_fault ~meth:"POST" ~path
@@ -256,20 +264,39 @@ let reg_empty_response () =
     (Relay_test_support.response ~close_without_response:true "")
     ()
 
-(* KNOWN DEFECT 1 (FIXME — needs its own fix slice): Relay_client.request
-   never looks at the HTTP status line, so an HTTP 500 whose body claims
-   {"ok":true} is a FALSE SUCCESS: `c2c relay register` prints ok:true and
-   exits 0. Reproduced empirically 2026-07-10 against this exact fixture.
-   Desired behavior: a >= 400 status must fail the request regardless of
-   body. Skipped so the suite documents the defect without going red. *)
-let fixme_5xx_ok_body_false_success () =
-  Alcotest.skip ()
-  (* Reproduction (currently rc = 0 — dishonest):
-     with_fault ~meth:"POST" ~path:"/register"
-       [ json_response ~status:500 (`Assoc [ ("ok", `Bool true) ]) ]
-       (fun _srv url ->
-         let rc, _, _ = run_c2c ~tmp (register_args ~url) in
-         (* SHOULD be: *) Alcotest.(check int) "5xx is never success" 1 rc) *)
+(* KNOWN DEFECT 1 — FIXED (H7 status-honesty): Relay_client.request used to
+   ignore the HTTP status line, so an HTTP 500 whose body claimed
+   {"ok":true} was a FALSE SUCCESS (rc=0, ok:true printed — reproduced
+   empirically 2026-07-10). The fixed contract, pinned here: a non-2xx
+   status can NEVER produce ok:true. When the body does not honestly
+   report ok:false, the client overrides it with
+   error_code=http_error_<status>, attaches http_status, and preserves the
+   dishonest body under relay_response. Single request — an http_error is
+   never blindly retried. *)
+let http_5xx_ok_body_never_success () =
+  let tmp = mkdtemp () in
+  with_fault ~meth:"POST" ~path:"/register"
+    [ json_response ~status:500 (`Assoc [ ("ok", `Bool true) ]) ]
+    (fun srv url ->
+      let ((_, out, _) as res) = run_c2c ~tmp (register_args ~url) in
+      assert_honest_failure ~what:"register vs 500 + ok:true body"
+        ~needle:"http_error_500" res;
+      let json = Yojson.Safe.from_string out in
+      (match member "http_status" json with
+       | `Int 500 -> ()
+       | other ->
+           Alcotest.fail
+             (Printf.sprintf "http_status must be 500, got %s"
+                (Yojson.Safe.to_string other)));
+      (* The dishonest body is preserved for diagnosis, not believed. *)
+      (match member "relay_response" json with
+       | `Assoc _ -> ()
+       | other ->
+           Alcotest.fail
+             (Printf.sprintf "relay_response must carry the body, got %s"
+                (Yojson.Safe.to_string other)));
+      Alcotest.(check int) "exactly one request (no blind retry)" 1
+        (List.length (requests_for ~path:"/register" srv)))
 
 (* ------------------------------------------------------------------ *)
 (* Matrix: `c2c relay dm send` × faults                                *)
@@ -587,26 +614,51 @@ let doctor_refused_exit_contract () =
   Alcotest.(check bool) "lease check does not PASS against a dead relay" true
     (str_member "status" (doctor_check ~id:"relay.lease" json) <> Some "PASS")
 
-(* KNOWN DEFECT 2 (FIXME — needs its own fix slice): against a
-   CONNECTION-REFUSED relay, `c2c doctor --relay` reports
-   relay.reachable = PASS ("relay reachable (responded; ok=false ...)").
-   Root cause: Relay_client.request converts the network error into a
-   {"ok":false,"error_code":"connection_error"} JSON; probe_relay therefore
-   never lands in its exception branch, and check_reachable treats any
-   parsed JSON — including the client's own synthesized connection_error —
-   as proof the relay responded. relay.capabilities inherits the same
-   false positive via `reachable := probe.health <> None`. Reproduced
-   empirically 2026-07-10. Desired: relay.reachable = FAIL when the health
-   response is the client-synthesized connection_error. Skipped so the
-   suite documents the false PASS without going red. *)
-let fixme_doctor_reachable_false_pass () =
-  Alcotest.skip ()
-  (* Reproduction (currently PASS — dishonest):
-     let rc, out, _ = run_c2c ~tmp ~extra:["C2C_RELAY_URL=" ^ refused_url]
-       ["doctor"; "--relay"; "--json"] in
-     (* SHOULD be: *) str_member "status"
-       (doctor_check ~id:"relay.reachable" (Yojson.Safe.from_string out))
-       = Some "FAIL" *)
+(* KNOWN DEFECT 2 — FIXED (H7 status-honesty): against a CONNECTION-REFUSED
+   relay, `c2c doctor --relay` used to report relay.reachable = PASS
+   ("relay reachable (responded; ok=false ...)") because Relay_client
+   swallows the network error into a synthesized connection_error JSON and
+   check_reachable treated ANY parsed JSON as proof the relay responded
+   (reproduced empirically 2026-07-10). Fixed contract, pinned here:
+   client-synthesized transport errors carry transport:true; probe_relay
+   folds them back into the health=None unreachable branch, so
+   relay.reachable = FAIL (message names unreachability + the error) and
+   relay.lease reports itself skipped rather than judging leases against a
+   relay nobody reached. Full-report consistency pinned like the C047
+   exit-contract cell: summary.any_fail true, exit 1. *)
+let doctor_refused_reachable_fails () =
+  let tmp = mkdtemp () in
+  let url =
+    Printf.sprintf "http://127.0.0.1:%d" (Relay_test_support.closed_port ())
+  in
+  let rc, out, _ =
+    run_c2c ~tmp ~extra:[ "C2C_RELAY_URL=" ^ url ]
+      [ "doctor"; "--relay"; "--json" ]
+  in
+  let json = Yojson.Safe.from_string out in
+  let reachable = doctor_check ~id:"relay.reachable" json in
+  Alcotest.(check (option string)) "relay.reachable FAILs on refused relay"
+    (Some "FAIL") (str_member "status" reachable);
+  Alcotest.(check bool)
+    (Printf.sprintf "reachable message names unreachability (got %s)"
+       (Option.value ~default:"<none>" (str_member "message" reachable)))
+    true
+    (match str_member "message" reachable with
+     | Some m -> contains ~needle:"unreachable" m
+     | None -> false);
+  Alcotest.(check (option string))
+    "relay.lease is INCONCLUSIVE (skipped), never judged against a dead relay"
+    (Some "INCONCLUSIVE")
+    (str_member "status" (doctor_check ~id:"relay.lease" json));
+  (match member "summary" json with
+   | `Assoc _ as s ->
+       (match member "any_fail" s with
+        | `Bool b ->
+            Alcotest.(check bool) "summary.any_fail true (reachable FAILed)"
+              true b
+        | _ -> Alcotest.fail "summary.any_fail missing")
+   | _ -> Alcotest.fail "summary missing");
+  Alcotest.(check int) "doctor exits 1" 1 rc
 
 (* ------------------------------------------------------------------ *)
 (* Strict B098 vector (process level)                                  *)
@@ -766,9 +818,8 @@ let () =
           Alcotest.test_case "B095 empty response register fails honestly"
             `Quick reg_empty_response;
           Alcotest.test_case
-            "B090 FIXME(defect): 5xx with ok:true body is FALSE SUCCESS \
-             (status ignored)"
-            `Quick fixme_5xx_ok_body_false_success;
+            "B090 5xx with ok:true body is an honest http_error_500 failure"
+            `Quick http_5xx_ok_body_never_success;
         ] );
       ( "relay dm faults",
         [ Alcotest.test_case "B094 401 dm send fails honestly" `Quick dm_401;
@@ -821,8 +872,8 @@ let () =
             "C047 doctor --json refused relay: well-formed, exit=any_fail"
             `Quick doctor_refused_exit_contract;
           Alcotest.test_case
-            "C047 FIXME(defect): relay.reachable false-PASS on refused relay"
-            `Quick fixme_doctor_reachable_false_pass;
+            "C047 relay.reachable FAILs on refused relay (honest doctor)"
+            `Quick doctor_refused_reachable_fails;
         ] );
       ( "B098 strict vector",
         [ Alcotest.test_case

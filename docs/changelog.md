@@ -14,6 +14,16 @@ report (B087-B100): the relay path now tells the truth about delivery, can be
 monitored without stealing messages, is diagnosable end-to-end, and the
 approval path is hardened against peer influence.
 
+- **HTTP status honesty** (B090/C047) — `Relay_client.request` now reconciles
+  the HTTP status line with the response body: a non-2xx response can never
+  yield `ok:true`. A body that claims success on a 4xx/5xx is overridden with
+  `error_code=http_error_<status>` (+ `http_status`, dishonest body preserved
+  under `relay_response`); honest `ok:false` bodies keep their own
+  `error_code` and gain an `http_status` annotation. Client-synthesized
+  transport failures (connection refused, timeout, unparseable body) now carry
+  `transport:true`, and `c2c doctor --relay` reports `relay.reachable=FAIL`
+  against an unreachable relay instead of the old false PASS that treated the
+  client's own synthesized error JSON as proof the relay responded.
 - **Release CI gate** (B086) — the release workflow now runs the shared
   `ci-gate` before validation, builds, packaging, GitHub release upload, or npm
   publish work can proceed.
