@@ -183,10 +183,100 @@ let test_connector_check_stale_state () =
     (has_needle ~needle:"last sync" r.message)
 
 let test_connector_check_fresh_state_no_proc () =
-  let r = cc ~state:(conn_state ~last_sync:(now -. 10.0) ()) () in
-  Alcotest.(check bool) "fresh, no proc → Inconclusive (may be restarting)" true
-    (r.status = Inconclusive);
-  Alcotest.(check bool) "still offers a fix" true (r.fix_command <> None)
+  (* B1 (peer-review): a fresh, healthy, broker-OWNED state file with NO scoped
+     process is the canonical production path — `c2c relay connect --relay-url
+     <url>` carries no --broker-root on argv, so scope_connector_lines yields
+     []. The broker-owned state file is authoritative → PASS with a truthful
+     "connector running" message (was the false "connector not running"
+     Inconclusive before). *)
+  let st =
+    conn_state ~last_sync:(now -. 10.0) ~last_ok:(now -. 10.0) ~fwd:4 ~inbound:2 ()
+  in
+  let r = cc ~state:st () in
+  Alcotest.(check bool) "fresh healthy state alone → PASS" true (r.status = Pass);
+  Alcotest.(check bool) "message says running" true
+    (has_needle ~needle:"connector running" r.message);
+  Alcotest.(check bool) "message is NOT the 'not running' falsehood" false
+    (has_needle ~needle:"not running" r.message)
+
+(* Full production path: a real pgrep line for the canonical launch (NO
+   --broker-root on argv) must NOT be attributed by string match, leaving
+   scoped_procs=[]; the fresh broker-owned state file then drives PASS. This is
+   the exact input combo that produced the B1 false negative in the wild — the
+   synthetic argv fixture in [test_connector_check_proc_healthy] carried a proc
+   line that would not survive scoping in production. *)
+let test_connector_check_production_argv_no_broker_root () =
+  let argv_lines =
+    [ Printf.sprintf "4242 c2c relay connect --relay-url %s" relay_url ]
+  in
+  let scoped =
+    scope_connector_lines
+      ~broker_root:"/home/agent/.c2c/repos/deadbeef1234/broker" argv_lines
+  in
+  Alcotest.(check int) "canonical argv not string-matched to this broker" 0
+    (List.length scoped);
+  let st =
+    conn_state ~last_sync:(now -. 8.0) ~last_ok:(now -. 8.0) ~fwd:5 ~inbound:3 ()
+  in
+  let r = connector_check ~relay_url ~scoped_procs:scoped ~state:(Some st) ~now in
+  Alcotest.(check bool) "production fresh-state → PASS" true (r.status = Pass);
+  Alcotest.(check bool) "truthful running message" true
+    (has_needle ~needle:"connector running" r.message
+    && not (has_needle ~needle:"not running" r.message))
+
+(* Coherence: capabilities and the connector check consume the same
+   broker-owned signal ([connector_running]) and can never contradict. Whenever
+   capabilities reports connect=yes, the connector check must agree the
+   connector is running — never the "connector not running" / unattributable
+   falsehood — and on the healthy path both land on PASS. *)
+let test_capabilities_connector_coherence () =
+  let combos =
+    [ ("fresh state, no proc (production)", [],
+       Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()))
+    ; ("proc + fresh healthy state", [ "p" ],
+       Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()))
+    ; ("proc + stale state", [ "p" ],
+       Some (conn_state ~last_sync:(now -. 9000.0) ()))
+    ; ("proc, no state (first sync)", [ "p" ], None)
+    ; ("fresh erroring state, no proc", [],
+       Some (conn_state ~last_sync:(now -. 5.0) ~err_op:"sync"
+               ~err_detail:"429" ~err_ts:(now -. 5.0) ()))
+    ; ("stale state, no proc (down)", [],
+       Some (conn_state ~last_sync:(now -. 9000.0) ()))
+    ; ("nothing", [], None)
+    ]
+  in
+  (* Non-contradiction across every representable combo. *)
+  List.iter
+    (fun (label, procs, state) ->
+      let running = connector_running ~scoped_procs:procs ~state ~now in
+      let cr = connector_check ~relay_url ~scoped_procs:procs ~state ~now in
+      let cap =
+        (capabilities ~url:relay_url ~reachable:true ~connector_running:running)
+          .connect
+      in
+      Alcotest.(check bool) (label ^ ": capabilities.connect == connector_running")
+        running cap;
+      if running then begin
+        Alcotest.(check bool)
+          (label ^ ": connect=yes never yields 'not running'") false
+          (has_needle ~needle:"not running" cr.message);
+        Alcotest.(check bool)
+          (label ^ ": connect=yes never yields the unattributable FAIL") false
+          (has_needle ~needle:"no relay connector attributable" cr.message)
+      end)
+    combos;
+  (* Strong form on the healthy path: connect=yes ⇒ connector_check PASS. *)
+  List.iter
+    (fun (label, procs, state) ->
+      let running = connector_running ~scoped_procs:procs ~state ~now in
+      let cr = connector_check ~relay_url ~scoped_procs:procs ~state ~now in
+      Alcotest.(check bool) (label ^ ": connect=yes ⇒ PASS") true
+        ((not running) || cr.status = Pass))
+    [ ("fresh state, no proc", [],
+       Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()))
+    ; ("proc + fresh healthy state", [ "p" ],
+       Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ())) ]
 
 let test_connector_check_proc_no_state () =
   let r = cc ~procs:[ "12345 c2c relay connect" ] () in
@@ -293,11 +383,14 @@ let () =
       ( "connector-check",
         [ Alcotest.test_case "no proc no state → FAIL" `Quick test_connector_check_no_proc_no_state;
           Alcotest.test_case "stale state → FAIL" `Quick test_connector_check_stale_state;
-          Alcotest.test_case "fresh no proc → Inconclusive" `Quick test_connector_check_fresh_state_no_proc;
+          Alcotest.test_case "fresh state no proc → PASS (B1)" `Quick test_connector_check_fresh_state_no_proc;
+          Alcotest.test_case "production argv no broker-root → PASS (B1)" `Quick test_connector_check_production_argv_no_broker_root;
           Alcotest.test_case "proc no state → Inconclusive" `Quick test_connector_check_proc_no_state;
           Alcotest.test_case "proc recent error → FAIL+fix" `Quick test_connector_check_proc_recent_error;
           Alcotest.test_case "proc healthy → PASS" `Quick test_connector_check_proc_healthy;
           Alcotest.test_case "every FAIL has a fix" `Quick test_every_fail_has_fix ] );
+      ( "capabilities-connector-coherence",
+        [ Alcotest.test_case "connect=yes ⇒ connector_check agrees (B1)" `Quick test_capabilities_connector_coherence ] );
       ( "docs-link",
         [ Alcotest.test_case "docs link target" `Quick test_docs_link_target ] );
       ( "public-smoke",

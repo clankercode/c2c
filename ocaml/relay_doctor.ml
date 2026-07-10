@@ -168,7 +168,19 @@ let age_str now ts =
 let recent_error_window_s = 300.0
 
 (* Pure connector check. Every FAIL carries a copy-pasteable fix_command
-   (B093 item 5 — some FAIL branches previously had fix_command=None). *)
+   (B093 item 5 — some FAIL branches previously had fix_command=None).
+
+   The "is the connector running?" determination is the SAME broker-owned
+   signal the capabilities matrix consumes ([connector_running]): a scoped
+   process OR a fresh broker-owned state file. This closes the peer-review B1
+   false negative: the canonical launch `c2c relay connect --relay-url <url>`
+   carries NO --broker-root on argv, so [scope_connector_lines] yields
+   scoped_procs=[] for a genuinely-running healthy connector; the broker-owned
+   state file (the authoritative signal, per the design note above) must then
+   drive the running/PASS verdict on its own. Deriving both surfaces from
+   [connector_running] guarantees they can never contradict — capabilities
+   connect=yes ⇒ this check agrees the connector is running (PASS on the
+   healthy path, never the "connector not running" falsehood). *)
 let connector_check ~relay_url ~scoped_procs ~state ~now =
   let fix_connect =
     Printf.sprintf "c2c relay connect --relay-url %s &" relay_url
@@ -184,29 +196,29 @@ let connector_check ~relay_url ~scoped_procs ~state ~now =
     }
   in
   let id = "relay.connector" in
-  match scoped_procs, state with
-  | [], None ->
+  let running = connector_running ~scoped_procs ~state ~now in
+  match running, state with
+  | false, None ->
       base id Fail
         "no relay connector attributable to this broker root and no prior sync state"
         (Some
            "Outbound remote-alias messages will queue in remote-outbox.jsonl \
             indefinitely.")
         (Some fix_connect)
-  | [], Some st ->
+  | false, Some st ->
+      (* Not running: scoped_procs=[] AND the state file is stale — the
+         connector is genuinely down (its last sync aged past the freshness
+         threshold). *)
       let last_sync = st.C2c_relay_connector.cs_last_sync_ts in
-      if connector_state_is_fresh ~now st then
-        base id Inconclusive
-          (Printf.sprintf "connector not running (last sync %s ago)"
-             (age_str now last_sync))
-          (Some "May be restarting; re-run shortly.")
-          (Some fix_connect)
-      else
-        base id Fail
-          (Printf.sprintf "connector not running (last sync %s ago)"
-             (age_str now last_sync))
-          (Some "Outbox will not drain until a connector restarts.")
-          (Some fix_connect)
-  | _ :: _, None ->
+      base id Fail
+        (Printf.sprintf "connector not running (last sync %s ago)"
+           (age_str now last_sync))
+        (Some "Outbox will not drain until a connector restarts.")
+        (Some fix_connect)
+  | true, None ->
+      (* Running signal came from a scoped process while no state file exists
+         yet — the first sync is still in flight (state=None can only pair with
+         running=true via a scoped process). *)
       base id Inconclusive
         (Printf.sprintf
            "connector process attributable to this broker (%d); no state file \
@@ -214,8 +226,15 @@ let connector_check ~relay_url ~scoped_procs ~state ~now =
            (List.length scoped_procs))
         (Some "First sync may still be in flight.")
         None
-  | _ :: _, Some st ->
+  | true, Some st ->
+      (* Running with a state file to read: evidence is a scoped process
+         AND/OR a fresh broker-owned state file. A fresh healthy state file
+         alone (scoped_procs=[]) is authoritative → PASS, matching what
+         capabilities reports for the same inputs. *)
       let n = List.length scoped_procs in
+      let evidence =
+        if n > 0 then Printf.sprintf "%d proc" n else "state file"
+      in
       let last_err =
         match st.C2c_relay_connector.cs_last_error_detail with
         | Some e -> Printf.sprintf " last error: %s" e
@@ -250,6 +269,6 @@ let connector_check ~relay_url ~scoped_procs ~state ~now =
             None )
       in
       base id status
-        (Printf.sprintf "connector running (%d); last sync %s ago%s" n
+        (Printf.sprintf "connector running (%s); last sync %s ago%s" evidence
            (age_str now st.C2c_relay_connector.cs_last_sync_ts) last_err)
         detail fix
