@@ -26,10 +26,10 @@ contracts.
 
 ## Fix status
 
-Blocked on explicit operator/security authority because current canonical
-surfaces conflict. Recommended strict resolution: remove the legacy inbox-DM
-verdict fallback and accept only the host-local verdict-file/CLI path; test that
-even a configured-supervisor inbox/relay message is inert. If remote-supervisor
-DM approval is intentionally preserved, rewrite B098 and every absolute
-bus-never-RPC/local-operator-only claim to the weaker contract. Do not silently
-choose either outcome.
+**Decision resolved; implementation open.** The coordinator selected the strict
+contract in `.collab/research/friction-cn-b098-decision.md`, based on the direct
+operator request to complete the report plus critical backlog B098. H1 is
+unblocked: remove the legacy inbox-DM verdict fallback, accept only the
+host-local verdict-file/CLI path, and prove that even a configured-supervisor
+inbox/relay message is inert. The weaker remote-supervisor RPC contract was
+rejected for this run.
