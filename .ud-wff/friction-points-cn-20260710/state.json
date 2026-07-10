@@ -1,6 +1,6 @@
 {
   "assumptions": {},
-  "events_seen": 100,
+  "events_seen": 102,
   "issues": {},
   "protocol_version": "udwff/v1",
   "questions": {},
@@ -287,11 +287,40 @@
         {
           "event_id": "evt_af563f4cb6be419bcb2d5f2b319660fa",
           "event_type": "ReviewRequested"
+        },
+        {
+          "event_id": "evt_d7e8fd34d9247160a25c2a67b2f60a9b",
+          "event_type": "ReviewRecorded"
+        },
+        {
+          "event_id": "evt_06f1f438eccea2d979fb9f2b10a8c07c",
+          "event_type": "TaskCompleted"
         }
       ],
       "node_id": "impl-H4",
       "owner": "fable-warden/H4-doctor-truth-worker",
-      "status": "needs-review",
+      "review": {
+        "attempted_decisive_criticisms": [
+          "subscribe predicate might diverge between doctor and command (no: single Relay_doctor.subscribe_url_supported at the only scheme decision)",
+          "connector scoping might misattribute (found BLOCKER: argv scoping false-negatived canonical in-process connector -> contradictory output; fixed 43fbd5c2 state-file-authoritative)",
+          "offline smoke might be vacuous (no: offline branch asserts subscribe=no/poll=yes)",
+          "docs link might still 404 (no: relay-quickstart 200, old link 404 curl-verified)"
+        ],
+        "evidence_path": "artifacts/H4-doctor-truth/receipt.md",
+        "igc": "Doctor reports only true relay capabilities with actual-attempt parity; connector and capabilities checks consume one broker-owned running signal and cannot contradict; lane-head test extraction isolated.",
+        "remaining_uncertainty": "Follow-ups: scoped-proc+stale-state PASS could be Inconclusive; relay subscribe-daemon surface bypasses subscribe_url_supported; connector --interval > 120s flaps freshness window.",
+        "result": "PASS",
+        "review_id": "review-H4",
+        "reviewer": "fable-warden (live peer, not slice author); BLOCKER fixed in new commit 43fbd5c2; tips 40097cdd -> 4ee8f047 -> 43fbd5c2",
+        "validators": [
+          "doctor_capabilities 23/23 rc=0 offline AND C2C_DOCTOR_LIVE_SMOKE=1",
+          "relay_connector 24/24 rc=0",
+          "just build rc=0 IN slice worktree",
+          "just check rc=0 IN slice worktree",
+          "signed peer-pass artifact 43fbd5c2-fable-warden (build_rc=0, all targets)"
+        ]
+      },
+      "status": "done",
       "task_id": "H4-doctor-truth",
       "title": "Doctor/capability truth: scheme/attempt-aware capabilities, connector detection, canonical capabilities surface, stale B087 subscribe claim removed"
     },
