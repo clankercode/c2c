@@ -21,10 +21,11 @@ v1 validator *ignores* those reserved keys (and any other unknown key) rather
 than rejecting them, so a v2 producer stays backward compatible. `schema_version`
 is carried from day one so v2 is non-breaking.
 
-> Scope note: this page (slice J1) *publishes* the schema and its vectors. The
-> individual output surfaces are migrated onto it by later slices (J2 CLI,
-> J3 monitor NDJSON, J4 MCP). Until then, existing surfaces keep their current
-> shape unchanged.
+> Scope note: this page (slice J1) *publishes* the schema and its vectors.
+> The MCP tool surfaces (`send` / `poll_inbox` / `peek_inbox`) emit it as of
+> slice J4, with the legacy pre-v1 keys preserved alongside for existing
+> consumers. The remaining surfaces are migrated by their own slices (J2 CLI,
+> J3 monitor NDJSON); until then they keep their current shape unchanged.
 
 ## Field contract
 
@@ -45,7 +46,12 @@ is carried from day one so v2 is non-breaking.
 | `delivery` | object | no | See sub-field. |
 | `delivery.state` | enum `queued` \| `accepted` \| `delivered` | no | Lifecycle state. Unknown value rejected. |
 
-### Reserved for v2 (ignored on parse, never emitted by v1)
+### Reserved for v2 (never emitted by v1)
+
+Two different reservation mechanics apply here: reserved **keys** (the
+first four rows) are *ignored* on parse, while a reserved enum **value**
+for an existing field — `delivery.state = "read"` — is *rejected* by a
+v1 validator until v2 defines it.
 
 | Reserved key | Location | Deferred to |
 |---|---|---|

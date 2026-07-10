@@ -155,6 +155,11 @@ let serialize (m : t) : Yojson.Safe.t =
 
 let to_string m = Yojson.Safe.to_string (serialize m)
 
+let serialize_with_legacy m ~legacy =
+  match serialize m with
+  | `Assoc fields -> `Assoc (fields @ legacy)
+  | j -> j (* unreachable: [serialize] always returns [`Assoc] *)
+
 (* ---- Validate ---- *)
 
 let ( let* ) = Result.bind
