@@ -290,7 +290,7 @@ let test_drain_inbox_resets_debounce_window () =
       (match ctx1 with Some s -> string_contains s "c2c:" | None -> false);
     
     (* Drain the inbox manually (simulating poll-inbox) *)
-    seed_inbox ~dir ~sid 0;
+    ignore (seed_inbox ~dir ~sid 0);
     
     (* Second invocation: no messages, should NOT emit nudge *)
     let r2 = run_hook ~env ~stdin_payload:payload ~hook_name:"c2c_inbox_hook" () in
