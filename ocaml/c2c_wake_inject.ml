@@ -210,9 +210,37 @@ let herdr_env_extra ~(socket : string option) =
   | Some s -> [ ("HERDR_SOCKET_PATH", s) ]
   | None -> []
 
-(* agent_status for the pane: idle | working | blocked | unknown.
-   Any failure (herdr missing, socket dead, unparseable output) → "unknown",
-   which the idle gate treats as not-idle (never inject blind).
+(* Parse `herdr agent get` stdout into an agent_status string. The CLI wraps
+   the payload: {"id":"cli:agent:get","result":{"agent":{"agent_status":...,
+   ...},"type":"agent_info"}} (verified live 2026-07-10). Search the JSON
+   tree for the first "agent_status" member so top-level, result.agent, and
+   future wrapper drift all resolve. Unparseable → "unknown" (never inject
+   blind). *)
+let parse_herdr_agent_status (out : string) : string =
+  let rec find (j : Yojson.Safe.t) : string option =
+    match j with
+    | `Assoc fields -> (
+        match List.assoc_opt "agent_status" fields with
+        | Some (`String s) -> Some s
+        | _ -> List.find_map (fun (_, v) -> find v) fields)
+    | `List items -> List.find_map find items
+    | _ -> None
+  in
+  try
+    match find (Yojson.Safe.from_string (String.trim out)) with
+    | Some s -> s
+    | None -> "unknown"
+  with _ -> "unknown"
+
+(* Statuses safe to inject into. herdr reports idle | working | blocked |
+   unknown | done; "done" is a pane whose agent finished its last turn and
+   is sitting at the composer (observed live for at-rest codex panes) —
+   exactly the state a wake nudge is for. working/blocked/unknown are never
+   injected. *)
+let herdr_status_injectable status = status = "idle" || status = "done"
+
+(* agent_status for the pane. Any failure (herdr missing, socket dead,
+   unparseable output) → "unknown", which the gate treats as not-injectable.
    Fixture mode: the `herdr agent get` argv is recorded, and the status is
    read from C2C_WAKE_INJECT_HERDR_STATUS (default "idle"). *)
 let herdr_agent_status ~(pane : string) ~(socket : string option) : string =
@@ -231,15 +259,7 @@ let herdr_agent_status ~(pane : string) ~(socket : string option) : string =
           [ "herdr"; "agent"; "get"; pane ]
       with
       | None -> "unknown"
-      | Some out -> (
-          try
-            match Yojson.Safe.from_string (String.trim out) with
-            | `Assoc fields -> (
-                match List.assoc_opt "agent_status" fields with
-                | Some (`String s) -> s
-                | _ -> "unknown")
-            | _ -> "unknown"
-          with _ -> "unknown"))
+      | Some out -> parse_herdr_agent_status out)
 
 (* ---------------------------------------------------------------------------
  * Per-session inject state (backoff / dedupe)
@@ -377,7 +397,7 @@ let maybe_inject ?now ~(broker_root : string) ~(session_id : string) () : outcom
                     match backend with
                     | Herdr { pane; socket } ->
                         let status = herdr_agent_status ~pane ~socket in
-                        if status = "idle" then Ok ()
+                        if herdr_status_injectable status then Ok ()
                         else Error ("herdr_not_idle:" ^ status)
                     | Tmux _ -> (
                         match reg.last_activity_ts with

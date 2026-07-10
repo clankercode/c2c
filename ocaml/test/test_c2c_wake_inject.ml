@@ -236,6 +236,37 @@ let test_herdr_working_blocks_inject () =
     check (list string) "probe argv" [ "herdr"; "agent"; "get"; "w2:p1" ]
       (argv_of (List.nth lines 0)))
 
+let test_herdr_done_status_injectable () =
+  with_ctx (fun ctx ->
+    let sid = "zw-wake-herdrdone" in
+    ignore (register ctx ~session_id:sid ~alias:sid ~herdr_pane:"w2:p7");
+    enqueue ctx ~to_alias:sid ~from_session:"zw-wake-peer-e2" ~from_alias:"zw-wake-peer-e2"
+      ~content:"turn over?";
+    (* "done" = agent finished its last turn, sitting at the composer —
+       observed live for at-rest codex panes; injectable. *)
+    with_env [ ("C2C_WAKE_INJECT_HERDR_STATUS", Some "done") ] (fun () ->
+      match inject ctx ~session_id:sid with
+      | Injected { backend; _ } -> check string "herdr backend" "herdr" backend
+      | o -> failf "expected Injected on done, got %s"
+               (C2c_wake_inject.outcome_to_string o)))
+
+(* Real `herdr agent get` output captured live 2026-07-10: the CLI wraps the
+   agent payload under result.agent. The parser must find the nested
+   agent_status (a naive top-level lookup reads "unknown" and the herdr
+   backend never injects). *)
+let test_parse_herdr_agent_status_real_shape () =
+  let live =
+    {|{"id":"cli:agent:get","result":{"agent":{"agent":"codex","agent_status":"idle","cwd":"/home/x/src/c2c","focused":false,"foreground_cwd":"/home/x/src/c2c","pane_id":"w1:p4","revision":0,"tab_id":"w1:t3","terminal_id":"term_65600961fbf4413","workspace_id":"w1"},"type":"agent_info"}}|}
+  in
+  check string "nested result.agent.agent_status" "idle"
+    (C2c_wake_inject.parse_herdr_agent_status live);
+  check string "top-level agent_status still accepted" "working"
+    (C2c_wake_inject.parse_herdr_agent_status {|{"agent_status":"working"}|});
+  check string "garbage is unknown" "unknown"
+    (C2c_wake_inject.parse_herdr_agent_status "not json");
+  check string "missing member is unknown" "unknown"
+    (C2c_wake_inject.parse_herdr_agent_status {|{"result":{"type":"agent_info"}}|})
+
 let test_herdr_preferred_over_tmux () =
   with_ctx (fun ctx ->
     let sid = "zw-wake-both" in
@@ -396,6 +427,10 @@ let () =
             test_herdr_command_shape_and_socket_env
         ; test_case "herdr: working pane never injected" `Quick
             test_herdr_working_blocks_inject
+        ; test_case "herdr: done status injectable" `Quick
+            test_herdr_done_status_injectable
+        ; test_case "herdr: parse real agent-get JSON shape" `Quick
+            test_parse_herdr_agent_status_real_shape
         ; test_case "herdr preferred over tmux" `Quick test_herdr_preferred_over_tmux
         ; test_case "backoff + inbox-growth dedupe" `Quick
             test_backoff_and_new_message_dedupe
