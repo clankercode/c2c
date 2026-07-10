@@ -16,12 +16,16 @@ type output_mode =
   | XmlFd of Unix.file_descr
   | Null
 
+(* Canonical resolution (env override → repo-fingerprint path), same chain
+   every other c2c command uses. The old fallback here hardcoded
+   repos/default/broker, so `c2c deliver wake-watch --alias <a>` run from a
+   repo checkout could not see the repo broker's registry (live-caught
+   2026-07-10: "alias ... is not registered in this broker"). *)
 let default_broker_root () : string =
-  match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-  | Some b -> b
-  | None ->
-      let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
-      home // ".c2c" // "repos" // "default" // "broker"
+  try C2c_repo_fp.resolve_broker_root ()
+  with _ ->
+    let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+    home // ".c2c" // "repos" // "default" // "broker"
 
 (* P4: Check if a global session inbox exists for the given session_id. *)
 let global_inbox_exists ~root ~session_id =

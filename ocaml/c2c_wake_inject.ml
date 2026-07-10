@@ -75,15 +75,22 @@ type backend =
 
 let backend_name = function Herdr _ -> "herdr" | Tmux _ -> "tmux"
 
-(* herdr preferred over tmux when both targets are registered: herdr exposes
-   a real agent_status idle/working signal; tmux only has the activity-age
-   heuristic. *)
+(* Innermost surface wins when both targets are registered. A session
+   running inside tmux always captures $TMUX_PANE — that pane id names the
+   exact pane the session lives in. A HERDR_PANE_ID seen alongside it was
+   inherited from the *outer* herdr pane hosting the tmux client: injecting
+   there types into whatever tmux window happens to be active (live-verified
+   2026-07-10 — the herdr probe on the outer pane also reports
+   agent_status=unknown, so every wake was skipped). herdr is used only when
+   it is the sole target, i.e. the session really runs directly in a herdr
+   pane, where its idle/working agent_status signal beats the tmux
+   activity-age heuristic. *)
 let backend_of_registration (r : C2c_mcp_helpers.registration) : backend option =
-  match r.herdr_pane with
-  | Some pane -> Some (Herdr { pane; socket = r.herdr_socket })
+  match r.tmux_location with
+  | Some target -> Some (Tmux target)
   | None ->
-      (match r.tmux_location with
-       | Some target -> Some (Tmux target)
+      (match r.herdr_pane with
+       | Some pane -> Some (Herdr { pane; socket = r.herdr_socket })
        | None -> None)
 
 (* Env-derived wake targets, used at capture points (`c2c hook codex`, MCP
