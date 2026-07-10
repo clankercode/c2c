@@ -239,6 +239,38 @@ let test_of_string_parse_error () =
   Alcotest.(check bool) "of_string returns Error on bad JSON" true
     (is_err (S.of_string "{not json"))
 
+(* J4: serialize_with_legacy appends legacy keys after the v1 fields and
+   the result still validates (unknown top-level keys are tolerated). *)
+let test_serialize_with_legacy () =
+  let m : S.t =
+    { schema_version = S.schema_version
+    ; msg_type = S.Dm
+    ; message_id = None
+    ; ts = Some 1700000000.0
+    ; from = { alias = "lyra-quill"; host_id = None; address = None }
+    ; to_ = "storm-ember"
+    ; source = None
+    ; content = "hi"
+    ; in_reply_to = None
+    ; delivery_state = Some S.Queued
+    }
+  in
+  let json =
+    S.serialize_with_legacy m
+      ~legacy:[ ("queued", `Bool true); ("from_alias", `String "lyra-quill") ]
+  in
+  (match json with
+   | `Assoc fields ->
+       Alcotest.(check bool) "legacy queued appended" true
+         (List.assoc_opt "queued" fields = Some (`Bool true));
+       Alcotest.(check bool) "legacy from_alias appended" true
+         (List.assoc_opt "from_alias" fields = Some (`String "lyra-quill"));
+       Alcotest.(check bool) "v1 content still present" true
+         (List.assoc_opt "content" fields = Some (`String "hi"))
+   | _ -> Alcotest.fail "serialize_with_legacy did not return an object");
+  Alcotest.(check bool) "document with legacy keys still validates" true
+    (is_ok (S.validate json))
+
 let () =
   Alcotest.run "c2c_schema_v1"
     [ ( "valid",
@@ -272,5 +304,6 @@ let () =
       ( "optionality",
         [ Alcotest.test_case "serialize omits None" `Quick test_serialize_omits_none;
           Alcotest.test_case "full roundtrip" `Quick test_serialize_full_roundtrip;
-          Alcotest.test_case "of_string parse error" `Quick test_of_string_parse_error ] );
+          Alcotest.test_case "of_string parse error" `Quick test_of_string_parse_error;
+          Alcotest.test_case "serialize_with_legacy appends + validates" `Quick test_serialize_with_legacy ] );
     ]

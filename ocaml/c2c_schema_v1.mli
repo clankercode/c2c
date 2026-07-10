@@ -12,10 +12,13 @@
     lean"): v1 ships only the fields emitted today plus a canonical
     [delivery.state]. Trust/identity fields ([identity_pk], [verified],
     [trust_tier]) and [priority] are DEFERRED to a future v2 (I003/I008),
-    and the [read] delivery state is deferred to receipts (I004). Those keys
-    are enumerated in {!reserved_v2_keys} and are IGNORED by {!validate}
-    (forward-compat), never rejected. [schema_version] is carried from day
-    one so v2 is non-breaking.
+    and the [read] delivery state is deferred to receipts (I004). Note the
+    distinction: reserved v2 KEYS (enumerated in {!reserved_v2_keys} /
+    {!reserved_v2_from_keys}) are IGNORED by {!validate} (forward-compat,
+    never rejected), whereas reserved enum VALUES for existing fields —
+    e.g. [delivery.state = "read"] — are REJECTED by {!validate} until v2
+    defines them. [schema_version] is carried from day one so v2 is
+    non-breaking.
 
     Purely functional: depends only on [yojson]. No I/O, no environment. *)
 
@@ -112,6 +115,15 @@ val serialize : t -> Yojson.Safe.t
 
 val to_string : t -> string
 (** [serialize] then compact-print. *)
+
+val serialize_with_legacy : t -> legacy:(string * Yojson.Safe.t) list -> Yojson.Safe.t
+(** [serialize] the v1 document, then append the [legacy] key/value pairs
+    after the canonical fields. This is the single supported way for
+    migrating surfaces (J2 CLI / J3 monitor / J4 MCP) to keep legacy
+    duplicate keys (e.g. [from_alias], [to_alias], [queued]) alongside the
+    v1 fields during the compatibility window. Callers must not pass a
+    legacy key that collides with an emitted v1 key (e.g. [content], [ts]);
+    duplicate keys in a JSON object are undefined behavior for consumers. *)
 
 val validate : Yojson.Safe.t -> (t, string) result
 (** Parse and check a JSON value against the v1 schema.
