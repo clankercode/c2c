@@ -234,21 +234,20 @@ codegen-role-templates:
 # so that any compilation error causes a non-zero exit.
 # For server-only fast builds use build-server; for CLI-only use build-cli.
 #
-# Per-worktree flock (#parallel-dune-softlock) serialises same-worktree
-# concurrent builds while leaving cross-worktree builds parallel.
+# Global slot gate + per-worktree flock + shared Dune cache (B125).
+# See scripts/dune-build-locked.sh and
+# .collab/findings/2026-07-11T08-00-00Z-b125-parallel-dune-global-gate.md.
+# Tunables: C2C_DUNE_GLOBAL_SLOTS (default 1), C2C_DUNE_CACHE, DUNE_WATCHDOG_TIMEOUT.
 build: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
-    mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
+    scripts/dune-build-locked.sh build ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Build the OCaml CLI binary only (fast, for iterative CLI work)
 build-cli: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
-    mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
+    scripts/dune-build-locked.sh build ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build MCP server + hooks only (fast, for server/hook work)
 build-server: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
-    mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
+    scripts/dune-build-locked.sh build ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Alias for build-all (back-compat)
 build-all: build
@@ -263,12 +262,11 @@ test-py:
 test-ocaml:
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-900}" opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
+    scripts/dune-build-locked.sh build ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
     ln -sf "$PWD/_build/default/ocaml/cli/c2c.exe" "$PWD/_build/default/ocaml/cli/c2c"
     ln -sf "$PWD/_build/default/ocaml/cli/c2c_deliver_inbox.exe" "$PWD/_build/default/ocaml/cli/c2c-deliver-inbox"
     PATH="$PWD/_build/default/ocaml/cli:$PATH" \
-      flock _build/.c2c-build.lock scripts/dune-watchdog.sh "${DUNE_WATCHDOG_TIMEOUT:-900}" opam exec -- dune runtest --root "$PWD" ocaml/
+      scripts/dune-build-locked.sh runtest ocaml/
 
 # Run TypeScript (vitest) unit tests for the .opencode plugin
 # Installs devDependencies on demand (idempotent if already installed).
@@ -302,7 +300,7 @@ test-ts-integration:
 # reaches the recipient inbox / room history) is the OCaml suite
 # test_c2c_watch_e2e, run by `just test-ocaml`.
 watch-e2e:
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe
+    scripts/dune-build-locked.sh build ./ocaml/cli/c2c.exe
     scripts/c2c-watch-e2e.sh
 
 # B013 codex delivery regression guard (background-safe, no codex process):
@@ -312,7 +310,7 @@ watch-e2e:
 # tmux/codex round-trip lives in scripts/test-codex-delivery-tmux-e2e.sh
 # (run its 'run' mode from inside tmux; 'preflight' is the safe default).
 codex-deliver-e2e:
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
+    scripts/dune-build-locked.sh build ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
     scripts/test-codex-deliver-inbox-e2e.sh
 
 # Run all tests (Python + OCaml + TS + npm packaging). Always rebuilds OCaml first to avoid stale binary.
@@ -382,8 +380,7 @@ check:
     just sync-skills-check
     git diff --exit-code -- .collab/skills .opencode/skills .codex/skills ocaml/cli/c2c_claude_skill_embedded.ml
     just codegen-alias-words-check
-    mkdir -p _build && touch _build/.c2c-build.lock
-    flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD"
+    scripts/dune-build-locked.sh build
     # #442: enforce broker-log-events.md catalog completeness — any new
     # `"event", `String "<name>"` emitter in ocaml/ must be cataloged.
     ./scripts/check-broker-log-catalog.sh
@@ -394,7 +391,7 @@ check:
 
 # Validate the docs/connect.md golden-path commands against the built binary.
 check-connect-commands:
-    opam exec -- dune build --root "$PWD" ocaml/cli/c2c.exe
+    scripts/dune-build-locked.sh build ocaml/cli/c2c.exe
     python3 scripts/check-connect-commands.py --bin _build/default/ocaml/cli/c2c.exe
 
 # Install repo git hooks (pre-commit: plugin syntax check).
@@ -424,7 +421,7 @@ install-git-hooks:
 # Routes through the shared flock+guard+stamp path (#322) so partial
 # installs can't bypass the integrity guard.
 install-cli:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe
+    scripts/dune-build-locked.sh build -j1 ./ocaml/cli/c2c.exe
     mkdir -p ~/.local/bin
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
@@ -436,7 +433,7 @@ install-cli:
 
 # Install OCaml MCP server binary to ~/.local/bin (build + copy)
 install-mcp:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" -j1 ./ocaml/server/c2c_mcp_server.exe
+    scripts/dune-build-locked.sh build -j1 ./ocaml/server/c2c_mcp_server.exe
     mkdir -p ~/.local/bin
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
@@ -448,7 +445,7 @@ install-mcp:
 
 # Install OCaml inbox hook binary to ~/.local/bin (build + copy)
 install-hook:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" -j1 ./ocaml/tools/c2c_inbox_hook.exe
+    scripts/dune-build-locked.sh build -j1 ./ocaml/tools/c2c_inbox_hook.exe
     mkdir -p ~/.local/bin
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
@@ -463,7 +460,7 @@ install-hook:
 # Build all first, then copy all; avoids half-updated state on build failure.
 # Git hooks are opt-in via `just install-git-hooks`.
 install-all: codegen-role-designer codegen-opencode-plugin codegen-c2c-skills
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" -j1 ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/server/c2c_mcp_server_inner_bin.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
+    scripts/dune-build-locked.sh build -j1 ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/server/c2c_mcp_server_inner_bin.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
     # Guard + atomic install + stamp under a single flock so concurrent
     # `just bi` runs from different worktrees can't race past the guard
     # then clobber each other. See scripts/c2c-install-guard.sh (#302).
@@ -528,9 +525,9 @@ install-python-legacy:
 status:
     c2c health
 
-# Clean dune build artifacts
+# Clean dune build artifacts (still gated — concurrent clean+build softlocks)
 clean:
-    scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune clean
+    scripts/dune-build-locked.sh clean
 
 # Local relay in docker-compose. See .collab/runbooks/local-relay.md.
 relay-up:

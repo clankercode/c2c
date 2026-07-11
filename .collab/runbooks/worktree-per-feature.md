@@ -267,36 +267,52 @@ c2c dev worktree prune
 
 ---
 
-## Pattern — parallel-dune softlock
+## Pattern — parallel-dune softlock (B125)
 
-**Symptom**: `just build` (or a raw `opam exec -- dune build`) hangs
-forever inside a worktree where a sibling subagent is also building. Two
-dune processes contend on dune's internal locks; neither completes. Filed
-2026-04-28 as
-`.collab/findings/2026-04-28T05-20-00Z-stanza-coder-parallel-dune-softlock.md`,
-recurring 3-4× per swarm session with multi-subagent fanouts (notably the
-14-minute A2+B subagent runtime that motivated the fix).
+**Symptom**: `just build` (or a raw `opam exec -- dune build`) hangs for
+hours at ~0% CPU. Originally filed same-worktree (2026-04-28
+`.collab/findings/2026-04-28T05-20-00Z-stanza-coder-parallel-dune-softlock.md`);
+later confirmed **cross-worktree** too (2026-07-11 B125 — multiple hung
+`dune build --root .worktrees/bl-b*` processes for 1–5h despite separate
+`_build/` dirs). Per-worktree flock alone does not prevent the hang.
 
-**Cause**: same-worktree concurrent dune invocations share a `_build/`
-directory and contend on dune's per-build locks. Cross-worktree builds
-have independent `_build/` dirs and do not contend.
+**Cause (working model)**:
+- Same-worktree: concurrent dune share `_build/` and contend on dune's
+  internal locks.
+- Cross-worktree: separate `_build/` but shared opam switch state, Dune
+  shared-cache I/O, and CPU/RAM stampede still softlock under N≥3
+  concurrent builds. Exact internal deadlock not fully bisected.
 
-**Mitigation**: use `just build` / `just build-cli` / `just build-server`
-/ `just test-ocaml`, which now hold an exclusive `flock` on
-`_build/.c2c-build.lock` for the duration of the dune invocation.
-Same-worktree concurrent builds serialise (the second one waits for the
-first to finish — almost always a no-op rebuild after that). Cross-
-worktree builds remain fully parallel.
+**Mitigation (B125)**: `just build` / `just build-cli` / `just build-server`
+/ `just test-ocaml` / `just install-*` / `just clean` all route through
+`scripts/dune-build-locked.sh`, which:
 
-The standalone `scripts/dune-build-locked.sh` wraps the same flock for
-ad-hoc invocations (e.g. subagent prompts that can't easily reach the
-justfile). Prefer `just build` in subagent prompts; never write
-`opam exec -- dune build` in a prompt — it bypasses the lock.
+1. Enables Dune shared cache (`DUNE_CACHE=enabled`, hardlink storage).
+2. Acquires a **machine-wide slot lock** (default `C2C_DUNE_GLOBAL_SLOTS=1`
+   under `~/.cache/c2c/dune-global/slot-*.lock`).
+3. Acquires the per-worktree `_build/.c2c-build.lock`.
+4. Runs under `scripts/dune-watchdog.sh` (default 900s).
 
-**Recovery**: if a build is already softlocked from before this fix
-landed, `pkill -f "dune build"` (scoped to your worktree's dune
-processes) clears it; subsequent `just build` calls will serialise
-cleanly.
+Tunables: `C2C_DUNE_GLOBAL_SLOTS`, `C2C_DUNE_GLOBAL_LOCK_DIR`,
+`C2C_DUNE_CACHE`, `C2C_DUNE_CACHE_ROOT`, `C2C_DUNE_LOCK_WAIT_SECONDS`,
+`C2C_DUNE_SKIP_GLOBAL_LOCK=1` (emergency), `DUNE_WATCHDOG_TIMEOUT`.
+
+Prefer `just build` in subagent prompts; never write raw
+`opam exec -- dune build` — it bypasses every gate and is how multi-hour
+hangs keep appearing.
+
+**Recovery**: if a build is already softlocked (usually a raw dune that
+bypassed the wrapper), clear only the stuck PIDs for your worktree:
+
+```
+pkill -f "dune build --root $(pwd)"
+# or, if many worktrees are wedged and peers agree:
+# killall dune
+```
+
+Then re-run via `just build` / `scripts/dune-build-locked.sh` so the
+global gate serialises subsequent work. See
+`.collab/findings/2026-07-11T08-00-00Z-b125-parallel-dune-global-gate.md`.
 
 ---
 
