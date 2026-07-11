@@ -20,6 +20,12 @@ that an injected item becomes visible in the stock remote TUI, and no documented
 path attaches app-server control to an already-running ordinary `codex` TUI.
 Use the current hook-based path for ordinary sessions.
 
+There is also a security gate: the app-server exposes powerful control methods,
+not only item injection. A Unix socket path is not a sufficient boundary among
+same-UID swarm processes. The prototype must prove an authenticated transport
+with protected credentials or an OS/container identity boundary; otherwise this
+architecture is a no-go even if injection preserves the composer.
+
 ## Safe contract
 
 1. Persist every inbound c2c message in its broker inbox first.
@@ -31,6 +37,9 @@ Use the current hook-based path for ordinary sessions.
 4. Preserve the existing Codex hook delivery as the fallback.
 5. Keep the existing hooks+wake implementation opt-in: its tmux/Herdr nudge
    writes text plus Enter and therefore cannot guarantee typed-draft safety.
+6. Do not expose an app-server endpoint to peer processes without a proven
+   control boundary. A peer must be unable to start, steer, interrupt, or
+   otherwise control the thread.
 
 ## Evidence
 

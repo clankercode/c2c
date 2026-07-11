@@ -21,6 +21,8 @@ Acceptance criteria:
 - Prove whether injected items are accepted while the remote TUI is idle and while a turn is active.
 - Verify that injection starts no new turn and does not use `turn/steer` or `turn/interrupt`.
 - Treat all c2c message content as data; injection must not create an approval or execute an action.
+- Establish the app-server control boundary before considering delivery: attempt unauthorized same-UID local-client connections and requests for `turn/start`, `turn/steer`, `turn/interrupt`, and other non-passive methods. A private Unix-path name or file mode alone is not evidence of isolation.
+- Record the exact boundary (for example an authenticated transport plus protected secret, or an OS/container identity boundary), its threat model, and its failure behavior. If no boundary prevents another swarm process from controlling the server, return a no-go for this architecture rather than proceeding.
 - Record exact failure modes and a go/no-go decision for implementation tasks.
 
-Blockers: none; this is the evidence-producing prerequisite.
+Blockers: none; this is the evidence-producing prerequisite, including the control-boundary go/no-go.
