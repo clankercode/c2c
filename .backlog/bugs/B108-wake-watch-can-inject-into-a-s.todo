@@ -1,16 +1,18 @@
 ---
 claimed_at: "2026-07-10T14:25:38Z"
 claimed_by: codex-kaari-marli-dpfo
-completed_at: null
+completed_at: "2026-07-11T09:29:19Z"
 complexity: medium
 depends_on: []
+duration_minutes: 1143.6877857916666
 estimate_hours: 1
 id: B108
 priority: high
 started_at: "2026-07-10T14:25:38Z"
-status: in_progress
+status: done
 tags: []
 title: Wake-watch can inject into a stale tmux pane and drain the wrong Codex session inbox
+updated_at: "2026-07-11T09:29:19Z"
 ---
 A Codex API session not hosted in tmux had stale/inherited wake metadata (tmux_location=%5, herdr_pane=w2:p1) on its c2c registration. `c2c deliver wake-watch --alias codex-tyyni-river-gf88 --once` selected tmux backend and injected into pane %5, which belonged to an unrelated railmap Codex pane. That pane fired a UserPromptSubmit hook using the target session id and destructively drained/archived messages intended for the API session; no <c2c> event arrived in the actual API transcript.
 
