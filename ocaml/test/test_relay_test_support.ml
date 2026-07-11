@@ -987,6 +987,9 @@ let fixture_health =
     [ ("ok", `Bool true);
       ("version", `String Version.version);
       ("git_hash", `String "0000000");
+      ("protocol_version", `Int Version.relay_protocol_version);
+      ("min_client_protocol_version",
+       `Int Version.relay_min_client_protocol_version);
       ("auth_mode", `String "dev");
       ("pow",
        `Assoc
