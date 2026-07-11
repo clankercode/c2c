@@ -35,8 +35,24 @@ Public surface (consumed later): `start`, `supervise_step`, `stop`,
   process memory + the frontend child env, and is scrubbed on stop.
 - Because the raw token is memory-only, a DIFFERENT process that loads the
   persisted state cannot re-authenticate the endpoint. `classify_persisted`
-  therefore ALWAYS returns `Start_fresh` (best-effort reaping recorded pids) — a
-  restart can NEVER silently attach to an unverifiable endpoint.
+  therefore ALWAYS returns `Start_fresh` (best-effort reaping recorded pids that
+  it can positively identify as ours via /proc cmdline) — a restart can NEVER
+  silently attach to an unverifiable endpoint.
+
+### Startup-race hardening (`real_verify_owner`, /proc)
+
+Loopback ephemeral ports have an inherent allocate-then-bind TOCTOU: a same-UID
+adversary could try to race-bind the port and impersonate the server, capturing
+the frontend's bearer token. Cure: before the frontend is spawned, readiness
+requires not just an authed 101 handshake but ALSO that the LISTEN socket on the
+endpoint port is held by a process in OUR server's process group (the server is
+spawned as a session leader; codex may hold the listener in a worker child of
+that group). Verified via `/proc/net/tcp{,6}` inode → `/proc/<pid>/fd` +
+`/proc/<pid>/stat` pgrp. Once our server holds the bound socket no same-UID
+process can rebind the port, so this check is race-free. Fail-closed
+(`endpoint_ownership_unverified` diagnostic, frontend never spawned → no token
+leak). Proven live: `real_verify_owner` returns true for the real codex server
+in the gated test.
 
 Test that proves an unauthorized same-UID client is rejected:
 - `security / live auth boundary` (`C2C_CODEX_APPSERVER_LIVE=1`) spawns a REAL
@@ -77,17 +93,26 @@ Cleaning_up → Offline`.
 | app-server death while frontend runs → unit torn down | `supervision / server crash while running` |
 | parent signal → stop reaps both | `supervision / parent signal stop` |
 | repeated stop/cleanup idempotent, no double-reap | `supervision / stop idempotent` |
+| capability-flag probe rejects (before spawn) | `version / capability gate rejects` |
+| endpoint ownership unverified (port race) → no frontend, no token leak | `lifecycle-failures / ownership unverified` |
+| mandatory Running-persist fails → tear down + reap | `lifecycle-failures / persistence failure tears down` |
+| self-contained supervise loop to terminal | `supervision / supervise_until_exit terminal` |
 | stale state → start fresh (never attach) | `recovery / stale starts fresh` |
+| stale recovery is PID-reuse safe (won't kill foreign pid) | `recovery / pid-reuse safe` |
 | persisted atomic round-trip | `recovery / persisted roundtrip` |
 
 ## Structured diagnostic (T006-consumable)
 
 Unsupported version/capability fails BEFORE the frontend (in fact before the
 server) with `diagnostic_to_json`: `{error, code, message, codex_version,
-min_codex_version}`. Codes: `codex_not_found`, `codex_version_unsupported`,
+min_codex_version}`. The capability gate probes `codex app-server --help` +
+`codex --help` for `--listen`/`--ws-auth`/`--ws-token-sha256`/`--remote`/
+`--remote-auth-token-env` (a version bump that renames/drops any of these yields
+a structured pre-frontend diagnostic, not a generic spawn failure). Codes:
+`codex_not_found`, `codex_version_unsupported`, `codex_capability_unsupported`,
 `endpoint_alloc_failed`, `server_spawn_failed`, `readiness_timeout`,
-`server_died_before_ready`, `auth_setup_failed`, `frontend_spawn_failed`,
-`internal_error`.
+`server_died_before_ready`, `endpoint_ownership_unverified`, `auth_setup_failed`,
+`frontend_spawn_failed`, `persistence_failed`, `internal_error`.
 
 ## tmux dogfood (real codex 0.144.1, sanitized; NO credential values)
 
@@ -116,8 +141,8 @@ zero leaked processes.
 
 | command | rc |
 |---|---|
-| `test_c2c_codex_app_server.exe` (gate off — 22 tests) | 0 |
-| `C2C_CODEX_APPSERVER_LIVE=1 ...exe` (live auth boundary) | 0 |
+| `test_c2c_codex_app_server.exe` (gate off — 27 tests) | 0 |
+| `C2C_CODEX_APPSERVER_LIVE=1 ...exe` (live auth boundary + real_verify_owner) | 0 |
 | `just build` | 0 |
 | `./scripts/c2c_tmux.py list` | 0 |
 | tmux dogfood (server+frontend, reap-proof) | 0 (no leaks) |
@@ -136,3 +161,43 @@ suite was run directly (22/22 + gated live) — all green.
   channel (persist-first to the broker inbox; never `turn/*`). This module opens
   no control JSON-RPC session and delivers nothing.
 - **T007** owns policy-driven `turn/start`. This module never starts a turn.
+
+## Review round 1 — codex (ccc @cx-reviewer, gpt-5.6-terra xhigh) → FAIL → fixed
+
+The first codex review returned FAIL with legitimate findings for a security
+primitive; all were addressed (new commit, not amend):
+
+1. **BLOCKER — port-allocation TOCTOU / token exfil.** Bind-port-0-then-respawn
+   left a window for a same-UID adversary to race-bind the loopback port and
+   capture the frontend's bearer token. Probed unix-socket transport as an
+   alternative (atomic ownership) but codex does NOT cleanly enforce `--ws-auth`
+   on unix (authed connect also failed → unproven boundary, which T001 forbids
+   shipping). Fix: `real_verify_owner` (/proc process-group listener-ownership
+   check) gates frontend spawn — race-free because it runs after our server holds
+   the bound socket. See "Startup-race hardening" above.
+2. **MAJOR — PID-reuse in stale recovery.** `classify_persisted` now verifies a
+   recorded pid's `/proc/<pid>/cmdline` matches our codex-on-this-endpoint before
+   signaling (test `recovery / pid-reuse safe`).
+3. **MAJOR — restart orphaned prior unit.** `start` now loads + recovers prior
+   persisted state (reaping the old pair) and takes an instance flock before
+   allocating/overwriting.
+4. **MAJOR — process-group teardown.** The headless server is spawned as a
+   session leader (setsid) and reaped via killpg (server + helper children); the
+   frontend keeps its controlling tty (reaped by pid). Added `supervise_until_exit`
+   (installs SIGTERM/SIGINT→stop, owns the poll loop) so the primitive is
+   self-contained; dogfood uses it.
+5. **MAJOR — discarded persistence errors.** The Running-state mapping persist is
+   now mandatory; on failure the unit is torn down + reaped and `persistence_failed`
+   returned (test `lifecycle-failures / persistence failure tears down`).
+6. **MAJOR — capability gate too weak.** Added a `--help`-based capability probe
+   for the exact required flags, before alloc/spawn (`codex_capability_unsupported`).
+7. **MAJOR — test rigor.** Added ownership/capability/persistence/pid-reuse/
+   supervise-loop tests; server-died-before-ready now asserts reaping. (22 → 27
+   fixture tests; live test now also asserts `real_verify_owner`.)
+8. **MINOR — fd leak.** `real_spawn_server` wraps its devnull/log fds in
+   `Fun.protect`.
+
+Residual (documented, not a defect of this slice): same-UID is not an OS
+boundary (T001) — a determined same-UID attacker can already read the frontend's
+`/proc/<pid>/environ`. The capability token + /proc ownership gate are
+defense-in-depth within the same-UID trust domain, which is exactly T001's model.

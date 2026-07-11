@@ -52,19 +52,23 @@ let mk_fake ?(id = 4242) (f : fake) : child =
 (* A scripted backend built around a shared mutable clock. Overridable fields
    let each test drive a specific transition. *)
 let scripted_backend ~clock ?(codex_version = Ok "codex-cli 0.144.1")
-    ?(alloc_port = Ok 40123) ?(gen_token = fun () -> "RAWT0KEN_secret_do_not_leak")
+    ?(capabilities = Ok ()) ?(alloc_port = Ok 40123)
+    ?(gen_token = fun () -> "RAWT0KEN_secret_do_not_leak")
     ?(spawn_server = fun ~argv:_ ~env:_ ~log_path:_ -> Error "unset")
     ?(spawn_frontend = fun ~argv:_ ~env:_ -> Error "unset")
-    ?(probe_ready = fun _ ~token:_ -> Ok ()) () : backend =
+    ?(probe_ready = fun _ ~token:_ -> Ok ())
+    ?(verify_owner = fun _ ~server_pid:_ -> true) () : backend =
   {
     now = (fun () -> !clock);
     sleep = (fun d -> clock := !clock +. d);
     gen_token;
     alloc_port = (fun () -> alloc_port);
     codex_version = (fun _ -> codex_version);
+    capabilities = (fun _ -> capabilities);
     spawn_server;
     spawn_frontend;
     probe_ready;
+    verify_owner;
   }
 
 let cfg_for dir =
@@ -185,7 +189,55 @@ let test_server_died_before_ready () =
           ~probe_ready:(fun _ ~token:_ -> Error Re_not_yet) ()
       in
       let r = start ~backend:bk (cfg_for dir) in
-      Alcotest.(check string) "code" "server_died_before_ready" (diag_code_str r))
+      Alcotest.(check string) "code" "server_died_before_ready" (diag_code_str r);
+      Alcotest.(check bool) "dead server still reaped (no zombie)" true (sf.reaped >= 1))
+
+let test_capability_gate_rejects () =
+  with_tmp_dir (fun dir ->
+      let clock = ref 0.0 in
+      let spawned = ref false in
+      let bk =
+        scripted_backend ~clock ~capabilities:(Error "missing --ws-token-sha256")
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> spawned := true; Error "x") ()
+      in
+      let r = start ~backend:bk (cfg_for dir) in
+      Alcotest.(check string) "code" "codex_capability_unsupported" (diag_code_str r);
+      Alcotest.(check bool) "no spawn when capability missing" false !spawned)
+
+let test_ownership_unverified () =
+  with_tmp_dir (fun dir ->
+      let clock = ref 0.0 in
+      let sf = { status = Running_; signals = []; reaped = 0 } in
+      let fe_spawned = ref false in
+      let bk =
+        scripted_backend ~clock
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake sf))
+          ~spawn_frontend:(fun ~argv:_ ~env:_ -> fe_spawned := true; Ok (mk_fake sf))
+          ~probe_ready:(fun _ ~token:_ -> Ok ())
+          ~verify_owner:(fun _ ~server_pid:_ -> false) ()   (* listener not ours -> refuse *)
+      in
+      let r = start ~backend:bk (cfg_for dir) in
+      Alcotest.(check string) "code" "endpoint_ownership_unverified" (diag_code_str r);
+      Alcotest.(check bool) "frontend NEVER spawned (no token leak)" false !fe_spawned;
+      Alcotest.(check bool) "server reaped" true (sf.reaped >= 1))
+
+let test_persistence_failure_tears_down () =
+  with_tmp_dir (fun dir ->
+      (* Make the instance dir uncreatable so the mandatory Running-persist fails. *)
+      let ro = dir // "ro" in
+      mkdir_p ro; Unix.chmod ro 0o500;
+      let inst = ro // "sub" in
+      let clock = ref 0.0 in
+      let sf = { status = Running_; signals = []; reaped = 0 } in
+      let ff = { status = Running_; signals = []; reaped = 0 } in
+      let bk = happy_backend ~clock ~server_fake:sf ~frontend_fake:ff () in
+      let cfg = { (default_config ~instance_name:"tst" ~instance_dir:inst ~cwd:dir) with
+                  readiness_timeout_s = 1.0 } in
+      let r = start ~backend:bk cfg in
+      Unix.chmod ro 0o700;   (* restore for cleanup *)
+      Alcotest.(check string) "code" "persistence_failed" (diag_code_str r);
+      Alcotest.(check bool) "server reaped on persist failure" true (sf.reaped >= 1);
+      Alcotest.(check bool) "frontend reaped on persist failure" true (ff.reaped >= 1))
 
 let test_frontend_spawn_failure () =
   with_tmp_dir (fun dir ->
@@ -290,6 +342,19 @@ let test_stop_idempotent () =
       Alcotest.(check int) "frontend not re-reaped" fr ff.reaped;
       Alcotest.(check string) "still offline" "offline" (state_to_string (current_state h)))
 
+let test_supervise_until_exit_terminal () =
+  with_tmp_dir (fun dir ->
+      let clock = ref 0.0 in
+      let h, sf, ff = run_to_running dir clock in
+      ff.status <- Exited 0;   (* frontend already exited -> loop observes it first pass *)
+      let observed = ref None in
+      let r = supervise_until_exit ~poll_interval_s:0.01 ~max_wall_s:5.0
+                ~on_transition:(fun x -> observed := Some x) h in
+      Alcotest.(check bool) "returns frontend_exited" true (r = Sv_frontend_exited);
+      Alcotest.(check bool) "on_transition fired" true (!observed = Some Sv_frontend_exited);
+      Alcotest.(check bool) "server reaped" true (sf.reaped >= 1);
+      Alcotest.(check string) "offline" "offline" (state_to_string (current_state h)))
+
 (* ------------------------------------------------------------------ *)
 (* stale-state recovery                                                *)
 (* ------------------------------------------------------------------ *)
@@ -316,6 +381,19 @@ let test_stale_state_starts_fresh () =
   let p = sample_persisted ~server_pid:(Some 999999) ~frontend_pid:(Some 999998) () in
   (match classify_persisted ~reap_recorded:false p with
    | Start_fresh reason -> Alcotest.(check bool) "has reason" true (String.length reason > 0))
+
+let test_stale_recovery_pid_reuse_safe () =
+  (* classify_persisted must NOT signal a live pid whose /proc cmdline is not our
+     codex-on-this-endpoint (guards against PID reuse killing a foreign process). *)
+  let child = Unix.create_process "sleep" [| "sleep"; "30" |] Unix.stdin Unix.stdout Unix.stderr in
+  Fun.protect
+    ~finally:(fun () -> (try Unix.kill child Sys.sigkill with _ -> ());
+                        (try ignore (Unix.waitpid [] child) with _ -> ()))
+    (fun () ->
+      let p = sample_persisted ~server_pid:(Some child) () in
+      (match classify_persisted ~reap_recorded:true p with Start_fresh _ -> ());
+      (* foreign 'sleep' must still be alive — recovery refused to kill it *)
+      Alcotest.(check bool) "foreign pid not killed" true (pid_alive child))
 
 let test_stale_state_roundtrip () =
   with_tmp_dir (fun dir ->
@@ -460,6 +538,10 @@ let test_live_auth_boundary () =
               | Error _ -> if Unix.gettimeofday () > deadline then false else (Unix.sleepf 0.2; wait ())
             in
             Alcotest.(check bool) "authed readiness" true (wait ());
+            (* /proc listener-ownership check must confirm OUR server owns the
+               port (startup-race gate proven against the real binary) *)
+            Alcotest.(check bool) "real_verify_owner true for our server" true
+              (real_verify_owner ep ~server_pid:server.child_id);
             (* authed handshake -> Ready *)
             Alcotest.(check bool) "authed handshake ready" true
               (handshake ep ~token:(Some raw) = Hs_ready);
@@ -482,7 +564,8 @@ let () =
         [ Alcotest.test_case "parse" `Quick test_version_parse;
           Alcotest.test_case "gate rejects old" `Quick test_version_gate_rejects_old;
           Alcotest.test_case "gate not found" `Quick test_version_gate_not_found;
-          Alcotest.test_case "gate unparseable" `Quick test_version_gate_unparseable ] );
+          Alcotest.test_case "gate unparseable" `Quick test_version_gate_unparseable;
+          Alcotest.test_case "capability gate rejects" `Quick test_capability_gate_rejects ] );
       ( "lifecycle-happy",
         [ Alcotest.test_case "to running" `Quick test_happy_path_to_running ] );
       ( "lifecycle-failures",
@@ -490,17 +573,21 @@ let () =
           Alcotest.test_case "server spawn fail" `Quick test_server_spawn_failure;
           Alcotest.test_case "readiness timeout" `Quick test_readiness_timeout;
           Alcotest.test_case "server died before ready" `Quick test_server_died_before_ready;
+          Alcotest.test_case "ownership unverified (port race)" `Quick test_ownership_unverified;
           Alcotest.test_case "frontend spawn fail" `Quick test_frontend_spawn_failure;
-          Alcotest.test_case "auth setup fail" `Quick test_auth_setup_failure ] );
+          Alcotest.test_case "auth setup fail" `Quick test_auth_setup_failure;
+          Alcotest.test_case "persistence failure tears down" `Quick test_persistence_failure_tears_down ] );
       ( "supervision",
         [ Alcotest.test_case "stays running" `Quick test_supervise_running_stays_running;
           Alcotest.test_case "frontend normal exit" `Quick test_frontend_normal_exit;
           Alcotest.test_case "frontend signal exit" `Quick test_frontend_signal_exit;
           Alcotest.test_case "server crash while running" `Quick test_server_crash_while_running;
           Alcotest.test_case "parent signal stop" `Quick test_parent_signal_stop;
-          Alcotest.test_case "stop idempotent" `Quick test_stop_idempotent ] );
+          Alcotest.test_case "stop idempotent" `Quick test_stop_idempotent;
+          Alcotest.test_case "supervise_until_exit terminal" `Quick test_supervise_until_exit_terminal ] );
       ( "recovery",
         [ Alcotest.test_case "stale starts fresh" `Quick test_stale_state_starts_fresh;
+          Alcotest.test_case "pid-reuse safe" `Quick test_stale_recovery_pid_reuse_safe;
           Alcotest.test_case "persisted roundtrip" `Quick test_stale_state_roundtrip ] );
       ( "security",
         [ Alcotest.test_case "secret hygiene" `Quick test_secret_hygiene;

@@ -35,12 +35,15 @@ val state_of_string : string -> state
 type diag_code =
   | Codex_not_found
   | Codex_version_unsupported
+  | Codex_capability_unsupported
   | Endpoint_alloc_failed
   | Server_spawn_failed
   | Readiness_timeout
   | Server_died_before_ready
+  | Endpoint_ownership_unverified
   | Auth_setup_failed
   | Frontend_spawn_failed
+  | Persistence_failed
   | Internal_error
 
 val diag_code_to_string : diag_code -> string
@@ -93,6 +96,18 @@ val handshake_result_to_string : handshake_result -> string
     with [token:None] to prove an unauthenticated client is rejected. *)
 val handshake : ?timeout:float -> endpoint -> token:string option -> handshake_result
 
+(* ------------------------------ /proc helpers ----------------------------- *)
+
+val pid_alive : int -> bool
+val read_proc_cmdline : int -> string option
+
+(** Verify the LISTEN socket on 127.0.0.1:<port> is owned by [server_pid] (via
+    /proc). Once our server holds the bound socket no same-UID process can rebind
+    the port, so this is a race-free proof the endpoint is ours — it closes the
+    allocate-then-bind impersonation window before the frontend is handed the
+    bearer token. Fail-closed (false when ownership can't be proven). *)
+val real_verify_owner : endpoint -> server_pid:int -> bool
+
 (* ------------------------------ child procs ------------------------------- *)
 
 type child_status = Running_ | Exited of int | Signaled of int
@@ -109,7 +124,11 @@ type child = {
 val child_poll : child -> child_status
 val child_signal : child -> int -> unit
 val child_reap : ?timeout:float -> child -> child_status
-val make_real_child : int -> child
+
+(** [group_leader:true] reaps the child's whole process group via killpg (used
+    for the headless server + any helpers); default false signals by pid (the
+    frontend, which must keep its controlling tty). *)
+val make_real_child : ?group_leader:bool -> int -> child
 
 (* --------------------------------- config --------------------------------- *)
 
@@ -140,9 +159,11 @@ type backend = {
   gen_token : unit -> string;
   alloc_port : unit -> (int, string) result;
   codex_version : string -> (string, string) result;
+  capabilities : string -> (unit, string) result;
   spawn_server : argv:string array -> env:string array -> log_path:string -> (child, string) result;
   spawn_frontend : argv:string array -> env:string array -> (child, string) result;
   probe_ready : endpoint -> token:string -> (unit, ready_error) result;
+  verify_owner : endpoint -> server_pid:int -> bool;
 }
 
 val real_backend : unit -> backend
@@ -187,8 +208,6 @@ type recovery = Start_fresh of string
     still-alive recorded pids so no unowned app-server is orphaned. *)
 val classify_persisted : ?reap_recorded:bool -> persisted -> recovery
 
-val pid_alive : int -> bool
-
 (* -------------------------------- handle ---------------------------------- *)
 
 type handle
@@ -217,6 +236,14 @@ type supervise_result =
 (** One nonblocking supervision step. Frontend exit → reap server (Sv_frontend_exited).
     App-server death while frontend runs → kill frontend, unit offline (Sv_server_died). *)
 val supervise_step : handle -> supervise_result
+
+(** Self-contained supervision loop: installs SIGTERM/SIGINT → {!stop}, polls
+    {!supervise_step} until terminal or [max_wall_s], restoring prior signal
+    handlers on exit. Convenience for the dogfood / simple callers; T006 may
+    instead drive {!supervise_step} inside its own managed loop. *)
+val supervise_until_exit :
+  ?poll_interval_s:float -> ?max_wall_s:float ->
+  ?on_transition:(supervise_result -> unit) -> handle -> supervise_result
 
 (** Bring the whole unit down: reap frontend then server, scrub the token, mark
     Offline. Idempotent, leaves no zombies. Route parent SIGTERM/SIGINT here. *)

@@ -66,22 +66,19 @@ let () =
         (pid_str p.A.server_pid) (pid_str p.A.frontend_pid)
         (A.token_env_var_of h)
         (String.sub (A.token_sha256_of h) 0 12);
-      (* Install SIGTERM/SIGINT -> stop so a killed pane still reaps children. *)
-      let stop_and_exit _ = log "signal -> stop"; A.stop h; exit 0 in
-      Sys.set_signal Sys.sigterm (Sys.Signal_handle stop_and_exit);
-      Sys.set_signal Sys.sigint (Sys.Signal_handle stop_and_exit);
-      let deadline = now () +. max_s in
-      let rec loop () =
-        match A.supervise_step h with
-        | A.Sv_running ->
-            if now () > deadline then (log "max wall-clock reached -> stop"; A.stop h;
-                                       log "final state=%s" (A.state_to_string (A.current_state h)))
-            else (Unix.sleepf 0.5; loop ())
+      (* supervise_until_exit installs SIGTERM/SIGINT -> stop and owns the poll
+         loop until the frontend exits, the server dies, or max_s elapses. *)
+      let on_transition = function
         | A.Sv_frontend_exited -> log "frontend exited -> server stopped; state=%s"
                                     (A.state_to_string (A.current_state h))
         | A.Sv_server_died -> log "app-server died -> unit torn down; state=%s"
                                 (A.state_to_string (A.current_state h))
         | A.Sv_offline -> log "offline"
+        | A.Sv_running -> ()
       in
-      loop ();
+      let r = A.supervise_until_exit ~poll_interval_s:0.5 ~max_wall_s:max_s ~on_transition h in
+      (match r with
+       | A.Sv_offline -> log "max wall-clock reached -> stopped; state=%s"
+                           (A.state_to_string (A.current_state h))
+       | _ -> ());
       log "done"
