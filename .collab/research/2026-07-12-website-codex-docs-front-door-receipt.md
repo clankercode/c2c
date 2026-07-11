@@ -86,6 +86,36 @@ Grep key: `landing now` and `until` land on every one of these.
 10. `docs/MSG_IO_METHODS.md` Codex row: "App-server interactive delivery
     (arrival-time, draft-safe) is landing now for managed sessions".
 
+## Post-B131 flip-to-shipped pass (2026-07-12, this slice, after merging master)
+
+B131 merged to local master as `b40fb561` — the app-server transport is now
+the **default and only** managed codex path on a supported codex
+(codex-cli ≥ 0.144; `--app-server` flag + `C2C_CODEX_APP_SERVER` gate removed;
+hidden `C2C_CODEX_FORCE_HOOKS=1` operator escape), its delivery stack
+(arrival-time model-visible injection + one gated auto-turn for eligible
+local mail when idle and DND off) is **wired into managed supervision and
+proven live end-to-end**, with automatic hook fallback for older codex or
+app-server startup failure.
+
+Actions taken in this worktree:
+
+- Merged local master (`git merge master`); the one conflict
+  (`docs/get-started.md` Codex delivery note) was resolved by keeping
+  master's shipped B131 framing and folding in this branch's
+  "`c2c new codex` for a fresh thread" addition.
+- Every FLAGGED sentence in the section above (items 1–10) was flipped to
+  the shipped framing: app-server interactive delivery is the default
+  managed-codex path (shipped, B131), arrival-time + gated local auto-turn,
+  hooks as the automatic fallback — no more "landing now / being wired in /
+  library-proven / until confirmed" language anywhere under `docs/` or in
+  root `llms.txt`. The dual-identity caveat in `docs/client-delivery.md`
+  (frontend `c2c hook codex` self-registers a second alias) is unchanged
+  and remains true.
+- The "Known residual skew" above is resolved: T005's pages
+  (client-delivery.md, feature-matrix.md, commands.md) got the shipped
+  framing via the B131 merge from master; the front-door pages got it via
+  this pass. No skew remains.
+
 ## Command-example provenance
 
 - `c2c new codex -- --model gpt-5.3-codex-spark` and `alias cx='c2c new codex --'`

@@ -143,12 +143,13 @@ For Codex, `c2c install codex` writes a managed, pre-trusted hooks block to
 - `SessionEnd` cleans up vanilla per-thread hook registrations.
 
 Vanilla/unmanaged Codex sessions auto-register on the first hook fire and receive
-through these installed hooks. Managed `c2c start codex` sessions likewise
-receive through the installed hooks at hook boundaries; their stable c2c session
-id resolves from the managed thread mapping. Explicit polling remains the
-universal fallback. App-server interactive delivery is landing now, with the
-live supervisor wiring being wired in; until that wiring is confirmed live,
-managed sessions receive at the hook boundary. The hook command is intentionally
+through these installed hooks. Managed `c2c start codex` sessions on a supported
+Codex (codex-cli ≥ 0.144) instead receive arrival-time over the app-server path
+(shipped, B131 — see [Per-Client Delivery § Codex](/client-delivery/#codex));
+managed sessions on an older Codex, or after an app-server startup failure, fall
+back automatically to the installed hooks at hook boundaries, with their stable
+c2c session id resolved from the managed thread mapping. Explicit polling
+remains the universal fallback. The hook command is intentionally
 fail-open: hook errors exit `0` with empty output so a c2c issue does not break
 the Codex turn.
 
@@ -169,19 +170,19 @@ additionalContext visible in the agent transcript:
 ```
 
 Latency: bounded by how quickly the recipient reaches the next hook boundary.
-Active Claude Code and Codex sessions — vanilla and managed alike — usually
-receive messages on the next tool call; Codex also drains at user-turn
-boundaries. App-server interactive delivery is landing now, with the live
-supervisor wiring being wired in; until that wiring is confirmed live, managed
-Codex sessions receive at the hook boundary. Idle agents that are not reaching
-any hook boundary still need an idle-session bridge or manual polling.
+Active Claude Code and hook-path Codex sessions usually receive messages on
+the next tool call; Codex also drains at user-turn boundaries. Managed Codex
+sessions on a supported Codex are not bounded by hook boundaries at all: the
+app-server path (shipped, B131) injects mail into the thread's model-visible
+history on arrival. Idle agents on the hook path that are not reaching any
+hook boundary still need an idle-session bridge or manual polling.
 
 #### Client support
 
 | Client | Supported | Notes |
 |--------|-----------|-------|
 | Claude Code | Yes | Primary delivery mechanism. Installed by `c2c install claude`. |
-| Codex | Yes | `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext` — for vanilla and managed sessions alike (hook-boundary, not arrival-time; explicit polling remains the fallback). App-server interactive delivery (arrival-time, draft-safe) is landing now for managed sessions; its live supervisor wiring is being wired in, so until confirmed live sessions receive at the hook boundary — see [Per-Client Delivery § Codex](/client-delivery/#codex). |
+| Codex | Yes | `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext` — the path for vanilla sessions and the automatic fallback for managed sessions on an older Codex (hook-boundary, not arrival-time; explicit polling remains the fallback). Managed sessions on a supported Codex get app-server interactive delivery instead (arrival-time, draft-safe; shipped, B131) — see [Per-Client Delivery § Codex](/client-delivery/#codex). |
 | Pi Agent | No | Pi Agent uses the `pi-c2c` extension rather than host hooks. |
 | OpenCode | No | OpenCode uses its native TypeScript plugin instead. |
 | Kimi | No | Kimi uses notification-store delivery instead. |

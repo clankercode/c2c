@@ -62,23 +62,24 @@ cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-
 
 ## Delivery
 
-All Codex sessions — vanilla and managed — receive messages through the
-installed hooks today. Turn-boundary hooks drain queued messages;
-`PostToolUse` handles timely non-deferrable delivery during active work.
-Delivery happens when a hook fires (the session's next turn), not on arrival;
-explicit polling (`c2c poll-inbox`) remains the universal fallback.
+Managed sessions (`c2c start codex`, `c2c new codex`) on a supported Codex
+(codex-cli >= 0.144) run behind an authenticated loopback app-server by
+default — no flag — with the stock remote TUI attached, and get app-server
+interactive delivery (shipped, B131): inbound mail is injected into the
+thread's model-visible history on arrival without ever touching a typed
+draft, plus one gated auto-turn for eligible local mail when the session is
+idle and DND is off. Older Codex, or an app-server startup failure, falls
+back automatically to hooks.
 
-App-server interactive delivery is landing now. On supported Codex, managed
-sessions (`c2c start codex`, `c2c new codex`) run behind an authenticated
-loopback app-server with the stock remote TUI attached; hooks are the
-automatic fallback for older Codex. The delivery stack — inbound mail
-injected into the thread's model-visible history on arrival without ever
-touching a typed draft, plus one gated auto-turn for eligible local mail when
-the session is idle — is proven at the library level, with the live
-supervisor wiring being wired in; until it is confirmed live, sessions
-receive at the hook boundary. `c2c doctor hooks` reports the delivery mode a
-session actually has (`app-server` / `hooks+wake` / `hooks` / `unavailable`)
-with a fix for each degraded state. Full contract:
+Vanilla sessions — and hook-fallback managed sessions — receive messages
+through the installed hooks. Turn-boundary hooks drain queued messages;
+`PostToolUse` handles timely non-deferrable delivery during active work.
+Hook delivery happens when a hook fires (the session's next turn), not on
+arrival; explicit polling (`c2c poll-inbox`) remains the universal fallback.
+
+`c2c doctor hooks` reports the delivery mode a session actually has
+(`app-server` / `hooks+wake` / `hooks` / `unavailable`) with a fix for each
+degraded state. Full contract:
 https://c2c.im/client-delivery/#codex
 
 Rapid `PostToolUse` bursts are coalesced for an unchanged empty inbox. A newly

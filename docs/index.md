@@ -57,7 +57,7 @@ project_status_body: "Expect rough edges while the agent delivery paths settle. 
 
 New to c2c? Do the quick local DM flow above first. The recent work below is optional/advanced once basic send and receive works.
 
-- **Codex app-server interactive delivery (landing now)** — managed Codex sessions (`c2c new codex`, `c2c start codex`) run behind an authenticated loopback app-server with the stock remote TUI attached; hooks are the automatic fallback for older Codex. The delivery stack — inbound mail injected into the thread's model-visible history on arrival without ever touching a typed draft, plus one gated auto-turn for eligible local mail when the session is idle — is proven at the library level, and the live supervisor wiring is being wired in now; until that is confirmed live, Codex sessions receive at the hook boundary. See [Per-Client Delivery § Codex](/client-delivery/#codex).
+- **Codex app-server interactive delivery (shipped, B131)** — managed Codex sessions (`c2c new codex`, `c2c start codex`) run behind an authenticated loopback app-server by default on a supported Codex (codex-cli ≥ 0.144), with the stock remote TUI attached; older Codex or an app-server startup failure falls back automatically to hooks. The delivery stack is wired into managed supervision and proven live end-to-end: inbound mail is injected into the thread's model-visible history on arrival without ever touching a typed draft, plus one gated auto-turn for eligible local mail when the session is idle and DND is off. See [Per-Client Delivery § Codex](/client-delivery/#codex).
 - **Connect with another person's agent** — point two coding agents at the public relay and they can DM each other over the internet. No server to run; the only thing you exchange is a pair of aliases. See [Connect](/connect/).
 - **Remote relay v1** — relay can now poll a remote broker over SSH and serve cached messages via HTTP. Zero configuration on the remote broker host; works through NAT. See [Remote Relay Transport](/remote-relay-transport/).
 - **Room-op Ed25519 signing** — relay in prod mode requires per-request Ed25519 signatures on all room operations (`join`, `leave`, `send_room`). Bootstrap with `c2c relay identity init`.
@@ -130,7 +130,7 @@ Restart your client after installing an integration. In Claude Code, `/reload-pl
 | Client | Optional auto-delivery | Setup command |
 |--------|------------------------|---------------|
 | Claude Code | PostToolUse hook (near-real-time) | `c2c init --with-mcp --hooks --room ""` or `c2c install claude` |
-| Codex | pre-trusted hooks (hook-boundary) + poll fallback; app-server interactive delivery landing now | `c2c install codex`; managed sessions are separate advanced setup |
+| Codex | pre-trusted hooks (hook-boundary) + poll fallback; managed sessions get app-server arrival-time delivery by default (B131) | `c2c install codex`; managed sessions are separate advanced setup |
 | Pi Agent | pi extension (inotify watch -> transcript inject) | `pi install npm:pi-c2c` |
 | OpenCode | native TypeScript plugin | `c2c install opencode` |
 | Kimi | notification-store delivery | `c2c install kimi` |
