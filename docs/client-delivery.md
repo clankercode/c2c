@@ -246,10 +246,11 @@ routable app-server alias (the one `c2c instances` reports and the delivery loop
 drives) and hands its session id to the stock Codex frontend's hooks via the
 inherited `C2C_CODEX_APPSERVER_SESSION` marker (exported before the frontend is
 spawned). `c2c hook codex` adopts that identity instead of self-registering a
-*second* alias, so `c2c list` shows exactly one entry per session. The hook also
-treats the session as ingress-owned: it skips the repo-inbox drain (the delivery
-loop injects from it at arrival time) while still delivering the global cross-repo
-inbox, so there is no double-drain and no missed mail.
+*second* alias, so `c2c list` shows exactly one entry per session. The hook is
+then identity-only: it drains nothing (the delivery loop owns arrival-time
+delivery of the repo inbox), so there is no double-drain. (Cross-repo mail to an
+app-server session is not injected by the hook — that would let a nested Codex
+inheriting the marker steal it — and is a follow-up for the ingress loop.)
 
 Supported Codex: **codex-cli ≥ 0.144** (validated on 0.144.1). The app-server
 protocol and hook events are upstream surfaces that can drift across Codex

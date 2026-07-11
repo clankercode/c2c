@@ -614,6 +614,26 @@ let hook_codex_cmd =
                          ~session_id:sid ~alias ~client:(Some "codex"));
                   (sid, Some alias))
        in
+       (* B137: is this an app-server-backed managed codex session? Detected by
+          the inherited launcher marker (C2C_CODEX_APPSERVER_SESSION — present
+          even before the launcher's broker registration lands, so the earliest
+          hook fire is covered too) OR by the resolved session already carrying a
+          "codex-app-server" registration. For such a session the app-server
+          C2c_codex_ingress loop owns delivery and the launcher owns the
+          registration — the hook is IDENTITY-ONLY (adopted above; it does not
+          register, drain, or touch wake targets). Hook-fallback managed codex
+          (client_type "codex") is NOT ingress-owned — hooks remain its delivery
+          + wake path. *)
+       let ingress_owned =
+         (match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
+          | Some s when String.trim s <> "" -> true
+          | _ -> false)
+         || List.exists
+              (fun (r : C2c_mcp.registration) ->
+                 r.session_id = session_id
+                 && r.client_type = Some "codex-app-server")
+              (regs ())
+       in
        (* Wake-target capture (codex-wake-inject): the hook runs with the
           codex process's env, so $TMUX/$TMUX_PANE and $HERDR_PANE_ID /
           $HERDR_SOCKET_PATH identify this session's pane for BOTH vanilla
@@ -636,8 +656,13 @@ let hook_codex_cmd =
          && not (C2c_wake_inject.binding_owns_current_process
                    ~broker_root ~session_id)
        in
-       (if event = "SessionStart" || Option.is_some onboarded_alias
-           || binding_moved then begin
+       (* Never refresh wake targets for an app-server session: it delivers via
+          the ingress loop (not wake-inject), so the targets are unused, and a
+          NESTED codex that inherited the marker could otherwise overwrite the
+          parent registration's pane. *)
+       (if (not ingress_owned)
+           && (event = "SessionStart" || Option.is_some onboarded_alias
+               || binding_moved) then begin
           let tmux_location, herdr_pane, herdr_socket =
             C2c_wake_inject.refresh_wake_targets ~broker_root ~session_id ()
           in
@@ -656,39 +681,23 @@ let hook_codex_cmd =
           messages, respecting sender intent. Ephemeral no-archive semantics
           are handled inside the broker drain. *)
        let full_drain = event = "SessionStart" || event = "UserPromptSubmit" in
-       (* B137: when this session is an app-server-backed managed codex, the
-          C2c_codex_ingress loop owns arrival-time delivery of this inbox. The
-          hook must NOT also drain it — a second drainer would race the ingress
-          loop and steal messages before they are injected. Skip delivery
-          entirely; identity was still resolved/adopted above so no duplicate
-          registration is created. Detected either by the inherited launcher
-          marker (C2C_CODEX_APPSERVER_SESSION — set even before the launcher's
-          broker registration lands, so the earliest hook fire also fail-closes
-          against draining) or by the resolved session's "codex-app-server"
-          registration. Hook-fallback managed codex (client_type "codex") is
-          unaffected — hooks remain its delivery path. *)
-       let ingress_owned =
-         (match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
-          | Some s when String.trim s <> "" -> true
-          | _ -> false)
-         || List.exists
-              (fun (r : C2c_mcp.registration) ->
-                 r.session_id = session_id
-                 && r.client_type = Some "codex-app-server")
-              (regs ())
-       in
        let repo_broker, messages =
-         if full_drain then begin
-           (* [ingress_owned] skips ONLY the repo inbox — the C2c_codex_ingress
-              loop injects from it and would race a second drainer. It does NOT
-              own the cross-repo sessions broker (the deliver loop is configured
-              with the repo broker_root only), so the global inbox must still be
-              drained here or cross-repo mail to a managed app-server session
-              would sit undelivered forever. Same shape as the channel-capable
-              (managed claude) skip. *)
+         if ingress_owned then
+           (* B137: app-server session — the hook drains NOTHING. The
+              C2c_codex_ingress loop owns arrival-time delivery of the repo
+              inbox; a second drainer here would race it and steal messages
+              before injection. The global cross-repo inbox is deliberately not
+              drained either: doing so from the frontend hook would let a NESTED
+              codex that inherited C2C_CODEX_APPSERVER_SESSION consume mail
+              addressed to the parent app-server identity (misrouting into the
+              wrong transcript). Global-inbox delivery for app-server sessions
+              belongs to a future extension of the ingress loop, not this hook.
+              Identity was still adopted above, so no duplicate registration is
+              created — which is all B137 requires of the hook. *)
+           (Some broker, [])
+         else if full_drain then begin
            let repo_messages =
-             if ingress_owned
-                || C2c_mcp.Broker.is_session_channel_capable broker ~session_id then []
+             if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then []
              else C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id
            in
            let global_messages =
@@ -703,15 +712,10 @@ let hook_codex_cmd =
            (Some broker, repo_messages @ global_messages)
          end
          else
-           (* Mid-turn (PostToolUse / PreToolUse): push-only drain. When the
-              ingress loop owns the repo inbox, pass an empty repo broker_root so
-              only the global (cross-repo) push inbox is drained — the repo inbox
-              stays untouched for the ingress loop. *)
            let rb, msgs, _alias =
-             C2c_hook_lib.drain_all_messages ~session_id
-               ~broker_root:(if ingress_owned then "" else broker_root) ()
+             C2c_hook_lib.drain_all_messages ~session_id ~broker_root ()
            in
-           ((if ingress_owned then Some broker else rb), msgs)
+           (rb, msgs)
        in
        let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
        let intro =

@@ -615,12 +615,14 @@ let test_b137_app_server_marker_adopts_before_registration () =
        owns that registration). *)
     check int "hook self-registers nothing" 0 (List.length regs))
 
-(* The app-server ingress loop owns only the REPO inbox. Cross-repo mail lands
-   in the global sessions broker, which the loop does not cover — so the hook
-   must still deliver the global inbox for a managed app-server session, while
-   leaving the repo inbox for the ingress loop. Regression guard for the
-   codex-review HIGH finding (blanket ingress skip dropped global mail). *)
-let test_b137_app_server_still_delivers_global_inbox () =
+(* The app-server hook is identity-only: it drains NOTHING (neither the repo
+   inbox — owned by the ingress loop — nor the global cross-repo inbox). The
+   global skip is deliberate: draining it from the frontend hook would let a
+   NESTED codex that inherited C2C_CODEX_APPSERVER_SESSION steal cross-repo mail
+   addressed to the parent identity. Regression guard for the codex-review
+   MEDIUM (marker leak → nested theft) — and, symmetrically, proof there is no
+   double-drain vs the ingress loop. *)
+let test_b137_app_server_hook_drains_nothing () =
   with_ctx (fun ctx ->
     let managed_sid = "managed-b137-global" in
     let thread_id = "codex-thread-b137-global" in
@@ -630,7 +632,8 @@ let test_b137_app_server_still_delivers_global_inbox () =
     (* Repo inbox message — ingress owns it, hook must NOT drain. *)
     C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-b137-gpeer"
       ~to_alias:launcher_alias ~content:"repo owned by ingress" ();
-    (* Global (cross-repo) inbox message — hook MUST still deliver. *)
+    (* Global (cross-repo) inbox message — the hook must NOT drain it either
+       (a nested codex would otherwise steal it). *)
     let global = C2c_mcp.Broker.create ~root:ctx.global_root in
     let pid = Some (Unix.getpid ()) in
     let pst = C2c_mcp.Broker.capture_pid_start_time pid in
@@ -639,9 +642,13 @@ let test_b137_app_server_still_delivers_global_inbox () =
     C2c_mcp.Broker.register global ~session_id:"codex-b137-global-peer"
       ~alias:"zz-codex-b137-gpeer" ~pid ~pid_start_time:pst ();
     C2c_mcp.Broker.enqueue_message global ~from_alias:"zz-codex-b137-gpeer"
-      ~to_alias:launcher_alias ~content:"cross-repo must arrive" ();
+      ~to_alias:launcher_alias ~content:"cross-repo stays queued" ();
+    let regs_before = List.length (C2c_mcp.Broker.list_registrations (broker ctx)) in
     let rc, stdout, stderr =
       run_hook
+        (* thread_id here is NOT the launcher's registered session — i.e. the
+           same shape as a NESTED codex that inherited the marker. It must not
+           steal the parent's mail nor register a new identity. *)
         ~extra_env:
           [ ("C2C_CODEX_MANAGED", "1")
           ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid) ]
@@ -649,19 +656,18 @@ let test_b137_app_server_still_delivers_global_inbox () =
         ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
     in
     check int "exit 0" 0 rc;
-    (match parse_context stdout with
-     | Some (_, context) ->
-         check bool "global cross-repo message delivered" true
-           (contains ~haystack:context ~needle:"cross-repo must arrive");
-         check bool "repo inbox message NOT delivered by hook" false
-           (contains ~haystack:context ~needle:"repo owned by ingress")
-     | None ->
-         failf "expected global delivery output, got: %S (stderr %S)" stdout stderr);
-    (* Repo inbox still holds its message (ingress will deliver it). *)
+    check int "hook registered nothing (no fork)" regs_before
+      (List.length (C2c_mcp.Broker.list_registrations (broker ctx)));
+    (* Hook emitted no message content at all. *)
+    check bool "repo message not surfaced" false
+      (contains ~haystack:stdout ~needle:"repo owned by ingress");
+    check bool "global message not surfaced (no nested theft)" false
+      (contains ~haystack:stdout ~needle:"cross-repo stays queued");
+    ignore stderr;
+    (* Both inboxes are left intact for their proper owner. *)
     check int "repo inbox left for ingress loop" 1
       (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
-    (* Global inbox was drained (delivered exactly once). *)
-    check int "global inbox drained by hook" 0
+    check int "global inbox left queued (not drained by hook)" 1
       (List.length (C2c_mcp.Broker.read_inbox global ~session_id:managed_sid)))
 
 (* Guard: a codex subprocess that merely inherited C2C_MCP_SESSION_ID from a
@@ -1148,8 +1154,8 @@ let () =
             test_b137_managed_app_server_adopts_launcher_alias
         ; test_case "B137 app-server marker adopts before registration" `Quick
             test_b137_app_server_marker_adopts_before_registration
-        ; test_case "B137 app-server still delivers global inbox" `Quick
-            test_b137_app_server_still_delivers_global_inbox
+        ; test_case "B137 app-server hook drains nothing" `Quick
+            test_b137_app_server_hook_drains_nothing
         ; test_case "B137 non-codex env session not adopted" `Quick
             test_b137_non_codex_env_session_not_adopted
         ; test_case "deferrable held until turn boundary" `Quick
