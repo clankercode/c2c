@@ -112,7 +112,7 @@ let list_cmd =
   in
   let global =
     Cmdliner.Arg.(value & flag & info [ "global"; "g" ]
-      ~doc:"Scan all known broker roots (across all repos) and list every registered session system-wide. Each session is annotated with its repo fingerprint and path. Use this to find sessions started in other repos or on other brokers.")
+      ~doc:"Scan all known broker roots (across all repos) and group visible sessions by repository. Each row is annotated with its repo fingerprint and path; confirmed-dead rows stay hidden unless --all is passed. Use this to find sessions started in other repos or on other brokers.")
   in
   let alive_only =
     Cmdliner.Arg.(value & flag & info [ "alive"; "A" ]
