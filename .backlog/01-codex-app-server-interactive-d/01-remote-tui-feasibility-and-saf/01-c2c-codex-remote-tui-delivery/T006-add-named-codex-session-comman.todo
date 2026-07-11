@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-11T10:48:41Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-11T11:52:35Z"
 complexity: high
 depends_on:
     - P1.M1.E1.T002
+duration_minutes: 63.91528560378333
 estimate_hours: 8
 id: P1.M1.E1.T006
 priority: high
 started_at: "2026-07-11T10:48:41Z"
-status: in_progress
+status: done
 tags: []
 title: Ship managed Codex command grammar, identity, and lifecycle
-updated_at: "2026-07-11T10:48:41Z"
+updated_at: "2026-07-11T11:52:35Z"
 ---
 ## Objective
 

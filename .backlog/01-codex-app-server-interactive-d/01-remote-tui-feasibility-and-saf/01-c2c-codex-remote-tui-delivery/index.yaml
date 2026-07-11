@@ -71,7 +71,7 @@ tasks:
       file: T006-add-named-codex-session-comman.todo
       id: T006
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Ship managed Codex command grammar, identity, and lifecycle
     - complexity: high
