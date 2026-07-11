@@ -1,0 +1,27 @@
+---
+complexity: medium
+depends_on:
+    - P1.M1.E1.T002
+estimate_hours: 4
+id: P1.M1.E1.T006
+priority: high
+status: pending
+tags:
+    - codex
+    - cli
+    - alias
+    - lifecycle
+title: Add named Codex session commands and generated aliases
+---
+Depends on the app-server launcher.
+
+Provide the managed-session UX: `c2c start codex` is canonical; `c2c codex` is an exact shortcut; `c2c new codex` creates a fresh thread; and `c2c resume codex <alias>` resumes the named session, with an explicit exact-thread/session option where needed.
+
+Acceptance criteria:
+- Default alias is generated from stable Codex/app-server session identity; `--alias` is optional and never silently selected.
+- `c2c start codex --yolo` visibly forwards only to Codex `--dangerously-bypass-approvals-and-sandbox`; without it, current approval/sandbox behavior is preserved.
+- Normal TUI exit shuts down the owning app-server and changes status to offline.
+- Help, status, completion, instance persistence, and restart/resume semantics agree; unsupported old Codex versions fail clearly.
+- CLI tests cover generated identity collision/restart behavior and no-shortcut ambiguity.
+
+Blockers: P1.M1.E1.T002.
