@@ -1101,11 +1101,12 @@ let relay_dm_cmd =
               WITHOUT draining the inbox, so a relay-aware monitor (B089)
               can tail without stealing messages from the poll consumer.
               Signs against /peek_inbox; the server route already exists.
-              B115: token-configured (prod) relays now require the signed
-              request's alias to own the node/session for both /poll_inbox
-              and /peek_inbox; this signed path satisfies that. The unsigned
-              fallback below only works against dev relays (no Bearer token
-              configured). *)
+              B115: the relay now requires the signed request's alias to
+              own the node/session for both /poll_inbox and /peek_inbox —
+              by default even on tokenless relays; this signed path
+              satisfies that. The unsigned fallback below only works
+              against a tokenless dev relay that also sets the explicit
+              C2C_RELAY_ALLOW_UNSIGNED_INBOX=1 gate. *)
            let from_alias = match alias with
              | Some a -> a
              | None ->

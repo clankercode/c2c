@@ -51,8 +51,10 @@ let auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified =
      B115: /poll_inbox and /peek_inbox are deliberately NOT in this set. They
      are ordinary peer routes: reading or draining an inbox requires a verified
      Ed25519 request whose bound alias owns the node/session (checked in the
-     handlers). Only dev mode (no Bearer token configured) keeps the legacy
-     unauthenticated path. Same rule as /send and /heartbeat. *)
+     handlers). The handlers additionally fail closed even on a tokenless
+     relay unless the explicit development-only env gate
+     C2C_RELAY_ALLOW_UNSIGNED_INBOX=1 is set (see inbox_owner_required in
+     relay.ml). Same route class as /send and /heartbeat. *)
   let is_self_auth =
     path = "/register"
     || path = "/join_room"

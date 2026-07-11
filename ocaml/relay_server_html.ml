@@ -118,9 +118,9 @@ POST /heartbeat     { node_id, session_id }
 POST /send          { from_alias, to_alias, content, message_id? }
 POST /send_all      { from_alias, content, message_id? }
 POST /poll_inbox    { node_id, session_id }      drains &amp; returns []
-                    (Ed25519 owner-signed request required in prod)
+                    (Ed25519 owner-signed request required)
 POST /peek_inbox    { node_id, session_id }      non-destructive
-                    (Ed25519 owner-signed request required in prod)
+                    (Ed25519 owner-signed request required)
 POST /join_room     { alias, room_id, visibility? }
 POST /leave_room    { alias, room_id }
 POST /send_room     { from_alias, room_id, content, message_id? }

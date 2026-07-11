@@ -182,3 +182,19 @@ Seconds the hook will block on `c2c await-reply` before falling closed
 ### `C2C_RELAY_E2E_STRICT_V2`
 
 When truthy (`1`, `true`, `yes`, `on` — case-insensitive), the relay-e2e verifier rejects envelopes with `envelope_version < 2` before checking the signature. Default off — v1 envelopes continue to verify normally during the v1↔v2 cutover window. The flag is env-read on every verify, so ops can flip it without daemon restart. Used together with Slice B-min-version (per-peer downgrade pin): B handles once-seen-v2-stays-v2 attacks, C handles the global cutover for first-contact peers. See `.collab/design/2026-04-29-relay-crypto-crit-fix-plan-cairn.md` "Slice C — Strict-mode flip".
+
+### `C2C_RELAY_ALLOW_UNSIGNED_INBOX` (B115)
+
+Server-side, development-only. `/poll_inbox` and `/peek_inbox` on the OCaml
+relay require a valid Ed25519 request header whose bound alias owns the
+requested `node_id`/`session_id` — by default even on a tokenless relay, so a
+production deploy whose token secret goes missing fails closed for inbox
+reads instead of reopening the B111 read/drain primitive. Setting
+`C2C_RELAY_ALLOW_UNSIGNED_INBOX=1` (also `true`/`TRUE`/`yes`) on the relay
+process re-enables the legacy unauthenticated poll/peek path **only when no
+Bearer token is configured**; a token-configured (prod) relay ignores this
+gate entirely, so env alone can never downgrade production. Read per-request
+(`inbox_owner_required` in `ocaml/relay.ml`). Used by the local/dev docker
+compose harnesses (`docker-compose.yml`, `docker-compose.e2e-multi-agent.yml`)
+whose agents register without Ed25519 identities. Regression coverage:
+`ocaml/test/test_relay_remote_broker.ml` (`b115_inbox_owner_auth` suite).

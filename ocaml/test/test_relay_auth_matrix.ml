@@ -201,8 +201,11 @@ let t_ws_subscribe_no_header_auth_allowed () =
    B111 found both were outer-auth bypasses: without an Ed25519 header the
    handlers trusted caller-supplied node_id/session_id, letting anyone who
    learned those identifiers read (peek) or drain (poll) an inbox. They must
-   behave exactly like /send and /heartbeat: Ed25519 required in prod
-   (token configured), Bearer rejected, dev mode (token=None) open. *)
+   behave exactly like /send and /heartbeat at THIS layer: Ed25519 required
+   in prod (token configured), Bearer rejected, dev mode (token=None)
+   allowed through the classifier. End-to-end the handlers additionally
+   fail closed on tokenless relays unless C2C_RELAY_ALLOW_UNSIGNED_INBOX=1
+   (covered in test_relay_remote_broker.ml). *)
 
 let t_poll_inbox_no_auth_rejected_when_token_set () =
   Alcotest.(check bool) "/poll_inbox + no auth rejected (token set)" false

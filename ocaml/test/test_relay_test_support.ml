@@ -236,6 +236,23 @@ let with_pow_env_off f =
   Unix.putenv "C2C_RELAY_POW" "";
   Fun.protect ~finally:restore f
 
+(* B115: the F5c fake/real vector polls /poll_inbox UNSIGNED against the
+   real production callback. Since B115, unsigned inbox reads fail closed
+   even on a tokenless relay, so the vector's legacy poll semantics need
+   the explicit development-only gate armed for the real capture. This
+   suite asserts fake/real response-shape equality, not auth policy —
+   the auth policy itself is locked by test_relay_remote_broker.ml. *)
+let with_unsigned_inbox_allowed f =
+  let var = "C2C_RELAY_ALLOW_UNSIGNED_INBOX" in
+  let previous = Sys.getenv_opt var in
+  let restore () =
+    match previous with
+    | Some v -> Unix.putenv var v
+    | None -> Unix.putenv var ""
+  in
+  Unix.putenv var "1";
+  Fun.protect ~finally:restore f
+
 let json_member name = function
   | `Assoc fields -> List.assoc_opt name fields |> Option.value ~default:`Null
   | _ -> `Null
@@ -1028,6 +1045,7 @@ let capture_fake () : (string * int * Yojson.Safe.t) list =
 
 let capture_real () : (string * int * Yojson.Safe.t) list =
   with_pow_env_off @@ fun () ->
+  with_unsigned_inbox_allowed @@ fun () ->
   Real.with_server (fun ~base_url ~relay:_ ->
       let open Lwt.Infix in
       let one label ~meth ~path ?req () =

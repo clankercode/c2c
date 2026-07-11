@@ -3185,13 +3185,26 @@ end = struct
       end
 
   (* B115: /poll_inbox and /peek_inbox expose inbox contents, so they are
-     bound to a verified owner. [require_owner] is true whenever the relay
-     runs with a Bearer token configured (auth_mode "prod" in /health); in
-     that mode an unverified request is rejected here even if the outer
-     route classifier ever regresses (defense in depth — auth_decision
-     already refuses these routes without a verified Ed25519 header).
-     The unverified legacy path survives ONLY in dev mode (no token
-     configured), the explicit development-only setting. *)
+     bound to a verified owner. [require_owner] is computed at the dispatch
+     site via [inbox_owner_required]: always true on a token-configured
+     (prod) relay, and true BY DEFAULT on a tokenless relay too — a
+     production deploy whose token secret goes missing therefore fails
+     closed for inbox reads instead of silently reopening the B111 drain.
+     The legacy unauthenticated path exists only behind the explicit
+     development-only setting [C2C_RELAY_ALLOW_UNSIGNED_INBOX=1], and even
+     that is ignored when a token is configured (a prod relay can never be
+     downgraded by env). When [require_owner] is true an unverified request
+     is rejected here even if the outer route classifier ever regresses
+     (defense in depth — auth_decision already refuses these routes without
+     a verified Ed25519 header whenever a token is configured). *)
+  let allow_unsigned_inbox_env = "C2C_RELAY_ALLOW_UNSIGNED_INBOX"
+
+  let inbox_owner_required ~token_configured =
+    token_configured
+    || (match Sys.getenv_opt allow_unsigned_inbox_env with
+        | Some ("1" | "true" | "TRUE" | "yes") -> false
+        | Some _ | None -> true)
+
   let handle_inbox_read relay ~verified_alias ~require_owner ~route ~read body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
@@ -4478,7 +4491,7 @@ end = struct
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j ->
            handle_poll_inbox relay ~verified_alias
-             ~require_owner:(token <> None) j)
+             ~require_owner:(inbox_owner_required ~token_configured:(token <> None)) j)
 
       | `POST, "/peek_inbox" ->
         let json = parse_body () in
@@ -4486,7 +4499,7 @@ end = struct
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j ->
            handle_peek_inbox relay ~verified_alias
-             ~require_owner:(token <> None) j)
+             ~require_owner:(inbox_owner_required ~token_configured:(token <> None)) j)
 
       | `POST, "/join_room" ->
         let json = parse_body () in

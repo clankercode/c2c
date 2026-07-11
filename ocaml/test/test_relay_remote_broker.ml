@@ -129,15 +129,27 @@ module Backend_http_tests (R : Relay.RELAY) = struct
         Relay.relay_err_signature_invalid
         (json_string_field "error_code" result.json))
 
+  (* B115: the unsigned legacy inbox path now requires BOTH a tokenless
+     relay AND the explicit development-only env gate
+     C2C_RELAY_ALLOW_UNSIGNED_INBOX=1. [with_unsigned_inbox_gate] arms the
+     gate for one test body and always disarms it after (empty value =
+     fail closed; OCaml's Unix has no unsetenv). *)
+  let with_unsigned_inbox_gate f =
+    Unix.putenv "C2C_RELAY_ALLOW_UNSIGNED_INBOX" "1";
+    Fun.protect
+      ~finally:(fun () -> Unix.putenv "C2C_RELAY_ALLOW_UNSIGNED_INBOX" "")
+      f
+
   let test_unsigned_dev_request_keeps_existing_policy relay =
     let _victim, _attacker = prime_victim_inbox relay in
-    with_server relay (fun ~base_url ->
-      call_json ~base_url ~path:"/peek_inbox" victim_body >|= fun result ->
-      Alcotest.(check int) "unsigned dev-mode peek remains allowed" 200
-        (Cohttp.Code.code_of_status result.status);
-      let messages = json_messages result.json in
-      Alcotest.(check int) "victim inbox remains readable in dev mode" 1
-        (List.length messages))
+    with_unsigned_inbox_gate (fun () ->
+      with_server relay (fun ~base_url ->
+        call_json ~base_url ~path:"/peek_inbox" victim_body >|= fun result ->
+        Alcotest.(check int) "unsigned gated dev-mode peek remains allowed" 200
+          (Cohttp.Code.code_of_status result.status);
+        let messages = json_messages result.json in
+        Alcotest.(check int) "victim inbox remains readable in gated dev mode" 1
+          (List.length messages)))
 
   let test_verified_owner_can_peek_own_inbox relay =
     let victim, _attacker = prime_victim_inbox relay in
@@ -311,16 +323,48 @@ module Backend_http_tests (R : Relay.RELAY) = struct
       (owner_handler_message_count relay)
 
   let test_dev_unsigned_poll_still_allowed relay =
-    (* Development-only escape: with NO Bearer token configured the relay is
-       in dev mode (auth_mode "dev" in /health) and unsigned poll keeps the
-       legacy behavior. This is the explicit dev-only setting from B115. *)
+    (* Development-only escape: unsigned poll works ONLY when the relay is
+       tokenless AND C2C_RELAY_ALLOW_UNSIGNED_INBOX=1 is set — the explicit
+       dev-only setting from B115. *)
+    let _victim, _attacker = prime_victim_inbox relay in
+    with_unsigned_inbox_gate (fun () ->
+      with_server relay (fun ~base_url ->
+        call_json ~base_url ~path:"/poll_inbox" victim_body >|= fun result ->
+        Alcotest.(check int) "unsigned gated dev-mode poll remains allowed" 200
+          (Cohttp.Code.code_of_status result.status);
+        Alcotest.(check int) "gated dev-mode poll drains the victim inbox" 1
+          (List.length (json_messages result.json))))
+
+  let test_tokenless_unsigned_poll_fails_closed_by_default relay =
+    (* Fail-closed default (B115 review finding): a tokenless relay — e.g. a
+       production deploy whose token secret went missing — must still refuse
+       unsigned inbox reads unless the dev gate is explicitly armed. *)
+    let victim, _attacker = prime_victim_inbox relay in
+    with_server relay (fun ~base_url ->
+      call_json ~base_url ~path:"/poll_inbox" victim_body >>= fun result ->
+      Alcotest.(check int) "unsigned tokenless poll rejected by default" 401
+        (Cohttp.Code.code_of_status result.status);
+      owner_poll_message_count relay ~base_url victim >|= fun n ->
+      Alcotest.(check int) "rejected tokenless poll did NOT drain the inbox" 1 n)
+
+  let test_tokenless_unsigned_peek_fails_closed_by_default relay =
     let _victim, _attacker = prime_victim_inbox relay in
     with_server relay (fun ~base_url ->
-      call_json ~base_url ~path:"/poll_inbox" victim_body >|= fun result ->
-      Alcotest.(check int) "unsigned dev-mode poll remains allowed" 200
-        (Cohttp.Code.code_of_status result.status);
-      Alcotest.(check int) "dev-mode poll drains the victim inbox" 1
-        (List.length (json_messages result.json)))
+      call_json ~base_url ~path:"/peek_inbox" victim_body >|= fun result ->
+      Alcotest.(check int) "unsigned tokenless peek rejected by default" 401
+        (Cohttp.Code.code_of_status result.status))
+
+  let test_prod_env_gate_cannot_downgrade_token_relay relay =
+    (* The dev gate must be ignored whenever a token is configured: env
+       alone can never reopen the unsigned path on a prod relay. *)
+    let victim, _attacker = prime_victim_inbox relay in
+    with_unsigned_inbox_gate (fun () ->
+      with_server ~token:prod_token relay (fun ~base_url ->
+        call_json ~base_url ~path:"/poll_inbox" victim_body >>= fun result ->
+        Alcotest.(check int) "env gate does not downgrade token-configured relay"
+          401 (Cohttp.Code.code_of_status result.status);
+        owner_poll_message_count relay ~base_url victim >|= fun n ->
+        Alcotest.(check int) "rejected downgrade poll did NOT drain the inbox" 1 n))
 end
 
 module In_memory_http = Backend_http_tests (Relay.InMemoryRelay)
@@ -390,8 +434,17 @@ let b115_prod_tests = [
     in_memory_prod In_memory_http.test_prod_owner_signed_poll_drains;
   "InMemory prod: owner-signed peek ok", `Quick,
     in_memory_prod In_memory_http.test_prod_owner_signed_peek_ok;
-  "InMemory dev: unsigned poll still allowed (no token)", `Quick,
+  "InMemory dev: unsigned poll allowed with explicit gate", `Quick,
     in_memory_prod In_memory_http.test_dev_unsigned_poll_still_allowed;
+  "InMemory tokenless: unsigned poll fails closed by default", `Quick,
+    in_memory_prod
+      In_memory_http.test_tokenless_unsigned_poll_fails_closed_by_default;
+  "InMemory tokenless: unsigned peek fails closed by default", `Quick,
+    in_memory_prod
+      In_memory_http.test_tokenless_unsigned_peek_fails_closed_by_default;
+  "InMemory prod: env gate cannot downgrade token relay", `Quick,
+    in_memory_prod
+      In_memory_http.test_prod_env_gate_cannot_downgrade_token_relay;
   "SQLite prod: unsigned poll rejected + not drained", `Quick,
     sqlite_prod Sqlite_http.test_prod_unsigned_poll_rejected_and_not_drained;
   "SQLite prod: unsigned peek rejected", `Quick,
@@ -406,8 +459,17 @@ let b115_prod_tests = [
     sqlite_prod Sqlite_http.test_prod_owner_signed_poll_drains;
   "SQLite prod: owner-signed peek ok", `Quick,
     sqlite_prod Sqlite_http.test_prod_owner_signed_peek_ok;
-  "SQLite dev: unsigned poll still allowed (no token)", `Quick,
+  "SQLite dev: unsigned poll allowed with explicit gate", `Quick,
     sqlite_prod Sqlite_http.test_dev_unsigned_poll_still_allowed;
+  "SQLite tokenless: unsigned poll fails closed by default", `Quick,
+    sqlite_prod
+      Sqlite_http.test_tokenless_unsigned_poll_fails_closed_by_default;
+  "SQLite tokenless: unsigned peek fails closed by default", `Quick,
+    sqlite_prod
+      Sqlite_http.test_tokenless_unsigned_peek_fails_closed_by_default;
+  "SQLite prod: env gate cannot downgrade token relay", `Quick,
+    sqlite_prod
+      Sqlite_http.test_prod_env_gate_cannot_downgrade_token_relay;
   "InMemory handler: unverified poll rejected (owner required)", `Quick,
     in_memory_prod
       In_memory_http.test_handler_unverified_poll_rejected_when_owner_required;
