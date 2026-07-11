@@ -43,7 +43,7 @@ after a full run.
 c2c doctor
 
 # Check no stale sessions
-c2c list
+c2c list --all
 ```
 
 ---
