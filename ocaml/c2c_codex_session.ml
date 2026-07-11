@@ -137,20 +137,28 @@ let status_of_instance ~(instance_dir : string) : status option =
    nothing actually delivers) is runtime-only. Persist it into the instance dir
    so `c2c doctor`/`c2c health` — which read persisted state, not the live loop —
    can tell a healthy online-attached session from one whose delivery is
-   degraded, instead of overclaiming LIVE app-server delivery for both. *)
+   degraded, instead of overclaiming LIVE app-server delivery for both.
+
+   The record is STAMPED with the app-server unit's [unit_id] (its generation).
+   A record whose unit_id does not match the currently-attached unit is from a
+   prior run on a reused instance dir and MUST NOT be trusted — otherwise a
+   healthy prior run's [degraded=false] would mask a new no-thread session
+   (B138 review). *)
 let delivery_status_path ~instance_dir = instance_dir // "codex-delivery-status.json"
 
-(* Best-effort persist of the deliver-loop degraded signal. [degraded] = true
-   means the app-server unit is supervised but no thread was discovered to
-   inject into. Written at loop start (true) and flipped to false once a thread
-   loads. Never raises (delivery health must never wedge the session). *)
-let write_delivery_degraded ~instance_dir (degraded : bool) : unit =
+(* Best-effort persist of the deliver-loop degraded signal, stamped with the
+   attached unit's [unit_id]. [degraded] = true means the app-server unit is
+   supervised but no thread was discovered to inject into. Written fail-closed
+   (true) at session start + loop start, flipped to false once a thread loads.
+   Never raises (delivery health must never wedge the session). *)
+let write_delivery_degraded ~instance_dir ~(unit_id : string) (degraded : bool) : unit =
   try
     (try if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir
      with _ -> ());
     let path = delivery_status_path ~instance_dir in
     let j =
-      `Assoc [ ("degraded", `Bool degraded);
+      `Assoc [ ("unit_id", `String unit_id);
+               ("degraded", `Bool degraded);
                ("thread_loaded", `Bool (not degraded));
                ("updated_at", `Float (Unix.gettimeofday ())) ]
     in
@@ -161,17 +169,42 @@ let write_delivery_degraded ~instance_dir (degraded : bool) : unit =
     (try Unix.rename tmp path with _ -> ())
   with _ -> ()
 
-(* Read the persisted deliver-loop degraded signal for an instance. [None] means
-   no signal file exists (older session, non-app-server instance, or not yet
-   written) — callers treat that as "not known degraded" and do NOT downgrade a
-   healthy classification. Total — any read/parse error reads as [None]. *)
-let delivery_degraded_of_instance ~(instance_dir : string) : bool option =
+(* Read the persisted deliver-loop degraded signal, trusting it ONLY when its
+   stamped unit_id matches [unit_id] (the currently-attached unit). [None] =
+   absent / parse error / unit_id mismatch (stale record from a prior run on a
+   reused dir). Total — any read/parse error reads as [None]. *)
+let delivery_degraded_of_instance ~(instance_dir : string) ~(unit_id : string)
+    : bool option =
   match C2c_io.read_json_opt (delivery_status_path ~instance_dir) with
   | Some (`Assoc a) ->
-      (match List.assoc_opt "degraded" a with
-       | Some (`Bool b) -> Some b
-       | _ -> None)
+      let unit_matches =
+        match List.assoc_opt "unit_id" a with
+        | Some (`String u) -> u = unit_id
+        | _ -> false
+      in
+      if not unit_matches then None
+      else (match List.assoc_opt "degraded" a with Some (`Bool b) -> Some b | _ -> None)
   | _ -> None
+
+(* Decide, fail-closed, whether an ONLINE-ATTACHED managed codex session's
+   delivery loop is degraded (B138). Loads the live unit_id from the app-server
+   record and trusts the persisted degraded signal only when its stamp matches.
+   Absence / staleness / a missing persisted record ALL read as degraded=true:
+   an online-attached session always has a driving deliver loop that writes this
+   record, so its absence means write-failure / mid-startup / stale reuse, and
+   we must fail TOWARD degraded rather than overclaim LIVE. A genuinely healthy
+   session (thread loaded) wrote degraded=false with the matching unit_id, so it
+   still reads healthy — the healthy path is not weakened. Total. *)
+let online_attached_delivery_degraded ~(instance_dir : string) : bool =
+  match C2c_codex_app_server.load_persisted ~instance_dir with
+  | Some p ->
+      (match
+         delivery_degraded_of_instance ~instance_dir
+           ~unit_id:p.C2c_codex_app_server.unit_id
+       with
+       | Some b -> b
+       | None -> true)
+  | None -> true
 
 (* --------------------------- identity mapping ----------------------------- *)
 
@@ -365,6 +398,10 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
      already spawned with its env captured, so this does not leak into it). *)
   Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
   let broker_root = try C2c_start.broker_root () with _ -> "" in
+  (* B138: the delivery-status record is stamped with THIS unit's generation id
+     so a stale record from a prior run on a reused instance dir is never
+     trusted. *)
+  let unit_id = (C2c_codex_app_server.persisted_of handle).C2c_codex_app_server.unit_id in
   let endpoint = C2c_codex_app_server.endpoint_of handle in
   let token_provider () =
     match C2c_codex_app_server.raw_token_of handle with "" -> None | t -> Some t
@@ -434,11 +471,11 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
              log_deliver_pass ~instance_dir po
            end);
       on_degraded =
-        (* B138: persist the deliver-loop degraded signal so `c2c doctor`/
-           `c2c health` can read it. Fired true at loop start, false once a
-           frontend thread loads. Best-effort — write_delivery_degraded never
-           raises. *)
-        (fun degraded -> write_delivery_degraded ~instance_dir degraded);
+        (* B138: persist the deliver-loop degraded signal (stamped with the
+           attached unit_id) so `c2c doctor`/`c2c health` can read it. Fired true
+           at loop start, false once a frontend thread loads. Best-effort —
+           write_delivery_degraded never raises. *)
+        (fun degraded -> write_delivery_degraded ~instance_dir ~unit_id degraded);
       now = Unix.gettimeofday;
       sleep = (fun s -> try Unix.sleepf s with _ -> ());
       poll_interval_s = 1.0;
@@ -512,6 +549,18 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          session identity; the hook path owns its own alias handling. *)
       fallback ~extra_args:(frontend_extra_args ~yolo ~extra:extra_args) ()
   | Ok handle ->
+      (* B138: the instant the unit is up (and therefore observable as
+         online-attached by doctor/health), synchronously publish a fail-closed
+         degraded record STAMPED with this unit's generation id — before the
+         mapping is written and before the async deliver loop's first pass. This
+         overwrites any stale [degraded=false] left by a prior healthy run on a
+         reused instance dir, so there is no window in which doctor/health see a
+         previous run's healthy signal for this new, no-thread-yet session. The
+         deliver loop flips it to healthy once a frontend thread loads. *)
+      (try
+         let unit_id = (C2c_codex_app_server.persisted_of handle).C2c_codex_app_server.unit_id in
+         write_delivery_degraded ~instance_dir ~unit_id true
+       with _ -> ());
       (* Session is up and attached. Persist the identity mapping — the
          authoritative alias<->session record that `c2c instances`/status read.
          B131: the derived alias becomes a LIVE, routable broker alias below —

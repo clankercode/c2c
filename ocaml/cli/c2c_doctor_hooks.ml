@@ -275,13 +275,16 @@ let live_codex_instances () : (string * string option * bool * bool) list =
                  try C2c_start.codex_wake_target_registered ~name ()
                  with _ -> false
                in
+               (* B138: only the online-attached path cares about degraded, and
+                  it fails closed (absent/stale/missing record → degraded) so we
+                  never overclaim LIVE. Other statuses ignore the flag. *)
                let degraded =
-                 match
-                   (try C2c_codex_session.delivery_degraded_of_instance ~instance_dir
-                    with _ -> None)
-                 with
-                 | Some b -> b
-                 | None -> false
+                 match app_status with
+                 | Some "online-attached" ->
+                     (try C2c_codex_session.online_attached_delivery_degraded
+                            ~instance_dir
+                      with _ -> true)
+                 | _ -> false
                in
                Some (name, app_status, wake, degraded)
            | _ -> None)

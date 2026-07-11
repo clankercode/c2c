@@ -747,20 +747,18 @@ let read_managed_instances () =
               with
               | Some C2c_codex_session.Online_attached ->
                   (* B138: online-attached is only LIVE app-server delivery when
-                     the deliver loop actually loaded a frontend thread. If the
-                     persisted signal says degraded (no thread ever loaded), the
-                     loop is supervising but delivering nothing — report the
-                     distinct degraded label (same vocabulary as `c2c doctor`)
-                     instead of overclaiming "app-server". *)
-                  (match
-                     (try C2c_codex_session.delivery_degraded_of_instance
+                     the deliver loop actually loaded a frontend thread. The
+                     fail-closed helper (shared with `c2c doctor`) trusts the
+                     unit-stamped persisted signal and reports degraded when no
+                     thread loaded — or when the record is absent/stale — instead
+                     of overclaiming "app-server". *)
+                  if (try C2c_codex_session.online_attached_delivery_degraded
                             ~instance_dir
-                      with _ -> None)
-                   with
-                   | Some true ->
-                       C2c_doctor_hooks.codex_delivery_mode_label
-                         C2c_doctor_hooks.Cd_app_server_degraded
-                   | _ -> "app-server")
+                      with _ -> true)
+                  then
+                    C2c_doctor_hooks.codex_delivery_mode_label
+                      C2c_doctor_hooks.Cd_app_server_degraded
+                  else "app-server"
               | Some (C2c_codex_session.Starting | C2c_codex_session.Offline
                      | C2c_codex_session.Failed_startup)
               | None -> delivery_mode
