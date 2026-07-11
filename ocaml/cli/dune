@@ -285,3 +285,16 @@
  (modules test_c2c_gemini_deprecation c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded)
  (libraries c2c_mcp alcotest cmdliner yojson unix digestif.ocaml)
  (deps c2c.exe))
+
+; Grok CLI-first install: skill + SessionStart hooks, no MCP.
+(test
+ (name test_c2c_setup_grok)
+ (modules test_c2c_setup_grok c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded)
+ (libraries c2c_mcp alcotest yojson unix digestif.ocaml))
+
+; Grok SessionStart/SessionEnd hook (register + identity skill; no additionalContext).
+(test
+ (name test_c2c_hook_grok)
+ (modules test_c2c_hook_grok)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps c2c.exe))

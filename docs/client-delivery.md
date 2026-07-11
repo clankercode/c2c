@@ -97,6 +97,11 @@ minimal swarm intro.
   `c2c-deliver-inbox --client kimi` to write notification files into Kimi's
   notification store. Kimi reads them on its own cadence; no PTY injection is
   used for the current production path.
+- **Grok**: `c2c install grok` is **CLI-first** (no MCP by default). Preferred
+  inbound is a persistent Monitor on `c2c monitor` (Grok injects each line into
+  the conversation). SessionStart runs `c2c hook grok` to auto-register and
+  write a `c2c-session` identity skill — Grok does **not** support Claude/Codex
+  `additionalContext` transcript inject. Fallback: `c2c poll-inbox`.
 - **Generic / unmanaged clients**: use MCP or CLI polling. Where available,
   `c2c-deliver-inbox --inotify --loop` can watch an inbox and bridge messages to
   a client-specific delivery mode, but the portable baseline is still
@@ -179,6 +184,25 @@ Notification-store push (`C2c_kimi_notifier`) writes notification JSON files int
 kimi's session directory. Tmux idle-wake fires when pane is idle. No PTY
 injection. Alias auto-registered via `C2C_MCP_AUTO_REGISTER_ALIAS`. Restart via
 `c2c stop <name>` + `c2c start kimi -n <name>`.
+
+## Grok
+
+`c2c install grok` writes:
+
+- `~/.grok/skills/c2c/SKILL.md` — assembled Grok skill (CLI-first cookbook)
+- `~/.grok/hooks/c2c-session.json` — SessionStart/SessionEnd → `c2c hook grok`
+
+**No MCP config** is written. Preferred receive:
+
+```
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+```
+
+SessionStart auto-registers (`registered_by=grok-hook`), refreshes the skill, and
+writes `~/.grok/skills/c2c-session/SKILL.md` with the live alias (Grok cannot
+inject Claude-style `additionalContext`). Session ID from `$GROK_SESSION_ID` or
+the hook payload. Restart Grok (new session) after install. Plugin packaging is
+deferred (backlog I009).
 
 ---
 
