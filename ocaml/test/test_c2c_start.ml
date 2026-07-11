@@ -377,6 +377,43 @@ let test_extra_argv_boundary_c2c_flag_not_consumed_b128 () =
     [ "--model"; "gpt-x"; "-n"; "not-c2c-name"; "--alias"; "z" ]
     !captured_extra
 
+(* B129 regression guard: `c2c start pty -- bash -i` must parse with a SINGLE
+   `--`. The shared positional parser strips the leading client name + `--`
+   (see the `_ :: _ :: rest` strip mirrored below), so `parse_pty_cmd_argv`
+   receives the raw command tokens `["bash"; "-i"]` and must NOT hunt for
+   another `--`. Prior to the fix it required a second `--`, forcing users to
+   type the double-`--` form `c2c start pty -- -- bash -i`. This test drives
+   the full flow: strip via the same cmdliner grammar, then parse. *)
+let test_parse_pty_cmd_argv_single_dashdash_b129 () =
+  let extra_argv =
+    Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"ARG" ~doc:"")
+  in
+  let client =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"")
+  in
+  let captured = ref [] in
+  let term =
+    let open Cmdliner.Term.Syntax in
+    let+ _client = client
+    and+ all = extra_argv in
+    (* Strip client name (pos 0) and `--` (pos 1) — same as the real term. *)
+    captured := (match all with _ :: _ :: rest -> rest | _ -> [])
+  in
+  let cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start") term in
+  let argv = [| "c2c"; "start"; "pty"; "--"; "bash"; "-i" |] in
+  let _ = Cmdliner.Cmd.eval ~argv cmd in
+  check (list string) "single `--`: extra_args is the raw command tokens"
+    [ "bash"; "-i" ] !captured;
+  let parsed_cmd, parsed_argv = C2c_start.parse_pty_cmd_argv !captured in
+  check string "parsed command is `bash` (no double `--` needed)" "bash" parsed_cmd;
+  check (list string) "parsed argv is `[-i]`" [ "-i" ] parsed_argv
+
+(* B129: a bare command with no argv parses to (cmd, []). *)
+let test_parse_pty_cmd_argv_bare_command_b129 () =
+  let cmd, argv = C2c_start.parse_pty_cmd_argv [ "bash" ] in
+  check string "bare command parsed" "bash" cmd;
+  check (list string) "bare command has empty argv" [] argv
+
 (* #470 regression guard: the `c2c start` Cmdliner term parses trailing
    args after `--` via `pos_all string []`. The previous shape
    `pos_right 1 (list string) []` used the `list string` converter, which
@@ -4026,6 +4063,10 @@ let () =
             `Quick, test_extra_argv_boundary_c2c_flag_not_consumed_b128 )
         ; ( "extra_argv_preserves_commas_470",
             `Quick, test_extra_argv_preserves_commas_470 )
+        ; ( "parse_pty_cmd_argv_single_dashdash_b129",
+            `Quick, test_parse_pty_cmd_argv_single_dashdash_b129 )
+        ; ( "parse_pty_cmd_argv_bare_command_b129",
+            `Quick, test_parse_pty_cmd_argv_bare_command_b129 )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "prepare_launch_args_codex_headless_model_flag",

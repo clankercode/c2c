@@ -421,6 +421,14 @@ val normalize_model_override_for_client :
     OpenCode keeps provider/model syntax, while single-provider clients accept
     either bare model names or provider:model input and emit just the model. *)
 
+val parse_pty_cmd_argv : string list -> string * string list
+(** Parse the command + argv for [c2c start pty] from the already-stripped
+    [extra_args] (the shared positional parser has removed the leading client
+    name + [--]). Returns [(cmd, argv)] where the first token is the command
+    and the rest is its argv. Exits with a clear error when [extra_args] is
+    empty. Note: it does NOT require a leading [--] (B129) — the tokens it
+    receives are the raw command already. Exported for tests. *)
+
 type pty_inject_capability = [ `Ok | `Missing_cap of string | `Unknown ]
 
 val check_pty_inject_capability :
