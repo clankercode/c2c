@@ -1,7 +1,7 @@
 ---
 complexity: medium
 depends_on:
-    - B102
+    - B127
     - P1.M1.E1.T002
 estimate_hours: 4
 id: P1.M1.E1.T006
@@ -25,4 +25,4 @@ Acceptance criteria:
 - Help, status, completion, instance persistence, and restart/resume semantics agree; unsupported old Codex versions fail clearly.
 - CLI tests cover generated identity collision/restart behavior and no-shortcut ambiguity.
 
-Blockers: B102 offline mailbox semantics and P1.M1.E1.T002.
+Blockers: B127 offline mailbox semantics and P1.M1.E1.T002.
