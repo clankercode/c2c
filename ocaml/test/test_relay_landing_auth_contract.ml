@@ -167,11 +167,22 @@ let t_landing_admin_section_complete () =
 
 let t_landing_self_auth_section_complete () =
   let sec = section "self-auth" in
+  let classifier_only = Relay_server_auth.self_auth_classifier_only_routes in
   List.iter
     (fun r ->
-       Alcotest.(check bool)
-         (Printf.sprintf "self-auth section lists %s" r)
-         true (contains sec (code r)))
+       if List.mem r classifier_only then
+         (* classifier-only compatibility entries pass the outer gate but
+            have no HTTP router branch (e.g. /send_room_invite — the live
+            endpoint is /invite_room), so advertising them as active
+            endpoints would be a false claim (review finding, iteration 2). *)
+         Alcotest.(check bool)
+           (Printf.sprintf
+              "self-auth section does NOT advertise classifier-only %s" r)
+           false (contains sec (code r))
+       else
+         Alcotest.(check bool)
+           (Printf.sprintf "self-auth section lists %s" r)
+           true (contains sec (code r)))
     Relay_server_auth.self_auth_exact_routes;
   List.iter
     (fun p ->
@@ -179,6 +190,23 @@ let t_landing_self_auth_section_complete () =
          (Printf.sprintf "self-auth section covers prefix %s" p)
          true (contains sec p))
     Relay_server_auth.self_auth_prefix_routes
+
+let t_classifier_only_routes_still_self_auth () =
+  (* Behavior preservation: classifier-only entries must stay in the
+     classifier (removing one would flip it to the peer default and change
+     auth_decision), and each must genuinely be a member of the exact list. *)
+  List.iter
+    (fun r ->
+       Alcotest.(check bool)
+         (Printf.sprintf "%s is in self_auth_exact_routes" r)
+         true
+         (List.mem r Relay_server_auth.self_auth_exact_routes);
+       check_class ~path:r Relay_server_auth.Self_auth;
+       Alcotest.(check bool)
+         (Printf.sprintf "%s still passes the outer gate" r)
+         true
+         (allowed (decide ~path:r ())))
+    Relay_server_auth.self_auth_classifier_only_routes
 
 let t_landing_peer_section () =
   let sec = section "peer" in
@@ -215,20 +243,50 @@ let t_section_semantics_pinned () =
   check_phrase "peer" "Bearer tokens are rejected";
   check_phrase "admin" "operator Bearer token only";
   check_phrase "admin" "Ed25519 rejected";
-  (* self-auth must describe handler-specific authorization AND disclose the
-     legacy/unauthenticated acceptance paths (B111: unsigned room ops,
-     envelope-less /send_room, headerless poll/peek, bare-ID /binding/*
-     revoke). *)
-  check_phrase "self-auth" "applies its own authorization";
+  (* self-auth must NOT claim a uniform handler check (iteration-2 review:
+     headerless poll/peek and bare-ID /binding/* apply no authorization at
+     all); it must describe an outer-gate bypass with route-specific policy
+     AND disclose the legacy/unauthenticated acceptance paths (B111:
+     unsigned room ops, envelope-less /send_room, headerless poll/peek,
+     bare-ID /binding/* revoke). *)
+  check_phrase "self-auth" "bypass the outer header-auth gate";
+  check_phrase "self-auth" "route-specific";
+  check_phrase "self-auth" "no check at all";
   check_phrase "self-auth" "legacy";
   check_phrase "self-auth" "C2C_REQUIRE_SIGNED_ROOM_OPS"
 
 let t_no_blanket_proof_claim () =
-  (* The first cut of this slice claimed "the handler verifies a proof" for
-     the whole self-auth class — false for poll/peek/binding/unsigned room
-     ops. Keep the phrase dead. *)
+  (* Iteration-1 copy claimed "the handler verifies a proof" for the whole
+     self-auth class; iteration-2 copy claimed each handler "applies its own
+     authorization" — both false for headerless poll/peek and bare-ID
+     /binding/* revoke. Keep both phrases dead. *)
   Alcotest.(check bool) "no blanket 'verifies a proof' claim" false
-    (contains landing "verifies a proof")
+    (contains landing "verifies a proof");
+  Alcotest.(check bool) "no blanket 'applies its own authorization' claim"
+    false
+    (contains landing "applies its own authorization")
+
+let t_dev_mode_disclosed () =
+  (* auth_decision preserves tokenless dev mode: peer and admin routes allow
+     credential-free requests when no server token is configured
+     (check_auth None _ = true; peer default falls through to token = None).
+     The unconditional production-mode wording of iteration 2 was flagged as
+     inaccurate; the copy must scope the Ed25519/Bearer/"/list is not
+     anonymous" claims to configured-token (production) mode and disclose
+     dev mode. *)
+  Alcotest.(check bool) "peer route allowed without creds in dev mode" true
+    (allowed (decide ~path:"/send" ~token:None ()));
+  Alcotest.(check bool) "/list allowed without creds in dev mode" true
+    (allowed (decide ~path:"/list" ~token:None ()));
+  Alcotest.(check bool) "admin route allowed without creds in dev mode" true
+    (allowed (decide ~path:"/gc" ~token:None ()));
+  Alcotest.(check bool) "copy scopes auth classes to configured-token mode"
+    true
+    (contains landing "when the operator has configured a server token");
+  Alcotest.(check bool) "copy discloses dev mode" true
+    (contains landing "dev mode");
+  Alcotest.(check bool) "copy says dev mode skips peer/admin auth" true
+    (contains landing "peer and admin routes accept unauthenticated requests")
 
 (* === 3. B111 stale claims are gone; corrections are present === *)
 
@@ -251,8 +309,12 @@ let t_list_rooms_includes_gated () =
     (contains landing "public and gated")
 
 let t_list_is_not_anonymous () =
-  Alcotest.(check bool) "/list copy says not anonymously readable" true
-    (contains landing "not anonymously readable")
+  (* Scoped to token-configured (production) relays: in tokenless dev mode
+     /list IS anonymously readable (see t_dev_mode_disclosed). *)
+  Alcotest.(check bool)
+    "/list copy says not anonymously readable, scoped to token-configured"
+    true
+    (contains landing "not anonymously readable on a token-configured relay")
 
 let t_alias_visibility_explained () =
   Alcotest.(check bool) "copy explains listed-room member rosters" true
@@ -279,10 +341,14 @@ let () =
           Alcotest.test_case "self-auth section" `Quick
             t_landing_self_auth_section_complete;
           Alcotest.test_case "peer section" `Quick t_landing_peer_section;
+          Alcotest.test_case "classifier-only routes" `Quick
+            t_classifier_only_routes_still_self_auth;
           Alcotest.test_case "section semantics pinned" `Quick
             t_section_semantics_pinned;
           Alcotest.test_case "no blanket proof claim" `Quick
-            t_no_blanket_proof_claim ] );
+            t_no_blanket_proof_claim;
+          Alcotest.test_case "dev mode disclosed" `Quick
+            t_dev_mode_disclosed ] );
       ( "b111-copy-corrections",
         [ Alcotest.test_case "no blanket Bearer claim" `Quick
             t_no_blanket_bearer_claim;

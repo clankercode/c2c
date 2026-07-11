@@ -63,6 +63,15 @@ let self_auth_exact_routes =
 
 let self_auth_prefix_routes = ["/binding/"]
 
+(* Classifier-only compatibility entries: they pass the outer gate exactly
+   like the rest of self_auth_exact_routes (removing one would flip it to
+   the peer default and change auth_decision), but the HTTP router has no
+   branch for them, so requests 404 after the gate. /send_room_invite is the
+   MCP/broker tool name; the live relay endpoint is /invite_room. The
+   landing page must not advertise these as active endpoints
+   (test_relay_landing_auth_contract pins both directions). *)
+let self_auth_classifier_only_routes = ["/send_room_invite"]
+
 let admin_exact_routes = ["/gc"; "/dead_letter"; "/admin/unbind"]
 let admin_prefix_routes = ["/remote_inbox/"]
 
