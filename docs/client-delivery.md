@@ -106,6 +106,9 @@ minimal swarm intro.
 
 ## Claude Code
 
+`c2c install claude` also installs a SessionStart/SessionEnd hook.  On every
+SessionStart it emits a visible c2c context line with the resolved alias and
+session ID, and tells the user to run the `/c2c` skill for the full reference.
 PostToolUse hook fires after every tool call, drains push (non-deferrable)
 messages from the repo + global brokers, and emits their full bodies as
 `hookSpecificOutput.additionalContext` into the transcript (deferrable

@@ -551,23 +551,23 @@ let hook_codex : unit Cmdliner.Cmd.t =
    the per-event behaviour dispatches on [event] below. *)
 let claude_session_events = [ "SessionStart"; "SessionEnd" ]
 
-let claude_onboarding_text ~alias =
+let claude_onboarding_text ~alias ~session_id =
   Printf.sprintf
     "c2c: this Claude Code session is now registered on the local \
-     agent-messaging system as `%s`. Peer messages are delivered \
+     agent-messaging system as `%s` (session ID: `%s`). Peer messages are delivered \
      automatically into your context as `<c2c ...>` blocks. Key commands: \
      `c2c whoami` (identity), `c2c list --alive` (peers online), `c2c find \
      <substr>` (peer lookup), `c2c send <alias> \"msg\"` (DM), `c2c \
      wait-inbox --timeout 5m` (blocking receive when idle), `c2c rooms join \
-     swarm-lounge` (social room). The /c2c skill has the full reference."
-    alias
+     swarm-lounge` (social room). Run the `/c2c` skill for the full reference."
+    alias session_id
 
-let claude_wake_text ~alias =
+let claude_wake_text ~alias ~session_id =
   Printf.sprintf
-    "c2c: connected as `%s`. Inbound agent messages arrive automatically via \
+    "c2c: connected as `%s` (session ID: `%s`). Inbound agent messages arrive automatically via \
      hooks; send with `c2c send <alias> \"msg\"`, block-receive when idle \
-     with `c2c wait-inbox`. The /c2c skill has the full reference."
-    alias
+     with `c2c wait-inbox`. Run the `/c2c` skill for the full reference."
+    alias session_id
 
 let hook_claude_cmd =
   let open Cmdliner.Term in
@@ -712,10 +712,10 @@ let hook_claude_cmd =
        (* Part 1: onboarding (fresh auto-register) or wake note (known session). *)
        let intro =
          match onboarded_alias with
-         | Some alias -> claude_onboarding_text ~alias
-         | None ->
+        | Some alias -> claude_onboarding_text ~alias ~session_id
+        | None ->
              (match alias_of session_id with
-              | Some a -> claude_wake_text ~alias:a
+              | Some a -> claude_wake_text ~alias:a ~session_id
               | None -> "")
        in
        (* Part 2: post-compact context (#317). SessionStart source=compact

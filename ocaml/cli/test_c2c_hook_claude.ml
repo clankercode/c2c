@@ -166,6 +166,10 @@ let test_vanilla_session_start_auto_registers_once () =
               check string "hookEventName is SessionStart" "SessionStart" event;
               check bool "onboarding mentions alias" true
                 (contains ~haystack:context ~needle:r.alias);
+              check bool "onboarding shows the session id" true
+                (contains ~haystack:context ~needle:sid);
+              check bool "onboarding directs user to the /c2c skill" true
+                (contains ~haystack:context ~needle:"`/c2c`");
               check bool "mentions wait-inbox" true
                 (contains ~haystack:context ~needle:"wait-inbox");
               check bool "mentions send" true
@@ -285,6 +289,10 @@ let test_session_start_wake_note_and_cold_boot_once () =
          check string "hookEventName is SessionStart" "SessionStart" event;
          check bool "wake note names alias" true
            (contains ~haystack:context ~needle:"zz-claude-e2e-wake");
+         check bool "wake note shows the session id" true
+           (contains ~haystack:context ~needle:sid);
+         check bool "wake note directs user to the /c2c skill" true
+           (contains ~haystack:context ~needle:"`/c2c`");
          check bool "cold-boot context on first start" true
            (contains ~haystack:context ~needle:"kind=\"cold-boot\"")
      | None ->
