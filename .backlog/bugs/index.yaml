@@ -132,3 +132,4 @@ bugs:
     - file: B133-c2c-skill-bare-c2c-with-no-oth.todo
     - file: B134-client-detect-mislabels-grok-a.todo
     - file: B135-alias-rename-claude-quip-neura.todo
+    - file: B136-codex-vanilla-sessions-occasio.todo
