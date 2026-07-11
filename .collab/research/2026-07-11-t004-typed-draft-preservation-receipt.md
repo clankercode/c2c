@@ -77,55 +77,97 @@ must be built on exactly them:
   (rotating tips, the one-shot "Skill descriptions were shortened" warning, or a
   growing transcript during an active turn) shifts the absolute row but must not
   move the cursor *within* the draft. Reported abs→abs too.
-- **No-turn proof (protocol-level).** codex 0.144.1 emits **no `turn/started`**
-  notification; a turn's id is returned in the `turn/start` RESPONSE and the turn
-  LIFECYCLE is signalled by `thread/status/changed` (idle↔active). A separate
-  authed **observer** ws connection tracks those transitions and `thread/read`
-  status. Passive arrival must produce **no transition to `active`** and leave
-  `thread/read` status unchanged (idle stays idle; an active turn's id stays
-  active with no idle blip ⇒ not interrupted/steered). The adapter structurally
-  has no turn surface (T003) — it issues only `initialize` + `thread/inject_items`.
+- **No-turn proof — WIRE-LEVEL (a recording proxy in the adapter's path).** The
+  T003 adapter connects to a transparent recording+faulting ws JSON-RPC **proxy**
+  (`ProxyRecorder`) that forwards to the real app-server, so EVERY JSON-RPC
+  method the adapter issues is recorded. For every passive arrival the harness
+  asserts the adapter's wire traffic was ONLY `initialize` + `thread/inject_items`
+  — **never** `turn/start|steer|interrupt|cancel`, never `fs/*`. This is
+  non-gameable (it observes the actual bytes, not a status heuristic) and closes
+  the codex-review gap that status-only checks could miss a steer or a second
+  turn. It is corroborated by the protocol lifecycle: codex 0.144.1 emits **no
+  `turn/started`** (a turn's id is in the `turn/start` RESPONSE; lifecycle via
+  `thread/status/changed`), so a separate authed **observer** connection also
+  confirms no idle→active transition on arrival and that an active turn's status
+  never blips (⇒ not interrupted). The remote TUI talks to the app-server
+  DIRECTLY (not the proxy), so the proxy never perturbs the draft.
+- **Driver binding.** `run_adapter` refuses any `INGRESS_DRIVER` not under
+  `_build/`, asserts a zero exit code, AND cross-checks the proxy's recorded
+  `thread/inject_items` (with message ids) — a stale/fake driver that reported
+  the expected counts but did no real injection is caught (zero wire injects).
+- **Atomic-enough sampling.** Each snapshot captures frame A → reads the cursor →
+  captures frame B and accepts only when the composer BLOCK is identical across A
+  and B (retrying if mid-repaint), so a streaming repaint cannot desync
+  `cursor_y − composer_start` (mask or fabricate a relative move).
 - **Deterministic waits / teardown.** Every wait is a bounded poll on a
-  state/event (port bind, composer render, frame-settle across N consecutive
-  captures, draft-marker-in-composer, delivery state, thread status) with a
-  timeout + actionable failure dump (FAIL-*.diff written). No fixed sleeps where
-  a state can be waited on. Teardown always runs (try/finally): observer closed,
-  tmux session killed, app-server **process group** SIGTERM/KILL, before/after
-  process counts reported.
+  state/event (port bind, composer render, frame-settle, draft-marker-in-composer,
+  delivery state, thread status) with a timeout + actionable failure dump. No
+  fixed sleeps where a state can be waited on (the row-5 retry is a
+  delivery-state poll; the ambiguous reconcile is a state poll). Teardown always
+  runs (try/finally): observer closed, proxy stopped, tmux session killed,
+  app-server **process group** SIGTERM/KILL, with a **per-owned-PID** cleanup
+  receipt (our app-server pid alive before/after) and a proc count matched to
+  OUR port only (never a concurrent unrelated codex run).
 
-## Required scenario matrix — RESULT: 26/26 checks PASS (live, codex 0.144.1)
+## Required scenario matrix — RESULT: 31/31 checks PASS (live, codex 0.144.1)
 
-Single canonical run `--rows all` (run dir `…/t004-canonical`; snapshots
-`snap-NN-<tag>.txt`, `results.json`, `verification-pane.txt`). Unique message id
-per row.
+Single canonical run `--rows all` (run dir `…/t004-canonical2`; snapshots
+`snap-NN-<tag>.txt`, `results.json`, `verification-pane.txt`,
+`r6-hook-output.json`). Unique message id per row.
 
 | # | Receiver state / composer | Result |
 |---|---|---|
-| 1 | Idle, EMPTY | composer stayed empty at prompt start; rel-cursor (2,0) stable; **no turn** (status idle→idle, no `active`); adapter injected 1 (health.injected=1) |
-| 2 | Idle, NON-EMPTY, cursor mid-text | draft BYTE-EXACT; rel-cursor (23,1) stable (abs 22→22); **no start/steer/cancel/submit**; injected 1. After-submit: operator Enter emptied the composer + thread went `active` (submission — not arrival — starts a turn) |
-| 3 | ACTIVE generation, EMPTY | composer stayed empty (rel-cursor (2,0) stable) while the transcript streamed; **same turn stayed active, no idle blip** (not interrupted/steered); injected 1 |
-| 4 | ACTIVE generation, NON-EMPTY | draft BYTE-EXACT (rel-cursor (33,1) stable) during in-flight generation; **no extra turn, turn id stable**; injected 1 |
-| 5 | Adapter disconnect/reconnect, NON-EMPTY | draft BYTE-EXACT before/DURING-outage/after; outage inject → `pending_injection` (durable, no loss); reconnect → `injected`; idempotent recheck inject_calls=0 ⇒ **exactly one model-visible item**; no turn |
-| 6 | Ordinary NON-remote codex (hook-fallback CONTROL) | ordinary-codex draft BYTE-EXACT + rel-cursor stable across a simulated c2c arrival; **no arrival-time composer mutation**; the message stayed **inbox-pending** (delivered only at a UserPromptSubmit hook boundary; hook path NOT redesigned) |
+| 1 | Idle, EMPTY | composer BYTE-IDENTICAL + empty at prompt start; rel-cursor (2,0) stable; **wire methods = exactly [initialize, thread/inject_items]** (no turn); status idle→idle |
+| 2 | Idle, NON-EMPTY, cursor mid-text | draft BYTE-EXACT; rel-cursor (23,1) stable; **wire = initialize+inject only** (no start/steer/cancel/submit). After-submit: operator Enter emptied the composer + thread went `active` (submission — not arrival — starts a turn) |
+| 3 | ACTIVE generation, EMPTY | composer BYTE-IDENTICAL+empty (rel-cursor (2,0) stable) while transcript streamed; **wire had NO steer/interrupt**; same turn stayed active, no idle blip; injected 1 |
+| 4 | ACTIVE generation, NON-EMPTY | draft BYTE-EXACT (rel-cursor (33,1) stable) during in-flight generation; **wire had NO steer/interrupt**; turn id stable; injected 1 |
+| 5 | Adapter disconnect/reconnect, NON-EMPTY | **REAL connection loss** (proxy listener paused → adapter connect REFUSED) → `pending_injection` (durable, no loss); proxy resumed → `injected`; idempotent recheck inject_calls=0 ⇒ **exactly one model-visible item**; draft BYTE-EXACT before/during-outage/after; no turn |
+| 6 | Ordinary NON-remote codex (hook-fallback CONTROL) | ordinary-codex draft BYTE-EXACT + rel-cursor stable across c2c arrival; message **pending at arrival**; then the REAL `c2c hook codex` at a UserPromptSubmit boundary emitted it as `hookSpecificOutput.additionalContext` AND drained it ⇒ **delivered ONLY at the hook boundary** (hook path NOT redesigned) |
 
-**Burst + middle-retry:** 3 messages injected in ts order (`burst1/2/3` all
-`injected`, inject_calls=3); re-running the same inbox (middle id already
-`injected`) performed **0** re-injections ⇒ visible order 1,2,3 with exactly one
-`2` on the acknowledged path.
+**Burst + middle-retry (WIRE-proven order):** the in-path proxy recorded
+`thread/inject_items` for the three ids in exactly `[burst1, burst2, burst3]`
+order; re-running the same inbox (all ids already `injected`) recorded **0**
+further wire injects ⇒ visible order 1,2,3 with the middle id injected **exactly
+once** (wire count = 1).
 
-**Ambiguous-ack AT-LEAST-ONCE (T003 contract), LIVE with a draft present:**
-reproduced deterministically by deleting the persisted idempotency ledger between
-two live passes (the exact "cannot confirm prior delivery" condition of the
-ambiguous window): pass1 injected once, ledger removed, pass2 injected AGAIN ⇒
-**at-least-once** (2 model-visible copies). Draft stayed BYTE-EXACT and no turn
-across BOTH injections. (The natural crash-window race — server accepted,
-response lost before ledger commit — is not deterministically reproducible on a
-live socket; T003 also unit-tests it via a scripted client.)
+**Ambiguous-ack AT-LEAST-ONCE (T003 contract), REAL response-loss, draft present:**
+the proxy FORWARDS the `thread/inject_items` request to the app-server (which
+processes it) but DROPS the response and closes the adapter → the adapter observes
+`Inj_ambiguous` and persists `Injecting` (T003's real crash window, NOT a ledger
+deletion). The `Injecting` entry is then reconciled on later passes: on this codex
+`thread/read` exposes no item list so `history_contains` cannot confirm, and the
+message is re-injected — the server received the inject **2× total** ⇒ documented
+**at-least-once** (exactly-once explicitly NOT claimed across the window). Draft
+BYTE-EXACT and no turn across the whole sequence. A SEPARATELY-LABELED secondary
+case (`ambiguous/ledger-loss-recovery-at-least-once`) exercises ledger-loss
+corruption recovery (re-inject after the persisted ledger is destroyed).
 
 **Model-visibility verification turn:** a single harness `turn/start` asked the
-model to echo the injected markers; the model echoed 8 distinct injected markers
-(e.g. `r1-…`, `r2-…`, `r5-…`, `burst1/2/3-…`, `ambig-…`) — read from the
-FRONTEND pane (see lifecycle finding). Proves the injected items are model-visible.
+model to echo the injected markers; the model echoed the injected markers (e.g.
+`r1-…`, `r2-…`, `r5-…`, `burst1/2/3-…`, `ambig-…`) — read from the FRONTEND pane
+(see lifecycle finding). Proves the injected items are model-visible.
+
+## Assertion soundness — the checks have TEETH (offline negative-control test)
+
+`scripts/test-draft-preservation-assertions.py` (no codex/tmux/quota — pure logic
+over synthetic terminal snapshots; exit 0 iff every case holds) proves the
+draft/cursor checks are NON-vacuous — they fail exactly when the draft or cursor
+differs and pass only on true preservation. All cases hold:
+
+- `composer_block` selects the BOTTOM-most `›` block (never a transcript echo of
+  a submitted message — the exact trap that produced an early false result).
+- `assert_draft_preserved` **FAILS** on: a single changed draft byte; a dropped
+  multibyte char; a cursor move within the composer; a chrome-shift that ALSO
+  moves the cursor (rel-cursor is not fooled). **PASSES** on: identical
+  composer+cursor; a pure chrome shift (absolute row moves, rel-cursor stable).
+- `assert_empty_preserved` is now a **byte-exact composer compare** (hardened per
+  codex review — the earlier col≤2 check was vacuous for text inserted with the
+  cursor left at the prompt start). It **FAILS** on: text inserted into the
+  composer; a second composer line appearing; ANY composer-region change
+  (fails-safe, never a false pass). **PASSES** only on an unchanged empty composer.
+
+So a real draft edit or cursor move can never slip through as a pass — the
+31/31 live result is a meaningful proof, not a green rubber-stamp.
 
 ## FINDING — the exact T003 lifecycle point where injected items become model-visible
 
@@ -179,20 +221,65 @@ gpt-5.3-codex-spark):
 | command | rc | notes |
 |---|---|---|
 | `python3 scripts/codex-draft-preservation-e2e.py preflight` | 0 | CI-safe |
-| `python3 scripts/codex-draft-preservation-e2e.py run --rows all` | 0 | **26/26** matrix checks PASS; clean teardown |
+| `python3 scripts/codex-draft-preservation-e2e.py run --rows all` | 0 | **31/31** matrix checks PASS; clean teardown |
+| `python3 scripts/test-draft-preservation-assertions.py` | 0 | offline teeth-test — checks fail when the draft/cursor differs |
 | `just build` | 0 | |
-| `just check` | 1 | **sole failure PRE-EXISTING + unrelated**: `git diff --exit-code -- .collab/skills .opencode/skills .codex/skills …` reports the Grok/Pi skill-codegen drift in `.codex`/`.opencode/skills/c2c/SKILL.md` (present vs `origin/master`; T001/T002/T003 receipts note the identical drift). This slice touched NO skill files (only added one `.py`). Every other check step passes. |
+| `just check` | 1 | **sole failure PRE-EXISTING + unrelated**: `git diff --exit-code -- .collab/skills .opencode/skills .codex/skills …` reports the Grok/Pi skill-codegen drift in `.codex`/`.opencode/skills/c2c/SKILL.md` (present vs `origin/master`; T001/T002/T003 receipts note the identical drift). This slice touched NO skill files. Every other check step passes. |
 | `./scripts/test-codex-delivery-tmux-e2e.sh` | 2 | prints `OBSOLETE` by design (the codex `--xml-input-fd` path was removed 2026-07-06); superseded by this focused e2e |
 | `./scripts/tui-snapshot.sh 100 30 -- codex --version` | 0 | canonical TUI-snapshot harness exercised (rendered `codex-cli 0.144.1`) |
 
 ## Cleanup / process discipline
 
-Every live run reports before/after app-server & `--remote` process counts and
-tears down the app-server **process group** + tmux session(s) in a `finally`
-block (incl. on failure). Final canonical run: **app-server/remote procs
+Every live run reports before/after process counts (matched to OUR port only)
+and tears down, in a `finally` block (incl. on failure): the observer, the
+recording proxy, the tmux session(s), and the app-server **process group**
+(SIGTERM→SIGKILL). The teardown prints a per-owned-PID receipt (our app-server
+pid alive before=True / after=False). Final canonical run: **procs on our ports
 remaining after teardown = 0**; no leftover `t004*` tmux sessions; the row-6
 control's isolated `CODEX_HOME` temp dir is removed and the user's real
 `~/.codex` config is never modified. Pre-existing unrelated codex processes
 (`codex-code-mode-host`, a `codex … resume`) were identified at start and never
-touched (the proc-count pattern matches only our own `--listen ws://127.0.0.1` /
-`--remote ws://127.0.0.1` invocations).
+touched.
+
+## Review round — codex (`/ccc-review-cx`, gpt-5.6-terra xhigh) FAIL → fixed
+
+The first codex static review returned **FAIL** with legitimate soundness gaps
+for a *proof* slice; all were addressed in new commits (never `--amend`). The
+central fix is a **recording + fault-injecting ws JSON-RPC proxy** placed in the
+adapter's connection path:
+
+1. **BLOCKER — active-turn no-turn proof was status-only** (a steer or a second
+   turn could pass). Fixed: the proxy records EVERY adapter method; all rows now
+   assert wire methods ⊆ {`initialize`, `thread/inject_items`} — a direct,
+   non-gameable proof no `turn/*`/steer/interrupt was issued.
+2. **BLOCKER — burst order not observed** (only counts). Fixed: the proxy records
+   the injected message ids in order; burst asserts wire order `[1,2,3]` and the
+   middle id injected exactly once; the retry pass records 0 wire injects.
+3. **MAJOR — empty-composer check vacuous.** Fixed: byte-exact composer-region
+   compare (catches inserted text even with the cursor at col ≤2); teeth-test
+   updated.
+4. **MAJOR — non-atomic capture.** Fixed: snapshots require the composer block
+   identical across two frames bracketing the cursor read.
+5. **MAJOR — driver not bound.** Fixed: `_build/` realpath check + zero-exit
+   assertion + proxy cross-check of real injections.
+6. **MAJOR — row 5 not a real disconnect.** Fixed: the proxy listener is paused
+   (adapter connect REFUSED) then resumed — a real adapter↔server connection loss
+   with the TUI/draft unaffected.
+7. **MAJOR — ambiguous ≠ T003's path.** Fixed: the proxy forwards the inject
+   request but DROPS the response (server accepted, response lost → real
+   `Injecting`), reconciled to at-least-once; ledger-deletion kept as a separate
+   labeled corruption-recovery case.
+8. **MAJOR — row 6 not a real hook test.** Fixed: after proving no arrival-time
+   mutation, the REAL `c2c hook codex` is fired at a UserPromptSubmit boundary and
+   emits the message as `additionalContext` + drains it (boundary delivery).
+9. **MAJOR — fixed `sleep(2.5)`.** Fixed: replaced with a delivery-state poll.
+10. **MINOR — settle ignored / proc-count too broad.** Fixed: proc-count matched
+    to our port; per-owned-PID cleanup receipt; atomic snapshot mitigates unstable
+    frames.
+11. **Receipt overclaims.** This receipt was rewritten to match what the harness
+    now actually asserts (wire-level order/no-turn, real reconnect, real
+    ambiguous, hook-boundary delivery), with concrete run dirs / snapshot paths /
+    wire traces.
+
+Re-run after fixes: **31/31** matrix checks PASS; teeth-test green; `just build`
+0; `just check` 1 (pre-existing Grok drift only).

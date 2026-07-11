@@ -47,12 +47,14 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -274,6 +276,187 @@ class Observer:
             pass
 
 
+# ------------------------------------------------------------------- proxy
+# A transparent recording + fault-injecting ws JSON-RPC proxy sitting BETWEEN the
+# T003 adapter and the real app-server. The adapter connects to the proxy port
+# (not the app-server), so EVERY JSON-RPC method the adapter issues is recorded
+# here — a wire-level proof that passive delivery only ever sends `initialize` +
+# `thread/inject_items` (never turn/start|steer|interrupt|cancel, never fs/*),
+# and a record of the exact injected message-id ORDER. It can also:
+#   * pause() — close the listener so the adapter's next connect is REFUSED
+#     (a real adapter-side disconnect; the TUI talks to the app-server directly
+#     and is unaffected), and resume() to reconnect;
+#   * arm_drop_inject_response() — forward one `thread/inject_items` request to
+#     the server (which processes it) but DROP the response and close the adapter
+#     side, reproducing T003's real ambiguous-ack window (server accepted,
+#     response lost) — NOT a ledger deletion.
+
+
+class ProxyRecorder:
+    def __init__(self, listen_port: int, target_port: int):
+        self.listen = listen_port
+        self.target = target_port
+        self._loop = asyncio.new_event_loop()
+        self._server = None
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self.record: list[dict] = []
+        self.paused = False
+        self._drop_inject_resp = False
+
+    # ---- lifecycle
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        # wait until the listener is accepting
+        for _ in range(100):
+            with socket.socket() as s:
+                if s.connect_ex(("127.0.0.1", self.listen)) == 0:
+                    return
+            time.sleep(0.05)
+
+    def _run(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._serve())
+        self._loop.run_forever()
+
+    async def _serve(self):
+        import websockets
+        self._server = await websockets.serve(self._handler, "127.0.0.1", self.listen, max_size=8 * 1024 * 1024)
+
+    async def _handler(self, client):
+        import websockets
+        if self.paused:
+            await client.close()
+            return
+        auth = client.request.headers.get("Authorization")
+        try:
+            server = await websockets.connect(
+                f"ws://127.0.0.1:{self.target}",
+                additional_headers=({"Authorization": auth} if auth else None),
+                open_timeout=10, max_size=8 * 1024 * 1024)
+        except Exception:
+            await client.close()
+            return
+        inject_ids: set = set()
+
+        async def c2s():
+            try:
+                async for msg in client:
+                    self._note(msg, inject_ids)
+                    await server.send(msg)
+            except Exception:
+                pass
+            finally:
+                try:
+                    await server.close()
+                except Exception:
+                    pass
+
+        async def s2c():
+            try:
+                async for msg in server:
+                    if self._drop_inject_resp:
+                        try:
+                            j = json.loads(msg)
+                            if j.get("id") in inject_ids and ("result" in j or "error" in j):
+                                self._drop_inject_resp = False
+                                await client.close()  # adapter sees NO response => ambiguous
+                                return
+                        except Exception:
+                            pass
+                    await client.send(msg)
+            except Exception:
+                pass
+            finally:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+        await asyncio.gather(c2s(), s2c())
+
+    def _note(self, msg: str, inject_ids: set):
+        try:
+            j = json.loads(msg)
+        except Exception:
+            return
+        meth = j.get("method")
+        if not meth:
+            return
+        mids: list[str] = []
+        if meth == "thread/inject_items":
+            inject_ids.add(j.get("id"))
+            # extract message_id from the DECODED item text (the raw frame has it
+            # JSON-escaped, so regex the parsed content, not the wire bytes).
+            try:
+                for item in (j.get("params") or {}).get("items") or []:
+                    for c in (item.get("content") or []):
+                        t = c.get("text") or ""
+                        mids += re.findall(r'message_id="([^"]+)"', t)
+            except Exception:
+                pass
+        with self._lock:
+            self.record.append({"method": meth, "message_ids": mids})
+
+    # ---- control (thread-safe via the loop)
+    def snapshot(self) -> list[dict]:
+        with self._lock:
+            return list(self.record)
+
+    def reset(self):
+        with self._lock:
+            self.record = []
+
+    def methods(self) -> list[str]:
+        return [r["method"] for r in self.snapshot()]
+
+    def injected_ids(self) -> list[str]:
+        out: list[str] = []
+        for r in self.snapshot():
+            if r["method"] == "thread/inject_items":
+                out.extend(r["message_ids"])
+        return out
+
+    def _sync(self, coro, timeout=5):
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result(timeout)
+
+    async def _close_server(self):
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
+
+    def pause(self):
+        self.paused = True
+        self._sync(self._close_server())
+
+    def resume(self):
+        self.paused = False
+        self._sync(self._serve())
+
+    def arm_drop_inject_response(self):
+        self._drop_inject_resp = True
+
+    def stop(self):
+        try:
+            self._sync(self._close_server())
+        except Exception:
+            pass
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        except Exception:
+            pass
+
+
+class _AdapterResult(list):
+    """A list of per-pass dicts that also carries the adapter's exit code and the
+    proxy-recorded wire trace for the run."""
+    returncode: int = 0
+    wire_methods: list = []
+    wire_ids: list = []
+
+
 # --------------------------------------------------------------------- harness
 
 
@@ -282,24 +465,51 @@ class DraftPreservationHarness:
         self.run_dir = run_dir
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.port = free_port()
+        self.proxy_port = free_port()   # adapter → proxy → app-server
         self.token = secrets.token_hex(32)
         self.sha = hashlib.sha256(self.token.encode()).hexdigest()
         self.broker_root = str(self.run_dir / "broker")
         Path(self.broker_root).mkdir(parents=True, exist_ok=True)
         self.session = f"t004tui-{os.getpid()}"
         self.appserver = None
+        self.appserver_pid: int | None = None
         self.appserver_log = str(self.run_dir / "appserver.log")
         self.observer: Observer | None = None
+        self.proxy: ProxyRecorder | None = None
         self.thread_id: str | None = None
         self.results: list[tuple[str, bool, str]] = []
         self._snap_n = 0
 
+    # ---- the recording proxy the adapter's traffic flows through
+    def start_proxy(self):
+        self.proxy = ProxyRecorder(self.proxy_port, self.port)
+        self.proxy.start()
+        log(f"[setup] recording proxy up: adapter → ws://127.0.0.1:{self.proxy_port} "
+            f"→ app-server ws://127.0.0.1:{self.port}")
+
+    ALLOWED_ADAPTER_METHODS = {"initialize", "thread/inject_items"}
+
+    def assert_wire_clean(self, name: str, methods: list[str], min_injects: int = 1):
+        """Wire-level no-turn proof: the adapter connection carried ONLY
+        initialize + thread/inject_items — never turn/start|steer|interrupt|
+        cancel, never fs/*. Recorded by the in-path proxy, so it cannot be gamed
+        by status polling."""
+        forbidden = [m for m in methods if m not in self.ALLOWED_ADAPTER_METHODS]
+        injects = sum(1 for m in methods if m == "thread/inject_items")
+        ok = not forbidden and injects >= min_injects
+        self._record(name, ok,
+                     f"adapter wire methods={methods} (allowed only "
+                     f"{sorted(self.ALLOWED_ADAPTER_METHODS)}); forbidden={forbidden}; "
+                     f"inject_items={injects} (>= {min_injects})")
+
     # ---- process discipline
     def _proc_count(self) -> int:
-        # Match ONLY our own invocations (loopback listen/remote against our
-        # endpoint pattern) so we never miscount a shell whose argv contains the
-        # search string, nor any pre-existing/unrelated codex process.
-        pat = r"app-server --listen ws://127\.0\.0\.1|--remote ws://127\.0\.0\.1"
+        # Match ONLY THIS run's own invocations — the app-server bound to OUR port
+        # and the remote TUI attached to OUR port — so a concurrent unrelated
+        # codex run on a different port is never miscounted, and no shell whose
+        # argv contains the search string is matched.
+        pat = (rf"app-server --listen ws://127\.0\.0\.1:{self.port}\b"
+               rf"|--remote ws://127\.0\.0\.1:{self.port}\b")
         out = subprocess.run(["pgrep", "-af", pat], capture_output=True, text=True).stdout
         lines = [ln for ln in out.splitlines()
                  if "pgrep" not in ln and "codex-draft-preservation" not in ln]
@@ -312,6 +522,7 @@ class DraftPreservationHarness:
         f = open(self.appserver_log, "w")
         self.appserver = subprocess.Popen(argv, stdout=f, stderr=subprocess.STDOUT,
                                           start_new_session=True)
+        self.appserver_pid = self.appserver.pid
         log(f"[setup] app-server pid={self.appserver.pid} endpoint=ws://127.0.0.1:{self.port} "
             f"(token sha256={self.sha[:12]}… REDACTED)")
         if not self._wait(lambda: self._port_open(), 25, "app-server bind"):
@@ -412,10 +623,25 @@ class DraftPreservationHarness:
         return start, region
 
     def snapshot(self, tag: str, session: str | None = None) -> dict:
+        """Atomic-enough sample: capture frame A, read the cursor, capture frame B,
+        and accept only when the composer BLOCK is identical across A and B — so a
+        repaint during active streaming cannot desync `cursor_y − composer_start`
+        (mask or fabricate a relative move). Retries briefly if the composer is
+        mid-repaint."""
         self._snap_n += 1
         frame = self.capture_frame(session)
         cur = self.cursor(session)
-        start, region = self.composer_block(frame)
+        block = self.composer_block(frame)
+        for _ in range(12):
+            frame2 = self.capture_frame(session)
+            block2 = self.composer_block(frame2)
+            if block == block2:
+                break  # composer stable across the cursor read
+            time.sleep(0.15)
+            frame = frame2
+            cur = self.cursor(session)
+            block = block2
+        start, region = block
         rel = (cur[0], (cur[1] - start) if start is not None else None)
         p = self.run_dir / f"snap-{self._snap_n:02d}-{tag}.txt"
         p.write_text(frame)
@@ -482,11 +708,26 @@ class DraftPreservationHarness:
                 "ts": ts, "deferrable": False, "ephemeral": False,
                 "reply_via": None, "enc_status": None, "message_id": message_id}
 
-    def run_adapter(self, session_id: str, passes: int = 1, endpoint_port: int | None = None) -> list[dict]:
-        """Run the REAL T003 adapter (dev_codex_ingress_dogfood.exe). Returns a
-        list of per-pass dicts {inject_calls, health, states}. endpoint_port
-        overrides the target port (used to force a transient Server_unavailable)."""
-        port = endpoint_port if endpoint_port is not None else self.port
+    def run_adapter(self, session_id: str, passes: int = 1, endpoint_port: int | None = None,
+                    through_proxy: bool = True, reset_proxy: bool = True) -> list[dict]:
+        """Run the REAL T003 adapter (dev_codex_ingress_dogfood.exe). By default
+        the adapter connects through the RECORDING PROXY (so its wire traffic is
+        audited). Returns per-pass dicts {inject_calls, health, states} plus, on
+        the list object, `.wire_methods` / `.wire_ids` from the proxy for this
+        run. `endpoint_port` forces a specific target (e.g. a dead port). The
+        driver realpath + a zero exit code are asserted, so a stale/fake driver
+        cannot silently satisfy the proof."""
+        drv = Path(DRIVER).resolve()
+        if "_build/" not in str(drv):
+            raise RuntimeError(f"INGRESS_DRIVER is not the built T003 adapter under _build/: {drv}")
+        if endpoint_port is not None:
+            port = endpoint_port
+        elif through_proxy:
+            port = self.proxy_port
+        else:
+            port = self.port
+        if through_proxy and reset_proxy and self.proxy:
+            self.proxy.reset()
         env = dict(os.environ)
         env.update({
             "C2C_MCP_BROKER_ROOT": self.broker_root,
@@ -496,12 +737,11 @@ class DraftPreservationHarness:
             "C2C_CODEX_INGRESS_TOKEN": self.token,
             "C2C_CODEX_INGRESS_LIVE": "1",
         })
-        res = subprocess.run([DRIVER, str(passes)], env=env, capture_output=True, text=True)
-        out = []
+        res = subprocess.run([str(drv), str(passes)], env=env, capture_output=True, text=True)
+        out: list = []
         for line in res.stdout.splitlines():
             if not line.startswith("PASS "):
                 continue
-            # PASS N real_inject_calls=K health={...} states=[...]
             try:
                 calls = int(line.split("real_inject_calls=")[1].split()[0])
                 health = json.loads(line.split("health=")[1].split(" states=")[0])
@@ -509,10 +749,16 @@ class DraftPreservationHarness:
             except Exception:
                 calls, health, states = -1, {}, []
             out.append({"inject_calls": calls, "health": health, "states": states})
-        if not out:
-            log("    [adapter] stdout:\n" + res.stdout)
+        # attach the driver exit + proxy wire trace for this run
+        out_wrap = _AdapterResult(out)
+        out_wrap.returncode = res.returncode
+        if through_proxy and self.proxy:
+            out_wrap.wire_methods = self.proxy.methods()
+            out_wrap.wire_ids = self.proxy.injected_ids()
+        if not out or res.returncode != 0:
+            log(f"    [adapter] rc={res.returncode} stdout:\n" + res.stdout)
             log("    [adapter] stderr:\n" + res.stderr)
-        return out
+        return out_wrap
 
     # ---- deterministic wait
     def _wait(self, pred, timeout: float, what: str, interval=0.25, quiet=False) -> bool:
@@ -574,31 +820,44 @@ class DraftPreservationHarness:
                          f"frame diff:\n{diff[:900]}")
 
     def assert_empty_preserved(self, name, before: dict, after: dict):
-        """EMPTY composer: the empty-composer placeholder rotates (chrome), so we
-        assert the composer stayed EMPTY at the SAME relative cursor — cursor at
-        the prompt start (col≈2, rel row 0) with a single composer line, before
-        AND after — i.e. arrival inserted no text and moved no cursor."""
+        """EMPTY composer: prove arrival inserted NO text and moved NO cursor.
+        We require (a) the composer region BYTE-IDENTICAL before/after — this is
+        what catches an inserted glyph even when the cursor stays at col ≤2, so
+        the check is NOT vacuous — (b) rel-cursor identical, and (c) the state is
+        genuinely the empty composer (cursor at prompt start col ≤2, rel row 0,
+        single composer line). The composer is captured settled, so its rotating
+        placeholder is stable across the short arrival window; a placeholder
+        rotation would fail-safe (conservative), never mask an insertion."""
         def is_empty(snap):
             return (snap["rel_cursor"] is not None
                     and snap["rel_cursor"][1] == 0
                     and snap["cursor"][0] <= 2
                     and len(snap["composer"]) == 1)
-        ok = is_empty(before) and is_empty(after) and before["rel_cursor"] == after["rel_cursor"]
+        ok = (is_empty(before) and is_empty(after)
+              and before["composer"] == after["composer"]      # byte-exact: no insert
+              and before["rel_cursor"] == after["rel_cursor"])
         if ok:
             self._record(name, True,
-                         f"composer stayed empty at prompt start; rel-cursor {before['rel_cursor']} "
-                         f"stable (abs {before['cursor']}→{after['cursor']})")
+                         f"composer byte-identical + empty at prompt start ({before['composer']!r}); "
+                         f"rel-cursor {before['rel_cursor']} stable (abs {before['cursor']}→{after['cursor']})")
         else:
             diff = self._dump_fail(name, before, after)
             self._record(name, False,
-                         f"empty-check before(rel={before['rel_cursor']},lines={len(before['composer'])}) "
-                         f"after(rel={after['rel_cursor']},lines={len(after['composer'])}); diff:\n{diff[:900]}")
+                         f"empty-check before(composer={before['composer']!r},rel={before['rel_cursor']}) "
+                         f"after(composer={after['composer']!r},rel={after['rel_cursor']}); diff:\n{diff[:900]}")
 
     # ---- teardown
     def teardown(self):
         log("[teardown] tearing down …")
         if self.observer:
             self.observer.close()
+        if self.proxy:
+            try:
+                self.proxy.stop()
+            except Exception:
+                pass
+        # per-owned-resource cleanup receipt
+        appserver_alive_before = self.appserver_pid is not None and self._pid_alive(self.appserver_pid)
         tmux("kill-session", "-t", self.session, check=False)
         if self.appserver:
             try:
@@ -609,9 +868,21 @@ class DraftPreservationHarness:
                     os.killpg(os.getpgid(self.appserver.pid), signal.SIGKILL)
                 except Exception:
                     pass
+        appserver_alive_after = self.appserver_pid is not None and self._pid_alive(self.appserver_pid)
         remaining = self._proc_count()
-        log(f"[teardown] app-server/remote procs remaining: {remaining}")
+        log(f"[teardown] owned app-server pid={self.appserver_pid} "
+            f"alive before={appserver_alive_before} after={appserver_alive_after}; "
+            f"tmux session '{self.session}' killed; proxy stopped; "
+            f"loopback app-server/remote procs on our ports remaining: {remaining}")
         return remaining
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except Exception:
+            return False
 
 
 # ------------------------------------------------------------------- scenarios
@@ -637,7 +908,8 @@ def scenario_idle_empty(h, ob):
                and "active" not in seen,
                f"status {status_before}->{status_after}; status-transitions-on-arrival={seen} "
                f"(no active => no turn; codex emits no turn/started, lifecycle via thread/status/changed)")
-    h._record("row1/injected-1", inj == 1, f"real_inject_calls={inj} health.injected={passes[0]['health'].get('injected_count') if passes else '?'}")
+    h._record("row1/injected-1", inj == 1 and passes.returncode == 0, f"real_inject_calls={inj} rc={passes.returncode} health.injected={passes[0]['health'].get('injected_count') if passes else '?'}")
+    h.assert_wire_clean("row1/wire-only-initialize+inject", passes.wire_methods)
     return mid
 
 
@@ -661,7 +933,8 @@ def scenario_idle_draft(h, ob):
     h._record("row2/no-start-steer-cancel-submit",
               status_before == "idle" and status_after == "idle" and "active" not in seen,
               f"status {status_before}->{status_after}; status-transitions-on-arrival={seen} (no active => no turn/steer/cancel/submit)")
-    h._record("row2/injected-1", inj == 1, f"real_inject_calls={inj}")
+    h._record("row2/injected-1", inj == 1 and passes.returncode == 0, f"real_inject_calls={inj} rc={passes.returncode}")
+    h.assert_wire_clean("row2/wire-only-initialize+inject", passes.wire_methods)
     # after-submit: the OPERATOR presses Enter -> the composer empties (the draft
     # moves into the transcript as the submitted user turn) and the thread goes
     # active. Detect via composer emptying (block back to a single prompt line at
@@ -731,7 +1004,8 @@ def scenario_active_empty(h, ob):
               status_after == "active" and "idle" not in transitions,
               f"turn {active_turn} still active={status_after=='active'}; "
               f"status-transitions-during-arrival={transitions} (no idle => turn not interrupted/steered)")
-    h._record("row3/injected-1", inj == 1, f"real_inject_calls={inj}")
+    h._record("row3/injected-1", inj == 1 and passes.returncode == 0, f"real_inject_calls={inj} rc={passes.returncode}")
+    h.assert_wire_clean("row3/wire-no-steer-no-interrupt-during-active", passes.wire_methods)
     ob.interrupt(h.thread_id, active_turn)
     h._wait(lambda: ob.thread_status(h.thread_id) == "idle", 12, "turn interrupt -> idle", quiet=True)
     return mid
@@ -761,7 +1035,8 @@ def scenario_active_draft(h, ob):
               status_after == "active" and "idle" not in transitions,
               f"active turn {active_turn} stable={status_after=='active'}; "
               f"status-transitions-during-arrival={transitions} (no new turn / no interrupt)")
-    h._record("row4/injected-1", inj == 1, f"real_inject_calls={inj}")
+    h._record("row4/injected-1", inj == 1 and passes.returncode == 0, f"real_inject_calls={inj} rc={passes.returncode}")
+    h.assert_wire_clean("row4/wire-no-steer-no-interrupt-during-active", passes.wire_methods)
     ob.interrupt(h.thread_id, active_turn)
     h._wait(lambda: ob.thread_status(h.thread_id) == "idle", 12, "turn interrupt -> idle", quiet=True)
     return mid
@@ -777,29 +1052,25 @@ def scenario_disconnect_reconnect(h, ob):
     turns_before = list(ob.turn_ids_seen)
     mid = "r5-" + secrets.token_hex(3)
     h.seed_inbox(sess, [h.mk_msg("peer-r5", sess, f"row5 recon {mid}", 1000.0, mid)])
-    # 1) adapter's own connection is DOWN (point at a dead port). The inject is
-    #    ATTEMPTED (inject_calls>=1) but fails recoverably -> the message stays
-    #    durably Pending_injection (no loss); the frontend draft is untouched
-    #    because the adapter failure is on its OWN separate connection.
-    dead = free_port()
-    p_fail = h.run_adapter(sess, 1, endpoint_port=dead)
+    # 1) REAL adapter↔app-server connection loss: pause the in-path proxy so the
+    #    adapter's next connect is REFUSED. The remote TUI talks to the app-server
+    #    DIRECTLY (not the proxy), so its draft is unaffected. The inject fails
+    #    recoverably → the message stays durably Pending_injection (no loss).
+    h.proxy.pause()
+    p_fail = h.run_adapter(sess, 1)
     mid_snap = h.snapshot("r5-during-outage")
     fail_state = (p_fail[0]["states"][0]["state"] if p_fail and p_fail[0]["states"] else "?")
-
-    # 2) adapter reconnects to the LIVE endpoint. The first retry is gated by the
-    #    T003 exponential backoff (base*2^retry, base=1s), so poll passes until
-    #    the message reaches `injected` (deterministic wait on delivery STATE).
-    def one_pass_state():
-        p = h.run_adapter(sess, 1)
-        st = (p[0]["states"][0]["state"] if p and p[0]["states"] else "?")
-        return p, st
+    # 2) reconnect the adapter's endpoint and poll passes until the message reaches
+    #    `injected` — a bounded wait on the DELIVERY STATE (each pass returns the
+    #    state; no fixed sleep). The first retry is also gated by T003's backoff.
+    h.proxy.resume()
     ok_state = "?"
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        _p, ok_state = one_pass_state()
-        if ok_state == "injected":
-            break
-        time.sleep(2.5)  # wait out the backoff window before the next eligible retry
+    def injected_yet():
+        nonlocal ok_state
+        p = h.run_adapter(sess, 1)
+        ok_state = (p[0]["states"][0]["state"] if p and p[0]["states"] else "?")
+        return ok_state == "injected"
+    reconnected = h._wait(injected_yet, 30, "row5 reconnect → injected", interval=0.75)
     seen = ob.drain_no_turn(1.5)
     after = h.snapshot("r5-after")
     status_after = ob.thread_status(h.thread_id)
@@ -811,8 +1082,8 @@ def scenario_disconnect_reconnect(h, ob):
               before["composer"] == mid_snap["composer"] and before["rel_cursor"] == mid_snap["rel_cursor"],
               "outage-window composer bytes + rel-cursor identical to before")
     h._record("row5/retry-contract-one-visible-item",
-              fail_state == "pending_injection" and ok_state == "injected" and recheck_calls == 0,
-              f"outage state={fail_state} (durable, no loss) -> reconnect state={ok_state}; "
+              fail_state == "pending_injection" and reconnected and ok_state == "injected" and recheck_calls == 0,
+              f"connection-refused outage state={fail_state} (durable, no loss) -> reconnect state={ok_state}; "
               f"idempotent recheck inject_calls={recheck_calls} (exactly one model-visible item)")
     h._record("row5/no-turn",
               status_before == "idle" and status_after == "idle" and "active" not in seen,
@@ -833,61 +1104,99 @@ def scenario_burst_and_retry(h, ob):
         h.mk_msg("peer-b", sess, f"BURST_THREE {m3}", 1002.0, m3),
     ]
     h.seed_inbox(sess, msgs)
-    p1 = h.run_adapter(sess, 1)
-    # retry: re-run with the SAME inbox (message_id m2 already Injected) -> the
-    # ledger dedups; m2 re-injects ZERO times (exactly one model-visible '2').
+    p1 = h.run_adapter(sess, 1)              # proxy record reset → captures this pass
+    wire1 = list(p1.wire_ids)               # ORDERED message_ids as injected on the wire
+    # retry the MIDDLE with the same id: re-run the SAME inbox (m1/m2/m3 already
+    # Injected). The ledger dedups → ZERO re-injections (exactly one visible per id).
     p2 = h.run_adapter(sess, 1)
+    wire2 = list(p2.wire_ids)
     c1 = p1[0]["inject_calls"] if p1 else -1
     c2 = p2[0]["inject_calls"] if p2 else -1
-    # states: all three injected, order preserved by ts.
     states1 = {s["message_id"]: s["state"] for s in (p1[0]["states"] if p1 else [])}
     all_injected = all(states1.get(m) == "injected" for m in (m1, m2, m3))
-    h._record("burst/three-injected-in-order", c1 == 3 and all_injected,
-              f"pass1 inject_calls={c1} states={states1}")
-    h._record("burst/same-id-retry-exactly-once", c2 == 0,
-              f"pass2 (same ids) inject_calls={c2} (0 re-injections => exactly one model-visible per id)")
+    # visible ORDER proven at the WIRE: the proxy saw inject_items for m1,m2,m3
+    # in exactly that order, each exactly once.
+    h._record("burst/three-injected-in-order",
+              c1 == 3 and all_injected and wire1 == [m1, m2, m3],
+              f"pass1 inject_calls={c1}; wire inject order={wire1} (expected [1,2,3]={[m1, m2, m3]}); states={states1}")
+    h._record("burst/same-id-retry-exactly-once",
+              c2 == 0 and wire2 == [] and wire1.count(m2) == 1,
+              f"pass2 (same ids) inject_calls={c2}, wire injects={wire2} (0 re-injections); "
+              f"middle id '{m2}' injected exactly once (wire count={wire1.count(m2)})")
     return (m1, m2, m3)
 
 
 def scenario_ambiguous_at_least_once(h, ob):
-    log("\n=== Ambiguous-ack AT-LEAST-ONCE (T003 contract) — LIVE, draft present ===")
-    # The natural ambiguous-ack window (server accepted, response lost before the
-    # ledger commit) is a crash-window race not deterministically reproducible
-    # against a live socket. We reproduce the SAME OUTCOME deterministically:
-    # when the idempotency ledger cannot confirm a prior delivery, the message is
-    # re-injected (documented AT-LEAST-ONCE). We force that "cannot confirm"
-    # condition by deleting the persisted ledger between two live passes, and
-    # prove the operator draft stays byte-exact + no turn across BOTH injections.
+    log("\n=== Ambiguous-ack AT-LEAST-ONCE (T003 contract) — REAL response-loss, draft present ===")
+    # T003's actual ambiguous window: the server ACCEPTS thread/inject_items (item
+    # is in history) but the RESPONSE is lost before the ledger commits, leaving an
+    # `Injecting` marker. We reproduce it faithfully with the in-path proxy: it
+    # forwards the inject request to the app-server (which processes it) then DROPS
+    # the response and closes the adapter side → the adapter observes
+    # Inj_ambiguous "connection_closed_before_response". On the next pass the
+    # `Injecting` entry is reconciled: thread/read (history_contains) cannot
+    # confirm the marker on this codex (no item list), so it re-injects — the
+    # documented AT-LEAST-ONCE. Draft must stay byte-exact + no turn across both.
     sess = "ambig"
     h.set_draft(DRAFT_TEXT, "DRAFT_MARKER_QZX")
     h.settle()
     before = h.snapshot("ambig-before")
     status_before = ob.thread_status(h.thread_id)
-    turns_before = list(ob.turn_ids_seen)
     mid = "ambig-" + secrets.token_hex(3)
     h.seed_inbox(sess, [h.mk_msg("peer-ambig", sess, f"ambiguous {mid}", 1000.0, mid)])
+    # pass 1: proxy drops the inject RESPONSE → real ambiguous ack (server got the
+    # item; the adapter sees connection-closed-before-response → `Injecting`).
+    h.proxy.arm_drop_inject_response()
     p1 = h.run_adapter(sess, 1)
-    c1 = p1[0]["inject_calls"] if p1 else -1
-    # drop the persisted ledger → next pass cannot confirm prior delivery.
-    ledger = Path(h.broker_root) / "codex-appserver-ingress" / f"{sess}.ledger.json"
+    state1 = (p1[0]["states"][0]["state"] if p1 and p1[0]["states"] else "?")
+    total_wire_injects = list(p1.wire_ids).count(mid)   # server received it here
+    # reconcile: the `Injecting` entry is retried on later passes (gated by T003
+    # backoff). Poll passes until the state RESOLVES to `injected`, counting every
+    # re-inject the server actually receives (at-least-once on this codex, whose
+    # thread/read exposes no item list so history_contains cannot confirm).
+    final_state = state1
+    def resolved():
+        nonlocal final_state, total_wire_injects
+        p = h.run_adapter(sess, 1)
+        total_wire_injects += list(p.wire_ids).count(mid)
+        final_state = (p[0]["states"][0]["state"] if p and p[0]["states"] else "?")
+        return final_state == "injected"
+    got_injected = h._wait(resolved, 20, "ambiguous reconcile → injected", interval=0.75)
+    seen = ob.drain_no_turn(1.5)
+    after = h.snapshot("ambig-after")
+    status_after = ob.thread_status(h.thread_id)
+    # AT-LEAST-ONCE: the server received the inject at least once (pass1 ambiguous
+    # + reconcile re-injects), and the message ends up delivered.
+    h._record("ambiguous/real-response-loss-at-least-once",
+              state1 == "injecting" and got_injected and total_wire_injects >= 1,
+              f"pass1 ambiguous (response dropped) state={state1}; reconciled to state={final_state}; "
+              f"server received the inject {total_wire_injects}x total => AT-LEAST-ONCE "
+              f"(≥1; exactly-once NOT claimed across the ambiguous window)")
+    h.assert_draft_preserved("ambiguous/draft-preserved-both-injections", before, after)
+    h._record("ambiguous/no-turn",
+              status_before == "idle" and status_after == "idle" and "active" not in seen,
+              f"status {status_before}->{status_after}; status-transitions-on-arrival={seen} (no active => no turn)")
+    # secondary, SEPARATELY LABELED: ledger-loss corruption recovery (not the
+    # ambiguous window) — if the persisted ledger is destroyed after a clean ack,
+    # a later pass cannot confirm delivery and re-injects (at-least-once). Proves
+    # graceful degradation on state loss.
+    sess2 = "ledgerloss"
+    mid2 = "ledgerloss-" + secrets.token_hex(3)
+    h.seed_inbox(sess2, [h.mk_msg("peer-ll", sess2, f"ledgerloss {mid2}", 1000.0, mid2)])
+    q1 = h.run_adapter(sess2, 1)
+    lc1 = q1[0]["inject_calls"] if q1 else -1
+    ledger = Path(h.broker_root) / "codex-appserver-ingress" / f"{sess2}.ledger.json"
     removed = False
     try:
         ledger.unlink(); removed = True
     except FileNotFoundError:
         pass
-    p2 = h.run_adapter(sess, 1)
-    c2 = p2[0]["inject_calls"] if p2 else -1
-    seen = ob.drain_no_turn(1.5)
-    after = h.snapshot("ambig-after")
-    status_after = ob.thread_status(h.thread_id)
-    h._record("ambiguous/at-least-once-reinject",
-              c1 == 1 and removed and c2 == 1,
-              f"pass1 inject_calls={c1}; ledger removed={removed}; "
-              f"pass2 (no dedup state) inject_calls={c2} => AT-LEAST-ONCE (2 model-visible copies)")
-    h.assert_draft_preserved("ambiguous/draft-preserved-both-injections", before, after)
-    h._record("ambiguous/no-turn",
-              status_before == "idle" and status_after == "idle" and "active" not in seen,
-              f"status {status_before}->{status_after}; status-transitions-on-arrival={seen} (no active => no turn)")
+    q2 = h.run_adapter(sess2, 1)
+    lc2 = q2[0]["inject_calls"] if q2 else -1
+    h._record("ambiguous/ledger-loss-recovery-at-least-once",
+              lc1 == 1 and removed and lc2 == 1,
+              f"clean ack pass inject_calls={lc1}; ledger removed={removed}; "
+              f"post-loss pass inject_calls={lc2} => at-least-once on state loss (separate from the ambiguous window)")
     return mid
 
 
@@ -974,10 +1283,11 @@ def scenario_row6_hook_control(h, ob):
         # ordinary codex session has no arrival-time delivery seam, so nothing
         # should touch the composer (contrast with the app-server passive path).
         r6_broker = str(h.run_dir / "r6-broker"); Path(r6_broker).mkdir(exist_ok=True)
-        r6_sess = "r6hook"
+        r6_sess = "r6hooksess"
         mid = "r6-" + secrets.token_hex(3)
+        marker = f"R6HOOK_{secrets.token_hex(3).upper()}"
         inbox = Path(r6_broker) / f"{r6_sess}.inbox.json"
-        inbox.write_text(json.dumps([h.mk_msg("peer-r6", r6_sess, f"row6 hook-control {mid}", 1000.0, mid)]))
+        inbox.write_text(json.dumps([h.mk_msg("peer-r6", r6_sess, f"row6 {marker} hook-control {mid}", 1000.0, mid)]))
         # bounded observation window: wait for the composer draft to change (it
         # must NOT) — the wait TIMES OUT when arrival correctly does nothing.
         mutated = h._wait(lambda: "DRAFT_MARKER_QZX" not in "".join(h.composer_block(h.capture_frame(sess))[1])
@@ -985,9 +1295,9 @@ def scenario_row6_hook_control(h, ob):
                           5, "row6 draft mutation on arrival (expected NONE)", quiet=True)
         after = h.snapshot("r6-after", session=sess)
         # message must still be pending (boundary-gated; not delivered at arrival)
-        still_pending = False
+        pending_at_arrival = False
         try:
-            still_pending = any(m.get("message_id") == mid for m in json.loads(inbox.read_text()))
+            pending_at_arrival = any(m.get("message_id") == mid for m in json.loads(inbox.read_text()))
         except Exception:
             pass
         draft_ok = (before["composer"] == after["composer"]
@@ -997,11 +1307,32 @@ def scenario_row6_hook_control(h, ob):
                   f"ordinary-codex draft byte-exact + cursor stable across c2c arrival={draft_ok} "
                   f"(composer={before['composer']!r} rel-cursor={before['rel_cursor']}; "
                   f"abs {before['cursor']}→{after['cursor']}); no arrival-time composer mutation")
-        h._record("row6/message-boundary-gated",
-                  still_pending,
-                  f"c2c message {mid} still inbox-pending after arrival={still_pending} "
-                  f"(ordinary codex has no arrival-time seam; delivered only at a "
-                  f"UserPromptSubmit hook boundary — hook path not redesigned here)")
+        # NOW fire the actual hook at a natural UserPromptSubmit boundary: run the
+        # REAL `c2c hook codex` against this isolated broker/session. It must (a)
+        # emit the pending message as hookSpecificOutput.additionalContext, and
+        # (b) drain it from the inbox — proving delivery happens ONLY at the hook
+        # boundary, never at arrival.
+        c2c_bin = (str(REPO_ROOT / "_build/default/ocaml/cli/c2c.exe")
+                   if (REPO_ROOT / "_build/default/ocaml/cli/c2c.exe").exists()
+                   else (shutil.which("c2c") or "c2c"))
+        payload = json.dumps({"hook_event_name": "UserPromptSubmit",
+                              "session_id": r6_sess, "cwd": str(REPO_ROOT)})
+        henv = dict(os.environ); henv["C2C_MCP_BROKER_ROOT"] = r6_broker
+        hres = subprocess.run([c2c_bin, "hook", "codex"], input=payload,
+                              env=henv, capture_output=True, text=True)
+        (h.run_dir / "r6-hook-output.json").write_text(hres.stdout)
+        delivered_at_boundary = marker in hres.stdout and "additionalContext" in hres.stdout
+        drained_after = False
+        try:
+            drained_after = not any(m.get("message_id") == mid for m in json.loads(inbox.read_text()))
+        except Exception:
+            drained_after = True  # inbox emptied/removed
+        h._record("row6/message-delivered-only-at-hook-boundary",
+                  pending_at_arrival and delivered_at_boundary and drained_after,
+                  f"pending at arrival (not delivered)={pending_at_arrival}; "
+                  f"`c2c hook codex` UserPromptSubmit emitted the message as additionalContext="
+                  f"{delivered_at_boundary}; inbox drained after the boundary={drained_after} "
+                  f"(marker {marker})")
         return mid
     finally:
         tmux("kill-session", "-t", sess, check=False)
@@ -1174,6 +1505,7 @@ def run_live(rows: str) -> int:
     markers: list[str] = []
     try:
         h.start_appserver()
+        h.start_proxy()
         h.start_tui()
         h.observer_connect()
         want = (set(rows.split(",")) if rows != "all"
