@@ -93,6 +93,14 @@
  (modules dev_codex_ingress_dogfood)
  (libraries c2c_mcp yojson unix))
 
+; T007 dogfood driver: runs the REAL auto-turn dispatcher (inject + turn/start)
+; against a live authenticated codex app-server (orchestrated by
+; scripts/codex-autoturn-e2e.py). NOT part of the public `c2c` CLI.
+(executable
+ (name dev_codex_autoturn_dogfood)
+ (modules dev_codex_autoturn_dogfood)
+ (libraries c2c_mcp yojson unix))
+
 (test
  (name test_c2c_kimi_notifier)
  (modules test_c2c_kimi_notifier)
