@@ -30,6 +30,7 @@ let commands_by_safety_cmd =
     ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
     ("my-rooms", "List rooms you are a member of");
     ("history", "Show archived inbox messages");
+    ("changelog", "Show recent c2c changelog entries (what's new + setup hints)");
     ("dead-letter", "Show dead-letter entries");
     ("tail-log", "Show recent broker RPC log entries");
     ("health", "Show broker health diagnostics");
@@ -211,6 +212,7 @@ let fast_path_commands () =
     ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
     ("my-rooms", "List rooms you are a member of");
     ("history", "Show archived inbox messages");
+    ("changelog", "Show recent c2c changelog entries (what's new + setup hints)");
     ("dead-letter", "Show dead-letter entries");
     ("tail-log", "Show recent broker RPC log entries");
     ("health", "Show broker health diagnostics");
