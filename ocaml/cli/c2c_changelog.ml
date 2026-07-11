@@ -10,11 +10,16 @@
 
 let ( // ) = Filename.concat
 
+(* One feature within a version. A version section (## v<ver> — <date>) may
+   contain several features, each a "### <title>" block with key: value lines. *)
 type entry = {
   version : string;              (* e.g. "0.10.0" (leading 'v' stripped) *)
   date : string option;          (* raw date text after the em-dash, if any *)
-  title : string option;         (* first prose line of the section body *)
-  body : string list;            (* remaining body lines (bullets + prose) *)
+  title : string;                (* the "### <title>" line *)
+  summary : string;              (* 1-3 sentences addressed to the agent *)
+  setup : string option;         (* verbatim command to adopt the feature *)
+  clients : string list;         (* subset of clients; [] = all clients *)
+  audience : string;             (* interactive | autonomous | all (default all) *)
 }
 
 (* ---- version parsing / comparison -------------------------------------- *)
@@ -98,39 +103,98 @@ let parse_header (line : string) : (string * string option) option =
     else None
   end
 
+(* A "### <title>" feature header inside a version section. *)
+let parse_feature_header (line : string) : string option =
+  let l = String.trim line in
+  if String.length l >= 4 && String.sub l 0 4 = "### " then
+    Some (String.trim (String.sub l 4 (String.length l - 4)))
+  else None
+
+(* Split "key: value" if [key] is one of the known field keys. *)
+let known_keys = [ "summary"; "setup"; "clients"; "audience" ]
+let parse_kv (line : string) : (string * string) option =
+  match String.index_opt line ':' with
+  | None -> None
+  | Some i ->
+      let key = String.trim (String.sub line 0 i) in
+      if List.mem key known_keys then
+        Some (key, String.trim (String.sub line (i + 1) (String.length line - i - 1)))
+      else None
+
+let split_clients (v : string) : string list =
+  String.split_on_char ',' v
+  |> List.concat_map (String.split_on_char ' ')
+  |> List.map String.trim
+  |> List.filter (fun s -> s <> "")
+
+(* Mutable accumulator for a feature while we scan its lines. *)
+type feat_acc = {
+  mutable f_summary : string list;  (* reversed *)
+  mutable f_setup : string option;
+  mutable f_clients : string list;
+  mutable f_audience : string;
+  mutable f_cur_key : string;       (* which field trailing plain lines extend *)
+}
+
 let parse (md : string) : entry list =
   let lines = String.split_on_char '\n' md in
-  (* Fold, accumulating the current section. *)
-  let finish cur acc =
-    match cur with
-    | None -> acc
-    | Some (version, date, body_rev) ->
-        let body = List.rev body_rev in
-        (* trim leading/trailing blank lines *)
-        let rec drop = function "" :: t -> drop t | l -> l in
-        let body = drop body |> List.rev |> drop |> List.rev in
-        let title =
-          List.find_opt
-            (fun l ->
-               let t = String.trim l in
-               t <> "" && not (String.length t >= 1 && (t.[0] = '-' || t.[0] = '*')))
-            body
-          |> Option.map String.trim
+  let out = ref [] in
+  let cur_version = ref None in     (* (version, date) *)
+  let cur_title = ref None in
+  let cur = ref None in             (* feat_acc option *)
+  let flush_feature () =
+    match !cur_version, !cur_title, !cur with
+    | Some (version, date), Some title, Some fa ->
+        let summary =
+          String.trim (String.concat "\n" (List.rev fa.f_summary))
         in
-        { version; date; title; body } :: acc
+        out :=
+          { version; date; title; summary; setup = fa.f_setup
+          ; clients = fa.f_clients; audience = fa.f_audience }
+          :: !out
+    | _ -> ()
   in
-  let cur, acc =
-    List.fold_left
-      (fun (cur, acc) line ->
-         match parse_header line with
-         | Some (version, date) -> (Some (version, date, []), finish cur acc)
-         | None ->
-             (match cur with
-              | Some (v, d, body) -> (Some (v, d, line :: body), acc)
-              | None -> (None, acc)))
-      (None, []) lines
-  in
-  List.rev (finish cur acc)
+  List.iter
+    (fun line ->
+       match parse_header line with
+       | Some (version, date) ->
+           flush_feature ();
+           cur_version := Some (version, date);
+           cur_title := None;
+           cur := None
+       | None ->
+           (match parse_feature_header line with
+            | Some title ->
+                flush_feature ();
+                cur_title := Some title;
+                cur :=
+                  Some { f_summary = []; f_setup = None; f_clients = []
+                       ; f_audience = "all"; f_cur_key = "summary" }
+            | None ->
+                (match !cur with
+                 | None -> ()  (* prose before any feature — ignored *)
+                 | Some fa ->
+                     (match parse_kv line with
+                      | Some ("summary", v) ->
+                          fa.f_summary <- [ v ]; fa.f_cur_key <- "summary"
+                      | Some ("setup", v) ->
+                          fa.f_setup <- (if v = "" then None else Some v);
+                          fa.f_cur_key <- "setup"
+                      | Some ("clients", v) ->
+                          fa.f_clients <- split_clients v; fa.f_cur_key <- "clients"
+                      | Some ("audience", v) ->
+                          fa.f_audience <- (if v = "" then "all" else v);
+                          fa.f_cur_key <- "audience"
+                      | Some _ -> ()
+                      | None ->
+                          (* continuation line: extend the current field
+                             (only summary is multi-line in practice) *)
+                          let t = String.trim line in
+                          if t <> "" && fa.f_cur_key = "summary" then
+                            fa.f_summary <- t :: fa.f_summary))))
+    lines;
+  flush_feature ();
+  List.rev !out
 
 (* ---- embedded + remote sources ----------------------------------------- *)
 
@@ -163,22 +227,50 @@ let merged_entries ~broker_root : entry list =
   let remote_only =
     List.filter (fun e -> not (Hashtbl.mem seen e.version)) remote
   in
-  List.sort (fun a b -> compare_version b.version a.version) (embedded @ remote_only)
+  (* stable_sort preserves source order among features sharing a version. *)
+  List.stable_sort (fun a b -> compare_version b.version a.version)
+    (embedded @ remote_only)
 
 (* Entries strictly newer than [version]. *)
 let entries_since ~version (entries : entry list) : entry list =
   List.filter (fun e -> compare_version e.version version > 0) entries
+
+(* Keep entries relevant to [client] ([] clients field = all clients). The
+   session-start injection filters to the current client; `c2c changelog`
+   shows everything. *)
+let filter_client ~client (entries : entry list) : entry list =
+  List.filter
+    (fun e -> e.clients = [] || List.mem client e.clients)
+    entries
+
+(* Keep entries for an [audience] ("all" always matches). *)
+let filter_audience ~audience (entries : entry list) : entry list =
+  List.filter
+    (fun e -> e.audience = "all" || e.audience = audience)
+    entries
 
 (* ---- rendering ---------------------------------------------------------- *)
 
 let render_entry_human (e : entry) : string =
   let hdr =
     match e.date with
-    | Some d -> Printf.sprintf "v%s — %s" e.version d
-    | None -> Printf.sprintf "v%s" e.version
+    | Some d -> Printf.sprintf "v%s — %s — %s" e.version d e.title
+    | None -> Printf.sprintf "v%s — %s" e.version e.title
   in
-  let body = String.concat "\n" e.body in
-  if String.trim body = "" then hdr else hdr ^ "\n" ^ body
+  let buf = Buffer.create 128 in
+  Buffer.add_string buf hdr;
+  if String.trim e.summary <> "" then begin
+    Buffer.add_char buf '\n';
+    Buffer.add_string buf e.summary
+  end;
+  (match e.setup with
+   | Some cmd when String.trim cmd <> "" ->
+       Buffer.add_string buf (Printf.sprintf "\n  setup: %s" cmd)
+   | _ -> ());
+  if e.clients <> [] then
+    Buffer.add_string buf
+      (Printf.sprintf "\n  clients: %s" (String.concat ", " e.clients));
+  Buffer.contents buf
 
 let render_human (entries : entry list) : string =
   String.concat "\n\n" (List.map render_entry_human entries)
@@ -187,8 +279,11 @@ let entry_json (e : entry) : Yojson.Safe.t =
   `Assoc
     [ ("version", `String e.version)
     ; ("date", match e.date with Some d -> `String d | None -> `Null)
-    ; ("title", match e.title with Some t -> `String t | None -> `Null)
-    ; ("body", `List (List.map (fun l -> `String l) e.body))
+    ; ("title", `String e.title)
+    ; ("summary", `String e.summary)
+    ; ("setup", match e.setup with Some s -> `String s | None -> `Null)
+    ; ("clients", `List (List.map (fun c -> `String c) e.clients))
+    ; ("audience", `String e.audience)
     ]
 
 (* ---- AGENT-FACING SURFACING SEAM (v0 placeholder copy) ------------------
@@ -201,13 +296,21 @@ let entry_json (e : entry) : Yojson.Safe.t =
    this function's body freely without touching the fetch/cache/state plumbing;
    [auto_show] only depends on its type (entry list -> string). *)
 let render_changelog_for_agent ~current_version (entries : entry list) : string =
+  let render_one e =
+    let setup =
+      match e.setup with
+      | Some cmd when String.trim cmd <> "" -> Printf.sprintf "\n  offer to run: %s" cmd
+      | _ -> ""
+    in
+    Printf.sprintf "- %s: %s%s" e.title (String.trim e.summary) setup
+  in
   Printf.sprintf
     "<c2c-changelog current-version=\"%s\">\n\
      c2c updated — new since you last saw it. You can offer to set up any of these:\n\n\
      %s\n\n\
      Run `c2c changelog` any time to see this again.\n\
      </c2c-changelog>"
-    current_version (render_human entries)
+    current_version (String.concat "\n" (List.map render_one entries))
 
 (* ---- background fetch (fixture-gated) ---------------------------------- *)
 
@@ -277,35 +380,52 @@ let write_marker ~broker_root ~client ~version : unit =
   mkdir_p (broker_changelog_dir ~broker_root);
   ignore (C2c_io.write_file_atomic (marker_path ~broker_root ~client) (version ^ "\n"))
 
-(* Returns [Some block] to show once, or [None]. Persists the per-client marker
-   only on terminal outcomes (nothing-to-show / after a successful show), never
-   when we are still waiting for entries to become locally available. *)
-let auto_show ?current ~broker_root ~client ~now () : string option =
+(* Per-client version-change auto-show. Returns [Some block] to inject once, or
+   [None]. Marker semantics (parent-specified surfacing contract):
+   - marker is per-client and records the last version actually INJECTED;
+   - advance it only after a real emit, and only when entries covering
+     (marker, current] were locally available;
+   - missing entries → emit nothing, trigger a bg fetch, leave marker untouched
+     (a later launch shows once the cache lands);
+   - no marker at all (fresh install) → set marker to current WITHOUT injecting;
+   - downgrade/equal version → no-op, never regress the marker.
+   [?current] overrides the binary version (tests). [?audience] filters entries
+   for the current run's audience (interactive|autonomous|all). *)
+let auto_show ?current ?(audience = "all") ~broker_root ~client ~now () : string option =
   let current = match current with Some v -> v | None -> Version.version in
   match read_marker ~broker_root ~client with
   | Some prev when prev = current ->
-      None  (* already shown for this version *)
+      None  (* already injected for this version *)
   | None ->
-      (* First ever run for this client: no update to announce. Record the
-         current version and warm the cache for future upgrades. *)
+      (* Fresh install: nothing to announce. Record current, warm the cache. *)
       if cache_is_stale ~broker_root ~now () then spawn_background_fetch ~broker_root;
       write_marker ~broker_root ~client ~version:current;
       None
+  | Some prev when compare_version current prev <= 0 ->
+      None  (* downgrade — never regress the marker *)
   | Some prev ->
-      (* Version changed. Warm the cache (1st-launch "fetch missing"), then
-         show whatever new entries are already available locally. *)
+      (* Genuine upgrade. Warm the cache (1st-launch "fetch missing"). *)
       if cache_is_stale ~broker_root ~now () then spawn_background_fetch ~broker_root;
-      let new_entries = entries_since ~version:prev (merged_entries ~broker_root) in
-      if new_entries = [] then begin
-        (* Nothing available yet. If we've actually regressed (downgrade) or
-           there is genuinely nothing newer than [prev] and [prev] >= current,
-           advance to avoid a stuck marker; otherwise keep the marker so a
-           later launch (post-fetch) can show the entries. *)
-        if compare_version prev current >= 0 then
-          write_marker ~broker_root ~client ~version:current;
-        None
-      end
+      let merged = merged_entries ~broker_root in
+      (* Coverage: are the entries up to [current] locally available yet? The
+         binary always embeds its own version, so this is true on the common
+         upgrade path; the false case is a binary older than the entries it is
+         being asked to surface (remote-only) — then we wait for the fetch. *)
+      let covered = List.exists (fun e -> e.version = current) merged in
+      if not covered then None  (* leave marker; 2nd-launch shows once cached *)
       else begin
-        write_marker ~broker_root ~client ~version:current;
-        Some (render_changelog_for_agent ~current_version:current new_entries)
+        let new_entries =
+          entries_since ~version:prev merged
+          |> filter_client ~client
+          |> filter_audience ~audience
+        in
+        if new_entries = [] then
+          (* Covered, but nothing applies to this client/audience. Per the
+             contract, advance only after a real emit — so leave the marker;
+             re-eval on the next launch is cheap and idempotent. *)
+          None
+        else begin
+          write_marker ~broker_root ~client ~version:current;
+          Some (render_changelog_for_agent ~current_version:current new_entries)
+        end
       end
