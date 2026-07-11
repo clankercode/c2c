@@ -41,6 +41,15 @@ let rec has_adjacent_pair left right = function
   | _ :: tl -> has_adjacent_pair left right tl
   | [] -> false
 
+(* [is_suffix suffix lst] — true iff [suffix] is exactly the final elements of
+   [lst] (verbatim, in order). Stronger than [has_adjacent_pair]: proves the
+   whole forwarded block lands at the TAIL of the argv, with no reordering,
+   insertion, or truncation. Used by the B128 passthrough tests. *)
+let is_suffix suffix lst =
+  let ln = List.length lst and sn = List.length suffix in
+  let rec drop n l = if n <= 0 then l else match l with _ :: tl -> drop (n - 1) tl | [] -> [] in
+  sn <= ln && drop (ln - sn) lst = suffix
+
 let env_contains env expected =
   Array.exists (fun entry -> String.equal entry expected) env
 
@@ -290,24 +299,26 @@ let test_prepare_launch_args_forwards_extra_args_for_codex () =
    hermetic — see [has_explicit_kimi_mcp_config]); the extra args are still
    appended verbatim at the tail. *)
 let test_prepare_launch_args_forwards_extra_args_for_kimi () =
+  let extra =
+    [ "--mcp-config-file"; "/tmp/b128-kimi.json"; "--custom-flag"; "val,with,commas" ]
+  in
   let args =
     C2c_start.prepare_launch_args ~name:"kimi-b128" ~client:"kimi"
-      ~extra_args:[ "--mcp-config-file"; "/tmp/b128-kimi.json";
-                    "--custom-flag"; "val,with,commas" ]
-      ~broker_root:"/tmp/broker" ()
+      ~extra_args:extra ~broker_root:"/tmp/broker" ()
   in
-  check bool "forwards --custom-flag verbatim (commas preserved)" true
-    (has_adjacent_pair "--custom-flag" "val,with,commas" args);
-  check bool "explicit --mcp-config-file forwarded verbatim" true
-    (has_adjacent_pair "--mcp-config-file" "/tmp/b128-kimi.json" args)
+  (* The whole extra_args block is the verbatim tail of the argv — no
+     reorder/insert/truncate, commas preserved. *)
+  check bool "kimi: full extra_args forwarded verbatim as the argv tail" true
+    (is_suffix extra args)
 
 let test_prepare_launch_args_forwards_extra_args_for_gemini () =
+  let extra = [ "--sandbox"; "a,b,c" ] in
   let args =
     C2c_start.prepare_launch_args ~name:"gem-b128" ~client:"gemini"
-      ~extra_args:[ "--sandbox"; "a,b,c" ] ~broker_root:"/tmp/broker" ()
+      ~extra_args:extra ~broker_root:"/tmp/broker" ()
   in
-  check bool "forwards --sandbox verbatim (commas preserved)" true
-    (has_adjacent_pair "--sandbox" "a,b,c" args)
+  check bool "gemini: full extra_args forwarded verbatim as the argv tail" true
+    (is_suffix extra args)
 
 (* B128: the `--` boundary is explicit and tested. Pre-`--` flags parse as c2c
    flags; post-`--` tokens are forwarded verbatim and NEVER parsed as c2c flags
@@ -328,17 +339,25 @@ let test_extra_argv_boundary_c2c_flag_not_consumed_b128 () =
   let model =
     Cmdliner.Arg.(value & opt (some string) None & info ["model"; "m"] ~docv:"MODEL" ~doc:"")
   in
+  (* Declare the real `--alias` option too, so its post-`--` non-consumption is
+     a genuine "declared-but-not-parsed" proof, not just an undeclared token. *)
+  let alias =
+    Cmdliner.Arg.(value & opt (some string) None & info ["alias"] ~docv:"ALIAS" ~doc:"")
+  in
   let captured_name = ref None in
   let captured_model = ref None in
+  let captured_alias = ref (Some "sentinel") in
   let captured_extra = ref [] in
   let term =
     let open Cmdliner.Term.Syntax in
     let+ _client = client
     and+ n = name
     and+ m = model
+    and+ a = alias
     and+ all = extra_argv in
     captured_name := n;
     captured_model := m;
+    captured_alias := a;
     (* Strip client name (pos 0) and `--` (pos 1) — same as the real term. *)
     captured_extra := (match all with _ :: _ :: rest -> rest | _ -> [])
   in
@@ -352,6 +371,8 @@ let test_extra_argv_boundary_c2c_flag_not_consumed_b128 () =
     (Some "real-name") !captured_name;
   check (option string) "post-`--` --model NOT parsed as c2c model"
     None !captured_model;
+  check (option string) "post-`--` --alias NOT parsed as c2c alias"
+    None !captured_alias;
   check (list string) "post-`--` tokens forwarded verbatim"
     [ "--model"; "gpt-x"; "-n"; "not-c2c-name"; "--alias"; "z" ]
     !captured_extra

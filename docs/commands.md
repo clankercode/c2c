@@ -917,7 +917,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. Everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below). For `codex`, also accepts `--yolo`, `--app-server`, `--thread-id ID` (see the Codex session grammar below). |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--app-server`, `--thread-id ID` (see the Codex session grammar below). |
 | `codex [--alias A] [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
 | `new codex [--alias A] [--yolo] [--app-server] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
 | `resume codex ALIAS [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
@@ -932,9 +932,9 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 ### Argument passthrough (`--`) — any client wrapper
 
 `--` is the explicit boundary between c2c's own options and the launched
-client's options. It works uniformly for **every** `c2c start CLIENT`
-wrapper (`claude`, `codex`, `opencode`, `kimi`, `gemini`, …), not just
-codex:
+client's options. It works uniformly for **every managed agent client**
+`c2c start CLIENT` wrapper — `claude`, `codex`, `opencode`, `kimi`,
+`gemini` — not just codex:
 
 - Everything **before** `--` is parsed as a c2c flag (`-n`, `-m`,
   `--alias`, `--worktree`, …).
@@ -943,6 +943,11 @@ codex:
   byte-for-byte identical to a real c2c flag (e.g. `--model` after `--`
   reaches the client, not c2c). Commas inside an argument are preserved
   (no token splitting).
+
+> The two non-agent launchers handle the post-`--` tail differently by
+> design: for `c2c start tmux` the tail is **typed into the target pane**
+> (not appended to an argv), and for `c2c start pty` the first tail token
+> is the **command to spawn** under the PTY (e.g. `c2c start pty -- bash -i`).
 
 ```sh
 c2c start opencode -- --model some-model      # opencode gets `--model some-model`
@@ -1075,7 +1080,7 @@ cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-
 
 | Command | Description |
 |---------|-------------|
-| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. |
+| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. Post-`--` args forward verbatim to agent clients' argv (see **Argument passthrough**). |
 | `stop NAME [--json]` | Stop a managed instance. |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
