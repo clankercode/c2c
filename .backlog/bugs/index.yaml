@@ -133,3 +133,4 @@ bugs:
     - file: B134-client-detect-mislabels-grok-a.todo
     - file: B135-alias-rename-claude-quip-neura.todo
     - file: B136-codex-vanilla-sessions-occasio.todo
+    - file: B137-codex-frontend-hook-self-regis.todo
