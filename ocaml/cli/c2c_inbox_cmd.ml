@@ -229,9 +229,31 @@ let inbox_from_flag =
 
 let default_wait_timeout = "120s"
 
+(* B130: a dispatched Claude Code subagent inherits the parent's
+   C2C_MCP_SESSION_ID / session statefile and runs as its own child process
+   (CLAUDE_CODE_CHILD_SESSION=1). If it runs `c2c inbox`/`poll-inbox`/
+   `wait-inbox`/`peek-inbox` with NO explicit --session-id/--alias, the
+   resolver returns the OWNER's session and would drain/expose the owner's
+   inbox into the unrelated subagent transcript — the same inherited-session
+   leak the hooks now guard against. Refuse that implicit access. An explicit
+   --session-id/--alias is a deliberate target and remains allowed. *)
+let refuse_if_subagent_implicit ~json ~session_id_opt ~alias_opt =
+  if session_id_opt = None && alias_opt = None
+     && C2c_mcp_helpers_post_broker.is_subagent_context ()
+  then begin
+    if json then print_string "[]\n"
+    else
+      prerr_endline
+        "c2c: inbox access suppressed inside a dispatched subagent — the \
+         inherited session belongs to the owner (B130). Pass \
+         --session-id/--alias to target a specific inbox explicitly.";
+    exit 0
+  end
+
 let run_poll_inbox ~cmd_name ~wait ~json ~peek ~session_id_opt ~alias_opt
     ~cross_repo ~timeout_opt ~poll_interval_opt ~from_opt =
   mcp_nudge_if_needed ~cmd:cmd_name;
+  refuse_if_subagent_implicit ~json ~session_id_opt ~alias_opt;
   (* Arg errors: exit 2 in wait mode (1 there means "timeout"); keep the
      historical exit 1 for plain poll-inbox so existing callers don't break. *)
   let arg_error_exit = if wait then 2 else 1 in
@@ -384,6 +406,7 @@ let peek_inbox_cmd =
   and+ alias_opt = alias_flag
   and+ cross_repo = cross_repo_flag in
   mcp_nudge_if_needed ~cmd:"peek-inbox";
+  refuse_if_subagent_implicit ~json ~session_id_opt ~alias_opt;
   (match session_id_opt, alias_opt with
    | Some _, Some _ -> Printf.eprintf "error: --session-id and --alias are mutually exclusive.\n%!"; exit 1
    | _ -> ());

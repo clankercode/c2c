@@ -918,10 +918,20 @@ let hook_client_type_conflict_with (reg : registration) =
      Task-tool child process with this (value "1") — the robust,
      harness-provided signal.
 
-   Parsing fails safe toward *delivery* (a normal top-level session must never
-   be silenced): only a recognised truthy value counts as a subagent. Common
-   falsy spellings (empty, 0, false, no, off) are treated as not-a-subagent. *)
-let subagent_env_truthy name =
+   Parse semantics: the marker is a boolean-ish env var. Absent, empty, or an
+   explicit falsy spelling (0/false/no/off) means "not a subagent" (deliver
+   normally); any other present value (1/true/yes, or an unrecognised future
+   spelling) means "subagent" (suppress). This deliberately fails toward
+   ISOLATION rather than delivery: a suppressed delivery is recoverable (the
+   DM stays queued in the owner inbox and reaches the owner on its own turn),
+   whereas a leak into an unrelated transcript is not. It is also robust if the
+   harness changes CLAUDE_CODE_CHILD_SESSION's value string (e.g. "1" -> "true")
+   — a truthy-whitelist would silently fail OPEN there and re-introduce the
+   leak. There is no false-positive risk for real top-level sessions: neither
+   marker is ever set on a top-level Claude Code session — CLAUDE_CODE_CHILD_SESSION
+   is stamped only on dispatched children, and C2C_NO_AUTO_REGISTER is an
+   explicit operator opt-out. *)
+let subagent_env_present_and_not_false name =
   match Sys.getenv_opt name with
   | Some v ->
       (match String.lowercase_ascii (String.trim v) with
@@ -930,8 +940,8 @@ let subagent_env_truthy name =
   | None -> false
 
 let is_subagent_context () =
-  subagent_env_truthy "C2C_NO_AUTO_REGISTER"
-  || subagent_env_truthy "CLAUDE_CODE_CHILD_SESSION"
+  subagent_env_present_and_not_false "C2C_NO_AUTO_REGISTER"
+  || subagent_env_present_and_not_false "CLAUDE_CODE_CHILD_SESSION"
 
 let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
