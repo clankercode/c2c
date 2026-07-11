@@ -100,6 +100,13 @@ def main() -> int:
     if missing:
         print(f"error: easy-pool words missing from full pool: {missing}", file=sys.stderr)
         return 1
+    if len(easy) >= len(full):
+        print(
+            f"error: easy pool must be a STRICT subset of the full pool "
+            f"(easy={len(easy)} >= full={len(full)})",
+            file=sys.stderr,
+        )
+        return 1
     if len(full) < 1000:
         print(f"error: full pool too small ({len(full)} < 1000)", file=sys.stderr)
         return 1

@@ -79,7 +79,14 @@ let test_easy_pool_subset_of_words () =
     (fun w ->
       check bool (Printf.sprintf "easy word %S is in the full pool" w) true
         (Hashtbl.mem full w))
-    easy
+    easy;
+  (* STRICT subset: the easy pool must be materially smaller than the full
+     pool, so an accidental easy==full data-file swap fails loudly. *)
+  check bool
+    (Printf.sprintf "easy pool (%d) is strictly smaller than full pool (%d)"
+       (Array.length easy) (Array.length words))
+    true
+    (Array.length easy < Array.length words)
 
 let test_words_match_data_file () =
   let from_file = read_lines full_pool_file in

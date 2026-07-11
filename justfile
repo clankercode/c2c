@@ -262,12 +262,12 @@ build: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codege
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Build the OCaml CLI binary only (fast, for iterative CLI work)
-build-cli: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
+build-cli: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
     mkdir -p _build && touch _build/.c2c-build.lock
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build MCP server + hooks only (fast, for server/hook work)
-build-server: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
+build-server: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
     mkdir -p _build && touch _build/.c2c-build.lock
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 

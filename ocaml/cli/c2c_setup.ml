@@ -163,7 +163,7 @@ let json_read_file path =
 
 (* alias word pool lives in [C2c_alias_words] (#388 — converged from
    the duplicated literal previously inlined here and in c2c_start.ml;
-   B112 — generated from data/c2c_alias_words.txt, 1,456 words). *)
+   B112 — generated from data/c2c_alias_words.txt, 1,455 words). *)
 
 let generate_alias ?(no_nonce = false) () =
   let words = C2c_alias_words.words in

@@ -1275,7 +1275,7 @@ c2c identifies sessions by their **session ID** — a UUID assigned by the host 
 3. Explicit flag: `c2c register --session-id ID --alias A`.
 4. Auto-detection from `/proc` for the current client process (best-effort).
 
-Once registered, the alias is the handle you use for sends and receives. Aliases are short lowercase words (e.g., `storm-beacon`, `tide-runner`) drawn from the cartesian product of a 1,456-word pool (2,118,480 ordered pairs). The pool's source of truth is `data/c2c_alias_words.txt`, embedded into the binary via `just codegen-alias-words`.
+Once registered, the alias is the handle you use for sends and receives. Aliases are short lowercase words (e.g., `storm-beacon`, `tide-runner`) drawn from the cartesian product of a 1,455-word pool (2,115,570 ordered pairs). The pool's source of truth is `data/c2c_alias_words.txt`, embedded into the binary via `just codegen-alias-words`.
 
 **Liveness pid.** `c2c register` / `c2c init` pin the registration's liveness to a pid resolved as: `$C2C_MCP_CLIENT_PID` (managed launchers set it to the durable outer-loop pid) → the nearest `/proc` ancestor that is a known long-lived agent process (claude / codex / kimi / opencode / pi / gemini — matched as an exact path component or comm, and preferring an ancestor whose environment carries your session ID) → none. "None" means unknown liveness, which stays **routable**; a registration is never pinned to the transient shell that ran the command. If a peer's `c2c send` reports your alias's process as dead, re-register from your live session: `c2c register --alias <you>`.
 
