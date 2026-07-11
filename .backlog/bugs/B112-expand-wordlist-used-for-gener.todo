@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B112
+priority: high
+status: pending
+tags: []
+title: Expand wordlist used for generating names for agents
+---
+
+Expand wordlist used for generating names for agents
