@@ -1,14 +1,15 @@
 ---
 claimed_at: "2026-07-11T07:14:43Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-11T07:24:39Z"
 complexity: medium
 depends_on: []
+duration_minutes: 9.935487196183333
 estimate_hours: 1
 id: B123
 priority: high
 started_at: "2026-07-11T07:14:43Z"
-status: in_progress
+status: done
 tags: []
 title: Do an audit for deprecated python that is still in use. Pyhton is okay in tests but not in any user facing stuff.
 ---
