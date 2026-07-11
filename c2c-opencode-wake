@@ -1,4 +1,28 @@
 #!/usr/bin/env bash
+# DEPRECATED (B123): Python root wrapper retired. Prefer the OCaml `c2c` binary.
 set -euo pipefail
-SCRIPT_DIR="$(dirname "$0")"
-exec python3 "$SCRIPT_DIR/c2c_opencode_wake_daemon.py" "$@"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPLACEMENT='(retired) OpenCode uses the TypeScript plugin — c2c install opencode'
+LEGACY_NOTE='No Python fallback remains for this command.'
+
+if [ "${C2C_ALLOW_PYTHON_LEGACY:-}" = "1" ] || [ -n "${PYTEST_CURRENT_TEST:-}" ]; then
+  echo "warning: $(basename "$0") is a retired Python wrapper (B123); C2C_ALLOW_PYTHON_LEGACY=1 allows tests/emergency only." >&2
+  echo "error: no legacy Python path remains for this wrapper." >&2
+  exit 2
+fi
+
+cat >&2 <<EOF
+error: $(basename "$0") is a retired Python wrapper (B123).
+
+Use the OCaml CLI instead:
+  $REPLACEMENT
+
+Install the native binary with:
+  just install-all
+  # or: c2c install self
+
+$LEGACY_NOTE
+Escape hatch (tests/emergency only):
+  C2C_ALLOW_PYTHON_LEGACY=1 $(basename "$0") …
+EOF
+exit 2

@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Thin shim: delegates to c2c_cli.py (Python subcommands) or the OCaml binary."""
+"""Thin shim: prefer the OCaml `c2c` binary; Python CLI is retired (B123).
+
+User-facing path is always the native CLI when installed. The Python
+`c2c_cli.py` tree remains for tests and the `C2C_ALLOW_PYTHON_LEGACY=1`
+escape hatch (and a last-resort fallback when no native binary is found
+for residual Python-only subcommands).
+"""
+from __future__ import annotations
+
+import os
 import shutil
 import subprocess
 import sys
@@ -7,16 +16,46 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Transitional bridge while repo-root wrappers still exist: prefer the native
-# implementation for commands that have moved there, but never recurse back into
-# this shim if `c2c` on PATH points at the checkout script.
-NATIVE_FIRST_SUBCOMMANDS = {
-    "init",
-    "install",
-    "start",
-    "stop",
-    "restart",
-    "instances",
+# Residual Python CLI surface used ONLY when no native binary is found.
+# Lifecycle/setup commands (install/start/stop/restart/instances/init) are
+# intentionally excluded — they must use OCaml or fail closed (B123).
+PYTHON_FALLBACK_SUBCOMMANDS = {
+    "broker-gc",
+    "configure-claude-code",
+    "configure-codex",
+    "configure-crush",
+    "configure-kimi",
+    "configure-opencode",
+    "dead-letter",
+    "deliver-inbox",
+    "health",
+    "history",
+    "inject",
+    "list",
+    "mcp",
+    "peek-inbox",
+    "poker-sweep",
+    "poll-inbox",
+    "prune",
+    "refresh-peer",
+    "register",
+    "relay",
+    "restart-me",
+    "room",
+    "send",
+    "send-all",
+    "setup",
+    "verify",
+    "wake-peer",
+    "whoami",
+    "wire-daemon",
+    "coord-cherry-pick",
+    "status",
+    "sweep",
+    "sweep-dryrun",
+    "smoke-test",
+    "setcap",
+    "watch",
 }
 
 
@@ -50,49 +89,55 @@ def find_native_c2c() -> str | None:
         return str(resolved)
     return None
 
-# Subcommands handled by the Python CLI
-PYTHON_SUBCOMMANDS = {
-    "broker-gc", "configure-claude-code", "configure-codex", "configure-crush",
-    "configure-kimi", "configure-opencode", "dead-letter", "deliver-inbox",
-    "health", "history", "inject", "list", "mcp",
-    "peek-inbox", "poker-sweep", "poll-inbox", "prune", "refresh-peer",
-    "register", "relay", "restart-me", "room", "send", "send-all",
-    "setup", "verify", "wake-peer", "whoami", "wire-daemon",
-}
+
+def python_legacy_allowed() -> bool:
+    return os.environ.get("C2C_ALLOW_PYTHON_LEGACY", "").strip() == "1"
+
+
+def run_python_cli(args: list[str]) -> int:
+    cli = SCRIPT_DIR / "c2c_cli.py"
+    result = subprocess.run([sys.executable, str(cli)] + args)
+    return result.returncode
+
 
 def main() -> int:
     args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help"):
-        subcmd = None
-    else:
-        subcmd = args[0]
+    subcmd = None if (not args or args[0] in ("-h", "--help")) else args[0]
 
+    # Prefer the native OCaml CLI whenever it is available. C2C_ALLOW_PYTHON_LEGACY
+    # re-enables Python *wrappers* / modules (configure scripts, c2c_install.py),
+    # not a forced Python route for this shim when OCaml is on PATH (B122+B123).
     native_c2c = find_native_c2c()
-    if subcmd in NATIVE_FIRST_SUBCOMMANDS:
-        if native_c2c is None:
-            print(
-                "error: native c2c CLI not found. Build it with `just build-cli` or install it with `just install-all`.",
-                file=sys.stderr,
-            )
-            return 1
+    if native_c2c is not None:
         result = subprocess.run([native_c2c] + args)
         return result.returncode
 
-    if subcmd in PYTHON_SUBCOMMANDS:
-        cli = SCRIPT_DIR / "c2c_cli.py"
-        result = subprocess.run([sys.executable, str(cli)] + args)
-        return result.returncode
-
-    if native_c2c is None:
+    # No native binary. Legacy escape hatch may use Python CLI for any subcommand.
+    if python_legacy_allowed():
         print(
-            "error: native c2c CLI not found. Build it with `just build-cli` or install it with `just install-all`.",
+            "warning: native c2c not found; using retired Python CLI "
+            "(C2C_ALLOW_PYTHON_LEGACY=1).",
             file=sys.stderr,
         )
-        return 1
+        return run_python_cli(args)
 
-    # Fall through to the native CLI for commands the Python shim never owned.
-    result = subprocess.run([native_c2c] + args)
-    return result.returncode
+    # Last-resort fallback for residual Python-owned names (no escape hatch).
+    if subcmd in PYTHON_FALLBACK_SUBCOMMANDS:
+        print(
+            "warning: native c2c CLI not found; falling back to retired Python "
+            f"CLI for `{subcmd}` (B123). Install with `just install-all`.",
+            file=sys.stderr,
+        )
+        return run_python_cli(args)
+
+    print(
+        "error: native c2c CLI not found. Build it with `just build-cli` or "
+        "install it with `just install-all`.\n"
+        "Python root wrappers and c2c_cli.py are retired for user-facing use (B123).",
+        file=sys.stderr,
+    )
+    return 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

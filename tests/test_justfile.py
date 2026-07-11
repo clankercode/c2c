@@ -31,12 +31,19 @@ class JustfileTests(unittest.TestCase):
         self.assertIn("~/.local/bin/cc-quota", output)
         self.assertNotIn("c2c_install.py", output)
 
-    def test_install_python_legacy_is_explicit(self):
+    def test_install_python_legacy_refuses_by_default(self):
+        """B123: install-python-legacy must not silently install Python wrappers."""
         result = just_dry_run("install-python-legacy")
         output = combined_output(result)
 
+        # just --dry-run prints the recipe body; recipe must refuse unless
+        # C2C_ALLOW_PYTHON_LEGACY=1 is set.
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("python3 c2c_install.py", output)
+        self.assertIn("C2C_ALLOW_PYTHON_LEGACY", output)
+        self.assertIn("retired", output.lower())
+        # Must not be an unconditional python3 c2c_install.py line.
+        # The only python3 line is behind the escape-hatch branch.
+        self.assertIn("just install-all", output)
 
     def test_install_rs_is_ocaml_install_alias(self):
         result = just_dry_run("install-rs")

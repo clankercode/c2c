@@ -46,6 +46,8 @@ class C2CPollInboxTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.env = {
+            # B123: repo-root ./c2c prefers OCaml; Python poll/peek tests force legacy.
+            "C2C_ALLOW_PYTHON_LEGACY": "1",
             "C2C_REGISTRY_PATH": str(Path(self.temp_dir.name) / "registry.yaml"),
             "C2C_ALIAS_WORDS_PATH": str(self.words_path),
             "C2C_SEND_MESSAGE_FIXTURE": "1",
@@ -251,6 +253,9 @@ class C2CPollInboxTests(unittest.TestCase):
         self.assertEqual(json.loads(inbox_path.read_text(encoding="utf-8")), msgs)
 
     def test_c2c_peek_inbox_subcommand_is_nondestructive(self):
+        # B123: exercise the Python poller path (file-peek semantics + --broker-root).
+        # Repo ./c2c prefers OCaml when installed; OCaml uses C2C_MCP_BROKER_ROOT and
+        # a different flag surface, so call c2c_cli.py under the legacy escape hatch.
         broker_root = Path(self.temp_dir.name) / "mcp-broker-peek-sub"
         broker_root.mkdir()
         inbox_path = broker_root / "opencode-local.inbox.json"
@@ -263,15 +268,26 @@ class C2CPollInboxTests(unittest.TestCase):
         ]
         inbox_path.write_text(json.dumps(msgs), encoding="utf-8")
 
-        result = run_cli(
-            "c2c",
-            "peek-inbox",
-            "--session-id",
-            "opencode-local",
-            "--broker-root",
-            str(broker_root),
-            "--json",
-            env=self.env,
+        env = dict(self.env)
+        env["C2C_ALLOW_PYTHON_LEGACY"] = "1"
+        merged = os.environ.copy()
+        merged.update(env)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(REPO / "c2c_cli.py"),
+                "peek-inbox",
+                "--session-id",
+                "opencode-local",
+                "--broker-root",
+                str(broker_root),
+                "--json",
+            ],
+            cwd=REPO,
+            env=merged,
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT_SECONDS,
         )
 
         self.assertEqual(result_code(result), 0, result.stderr)

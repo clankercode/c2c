@@ -49,6 +49,8 @@ class C2CInstallTests(unittest.TestCase):
             "C2C_SESSIONS_FIXTURE": str(REPO / "tests/fixtures/sessions-live.json"),
             "C2C_MCP_AUTO_REGISTER_ALIAS": "",
             "C2C_MCP_AUTO_JOIN_ROOMS": "",
+            # B123: Python installer + root wrappers refuse without this.
+            "C2C_ALLOW_PYTHON_LEGACY": "1",
         }
 
     def tearDown(self):
@@ -185,6 +187,29 @@ class C2CInstallTests(unittest.TestCase):
 
         self.assertEqual(result_code(result), 0)
         self.assertIn("not currently on PATH", result.stdout)
+
+    def test_python_install_refuses_without_legacy_escape_hatch(self):
+        """B123: c2c_install.py / c2c-install refuse unless explicitly allowed."""
+        install_dir = Path(self.temp_dir.name) / "bin-refuse"
+        env = dict(self.env)
+        env["C2C_INSTALL_BIN_DIR"] = str(install_dir)
+        env.pop("C2C_ALLOW_PYTHON_LEGACY", None)
+        # Also clear pytest auto-allow if present so this asserts product refuse.
+        env.pop("PYTEST_CURRENT_TEST", None)
+
+        # Call the Python module directly so we are not depending on the
+        # wrapper's PYTEST_CURRENT_TEST auto-allow.
+        result = subprocess.run(
+            [sys.executable, str(REPO / "c2c_install.py"), "--json"],
+            cwd=REPO,
+            env={**os.environ, **env, "C2C_ALLOW_PYTHON_LEGACY": ""},
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("retired Python installer", result.stderr)
+        self.assertFalse(install_dir.exists())
 
 
 class C2CInstallDryRunTests(unittest.TestCase):

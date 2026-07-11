@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
-# Deprecated user-facing wrapper (B122). crush is also a retired client.
+# DEPRECATED (B122+B123): Python root wrapper retired. Prefer the OCaml `c2c` binary.
 set -euo pipefail
-cat >&2 <<'EOF'
-error: c2c-configure-crush is retired.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPLACEMENT='c2c install crush   (deprecated client)'
+LEGACY_NOTE='Legacy Python path (escape hatch only): python3 c2c_configure_crush.py …'
 
-crush is no longer a supported c2c client. Use:
-  c2c install claude|codex|opencode|kimi|grok
+if [ "${C2C_ALLOW_PYTHON_LEGACY:-}" = "1" ] || [ -n "${PYTEST_CURRENT_TEST:-}" ]; then
+  echo "warning: $(basename "$0") is a retired Python wrapper (B122+B123); C2C_ALLOW_PYTHON_LEGACY=1 allows tests/emergency only." >&2
+  exec python3 "$SCRIPT_DIR/c2c_configure_crush.py" "$@"
+fi
+
+cat >&2 <<EOF
+error: $(basename "$0") is a retired Python wrapper (B122+B123).
+
+Use the OCaml CLI instead:
+  $REPLACEMENT
+
+Install the native binary with:
+  just install-all
+  # or: c2c install self
+
+$LEGACY_NOTE
+Escape hatch (tests/emergency only):
+  C2C_ALLOW_PYTHON_LEGACY=1 $(basename "$0") …
 EOF
-exit 1
+exit 2

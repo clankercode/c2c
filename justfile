@@ -500,21 +500,29 @@ bi: install-all
 bii: install-all
     ./restart-self
 
-# Retired (B122): Python wrapper install is no longer a supported user path.
-# Canonical install: `just install-all` / `c2c install self` / `c2c install <client>`.
-# Python modules remain in-tree for tests only.
+# Retired (B122+B123): was installing Python root wrappers into ~/.local/bin.
+# Refuses by default. Canonical: `just install-all` / `c2c install self` / `c2c install <client>`.
+# Escape hatch for tests only: C2C_ALLOW_PYTHON_LEGACY=1 just install-python-legacy
 install-python-legacy:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "error: just install-python-legacy is retired (B122)." >&2
-    echo "Use: just install-all   # or: c2c install self && c2c install <client>" >&2
-    echo "MCP server: c2c-mcp-server (OCaml), not python3 c2c_mcp.py" >&2
-    echo "Override for isolated migration only: C2C_ALLOW_PYTHON_LEGACY=1 just install-python-legacy" >&2
-    if [[ "${C2C_ALLOW_PYTHON_LEGACY:-}" == "1" ]]; then
-      python3 c2c_install.py
-      exit 0
+    if [ "${C2C_ALLOW_PYTHON_LEGACY:-}" != "1" ]; then
+        echo "error: just install-python-legacy is retired (B122+B123)." >&2
+        echo "" >&2
+        echo "Do NOT install Python root wrappers into PATH." >&2
+        echo "Use the OCaml binary instead:" >&2
+        echo "  just install-all" >&2
+        echo "  # or:" >&2
+        echo "  c2c install self" >&2
+        echo "  c2c install <client>" >&2
+        echo "" >&2
+        echo "MCP server: c2c-mcp-server (OCaml), not python3 c2c_mcp.py" >&2
+        echo "Escape hatch (tests/emergency only):" >&2
+        echo "  C2C_ALLOW_PYTHON_LEGACY=1 just install-python-legacy" >&2
+        exit 2
     fi
-    exit 1
+    echo "warning: install-python-legacy running under C2C_ALLOW_PYTHON_LEGACY=1" >&2
+    python3 c2c_install.py
 
 # Quick c2c broker status
 status:
