@@ -1,16 +1,17 @@
 ---
+claimed_at: "2026-07-11T07:56:14Z"
+claimed_by: cli-user
+completed_at: null
 complexity: high
 depends_on: []
 estimate_hours: 5
 id: B127
 priority: high
-status: pending
-tags:
-    - delivery
-    - offline
-    - codex
-    - managed-session
+started_at: "2026-07-11T07:56:14Z"
+status: in_progress
+tags: []
 title: Offline managed alias rejects sends instead of queueing durable inbox mail
+updated_at: "2026-07-11T07:56:14Z"
 ---
 Requested behavior: a closed normal managed Codex session is offline. `c2c send <alias> <message>` must persist the message for the alias and return a clear successful-but-offline warning; it must not silently drop the message or reject it as an unknown recipient. The next explicit session start/resume must drain the durable inbox.
 
