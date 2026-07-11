@@ -257,8 +257,9 @@ gets once wiring lands), never as live managed behavior.
   Fixed: table remediations are now verbatim from the classifier; the round
   log records actual outcomes.
 
-**Round 4: re-review → see `reviews/`-independent note below.** (Final
-verdict recorded in the "Verification" table's review row.)
+**Round 4: re-review → PASS** (codex verified F4/F5 fixed, 22/22 tests, no
+regressions; front-door pages untouched). Four review rounds total, every
+fix in a new commit (never `--amend`).
 
 ## Boundaries honored
 
