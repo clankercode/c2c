@@ -93,7 +93,7 @@ auth rejection · server restart recovers · thread unloaded then resumed ·
 adapter restart with pending state · unsupported→hook fallback (broker drain
 still delivers) · malformed→dead-letter (broker record intact) ·
 queue overload bounded (no drop, overloaded flag) · ordered multi-message ·
-ephemeral no-archive · no-turn/no-approval data-item. Plus 2 B098 cases in
+ephemeral no-archive · no-turn/no-approval data-item. Plus 3 B098 cases (incl. a positive control) in
 `test_c2c_codex_ingress_b098.ml`.
 
 ## tmux dogfood — REAL codex 0.144.1 (sanitized; NO token/sha values)
