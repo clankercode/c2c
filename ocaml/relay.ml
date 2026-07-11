@@ -31,6 +31,9 @@ module InMemoryRelay : RELAY = struct
     bindings : (string, string) Hashtbl.t;
     register_nonces : (string, float) Hashtbl.t;
     request_nonces : (string, float) Hashtbl.t;
+    (* B116: dedicated revoke-proof nonce store, isolated from
+       request_nonces (which the outer verifier writes pre-auth). *)
+    revoke_nonces : (string, float) Hashtbl.t;
     inboxes : ((string * string), Yojson.Safe.t list) Hashtbl.t;
     dead_letter : Yojson.Safe.t Queue.t;
     rooms : (string, string list) Hashtbl.t;
@@ -115,6 +118,7 @@ module InMemoryRelay : RELAY = struct
       bindings = Hashtbl.create 16;
       register_nonces = Hashtbl.create 64;
       request_nonces = Hashtbl.create 256;
+      revoke_nonces = Hashtbl.create 64;
       inboxes = Hashtbl.create 16;
       dead_letter = Queue.create ();
       rooms = Hashtbl.create 16;
@@ -460,6 +464,10 @@ module InMemoryRelay : RELAY = struct
   let check_request_nonce t ~nonce ~ts =
     with_lock t (fun () ->
       check_nonce_in t.request_nonces ~ttl:request_nonce_ttl ~nonce ~ts)
+
+  let check_revoke_nonce t ~nonce ~ts =
+    with_lock t (fun () ->
+      check_nonce_in t.revoke_nonces ~ttl:request_nonce_ttl ~nonce ~ts)
 
   let heartbeat t ~node_id ~session_id =
     with_lock t (fun () ->
@@ -1479,6 +1487,28 @@ module SqliteRelay : RELAY = struct
       if has_row then Res.Error relay_err_nonce_replay
       else (
         let ins_stmt = Sqlite3.prepare conn "INSERT INTO request_nonces (nonce, ts) VALUES (?, ?)" in
+        Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
+        Sqlite3.bind_double ins_stmt 2 ts |> ignore;
+        Sqlite3.step ins_stmt |> ignore;
+        Res.Ok ()
+      )
+    )
+
+  (* B116: dedicated revoke-proof nonce store (persisted). Same TTL as
+     request nonces (120s > the 30s signed-request window, no eviction
+     gap) but a distinct table so the pre-auth outer verifier never writes
+     here. *)
+  let check_revoke_nonce t ~nonce ~ts =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let cutoff = ts -. 120.0 in
+      let del_stmt = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
+      Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
+      Sqlite3.step del_stmt |> ignore;
+      let has_row = exec_prepared conn "SELECT nonce FROM revoke_nonces WHERE nonce = ?" [`Text nonce] in
+      if has_row then Res.Error relay_err_nonce_replay
+      else (
+        let ins_stmt = Sqlite3.prepare conn "INSERT INTO revoke_nonces (nonce, ts) VALUES (?, ?)" in
         Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
         Sqlite3.bind_double ins_stmt 2 ts |> ignore;
         Sqlite3.step ins_stmt |> ignore;
@@ -3842,8 +3872,12 @@ end = struct
      Replay + freshness follow the SAME signed-request pattern as every
      other peer route (spec §5.1): the ts must be within
      [-request_ts_past_window, +request_ts_future_window] of now, and the
-     nonce is consumed through the backend's request-nonce store
-     (R.check_request_nonce) — which SqliteRelay persists to disk, so
+     nonce is consumed through a DEDICATED revoke-nonce store
+     (R.check_revoke_nonce) — separate from request_nonces because the
+     outer Ed25519 request verifier writes header nonces to request_nonces
+     BEFORE signature verification, so sharing that store would let an
+     attacker pre-seed/grief a revoke nonce with a bogus Authorization
+     header. SqliteRelay persists the revoke-nonce table to disk, so
      replay protection survives a relay restart within the freshness
      window (InMemoryRelay is in-memory, matching all other signed ops in
      dev/test).
@@ -3947,10 +3981,13 @@ end = struct
                  in
                  if not owner then deny_uniform ()
                  else
-                   (* Replay check consumes the nonce via the persisted
-                      backend store. A replay denies through the SAME
-                      revoke_denied body as a non-owner — no oracle. *)
-                   match R.check_request_nonce relay ~nonce ~ts:ts_f with
+                   (* Replay check consumes the nonce via the DEDICATED
+                      persisted revoke-nonce store (never touched by the
+                      pre-auth outer Ed25519 verifier, which writes header
+                      nonces to request_nonces). A replay denies through
+                      the SAME revoke_denied body as a non-owner — no
+                      oracle. *)
+                   match R.check_revoke_nonce relay ~nonce ~ts:ts_f with
                    | Error _ -> deny_uniform ()
                    | Ok () ->
                      R.remove_observer_binding relay ~binding_id;

@@ -49,6 +49,12 @@ module type RELAY = sig
   val unbind_alias : t -> alias:string -> bool
   val check_register_nonce : t -> nonce:string -> ts:float -> (unit, string) result
   val check_request_nonce : t -> nonce:string -> ts:float -> (unit, string) result
+  (** B116: consume a DELETE /binding/<id> revocation-proof nonce. Separate
+      from [check_request_nonce] so the outer Ed25519 request verifier
+      (which writes header nonces to the request-nonce store before
+      signature verification) can never touch revoke replay state.
+      Persisted by SqliteRelay; in-memory for InMemoryRelay. *)
+  val check_revoke_nonce : t -> nonce:string -> ts:float -> (unit, string) result
   val heartbeat : t -> node_id:string -> session_id:string -> (string * RegistrationLease.t)
   val list_peers : t -> ?include_dead:bool -> RegistrationLease.t list
   val send : t -> from_alias:string -> to_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float | `Duplicate of float | `Error of string * string]

@@ -65,6 +65,13 @@ let signed_delete ~base_url ~binding_id (id : Relay_identity.t) =
   let proof = Relay_signed_ops.sign_binding_revoke id ~binding_id in
   delete ~base_url ~binding_id ~body:(revoke_body_of_proof proof) ()
 
+(* DELETE with an arbitrary Authorization header (exercises the outer
+   Ed25519 request verifier's pre-dispatch path). *)
+let delete_with_auth ~base_url ~binding_id ~auth ?(body = `Assoc []) () =
+  RTSR.call ~base_url ~meth:`DELETE ~path:("/binding/" ^ binding_id)
+    ~headers:[ ("Content-Type", "application/json"); ("Authorization", auth) ]
+    ~body:(Yojson.Safe.to_string body) ()
+
 let error_code json =
   match json with
   | Some (`Assoc fields) ->
@@ -235,6 +242,51 @@ let test_non_owner_does_not_consume_nonce () =
     Alcotest.(check bool) "binding removed by owner" false
       (binding_exists relay ~binding_id))
 
+(* --- 6d: a bogus Ed25519 Authorization header on /binding/<id> must not
+   burn the revoke-nonce store. The outer request verifier consumes header
+   nonces into the SHARED request_nonces store before signature
+   verification; because revoke replay uses a DEDICATED store, an attacker
+   pre-seeding the owner's nonce via a bogus header must NOT block the
+   owner's later revoke with that same nonce. Also: no existence oracle. *)
+
+let test_bogus_header_does_not_burn_revoke_nonce () =
+  RTSR.with_server ~token:test_token (fun ~base_url ~relay ->
+    let machine = gen_identity () and phone = gen_identity () in
+    let existing = "b116-hdrseed-exists" and missing = "b116-hdrseed-miss" in
+    add_binding relay ~binding_id:existing ~machine ~phone;
+    (* Craft the owner proof first so we know the nonce the attacker will
+       try to pre-seed. *)
+    let proof = Relay_signed_ops.sign_binding_revoke machine ~binding_id:existing in
+    let nonce = proof.Relay_signed_ops.nonce in
+    let ts = proof.Relay_signed_ops.ts in
+    (* Attacker sends a DELETE with a bogus Ed25519 header reusing that
+       nonce (garbage sig, unknown alias) against both an existing and a
+       missing binding. *)
+    let bogus_auth =
+      Printf.sprintf "Ed25519 alias=nobody,ts=%s,nonce=%s,sig=AAAA" ts nonce
+    in
+    let open Lwt.Infix in
+    delete_with_auth ~base_url ~binding_id:existing ~auth:bogus_auth ()
+    >>= fun r_exists ->
+    delete_with_auth ~base_url ~binding_id:missing ~auth:bogus_auth ()
+    >>= fun r_missing ->
+    (* Both rejected identically (no oracle) and the binding survives. *)
+    Alcotest.(check int) "bogus-header revoke of existing is 401"
+      401 (RTSR.status_code r_exists);
+    Alcotest.(check string)
+      "bogus-header existing vs missing identical body (no oracle)"
+      r_exists.RTSR.body_text r_missing.RTSR.body_text;
+    Alcotest.(check bool) "binding survives bogus-header attempt" true
+      (binding_exists relay ~binding_id:existing);
+    (* The owner's real revoke with the same nonce must STILL succeed —
+       proving the bogus header did not consume the revoke nonce. *)
+    delete ~base_url ~binding_id:existing
+      ~body:(revoke_body_of_proof proof) () >|= fun r_owner ->
+    Alcotest.(check int) "owner revoke still succeeds after header pre-seed"
+      200 (RTSR.status_code r_owner);
+    Alcotest.(check bool) "binding removed by owner" false
+      (binding_exists relay ~binding_id:existing))
+
 (* --- 6c: oversized nonce rejected before any store access --- *)
 
 let test_oversized_nonce_rejected () =
@@ -342,6 +394,8 @@ let () =
             test_replay_rejected;
           Alcotest.test_case "non-owner does not consume nonce" `Quick
             test_non_owner_does_not_consume_nonce;
+          Alcotest.test_case "bogus Ed25519 header does not burn revoke nonce"
+            `Quick test_bogus_header_does_not_burn_revoke_nonce;
           Alcotest.test_case "oversized nonce rejected" `Quick
             test_oversized_nonce_rejected;
           Alcotest.test_case "stale ts rejected" `Quick
