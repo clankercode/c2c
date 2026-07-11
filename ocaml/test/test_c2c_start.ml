@@ -3602,8 +3602,9 @@ let test_format_c2c_envelope_with_reply_hint_appends_block () =
   in
   check bool "hint appended after </c2c>" true
     (string_contains env "</c2c>\n<system-reminder>");
-  check bool "hint names sender" true
-    (string_contains env "from `alice`");
+  check bool "hint distinguishes recipient and sender" true
+    (string_contains env
+       "alias is `bob`; this direct message is from `alice`");
   check bool "hint gives c2c_send call shape" true
     (string_contains env "c2c_send(to_alias=\"alice\"")
 

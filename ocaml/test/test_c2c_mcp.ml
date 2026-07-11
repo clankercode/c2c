@@ -785,13 +785,11 @@ let test_channel_notification_room_to_alias_uses_room_hint () =
   check bool "room hint mentions room_id" true (string_contains content "room_id")
 
 let test_channel_notification_relay_dm_uses_dm_hint () =
-  (* Relay DM to_alias is `<name>#<12-hex-host-hash>` per
-     deriveRelayAlias in the c2c main project. The 12-hex suffix
-     distinguishes relay DMs from room deliveries; relay DMs reply
-     via c2c_send like any DM. *)
+  (* Current relay DM to_alias is `<name>@<host-id>`; relay DMs reply via
+     c2c_send like any DM and display only the local recipient identity. *)
   let json =
     C2c_mcp.channel_notification
-      (mk_msg ~to_alias:"bob#0123456789ab" ())
+      (mk_msg ~to_alias:"bob@0123456789ab" ())
   in
   let open Yojson.Safe.Util in
   let content = json |> member "params" |> member "content" |> to_string in
@@ -805,17 +803,25 @@ let test_format_reply_hint_basic_dm () =
     (String.starts_with ~prefix:"<system-reminder>\n" hint);
   check bool "ends with </system-reminder>" true
     (String.ends_with ~suffix:"</system-reminder>" hint);
-  check bool "names the sender" true (string_contains hint "from `alice`");
+  check bool "distinguishes recipient from sender" true
+    (string_contains hint
+       "Your c2c alias is `bob`; this direct message is from `alice`.");
   check bool "gives c2c_send call shape" true
     (string_contains hint "c2c_send(to_alias=\"alice\"")
 
 let test_format_reply_hint_room_detection () =
   let room_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#swarm-lounge" () in
-  let relay_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#0123456789ab" () in
+  let relay_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob@0123456789ab" () in
   check bool "room hint asks for c2c_send_room" true (string_contains room_hint "c2c_send_room");
   check bool "relay hint asks for c2c_send (not room)" true
     (string_contains relay_hint "c2c_send("
-     && not (string_contains relay_hint "c2c_send_room"))
+     && not (string_contains relay_hint "c2c_send_room"));
+  check bool "room hint strips routing suffix from recipient identity" true
+    (string_contains room_hint
+       "alias is `bob`; this room message is from `alice`");
+  check bool "relay hint strips host suffix from recipient identity" true
+    (string_contains relay_hint
+       "alias is `bob`; this direct message is from `alice`")
 
 let test_format_reply_hint_xml_escapes_sender () =
   (* Adversarial peer: alias with XML metacharacters. The hint must
@@ -831,9 +837,20 @@ let test_format_reply_hint_xml_escapes_sender () =
 let test_format_reply_hint_escapes_backticks_and_backslashes () =
   let hint = C2c_mcp.format_reply_hint ~from:"ali`ce\\ops" ~to_alias:"bob" () in
   check bool "sender mention escapes backtick" true
-    (string_contains hint "from `ali\\`ce\\\\ops`");
+    (string_contains hint "message is from `ali\\`ce\\\\ops`");
   check bool "reply call escapes backtick and backslash" true
     (string_contains hint "c2c_send(to_alias=\"ali\\`ce\\\\ops\"")
+
+let test_format_reply_hint_xml_escapes_recipient () =
+  let hint =
+    C2c_mcp.format_reply_hint
+      ~from:"alice" ~to_alias:"b&b<c>d\"e'f#swarm-lounge" ()
+  in
+  check bool "recipient identity escaped and suffix stripped" true
+    (string_contains hint
+       "alias is `b&amp;b&lt;c&gt;d&quot;e&#39;f`; this room message is from");
+  check bool "raw recipient cannot break markup" false
+    (string_contains hint "b&b<c>d\"e'f")
 
 let test_is_room_recipient () =
   check bool "DM has no #" false
@@ -842,6 +859,8 @@ let test_is_room_recipient () =
     (C2c_mcp.is_room_recipient ~to_alias:"bob#swarm-lounge");
   check bool "relay DM has 12-hex host hash (NOT a room)" false
     (C2c_mcp.is_room_recipient ~to_alias:"bob#0123456789ab");
+  check bool "current @host relay DM is not a room" false
+    (C2c_mcp.is_room_recipient ~to_alias:"bob@host-id");
   check bool "empty to_alias is not a room" false
     (C2c_mcp.is_room_recipient ~to_alias:"")
 
@@ -856,7 +875,9 @@ let test_format_c2c_envelope_with_reply_hint () =
     (string_contains env "<c2c event=\"message\"");
   check bool "hint appended after </c2c>" true
     (string_contains env "</c2c>\n<system-reminder>");
-  check bool "hint mentions sender" true (string_contains env "from `alice`")
+  check bool "hint distinguishes recipient and sender" true
+    (string_contains env
+       "alias is `bob`; this direct message is from `alice`")
 
 let test_format_c2c_envelope_escape_content_for_xml () =
   let env =
@@ -15245,6 +15266,8 @@ let () =
             test_format_reply_hint_room_detection
         ; test_case "format_reply_hint XML-escapes sender" `Quick
             test_format_reply_hint_xml_escapes_sender
+        ; test_case "format_reply_hint XML-escapes recipient" `Quick
+            test_format_reply_hint_xml_escapes_recipient
         ; test_case "format_reply_hint escapes backticks and backslashes" `Quick
             test_format_reply_hint_escapes_backticks_and_backslashes
         ; test_case "is_room_recipient distinguishes DM room and relay" `Quick

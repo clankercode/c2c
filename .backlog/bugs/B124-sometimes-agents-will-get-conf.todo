@@ -1,16 +1,18 @@
 ---
 claimed_at: "2026-07-11T07:40:26Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-11T08:11:43Z"
 complexity: medium
 depends_on: []
+duration_minutes: 31.288316455666667
 estimate_hours: 1
 id: B124
 priority: high
 started_at: "2026-07-11T07:40:26Z"
-status: in_progress
+status: done
 tags: []
 title: Sometimes agents will get confused about their alias. We should have reminders about who is who whenever we deliver a message (like 'you are <name>. remote agent is <name>'. that's probably not ideal language, so you should improve it.) In general we need concise explicit feedback like this (including instructions like how to reply, which we already do to a degree)
+updated_at: "2026-07-11T08:11:43Z"
 ---
 
 Sometimes agents will get confused about their alias. We should have reminders about who is who whenever we deliver a message (like 'you are <name>. remote agent is <name>'. that's probably not ideal language, so you should improve it.) In general we need concise explicit feedback like this (including instructions like how to reply, which we already do to a degree)
