@@ -1,0 +1,5 @@
+VERDICT: FAIL
+
+- M2 — `docs/commands.md:947-950` documents `c2c start pty -- bash -i` as valid, but `start_cmd` strips `CLIENT` and `--` before calling `run_pty_loop` (`ocaml/cli/c2c_managed_cmd.ml:203-223`; `ocaml/c2c_start.ml:5422-5424`). `parse_pty_cmd_argv` still requires a literal `--` in that already-stripped list (`ocaml/c2c_start.ml:4244-4259`), so the documented command exits with its "requires '--'" error. Fix the PTY parser to accept the stripped `command :: argv` shape (and add a regression test), or document the actual accepted invocation.
+
+- M3 — `.collab/research/2026-07-11T11-59-43Z-b128-generalize-arg-passthrough-audit.md:49-53` says all `c2c new` / `c2c codex` / `c2c resume codex` passthrough goes through `prepare_launch_args`. Each supports `--app-server`; that route instead calls `run_app_server`, sets `extra_frontend_args` from `model_args @ extra_args` (`ocaml/c2c_codex_session.ml:300-327`), and appends it in `build_frontend_argv`. Qualify the scope note by transport and name site 2 for app-server invocations.

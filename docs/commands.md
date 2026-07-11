@@ -944,10 +944,11 @@ client's options. It works uniformly for **every managed agent client**
   reaches the client, not c2c). Commas inside an argument are preserved
   (no token splitting).
 
-> The two non-agent launchers handle the post-`--` tail differently by
-> design: for `c2c start tmux` the tail is **typed into the target pane**
-> (not appended to an argv), and for `c2c start pty` the first tail token
-> is the **command to spawn** under the PTY (e.g. `c2c start pty -- bash -i`).
+> The two non-agent launchers (`c2c start tmux`, `c2c start pty`) do **not**
+> use this agent-argv passthrough: `tmux` **types** the tail into the target
+> pane, and `pty` runs a command under a PTY via its own `--`-delimited
+> command grammar. Their exact tail handling differs from the rule above — see
+> `c2c start tmux --help` / `c2c start pty --help` for their specific syntax.
 
 ```sh
 c2c start opencode -- --model some-model      # opencode gets `--model some-model`

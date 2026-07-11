@@ -49,8 +49,11 @@ tail-assembly sites (both verbatim), selected by transport:
 `c2c new` / `c2c codex` / `c2c resume codex` are **codex-only by design**
 (T006, `ocaml/cli/c2c_codex_cmd.ml`, guarded by `require_codex_client`). They
 peel positionals with `drop_sep` / `split_client` / `split_client_alias` and
-route `extra_args` through the same `prepare_launch_args` tail append, so
-`c2c new codex -- <opts>` already forwards verbatim. Generalizing `c2c new` to
+pass `extra_args` into `C2c_codex_session.run` — so, exactly like
+`c2c start codex`, they route through **site 1** (`prepare_launch_args`) on the
+default hook-backed path and through **site 2** (`build_frontend_argv`) when
+`--app-server` / `C2C_CODEX_APP_SERVER=1` is engaged. Either way
+`c2c new codex -- <opts>` forwards verbatim. Generalizing `c2c new` to
 spawn fresh claude/opencode/kimi/gemini threads is a **separate feature** (new
 per-client new-thread semantics), not an arg-passthrough bug — out of scope for
 B128. The universal wrapper that honors `--` for all clients is `c2c start`.
@@ -109,6 +112,19 @@ B128. The universal wrapper that honors `--` for all clients is `c2c start`.
   both `start CLIENT` rows to show `[-- client-options…]` + `gemini`, and
   re-pointed the codex-specific `--` block at the general rule (codex kept as
   the primary worked example).
+
+## Out-of-scope finding (pre-existing, NOT fixed here)
+
+**`c2c start pty -- bash -i` is broken** (pre-existing, not a B128 regression).
+Since #470 the shared `extra_argv` term strips the leading `<client>` + `--`,
+so the pty path receives `["bash"; "-i"]`. But `parse_pty_cmd_argv`
+(`ocaml/c2c_start.ml:4244`) still requires a literal `--` *inside* that
+already-stripped list, so the invocation exits with "requires '--'". The actual
+working form is the double-dash `c2c start pty -- -- bash -i`. The `--help`
+example in `ocaml/cli/c2c_managed_cmd.ml` (~line 216) is likewise inaccurate.
+Out of B128 scope (agent-client passthrough); flagged for a follow-up backlog
+item. This slice avoids documenting the broken example (see the tmux/pty
+callout in `docs/commands.md`, which points at each launcher's own `--help`).
 
 ## Codex review (`/ccc-review-cx`)
 
