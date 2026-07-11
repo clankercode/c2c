@@ -153,8 +153,11 @@ now the canonical framing.)
 - **Codex delivery — app-server transport (P1.M1 T001–T007, 2026-07-11) with
   hooks as the fallback.** `codex` is at `/home/xertrov/.bun/bin/codex`
   (npm `@openai/codex`; app-server mode validated on codex-cli 0.144.1,
-  needs ≥ 0.144). Managed `c2c start codex --app-server` (or
-  `C2C_CODEX_APP_SERVER=1`) runs `codex app-server` on an **authenticated
+  needs ≥ 0.144). The app-server transport is the **default and only** managed
+  codex path on a supported codex (B131) — the `--app-server` flag +
+  `C2C_CODEX_APP_SERVER` gate are GONE; a hidden `C2C_CODEX_FORCE_HOOKS=1`
+  escape forces hooks (operator testing only). Managed `c2c start codex` /
+  `c2c new codex` runs `codex app-server` on an **authenticated
   loopback WebSocket** (`--ws-auth capability-token`; NEVER a bare listener —
   T001 proved a bare listener gives any same-UID process `turn/start` +
   `fs/*`) with the stock remote TUI attached. Its delivery stack — mail
@@ -164,9 +167,12 @@ now the canonical framing.)
   eligible **local** mail when the thread is explicitly idle and DND is off
   (active/unknown status and any `@host`/`#` remote-origin sender stay
   queued fail-closed; mid-turn arrivals batch into ONE follow-up turn,
-  T007) — is **library-proven; wiring it into `c2c start codex`
-  supervision is the follow-up slice, so until that lands app-server
-  sessions too receive at the hook boundary.**
+  T007) — is **wired into managed supervision and shipped (B131)**:
+  `C2c_codex_deliver_loop` drives the T003 ingress + T007 auto-turn pipeline
+  against the live session (register-on-attach → drive-while-Running →
+  deregister-on-exit, no orphan), proven live end-to-end with real
+  `c2c new codex` on codex 0.144.1 / gpt-5.3-codex-spark. Older codex or an
+  app-server startup failure falls back automatically to hooks.
   `delivery_mode` reports `app-server` (only while `online-attached`)/
   `hooks+wake`/`hooks`/`unavailable` (one vocabulary across
   `c2c dev instances`/`c2c status`/`c2c doctor`; `c2c doctor hooks` adds

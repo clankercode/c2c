@@ -82,19 +82,20 @@ minimal swarm intro.
 
 ### Non-Claude receiving
 
-- **Codex**: today, all Codex sessions — vanilla and managed — receive at the
-  **hook boundary**: `c2c install codex` installs `UserPromptSubmit`,
-  `PostToolUse`, `SessionStart`, and `SessionEnd` hooks running
-  `c2c hook codex`, which auto-registers the session, drains inbound broker
-  messages, and returns them through `hookSpecificOutput.additionalContext` —
-  delivery happens when a hook fires, not on arrival. The canonical direction
-  is the **app-server transport** (`c2c start codex --app-server`): its
-  delivery stack (draft-safe arrival-time injection over an authenticated
-  loopback app-server, plus a gated turn for eligible local mail) is
-  implemented and proven at the library level, with managed supervision
-  wiring landing as a follow-up slice. Explicit polling remains the portable
-  fallback. See [Codex](#codex) below for the full contract and wiring
-  status.
+- **Codex**: managed `c2c start codex` / `c2c new codex` use the **app-server
+  transport** by default on a supported Codex (codex-cli ≥ 0.144) — there is no
+  flag to set. Its delivery stack is wired into managed supervision (B131): the
+  supervisor injects inbound c2c mail into the thread's model-visible history on
+  arrival (draft-safe), and starts one gated model turn for eligible local mail
+  when the thread is idle and DND is off. Older Codex or an app-server startup
+  failure falls back automatically to the **hook boundary**: `c2c install codex`
+  installs `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`
+  hooks running `c2c hook codex`, which auto-registers the session, drains
+  inbound broker messages, and returns them through
+  `hookSpecificOutput.additionalContext` — hook delivery happens when a hook
+  fires, not on arrival. Vanilla (non-managed) Codex sessions use the hook path.
+  Explicit polling remains the portable fallback. See [Codex](#codex) below for
+  the full contract.
 - **Pi Agent**: `pi install npm:pi-c2c` installs the external Pi extension. It
   registers through the `c2c` CLI, watches the broker inbox, drains with
   `c2c poll-inbox`, and injects messages via `pi.sendMessage`.
@@ -160,25 +161,35 @@ additionally distinguishes `app-server-unavailable`). Run
 the hook modes is arrival-time delivery — output never claims "instant"
 delivery when only a hook boundary is available.
 
-### App-server transport (`c2c start codex --app-server`)
+### App-server transport (default managed path)
 
-`--app-server` (or `C2C_CODEX_APP_SERVER=1`) launches `codex app-server` plus
-the stock remote TUI attached to it over an authenticated loopback boundary.
+Managed `c2c start codex` / `c2c new codex` launch `codex app-server` plus the
+stock remote TUI attached to it over an authenticated loopback boundary. This is
+the **default and only** managed path for a supported Codex (codex-cli ≥ 0.144) —
+there is no flag to enable it, and no user-facing way to select hooks. Older
+Codex or a genuine app-server startup failure falls back automatically to the
+hook-backed launch (a hidden `C2C_CODEX_FORCE_HOOKS=1` escape exists for operator
+testing only).
 
-**Wiring status (2026-07-11) — read this first.** The app-server *transport*
-(launch, auth boundary, lifecycle, `app_server_status` reporting) is live in
-`c2c start codex --app-server`. The inbound *delivery stack* for it — the
-passive injection adapter and the gated auto-turn dispatcher — is implemented
-and proven at the **library level** (live harnesses:
-`scripts/codex-ingress-dogfood.py`, `scripts/codex-draft-preservation-e2e.py`,
-`scripts/codex-autoturn-e2e.py`); surfacing it under managed supervision is
-the follow-up slice. **Until that lands, an app-server-launched session still
-receives inbound c2c mail at the hook boundary** (see the hook fallback
-below). `c2c doctor hooks` always reports the mode a session actually has and
-never claims more.
+**Wiring status (2026-07-12, B131) — read this first.** The app-server
+*transport* (launch, auth boundary, lifecycle, `app_server_status` reporting) AND
+its inbound *delivery stack* — arrival-time passive injection + the gated
+auto-turn dispatcher — are now **wired into managed supervision and shipped**.
+The managed supervisor drives the proven T003 ingress + T007 auto-turn pipeline
+against the live session while the frontend is attached: inbound c2c mail is
+injected on arrival as DATA, and eligible local mail starts one gated turn when
+the thread is idle and DND is off. Proven live end-to-end with real `c2c new
+codex` on codex-cli 0.144.1 / gpt-5.3-codex-spark (peer DM auto-injected +
+auto-turned + agent response over two sustained rounds, clean teardown with no
+orphans) — receipt:
+`.collab/research/2026-07-11-b131-autoturn-wiring-e2e-receipt.md`. The
+library-level harnesses that proved the primitives remain available
+(`scripts/codex-ingress-dogfood.py`, `scripts/codex-draft-preservation-e2e.py`,
+`scripts/codex-autoturn-e2e.py`). `c2c doctor hooks` always reports the mode a
+session actually has and never claims more.
 
-The contract of the app-server delivery stack — implemented and proven, and
-what a managed session gets once the supervision wiring lands:
+The contract of the app-server delivery stack, as driven by the managed
+supervisor:
 
 - **Authenticated local boundary (required).** The app-server always listens
   on loopback with `--ws-auth capability-token` and a per-unit 256-bit
@@ -228,7 +239,7 @@ what a managed session gets once the supervision wiring lands:
   the app-server capability set, startup fails **before** any routable alias
   is published, prints the minimum-version message, and falls back to the
   hook launch — `c2c doctor hooks` then reports `app-server-unavailable`
-  with the remediation (upgrade Codex, relaunch with `--app-server`).
+  with the remediation (upgrade Codex, then relaunch `c2c start codex`).
 
 Supported Codex: **codex-cli ≥ 0.144** (validated on 0.144.1). The app-server
 protocol and hook events are upstream surfaces that can drift across Codex
@@ -239,7 +250,8 @@ references: [Codex app-server](https://learn.chatgpt.com/docs/app-server) and
 ### Hook fallback (vanilla sessions, hook-mode managed sessions)
 
 Hooks installed by `c2c install codex` are the delivery path for vanilla
-Codex sessions and for managed sessions not using `--app-server`. The Codex
+Codex sessions and the automatic fallback for managed sessions on a Codex too
+old for the app-server transport (or when app-server startup fails). The Codex
 hook set covers `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and
 `SessionEnd`; each hook runs `c2c hook codex`, which can auto-register, drain
 broker inbox messages, and surface them via
@@ -277,10 +289,11 @@ reports `delivery_mode=hooks+wake`. Sessions outside tmux/herdr keep plain
 unreliable). Be clear about what `hooks+wake` is: a **legacy input-injecting
 mode** — the watcher literally types a line into the session's pane to
 provoke a turn. It is still hook-boundary delivery, not arrival-time
-delivery — and today it is the supported idle path for every codex session,
-`--app-server` launches included. Once the app-server supervision wiring
-lands (see the wiring status above), `c2c start codex --app-server` becomes
-the injection-free, draft-safe replacement.
+delivery — and it is the supported idle path only for **hook-fallback** codex
+sessions (vanilla, or managed on a Codex too old for the app-server transport).
+Managed sessions on a supported Codex use the app-server transport instead
+(default; see the wiring status above), whose delivery loop is the
+injection-free, draft-safe, arrival-time replacement — no pane typing.
 
 Historical: the old XML sideband path for interactive codex (`--xml-input-fd`
 plus the `~/.c2c/clients/codex/deliver-watch.sh` supervisor scripts) is gone —

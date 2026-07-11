@@ -917,10 +917,10 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--app-server`, `--thread-id ID` (see the Codex session grammar below). |
-| `codex [--alias A] [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
-| `new codex [--alias A] [--yolo] [--app-server] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
-| `resume codex ALIAS [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--thread-id ID` (see the Codex session grammar below). |
+| `codex [--alias A] [--yolo] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
+| `new codex [--alias A] [--yolo] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
+| `resume codex ALIAS [--yolo] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
@@ -977,7 +977,7 @@ Four command forms share one implementation path for managed Codex sessions:
 | Form | Meaning |
 |------|---------|
 | `c2c start codex …` | Canonical managed entry point (full managed flag surface: `-n`, `-m`, `--worktree`, `--agent`, `--auto-join`, …). |
-| `c2c codex …` | Shortcut for `c2c start codex` with the same Codex session semantics (identity, `--yolo`, `--app-server`, `--thread-id`) and the same defaults. It exposes a reduced flag surface — pass codex options after `--`, and use `c2c start codex` when you need the full managed flags. |
+| `c2c codex …` | Shortcut for `c2c start codex` with the same Codex session semantics (identity, `--yolo`, `--thread-id`) and the same defaults. It exposes a reduced flag surface — pass codex options after `--`, and use `c2c start codex` when you need the full managed flags. |
 | `c2c new codex …` | Always a new Codex thread + a new c2c identity — never silently resumes. |
 | `c2c resume codex ALIAS …` | Resume the Codex thread saved for `ALIAS`. |
 
@@ -996,14 +996,16 @@ Key semantics:
   sandbox for that session). It is a per-launch decision and is **never**
   persisted into later resumes; without it, approval/sandbox defaults are
   unchanged.
-- **`--app-server`** selects the app-server-backed remote-TUI transport (also via
-  `C2C_CODEX_APP_SERVER=1`). Without it, the proven hook-backed launch runs. If
-  the local Codex is too old for the app-server capability set, startup fails
-  before any routable alias is published, prints an actionable minimum-version
-  message, and falls back to the hook-backed launch. `c2c instances` reports the
-  app-server lifecycle state — `starting` / `online-attached` / `offline` /
-  `failed-startup` — using the same terminology across help, completions,
-  `stop`/`restart`, and `resume`.
+- **App-server transport (default, no flag).** Managed Codex sessions use the
+  app-server-backed remote-TUI transport by default on a supported Codex
+  (codex-cli ≥ 0.144) — there is no flag to set. If the local Codex is too old
+  for the app-server capability set, or app-server startup fails, startup falls
+  back automatically to the hook-backed launch before any routable alias is
+  published, printing an actionable minimum-version message. (A hidden
+  `C2C_CODEX_FORCE_HOOKS=1` escape forces the hook path for operator testing
+  only.) `c2c instances` reports the app-server lifecycle state — `starting` /
+  `online-attached` / `offline` / `failed-startup` — using the same terminology
+  across help, completions, `stop`/`restart`, and `resume`.
 
 **`--` passthrough (recommended).** This is the codex-specific instance of the
 general [Argument passthrough (`--`)](#argument-passthrough----any-client-wrapper)
@@ -1024,16 +1026,16 @@ alias cx='c2c new codex --'
 cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-spark
 ```
 
-**Delivery + diagnostics.** Today all Codex sessions deliver at the hook
-boundary (messages surface on the session's next hook fire, not on arrival).
-The app-server path's delivery stack — inbound c2c mail injected into the
-thread's model-visible history on arrival over the authenticated loopback
-app-server (draft-safe; never rendered in the TUI transcript), and one gated
-turn for eligible **local** mail when the thread is explicitly idle and DND
-is off (relay-origin mail and mail arriving during an active/unknown-status
-turn stays queued, fail-closed; mid-turn arrivals batch into one follow-up
-turn) — is implemented and proven at the library level; wiring it into
-`c2c start codex --app-server` supervision is the follow-up slice. Message
+**Delivery + diagnostics.** Managed Codex sessions on a supported Codex deliver
+over the app-server path, wired into managed supervision (B131): inbound c2c
+mail is injected into the thread's model-visible history on arrival over the
+authenticated loopback app-server (draft-safe; never rendered in the TUI
+transcript), and one gated turn fires for eligible **local** mail when the
+thread is explicitly idle and DND is off (relay-origin mail and mail arriving
+during an active/unknown-status turn stays queued, fail-closed; mid-turn
+arrivals batch into one follow-up turn). Hook-fallback sessions (vanilla, or
+managed on a too-old Codex) deliver at the hook boundary instead — messages
+surface on the session's next hook fire, not on arrival. Message
 content can never resolve approvals or write verdict files (B098).
 `delivery_mode` in `c2c dev instances` / `c2c status` uses one vocabulary —
 `app-server` (only while `online-attached`) / `hooks+wake` (input-injecting
