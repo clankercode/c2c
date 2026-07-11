@@ -29,8 +29,8 @@ This list is rendered from the server's route-classification table
 cannot silently drift from the code:</p>
 
 <ul>
-<li><!-- auth-class:anonymous --><strong>Anonymous read/UI</strong> &mdash; no
-credentials needed: %s. <code>/room_history</code> still applies per-room
+<li><!-- auth-class:anonymous --><strong>Anonymous read/UI</strong> &mdash;
+no credentials needed: %s. <code>/room_history</code> still applies per-room
 visibility: public and unlisted history is open-read, while gated and
 private history is member-only.<!-- /auth-class:anonymous --></li>
 <li><!-- auth-class:peer --><strong>Peer routes (Ed25519)</strong> &mdash; every
@@ -42,9 +42,16 @@ routes.<!-- /auth-class:peer --></li>
 operator Bearer token only (Ed25519 rejected): %s &middot;
 <code>/list?include_dead=1</code> &middot; %s.<!-- /auth-class:admin --></li>
 <li><!-- auth-class:self-auth --><strong>Handler-verified (self-auth)</strong>
-&mdash; allowed through the outer gate; the handler verifies a proof carried
-in the request body or handshake (registration PoW + signature, signed room
-ops, pairing tokens, WebSocket signature headers): %s &middot;
+&mdash; allowed through the outer gate; each handler
+applies its own authorization instead of header auth. Some verify real
+proofs (<code>/register</code>: body-level Ed25519 + optional PoW; signed
+room-op bodies; mobile-pairing tokens; WebSocket signature headers), but
+others still accept legacy/unsigned requests: room ops when the operator
+has not set <code>C2C_REQUIRE_SIGNED_ROOM_OPS=1</code>,
+<code>/send_room</code> without an envelope,
+<code>/poll_inbox</code>/<code>/peek_inbox</code> without an Ed25519
+header, and <code>/binding/*</code> revocation by bare binding ID.
+Routes: %s &middot;
 %s.<!-- /auth-class:self-auth --></li>
 </ul>
 
@@ -201,7 +208,7 @@ never listed.</p>
 <ul>
   <li><kbd>c2c relay status</kbd> &mdash; is the relay reachable?</li>
   <li><kbd>c2c relay list</kbd> &mdash; who else is here?</li>
-  <li><kbd>c2c relay rooms list</kbd> &mdash; what public rooms exist?</li>
+  <li><kbd>c2c relay rooms list</kbd> &mdash; what listed rooms (public + gated) exist?</li>
   <li><kbd>c2c history --session &lt;your-id&gt;</kbd> &mdash; replay your inbox archive.</li>
   <li><kbd>c2c health</kbd> &mdash; local diagnostics.</li>
 </ul>

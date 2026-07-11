@@ -191,6 +191,45 @@ let t_landing_peer_section () =
          true (contains sec (code r)))
     Relay_server_html.peer_example_routes
 
+(* === 2b. semantic phrase pinning ===
+
+   Substring checks on route names alone would let the surrounding prose
+   drift (review finding, 2026-07-11): "no credentials" could become
+   "credentials", or the self-auth section could (as the first cut of this
+   slice did) claim every handler verifies a proof when poll/peek without an
+   Ed25519 header, /binding/* revocation, and legacy unsigned room ops do
+   not. Pin the load-bearing phrase of each class section, and ban the known
+   false claims page-wide. This is deliberately a lightweight textual
+   contract, not a semantic parser: it forces any meaning-changing edit to
+   consciously update this test in the same commit. *)
+
+let check_phrase sec_name phrase =
+  Alcotest.(check bool)
+    (Printf.sprintf "%s section pins phrase %S" sec_name phrase)
+    true
+    (contains (section sec_name) phrase)
+
+let t_section_semantics_pinned () =
+  check_phrase "anonymous" "no credentials needed";
+  check_phrase "peer" "requires a per-request Ed25519";
+  check_phrase "peer" "Bearer tokens are rejected";
+  check_phrase "admin" "operator Bearer token only";
+  check_phrase "admin" "Ed25519 rejected";
+  (* self-auth must describe handler-specific authorization AND disclose the
+     legacy/unauthenticated acceptance paths (B111: unsigned room ops,
+     envelope-less /send_room, headerless poll/peek, bare-ID /binding/*
+     revoke). *)
+  check_phrase "self-auth" "applies its own authorization";
+  check_phrase "self-auth" "legacy";
+  check_phrase "self-auth" "C2C_REQUIRE_SIGNED_ROOM_OPS"
+
+let t_no_blanket_proof_claim () =
+  (* The first cut of this slice claimed "the handler verifies a proof" for
+     the whole self-auth class — false for poll/peek/binding/unsigned room
+     ops. Keep the phrase dead. *)
+  Alcotest.(check bool) "no blanket 'verifies a proof' claim" false
+    (contains landing "verifies a proof")
+
 (* === 3. B111 stale claims are gone; corrections are present === *)
 
 let t_no_blanket_bearer_claim () =
@@ -199,8 +238,13 @@ let t_no_blanket_bearer_claim () =
     (contains landing "All routes except")
 
 let t_no_public_rooms_only_claim () =
-  Alcotest.(check bool) "no 'public rooms only' claim" false
-    (contains landing "public rooms only")
+  (* Ban the whole "public rooms" phrasing, not just the "public rooms only"
+     variant: the directory lists public AND gated rooms, so any "public
+     rooms" wording ("what public rooms exist?", review finding 2026-07-11)
+     misdescribes it. Correct copy says "public and gated rooms" /
+     "public + gated", which this substring does not match. *)
+  Alcotest.(check bool) "no 'public rooms' phrasing anywhere" false
+    (contains landing "public rooms")
 
 let t_list_rooms_includes_gated () =
   Alcotest.(check bool) "/list_rooms copy says public and gated" true
@@ -234,7 +278,11 @@ let () =
             t_landing_admin_section_complete;
           Alcotest.test_case "self-auth section" `Quick
             t_landing_self_auth_section_complete;
-          Alcotest.test_case "peer section" `Quick t_landing_peer_section ] );
+          Alcotest.test_case "peer section" `Quick t_landing_peer_section;
+          Alcotest.test_case "section semantics pinned" `Quick
+            t_section_semantics_pinned;
+          Alcotest.test_case "no blanket proof claim" `Quick
+            t_no_blanket_proof_claim ] );
       ( "b111-copy-corrections",
         [ Alcotest.test_case "no blanket Bearer claim" `Quick
             t_no_blanket_bearer_claim;
