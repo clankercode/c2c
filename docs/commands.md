@@ -35,6 +35,16 @@ Register an alias for the current session. Must be called before sending or rece
 
 **Returns** `{alias, session_id, status}` — `status` is `"registered"` or `"already_registered"`. Calling with no arguments is a safe self-refresh (e.g. after a PID change).
 
+**Sticky alias (B135)** — the alias bound to a `session_id` does not change. Passing a different `alias` for an already-registered session returns `is_error: true`:
+
+```
+register rejected: alias is sticky for session_id '<id>' (currently '<old>').
+You requested '<new>'. Start a fresh session to use a new name;
+same-alias re-register remains allowed for PID refresh.
+```
+
+Start a new session (new `session_id`) if you need a different name. Same-alias re-register and omitted-alias reuse remain allowed.
+
 **Errors**
 
 If `alias` is already held by a **different alive session**, the call returns `is_error: true` with an actionable message:
@@ -728,7 +738,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `uninstall git-hook` | 3 | Remove the c2c pre-commit/pre-push hooks from `.git/hooks` only if they match the c2c source. |
 | `uninstall git-shim` | 3 | Remove the swarm git shim binaries from `$XDG_STATE_HOME/c2c/bin/` and per-instance copies. |
 | `uninstall all` | 3 | Uninstall every component above (clients first, then git pieces, then `self` last). |
-| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup] [--with-mcp] [--hooks]` | 2 | One-command project onboarding: register + join `swarm-lounge` (or `--room`). MCP/hooks are **off by default** — pass `--with-mcp` / `--hooks` deliberately. CLI messaging works without MCP. |
+| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup] [--with-mcp] [--hooks]` | 2 | One-command project onboarding: register + join `swarm-lounge` (or `--room`). MCP/hooks are **off by default** — pass `--with-mcp` / `--hooks` deliberately. CLI messaging works without MCP. Explicit `-a`/`--alias` that differs from an existing registration for this session_id is refused (sticky alias B135). |
 
 All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (machine-readable output). `uninstall` also accepts `--target-dir DIR` for project-scoped clients and `--alias A` to locate the wake schedule when the install manifest is missing.
 
@@ -1108,7 +1118,7 @@ app-server) with an actionable remediation per degraded state. Full contract
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `await-reply --token TOKEN [--timeout SECS] [--poll-interval SECS]` | Block until the host-local verdict file for `TOKEN` contains `allow` or `deny`. Peer inbox and relay messages are never verdicts. Exits 0 after printing the verdict, or 1 on timeout. |
-| `register [--alias A] [--session-id ID] [--no-metadata] [--cross-repo]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. `--no-metadata` opts out of metadata exposure while still capturing `cwd` for the worktree guard. `--cross-repo` writes the registration to the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
+| `register [--alias A] [--session-id ID] [--no-metadata] [--cross-repo]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. Explicit `--alias` that differs from an existing registration for this session_id is refused (sticky alias B135 — start a fresh session for a new name). `--no-metadata` opts out of metadata exposure while still capturing `cwd` for the worktree guard. `--cross-repo` writes the registration to the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
 
 ### Scheduling
 

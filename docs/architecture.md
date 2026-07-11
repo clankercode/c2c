@@ -225,9 +225,13 @@ Key behaviours:
   new session_id but the same alias, `join_room` replaces the stale
   entry rather than adding a duplicate. Prevents fan-out duplication
   after client restarts.
-- **Peer-renamed fan-out** — when a session re-registers with a
-  different alias, the broker fans out a `{"type":"peer_renamed", ...}`
-  system message to every room the session belongs to.
+- **Sticky alias (B135)** — alias is sticky per `session_id`. Explicit
+  rename via MCP `register` / `c2c init --alias` / `c2c register --alias`
+  is refused when the session already has a different alias; start a
+  fresh session for a new name. Same-alias re-register (PID refresh)
+  and omitted-alias reuse (B046 / MCP no-args) remain allowed.
+  The legacy `peer_renamed` room-history event type is unused under
+  this policy (code path retained but unreachable via public surfaces).
 - **Auto-join** — `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` (written by
   `c2c install <client>`) makes every agent auto-join the social room
   on startup without calling `join_room` manually.

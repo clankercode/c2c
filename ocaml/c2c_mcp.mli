@@ -392,6 +392,15 @@ module Broker : sig
       field; unlike [update_wake_targets], values are not preserved. *)
 
   val list_registrations : t -> registration list
+
+  val sticky_alias_conflict : t -> session_id:string -> requested_alias:string -> string option
+  (** B135: [Some existing_alias] when [session_id] already has a registration
+      whose alias differs (casefold) from [requested_alias]. Used to refuse
+      explicit renames at MCP register / CLI init / CLI register surfaces. *)
+
+  val sticky_alias_error : session_id:string -> existing_alias:string -> requested_alias:string -> string
+  (** Canonical sticky-alias rejection message for CLI and MCP tool errors. *)
+
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
   val registration_is_alive : registration -> bool

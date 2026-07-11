@@ -3062,6 +3062,83 @@ let test_init_reuses_alias_for_same_session_id () =
       (try Sys.remove "/tmp/c2c-b046-r1.out" with _ -> ());
       (try Sys.remove "/tmp/c2c-b046-r2.out" with _ -> ()))
 
+(* B135: init --alias that differs from the existing session registration is refused. *)
+let test_init_explicit_rename_refused_sticky_alias () =
+  with_temp_dir (fun dir ->
+      let session_id = "test-sess-b135" in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id ~alias:"original-sticky"
+        ~pid:None ~pid_start_time:None ();
+      let out = Filename.temp_file "c2c-b135-init" ".out" in
+      Fun.protect
+        ~finally:(fun () -> try Sys.remove out with _ -> ())
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s > %s 2>&1"
+              (Filename.quote dir) (Filename.quote session_id)
+              (c2c_cmd "c2c init --no-setup --alias renamed-sticky")
+              (Filename.quote out)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file out in
+          check bool "init --alias rename exits non-zero" true (rc <> 0);
+          check bool "error mentions sticky" true
+            (string_contains content "sticky");
+          check bool "error names original alias" true
+            (string_contains content "original-sticky");
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check string "old alias remains" "original-sticky" (List.hd regs).alias))
+
+(* B135: c2c register --alias rename for same session_id is refused. *)
+let test_register_cmd_explicit_rename_refused_sticky_alias () =
+  with_temp_dir (fun dir ->
+      let session_id = "test-sess-b135-reg" in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id ~alias:"reg-original"
+        ~pid:None ~pid_start_time:None ();
+      let out = Filename.temp_file "c2c-b135-reg" ".out" in
+      Fun.protect
+        ~finally:(fun () -> try Sys.remove out with _ -> ())
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s > %s 2>&1"
+              (Filename.quote dir) (Filename.quote session_id)
+              (c2c_cmd "c2c register --alias reg-renamed")
+              (Filename.quote out)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file out in
+          check bool "register --alias rename exits non-zero" true (rc <> 0);
+          check bool "error mentions sticky" true
+            (string_contains content "sticky");
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check string "old alias remains" "reg-original" (List.hd regs).alias))
+
+(* B135: same-alias c2c register refresh still works. *)
+let test_register_cmd_same_alias_refresh_allowed () =
+  with_temp_dir (fun dir ->
+      let session_id = "test-sess-b135-same" in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id ~alias:"keep-me"
+        ~pid:None ~pid_start_time:None ();
+      let out = Filename.temp_file "c2c-b135-same" ".out" in
+      Fun.protect
+        ~finally:(fun () -> try Sys.remove out with _ -> ())
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s > %s 2>&1"
+              (Filename.quote dir) (Filename.quote session_id)
+              (c2c_cmd "c2c register --alias keep-me")
+              (Filename.quote out)
+          in
+          let rc = Sys.command cmd in
+          check int "same-alias register exits 0" 0 rc;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check string "alias unchanged" "keep-me" (List.hd regs).alias))
+
 let run_capture command =
   let tmpfile = Filename.temp_file "c2c-cli-capture" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
@@ -3955,5 +4032,9 @@ let () =
         ; ( "init prefers Claude environment over ambiguous PATH", `Quick
           , test_init_prefers_claude_environment_over_ambiguous_path )
         ; ( "init reuses alias for same session_id", `Quick, test_init_reuses_alias_for_same_session_id )
+        ; ( "init explicit rename refused sticky alias", `Quick, test_init_explicit_rename_refused_sticky_alias )
+        ; ( "register cmd explicit rename refused sticky alias", `Quick, test_register_cmd_explicit_rename_refused_sticky_alias )
+        ; ( "register cmd same-alias refresh allowed", `Quick, test_register_cmd_same_alias_refresh_allowed )
         ] )
     ]
+ 

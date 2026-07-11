@@ -31,7 +31,7 @@ let base_tool_definitions =
       ~description:"Register a C2C alias for the current session. `alias` is optional: if omitted the server falls back to the C2C_MCP_AUTO_REGISTER_ALIAS environment variable. Calling register with no arguments is a safe way to refresh your registration (e.g. after a process restart that changed your PID)."
       ~required:[]
       ~properties:
-        [ prop "alias" "New alias to register for this session. Pass a different alias to rename without changing env vars."
+        [ prop "alias" "Alias to register for this session. Same-alias re-register is a safe PID refresh. A different alias for an already-registered session_id is refused (sticky alias — start a fresh session for a new name)."
         ; prop "session_id" "Optional session id override; defaults to the current MCP session."
         ; prop "role" "Optional sender role for envelope attribution (coordinator, reviewer, agent, user)."
         ; prop "tmux_location" "Optional tmux target for this session's pane — either session:window.pane (e.g. \"0:0.0\") or a raw pane id (e.g. \"%5\"). When not passed, falls back to the C2C_TMUX_LOCATION environment variable. Set automatically by managed sessions started via 'c2c start'. Used as the wake-inject target for idle codex sessions."

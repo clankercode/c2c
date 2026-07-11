@@ -31,17 +31,18 @@ let register ~broker ~session_id_override ~arguments =
         | Some v -> String.trim v = "1"
         | None -> false
       in
-      (* #dual-alias-fix: if this session already has a registration with a
-         different alias and the caller did NOT explicitly request an alias
-         (i.e. relying on C2C_MCP_AUTO_REGISTER_ALIAS or default), reuse the
-         existing alias to prevent the same session accumulating multiple
-         registrations under different aliases. Explicit alias= argument
-         is treated as an intentional rename and proceeds normally.
+      (* #dual-alias-fix / B046: if this session already has a registration
+         with a different alias and the caller did NOT explicitly request an
+         alias (i.e. relying on C2C_MCP_AUTO_REGISTER_ALIAS or default), reuse
+         the existing alias to prevent the same session accumulating multiple
+         registrations under different aliases. B135: an explicit alias=
+         that differs from the existing registration is refused (sticky
+         alias) — start a fresh session for a new name.
          When reusing an existing alias we skip the blocklist, because the
          alias was already validated at first registration. *)
       let alias, alias_from_auto_gen =
         match explicit_alias with
-        | Some a -> (a, false)  (* explicit request — allow rename, enforce blocklist *)
+        | Some a -> (a, false)  (* explicit request — sticky check below; enforce blocklist *)
         | None ->
             let existing =
               List.find_opt
@@ -52,6 +53,18 @@ let register ~broker ~session_id_override ~arguments =
              | Some reg when reg.alias <> alias -> (reg.alias, true)  (* reuse existing, skip blocklist *)
              | _ -> (alias, env_from_auto_gen ()))
       in
+      (* B135: refuse explicit rename of an existing session_id's alias. *)
+      match
+        (match explicit_alias with
+         | None -> None
+         | Some _ ->
+             Broker.sticky_alias_conflict broker ~session_id ~requested_alias:alias)
+      with
+      | Some existing_alias ->
+          Lwt.return (tool_err
+            (Broker.sticky_alias_error ~session_id ~existing_alias
+               ~requested_alias:alias))
+      | None ->
       (* Reserved aliases — always blocked. *)
       if Broker.is_reserved_system_alias alias then
         Lwt.return (tool_err (Printf.sprintf

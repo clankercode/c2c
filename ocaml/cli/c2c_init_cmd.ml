@@ -207,6 +207,27 @@ let init_cmd =
             a
   in
 
+  (* B135: alias is sticky per session_id — refuse explicit --alias rename. *)
+  (match alias_opt with
+   | Some requested ->
+       (match
+          C2c_mcp.Broker.sticky_alias_conflict broker ~session_id
+            ~requested_alias:requested
+        with
+        | Some existing_alias ->
+            let msg =
+              C2c_mcp.Broker.sticky_alias_error ~session_id ~existing_alias
+                ~requested_alias:requested
+            in
+            (match output_mode with
+             | Json ->
+                 print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
+             | Human ->
+                 Printf.eprintf "error: %s\n%!" msg);
+            exit 1
+        | None -> ())
+   | None -> ());
+
   let alias_for_install = Some alias in
   let do_mcp_setup = with_mcp || hooks in
   let setup_result =

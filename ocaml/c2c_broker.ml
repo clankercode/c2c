@@ -1289,6 +1289,30 @@ open C2c_mcp_helpers
     load_registrations t
     |> List.filter (fun reg -> not (is_expired_codex_hook_auto_registration reg))
 
+  (* B135: alias is sticky per session_id. Explicit rename of an existing
+     registration is refused — start a fresh session for a new name.
+     Same-alias re-register (PID refresh) remains allowed. Comparison is
+     case-insensitive (alias_casefold). Low-level [register] still updates
+     in-place for same-session alias changes; policy is enforced at the
+     MCP register handler and CLI init/register surfaces. *)
+  let sticky_alias_conflict t ~session_id ~requested_alias =
+    match
+      List.find_opt
+        (fun reg -> reg.session_id = session_id)
+        (list_registrations t)
+    with
+    | Some reg
+      when alias_casefold reg.alias <> alias_casefold requested_alias ->
+        Some reg.alias
+    | _ -> None
+
+  let sticky_alias_error ~session_id ~existing_alias ~requested_alias =
+    Printf.sprintf
+      "register rejected: alias is sticky for session_id '%s' (currently '%s'). \
+       You requested '%s'. Start a fresh session to use a new name; \
+       same-alias re-register remains allowed for PID refresh."
+      session_id existing_alias requested_alias
+
   (* /proc/<pid>/stat line layout: "<pid> (<comm>) <state> <ppid> ... <starttime> ..."
      comm can contain spaces and parens, so we split on the LAST ')'. The fields
      after comm are space-separated; starttime is field 22 in the 1-indexed man
