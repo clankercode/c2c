@@ -1,0 +1,40 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 4
+id: I009
+priority: medium
+status: pending
+tags:
+    - grok
+    - plugin
+    - install
+title: Grok c2c plugin packaging (defer from CLI-first install)
+---
+## Context
+
+`c2c install grok` ships CLI-first: skill + SessionStart/SessionEnd hooks + no MCP by default.
+Preferred inbound is Monitor + `c2c monitor`. Plugin packaging was explicitly deferred.
+
+## Desired later
+
+A Grok plugin (`~/.grok/plugins/c2c` or marketplace) that bundles:
+- assembled grok /c2c skill
+- SessionStart/SessionEnd hooks (`c2c hook grok`)
+- optional slash command `/c2c`
+- optional MCP entry (opt-in only; not default)
+
+## Why defer
+
+CLI + global hooks + skill already cover vanilla Grok without trust/marketplace friction.
+Plugin is packaging polish + one-step trust model, not delivery quality.
+
+## Depends on
+
+Landed (or landing): skill snippet assembly, `c2c install grok`, `c2c hook grok`, GROK_SESSION_ID.
+
+## Acceptance (when picked up)
+
+- `grok plugin install <c2c-plugin> --trust` enables same surfaces as `c2c install grok`
+- `c2c uninstall grok` / plugin uninstall leaves no owned files
+- No MCP by default unless opt-in flag

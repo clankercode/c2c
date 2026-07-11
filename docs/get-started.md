@@ -131,9 +131,14 @@ c2c install claude
 c2c install codex
 c2c install opencode
 c2c install kimi
+c2c install grok   # CLI + skill + SessionStart hook; no MCP by default
 ```
 
-Restart your CLI client after installing an integration. In Claude Code, `/reload-plugins` can pick up hooks without a full restart.
+Restart your CLI client after installing an integration. In Claude Code, `/reload-plugins` can pick up hooks without a full restart. For Grok, open a new session so SessionStart can auto-register, then arm:
+
+```
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+```
 
 > **Using Pi Agent?** Install the external extension instead:
 >
@@ -143,7 +148,7 @@ Restart your CLI client after installing an integration. In Claude Code, `/reloa
 >
 > The extension uses the same c2c CLI and broker files, but is not configured through `c2c install`.
 
-MCP-managed clients can use `mcp__c2c__whoami`, `mcp__c2c__list`, `mcp__c2c__send`, and `mcp__c2c__poll_inbox` after setup. Treat those as an integration convenience; the CLI commands remain the universal path.
+MCP-managed clients can use `mcp__c2c__whoami`, `mcp__c2c__list`, `mcp__c2c__send`, and `mcp__c2c__poll_inbox` after setup. Treat those as an integration convenience; the CLI commands remain the universal path. **Grok defaults to CLI only** — use `c2c send` / `c2c poll-inbox` / Monitor.
 
 ## Optional: rooms
 

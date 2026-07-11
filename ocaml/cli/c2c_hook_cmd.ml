@@ -798,10 +798,180 @@ let hook_claude : unit Cmdliner.Cmd.t =
        ~doc:"Claude Code session-lifecycle hook: reads the hook payload (JSON) on stdin, resolves this session's c2c identity env-first (auto-registering vanilla sessions on SessionStart), refreshes the /c2c skill, emits onboarding/wake text + cold-boot / post-compact context + queued messages as hookSpecificOutput.additionalContext, and deregisters hook auto-registrations on SessionEnd. Installed into ~/.claude/settings.json by `c2c install claude`. Never fails the claude turn: errors exit 0 with empty output.")
     hook_claude_cmd
 
+
+let grok_session_events = [ "SessionStart"; "SessionEnd" ]
+
+let hook_grok_cmd =
+  let open Cmdliner.Term in
+  const (fun () ->
+    (try
+       Sys.set_signal Sys.sigalrm (Sys.Signal_handle (fun _ -> exit 0));
+       ignore (Unix.alarm 8)
+     with _ -> ());
+    (try
+       if C2c_hook_lib.is_subagent_quiet () then exit 0;
+       let raw = read_stdin_all ~max_bytes:(1024 * 1024) in
+       let payload =
+         try Yojson.Safe.from_string (String.trim raw) with _ -> `Null
+       in
+       (* Grok hook runner may use camelCase or snake_case; accept both. *)
+       let event =
+         match payload_string_field payload "hook_event_name" with
+         | Some e -> e
+         | None ->
+             (match payload_string_field payload "hookEventName" with
+              | Some e -> e
+              | None ->
+                  (match Sys.getenv_opt "GROK_HOOK_EVENT" with
+                   | Some e when String.trim e <> "" -> String.trim e
+                   | _ -> exit 0))
+       in
+       let event =
+         match String.lowercase_ascii event with
+         | "session_start" | "sessionstart" -> "SessionStart"
+         | "session_end" | "sessionend" -> "SessionEnd"
+         | other -> event
+       in
+       if not (List.mem event grok_session_events) then exit 0;
+       if event = "SessionStart" then C2c_setup.refresh_grok_skill_if_stale ();
+       let broker_root = C2c_utils.resolve_broker_root () in
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+       let regs () = C2c_mcp.Broker.list_registrations broker in
+       let registered sid =
+         List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) (regs ())
+       in
+       let validated s =
+         match C2c_mcp.validate_session_id s with
+         | Ok sid -> Some sid
+         | Error _ -> None
+       in
+       let payload_sid =
+         match payload_string_field payload "session_id" with
+         | Some s -> validated s
+         | None ->
+             (match payload_string_field payload "sessionId" with
+              | Some s -> validated s
+              | None -> None)
+       in
+       let env_sid =
+         match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+         | Some s when String.trim s <> "" -> validated (String.trim s)
+         | _ ->
+             (match Sys.getenv_opt "GROK_SESSION_ID" with
+              | Some s when String.trim s <> "" -> validated (String.trim s)
+              | _ -> None)
+       in
+       if event = "SessionEnd" then begin
+         let candidates = List.filter_map (fun x -> x) [ payload_sid; env_sid ] in
+         (match
+            List.find_opt
+              (fun (r : C2c_mcp.registration) ->
+                 r.registered_by = Some "grok-hook"
+                 && List.exists (fun sid -> r.session_id = sid) candidates)
+              (regs ())
+          with
+          | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
+          | None -> ());
+         C2c_setup.remove_grok_session_identity_skill ();
+         exit 0
+       end;
+       (* SessionStart identity resolution (CLI-first; no MCP required):
+          1. env session already registered
+          2. payload session already registered
+          3. auto-register payload or env session id *)
+       let resolved =
+         match env_sid with
+         | Some sid when registered sid -> Some sid
+         | _ ->
+             (match payload_sid with
+              | Some sid when registered sid -> Some sid
+              | _ -> None)
+       in
+       let session_id, onboarded_alias =
+         match resolved with
+         | Some sid -> (sid, None)
+         | None ->
+             let sid_opt =
+               match payload_sid with
+               | Some sid -> Some sid
+               | None -> env_sid
+             in
+             (match sid_opt with
+              | None -> exit 0
+              | Some sid ->
+                  let alias =
+                    let path =
+                      (try Sys.getenv "HOME" with Not_found -> "/tmp")
+                      ^ "/.config/c2c/default-alias"
+                    in
+                    match
+                      try
+                        if Sys.file_exists path then
+                          let ic = open_in path in
+                          Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+                            Some (String.trim (input_line ic)))
+                        else None
+                      with _ -> None
+                    with
+                    | Some a when a <> "" -> a
+                    | _ -> C2c_setup.default_alias_for_client "grok"
+                  in
+                  (try
+                     C2c_mcp.Broker.register broker ~session_id:sid ~alias
+                       ~pid:None
+                       ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time None)
+                       ~client_type:(Some "grok")
+                       ~cwd:
+                         (match payload_string_field payload "cwd" with
+                          | Some c -> Some c
+                          | None -> payload_string_field payload "workspaceRoot")
+                       ~registered_by:(Some "grok-hook")
+                       ~from_auto_gen:true ()
+                   with e ->
+                     (try
+                        prerr_endline
+                          ("c2c hook grok: auto-register failed: "
+                           ^ Printexc.to_string e)
+                      with _ -> ());
+                     exit 0);
+                  (match C2c_cli_helpers.read_session_statefile ~broker_root with
+                   | Some existing
+                     when C2c_cli_helpers.statefile_session_registered ~broker_root existing -> ()
+                   | _ ->
+                       C2c_cli_helpers.write_session_statefile ~broker_root
+                         ~session_id:sid ~alias ~client:(Some "grok"));
+                  (sid, Some alias))
+       in
+       let alias =
+         match onboarded_alias with
+         | Some a -> a
+         | None ->
+             (match
+                List.find_map
+                  (fun (r : C2c_mcp.registration) ->
+                     if r.session_id = session_id then Some r.alias else None)
+                  (regs ())
+              with
+              | Some a -> a
+              | None -> "unknown")
+       in
+       C2c_setup.write_grok_session_identity_skill ~alias ~session_id;
+       (* Grok ignores passive-hook stdout for transcript inject; exit 0. *)
+       exit 0
+     with e ->
+       (try prerr_endline ("c2c hook grok: " ^ Printexc.to_string e) with _ -> ());
+       exit 0)) $ const ()
+
+let hook_grok : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "grok"
+       ~doc:"Grok Build TUI SessionStart/SessionEnd hook: auto-registers the session (registered_by=grok-hook), refreshes the /c2c skill, and writes a c2c-session identity skill (Grok cannot inject additionalContext). Installed by `c2c install grok`. Never fails the host turn.")
+    hook_grok_cmd
+
 let hook : unit Cmdliner.Cmd.t =
   let info = Cmdliner.Cmd.info "hook"
-    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), 'claude' for Claude SessionStart/SessionEnd, and 'codex' for all Codex CLI hook events."
+    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), 'claude' for Claude SessionStart/SessionEnd, and 'codex' for all Codex CLI hook events, and 'grok' for Grok SessionStart/SessionEnd."
   in
   (* Default to post-tool for backward compat: `c2c hook` (no subcommand) behaves
      as the PostToolUse hook, same as before the hook group refactor. *)
-  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex; hook_claude ]
+  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex; hook_claude; hook_grok ]
