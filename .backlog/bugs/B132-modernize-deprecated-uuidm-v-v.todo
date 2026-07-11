@@ -1,0 +1,24 @@
+---
+complexity: low
+created_at: "2026-07-11T15:08:54Z"
+depends_on: []
+estimate_hours: 0.25
+id: B132
+priority: low
+status: pending
+tags:
+    - tech-debt
+    - tests
+    - ocaml
+title: Modernize deprecated Uuidm.v `V4 in 2 test files (test_relay.ml:959, test_cross_host_e2e.ml:50)
+updated_at: "2026-07-11T15:08:54Z"
+---
+Two test call sites use the deprecated `Uuidm.v `V4` API, which emits a non-fatal deprecation warning (build stays green). Production code already uses the modern form `Uuidm.v4_gen (Random.State.make_self_init ()) ()` everywhere.
+
+Sites:
+- ocaml/test/test_relay.ml:959
+- ocaml/test/test_cross_host_e2e.ml:50
+
+Fix: replace `Uuidm.to_string (Uuidm.v `V4)` with `Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())` to match the production convention (see e.g. relay.ml:708, c2c_start.ml:5565). Test-only, mechanical.
+
+Discovered during the 2026-07-12 test-suite compile-fix (the same pass that added pow_difficulty=None + ~pow_difficulty:(-1)); left out of scope then to keep that pass purely to the compile-blocking errors. Low priority: warning only, no functional impact.

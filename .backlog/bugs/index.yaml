@@ -128,3 +128,4 @@ bugs:
     - file: B129-c2c-start-pty-cmd-broken-since.todo
     - file: B130-c2c-dm-to-coordinator-session.todo
     - file: B131-wire-codex-ingress-auto-turn-d.todo
+    - file: B132-modernize-deprecated-uuidm-v-v.todo
