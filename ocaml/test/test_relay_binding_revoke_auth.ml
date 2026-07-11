@@ -379,9 +379,70 @@ let test_malformed_binding_id_still_400 () =
     Alcotest.(check bool) "seeded binding untouched by malformed request" true
       (binding_exists relay ~binding_id:seeded))
 
+(* --- SqliteRelay-backed: revoke-nonce persistence across restart + GC.
+   The HTTP suite above runs on InMemoryRelay, so it can only prove
+   in-process replay. These direct-backend tests pin the persistence
+   invariant (iteration-2 motivation) and the GC sweep (iteration-3
+   finding): a consumed revoke nonce is still rejected after a "restart"
+   (fresh SqliteRelay on the same db), and gc removes expired rows. *)
+
+let with_sqlite_relay f =
+  let dir = Filename.temp_file "b116-revnonce" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o700;
+  let r = Relay.SqliteRelay.create ~persist_dir:dir () in
+  Fun.protect ~finally:(fun () ->
+    (* best-effort temp cleanup *)
+    (try Sys.readdir dir |> Array.iter (fun f -> try Sys.remove (Filename.concat dir f) with _ -> ()) with _ -> ());
+    (try Unix.rmdir dir with _ -> ()))
+    (fun () -> f ~dir ~relay:r)
+
+let test_sqlite_revoke_nonce_persists_across_restart () =
+  with_sqlite_relay (fun ~dir ~relay ->
+    let now = Unix.gettimeofday () in
+    let nonce = "b116-persist-nonce-01" in
+    (* First consume: Ok. *)
+    (match Relay.SqliteRelay.check_revoke_nonce relay ~nonce ~ts:now with
+     | Ok () -> ()
+     | Error e -> Alcotest.failf "first consume should be Ok, got %s" e);
+    (* "Restart": a fresh backend on the SAME persist dir must still see
+       the nonce (persisted to disk) and reject the replay. *)
+    let relay2 = Relay.SqliteRelay.create ~persist_dir:dir () in
+    (match Relay.SqliteRelay.check_revoke_nonce relay2 ~nonce ~ts:now with
+     | Error code ->
+       Alcotest.(check string) "replay after restart is nonce_replay"
+         "nonce_replay" code
+     | Ok () ->
+       Alcotest.fail "replay after restart should be rejected (persistence)"))
+
+let test_sqlite_revoke_nonce_gc_sweeps_expired () =
+  with_sqlite_relay (fun ~dir:_ ~relay ->
+    let now = Unix.gettimeofday () in
+    (* Consume with an OLD ts (well beyond the 120s TTL). *)
+    let old_ts = now -. 100000.0 in
+    let nonce = "b116-gc-nonce-01" in
+    (match Relay.SqliteRelay.check_revoke_nonce relay ~nonce ~ts:old_ts with
+     | Ok () -> () | Error e -> Alcotest.failf "seed consume Ok, got %s" e);
+    (* Still a replay before gc (per-call cleanup keys off the client ts,
+       so the old row survives its own re-submission). *)
+    (match Relay.SqliteRelay.check_revoke_nonce relay ~nonce ~ts:old_ts with
+     | Error _ -> () | Ok () -> Alcotest.fail "pre-gc replay should reject");
+    (* gc sweeps server-time expired rows. *)
+    (match Relay.SqliteRelay.gc relay with _ -> ());
+    (* After gc the old nonce is gone, so it is accepted afresh. *)
+    match Relay.SqliteRelay.check_revoke_nonce relay ~nonce ~ts:old_ts with
+    | Ok () -> ()
+    | Error _ ->
+      Alcotest.fail "post-gc the expired revoke nonce should be collected")
+
 let () =
   Alcotest.run "relay_binding_revoke_auth"
-    [ ( "binding-revoke-auth",
+    [ ( "revoke-nonce-store (sqlite)",
+        [ Alcotest.test_case "revoke nonce persists across restart" `Quick
+            test_sqlite_revoke_nonce_persists_across_restart;
+          Alcotest.test_case "gc sweeps expired revoke nonces" `Quick
+            test_sqlite_revoke_nonce_gc_sweeps_expired ] );
+      ( "binding-revoke-auth",
         [ Alcotest.test_case "anonymous bare-ID rejected + uniform" `Quick
             test_anonymous_revoke_rejected_and_uniform;
           Alcotest.test_case "machine-key revoke succeeds" `Quick

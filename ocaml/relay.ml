@@ -1710,6 +1710,15 @@ module SqliteRelay : RELAY = struct
         Sqlite3.bind_text del 2 session_id |> ignore;
         Sqlite3.step del |> ignore
       ) !stale_keys;
+      (* B116: sweep expired revoke-proof nonces on a SERVER-time basis.
+         check_revoke_nonce only self-cleans when another owner revoke
+         runs it (rare), so without this the persisted revoke_nonces table
+         would accumulate durable rows. request_nonces/register_nonces
+         self-clean on their frequent per-request hits, so this gc sweep is
+         specific to the low-traffic revoke store. *)
+      let del_revoke = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
+      Sqlite3.bind_double del_revoke 1 (now -. request_nonce_ttl) |> ignore;
+      Sqlite3.step del_revoke |> ignore;
       `Ok (List.rev !expired_aliases, pruned)
     )
 
