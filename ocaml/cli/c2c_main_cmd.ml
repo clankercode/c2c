@@ -59,6 +59,9 @@ let all_cmds =
   ; C2c_serve_cmd.serve
   ; C2c_serve_cmd.mcp
   ; C2c_managed_cmd.start
+  ; C2c_codex_cmd.codex
+  ; C2c_codex_cmd.new_cmd
+  ; C2c_codex_cmd.resume_cmd
   ; C2c_agent.agent_group
   ; C2c_config_cmd.config_group
   ; C2c_agent.roles_group

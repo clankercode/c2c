@@ -304,6 +304,23 @@ let start_cmd =
       ~doc:"For CLIENT=relay-connect: poll interval in seconds (default 30). \
             Ignored for other clients.")
   in
+  (* T006: app-server-backed Codex grammar flags (codex only). *)
+  let yolo_flag =
+    Cmdliner.Arg.(value & flag & info [ "yolo" ]
+      ~doc:"CLIENT=codex only. DANGER: forward codex \
+            --dangerously-bypass-approvals-and-sandbox (disables ALL approvals \
+            and the sandbox). Prints a warning; never persisted into resumes.")
+  in
+  let thread_id_flag =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "thread-id" ] ~docv:"ID"
+      ~doc:"CLIENT=codex app-server only. Exact Codex thread id to select; a \
+            conflict with the saved thread is rejected rather than guessed.")
+  in
+  let app_server_flag =
+    Cmdliner.Arg.(value & flag & info [ "app-server" ]
+      ~doc:"CLIENT=codex only. Use the app-server-backed remote-TUI transport \
+            instead of the hook-backed launch (also via C2C_CODEX_APP_SERVER=1).")
+  in
   let+ client = client
   and+ name_opt = name
   and+ alias_opt = alias
@@ -327,7 +344,10 @@ let start_cmd =
   and+ new_session = new_session_flag
   and+ foreground_flag = foreground_flag
   and+ relay_url_opt = relay_url_opt
-  and+ interval_opt = interval_opt in
+  and+ interval_opt = interval_opt
+  and+ yolo_flag = yolo_flag
+  and+ thread_id_flag = thread_id_flag
+  and+ app_server_flag = app_server_flag in
   (* #470: extra_argv is now string list. The positional converter was changed
      from `pos_right 1 (list string) []` (which split each token on commas, so
      `c2c start claude -- --prompt "Hello, world"` would arrive as
@@ -653,7 +673,11 @@ let start_cmd =
         Printf.eprintf "warning: failed to chdir to worktree %s: %s\n%!" wt_dir e);
       Printf.printf "[c2c] worktree: %s (branch: %s)\n%!" wt_dir branch
   | _ -> ());
-  exit (C2c_start.cmd_start ~client ~name ~extra_args:extra_argv
+  (* The hook-backed launch, as a thunk parameterized by the effective codex
+     passthrough argv. This is the exact existing path; T006 wraps it so
+     `c2c start codex` shares one implementation with `c2c codex`/`new`/`resume`. *)
+  let cmd_start_with ~extra_args () =
+    C2c_start.cmd_start ~client ~name ~extra_args
       ?binary_override:bin_opt
       ?alias_override
       ?session_id_override:session_id_opt
@@ -669,7 +693,17 @@ let start_cmd =
       ~alias_from_auto_gen
       ~no_prompt
       ~opencode_plugin_embedded:C2c_opencode_plugin_embedded.content
-      ())
+      ()
+  in
+  if client = "codex" then
+    exit (C2c_codex_cmd.start_delegate
+            ~alias_override ~thread_id:thread_id_flag ~yolo:yolo_flag
+            ~app_server:app_server_flag ?model_override ~extra_args:extra_argv
+            ~fallback:cmd_start_with ())
+  else begin
+    ignore yolo_flag; ignore thread_id_flag; ignore app_server_flag;
+    exit (cmd_start_with ~extra_args:extra_argv ())
+  end
 
 let start : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "start" ~doc:"Start a managed c2c instance.") start_cmd

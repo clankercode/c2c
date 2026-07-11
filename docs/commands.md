@@ -917,7 +917,10 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For `codex`, also accepts `--yolo`, `--app-server`, `--thread-id ID` (see the Codex session grammar below). |
+| `codex [--alias A] [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
+| `new codex [--alias A] [--yolo] [--app-server] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
+| `resume codex ALIAS [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
@@ -925,6 +928,58 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `sessions [--json]` | List registered broker sessions with session ID, alias, client type, cwd, and liveness. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `scripts/c2c_tmux.py supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor (Python script, not a `c2c` subcommand). Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
+
+### Codex session grammar (app-server-backed)
+
+Four command forms share one implementation path for managed Codex sessions:
+
+| Form | Meaning |
+|------|---------|
+| `c2c start codex …` | Canonical managed entry point (full managed flag surface: `-n`, `-m`, `--worktree`, `--agent`, `--auto-join`, …). |
+| `c2c codex …` | Shortcut for `c2c start codex` with the same Codex session semantics (identity, `--yolo`, `--app-server`, `--thread-id`) and the same defaults. It exposes a reduced flag surface — pass codex options after `--`, and use `c2c start codex` when you need the full managed flags. |
+| `c2c new codex …` | Always a new Codex thread + a new c2c identity — never silently resumes. |
+| `c2c resume codex ALIAS …` | Resume the Codex thread saved for `ALIAS`. |
+
+Key semantics:
+
+- **Generated alias.** With no `--alias`, a stable, human-readable alias is
+  derived deterministically from the Codex session id. Two new threads get
+  distinct aliases; resume/restart retains the same alias. `--alias` is an
+  **optional** override of the display/routing identity — it never replaces the
+  authoritative Codex thread id, and a conflict with a differently-owned saved
+  alias is rejected.
+- **`--thread-id ID`** pins the exact Codex thread to resume; a conflict with the
+  saved thread is rejected rather than guessed.
+- **`--yolo`** prints a conspicuous warning and forwards exactly Codex's
+  `--dangerously-bypass-approvals-and-sandbox` (disables all approvals and the
+  sandbox for that session). It is a per-launch decision and is **never**
+  persisted into later resumes; without it, approval/sandbox defaults are
+  unchanged.
+- **`--app-server`** selects the app-server-backed remote-TUI transport (also via
+  `C2C_CODEX_APP_SERVER=1`). Without it, the proven hook-backed launch runs. If
+  the local Codex is too old for the app-server capability set, startup fails
+  before any routable alias is published, prints an actionable minimum-version
+  message, and falls back to the hook-backed launch. `c2c instances` reports the
+  app-server lifecycle state — `starting` / `online-attached` / `offline` /
+  `failed-startup` — using the same terminology across help, completions,
+  `stop`/`restart`, and `resume`.
+
+**`--` passthrough (recommended).** Everything after a literal `--` is forwarded
+verbatim to the stock `codex` frontend and is never parsed as a c2c flag. For
+example:
+
+```sh
+c2c new codex -- --model gpt-5.3-codex-spark
+```
+
+Because of this boundary, the handy convention is a shell alias that **ends in
+`--`** so passthrough Just Works:
+
+```sh
+alias cx='c2c new codex --'
+# then:
+cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-spark
+```
 
 ### Operator TUI (`c2c watch`)
 
