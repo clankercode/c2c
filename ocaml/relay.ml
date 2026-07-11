@@ -3899,7 +3899,11 @@ end = struct
                reject relay_err_timestamp_out_of_window
                  "ts must be unix epoch seconds"
              | Some ts_f
-               when Float.abs (now -. ts_f) > binding_revoke_ts_window_s ->
+               (* is_finite also rejects nan, whose window comparison
+                  would otherwise be vacuously false — a non-expiring
+                  proof. *)
+               when (not (Float.is_finite ts_f))
+                    || Float.abs (now -. ts_f) > binding_revoke_ts_window_s ->
                reject relay_err_timestamp_out_of_window
                  (Printf.sprintf "ts outside %.0fs freshness window"
                     binding_revoke_ts_window_s)

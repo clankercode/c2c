@@ -197,6 +197,32 @@ let test_stale_ts_rejected () =
     Alcotest.(check bool) "binding survives stale-ts attempt" true
       (binding_exists relay ~binding_id))
 
+(* --- 7b: non-finite ts ("nan") must not bypass the freshness window --- *)
+
+let test_nan_ts_rejected () =
+  RTSR.with_server ~token:test_token (fun ~base_url ~relay ->
+    let machine = gen_identity () and phone = gen_identity () in
+    let binding_id = "b116-nan-ts-bind" in
+    add_binding relay ~binding_id ~machine ~phone;
+    let pk = pk_b64 machine in
+    let ts = "nan" in
+    let nonce = Relay_signed_ops.random_nonce_b64 () in
+    let blob = Relay_identity.canonical_msg
+      ~ctx:Relay_common.binding_revoke_sign_ctx
+      [ binding_id; pk; ts; nonce ] in
+    let sig_b64 = b64url_encode (Relay_identity.sign machine blob) in
+    let body = `Assoc [
+      ("revoke_pk", `String pk); ("ts", `String ts);
+      ("nonce", `String nonce); ("sig", `String sig_b64);
+    ] in
+    let open Lwt.Infix in
+    delete ~base_url ~binding_id ~body () >|= fun r ->
+    Alcotest.(check int) "nan-ts revoke is 401" 401 (RTSR.status_code r);
+    Alcotest.(check string) "nan-ts denial code" "timestamp_out_of_window"
+      (error_code r.RTSR.json);
+    Alcotest.(check bool) "binding survives nan-ts attempt" true
+      (binding_exists relay ~binding_id))
+
 (* --- 8: malformed binding id still 400, store untouched --- *)
 
 let test_malformed_binding_id_still_400 () =
@@ -219,5 +245,6 @@ let () =
           Alcotest.test_case "replay rejected" `Quick test_replay_rejected;
           Alcotest.test_case "stale ts rejected" `Quick
             test_stale_ts_rejected;
+          Alcotest.test_case "nan ts rejected" `Quick test_nan_ts_rejected;
           Alcotest.test_case "malformed binding id 400" `Quick
             test_malformed_binding_id_still_400 ] ) ]
