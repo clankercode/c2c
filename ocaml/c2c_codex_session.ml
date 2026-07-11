@@ -401,7 +401,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
   (* B138: the delivery-status record is stamped with THIS unit's generation id
      so a stale record from a prior run on a reused instance dir is never
      trusted. *)
-  let unit_id = (C2c_codex_app_server.persisted_of handle).C2c_codex_app_server.unit_id in
+  let unit_id = C2c_codex_app_server.unit_id_of handle in
   let endpoint = C2c_codex_app_server.endpoint_of handle in
   let token_provider () =
     match C2c_codex_app_server.raw_token_of handle with "" -> None | t -> Some t
@@ -558,7 +558,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          previous run's healthy signal for this new, no-thread-yet session. The
          deliver loop flips it to healthy once a frontend thread loads. *)
       (try
-         let unit_id = (C2c_codex_app_server.persisted_of handle).C2c_codex_app_server.unit_id in
+         let unit_id = C2c_codex_app_server.unit_id_of handle in
          write_delivery_degraded ~instance_dir ~unit_id true
        with _ -> ());
       (* Session is up and attached. Persist the identity mapping — the
