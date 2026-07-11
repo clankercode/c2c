@@ -1,0 +1,28 @@
+---
+complexity: high
+depends_on: []
+estimate_hours: 6
+id: P1.M1.E1.T001
+priority: high
+status: pending
+tags:
+    - codex
+    - app-server
+    - spike
+    - delivery
+title: Spike app-server remote TUI and passive item injection
+---
+Origin: I001.
+
+Implement a disposable, fixture-gated protocol probe for the installed Codex version. Launch `codex app-server --listen unix://PATH`, connect `codex --remote unix://PATH`, and use a second protocol client to resume the live thread and attempt `thread/inject_items`.
+
+Acceptance criteria:
+- Generate and commit no version-specific schema artifact; generate it under /tmp during the probe and record the Codex version plus relevant request/response shape in a research receipt.
+- Prove whether injected items are accepted while the remote TUI is idle and while a turn is active.
+- Verify that injection starts no new turn and does not use `turn/steer` or `turn/interrupt`.
+- Treat all c2c message content as data; injection must not create an approval or execute an action.
+- Establish the app-server control boundary before considering delivery: attempt unauthorized same-UID local-client connections and requests for `turn/start`, `turn/steer`, `turn/interrupt`, and other non-passive methods. A private Unix-path name or file mode alone is not evidence of isolation.
+- Record the exact boundary (for example an authenticated transport plus protected secret, or an OS/container identity boundary), its threat model, and its failure behavior. If no boundary prevents another swarm process from controlling the server, return a no-go for this architecture rather than proceeding.
+- Record exact failure modes and a go/no-go decision for implementation tasks.
+
+Blockers: none; this is the evidence-producing prerequisite, including the control-boundary go/no-go.

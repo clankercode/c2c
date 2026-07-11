@@ -1,0 +1,30 @@
+---
+complexity: high
+depends_on:
+    - P1.M1.E1.T001
+estimate_hours: 6
+id: P1.M1.E1.T002
+priority: high
+status: pending
+tags:
+    - codex
+    - app-server
+    - launcher
+    - experimental
+title: Add opt-in app-server-backed Codex session launcher
+---
+Depends on P1.M1.E1.T001 proving the protocol.
+
+Only if the T001 control-boundary gate passes, make canonical `c2c start codex` launch an app-server behind that proven boundary and run interactive Codex as `codex --remote <validated endpoint>`. Its default alias must be generated from the stable Codex/app-server session identity; `--alias` is an optional human-selected override, never a default.
+
+Acceptance criteria:
+- Enforce the T001-proven boundary. A private Unix socket location or mode is not sufficient on a same-UID swarm host.
+- An unauthorized same-UID probe cannot connect or invoke `turn/start`, `turn/steer`, `turn/interrupt`, shell, filesystem, or other app-server controls. Test this in the launcher E2E receipt.
+- Endpoint lifecycle, cleanup, restart behavior, and secret/mapping storage are deterministic; never persist an access credential in a peer-readable location.
+- Never expose a TCP listener by default; a non-local endpoint requires explicit operator configuration and documented authentication.
+- A normal Codex TUI exit stops its app-server and marks the managed alias offline. It must not leave an unattended worker running in this normal lifecycle.
+- Support explicit `--yolo` as a transparent forwarding alias for Codex `--dangerously-bypass-approvals-and-sandbox`; it is never implicit and must be visible in instance/status output.
+- Clearly report unavailable/unsupported Codex versions.
+- The launcher has fixture-gated tests plus a real tmux dogfood launch.
+
+Blockers: P1.M1.E1.T001 must produce a positive control-boundary go decision as well as protocol observations. If it is no-go, keep this task blocked and retain hooks as the supported path.

@@ -1,0 +1,26 @@
+---
+complexity: high
+depends_on: []
+estimate_hours: 5
+id: B127
+priority: high
+status: pending
+tags:
+    - delivery
+    - offline
+    - codex
+    - managed-session
+title: Offline managed alias rejects sends instead of queueing durable inbox mail
+---
+Requested behavior: a closed normal managed Codex session is offline. `c2c send <alias> <message>` must persist the message for the alias and return a clear successful-but-offline warning; it must not silently drop the message or reject it as an unknown recipient. The next explicit session start/resume must drain the durable inbox.
+
+Current evidence (2026-07-11): `C2c_mcp.Broker.send` resolves a matching dead registration as `All_recipients_dead` and raises `Invalid_argument ("recipient is not alive: " ^ to_alias)` at `ocaml/c2c_broker.ml:2350-2351`. This prevents the requested offline queueing behavior. No existing backlog entry matched this failure.
+
+Acceptance criteria:
+- Stable managed alias records survive normal frontend/server shutdown long enough for offline queueing, without presenting them as alive.
+- Direct send returns exit 0 with a machine-readable queued_offline result and a human-readable warning; an unknown alias remains an error.
+- Queueing preserves c2c envelope, ordering, ephemeral/archive semantics, and sender-side error reporting.
+- Explicit start/resume redelivers exactly once; expiry/dead-letter policy is documented and tested.
+- Cover local and relay routing, and do not use sweep during active managed-session operation.
+
+Blockers: none; this is required before any offline managed-Codex delivery promise.

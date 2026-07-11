@@ -123,3 +123,4 @@ bugs:
     - file: B124-sometimes-agents-will-get-conf.todo
     - file: B125-need-to-research-or-find-a-bet.todo
     - file: B126-add-a-nice-changelog-feature-t.todo
+    - file: B127-offline-managed-alias-rejects.todo

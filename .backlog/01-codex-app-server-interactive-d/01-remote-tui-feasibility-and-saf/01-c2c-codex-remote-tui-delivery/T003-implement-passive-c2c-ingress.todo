@@ -1,0 +1,27 @@
+---
+complexity: high
+depends_on:
+    - P1.M1.E1.T001
+    - P1.M1.E1.T002
+estimate_hours: 8
+id: P1.M1.E1.T003
+priority: high
+status: pending
+tags:
+    - codex
+    - app-server
+    - delivery
+    - safety
+title: Implement passive c2c ingress through app-server thread injection
+---
+Depends on the protocol spike and managed remote-TUI launcher.
+
+Create a c2c adapter that writes an inbound message to the durable broker inbox first, then uses only the validated `thread/inject_items` form to make it model-visible without starting or steering a turn.
+
+Acceptance criteria:
+- Never use PTY writes, `tmux send-keys`, Herdr pane run, `turn/start`, `turn/steer`, or `turn/interrupt` for passive delivery.
+- Preserve c2c envelope, sender attribution, ephemeral/archive behavior, and the bus-not-RPC invariant.
+- Make retry/idempotency and app-server disconnection behavior explicit; messages remain readable from the broker on every failure.
+- Feature-gate the integration by proven Codex version/capabilities and retain hooks as fallback.
+
+Blockers: P1.M1.E1.T001 protocol result and P1.M1.E1.T002 live remote-TUI lifecycle.

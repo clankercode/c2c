@@ -1,0 +1,31 @@
+---
+complexity: high
+depends_on:
+    - P1.M1.E1.T001
+    - P1.M1.E1.T002
+    - P1.M1.E1.T003
+    - P1.M1.E1.T004
+estimate_hours: 8
+id: P1.M1.E1.T007
+priority: high
+status: pending
+tags:
+    - codex
+    - app-server
+    - local-delivery
+    - dnd
+title: Trigger an app-server turn for local c2c mail unless DND is active
+---
+Implement the requested local-delivery policy for an active managed app-server session: local-broker mail may create a Codex turn so the agent can receive and respond without a human submit, but only when the recipient is not in DND and the normal TUI has no in-progress composer draft. If either gate applies, persist the message and defer the turn.
+
+Acceptance criteria:
+- The trigger is restricted to local-broker delivery; remote/relay mail remains queued unless a later explicit policy extends it.
+- A delivered message is persisted before the trigger and appears in the thread with accurate c2c attribution.
+- The turn starts only through the validated app-server path; no PTY/tmux/Herdr input injection is used.
+- DND suppresses the automatic turn and retains the message in the durable inbox; clearing DND makes queued mail available according to the documented policy.
+- A real TUI with deliberately non-empty composer text and a positioned cursor never receives an automatic turn. The message remains queued; exact composer text and cursor are unchanged. This is proven in the live tmux E2E before the auto-turn path ships.
+- This changes the prior bus-not-RPC behavior only for local message-to-turn delivery. It MUST NOT let a message resolve an approval: `allow`/`deny` content remains inert to `await-reply` and approval verdict files remain host-local.
+- E2E covers receiver response, DND and composer suppression, duplicate/retry idempotency, and ordinary TUI typed-draft preservation.
+- With an approval pending, an automatic local-delivery turn containing literal `allow` or `deny` must prove that no verdict file is written and `await-reply` remains unresolved.
+
+Blockers: P1.M1.E1.T001, P1.M1.E1.T002, P1.M1.E1.T003, and P1.M1.E1.T004.

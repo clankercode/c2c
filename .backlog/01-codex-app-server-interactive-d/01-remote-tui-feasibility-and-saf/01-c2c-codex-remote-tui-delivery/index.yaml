@@ -1,0 +1,74 @@
+complexity: high
+depends_on: []
+estimate_hours: 32
+id: P1.M1.E1
+locked: false
+name: c2c Codex remote-TUI delivery
+status: pending
+tasks:
+    - complexity: high
+      depends_on: []
+      estimate_hours: 6
+      file: T001-spike-app-server-remote-tui-an.todo
+      id: T001
+      priority: high
+      status: pending
+      title: Spike app-server remote TUI and passive item injection
+    - complexity: high
+      depends_on:
+        - P1.M1.E1.T001
+      estimate_hours: 6
+      file: T002-add-opt-in-app-server-backed-c.todo
+      id: T002
+      priority: high
+      status: pending
+      title: Add opt-in app-server-backed Codex session launcher
+    - complexity: high
+      depends_on:
+        - P1.M1.E1.T001
+        - P1.M1.E1.T002
+      estimate_hours: 8
+      file: T003-implement-passive-c2c-ingress.todo
+      id: T003
+      priority: high
+      status: pending
+      title: Implement passive c2c ingress through app-server thread injection
+    - complexity: high
+      depends_on:
+        - P1.M1.E1.T002
+        - P1.M1.E1.T003
+      estimate_hours: 6
+      file: T004-prove-typed-draft-preservation.todo
+      id: T004
+      priority: critical
+      status: pending
+      title: Prove typed-draft preservation in real tmux Codex sessions
+    - complexity: medium
+      depends_on:
+        - P1.M1.E1.T004
+      estimate_hours: 4
+      file: T005-publish-safe-interactive-deliv.todo
+      id: T005
+      priority: medium
+      status: pending
+      title: Publish safe interactive-delivery profile and operator docs
+    - complexity: medium
+      depends_on:
+        - P1.M1.E1.T002
+      estimate_hours: 4
+      file: T006-add-named-codex-session-comman.todo
+      id: T006
+      priority: high
+      status: pending
+      title: Add named Codex session commands and generated aliases
+    - complexity: high
+      depends_on:
+        - P1.M1.E1.T001
+        - P1.M1.E1.T002
+        - P1.M1.E1.T003
+      estimate_hours: 8
+      file: T007-trigger-an-app-server-turn-for.todo
+      id: T007
+      priority: high
+      status: pending
+      title: Trigger an app-server turn for local c2c mail unless DND is active

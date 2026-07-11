@@ -1,0 +1,27 @@
+---
+complexity: medium
+depends_on:
+    - P1.M1.E1.T004
+    - P1.M1.E1.T007
+estimate_hours: 4
+id: P1.M1.E1.T005
+priority: medium
+status: pending
+tags:
+    - codex
+    - docs
+    - install
+    - delivery
+title: Publish safe interactive-delivery profile and operator docs
+---
+Depends on end-to-end typed-draft preservation and the local auto-turn policy.
+
+Expose an opt-in safe interactive Codex profile, document its version/transport requirements, fallback behavior, and privacy/security boundaries. Update install/doctor output to distinguish passive app-server delivery from legacy hooks and input-injecting wake behavior.
+
+Acceptance criteria:
+- Replace the broad B098 bus-not-RPC wording in AGENTS/runbooks with the implemented policy: eligible local-broker mail may start a Codex turn, but a message never resolves an approval or writes an approval verdict. State the DND and non-empty-composer deferral gates exactly.
+- `hooks+wake` is accurately labeled as input injection and is not enabled by the safe profile.
+- App-server remote-TUI security guidance covers Unix socket default, localhost/SSH only, and WebSocket authentication for non-local listeners.
+- Docs are reviewed against the actual tested commands and default behavior.
+
+Blockers: P1.M1.E1.T004 and P1.M1.E1.T007 acceptance receipts.
