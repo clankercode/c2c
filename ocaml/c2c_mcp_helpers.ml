@@ -102,7 +102,12 @@ type registration =
         passthrough so consumers can persist it. None = not
         populated. *)
     }
-type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool; message_id : string option }
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool; message_id : string option; pow_difficulty : int option }
+(** [pow_difficulty] (B014): the sender's PoW difficulty in leading-zero bits at
+    send-accept time, carried on messages relayed from other agents. [None] for
+    locally-originated messages or relays that did not record it. Surfaced on
+    delivery as a self-describing [pow] object ({ difficulty_bits, expected_hashes
+    = 2^bits, scheme }) so a recipient can gauge the sender's PoW weight. *)
 (** [message_id] is set when the message arrived via the relay (which assigns
     a UUID to every sent message). It is used to anchor sticker reactions:
     a reaction references the original message via its [message_id]. *)

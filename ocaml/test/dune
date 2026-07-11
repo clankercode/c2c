@@ -100,7 +100,7 @@
 (test
  (name test_pow)
  (modules test_pow)
- (libraries c2c_mcp alcotest))
+ (libraries c2c_mcp alcotest yojson))
 
 (test
  (name test_pow_policy)

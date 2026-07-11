@@ -78,6 +78,15 @@ let post_register ~base_url body =
 let get_health ~base_url =
   call_json ~base_url ~meth:`GET ~path:"/health" ()
 
+let post_send ~base_url ~from_alias ~to_alias ~content =
+  call_json ~base_url ~meth:`POST ~path:"/send"
+    ~body:(`Assoc [
+      "from_alias", `String from_alias;
+      "to_alias", `String to_alias;
+      "content", `String content;
+    ]) ()
+
+
 let json_member name json =
   match json with
   | `Assoc fields -> List.assoc_opt name fields |> Option.value ~default:`Null
@@ -744,8 +753,128 @@ let test_stale_low_difficulty_proof_rejected_after_escalation () =
       Alcotest.(check bool) "accepted ok" true
         (json_member "ok" fresh_resp.json = `Bool true)))
 
+(* ------------------------------------------------------------------ *)
+(* B014: per-message PoW-difficulty metadata on delivered messages.    *)
+(*                                                                      *)
+(* When the relay accepts a DM it records the sender's current PoW      *)
+(* difficulty (leading-zero bits, keyed on the sender's identity), and  *)
+(* the recipient sees it on delivery as a self-describing [pow] object  *)
+(* ({ difficulty_bits, expected_hashes = 2^bits, scheme }). Signed      *)
+(* content is untouched. Verified end-to-end over real HTTP.            *)
+(* ------------------------------------------------------------------ *)
+
+let find_message_with_content msgs content =
+  List.find_opt (fun m -> json_string "content" m = content)
+    (match msgs with `List l -> l | _ -> [])
+
+(* Enabled + warmed sender: the delivered message carries a [pow] object whose
+   difficulty_bits > 0 and expected_hashes = 2^bits. *)
+let test_b014_delivered_message_carries_pow_metadata () =
+  with_pow_env "1" (fun () ->
+    let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+    with_server ~rate_limiter (fun ~base_url ~relay ->
+      let rcpt_alias = "b014-rcpt" in
+      let rcpt_identity = Relay_identity.generate ~alias_hint:rcpt_alias () in
+      (* Register recipient (in grace → free) so the DM has an inbox to land in. *)
+      reset_ip_rate_limit rate_limiter;
+      post_register ~base_url
+        (register_body ~node_id:"node-b014-rcpt" ~session_id:"session-b014-rcpt"
+           ~alias:rcpt_alias ~identity:rcpt_identity ~relay_url:base_url ())
+      >>= fun rcpt_reg ->
+      Alcotest.(check int) "recipient register ok" 200
+        (Cohttp.Code.code_of_status rcpt_reg.status);
+      (* Register + warm the sender past grace so its required difficulty > 0. *)
+      let sender_alias = "b014-sender" in
+      let sender_identity = Relay_identity.generate ~alias_hint:sender_alias () in
+      warm_actor_past_grace ~base_url ~identity:sender_identity ~alias:sender_alias
+      >>= fun () ->
+      reset_ip_rate_limit rate_limiter;
+      post_send ~base_url ~from_alias:sender_alias ~to_alias:rcpt_alias
+        ~content:"b014-hello" >|= fun sent ->
+      Alcotest.(check int) "send ok" 200 (Cohttp.Code.code_of_status sent.status);
+      (* Read the recipient's inbox directly from the relay backend: the HTTP
+         /poll_inbox path requires a signed owner (orthogonal to B014), whereas
+         the stored row is exactly what poll would return. *)
+      let msgs =
+        Relay.InMemoryRelay.poll_inbox relay ~node_id:"node-b014-rcpt"
+          ~session_id:"session-b014-rcpt"
+      in
+      match find_message_with_content (`List msgs) "b014-hello" with
+      | None -> failf "delivered message not found in inbox"
+      | Some m ->
+        (* content (the signed payload surface) is unchanged. *)
+        Alcotest.(check string) "content preserved" "b014-hello"
+          (json_string "content" m);
+        let pow = json_member "pow" m in
+        Alcotest.(check bool) "pow object present" true (pow <> `Null);
+        let bits = json_int "difficulty_bits" pow in
+        Alcotest.(check bool) "difficulty_bits > 0 for warmed sender" true (bits > 0);
+        Alcotest.(check int) "expected_hashes = 2^difficulty_bits" (1 lsl bits)
+          (json_int "expected_hashes" pow);
+        Alcotest.(check string) "scheme" Pow.scheme_id (json_string "scheme" pow)))
+
+(* PoW disabled: no [pow] object is attached (difficulty is unrecorded). *)
+let test_b014_no_pow_metadata_when_disabled () =
+  with_pow_env "0" (fun () ->
+    let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+    with_server ~rate_limiter (fun ~base_url ~relay ->
+      reset_ip_rate_limit rate_limiter;
+      post_register ~base_url (`Assoc [
+        "node_id", `String "node-b014-off-rcpt";
+        "session_id", `String "session-b014-off-rcpt";
+        "alias", `String "b014-off-rcpt";
+      ]) >>= fun rcpt_reg ->
+      Alcotest.(check int) "recipient register ok" 200
+        (Cohttp.Code.code_of_status rcpt_reg.status);
+      reset_ip_rate_limit rate_limiter;
+      post_register ~base_url (`Assoc [
+        "node_id", `String "node-b014-off-sender";
+        "session_id", `String "session-b014-off-sender";
+        "alias", `String "b014-off-sender";
+      ]) >>= fun _ ->
+      reset_ip_rate_limit rate_limiter;
+      post_send ~base_url ~from_alias:"b014-off-sender" ~to_alias:"b014-off-rcpt"
+        ~content:"b014-off" >|= fun sent ->
+      Alcotest.(check int) "send ok" 200 (Cohttp.Code.code_of_status sent.status);
+      let msgs =
+        Relay.InMemoryRelay.poll_inbox relay ~node_id:"node-b014-off-rcpt"
+          ~session_id:"session-b014-off-rcpt"
+      in
+      match find_message_with_content (`List msgs) "b014-off" with
+      | None -> failf "delivered message not found in inbox"
+      | Some m ->
+        Alcotest.(check bool) "no pow object when PoW disabled" true
+          (json_member "pow" m = `Null)))
+
+(* Broker render surface: inbox_row_json emits the pow object iff recorded. *)
+let test_b014_inbox_row_json_render () =
+  let mk pow_difficulty =
+    { C2c_mcp_helpers.from_alias = "s"; to_alias = "r"; content = "c"; deferrable = false;
+      reply_via = None; enc_status = None; ts = 1.0; ephemeral = false;
+      message_id = Some "m1"; pow_difficulty }
+  in
+  let row m = C2c_inbox_handlers.inbox_row_json ~m ~content:"c"
+      ~delivery_state:C2c_schema_v1.Delivered ~enc_status:None in
+  let pow_of j = match j with `Assoc f -> List.assoc_opt "pow" f | _ -> None in
+  (match pow_of (row (mk (Some 8))) with
+   | Some pow ->
+     let open Yojson.Safe.Util in
+     Alcotest.(check int) "rendered difficulty_bits" 8 (pow |> member "difficulty_bits" |> to_int);
+     Alcotest.(check int) "rendered expected_hashes" 256 (pow |> member "expected_hashes" |> to_int)
+   | None -> Alcotest.fail "expected pow object for Some 8");
+  Alcotest.(check bool) "no pow object for None" true
+    (pow_of (row (mk None)) = None)
+
 let () =
   Alcotest.run "pow_relay" [
+    "b014-metadata", [
+      Alcotest.test_case "delivered message carries pow metadata (warmed sender)"
+        `Quick test_b014_delivered_message_carries_pow_metadata;
+      Alcotest.test_case "no pow metadata when relay PoW disabled"
+        `Quick test_b014_no_pow_metadata_when_disabled;
+      Alcotest.test_case "inbox_row_json renders pow object iff recorded"
+        `Quick test_b014_inbox_row_json_render;
+    ];
     "relay", [
       Alcotest.test_case "disabled by default: legacy register succeeds" `Quick
         test_disabled_by_default_register_succeeds_without_pow;

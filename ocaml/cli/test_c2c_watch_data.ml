@@ -59,6 +59,7 @@ let mk_msg ~from_a ~to_a ~content : C2c_mcp.message =
   ; ts = 1714291842.0
   ; ephemeral = false
   ; message_id = None
+  ; pow_difficulty = None
   }
 
 (* A pid that cannot exist on Linux (well above the conventional pid_max)

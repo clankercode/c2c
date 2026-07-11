@@ -74,9 +74,54 @@ let test_mint_budget_covers_d_max () =
     "max_mint_iterations >= 2^d_max" true
     (P.max_mint_iterations >= (1 lsl Pow_policy.d_max))
 
+(* B014: PoW-difficulty metadata on delivered messages. The units helper turns
+   a leading-zero-bit difficulty into an interpretable "expected hashes" weight
+   (~2^bits), so a recipient agent can reason about a sender's PoW weight. *)
+module RPC = Relay_pow_challenge
+
+let test_expected_hashes_of_difficulty () =
+  Alcotest.(check int) "D=0 -> 0 hashes" 0 (RPC.expected_hashes_of_difficulty 0);
+  Alcotest.(check int) "negative -> 0 hashes" 0 (RPC.expected_hashes_of_difficulty (-1));
+  Alcotest.(check int) "D=1 -> 2 hashes" 2 (RPC.expected_hashes_of_difficulty 1);
+  Alcotest.(check int) "D=8 -> 256 hashes" 256 (RPC.expected_hashes_of_difficulty 8);
+  Alcotest.(check int) "D=12 (d_max) -> 4096 hashes" 4096
+    (RPC.expected_hashes_of_difficulty 12);
+  (* Matches the primitive: expected work ~ 2^difficulty. *)
+  Alcotest.(check int) "matches 2^d_max" (1 lsl Pow_policy.d_max)
+    (RPC.expected_hashes_of_difficulty Pow_policy.d_max)
+
+let test_pow_meta_json_is_self_describing () =
+  let open Yojson.Safe.Util in
+  let j = RPC.pow_meta_json ~difficulty:8 in
+  Alcotest.(check int) "difficulty_bits" 8 (j |> member "difficulty_bits" |> to_int);
+  Alcotest.(check int) "expected_hashes" 256 (j |> member "expected_hashes" |> to_int);
+  Alcotest.(check string) "scheme = pow scheme id" Pow.scheme_id
+    (j |> member "scheme" |> to_string)
+
+let has_pow_key fields = List.mem_assoc "pow" fields
+
+let test_with_pow_meta_gated_on_recorded () =
+  (* Recorded (>= 0): appends a pow object. *)
+  (match RPC.with_pow_meta ~difficulty:8 [ ("k", `String "v") ] with
+   | fields ->
+     Alcotest.(check bool) "recorded appends pow" true (has_pow_key fields);
+     Alcotest.(check bool) "preserves prior fields" true (List.mem_assoc "k" fields));
+  (* Unrecorded sentinel (-1): no pow object. *)
+  Alcotest.(check bool) "unrecorded omits pow" false
+    (has_pow_key (RPC.with_pow_meta ~difficulty:RPC.pow_difficulty_unrecorded [ ("k", `String "v") ]))
+
 let () =
   Alcotest.run "pow"
     [
+      ( "b014-metadata",
+        [
+          Alcotest.test_case "expected_hashes = 2^difficulty" `Quick
+            test_expected_hashes_of_difficulty;
+          Alcotest.test_case "pow_meta_json is self-describing" `Quick
+            test_pow_meta_json_is_self_describing;
+          Alcotest.test_case "with_pow_meta gated on recorded difficulty" `Quick
+            test_with_pow_meta_gated_on_recorded;
+        ] );
       ( "primitive",
         [
           Alcotest.test_case "mint budget covers d_max" `Quick

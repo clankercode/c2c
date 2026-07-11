@@ -329,7 +329,7 @@ open C2c_mcp_helpers
     ; opaque_host_id = str_opt "opaque_host_id" json
     }
 
-  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral; message_id } =
+  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral; message_id; pow_difficulty } =
     let base =
       [ ("from_alias", `String from_alias)
       ; ("to_alias", `String to_alias)
@@ -341,9 +341,33 @@ open C2c_mcp_helpers
     let with_ephemeral = if ephemeral then with_deferrable @ [("ephemeral", `Bool true)] else with_deferrable in
     let with_reply_via = match reply_via with None -> with_ephemeral | Some rv -> with_ephemeral @ [("reply_via", `String rv)] in
     let with_msg_id = match message_id with None -> with_reply_via | Some mid -> with_reply_via @ [("message_id", `String mid)] in
+    (* B014: preserve the sender's PoW difficulty across the inbox-file
+       round-trip as the self-describing [pow] object. *)
+    let with_pow = match pow_difficulty with
+      | Some d when d >= 0 -> Relay_pow_challenge.with_pow_meta ~difficulty:d with_msg_id
+      | _ -> with_msg_id
+    in
     match enc_status with
-    | None -> `Assoc with_msg_id
-    | Some es -> `Assoc (with_msg_id @ [("enc_status", `String es)])
+    | None -> `Assoc with_pow
+    | Some es -> `Assoc (with_pow @ [("enc_status", `String es)])
+
+  (* B014: parse the sender's PoW difficulty. Canonical wire form is the [pow]
+     object ([pow.difficulty_bits]); a bare int [pow_difficulty] is also accepted
+     for robustness. Negative/absent → [None]. *)
+  let pow_difficulty_of_json json =
+    let open Yojson.Safe.Util in
+    let bits =
+      match json |> member "pow" with
+      | `Assoc _ as pow ->
+        (match pow |> member "difficulty_bits" with
+         | `Int i -> Some i
+         | _ -> None)
+      | _ ->
+        (match json |> member "pow_difficulty" with
+         | `Int i -> Some i
+         | _ -> None)
+    in
+    match bits with Some i when i >= 0 -> Some i | _ -> None
 
   let message_of_json json =
     let open Yojson.Safe.Util in
@@ -375,6 +399,7 @@ open C2c_mcp_helpers
         (match json |> member "message_id" with
          | `String s when s <> "" -> Some s
          | _ -> None)
+    ; pow_difficulty = pow_difficulty_of_json json
     }
 
   (* Lowercase comparison helper: aliases are case-insensitive for collision
@@ -2558,6 +2583,7 @@ open C2c_mcp_helpers
               ; ts = Unix.gettimeofday ()
               ; ephemeral
               ; message_id = Some mid
+              ; pow_difficulty = None
               }
             ]
         in
@@ -2726,7 +2752,7 @@ open C2c_mcp_helpers
                         let mid = generate_msg_id () in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = Some mid } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = Some mid; pow_difficulty = None } ]
                         in
                         let ipath = inbox_path t ~session_id in
                         (* Per-DM trace for send_all fan-out — same diagnostic
@@ -3610,6 +3636,7 @@ open C2c_mcp_helpers
         ; ts = Unix.gettimeofday ()
         ; ephemeral
         ; message_id = Some (generate_msg_id ())
+        ; pow_difficulty = None
         }
       in
       enqueue_by_session_id t ~session_id ~messages:[ message ]
@@ -3744,6 +3771,7 @@ open C2c_mcp_helpers
               ; message_id =
                   (match json |> member "message_id" with
                    | `String s when s <> "" -> Some s | _ -> None)
+              ; pow_difficulty = pow_difficulty_of_json json
               }) items
         | _ -> []
       in
@@ -3998,7 +4026,7 @@ open C2c_mcp_helpers
                      with_inbox_lock t ~session_id (fun () ->
                          let current = load_inbox t ~session_id in
                          let next =
-                            current @ [ { from_alias; to_alias = tagged_to; content = prefixed_content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None } ]
+                            current @ [ { from_alias; to_alias = tagged_to; content = prefixed_content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None; pow_difficulty = None } ]
                          in
                          save_inbox t ~session_id next);
                      delivered := m.rm_alias :: !delivered

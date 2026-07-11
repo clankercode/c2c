@@ -57,7 +57,11 @@ module type RELAY = sig
   val check_revoke_nonce : t -> nonce:string -> ts:float -> (unit, string) result
   val heartbeat : t -> node_id:string -> session_id:string -> (string * RegistrationLease.t)
   val list_peers : t -> ?include_dead:bool -> RegistrationLease.t list
-  val send : t -> from_alias:string -> to_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float | `Duplicate of float | `Error of string * string]
+  (* [pow_difficulty]: B014 — the sender's PoW difficulty (leading-zero bits)
+     at send-accept time, stored as sibling metadata on the delivered message.
+     Default [-1] = not recorded (relay PoW disabled / sender identity
+     unresolved); such messages carry no [pow] object on delivery. *)
+  val send : t -> from_alias:string -> to_alias:string -> content:string -> ?message_id:string option -> ?pow_difficulty:int -> [> `Ok of float | `Duplicate of float | `Error of string * string]
   val poll_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t list
   val peek_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t list
   val send_all : t -> from_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float * string list * string list]

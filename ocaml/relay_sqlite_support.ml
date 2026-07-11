@@ -30,7 +30,12 @@ CREATE TABLE IF NOT EXISTS inboxes (
     from_alias TEXT NOT NULL,
     to_alias TEXT NOT NULL,
     content TEXT NOT NULL,
-    ts REAL NOT NULL
+    ts REAL NOT NULL,
+    -- B014: sender's PoW difficulty (leading-zero bits) at send-accept time.
+    -- -1 = not recorded (relay PoW disabled / sender identity unresolved, or a
+    -- send path that does not yet compute it, e.g. broadcast/room). Migration
+    -- for older DBs (SqliteRelay.create) adds the column with this default.
+    pow_difficulty INTEGER NOT NULL DEFAULT -1
 );
 CREATE INDEX IF NOT EXISTS idx_inboxes_session ON inboxes(node_id, session_id);
 

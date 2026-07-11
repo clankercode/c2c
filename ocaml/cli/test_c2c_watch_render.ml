@@ -175,6 +175,7 @@ let mk_msg ~from_ ~to_ ~content ~ts : C2c_mcp.message =
   ; ts
   ; ephemeral = false
   ; message_id = None
+  ; pow_difficulty = None
   }
 
 let ts1 = fixed_ts (* 2024-06-13 14:02:00 UTC *)

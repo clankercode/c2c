@@ -43,6 +43,13 @@ let inbox_row_json ~(m : message) ~(content : string) ~(delivery_state : C2c_sch
   let legacy = [ ("from_alias", `String m.from_alias); ("to_alias", `String m.to_alias) ] in
   let legacy = if m.deferrable then legacy @ [ ("deferrable", `Bool true) ] else legacy in
   let legacy = match enc_status with None -> legacy | Some es -> legacy @ [ ("enc_status", `String es) ] in
+  (* B014: surface the sender's PoW difficulty as a self-describing [pow] object
+     ({ difficulty_bits, expected_hashes = 2^bits, scheme }) so a recipient agent
+     can interpret the sender's PoW weight. Emitted only when recorded (>= 0). *)
+  let legacy = match m.pow_difficulty with
+    | Some d when d >= 0 -> legacy @ [ ("pow", Relay_pow_challenge.pow_meta_json ~difficulty:d) ]
+    | _ -> legacy
+  in
   C2c_schema_v1.serialize_with_legacy v1 ~legacy
 
 let poll_inbox ~broker ~session_id_override ~arguments =
