@@ -396,7 +396,9 @@ let test_relay_leave_room_removes_member () =
   let rooms = Relay.InMemoryRelay.list_rooms t in
   let members = json_get_list (List.hd rooms) "members" in
   if List.length members <> 1 then fail_fmt "should have 1 member left";
-  if Yojson.Safe.Util.(List.hd members |> to_string) <> "bob" then fail_fmt "bob should remain"
+  (* B118: /list_rooms rosters are presentation-only alias#room@relay
+     recipient addresses, not bare aliases. bob is still the sole member. *)
+  if Yojson.Safe.Util.(List.hd members |> to_string) <> "bob#test-room@relay" then fail_fmt "bob should remain"
 
 let test_relay_send_room_delivers_to_all_except_sender () =
   let t = make_test_relay () in

@@ -324,6 +324,15 @@
  (modules test_relay_history_public)
  (libraries c2c_mcp alcotest base64 sqlite3 unix))
 
+; B118: anonymous /list_rooms directory returns members as presentation-only
+; alias#room@relay recipient addresses (round-trip through the recipient
+; parser) with no lease/host machine metadata. Both backends + HTTP.
+(test
+ (name test_relay_list_rooms_roster)
+ (modules test_relay_list_rooms_roster)
+ (libraries c2c_mcp relay_test_support_real alcotest yojson str unix
+   lwt.unix cohttp))
+
 ; #586 slice 3: canonical_alias deprecation flag gates the leaky repo@host form
 ; vs the opaque host id form on local-broker registrations.
 (test

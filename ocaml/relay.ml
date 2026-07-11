@@ -1037,12 +1037,24 @@ module InMemoryRelay : RELAY = struct
            visibility (legacy in-memory rooms) defaults to public. *)
         let visibility = match Hashtbl.find_opt t.room_visibility room_id with
           | Some v -> v | None -> "public" in
+        (* B118: defensive directory-boundary guard. handle_join_room rejects
+           out-of-grammar room ids, but a backend-direct caller or a legacy
+           persisted row could still carry a room id containing `#`/`@`, which
+           would make its alias#room@relay directory address ambiguous. Omit
+           such rooms from the anonymous directory entirely — better unlisted
+           than emitting an address the recipient parser cannot round-trip. *)
         if not (visibility = "public" || visibility = "gated") then acc
+        else if not (valid_relay_room_id room_id) then acc
         else
           `Assoc [
             ("room_id", `String room_id);
             ("member_count", `Int (List.length members));
-            ("members", `List (List.map (fun a -> `String a) members));
+            (* B118: directory boundary — expose members as presentation-only
+               alias#room@relay recipient addresses, never bare aliases or
+               lease/host metadata. Stored membership ([members]) stays raw
+               for membership checks and delivery. *)
+            ("members", `List (List.map (fun a ->
+               `String (format_room_roster_address ~alias:a ~room_id)) members));
           ] :: acc
       ) t.rooms []
     )
@@ -2224,6 +2236,13 @@ module SqliteRelay : RELAY = struct
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
           let room_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+          (* B118: defensive directory-boundary guard — omit any room whose id
+             is out-of-grammar (contains `#`/`@` etc.) so its alias#room@relay
+             directory address can never be ambiguous. Covers legacy persisted
+             rows and backend-direct callers that bypass handle_join_room's
+             grammar check. Better unlisted than an unparseable address. *)
+          if not (valid_relay_room_id room_id) then loop ()
+          else
           let mem_stmt = Sqlite3.prepare conn "SELECT COUNT(*) FROM room_members WHERE room_id = ?" in
           Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
           let rc2 = Sqlite3.step mem_stmt in
@@ -2250,7 +2269,11 @@ module SqliteRelay : RELAY = struct
               failwith ("list_rooms aliases step failed: " ^ Rc.to_string rc3)
           in
           collect_aliases ();
-          rooms := `Assoc [("room_id", `String room_id); ("member_count", `Int member_count); ("members", `List (List.map (fun a -> `String a) !aliases))] :: !rooms;
+          (* B118: directory boundary — expose members as presentation-only
+             alias#room@relay recipient addresses, never bare aliases or
+             lease/host metadata. The room_members rows stay raw for
+             membership checks and delivery. *)
+          rooms := `Assoc [("room_id", `String room_id); ("member_count", `Int member_count); ("members", `List (List.map (fun a -> `String (format_room_roster_address ~alias:a ~room_id)) !aliases))] :: !rooms;
           loop ()
         else if rc <> Rc.DONE then
           failwith ("list_rooms step failed: " ^ Rc.to_string rc)
@@ -3554,6 +3577,15 @@ end = struct
     in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
+    else if not (valid_relay_room_id room_id) then
+      (* B118: enforce the canonical room-id grammar ([A-Za-z0-9_-], no `#`/`@`)
+         at the room-op boundary — matches the local broker's valid_room_id.
+         This keeps the anonymous /list_rooms directory address
+         (alias#room@relay) unambiguous: an out-of-grammar room id could
+         otherwise inject an extra `#`/`@` delimiter that defeats the
+         recipient parser. *)
+      respond_bad_request (json_error_str err_bad_request
+        "room_id must match [A-Za-z0-9_-] and be non-empty")
     else match requested_visibility with
     | None ->
       respond_bad_request (json_error_str err_bad_request
