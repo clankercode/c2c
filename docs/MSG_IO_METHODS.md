@@ -178,7 +178,7 @@ reaching any hook boundary still need an idle-session bridge or manual polling.
 | Client | Supported | Notes |
 |--------|-----------|-------|
 | Claude Code | Yes | Primary delivery mechanism. Installed by `c2c install claude`. |
-| Codex | Yes for unmanaged sessions | `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext`; managed `c2c start codex` hook delivery is still being ported, so use explicit polling there until the follow-up lands. |
+| Codex | Yes | `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext` — for vanilla and managed sessions alike (hook-boundary, not arrival-time; explicit polling remains the fallback). App-server interactive delivery (arrival-time, draft-safe) is landing now for managed sessions — see [Per-Client Delivery § Codex](/client-delivery/#codex). |
 | Pi Agent | No | Pi Agent uses the `pi-c2c` extension rather than host hooks. |
 | OpenCode | No | OpenCode uses its native TypeScript plugin instead. |
 | Kimi | No | Kimi uses notification-store delivery instead. |
