@@ -304,11 +304,35 @@ let check_protocol ~probe =
                 (git pull && just install-all)"
                probe.url)
       in
+      (* Prefer the structured too-new/too-old signal when present so the
+         fix_command matches the error direction (upgrade client vs wait
+         for relay deploy). Fall back to upgrade-client for rewritten
+         health bodies that only carry the error string. *)
+      let client_pv =
+        match j |> member "client_protocol_version" with
+        | `Int i -> i
+        | _ -> Version.relay_protocol_version
+      in
+      let server_pv =
+        match j |> member "server_protocol_version" with
+        | `Int i -> Some i
+        | _ -> None
+      in
+      let fix_command =
+        match server_pv with
+        | Some sp when client_pv > sp ->
+            Some (sprintf
+              "wait for relay deploy, or: c2c relay setup --url <matching-relay>   \
+               # client v%d is newer than relay protocol v%d"
+              client_pv sp)
+        | _ ->
+            Some "git pull && just install-all   # then retry c2c relay status"
+      in
       { check_id = "relay.protocol"
       ; status = Fail
       ; message = msg
       ; detail = Some (Yojson.Safe.pretty_to_string j)
-      ; fix_command = Some "git pull && just install-all   # then retry c2c relay status"
+      ; fix_command
       ; docs_url = Some docs_relay }
   | Some j ->
       (match Relay.Relay_client.protocol_compat_of_health j with
@@ -329,8 +353,7 @@ let check_protocol ~probe =
            ; message =
                "protocol version not advertised (pre-B121 relay; assuming compatible)"
            ; detail = None; fix_command = None; docs_url = Some docs_relay }
-       | (Relay.Relay_client.Client_too_old _ | Relay.Relay_client.Client_too_new _)
-         as compat ->
+       | Relay.Relay_client.Client_too_old _ as compat ->
            let msg =
              match Relay.Relay_client.upgrade_message ~url:probe.url compat with
              | Some m -> m
@@ -342,6 +365,24 @@ let check_protocol ~probe =
            ; detail = Some (Yojson.Safe.pretty_to_string j)
            ; fix_command =
                Some "git pull && just install-all   # then retry c2c relay status"
+           ; docs_url = Some docs_relay }
+       | Relay.Relay_client.Client_too_new {
+           server_protocol; client_protocol; _
+         } as compat ->
+           let msg =
+             match Relay.Relay_client.upgrade_message ~url:probe.url compat with
+             | Some m -> m
+             | None -> "incompatible relay protocol"
+           in
+           { check_id = "relay.protocol"
+           ; status = Fail
+           ; message = msg
+           ; detail = Some (Yojson.Safe.pretty_to_string j)
+           ; fix_command =
+               Some (sprintf
+                 "wait for relay deploy, or: c2c relay setup --url <matching-relay>   \
+                  # client v%d is newer than relay protocol v%d"
+                 client_protocol server_protocol)
            ; docs_url = Some docs_relay })
 
 let check_lease ~probe ~local_aliases ~local_total =
