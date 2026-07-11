@@ -77,7 +77,8 @@ frontend-only state the app-server cannot touch), and eligible **local** mail
 starts one gated turn when the thread is explicitly idle and DND is off;
 active/unknown status and relay-origin mail stay queued (fail-closed).
 `c2c instances` reports `delivery_mode=app-server` plus `app_server_status`.
-Full contract: [client-delivery](/client-delivery/#codex).
+Full contract + current wiring status:
+[client-delivery](/client-delivery/#codex).
 
 *Hook fallback* — Codex hooks for vanilla and hook-mode managed sessions.
 `c2c install codex` writes a pre-trusted hooks block to `~/.codex/config.toml`

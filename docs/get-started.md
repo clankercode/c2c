@@ -196,7 +196,7 @@ is injected into the thread's model-visible history on arrival without ever
 touching a typed draft, and eligible local mail can start one gated turn when
 the session is idle. `c2c doctor hooks` shows which delivery mode a session
 actually has (`app-server` / `hooks+wake` / `hooks` / `unavailable`) with a
-fix for each degraded state. Full contract:
+fix for each degraded state. Full contract and current wiring status:
 [Per-Client Delivery § Codex](/client-delivery/#codex).
 
 ---

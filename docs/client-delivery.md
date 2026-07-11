@@ -213,6 +213,15 @@ app-server's control channel:
   hook launch — `c2c doctor hooks` then reports `app-server-unavailable`
   with the remediation (upgrade Codex, relaunch with `--app-server`).
 
+*Wiring status (2026-07-11):* the injection adapter and the gated auto-turn
+dispatcher ship in the c2c library and are proven live by the T003/T004/T007
+harnesses (`scripts/codex-ingress-dogfood.py`,
+`scripts/codex-draft-preservation-e2e.py`, `scripts/codex-autoturn-e2e.py`);
+surfacing them under `c2c start codex --app-server` supervision is the
+follow-up slice. Until that lands, an app-server session's live inbound path
+is still the hook boundary — `c2c doctor hooks` always reports the mode a
+session actually has, and never claims more.
+
 Supported Codex: **codex-cli ≥ 0.144** (validated on 0.144.1). The app-server
 protocol and hook events are upstream surfaces that can drift across Codex
 releases — when something stops matching this page, check the official

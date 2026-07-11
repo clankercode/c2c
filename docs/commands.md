@@ -1038,7 +1038,7 @@ hook fire, not on arrival). `delivery_mode` in `c2c dev instances` /
 (input-injecting idle wake) / `hooks` / `unavailable` — and
 `c2c doctor hooks` classifies the live mode (adding `app-server-unavailable`
 for a failed/incompatible app-server) with an actionable remediation per
-degraded state. Full contract: [Per-Client Delivery § Codex](/client-delivery/#codex).
+degraded state. Full contract + current wiring status: [Per-Client Delivery § Codex](/client-delivery/#codex).
 
 ### Operator TUI (`c2c watch`)
 

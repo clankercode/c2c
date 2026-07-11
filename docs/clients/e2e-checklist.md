@@ -96,6 +96,10 @@ c2c list --all
   - Inside tmux: `c2c start codex --app-server -n test-cx-appserver-<rand>`
     (codex ≥ 0.144 required; on older codex expect the minimum-version
     message + hook fallback, and mark this row SKIP)
+  - If your build predates the supervision-wiring slice (the ingress/auto-turn
+    dispatcher ships in the c2c library but is not yet driven by
+    `c2c start codex` supervision), mark this row SKIP and exercise the
+    library path with `scripts/codex-autoturn-e2e.py` (inside tmux) instead
   - `c2c dev instances --json` shows `"delivery_mode": "app-server"` and
     `"app_server_status": "online-attached"` for the instance
 - **Action**:

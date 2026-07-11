@@ -189,6 +189,18 @@ semantics from B127's merged tests).
 | `dune exec --root "$PWD" ocaml/test/test_c2c_doctor_capabilities.exe` | 0 | 23/23 (unchanged suite, still green) |
 | docs build (`cd docs && bundle exec jekyll build`) | n/a | jekyll is not installable in this environment (`bundle install` fails building `jekyll-relative-links` — pre-existing toolchain gap, not caused by this slice). Per `docs/CLAUDE.md`, text-only edits fall back to a Markdown diff review: performed + a fence/link lint over all six changed docs pages (all OK; no front-matter/layout changes made) |
 
+## Wiring-status honesty note (self-review finding)
+
+`C2c_codex_autoturn` / `C2c_codex_ingress` ship in the c2c library and are
+proven by the T003/T004/T007 harnesses, but are **not yet driven by
+`c2c start codex --app-server` supervision** (T007 receipt: follow-up slice).
+The docs therefore state the app-server contract as the canonical documented
+behavior AND carry an explicit wiring-status paragraph
+(`docs/client-delivery.md`) + a SKIP note in e2e row 2b, so nothing promises
+managed-session arrival-time delivery before the wiring slice lands. The
+doctor `app-server` classification is a transport-state report (unit live),
+with the contract in its summary.
+
 ## Boundaries honored
 
 - No command-grammar changes (T006), no delivery-policy changes (T007), no
