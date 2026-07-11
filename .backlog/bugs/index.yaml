@@ -116,3 +116,4 @@ bugs:
     - file: B117-make-public-or-unlisted-room-h.todo
     - file: B118-return-anonymous-listed-room-r.todo
     - file: B119-mcp-register-overwrites-hook-r.todo
+    - file: B120-managed-codex-wake-broken-on-r.todo
