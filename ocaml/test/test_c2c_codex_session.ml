@@ -1,0 +1,299 @@
+(* Tests for C2c_codex_session (P1.M1.E1.T006): deterministic session-ID-derived
+   alias generation + collision extension, --yolo forwarding + non-persistence,
+   `--` passthrough splitting, thread-conflict rejection, status terminology,
+   identity-mapping round-trip, and the app-server lifecycle glue (alias
+   published only after start; graceful fallback on a startup diagnostic). All
+   scripted — no live codex process. *)
+
+open C2c_codex_app_server
+module S = C2c_codex_session
+
+(* ------------------------------------------------------------------ *)
+(* Deterministic session-ID-derived alias                              *)
+(* ------------------------------------------------------------------ *)
+
+let no_taken _ = false
+
+let test_alias_deterministic () =
+  (* Same fixed id + same taken predicate => identical alias every call. *)
+  let a1 = S.derive_alias ~session_id:"fixed-session-A" ~taken:no_taken in
+  let a2 = S.derive_alias ~session_id:"fixed-session-A" ~taken:no_taken in
+  Alcotest.(check string) "stable across calls" a1 a2;
+  Alcotest.(check string) "base == derived when free"
+    (S.derive_alias_base "fixed-session-A") a1;
+  (* Must be a two-word alias (contains a dash separating distinct words). *)
+  Alcotest.(check bool) "has a hyphen" true (String.contains a1 '-')
+
+let test_alias_distinct_for_distinct_ids () =
+  let a = S.derive_alias ~session_id:"fixed-session-A" ~taken:no_taken in
+  let b = S.derive_alias ~session_id:"fixed-session-B" ~taken:no_taken in
+  Alcotest.(check bool) "two new threads => distinct aliases" false (a = b)
+
+let test_alias_resume_stable () =
+  (* Restart/resume re-derives the SAME alias from the SAME session id. *)
+  let first = S.derive_alias ~session_id:"thread-xyz-123" ~taken:no_taken in
+  let restart = S.derive_alias ~session_id:"thread-xyz-123" ~taken:no_taken in
+  Alcotest.(check string) "resume retains alias" first restart
+
+let test_alias_collision_extension_deterministic () =
+  let sid = "collide-me" in
+  let base = S.derive_alias_base sid in
+  (* Predicate: only the base is taken -> must extend, NOT pick an unrelated
+     random alias. The extension is derived from the same session id, so it is
+     stable across calls. *)
+  let taken a = a = base in
+  let e1 = S.derive_alias ~session_id:sid ~taken in
+  let e2 = S.derive_alias ~session_id:sid ~taken in
+  Alcotest.(check bool) "extended != base" false (e1 = base);
+  Alcotest.(check string) "extension deterministic" e1 e2;
+  Alcotest.(check bool) "extension keeps base prefix" true
+    (String.length e1 > String.length base
+     && String.sub e1 0 (String.length base) = base)
+
+let test_alias_collision_chain_deterministic () =
+  (* When base AND the first extension are taken, the second extension is still
+     deterministic and stable (no randomness anywhere in the chain). *)
+  let sid = "chain-collide" in
+  let base = S.derive_alias_base sid in
+  let first_ext = S.derive_alias ~session_id:sid ~taken:(fun a -> a = base) in
+  let taken a = a = base || a = first_ext in
+  let c1 = S.derive_alias ~session_id:sid ~taken in
+  let c2 = S.derive_alias ~session_id:sid ~taken in
+  Alcotest.(check bool) "distinct from base" false (c1 = base);
+  Alcotest.(check bool) "distinct from first ext" false (c1 = first_ext);
+  Alcotest.(check string) "second extension deterministic" c1 c2
+
+(* ------------------------------------------------------------------ *)
+(* --yolo forwarding + non-persistence                                 *)
+(* ------------------------------------------------------------------ *)
+
+let test_yolo_forwards_bypass () =
+  let args = S.frontend_extra_args ~yolo:true ~extra:[ "--model"; "m" ] in
+  Alcotest.(check bool) "contains bypass flag" true
+    (List.mem "--dangerously-bypass-approvals-and-sandbox" args);
+  Alcotest.(check string) "exact flag" "--dangerously-bypass-approvals-and-sandbox"
+    S.yolo_bypass_flag;
+  Alcotest.(check bool) "bypass is first (before passthrough)" true
+    (match args with f :: _ -> f = S.yolo_bypass_flag | [] -> false)
+
+let test_yolo_absent_by_default () =
+  let args = S.frontend_extra_args ~yolo:false ~extra:[ "--model"; "m" ] in
+  Alcotest.(check bool) "no bypass without --yolo" false
+    (List.mem "--dangerously-bypass-approvals-and-sandbox" args);
+  Alcotest.(check (list string)) "passthrough preserved" [ "--model"; "m" ] args
+
+(* ------------------------------------------------------------------ *)
+(* `--` passthrough splitting                                          *)
+(* ------------------------------------------------------------------ *)
+
+let test_drop_sep () =
+  Alcotest.(check (list string)) "drops leading --"
+    [ "--model"; "x" ] (S.drop_sep [ "--"; "--model"; "x" ]);
+  Alcotest.(check (list string)) "no-op when absent"
+    [ "--model"; "x" ] (S.drop_sep [ "--model"; "x" ])
+
+let test_split_client_passthrough () =
+  (* c2c new codex -- --model gpt-5.3-codex-spark *)
+  let (client, extra) =
+    S.split_client [ "codex"; "--"; "--model"; "gpt-5.3-codex-spark" ] in
+  Alcotest.(check (option string)) "client" (Some "codex") client;
+  Alcotest.(check (list string)) "verbatim passthrough"
+    [ "--model"; "gpt-5.3-codex-spark" ] extra;
+  (* Without an explicit `--` (cmdliner already stripped it): still verbatim. *)
+  let (c2, e2) = S.split_client [ "codex"; "--model"; "x" ] in
+  Alcotest.(check (option string)) "client2" (Some "codex") c2;
+  Alcotest.(check (list string)) "passthrough2" [ "--model"; "x" ] e2;
+  let (c3, e3) = S.split_client [ "codex" ] in
+  Alcotest.(check (option string)) "client only" (Some "codex") c3;
+  Alcotest.(check (list string)) "no passthrough" [] e3
+
+let test_split_client_alias_passthrough () =
+  (* c2c resume codex myalias -- --model x *)
+  let (client, alias, extra) =
+    S.split_client_alias [ "codex"; "myalias"; "--"; "--model"; "x" ] in
+  Alcotest.(check (option string)) "client" (Some "codex") client;
+  Alcotest.(check (option string)) "alias" (Some "myalias") alias;
+  Alcotest.(check (list string)) "passthrough" [ "--model"; "x" ] extra;
+  (* alias must NOT be captured from a `--`-prefixed token. *)
+  let (_, alias2, extra2) = S.split_client_alias [ "codex"; "a"; "--model" ] in
+  Alcotest.(check (option string)) "alias2" (Some "a") alias2;
+  Alcotest.(check (list string)) "passthrough2" [ "--model" ] extra2
+
+(* ------------------------------------------------------------------ *)
+(* thread-id conflict rejection                                        *)
+(* ------------------------------------------------------------------ *)
+
+let test_reconcile_thread () =
+  let ok = function Ok v -> v | Error e -> Alcotest.failf "unexpected Error: %s" e in
+  Alcotest.(check (option string)) "none/none" None
+    (ok (S.reconcile_thread ~requested:None ~saved:None));
+  Alcotest.(check (option string)) "saved wins when no request" (Some "T1")
+    (ok (S.reconcile_thread ~requested:None ~saved:(Some "T1")));
+  Alcotest.(check (option string)) "request when no saved" (Some "T2")
+    (ok (S.reconcile_thread ~requested:(Some "T2") ~saved:None));
+  Alcotest.(check (option string)) "matching request+saved" (Some "T3")
+    (ok (S.reconcile_thread ~requested:(Some "T3") ~saved:(Some "T3")));
+  (match S.reconcile_thread ~requested:(Some "Treq") ~saved:(Some "Tsaved") with
+   | Error _ -> ()
+   | Ok _ -> Alcotest.fail "conflicting thread ids must be rejected, not guessed")
+
+(* ------------------------------------------------------------------ *)
+(* status terminology                                                  *)
+(* ------------------------------------------------------------------ *)
+
+let test_status_mapping () =
+  let eq name exp st =
+    Alcotest.(check string) name exp (S.status_to_string (S.status_of_app_server_state st))
+  in
+  eq "allocating" "starting" Allocating;
+  eq "starting_server" "starting" Starting_server;
+  eq "waiting_ready" "starting" Waiting_ready;
+  eq "starting_frontend" "starting" Starting_frontend;
+  eq "running" "online-attached" Running;
+  eq "frontend_exited" "offline" Frontend_exited;
+  eq "stopping_server" "offline" Stopping_server;
+  eq "offline" "offline" Offline;
+  eq "failed" "failed-startup" Failed;
+  eq "cleaning_up" "failed-startup" Cleaning_up
+
+(* ------------------------------------------------------------------ *)
+(* mapping round-trip                                                  *)
+(* ------------------------------------------------------------------ *)
+
+let with_tmp_dir f =
+  let dir = Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-codex-sess-%d-%d" (Unix.getpid ()) (Random.bits ())) in
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  Fun.protect
+    ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () -> f dir)
+
+let test_mapping_roundtrip () =
+  with_tmp_dir (fun dir ->
+      let m = { S.session_id = "sid-123"; alias = "quokka-lantern";
+                thread_id = Some "thr-abc"; created_at = 100.0; updated_at = 200.0 } in
+      S.write_mapping ~instance_dir:dir m;
+      match S.load_mapping ~instance_dir:dir with
+      | None -> Alcotest.fail "mapping should round-trip"
+      | Some m2 ->
+          Alcotest.(check string) "session_id" m.session_id m2.session_id;
+          Alcotest.(check string) "alias" m.alias m2.alias;
+          Alcotest.(check (option string)) "thread_id" m.thread_id m2.thread_id)
+
+(* ------------------------------------------------------------------ *)
+(* Lifecycle glue: alias published only after start succeeds; graceful *)
+(* fallback on a startup diagnostic.                                   *)
+(* ------------------------------------------------------------------ *)
+
+type fake = { mutable status : child_status }
+
+let mk_fake ?(id = 4242) (f : fake) : child =
+  { child_id = id;
+    poll_fn = (fun () -> f.status);
+    signal_fn = (fun _ -> ());
+    reap_fn = (fun _ -> (match f.status with Running_ -> f.status <- Exited 0 | _ -> ()); f.status) }
+
+let scripted ~clock ?(codex_version = Ok "codex-cli 0.144.1") ?(capabilities = Ok ())
+    ?(spawn_server = fun ~argv:_ ~env:_ ~log_path:_ -> Error "unset")
+    ?(spawn_frontend = fun ~argv:_ ~env:_ -> Error "unset") () : backend =
+  { now = (fun () -> !clock); sleep = (fun d -> clock := !clock +. d);
+    gen_token = (fun () -> "RAWT0KEN_do_not_leak");
+    alloc_port = (fun () -> Ok 40123);
+    codex_version = (fun _ -> codex_version); capabilities = (fun _ -> capabilities);
+    spawn_server; spawn_frontend;
+    probe_ready = (fun _ ~token:_ -> Ok ());
+    verify_owner = (fun _ ~server_pid:_ -> true) }
+
+(* A stable, unique session id => a deterministic derived alias => a known
+   instance dir we can inspect and clean. *)
+let unique_sid () = Printf.sprintf "t006-glue-%d-%d" (Unix.getpid ()) (Random.bits ())
+
+let cleanup_alias alias =
+  ignore (Sys.command (Printf.sprintf "rm -rf %s"
+    (Filename.quote (C2c_start.instance_dir alias))))
+
+let test_glue_happy_publishes_after_start () =
+  let sid = unique_sid () in
+  let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      let clock = ref 0.0 in
+      let server = { status = Running_ } in
+      (* Frontend already exited => supervise_until_exit returns immediately. *)
+      let frontend = { status = Exited 0 } in
+      let bk = scripted ~clock
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake ~id:111 server))
+          ~spawn_frontend:(fun ~argv:_ ~env:_ -> Ok (mk_fake ~id:222 frontend)) () in
+      let fallback_called = ref false in
+      let rc = S.run ~mode:S.Start ~yolo:false ~app_server:true
+          ~extra_args:[] ~thread_id:sid ~backend:bk
+          ~fallback:(fun ~extra_args:_ () -> fallback_called := true; 99) () in
+      Alcotest.(check bool) "fallback NOT used on happy path" false !fallback_called;
+      Alcotest.(check int) "clean exit" 0 rc;
+      (* The routable mapping is published only after start returned Ok. *)
+      match S.load_mapping ~instance_dir:(C2c_start.instance_dir alias) with
+      | None -> Alcotest.fail "mapping should be published after Running"
+      | Some m ->
+          Alcotest.(check string) "published alias" alias m.alias;
+          Alcotest.(check string) "seed persisted" sid m.session_id)
+
+let test_glue_diagnostic_falls_back_no_publish () =
+  let sid = unique_sid () in
+  let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      let clock = ref 0.0 in
+      (* Too-old codex => start returns a version diagnostic BEFORE any spawn,
+         so no routable alias is ever published. *)
+      let bk = scripted ~clock ~codex_version:(Ok "codex-cli 0.100.0") () in
+      let fallback_called = ref false in
+      let rc = S.run ~mode:S.Start ~yolo:false ~app_server:true
+          ~extra_args:[ "--model"; "x" ] ~thread_id:sid ~backend:bk
+          ~fallback:(fun ~extra_args () ->
+              fallback_called := true;
+              (* passthrough forwarded to the hook fallback *)
+              Alcotest.(check bool) "passthrough reaches fallback" true
+                (List.mem "--model" extra_args);
+              77) () in
+      Alcotest.(check bool) "fallback used on diagnostic" true !fallback_called;
+      Alcotest.(check int) "fallback exit code propagated" 77 rc;
+      Alcotest.(check (option string)) "no alias published on failure" None
+        (Option.map (fun (m : S.mapping) -> m.alias)
+           (S.load_mapping ~instance_dir:(C2c_start.instance_dir alias))))
+
+let test_hook_mode_uses_fallback () =
+  (* app_server:false => the legacy hook path (fallback) runs; --yolo still
+     forwards the bypass flag through the effective extra_args. *)
+  let seen = ref [] in
+  let rc = S.run ~mode:S.Start ~yolo:true ~app_server:false ~extra_args:[ "--model"; "x" ]
+      ~fallback:(fun ~extra_args () -> seen := extra_args; 0) () in
+  Alcotest.(check int) "fallback rc" 0 rc;
+  Alcotest.(check bool) "yolo bypass forwarded to hook path" true
+    (List.mem "--dangerously-bypass-approvals-and-sandbox" !seen);
+  Alcotest.(check bool) "passthrough preserved" true (List.mem "--model" !seen)
+
+let () =
+  let open Alcotest in
+  run "c2c_codex_session"
+    [ ( "deterministic-alias",
+        [ test_case "stable" `Quick test_alias_deterministic
+        ; test_case "distinct ids" `Quick test_alias_distinct_for_distinct_ids
+        ; test_case "resume stable" `Quick test_alias_resume_stable
+        ; test_case "collision extension" `Quick test_alias_collision_extension_deterministic
+        ; test_case "collision chain" `Quick test_alias_collision_chain_deterministic ] )
+    ; ( "yolo",
+        [ test_case "forwards bypass" `Quick test_yolo_forwards_bypass
+        ; test_case "absent by default" `Quick test_yolo_absent_by_default ] )
+    ; ( "passthrough",
+        [ test_case "drop_sep" `Quick test_drop_sep
+        ; test_case "split_client" `Quick test_split_client_passthrough
+        ; test_case "split_client_alias" `Quick test_split_client_alias_passthrough ] )
+    ; ( "thread-conflict",
+        [ test_case "reconcile" `Quick test_reconcile_thread ] )
+    ; ( "status",
+        [ test_case "mapping" `Quick test_status_mapping ] )
+    ; ( "mapping",
+        [ test_case "roundtrip" `Quick test_mapping_roundtrip ] )
+    ; ( "lifecycle-glue",
+        [ test_case "happy publishes after start" `Quick test_glue_happy_publishes_after_start
+        ; test_case "diagnostic falls back, no publish" `Quick test_glue_diagnostic_falls_back_no_publish
+        ; test_case "hook mode uses fallback" `Quick test_hook_mode_uses_fallback ] )
+    ]
