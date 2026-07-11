@@ -65,20 +65,32 @@ class RelayClient:
     ) -> dict:
         url = f"{self.base_url}{path}"
         data = json.dumps(body or {}).encode() if body is not None else b""
-        req = urllib.request.Request(url, data=data or None, method=method)
-        req.add_header("Content-Type", "application/json")
-        if auth_header:
-            req.add_header("Authorization", auth_header)
-        elif self.token:
-            req.add_header("Authorization", f"Bearer {self.token}")
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
+        # The relay applies a per-IP token-bucket rate limit (e.g. /room_history
+        # burst 20, refill 1/s). A tight test loop from 127.0.0.1 can exhaust it
+        # and get {"error":"rate_limit_exceeded","retry_after":N} — a harness
+        # artifact, not the behaviour under test. Retry a bounded number of
+        # times, honouring retry_after, so the assertions see the real response.
+        for _attempt in range(8):
+            req = urllib.request.Request(url, data=data or None, method=method)
+            req.add_header("Content-Type", "application/json")
+            if auth_header:
+                req.add_header("Authorization", auth_header)
+            elif self.token:
+                req.add_header("Authorization", f"Bearer {self.token}")
             try:
-                return json.loads(exc.read())
-            finally:
-                exc.close()
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read())
+            except urllib.error.HTTPError as exc:
+                try:
+                    result = json.loads(exc.read())
+                finally:
+                    exc.close()
+            if isinstance(result, dict) and result.get("error") == "rate_limit_exceeded":
+                retry_after = result.get("retry_after", 0.5)
+                time.sleep(min(float(retry_after) + 0.05, 3.0))
+                continue
+            return result
+        return result
 
     def get(self, path: str) -> dict:
         return self._request("GET", path)
@@ -95,16 +107,22 @@ class OCamlRelayServer:
     """Context manager: starts OCaml relay server as a subprocess, tears it down on exit."""
 
     def __init__(self, token: str | None, signed_env: str | None = None,
-                 identity_path: str | None = None, port: int = TEST_PORT) -> None:
+                 identity_path: str | None = None, port: int = TEST_PORT,
+                 storage: str = "memory", persist_dir: str | None = None) -> None:
         """token=None starts a dev-mode relay (no --token flag).
 
         signed_env is the C2C_REQUIRE_SIGNED_ROOM_OPS value: None leaves the
         variable unset (the secure source default), "0" requests the legacy
-        unsigned dev gate, "1" is the explicit strict setting."""
+        unsigned dev gate, "1" is the explicit strict setting.
+
+        storage="sqlite" + persist_dir spins up a durable relay so a
+        stop/restart cycle exercises on-disk persistence (B117)."""
         self.token = token
         self.signed_env = signed_env
         self.identity_path = identity_path
         self.port = port
+        self.storage = storage
+        self.persist_dir = persist_dir
         self._proc: subprocess.Popen | None = None
 
     def _build_env(self) -> dict:
@@ -122,8 +140,10 @@ class OCamlRelayServer:
         cmd = [
             C2C, "relay", "serve",
             "--listen", f"127.0.0.1:{self.port}",
-            "--storage", "memory",
+            "--storage", self.storage,
         ]
+        if self.persist_dir is not None:
+            cmd += ["--persist-dir", self.persist_dir]
         if self.token is not None:
             cmd += ["--token", self.token]
         self._proc = subprocess.Popen(
@@ -1106,6 +1126,222 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
                         f"signed set_room_visibility should be accepted: {r2}")
         self.assertNotIn("vis-e2e-flip", self._list_room_ids(),
                          "room must be hidden from /list_rooms after going private")
+
+
+class HistoryPublicE2ETests(unittest.TestCase):
+    """B117: history readability is a persisted per-room policy.
+
+    Matrix:
+      - anonymous /room_history on a public/unlisted room is allowed ONLY when
+        history_public is true (default true; closing it makes it member-only);
+      - a valid member can still read a history-closed listed room;
+      - a visibility downgrade to gated/private atomically clears history_public
+        (and stays anonymous-unreadable);
+      - setting history_public=true on a gated/private room is rejected.
+
+    Self-contained: generates its own signed identities; the first signed room
+    op pins each key to its alias (TOFU). No on-disk identity fixture needed."""
+
+    JOIN_CTX = "c2c/v1/room-join"
+    SETVIS_CTX = "c2c/v1/room-set-visibility"
+    SETHP_CTX = "c2c/v1/room-set-history-public"
+    ALIAS = "hp-e2e-alice"
+    ALIAS2 = "hp-e2e-bob"
+
+    server: OCamlRelayServer
+    client: RelayClient
+    helper: SignedRoomOpHelper
+    helper2: SignedRoomOpHelper
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
+                                      port=TEST_PORT + 7)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        cls.helper = SignedRoomOpHelper(generate_identity(cls.ALIAS))
+        cls.client.register(
+            "n-hp", "s-hp", cls.ALIAS,
+            **cls.helper.sign_register(cls.server.base_url),
+        )
+        cls.helper2 = SignedRoomOpHelper(generate_identity(cls.ALIAS2))
+        cls.client.register(
+            "n-hp2", "s-hp2", cls.ALIAS2,
+            **cls.helper2.sign_register(cls.server.base_url),
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def _signed_join(self, room_id: str, visibility: str) -> dict:
+        proof = self.helper.sign_room_op_with_visibility(
+            self.JOIN_CTX, room_id, visibility)
+        return self.client.post("/join_room", {
+            "alias": self.ALIAS, "room_id": room_id,
+            "visibility": visibility, **proof,
+        })
+
+    def _set_history_public(self, helper: SignedRoomOpHelper, alias: str,
+                            room_id: str, value: bool) -> dict:
+        proof = helper.sign_room_op_with_extra(
+            self.SETHP_CTX, room_id, "true" if value else "false")
+        return self.client.post("/set_room_history_public", {
+            "alias": alias, "room_id": room_id, "history_public": value,
+            **proof,
+        })
+
+    def _anon_history(self, room_id: str) -> dict:
+        return self.client.post("/room_history", {"room_id": room_id, "limit": 20})
+
+    def _member_history(self, helper: SignedRoomOpHelper, room_id: str) -> dict:
+        body = {"room_id": room_id, "limit": 20}
+        return self.client.post(
+            "/room_history", body,
+            auth_header=helper.sign_request("POST", "/room_history", body),
+        )
+
+    def test_public_default_open_then_close_gates_anon(self):
+        room = "hp-public-close"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        # default true → anonymous read allowed
+        self.assertTrue(self._anon_history(room)["ok"],
+                        "public room defaults to open history")
+        # close it → anonymous read now rejected
+        r = self._set_history_public(self.helper, self.ALIAS, room, False)
+        self.assertTrue(r["ok"], f"member should close history: {r}")
+        self.assertIs(r.get("history_public"), False)
+        anon = self._anon_history(room)
+        self.assertFalse(anon["ok"],
+                         f"closed public history must be member-only: {anon}")
+        self.assertEqual(anon.get("error_code"), "not_a_member")
+
+    def test_member_reads_closed_listed_room(self):
+        room = "hp-public-member-read"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        self.assertTrue(
+            self._set_history_public(self.helper, self.ALIAS, room, False)["ok"])
+        # anon blocked, member (creator) still allowed
+        self.assertFalse(self._anon_history(room)["ok"])
+        member = self._member_history(self.helper, room)
+        self.assertTrue(member["ok"],
+                        f"member must read a history-closed listed room: {member}")
+
+    def test_unlisted_close_gates_anon(self):
+        room = "hp-unlisted-close"
+        self.assertTrue(self._signed_join(room, "unlisted")["ok"])
+        self.assertTrue(self._anon_history(room)["ok"],
+                        "unlisted room defaults to open history")
+        self.assertTrue(
+            self._set_history_public(self.helper, self.ALIAS, room, False)["ok"])
+        self.assertFalse(self._anon_history(room)["ok"],
+                         "closed unlisted history must be member-only")
+
+    def test_reopen_restores_anon_read(self):
+        room = "hp-reopen"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        self.assertTrue(
+            self._set_history_public(self.helper, self.ALIAS, room, False)["ok"])
+        self.assertFalse(self._anon_history(room)["ok"])
+        self.assertTrue(
+            self._set_history_public(self.helper, self.ALIAS, room, True)["ok"])
+        self.assertTrue(self._anon_history(room)["ok"],
+                        "reopened public history must be anon-readable again")
+
+    def test_set_true_on_gated_rejected(self):
+        room = "hp-gated-reject"
+        self.assertTrue(self._signed_join(room, "gated")["ok"])
+        r = self._set_history_public(self.helper, self.ALIAS, room, True)
+        self.assertFalse(r["ok"],
+                         f"history_public=true must be rejected for gated: {r}")
+        self.assertEqual(r.get("error_code"), "history_public_gated")
+
+    def test_set_true_on_private_rejected(self):
+        room = "hp-private-reject"
+        self.assertTrue(self._signed_join(room, "private")["ok"])
+        r = self._set_history_public(self.helper, self.ALIAS, room, True)
+        self.assertFalse(r["ok"],
+                         f"history_public=true must be rejected for private: {r}")
+        self.assertEqual(r.get("error_code"), "history_public_gated")
+
+    def test_visibility_downgrade_clears_and_gates_anon(self):
+        room = "hp-downgrade"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        self.assertTrue(self._anon_history(room)["ok"])
+        # public → gated must atomically clear history_public
+        proof = self.helper.sign_room_op_with_visibility(
+            self.SETVIS_CTX, room, "gated")
+        r = self.client.post("/set_room_visibility", {
+            "alias": self.ALIAS, "room_id": room, "visibility": "gated", **proof,
+        })
+        self.assertTrue(r["ok"], f"set_room_visibility should succeed: {r}")
+        self.assertIs(r.get("history_public"), False,
+                      "downgrade must report history_public cleared")
+        anon = self._anon_history(room)
+        self.assertFalse(anon["ok"],
+                         "gated room history must be member-only after downgrade")
+        self.assertEqual(anon.get("error_code"), "not_a_member")
+
+    def test_non_member_cannot_set_history_public(self):
+        room = "hp-nonmember"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        # helper2 is registered but NOT a member of this room
+        r = self._set_history_public(self.helper2, self.ALIAS2, room, False)
+        self.assertFalse(r["ok"],
+                         f"non-member must not change history_public: {r}")
+        self.assertEqual(r.get("error_code"), "not_a_member")
+
+
+class HistoryPublicPersistenceTests(unittest.TestCase):
+    """B117: the history_public setting survives a relay restart on the SQLite
+    (durable) storage path. Start sqlite-backed relay, close history, stop,
+    restart on the same persist-dir, and confirm the setting is retained."""
+
+    ALIAS = "hp-persist-alice"
+    ROOM = "hp-persist-room"
+
+    def test_history_public_survives_restart(self):
+        data_dir = tempfile.mkdtemp(prefix="c2c-hp-persist-")
+        port = TEST_PORT + 8
+        helper = SignedRoomOpHelper(generate_identity(self.ALIAS))
+        try:
+            # --- first boot: register, join public, close history ---
+            with OCamlRelayServer(token=TOKEN, signed_env=None, port=port,
+                                  storage="sqlite", persist_dir=data_dir):
+                client = RelayClient(f"http://127.0.0.1:{port}", token=TOKEN)
+                client.register("n-hpp", "s-hpp", self.ALIAS,
+                                **helper.sign_register(f"http://127.0.0.1:{port}"))
+                join = helper.sign_room_op_with_visibility(
+                    "c2c/v1/room-join", self.ROOM, "public")
+                r = client.post("/join_room", {
+                    "alias": self.ALIAS, "room_id": self.ROOM,
+                    "visibility": "public", **join,
+                })
+                self.assertTrue(r["ok"], f"join failed: {r}")
+                proof = helper.sign_room_op_with_extra(
+                    "c2c/v1/room-set-history-public", self.ROOM, "false")
+                r = client.post("/set_room_history_public", {
+                    "alias": self.ALIAS, "room_id": self.ROOM,
+                    "history_public": False, **proof,
+                })
+                self.assertTrue(r["ok"], f"close history failed: {r}")
+                self.assertFalse(
+                    client.post("/room_history",
+                                {"room_id": self.ROOM, "limit": 5})["ok"],
+                    "closed history should be anon-unreadable before restart")
+
+            # --- second boot on the same DB: setting must persist ---
+            with OCamlRelayServer(token=TOKEN, signed_env=None, port=port,
+                                  storage="sqlite", persist_dir=data_dir):
+                client = RelayClient(f"http://127.0.0.1:{port}", token=TOKEN)
+                anon = client.post("/room_history",
+                                   {"room_id": self.ROOM, "limit": 5})
+                self.assertFalse(
+                    anon["ok"],
+                    f"history_public=false must persist across restart: {anon}")
+                self.assertEqual(anon.get("error_code"), "not_a_member")
+        finally:
+            subprocess.run(["rm", "-rf", data_dir], check=False)
 
 
 if __name__ == "__main__":

@@ -71,7 +71,8 @@ let anonymous_read_routes =
    relay.ml). Same route class as /send and /heartbeat. *)
 let self_auth_exact_routes =
   [ "/register"; "/join_room"; "/leave_room"; "/send_room";
-    "/set_room_visibility"; "/send_room_invite"; "/invite_room";
+    "/set_room_visibility"; "/set_room_history_public";
+    "/send_room_invite"; "/invite_room";
     "/uninvite_room"; "/knock_room"; "/list_room_knocks";
     "/approve_room_knock"; "/deny_room_knock"; "/mobile-pair/prepare";
     "/mobile-pair"; "/forward"; "/ws/subscribe" ]

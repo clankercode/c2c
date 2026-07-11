@@ -103,6 +103,12 @@ let require_signed_room_ops ~token_configured =
 let room_invite_sign_ctx = "c2c/v1/room-invite"
 let room_uninvite_sign_ctx = "c2c/v1/room-uninvite"
 let room_set_visibility_sign_ctx = "c2c/v1/room-set-visibility"
+(* B117: member-authorized mutation of the persisted history_public policy.
+   The signed blob covers the boolean (as "true"/"false") so it cannot be
+   forged/flipped in transit — see verify_room_op_proof extra_signed_fields. *)
+let room_set_history_public_sign_ctx = "c2c/v1/room-set-history-public"
+(* B117: setting history_public=true is rejected for gated/private rooms. *)
+let relay_err_history_public_gated = "history_public_gated"
 let room_knock_sign_ctx = "c2c/v1/room-knock"
 let room_list_knocks_sign_ctx = "c2c/v1/room-list-knocks"
 let room_approve_knock_sign_ctx = "c2c/v1/room-approve-knock"
@@ -145,6 +151,19 @@ let canonical_visibility_or_raw v =
   match canonical_visibility v with
   | Some v -> v
   | None -> v
+
+(* B117: history readability is a separate, persisted per-room policy from
+   visibility. [history_public_default_for_visibility v] is the default value
+   a room gets at creation (and for legacy/migrated rooms): public and
+   unlisted rooms default to open-read (true) for a compatible rollout; gated
+   and private rooms are always member-only (false). The invariant "gated and
+   private rooms must have history_public=false" is enforced on every write
+   (set_room_visibility atomically clears it on a downgrade; the
+   set_room_history_public mutation rejects a true value for gated/private). *)
+let history_public_default_for_visibility v =
+  match canonical_visibility_or_raw v with
+  | "public" | "unlisted" -> true
+  | _ -> false
 
 (* S5a: Mobile pair token signing context *)
 let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"

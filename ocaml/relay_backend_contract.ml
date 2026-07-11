@@ -74,6 +74,13 @@ module type RELAY = sig
   val room_invites_of : t -> room_id:string -> string list
   val is_invited : t -> room_id:string -> identity_pk_b64:string -> bool
   val set_room_visibility : t -> room_id:string -> visibility:string -> unit
+  (* B117: persisted per-room history readability policy. [history_public_of]
+     returns the stored value, defaulting per visibility for legacy/absent
+     rooms (public/unlisted → true, gated/private → false).
+     [set_room_history_public] persists the flag; callers enforce the
+     gated/private-must-be-false invariant before invoking it. *)
+  val history_public_of : t -> room_id:string -> bool
+  val set_room_history_public : t -> room_id:string -> history_public:bool -> unit
   val invite_to_room : t -> room_id:string -> identity_pk_b64:string -> unit
   val uninvite_from_room : t -> room_id:string -> identity_pk_b64:string -> unit
   val knock_room : t -> room_id:string -> requester_alias:string ->

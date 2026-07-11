@@ -713,7 +713,7 @@ let fetch_relay_peers_for_list ~timeout ?relay_url ?token ?alias () =
 
 let relay_rooms_cmd =
   let subcmd =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|set-visibility" ~doc:"Rooms subcommand.")
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|set-visibility|set-history-public" ~doc:"Rooms subcommand.")
   in
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
@@ -736,6 +736,9 @@ let relay_rooms_cmd =
   let visibility =
     Cmdliner.Arg.(value & opt (some string) None & info [ "visibility" ] ~docv:"public|unlisted|gated|private" ~doc:"Room visibility: 'public' (listed + open join), 'unlisted' (unlisted + open join), 'gated' (listed + invite-gated join), or 'private' (unlisted + invite-gated join). Required for set-visibility; optional for join, where it applies only when the join creates the room.")
   in
+  let history_public =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "history-public" ] ~docv:"true|false" ~doc:"History readability policy for 'set-history-public': 'true' allows anonymous room-history reads on a public/unlisted room, 'false' makes it member-only. Rejected for gated/private rooms (always member-only).")
+  in
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"Message body for 'send' (joined with spaces).")
   in
@@ -752,6 +755,7 @@ let relay_rooms_cmd =
   and+ alias = alias
   and+ invitee_pk = invitee_pk
   and+ visibility = visibility
+  and+ history_public = history_public
   and+ words = words in
   match subcmd with
   | "join" | "leave" ->
@@ -963,6 +967,47 @@ let relay_rooms_cmd =
                        ~visibility:(canonical_visibility_for_sig visibility_val) in
              Lwt_main.run (Relay.Relay_client.set_room_visibility_signed client
                ~alias ~room_id ~visibility:visibility_val
+               ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+               ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+               ~sig_:p.Relay_signed_ops.sig_b64)
+           in
+           print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
+  | "set-history-public" ->
+      let parsed_hp = match history_public with
+        | Some v ->
+            (match String.lowercase_ascii (String.trim v) with
+             | "true" | "1" | "yes" | "on" -> Some true
+             | "false" | "0" | "no" | "off" -> Some false
+             | _ -> None)
+        | None -> None
+      in
+      (match resolve_relay_url relay_url, room, alias, history_public, parsed_hp with
+       | None, _, _, _, _ ->
+           Printf.eprintf "%s%!" relay_url_required_error;
+           exit 1
+       | _, None, _, _, _ ->
+           Printf.eprintf "error: --room required for 'rooms set-history-public'.\n%!";
+           exit 1
+       | _, _, None, _, _ ->
+           Printf.eprintf "error: --alias required for 'rooms set-history-public'.\n%!";
+           exit 1
+       | _, _, _, None, _ ->
+           Printf.eprintf "error: --history-public true|false required for 'rooms set-history-public'.\n%!";
+           exit 1
+       | _, _, _, Some _, None ->
+           Printf.eprintf "error: --history-public must be 'true' or 'false'.\n%!";
+           exit 1
+       | Some url, Some room_id, Some alias, Some _, Some hp ->
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           (* The relay requires the caller be a room member AND a signed proof
+              whose signature covers the boolean — always sign. *)
+           let id = load_or_create_client_identity ~alias_hint:alias in
+           let result =
+             let p = Relay_signed_ops.sign_room_op_with_history_public id
+                       ~ctx:Relay.room_set_history_public_sign_ctx ~room_id ~alias
+                       ~history_public:hp in
+             Lwt_main.run (Relay.Relay_client.set_room_history_public_signed client
+               ~alias ~room_id ~history_public:hp
                ~identity_pk:p.Relay_signed_ops.identity_pk_b64
                ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
                ~sig_:p.Relay_signed_ops.sig_b64)

@@ -143,6 +143,8 @@ module Relay_client : sig
   val set_room_visibility : t -> alias:string -> room_id:string -> visibility:string -> Yojson.Safe.t Lwt.t
   val set_room_visibility_signed : t -> alias:string -> room_id:string -> visibility:string
     -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
+  val set_room_history_public_signed : t -> alias:string -> room_id:string -> history_public:bool
+    -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_prepare : t -> machine_ed25519_pubkey:string -> token:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_confirm : t -> token:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> Yojson.Safe.t Lwt.t
   (** B116: revocation carries a signed owner proof (machine or phone
@@ -805,6 +807,20 @@ end = struct
       ("alias", `String alias);
       ("room_id", `String room_id);
       ("visibility", `String visibility);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
+  (* B117: signed set_room_history_public. The relay requires the caller be a
+     room member AND a body-level Ed25519 proof whose signature covers the
+     boolean. *)
+  let set_room_history_public_signed t ~alias ~room_id ~history_public ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/set_room_history_public" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("history_public", `Bool history_public);
       ("identity_pk", `String identity_pk);
       ("ts", `String ts);
       ("nonce", `String nonce);

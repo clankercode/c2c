@@ -46,7 +46,13 @@ CREATE TABLE IF NOT EXISTS dead_letter (
 
 CREATE TABLE IF NOT EXISTS rooms (
     room_id TEXT PRIMARY KEY,
-    visibility TEXT NOT NULL DEFAULT 'public'
+    visibility TEXT NOT NULL DEFAULT 'public',
+    -- B117: history readability policy, persisted separately from visibility.
+    -- Default 1 (open) for compatible rollout; forced to 0 for gated/private
+    -- on creation and on any visibility downgrade. Migration for older DBs
+    -- (SqliteRelay.create) adds the column with DEFAULT 1 then clears it for
+    -- pre-existing gated/private rooms.
+    history_public INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS room_members (

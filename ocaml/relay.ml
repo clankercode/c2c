@@ -39,6 +39,9 @@ module InMemoryRelay : RELAY = struct
     rooms : (string, string list) Hashtbl.t;
     (* Layer 4 slice 5: per-room visibility and invited identity_pk list. *)
     room_visibility : (string, string) Hashtbl.t;  (* "public" | "unlisted" | "gated" | "private" *)
+    (* B117: per-room history readability policy, persisted separately from
+       visibility. Absent → default per visibility (history_public_of). *)
+    room_history_public : (string, bool) Hashtbl.t;
     room_invites : (string, string list) Hashtbl.t; (* b64url-nopad pks *)
     room_knocks : (string, room_knock list) Hashtbl.t;
     (* L3/5: operator allowlist (alias → identity_pk b64url-nopad). If an
@@ -102,10 +105,78 @@ module InMemoryRelay : RELAY = struct
        close_out oc
      with _ -> ())
 
+  (* B117: per-room metadata (visibility + history_public) persisted alongside
+     the history jsonl so a persist_dir-backed InMemoryRelay retains the
+     policy across a restart. Without this, a restart reloads room history but
+     defaults visibility/history_public, re-opening a deliberately-closed
+     room's history to anonymous readers. *)
+  let room_meta_json_path persist_dir room_id =
+    Filename.concat (Filename.concat persist_dir ("rooms/" ^ room_id)) "meta.json"
+
+  let write_room_meta persist_dir room_id ~visibility ~history_public =
+    let path = room_meta_json_path persist_dir room_id in
+    let dir = Filename.dirname path in
+    (try
+       C2c_io.mkdir_p dir;
+       let j = `Assoc [
+         ("visibility", `String visibility);
+         ("history_public", `Bool history_public);
+       ] in
+       let tmp = path ^ ".tmp" in
+       let oc = open_out tmp in
+       output_string oc (Yojson.Safe.to_string j);
+       close_out oc;
+       Sys.rename tmp path
+     with _ -> ())
+
+  let load_room_meta_from_disk persist_dir room_visibility room_history_public =
+    let rooms_dir = Filename.concat persist_dir "rooms" in
+    if not (Sys.file_exists rooms_dir) then ()
+    else begin
+      let entries = try Array.to_list (Sys.readdir rooms_dir) with Sys_error _ -> [] in
+      List.iter (fun room_id ->
+        let path = room_meta_json_path persist_dir room_id in
+        if Sys.file_exists path then begin
+          (* B117 (review P1): meta.json EXISTS but is unreadable / malformed /
+             missing a field ⇒ a deliberate policy was written but we can't
+             trust it, so fail CLOSED (member-only) rather than re-open a
+             possibly-closed history. A truly ABSENT meta.json is a legacy
+             pre-B117 room (no branch here) and keeps the AC-mandated
+             compatible-rollout default (public/unlisted → open). *)
+          let fail_closed () =
+            Hashtbl.replace room_history_public room_id false in
+          match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+          | None -> fail_closed ()
+          | Some j ->
+            (* Accept the persisted OPEN value only when BOTH fields are
+               present and well-formed. Any incompleteness (missing visibility,
+               missing/invalid history_public, unparseable file) fails closed —
+               symmetric, defence-in-depth against a partial/tampered write. *)
+            (* canonical_visibility returns None for any unrecognized string,
+               so a garbage/tampered visibility fails the both-fields-valid
+               check below and falls through to fail_closed. *)
+            let vis = match Yojson.Safe.Util.member "visibility" j with
+              | `String v -> canonical_visibility v | _ -> None in
+            let hp = match Yojson.Safe.Util.member "history_public" j with
+              | `Bool b -> Some b | _ -> None in
+            (match vis, hp with
+             | Some v, Some b ->
+               Hashtbl.replace room_visibility room_id v;
+               Hashtbl.replace room_history_public room_id b
+             | _ -> fail_closed ())
+        end
+      ) entries
+    end
+
   let create ?(dedup_window = 10000) ?persist_dir ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
     let room_history = Hashtbl.create 16 in
     (* Load persisted room history on startup *)
     Option.iter (fun d -> load_room_history_from_disk d room_history) persist_dir;
+    (* B117: reload persisted per-room metadata (visibility + history_public)
+       so the policy survives a restart on the persist_dir-backed path. *)
+    let room_visibility = Hashtbl.create 16 in
+    let room_history_public = Hashtbl.create 16 in
+    Option.iter (fun d -> load_room_meta_from_disk d room_visibility room_history_public) persist_dir;
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = Option.map (fun d -> Filename.concat d "relay-server-identity.json") persist_dir in
     let identity =
@@ -122,7 +193,8 @@ module InMemoryRelay : RELAY = struct
       inboxes = Hashtbl.create 16;
       dead_letter = Queue.create ();
       rooms = Hashtbl.create 16;
-      room_visibility = Hashtbl.create 16;
+      room_visibility;
+      room_history_public;
       room_invites = Hashtbl.create 16;
       room_knocks = Hashtbl.create 16;
       allowed_identities = Hashtbl.create 16;
@@ -589,6 +661,18 @@ module InMemoryRelay : RELAY = struct
   let add_dead_letter t msg =
     with_lock t (fun () -> Queue.add msg t.dead_letter)
 
+  (* B117: flush a room's visibility + history_public to disk (no-op without a
+     persist_dir). Call after any mutation of either field, under the lock. *)
+  let persist_room_meta t room_id =
+    match t.persist_dir with
+    | None -> ()
+    | Some d ->
+      let visibility = match Hashtbl.find_opt t.room_visibility room_id with
+        | Some v -> canonical_visibility_or_raw v | None -> "public" in
+      let history_public = match Hashtbl.find_opt t.room_history_public room_id with
+        | Some b -> b | None -> history_public_default_for_visibility visibility in
+      write_room_meta d room_id ~visibility ~history_public
+
   let join_room t ?(visibility = "public") ~alias ~room_id () =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
@@ -606,8 +690,14 @@ module InMemoryRelay : RELAY = struct
         (* Visibility is set only when the room is first created (this join is
            creating it). Later joiners passing a visibility have no effect —
            changes after creation go through the signed set_room_visibility op. *)
-        if not (Hashtbl.mem t.room_visibility room_id) then
+        if not (Hashtbl.mem t.room_visibility room_id) then begin
           Hashtbl.replace t.room_visibility room_id visibility;
+          (* B117: seed the history_public default from the creation
+             visibility (public/unlisted → true, gated/private → false). *)
+          Hashtbl.replace t.room_history_public room_id
+            (history_public_default_for_visibility visibility);
+          persist_room_meta t room_id
+        end;
         let already_member = List.mem alias members in
         let members' = if already_member then members else alias :: members in
         Hashtbl.replace t.rooms room_id members';
@@ -723,7 +813,28 @@ module InMemoryRelay : RELAY = struct
   let set_room_visibility t ~room_id ~visibility =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
-      Hashtbl.replace t.room_visibility room_id visibility)
+      Hashtbl.replace t.room_visibility room_id visibility;
+      (* B117: gated/private must always be member-only — atomically clear
+         history_public on a downgrade. public/unlisted preserve the current
+         stored value (never silently re-open a deliberately-closed room). *)
+      if visibility = "gated" || visibility = "private" then
+        Hashtbl.replace t.room_history_public room_id false;
+      persist_room_meta t room_id)
+
+  (* B117: default per visibility when no explicit value has been stored. *)
+  let history_public_of t ~room_id =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.room_history_public room_id with
+      | Some b -> b
+      | None ->
+        let visibility = match Hashtbl.find_opt t.room_visibility room_id with
+          | Some v -> canonical_visibility_or_raw v | None -> "public" in
+        history_public_default_for_visibility visibility)
+
+  let set_room_history_public t ~room_id ~history_public =
+    with_lock t (fun () ->
+      Hashtbl.replace t.room_history_public room_id history_public;
+      persist_room_meta t room_id)
 
   let invite_to_room t ~room_id ~identity_pk_b64 =
     with_lock t (fun () ->
@@ -1030,6 +1141,15 @@ module SqliteRelay : RELAY = struct
       Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN opaque_host_id TEXT NOT NULL DEFAULT ''" |> ignore;
     if not (sqlite_table_has_column conn ~table:"rooms" ~column:"visibility") then
       Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'" |> ignore;
+    (* B117: migrate older databases to the history_public column. Add it with
+       DEFAULT 1 so pre-existing public/unlisted rooms keep their prior
+       open-read behaviour, then force 0 for pre-existing gated/private rooms
+       (which were already member-only) so the invariant holds after upgrade.
+       Idempotent on fresh installs (the column is already in sqlite_ddl). *)
+    if not (sqlite_table_has_column conn ~table:"rooms" ~column:"history_public") then begin
+      Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN history_public INTEGER NOT NULL DEFAULT 1" |> ignore;
+      Sqlite3.exec conn "UPDATE rooms SET history_public = 0 WHERE visibility IN ('gated','private')" |> ignore
+    end;
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = if persist_dir = "" then None else Some (Filename.concat persist_dir "relay-server-identity.json") in
     let identity =
@@ -1902,9 +2022,14 @@ module SqliteRelay : RELAY = struct
       (* INSERT OR IGNORE: visibility is applied only on room creation; if the
          room already exists, its stored visibility is preserved. Post-creation
          changes go through the signed set_room_visibility op. *)
-      let room_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO rooms (room_id, visibility) VALUES (?, ?)" in
+      (* B117: seed history_public from the creation visibility. Only applied
+         on room creation (INSERT OR IGNORE); an existing room keeps its
+         stored policy. *)
+      let room_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO rooms (room_id, visibility, history_public) VALUES (?, ?, ?)" in
       Sqlite3.bind_text room_stmt 1 room_id |> ignore;
       Sqlite3.bind_text room_stmt 2 visibility |> ignore;
+      Sqlite3.bind_int room_stmt 3
+        (if history_public_default_for_visibility visibility then 1 else 0) |> ignore;
       Sqlite3.step room_stmt |> ignore;
       let mem_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO room_members (room_id, alias) VALUES (?, ?)" in
       Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
@@ -2232,9 +2357,51 @@ module SqliteRelay : RELAY = struct
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let stmt = Sqlite3.prepare conn "INSERT INTO rooms (room_id, visibility) VALUES (?, ?) ON CONFLICT(room_id) DO UPDATE SET visibility=excluded.visibility" in
+      (* B117: on a downgrade to gated/private, atomically clear history_public
+         (CASE forces 0). public/unlisted preserve the existing stored value
+         (rooms.history_public), never silently re-opening a closed room. On
+         insert (room absent) history_public seeds from the new visibility. *)
+      let stmt = Sqlite3.prepare conn
+        "INSERT INTO rooms (room_id, visibility, history_public) VALUES (?, ?, ?) \
+         ON CONFLICT(room_id) DO UPDATE SET visibility=excluded.visibility, \
+         history_public = CASE WHEN excluded.visibility IN ('gated','private') \
+         THEN 0 ELSE rooms.history_public END" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 visibility |> ignore;
+      Sqlite3.bind_int stmt 3
+        (if history_public_default_for_visibility visibility then 1 else 0) |> ignore;
+      Sqlite3.step stmt |> ignore
+    )
+
+  (* B117: read the persisted history_public policy; default per visibility
+     when the row/column is absent. *)
+  let history_public_of t ~room_id =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let stmt = Sqlite3.prepare conn "SELECT history_public, visibility FROM rooms WHERE room_id = ?" in
+      Sqlite3.bind_text stmt 1 room_id |> ignore;
+      let rc = Sqlite3.step stmt in
+      let result =
+        if rc = Rc.ROW then
+          match Sqlite3.Data.to_int (Sqlite3.column stmt 0) with
+          | Some n -> n <> 0
+          | None ->
+            (* Column NULL (shouldn't happen: NOT NULL) — fall back to the
+               per-visibility default. *)
+            let vis = try canonical_visibility_or_raw (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1)) with _ -> "public" in
+            history_public_default_for_visibility vis
+        else true (* unknown room: default open (matches empty-history read) *)
+      in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      result
+    )
+
+  let set_room_history_public t ~room_id ~history_public =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let stmt = Sqlite3.prepare conn "UPDATE rooms SET history_public = ? WHERE room_id = ?" in
+      Sqlite3.bind_int stmt 1 (if history_public then 1 else 0) |> ignore;
+      Sqlite3.bind_text stmt 2 room_id |> ignore;
       Sqlite3.step stmt |> ignore
     )
 
@@ -3458,8 +3625,58 @@ end = struct
             ("ok", `Bool true);
             ("room_id", `String room_id);
             ("visibility", `String visibility);
+            (* B117: report the effective history_public after the change
+               (a downgrade to gated/private atomically clears it). *)
+            ("history_public", `Bool (R.history_public_of relay ~room_id));
           ])
         end
+
+  (* B117 — set_room_history_public. Signed by any existing room member. The
+     boolean is bound into the canonical signed bytes (extra_signed_fields), so
+     an intermediary cannot flip it. gated/private rooms must always be
+     member-only: a request to set true on such a room is rejected. *)
+  let handle_set_room_history_public relay ~require_signed body =
+    let alias = get_string body "alias" in
+    let room_id = get_string body "room_id" in
+    match get_opt_bool body "history_public" with
+    | None ->
+      respond_bad_request (json_error_str err_bad_request
+        "history_public (boolean) is required")
+    | Some history_public ->
+    if alias = "" || room_id = "" then
+      respond_bad_request (json_error_str err_bad_request
+        "alias and room_id are required")
+    else
+      let hp_str = if history_public then "true" else "false" in
+      match verify_room_op_proof relay ~require_signed
+              ~sign_ctx:room_set_history_public_sign_ctx
+              ~extra_signed_fields:[ hp_str ]
+              ~room_id ~alias body with
+      | Error (code, msg) ->
+        if code = err_bad_request || code = relay_err_missing_proof_field then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        if not (R.is_room_member_alias relay ~room_id ~alias) then
+          respond_unauthorized (json_error_str relay_err_not_a_member
+            (Printf.sprintf "alias %S is not a member of room %S" alias room_id))
+        else
+          let visibility = R.room_visibility_of relay ~room_id in
+          let is_listed_open = visibility = "public" || visibility = "unlisted" in
+          if history_public && not is_listed_open then
+            respond_bad_request (json_error_str relay_err_history_public_gated
+              (Printf.sprintf
+                 "room %S is %s; history_public can only be true for public or unlisted rooms"
+                 room_id visibility))
+          else begin
+            R.set_room_history_public relay ~room_id ~history_public;
+            respond_ok (`Assoc [
+              ("ok", `Bool true);
+              ("room_id", `String room_id);
+              ("history_public", `Bool history_public);
+            ])
+          end
 
   (* L4/5 — invite / uninvite. Signed by any existing room member. *)
   let handle_room_invite_op relay ~require_signed ~sign_ctx ~op body =
@@ -3797,7 +4014,13 @@ end = struct
     else
       let limit = get_int body "limit" 50 in
       let visibility = R.room_visibility_of relay ~room_id in
-      let open_read = visibility = "public" || visibility = "unlisted" in
+      (* B117: anonymous open-read is now gated by BOTH visibility (listed +
+         open: public/unlisted) AND the persisted history_public policy. A
+         history-closed listed room is member-only, same as gated/private. *)
+      let open_read =
+        (visibility = "public" || visibility = "unlisted")
+        && R.history_public_of relay ~room_id
+      in
       let member_read =
         match verified_alias with
         | Some alias -> R.is_room_member_alias relay ~room_id ~alias
@@ -4746,6 +4969,12 @@ end = struct
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_set_room_visibility relay ~require_signed j)
+
+      | `POST, "/set_room_history_public" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_set_room_history_public relay ~require_signed j)
 
       | `POST, "/invite_room" ->
         let json = parse_body () in

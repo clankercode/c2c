@@ -319,6 +319,11 @@
  (libraries c2c_mcp alcotest yojson unix)
  (deps ../cli/c2c.exe))
 
+(test
+ (name test_relay_history_public)
+ (modules test_relay_history_public)
+ (libraries c2c_mcp alcotest base64 sqlite3 unix))
+
 ; #586 slice 3: canonical_alias deprecation flag gates the leaky repo@host form
 ; vs the opaque host id form on local-broker registrations.
 (test
