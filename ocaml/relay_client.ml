@@ -108,7 +108,12 @@ module Relay_client : sig
     -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_prepare : t -> machine_ed25519_pubkey:string -> token:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_confirm : t -> token:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> Yojson.Safe.t Lwt.t
-  val mobile_pair_revoke : t -> binding_id:string -> Yojson.Safe.t Lwt.t
+  (** B116: revocation carries a signed owner proof (machine or phone
+      Ed25519 key) — build it with [Relay_signed_ops.sign_binding_revoke].
+      A bare binding ID no longer authorizes deletion. *)
+  val mobile_pair_revoke :
+    t -> binding_id:string -> revoke_pk:string -> ts:string ->
+    nonce:string -> sig_b64:string -> Yojson.Safe.t Lwt.t
   val device_pair_init : t -> machine_ed25519_pubkey:string -> Yojson.Safe.t Lwt.t
   val device_pair_poll : t -> user_code:string -> Yojson.Safe.t Lwt.t
   val gc : t -> Yojson.Safe.t Lwt.t
@@ -598,8 +603,14 @@ end = struct
       ("phone_x25519_pubkey", `String phone_x25519_pubkey);
     ])
 
-  let mobile_pair_revoke t ~binding_id =
-    request t ~meth:`DELETE ~path:("/binding/" ^ binding_id) ()
+  let mobile_pair_revoke t ~binding_id ~revoke_pk ~ts ~nonce ~sig_b64 =
+    request t ~meth:`DELETE ~path:("/binding/" ^ binding_id)
+      ~body:(`Assoc [
+        ("revoke_pk", `String revoke_pk);
+        ("ts", `String ts);
+        ("nonce", `String nonce);
+        ("sig", `String sig_b64);
+      ]) ()
 
   let device_pair_init t ~machine_ed25519_pubkey =
     post t "/device-pair/init" (`Assoc [

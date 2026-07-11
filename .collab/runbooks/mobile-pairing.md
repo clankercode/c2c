@@ -22,7 +22,8 @@ c2c relay mobile-pair confirm \
 # Desktop: verify binding
 c2c relay status
 
-# Revoke (S5a revoke)
+# Revoke (S5a revoke; B116 — signs an owner proof with the machine
+# identity from ~/.config/c2c/identity.json)
 c2c relay mobile-pair revoke --binding-id BINDING_ID
 ```
 
@@ -51,7 +52,7 @@ Desktop                          Relay                        Phone
 - Token TTL is capped at 300 seconds server-side — clients should request shorter TTLs for safety
 - Tokens are one-time use — `prepare` can be called multiple times (rebind overwrites prior token)
 - `/mobile-pair/prepare` and `/mobile-pair` are self-auth (no Bearer token required)
-- Revocation (`DELETE /binding/<binding_id>`) requires no auth — binding_id is the secret
+- Revocation (`DELETE /binding/<binding_id>`) requires a **signed owner proof** (B116): the request body must carry `{revoke_pk, ts, nonce, sig}` signed by the binding's machine OR phone Ed25519 key. A bare binding ID neither deletes a binding nor reveals whether it exists.
 
 ---
 
@@ -262,18 +263,30 @@ c2c relay mobile-pair revoke \
   --binding-id my-phone-01
 ```
 
-**CLI equivalent**:
-```bash
-curl -X DELETE \
-  "https://your-relay.example.com/binding/my-phone-01"
+The CLI signs the revocation proof with the machine identity
+(`~/.config/c2c/identity.json` — the same key that minted the pairing
+token), so `c2c relay identity init` must have been run on this machine.
+
+**Owner proof required (B116)** — a bare binding ID is NOT authority.
+The DELETE body must carry a proof signed by the binding's machine or
+phone Ed25519 key:
+
+```json
+{
+  "revoke_pk": "<b64url Ed25519 pubkey (machine or phone key)>",
+  "ts": "<unix epoch seconds, string>",
+  "nonce": "<b64url random>",
+  "sig": "<b64url Ed25519 sig over c2c/v1/binding-revoke ⟂ binding_id ⟂ revoke_pk ⟂ ts ⟂ nonce>"
+}
 ```
 
-**No auth required** — `binding_id` is the secret. Anyone with the binding ID can revoke it.
+Constraints: `ts` must be within 300s of server time; each `(revoke_pk,
+nonce)` pair is single-use (replay cache).
 
 **Server behavior**:
-- Removes `binding_id` from observer bindings store
-- Returns `{"ok": true, "binding_id": "my-phone-01"}` if it existed
-- Returns `{"ok": false, "error": "not_found"}` if binding_id was already gone
+- Valid owner proof: removes `binding_id` from the observer bindings store, returns `{"ok": true, "binding_id": "my-phone-01"}`
+- Missing/invalid proof (bad shape, stale ts, replayed nonce, bad sig): `401` with a proof-specific `error_code` — checked before any store access
+- Valid signature but unknown binding OR non-owner key: uniform `401 {"error_code": "revoke_denied"}` — the same response either way, so revocation cannot be used as a binding-existence oracle
 
 ### 5.2 Rebind after revoke
 
@@ -332,14 +345,23 @@ Verify token signature, burn token, create binding.
 
 ### DELETE /binding/{binding_id}
 
-Revoke a binding. No auth required.
+Revoke a binding. Requires a signed owner proof in the JSON body
+(B116; see §5.1): `{revoke_pk, ts, nonce, sig}` signed by the binding's
+machine or phone Ed25519 key over
+`c2c/v1/binding-revoke ⟂ binding_id ⟂ revoke_pk ⟂ ts ⟂ nonce`.
 
 **Response 200**:
 ```json
 { "ok": true, "binding_id": "my-phone-01" }
 ```
 
-**Response 404**: binding not found
+**Response 401** `missing_proof_field` / `signature_invalid` /
+`timestamp_out_of_window` / `nonce_replay`: proof malformed, stale, or
+replayed (rejected before any store access).
+
+**Response 401** `revoke_denied`: binding unknown OR the proof key does
+not own it — deliberately the same response for both, so existence is
+never disclosed.
 
 ---
 

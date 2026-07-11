@@ -35,10 +35,11 @@ type route_class =
   | Anonymous_read  (* no credentials; handler may apply per-resource rules *)
   | Self_auth       (* bypasses the outer header-auth gate; what follows is
                        route-specific handler policy — some handlers verify
-                       a body/handshake proof, others accept legacy/unsigned
-                       requests or apply no check beyond the identifiers in
-                       the request (headerless poll/peek, bare-ID /binding/*
-                       revoke) *)
+                       a body/handshake proof (e.g. /binding/* revocation
+                       requires a signed owner proof, B116), others accept
+                       legacy/unsigned requests or apply no check beyond
+                       the identifiers in the request (headerless
+                       poll/peek) *)
   | Bearer_admin    (* operator Bearer token; Ed25519 rejected *)
   | Peer_ed25519    (* per-request Ed25519 signature from a bound identity *)
 
@@ -56,9 +57,10 @@ let anonymous_read_routes =
    Room mutation routes (join_room, leave_room, send_room, set_room_visibility,
    invite/uninvite/knock/knock-decision) similarly carry body-level Ed25519 proof via verify_room_op_proof
    and also accept an unsigned legacy path. Handler policy is route-specific
-   rather than uniform: some verify body/handshake proofs, some accept
-   legacy/unsigned requests, and some (headerless poll/peek, bare-ID
-   /binding/* revoke) apply no check beyond the request identifiers.
+   rather than uniform: some verify body/handshake proofs (mobile-pair
+   tokens; /binding/* revocation requires a signed machine/phone owner
+   proof since B116), some accept legacy/unsigned requests, and some
+   (headerless poll/peek) apply no check beyond the request identifiers.
    Bypassing header auth here lets signed AND unsigned bodies through. *)
 let self_auth_exact_routes =
   [ "/register"; "/join_room"; "/leave_room"; "/send_room";

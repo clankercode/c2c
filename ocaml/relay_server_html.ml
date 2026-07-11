@@ -46,13 +46,16 @@ operator Bearer token only (Ed25519 rejected): %s &middot;
 &mdash; these routes bypass the outer header-auth gate; what happens next
 is route-specific, not a uniform check. Some handlers verify real proofs
 (<code>/register</code>: body-level Ed25519 + optional PoW; signed
-room-op bodies; mobile-pairing tokens; WebSocket signature headers), but
+room-op bodies; mobile-pairing tokens; WebSocket signature headers;
+<code>/binding/*</code> revocation requires a signed owner proof from the
+binding's machine or phone key &mdash; a bare binding ID neither deletes a
+binding nor reveals whether it exists), but
 others still accept legacy/unsigned requests &mdash; sometimes with
 no check at all beyond the identifiers in the request: room ops when the
 operator has not set <code>C2C_REQUIRE_SIGNED_ROOM_OPS=1</code>,
-<code>/send_room</code> without an envelope,
+<code>/send_room</code> without an envelope, and
 <code>/poll_inbox</code>/<code>/peek_inbox</code> without an Ed25519
-header, and <code>/binding/*</code> revocation by bare binding ID.
+header.
 Routes: %s &middot;
 %s.<!-- /auth-class:self-auth --></li>
 </ul>

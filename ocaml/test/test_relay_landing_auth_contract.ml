@@ -318,10 +318,12 @@ let t_endpoint_table_methods () =
    drift (review finding, 2026-07-11): "no credentials" could become
    "credentials", or the self-auth section could (as the first cut of this
    slice did) claim every handler verifies a proof when poll/peek without an
-   Ed25519 header, /binding/* revocation, and legacy unsigned room ops do
-   not. Pin the load-bearing phrase of each class section, and ban the known
-   false claims page-wide. This is deliberately a lightweight textual
-   contract, not a semantic parser: it forces any meaning-changing edit to
+   Ed25519 header and legacy unsigned room ops do not. Pin the load-bearing
+   phrase of each class section, and ban the known false claims page-wide.
+   B116 note: /binding/* revocation now DOES verify a signed owner proof,
+   so the copy must say so and must no longer describe bare-ID revocation
+   as live behavior. This is deliberately a lightweight textual contract,
+   not a semantic parser: it forces any meaning-changing edit to
    consciously update this test in the same commit. *)
 
 let check_phrase sec_name phrase =
@@ -337,27 +339,38 @@ let t_section_semantics_pinned () =
   check_phrase "admin" "operator Bearer token only";
   check_phrase "admin" "Ed25519 rejected";
   (* self-auth must NOT claim a uniform handler check (iteration-2 review:
-     headerless poll/peek and bare-ID /binding/* apply no authorization at
-     all); it must describe an outer-gate bypass with route-specific policy
-     AND disclose the legacy/unauthenticated acceptance paths (B111:
-     unsigned room ops, envelope-less /send_room, headerless poll/peek,
-     bare-ID /binding/* revoke). *)
+     headerless poll/peek applies no authorization at all); it must
+     describe an outer-gate bypass with route-specific policy AND disclose
+     the remaining legacy/unauthenticated acceptance paths (B111: unsigned
+     room ops, envelope-less /send_room, headerless poll/peek). B116: the
+     copy must ALSO state that /binding/* revocation requires a signed
+     owner proof and does not disclose binding existence. *)
   check_phrase "self-auth" "bypass the outer header-auth gate";
   check_phrase "self-auth" "route-specific";
   check_phrase "self-auth" "no check at all";
   check_phrase "self-auth" "legacy";
-  check_phrase "self-auth" "C2C_REQUIRE_SIGNED_ROOM_OPS"
+  check_phrase "self-auth" "C2C_REQUIRE_SIGNED_ROOM_OPS";
+  check_phrase "self-auth" "signed owner proof";
+  check_phrase "self-auth" "reveals whether it exists"
 
 let t_no_blanket_proof_claim () =
   (* Iteration-1 copy claimed "the handler verifies a proof" for the whole
      self-auth class; iteration-2 copy claimed each handler "applies its own
-     authorization" — both false for headerless poll/peek and bare-ID
-     /binding/* revoke. Keep both phrases dead. *)
+     authorization" — both false for headerless poll/peek (and, before
+     B116, bare-ID /binding/* revoke). Keep both phrases dead. *)
   Alcotest.(check bool) "no blanket 'verifies a proof' claim" false
     (contains landing "verifies a proof");
   Alcotest.(check bool) "no blanket 'applies its own authorization' claim"
     false
     (contains landing "applies its own authorization")
+
+let t_no_bare_binding_id_revocation_claim () =
+  (* B116: bare-ID revocation is dead behavior — the copy must not describe
+     it as live. The current copy may only mention "bare binding ID" while
+     negating it ("neither deletes ... nor reveals"). *)
+  Alcotest.(check bool)
+    "no 'revocation by bare binding ID' claim" false
+    (contains landing "revocation by bare binding ID")
 
 let t_dev_mode_disclosed () =
   (* auth_decision preserves tokenless dev mode: peer and admin routes allow
@@ -444,6 +457,8 @@ let () =
             t_section_semantics_pinned;
           Alcotest.test_case "no blanket proof claim" `Quick
             t_no_blanket_proof_claim;
+          Alcotest.test_case "no bare-binding-ID revocation claim" `Quick
+            t_no_bare_binding_id_revocation_claim;
           Alcotest.test_case "dev mode disclosed" `Quick
             t_dev_mode_disclosed ] );
       ( "b111-copy-corrections",
