@@ -906,6 +906,57 @@ let auto_register_impl ~broker_root ?session_id_override () =
          CLAUDE_SESSION_ID from a running Claude Code session but has a
          different C2C_MCP_AUTO_REGISTER_ALIAS configured. *)
       let existing = Broker.list_registrations broker in
+      (* B119: hook auto-registrations are the identity authority for their
+         session_id. The SessionStart hooks (`c2c hook claude` / `c2c hook
+         codex`) register a fresh per-session alias (pid=None,
+         registered_by="claude-hook"/"codex-hook") and bake it into the
+         injected onboarding context BEFORE the MCP server connects. The MCP
+         env alias (C2C_MCP_AUTO_REGISTER_ALIAS) is static — picked once at
+         `c2c install` time — so registering it here would clobber the alias
+         the model was just told it has (identity split: DMs to the announced
+         alias bounce). Guards 1–4 all deliberately exclude pid=None rows
+         (#345 post-OOM semantics), so without this adoption the hook row
+         protects nothing and last-writer-wins.
+
+         Resolution: ADOPT the hook row's alias (the register below then
+         updates that row in place, upgrading it with our live pid, keys and
+         metadata while Broker.register preserves DND/confirmed state).
+         registered_by is carried over so SessionEnd hook cleanup still
+         recognises its own auto-registration.
+
+         Exception: when both client types are known and DIFFER (e.g. a
+         `kimi -p` child inheriting CLAUDE_SESSION_ID with its own MCP env),
+         this is inherited-session-id contamination, not the same agent —
+         skip registration entirely rather than adopt or clobber.
+
+         Pidless rows with registered_by=None (post-OOM zombies, cleared
+         managed rows) keep the #345 behavior: the fresh env alias wins. *)
+      let hook_identity_row =
+        List.find_opt
+          (fun reg ->
+            reg.session_id = session_id
+            && reg.pid = None
+            && (match reg.registered_by with
+                | Some "claude-hook" | Some "codex-hook" -> true
+                | _ -> false)
+            && Broker.alias_casefold reg.alias <> Broker.alias_casefold alias)
+          existing
+      in
+      let hook_client_type_conflict =
+        match hook_identity_row with
+        | None -> false
+        | Some reg ->
+            (match current_client_type (), reg.client_type with
+             | Some mine, Some theirs ->
+                 String.lowercase_ascii mine <> String.lowercase_ascii theirs
+             | _ -> false)
+      in
+      let alias, adopted_registered_by =
+        match hook_identity_row with
+        | Some reg when not hook_client_type_conflict ->
+            (reg.alias, reg.registered_by)
+        | _ -> (alias, None)
+      in
       (* Guard 1: if an alive registration already exists for this session_id
          with a DIFFERENT alias, skip — prevents session hijack when a child
          process inherits CLAUDE_SESSION_ID but has a different alias. *)
@@ -996,7 +1047,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
           existing
       in
       if not hijack_guard && not alias_occupied_guard && not same_session_alive_different_pid
-         && not same_pid_alive_different_session
+         && not same_pid_alive_different_session && not hook_client_type_conflict
       then begin
         let pid_start_time = Broker.capture_pid_start_time pid in
         let client_type = current_client_type () in
@@ -1024,7 +1075,11 @@ let auto_register_impl ~broker_root ?session_id_override () =
           ~tmux_location:(nonempty_env "C2C_TMUX_LOCATION")
           ~herdr_pane:(nonempty_env "HERDR_PANE_ID")
           ~herdr_socket:(nonempty_env "HERDR_SOCKET_PATH")
-          ~from_auto_gen:(auto_register_alias_from_auto_gen ()) ();
+          ~registered_by:adopted_registered_by
+          (* Adopted hook aliases were validated (incl. blocklist) at their
+             original registration — skip the user-supplied-only blocklist. *)
+          ~from_auto_gen:(Option.is_some adopted_registered_by
+                          || auto_register_alias_from_auto_gen ()) ();
         ignore (Broker.redeliver_dead_letter_for_session broker ~session_id ~alias)
       end else begin
         (* Log which guard triggered and by which registration, for debugging.
@@ -1050,7 +1105,18 @@ let auto_register_impl ~broker_root ?session_id_override () =
         log_guard_if_fired ~label:"same_pid_alive_different_session"
           ~reg_pid_fn:(fun _ -> pid)
           (fun reg -> reg.pid = pid && reg.session_id <> session_id && reg.alias <> alias
-                      && Broker.registration_is_alive reg)
+                      && Broker.registration_is_alive reg);
+        (if hook_client_type_conflict then
+           match hook_identity_row with
+           | Some reg ->
+               Printf.eprintf
+                 "[auto_register_startup] hook_client_type_conflict: skipping — \
+                  session_id=%S is owned by hook registration alias=%S \
+                  (client_type=%s) but this process declares client_type=%s\n%!"
+                 reg.session_id reg.alias
+                 (Option.value reg.client_type ~default:"?")
+                 (Option.value (current_client_type ()) ~default:"?")
+           | None -> ())
       end
   end)
 
