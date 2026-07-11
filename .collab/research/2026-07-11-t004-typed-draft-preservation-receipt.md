@@ -12,6 +12,33 @@
   operator's composer draft, preserves order, and honours T003's per-ack-state
   idempotency guarantee.
 
+## T007 implementation inputs (codex 0.144.1 — READ THIS before building auto-turn)
+
+These protocol facts were established live and T007's turn-completion tracking
+must be built on exactly them:
+
+1. **codex 0.144.1 emits NO `turn/started` notification.** Do not wait for one.
+2. **A turn's id is returned in the `turn/start` RESPONSE** (`result.turn.id`,
+   `result.turn.status == "inProgress"`). Capture it there.
+3. **Turn lifecycle is observed via `thread/status/changed`** (idle↔active), and
+   `thread/read` returns the current thread `status.type`. Completion = a
+   transition back to `idle`. `item/agentMessage/*` stream to the FRONTEND
+   (primary) client, not to a secondary observer ws.
+4. **An app-server `turn/start` CANNOT clobber the composer.** Proven live
+   (T007-precursor A): a turn started via the app-server while a non-empty
+   multibyte/multi-line draft is in the composer streams in the frontend AND
+   leaves the draft byte-exact, cursor stable, composer editable — because the
+   composer is frontend-only state the app-server never sees.
+5. **The app-server does NOT self-serialize turns.** Proven live (T007-precursor
+   B): a second `turn/start` while a turn is active is ACCEPTED as a distinct
+   turn id (queued/interleaved), not rejected. **T007 must own its own
+   queue-if-active policy** (gate on `thread/status/changed`/`thread/read`
+   status), or it will fire concurrent turns.
+6. **No composer-empty/draft signal exists** (T001) — auto-turn cannot know from
+   the protocol whether a human is mid-draft. Passive injection (T003) sidesteps
+   this by never starting a turn; any T007 auto-turn must adopt a policy that
+   tolerates the residual draft race (the draft itself always survives, per #4).
+
 ## Deliverable / harness
 
 - `scripts/codex-draft-preservation-e2e.py` — the T004 e2e harness. Modes:
