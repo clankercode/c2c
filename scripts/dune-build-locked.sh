@@ -27,9 +27,10 @@
 #                                 local) is not acquired within N seconds.
 #   C2C_DUNE_SKIP_GLOBAL_LOCK=1   Bypass the machine-wide gate (emergency).
 #   C2C_DUNE_LOCAL_LOCK_FILE      Override per-worktree lock path (tests).
-#   C2C_DUNE_CACHE                Value for DUNE_CACHE when DUNE_CACHE is
-#                                 unset (default: enabled). Set to "disabled"
-#                                 to opt out of the shared cache.
+#   C2C_DUNE_CACHE                Default for DUNE_CACHE when DUNE_CACHE is
+#                                 unset (default: enabled). The special value
+#                                 "disabled" always forces DUNE_CACHE=disabled
+#                                 (opt out even if DUNE_CACHE was pre-set).
 #   C2C_DUNE_CACHE_ROOT           Optional; exported as DUNE_CACHE_ROOT when
 #                                 DUNE_CACHE_ROOT is unset.
 #   C2C_DUNE_CACHE_STORAGE_MODE   Optional; exported as DUNE_CACHE_STORAGE_MODE
@@ -109,8 +110,10 @@ if [ -n "${C2C_DUNE_LOCK_WAIT_SECONDS:-}" ]; then
     flock_wait_args+=(-w "$C2C_DUNE_LOCK_WAIT_SECONDS")
 fi
 
-# Acquire one machine-wide slot on FD 9. Held for the lifetime of this
-# process (and inherited by the flock → watchdog → dune children).
+# Acquire one machine-wide slot on a dynamically allocated FD (bash {fd}).
+# Held for the lifetime of this process (inherited by flock → watchdog →
+# dune children). Released automatically when this shell exits.
+_C2C_DUNE_GLOBAL_FD=""
 acquire_global_slot() {
     if [ "${C2C_DUNE_SKIP_GLOBAL_LOCK:-0}" = "1" ]; then
         return 0
@@ -123,12 +126,19 @@ acquire_global_slot() {
         for i in $(seq 0 $((SLOTS - 1))); do
             lock="$GLOBAL_DIR/slot-$i.lock"
             : >> "$lock" 2>/dev/null || : > "$lock"
-            # Open/replace FD 9 on this slot file, then try non-blocking.
-            exec 9>>"$lock"
-            if flock -n 9; then
+            # Close any previous probe FD before opening the next slot file.
+            if [ -n "${_C2C_DUNE_GLOBAL_FD}" ]; then
+                # shellcheck disable=SC2094
+                exec {_C2C_DUNE_GLOBAL_FD}>&-
+                _C2C_DUNE_GLOBAL_FD=""
+            fi
+            # Dynamically allocate an FD so we do not clobber a caller's FD 9.
+            exec {_C2C_DUNE_GLOBAL_FD}>>"$lock"
+            if flock -n "${_C2C_DUNE_GLOBAL_FD}"; then
                 return 0
             fi
-            exec 9>&-
+            exec {_C2C_DUNE_GLOBAL_FD}>&-
+            _C2C_DUNE_GLOBAL_FD=""
         done
 
         if [ -n "${C2C_DUNE_LOCK_WAIT_SECONDS:-}" ]; then

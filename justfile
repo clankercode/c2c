@@ -236,7 +236,7 @@ codegen-role-templates:
 #
 # Global slot gate + per-worktree flock + shared Dune cache (B125).
 # See scripts/dune-build-locked.sh and
-# .collab/findings/2026-07-11T*-b125-parallel-dune-global-gate.md.
+# .collab/findings/2026-07-11T08-00-00Z-b125-parallel-dune-global-gate.md.
 # Tunables: C2C_DUNE_GLOBAL_SLOTS (default 1), C2C_DUNE_CACHE, DUNE_WATCHDOG_TIMEOUT.
 build: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
     scripts/dune-build-locked.sh build ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
