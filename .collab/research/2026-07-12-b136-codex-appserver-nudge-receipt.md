@@ -12,6 +12,9 @@ that already has app-server (or any managed) delivery.
 
 ## What changed
 
+- **`ocaml/c2c_codex_session.ml`** — `C2c_codex_session.run` now exports
+  `C2C_CODEX_MANAGED=1` before any codex child is spawned (the load-bearing
+  managed marker; see the codex-review P1 below).
 - **`ocaml/cli/c2c_hook_cmd.ml`** — runtime nudge in the `c2c hook codex`
   SessionStart path. New helpers: `codex_appserver_nudge_every`,
   `codex_appserver_nudge_count_path`, `read/write_codex_appserver_nudge_count`,
@@ -38,11 +41,21 @@ Nudge shows iff ALL hold:
    hold, so managed/app-server sessions never move it).
 
 `codex_session_is_managed` = OR of:
+- `C2C_CODEX_MANAGED` set — **load-bearing** marker exported by
+  `C2c_codex_session.run` before any codex child spawns (covers app-server AND
+  hook-fallback managed; race-free).
 - `C2C_CODEX_INGRESS_LIVE` set.
 - `C2C_MCP_SESSION_ID` set (non-empty).
 - `managed_sid_for_payload <> None` (payload thread maps to a managed c2c
-  instance — the hook already computes this for identity resolution).
+  instance via the legacy `config.json` mapping).
 - resolved session's registration has `client_type = "codex-app-server"`.
+
+The tip only emits after the incremented counter is durably written (I/O
+failure ⇒ no tip), and the read-modify-write is flock-serialized
+(`with_codex_nudge_lock`) so concurrent SessionStart hooks can't all emit. The
+lock **fails closed**: if the lockfile can't be opened or the lock can't be
+taken, no tip is shown (a lock failure can never let two hooks emit
+unserialized).
 
 ## Counter location
 
@@ -73,34 +86,43 @@ from the global `~/.codex/config.toml` hooks — do **not** see
 `C2C_CODEX_INGRESS_LIVE`. Gating on it alone would therefore FAIL the primary
 requirement (it would show the tip in app-server sessions).
 
-**Reliable markers the hook process CAN see**, used OR'd:
-- `managed_sid_for_payload` (thread→managed-instance mapping via
-  `C2c_mcp_helpers_post_broker.managed_session_id_from_codex_thread`, matched on
-  the instance `config.json` `codex_resume_target`/`resume_session_id`). This is
-  the primary "this is a managed session" signal and covers both app-server and
-  hook-fallback managed sessions. It is what the hook already uses for identity
-  resolution, so whenever the hook treats the session as managed
-  (`is_managed`), this is `Some`.
-- `C2C_MCP_SESSION_ID` — set by `c2c start` into the codex child env
-  (`ocaml/c2c_start.ml:3001`) and inherited by hook-fallback managed codex; the
-  definitive catch for that path.
-- registration `client_type = "codex-app-server"` — set by the app-server
-  delivery loop's `register()`; a further belt-and-suspenders check once the
-  registration lands.
-- `C2C_CODEX_INGRESS_LIVE` — kept as a cheap extra signal (covers any future
-  case where it does reach a hook, e.g. a hook fired from the launcher itself).
+**Codex review P1 (found by `/ccc-review-cx`, folded in):** the first cut gated
+only on the four "hook-visible" signals below, but a real `c2c new codex`
+app-server session defeats ALL of them: it persists `codex-session.json`
+(`C2c_codex_session.write_mapping`, line 144), NOT the legacy instance
+`config.json` that `managed_session_id_from_codex_thread` reads — so
+`managed_sid_for_payload` is None; its broker registration is under the managed
+instance *name*, not the payload thread id — so the `client_type` check misses;
+it sets no `C2C_MCP_SESSION_ID`; and `C2C_CODEX_INGRESS_LIVE` is exported only
+after the frontend spawns. Net: the hook resolves it as vanilla and would show
+the tip in genuine app-server sessions — a primary-requirement violation.
 
-This achieves the "truly vanilla only" refinement the spec hoped for: only a
-Codex session never launched via `c2c start/new codex` is eligible.
+**Fix (load-bearing):** `C2c_codex_session.run` now
+`Unix.putenv "C2C_CODEX_MANAGED" "1"` at the top, before any codex child (the
+app-server path's frontend/server env and the hook-fallback child's env are
+both later snapshots of `Unix.environment ()`), so every hook fired by a managed
+codex session inherits it. `codex_session_is_managed` treats it as the primary
+suppressor. Race-free and independent of config.json/registration timing.
 
-**Residual gap (documented, accepted):** a brand-new app-server thread in the
-narrow startup window where (a) its instance `config.json` thread mapping is not
-yet written AND (b) the delivery loop has not yet registered AND (c) no env
-marker is present, could slip through and see the throttled tip. This is a small
-race, the tip is throttled (default 1-in-5) and harmless (a correct suggestion,
-just redundant), and in practice the identity-resolution `is_managed` path makes
-`managed_sid_for_payload` `Some` in the common case. Not worth adding a
-synchronous barrier for.
+The other four signals are kept as defence-in-depth:
+- `C2C_CODEX_INGRESS_LIVE` — covers a hook fired from the launcher process.
+- `C2C_MCP_SESSION_ID` — hook-fallback managed codex child env
+  (`ocaml/c2c_start.ml:3001`).
+- `managed_sid_for_payload <> None` — legacy config.json thread mapping.
+- registration `client_type = "codex-app-server"`.
+
+This achieves the "truly vanilla only" refinement: only a Codex session never
+launched via `c2c start/new codex` is eligible.
+
+**Other codex-review fixes folded in:**
+- Counter I/O: `write_codex_appserver_nudge_count` now returns a bool; the tip
+  emits only when the incremented counter was durably written (an I/O failure
+  yields an empty tip, honouring "any error yields empty tip").
+- Concurrency: `with_codex_nudge_lock` flock-serializes the read-modify-write
+  so concurrent SessionStart hooks can't all read N-1, write N, and all emit.
+- Tests: added `C2C_CODEX_MANAGED`, `C2C_MCP_SESSION_ID`, and
+  `client_type=codex-app-server` suppression cases (the meaningful managed-gate
+  coverage now that `C2C_CODEX_MANAGED` is the load-bearing signal).
 
 ## Skill decision
 
@@ -112,10 +134,20 @@ cache files were modified.
 
 ## Verification
 
-- `just build` → RC 0.
-- `test_c2c_hook_codex.exe` → RC 0, 28/28 (7 new B136 tests + 21 existing).
+- `just build` → RC 0 (run in the worktree).
+- `test_c2c_hook_codex.exe` → RC 0, 31/31 (10 new B136 tests + 21 existing).
 - Tests assert: vanilla SessionStart shows tip (N=1); INGRESS_LIVE suppresses +
   counter not advanced; managed-thread mapping suppresses + counter not
-  advanced; absent on PostToolUse; throttle (N=2: absent 1st, present 2nd); off
-  switch (N=0: never shown, counter never written); additive to a real message
-  (both delivered).
+  advanced; `C2C_CODEX_MANAGED` suppresses + counter not advanced;
+  `C2C_MCP_SESSION_ID` suppresses; `client_type=codex-app-server` registration
+  suppresses; absent on PostToolUse; throttle (N=2: absent 1st, present 2nd);
+  off switch (N=0: never shown, counter never written); additive to a real
+  message (both delivered).
+- `just check` → RC 0.
+
+## Review
+
+`/ccc-review-cx` (codex, gpt-5.6-terra) — first pass FAIL with one P1 (app-server
+sessions can receive the tip) + three P2s (counter I/O can still show a tip on
+write failure; unlocked read-modify-write race; tests didn't cover the real
+managed-identity path). All folded in as described above; re-reviewed clean.

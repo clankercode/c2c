@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-11T15:58:36Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-11T16:23:24Z"
 complexity: medium
 created_at: "2026-07-11T15:52:53Z"
 depends_on: []
+duration_minutes: 24.811142846033334
 estimate_hours: 1
 id: B135
 priority: medium
 started_at: "2026-07-11T15:58:36Z"
-status: in_progress
+status: done
 tags: []
 title: Alias rename (claude-quip-neural-57cb → amaroo-coord) does not stick — peer still appears under old alias
-updated_at: "2026-07-11T15:58:36Z"
+updated_at: "2026-07-11T16:23:24Z"
 ---
 ## Symptom
 Peer `claude-quip-neural-57cb` renamed self to `amaroo-coord`, but continues to show up as `claude-quip-neural-57cb` (list / whoami / addressing / room membership still keyed to the old alias).

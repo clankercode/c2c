@@ -906,6 +906,65 @@ let test_appserver_nudge_suppressed_for_managed_thread () =
     check bool "managed thread does not advance counter" false
       (Sys.file_exists (nudge_count_path ctx)))
 
+let test_appserver_nudge_suppressed_when_codex_managed () =
+  with_ctx (fun ctx ->
+    (* C2C_CODEX_MANAGED=1 is exported by every managed codex launch
+       (`C2c_codex_session.run`) BEFORE the frontend/hooks spawn — this is the
+       load-bearing "app-server / managed session" signal. It must suppress the
+       nudge even though the session otherwise resolves as vanilla (fresh
+       generated alias, no thread mapping, no INGRESS_LIVE). *)
+    let sid = "codex-e2e-nudge-managed-env" in
+    let count_path = ctx.broker_root // "codex-appserver-nudge.count" in
+    let rc, stdout, _ =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "1")
+          ; ("C2C_CODEX_MANAGED", "1") ]
+        ctx ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    let context = match parse_context stdout with Some (_, c) -> c | None -> "" in
+    check bool "managed codex session not nudged" false
+      (contains ~haystack:context ~needle:nudge_needle);
+    check bool "managed codex session does not advance counter" false
+      (Sys.file_exists count_path))
+
+let test_appserver_nudge_suppressed_when_mcp_session_id () =
+  with_ctx (fun ctx ->
+    (* Hook-fallback managed codex inherits C2C_MCP_SESSION_ID from `c2c start`. *)
+    let sid = "codex-e2e-nudge-mcp-sid" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-nudge-mcp-sid");
+    let rc, stdout, _ =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "1")
+          ; ("C2C_MCP_SESSION_ID", sid) ]
+        ctx ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    let context = match parse_context stdout with Some (_, c) -> c | None -> "" in
+    check bool "C2C_MCP_SESSION_ID session not nudged" false
+      (contains ~haystack:context ~needle:nudge_needle))
+
+let test_appserver_nudge_suppressed_for_app_server_registration () =
+  with_ctx (fun ctx ->
+    (* A live app-server registration (client_type=codex-app-server) for the
+       resolved session must suppress the nudge. *)
+    let sid = "codex-e2e-nudge-appserver-reg" in
+    let b = broker ctx in
+    C2c_mcp.Broker.register b ~session_id:sid ~alias:"zz-codex-nudge-appserver"
+      ~pid:(Some (Unix.getpid ()))
+      ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time (Some (Unix.getpid ())))
+      ~client_type:(Some "codex-app-server") ();
+    let rc, stdout, _ =
+      run_hook ~extra_env:[ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "1") ] ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    let context = match parse_context stdout with Some (_, c) -> c | None -> "" in
+    check bool "codex-app-server registration not nudged" false
+      (contains ~haystack:context ~needle:nudge_needle))
+
 let test_appserver_nudge_absent_on_non_session_start () =
   with_ctx (fun ctx ->
     let sid = "codex-e2e-nudge-posttool" in
@@ -1027,6 +1086,12 @@ let () =
             test_appserver_nudge_suppressed_when_ingress_live
         ; test_case "B136 nudge suppressed for managed thread" `Quick
             test_appserver_nudge_suppressed_for_managed_thread
+        ; test_case "B136 nudge suppressed when C2C_CODEX_MANAGED" `Quick
+            test_appserver_nudge_suppressed_when_codex_managed
+        ; test_case "B136 nudge suppressed when C2C_MCP_SESSION_ID" `Quick
+            test_appserver_nudge_suppressed_when_mcp_session_id
+        ; test_case "B136 nudge suppressed for app-server registration" `Quick
+            test_appserver_nudge_suppressed_for_app_server_registration
         ; test_case "B136 nudge absent on non-SessionStart" `Quick
             test_appserver_nudge_absent_on_non_session_start
         ; test_case "B136 nudge throttled (N=2)" `Quick
