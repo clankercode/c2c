@@ -38,8 +38,13 @@ type harness = {
   mutable registers : int;
   mutable deregisters : int;
   mutable passes : int;
+  mutable degraded_events : bool list;       (* on_degraded calls, in order *)
   clock : float ref;
 }
+
+let mk_harness ?(steps = []) () =
+  { steps; registers = 0; deregisters = 0; passes = 0;
+    degraded_events = []; clock = ref 0.0 }
 
 let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     ?(broker_root = temp_broker_root ()) (h : harness) : DL.deps =
@@ -61,6 +66,7 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     register = (fun () -> h.registers <- h.registers + 1);
     deregister = (fun () -> h.deregisters <- h.deregisters + 1);
     on_pass = (fun _ -> h.passes <- h.passes + 1);
+    on_degraded = (fun b -> h.degraded_events <- h.degraded_events @ [ b ]);
     now = (fun () -> !(h.clock));
     sleep = (fun s -> h.clock := !(h.clock) +. s);
     poll_interval_s = 1.0;
@@ -71,7 +77,7 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
 
 let test_start_on_attach_and_drive () =
   let h = { steps = [ Ep.Sv_running; Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ];
-            registers = 0; deregisters = 0; passes = 0; clock = ref 0.0 } in
+            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
   let o = DL.run (mk_deps h) in
   Alcotest.(check int) "registered exactly once" 1 h.registers;
   Alcotest.(check int) "deregistered exactly once" 1 h.deregisters;
@@ -86,7 +92,7 @@ let test_stop_on_immediate_exit () =
   (* Frontend already exited: loop returns on the first step, having registered
      and (in the finally) deregistered — no orphaned loop. *)
   let h = { steps = [ Ep.Sv_frontend_exited ];
-            registers = 0; deregisters = 0; passes = 0; clock = ref 0.0 } in
+            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
   let o = DL.run (mk_deps h) in
   Alcotest.(check int) "registered" 1 h.registers;
   Alcotest.(check int) "deregistered on exit" 1 h.deregisters;
@@ -97,7 +103,7 @@ let test_stop_on_immediate_exit () =
 
 let test_server_death_terminal () =
   let h = { steps = [ Ep.Sv_running; Ep.Sv_server_died ];
-            registers = 0; deregisters = 0; passes = 0; clock = ref 0.0 } in
+            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
   let o = DL.run (mk_deps h) in
   Alcotest.(check bool) "server death is terminal" true (o.DL.final = Ep.Sv_server_died);
   Alcotest.(check int) "deregistered" 1 h.deregisters;
@@ -107,7 +113,7 @@ let test_degraded_no_thread () =
   (* Frontend never loads a thread: keep supervising, never deliver, mark
      degraded. The session is still reaped on exit. *)
   let h = { steps = [ Ep.Sv_running; Ep.Sv_running; Ep.Sv_offline ];
-            registers = 0; deregisters = 0; passes = 0; clock = ref 0.0 } in
+            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
   let o = DL.run (mk_deps ~discover:(fun () -> []) h) in
   Alcotest.(check (option string)) "no thread discovered" None o.DL.thread_id;
   Alcotest.(check bool) "degraded" true o.DL.degraded;
@@ -118,7 +124,7 @@ let test_degraded_no_thread () =
 let test_max_wall_bound () =
   (* An always-running supervisor must still return under the wall-clock bound
      (sleep advances the fake clock), deregistering cleanly. *)
-  let h = { steps = []; registers = 0; deregisters = 0; passes = 0; clock = ref 0.0 } in
+  let h = { steps = []; registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
   (* steps=[] means supervise_step returns Sv_frontend_exited by default — force
      an always-running supervisor via a custom step fn. *)
   let broker_root = temp_broker_root () in
@@ -134,13 +140,29 @@ let test_discover_throttle_reused_after_found () =
      stops probing thread/loaded/list). *)
   let discover_calls = ref 0 in
   let h = { steps = [ Ep.Sv_running; Ep.Sv_running; Ep.Sv_running; Ep.Sv_offline ];
-            registers = 0; deregisters = 0; passes = 0; clock = ref 0.0 } in
+            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
   let base = mk_deps h in
   let deps = { base with DL.discover_threads =
       (fun () -> incr discover_calls; [ "thread-x" ]) } in
   let o = DL.run deps in
   Alcotest.(check (option string)) "found thread" (Some "thread-x") o.DL.thread_id;
   Alcotest.(check int) "discovery attempted exactly once (stops after found)" 1 !discover_calls
+
+let test_on_degraded_transition_healthy () =
+  (* B138: on_degraded is fired [true] at loop start and flipped to [false] the
+     moment a thread is discovered — exactly one healthy transition. *)
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ] () in
+  let _ = DL.run (mk_deps h) in
+  Alcotest.(check (list bool)) "degraded true at start, then false on thread load"
+    [ true; false ] h.degraded_events
+
+let test_on_degraded_stays_degraded_no_thread () =
+  (* B138: a session that never loads a thread fires [true] once and never
+     flips — the persisted signal stays degraded. *)
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_offline ] () in
+  let _ = DL.run (mk_deps ~discover:(fun () -> []) h) in
+  Alcotest.(check (list bool)) "only the initial degraded=true, never healthy"
+    [ true ] h.degraded_events
 
 let () =
   let open Alcotest in
@@ -151,5 +173,7 @@ let () =
         ; test_case "server death is terminal" `Quick test_server_death_terminal
         ; test_case "degraded when no thread loaded" `Quick test_degraded_no_thread
         ; test_case "wall-clock bound returns + deregisters" `Quick test_max_wall_bound
-        ; test_case "discovery stops after found" `Quick test_discover_throttle_reused_after_found ] )
+        ; test_case "discovery stops after found" `Quick test_discover_throttle_reused_after_found
+        ; test_case "on_degraded transitions true->false on thread load" `Quick test_on_degraded_transition_healthy
+        ; test_case "on_degraded stays true when no thread loads" `Quick test_on_degraded_stays_degraded_no_thread ] )
     ]

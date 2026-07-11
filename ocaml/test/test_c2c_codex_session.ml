@@ -181,6 +181,28 @@ let test_mapping_roundtrip () =
           Alcotest.(check (option string)) "thread_id" m.thread_id m2.thread_id)
 
 (* ------------------------------------------------------------------ *)
+(* Deliver-loop degraded signal persistence (B138)                     *)
+(* ------------------------------------------------------------------ *)
+
+let test_delivery_degraded_roundtrip () =
+  with_tmp_dir (fun dir ->
+      (* No signal file yet → None (callers must NOT downgrade). *)
+      Alcotest.(check (option bool)) "absent signal reads as None"
+        None (S.delivery_degraded_of_instance ~instance_dir:dir);
+      (* Degraded at loop start. *)
+      S.write_delivery_degraded ~instance_dir:dir true;
+      Alcotest.(check (option bool)) "persisted degraded=true"
+        (Some true) (S.delivery_degraded_of_instance ~instance_dir:dir);
+      (* Flip to healthy once a thread loads — later write wins (self-heals a
+         reused instance dir). *)
+      S.write_delivery_degraded ~instance_dir:dir false;
+      Alcotest.(check (option bool)) "flip to healthy persists degraded=false"
+        (Some false) (S.delivery_degraded_of_instance ~instance_dir:dir);
+      (* File name is the documented path so doctor/health read the same place. *)
+      Alcotest.(check bool) "status file exists at the documented path" true
+        (Sys.file_exists (S.delivery_status_path ~instance_dir:dir)))
+
+(* ------------------------------------------------------------------ *)
 (* Lifecycle glue: alias published only after start succeeds; graceful *)
 (* fallback on a startup diagnostic.                                   *)
 (* ------------------------------------------------------------------ *)
@@ -459,6 +481,8 @@ let () =
         [ test_case "mapping" `Quick test_status_mapping ] )
     ; ( "mapping",
         [ test_case "roundtrip" `Quick test_mapping_roundtrip ] )
+    ; ( "delivery-degraded",
+        [ test_case "persist + read + flip roundtrip" `Quick test_delivery_degraded_roundtrip ] )
     ; ( "lifecycle-glue",
         [ test_case "default (no flag) engages app-server, publishes after start"
             `Quick test_glue_happy_publishes_after_start

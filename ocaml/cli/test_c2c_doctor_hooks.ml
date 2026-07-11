@@ -264,7 +264,7 @@ let label d = C2c_doctor_hooks.codex_delivery_mode_label d.C2c_doctor_hooks.cd_m
 
 let test_delivery_app_server_healthy () =
   let d =
-    classify ~app_server_status:(Some "online-attached") ~hooks_installed:true
+    classify ~degraded:false ~app_server_status:(Some "online-attached") ~hooks_installed:true
       ~wake_target:false
   in
   check string "mode" "app-server" (label d);
@@ -286,18 +286,51 @@ let test_delivery_app_server_healthy () =
      the wake pane-typing path is only the hook fallback used when app-server is
      unavailable. *)
   let dw =
-    classify ~app_server_status:(Some "online-attached") ~hooks_installed:true
+    classify ~degraded:false ~app_server_status:(Some "online-attached") ~hooks_installed:true
       ~wake_target:true
   in
   check bool "online-attached app-server delivery is never input-injecting" false
     dw.C2c_doctor_hooks.cd_input_injecting
+
+let test_delivery_app_server_degraded () =
+  (* B138: online-attached BUT the deliver loop never loaded a thread → the
+     transport is up but nothing actually delivers. Must NOT report the healthy
+     app-server LIVE label; reports the distinct degraded classification with an
+     actionable remediation. *)
+  let d =
+    classify ~degraded:true ~app_server_status:(Some "online-attached")
+      ~hooks_installed:true ~wake_target:false
+  in
+  check string "degraded online-attached reports the distinct label"
+    "app-server (degraded: no thread loaded)" (label d);
+  check bool "summary says NOT being delivered / no thread loaded" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "no Codex thread"
+     && C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "NOT");
+  (match d.C2c_doctor_hooks.cd_remediation with
+   | None -> fail "degraded app-server must carry an actionable remediation"
+   | Some fix ->
+       check bool "remediation says open/focus a thread in the TUI" true
+         (C2c_doctor_hooks.contains fix "thread"
+          && C2c_doctor_hooks.contains fix "TUI"));
+  check bool "degraded app-server delivery is data-path, not input-injecting"
+    false d.C2c_doctor_hooks.cd_input_injecting;
+  (* Healthy path is NOT weakened: a thread-loaded online-attached session still
+     reports LIVE app-server. *)
+  let healthy =
+    classify ~degraded:false ~app_server_status:(Some "online-attached")
+      ~hooks_installed:true ~wake_target:false
+  in
+  check string "thread-loaded online-attached still reports LIVE app-server"
+    "app-server" (label healthy);
+  check bool "healthy path carries no remediation" true
+    (healthy.C2c_doctor_hooks.cd_remediation = None)
 
 let test_delivery_app_server_starting_not_overclaimed () =
   (* A starting unit has no attached remote TUI yet — it must NOT get the
      healthy app-server label; the session's actual delivery is the hook
      fallback, annotated with the starting state + an actionable next step. *)
   let d =
-    classify ~app_server_status:(Some "starting") ~hooks_installed:true
+    classify ~degraded:false ~app_server_status:(Some "starting") ~hooks_installed:true
       ~wake_target:false
   in
   check string "starting reports the live hook fallback, not app-server"
@@ -311,14 +344,14 @@ let test_delivery_app_server_starting_not_overclaimed () =
          (C2c_doctor_hooks.contains fix "c2c dev diag"));
   (* Without hooks, a starting unit means no live delivery path at all. *)
   let d2 =
-    classify ~app_server_status:(Some "starting") ~hooks_installed:false
+    classify ~degraded:false ~app_server_status:(Some "starting") ~hooks_installed:false
       ~wake_target:false
   in
   check string "starting without hooks → unavailable" "unavailable" (label d2)
 
 let test_delivery_app_server_unavailable () =
   let d =
-    classify ~app_server_status:(Some "failed-startup") ~hooks_installed:true
+    classify ~degraded:false ~app_server_status:(Some "failed-startup") ~hooks_installed:true
       ~wake_target:false
   in
   check string "mode" "app-server-unavailable" (label d);
@@ -334,7 +367,7 @@ let test_delivery_app_server_unavailable () =
   (* failed-startup with a surviving hooks+wake path must NOT hide that the
      live delivery types into the pane (review round 3, F4). *)
   let dw =
-    classify ~app_server_status:(Some "failed-startup") ~hooks_installed:true
+    classify ~degraded:false ~app_server_status:(Some "failed-startup") ~hooks_installed:true
       ~wake_target:true
   in
   check string "mode (wake fallback)" "app-server-unavailable" (label dw);
@@ -344,7 +377,7 @@ let test_delivery_app_server_unavailable () =
     (C2c_doctor_hooks.contains dw.C2c_doctor_hooks.cd_summary "TYPES");
   (* Same failure without hooks: no delivery path at all, still actionable. *)
   let d2 =
-    classify ~app_server_status:(Some "failed-startup") ~hooks_installed:false
+    classify ~degraded:false ~app_server_status:(Some "failed-startup") ~hooks_installed:false
       ~wake_target:false
   in
   check string "mode (no hooks)" "app-server-unavailable" (label d2);
@@ -353,7 +386,7 @@ let test_delivery_app_server_unavailable () =
        "no codex delivery path")
 
 let test_delivery_hooks_wake_is_input_injecting () =
-  let d = classify ~app_server_status:None ~hooks_installed:true ~wake_target:true in
+  let d = classify ~degraded:false ~app_server_status:None ~hooks_installed:true ~wake_target:true in
   check string "mode" "hooks+wake" (label d);
   check bool "input-injecting flagged" true d.C2c_doctor_hooks.cd_input_injecting;
   check bool "summary is truthful about typing into the pane" true
@@ -365,7 +398,7 @@ let test_delivery_hooks_wake_is_input_injecting () =
          (C2c_doctor_hooks.contains fix "app-server transport"))
 
 let test_delivery_hooks_only () =
-  let d = classify ~app_server_status:None ~hooks_installed:true ~wake_target:false in
+  let d = classify ~degraded:false ~app_server_status:None ~hooks_installed:true ~wake_target:false in
   check string "mode" "hooks" (label d);
   check bool "not input-injecting" false d.C2c_doctor_hooks.cd_input_injecting;
   check bool "summary says idle sessions wait for the next turn" true
@@ -373,7 +406,7 @@ let test_delivery_hooks_only () =
   check bool "remediation present" true (d.C2c_doctor_hooks.cd_remediation <> None)
 
 let test_delivery_unavailable () =
-  let d = classify ~app_server_status:None ~hooks_installed:false ~wake_target:false in
+  let d = classify ~degraded:false ~app_server_status:None ~hooks_installed:false ~wake_target:false in
   check string "mode" "unavailable" (label d);
   check (option string) "remediation is the install command"
     (Some "run `c2c install codex`") d.C2c_doctor_hooks.cd_remediation
@@ -381,18 +414,18 @@ let test_delivery_unavailable () =
 let test_delivery_offline_record_falls_back_to_hooks () =
   (* An ended app-server unit is not a live delivery path — classify by what
      actually delivers now. *)
-  let d = classify ~app_server_status:(Some "offline") ~hooks_installed:true
+  let d = classify ~degraded:false ~app_server_status:(Some "offline") ~hooks_installed:true
       ~wake_target:false in
   check string "offline record → hooks" "hooks" (label d)
 
 let test_delivery_never_claims_instant () =
   let all =
-    [ classify ~app_server_status:(Some "online-attached") ~hooks_installed:true ~wake_target:false
-    ; classify ~app_server_status:(Some "starting") ~hooks_installed:true ~wake_target:false
-    ; classify ~app_server_status:(Some "failed-startup") ~hooks_installed:true ~wake_target:false
-    ; classify ~app_server_status:None ~hooks_installed:true ~wake_target:true
-    ; classify ~app_server_status:None ~hooks_installed:true ~wake_target:false
-    ; classify ~app_server_status:None ~hooks_installed:false ~wake_target:false
+    [ classify ~degraded:false ~app_server_status:(Some "online-attached") ~hooks_installed:true ~wake_target:false
+    ; classify ~degraded:false ~app_server_status:(Some "starting") ~hooks_installed:true ~wake_target:false
+    ; classify ~degraded:false ~app_server_status:(Some "failed-startup") ~hooks_installed:true ~wake_target:false
+    ; classify ~degraded:false ~app_server_status:None ~hooks_installed:true ~wake_target:true
+    ; classify ~degraded:false ~app_server_status:None ~hooks_installed:true ~wake_target:false
+    ; classify ~degraded:false ~app_server_status:None ~hooks_installed:false ~wake_target:false
     ]
   in
   List.iter
@@ -408,9 +441,10 @@ let test_delivery_report_structure () =
   let rep =
     C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true
       ~instances:
-        [ ("cx-live", Some "online-attached", false)
-        ; ("cx-broken", Some "failed-startup", false)
-        ; ("cx-tmux", None, true)
+        [ ("cx-live", Some "online-attached", false, false)
+        ; ("cx-degraded", Some "online-attached", false, true)
+        ; ("cx-broken", Some "failed-startup", false, false)
+        ; ("cx-tmux", None, true, false)
         ]
       ()
   in
@@ -423,6 +457,7 @@ let test_delivery_report_structure () =
   in
   check (list (pair string string)) "per-instance modes distinguished"
     [ ("cx-live", "app-server")
+    ; ("cx-degraded", "app-server (degraded: no thread loaded)")
     ; ("cx-broken", "app-server-unavailable")
     ; ("cx-tmux", "hooks+wake")
     ]
@@ -437,7 +472,8 @@ let test_delivery_report_structure () =
       check bool (Printf.sprintf "json mentions %s" needle) true
         (C2c_doctor_hooks.contains json needle))
     [ "app-server-unavailable"; "hooks+wake"; "input_injecting";
-      "app_server_status"; "remediation" ];
+      "app_server_status"; "remediation";
+      "app-server (degraded: no thread loaded)" ];
   List.iter
     (fun forbidden ->
       check bool (Printf.sprintf "json never contains %s" forbidden) false
@@ -465,6 +501,7 @@ let () =
         ] )
     ; ( "codex-delivery-mode"
       , [ test_case "app-server healthy" `Quick test_delivery_app_server_healthy
+        ; test_case "app-server degraded (no thread loaded)" `Quick test_delivery_app_server_degraded
         ; test_case "starting is not overclaimed as app-server" `Quick test_delivery_app_server_starting_not_overclaimed
         ; test_case "app-server unavailable + remediation" `Quick test_delivery_app_server_unavailable
         ; test_case "hooks+wake is input-injecting" `Quick test_delivery_hooks_wake_is_input_injecting

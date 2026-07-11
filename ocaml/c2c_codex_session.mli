@@ -78,6 +78,24 @@ val status_of_app_server_state : C2c_codex_app_server.state -> status
     app-server-backed session was ever recorded for that instance. *)
 val status_of_instance : instance_dir:string -> status option
 
+(* ------------------------- deliver-loop health ---------------------------- *)
+
+(** [delivery_status_path ~instance_dir] is the JSON file the deliver loop
+    persists its degraded (no-thread-loaded) signal into (B138). *)
+val delivery_status_path : instance_dir:string -> string
+
+(** [write_delivery_degraded ~instance_dir degraded] persists the deliver-loop
+    degraded signal (best-effort; never raises). [true] = the app-server unit is
+    supervised but no frontend thread has loaded, so nothing is actually
+    delivered; [false] = a thread loaded and delivery is live. *)
+val write_delivery_degraded : instance_dir:string -> bool -> unit
+
+(** [delivery_degraded_of_instance ~instance_dir] reads the persisted signal.
+    [None] when no signal file exists (older session / non-app-server instance /
+    not yet written) — callers treat it as "not known degraded" and do NOT
+    downgrade a healthy classification. Total. *)
+val delivery_degraded_of_instance : instance_dir:string -> bool option
+
 (* --------------------------- identity mapping ----------------------------- *)
 
 type mapping = {

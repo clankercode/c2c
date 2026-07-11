@@ -102,6 +102,7 @@ and codex_result = {
 
 type codex_delivery_mode =
   | Cd_app_server
+  | Cd_app_server_degraded  (* online-attached but the deliver loop never loaded a thread (B138) *)
   | Cd_app_server_unavailable
   | Cd_hooks_wake
   | Cd_hooks_only
@@ -127,6 +128,7 @@ type codex_delivery_report = {
 
 let codex_delivery_mode_label = function
   | Cd_app_server -> "app-server"
+  | Cd_app_server_degraded -> "app-server (degraded: no thread loaded)"
   | Cd_app_server_unavailable -> "app-server-unavailable"
   | Cd_hooks_wake -> "hooks+wake"
   | Cd_hooks_only -> "hooks"
@@ -173,16 +175,39 @@ let classify_codex_hook_fallback ~(hooks_installed : bool)
       cd_input_injecting = false }
 
 let classify_codex_delivery ~(app_server_status : string option)
-    ~(hooks_installed : bool) ~(wake_target : bool) : codex_delivery =
+    ~(degraded : bool) ~(hooks_installed : bool) ~(wake_target : bool)
+    : codex_delivery =
   match app_server_status with
+  | Some "online-attached" when degraded ->
+      (* B138: the app-server transport is attached (authenticated loopback,
+         live pid) BUT the managed deliver loop is DEGRADED — it registered and
+         supervises the session yet never discovered a frontend thread to inject
+         into, so inbound c2c mail is NOT actually being delivered this session.
+         This is NOT a healthy LIVE path: report it distinctly with actionable
+         remediation instead of overclaiming app-server LIVE. Persisted signal
+         written by C2c_codex_deliver_loop / run_delivery_loop. *)
+      { cd_mode = Cd_app_server_degraded;
+        cd_summary =
+          "app-server remote TUI is attached (transport online-attached over the \
+           authenticated loopback boundary) BUT the managed delivery loop is \
+           DEGRADED: no Codex thread has ever loaded, so the loop has nothing to \
+           inject into and inbound c2c mail is NOT being auto-delivered this \
+           session (the session is still supervised) (B138)";
+        cd_remediation =
+          Some "the app-server is attached but no Codex thread has loaded; open \
+                or focus a thread in the remote TUI so the delivery loop can \
+                discover it and inject inbound mail (`c2c dev diag <name>` shows \
+                the live loop state)";
+        cd_input_injecting = false }
   | Some "online-attached" ->
       (* Healthy TRANSPORT + LIVE delivery (B131). The remote TUI is attached
          over the authenticated loopback boundary AND the managed supervisor now
          drives the proven arrival-time data-injection + gated auto-turn loop
-         against this session. Inbound c2c mail is auto-delivered (draft-safe
-         data injection) and eligible LOCAL mail auto-turns when the thread is
-         idle and DND is off — no hook boundary needed. This is a healthy path;
-         no remediation. The delivery is data-injection, never input-injection. *)
+         against this session, with a frontend thread loaded (not degraded).
+         Inbound c2c mail is auto-delivered (draft-safe data injection) and
+         eligible LOCAL mail auto-turns when the thread is idle and DND is off —
+         no hook boundary needed. This is a healthy path; no remediation. The
+         delivery is data-injection, never input-injection. *)
       { cd_mode = Cd_app_server;
         cd_summary =
           "healthy app-server remote TUI (transport online-attached over the \
@@ -226,10 +251,12 @@ let classify_codex_delivery ~(app_server_status : string option)
       classify_codex_hook_fallback ~hooks_installed ~wake_target
 
 (* Read-only live gather of managed codex instances:
-   (name, app_server_status, wake_target). Total — any failure reads as an
-   empty list / absent field. Never loads endpoints or tokens (the T006
-   status mapping only exposes the lifecycle label). *)
-let live_codex_instances () : (string * string option * bool) list =
+   (name, app_server_status, wake_target, degraded). Total — any failure reads
+   as an empty list / absent field. Never loads endpoints or tokens (the T006
+   status mapping only exposes the lifecycle label). [degraded] (B138) is the
+   persisted deliver-loop signal: true iff the loop is supervising but never
+   loaded a thread; false/absent → not known degraded. *)
+let live_codex_instances () : (string * string option * bool * bool) list =
   try
     let base = C2c_start.instances_dir in
     if not (Sys.file_exists base && Sys.is_directory base) then []
@@ -238,11 +265,9 @@ let live_codex_instances () : (string * string option * bool) list =
       |> List.filter_map (fun name ->
            match C2c_start.load_config_opt name with
            | Some cfg when cfg.C2c_start.client = "codex" ->
+               let instance_dir = C2c_start.instance_dir name in
                let app_status =
-                 match
-                   C2c_codex_session.status_of_instance
-                     ~instance_dir:(C2c_start.instance_dir name)
-                 with
+                 match C2c_codex_session.status_of_instance ~instance_dir with
                  | Some st -> Some (C2c_codex_session.status_to_string st)
                  | None -> None
                in
@@ -250,12 +275,20 @@ let live_codex_instances () : (string * string option * bool) list =
                  try C2c_start.codex_wake_target_registered ~name ()
                  with _ -> false
                in
-               Some (name, app_status, wake)
+               let degraded =
+                 match
+                   (try C2c_codex_session.delivery_degraded_of_instance ~instance_dir
+                    with _ -> None)
+                 with
+                 | Some b -> b
+                 | None -> false
+               in
+               Some (name, app_status, wake, degraded)
            | _ -> None)
   with _ -> []
 
 let codex_delivery_report ?hooks_installed
-    ?(instances : (string * string option * bool) list option) () :
+    ?(instances : (string * string option * bool * bool) list option) () :
     codex_delivery_report =
   let hooks_installed =
     match hooks_installed with
@@ -266,15 +299,15 @@ let codex_delivery_report ?hooks_installed
     match instances with Some l -> l | None -> live_codex_instances ()
   in
   { cdr_default =
-      classify_codex_delivery ~app_server_status:None ~hooks_installed
-        ~wake_target:false;
+      classify_codex_delivery ~app_server_status:None ~degraded:false
+        ~hooks_installed ~wake_target:false;
     cdr_instances =
       List.map
-        (fun (name, app_status, wake) ->
+        (fun (name, app_status, wake, degraded) ->
           { ci_name = name;
             ci_app_server_status = app_status;
             ci_delivery =
-              classify_codex_delivery ~app_server_status:app_status
+              classify_codex_delivery ~app_server_status:app_status ~degraded
                 ~hooks_installed ~wake_target:wake })
         instances }
 

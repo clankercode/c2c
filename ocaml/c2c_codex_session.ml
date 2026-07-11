@@ -131,6 +131,48 @@ let status_of_instance ~(instance_dir : string) : status option =
            else Some Offline
        | _ -> Some st)
 
+(* ------------------------- deliver-loop health ---------------------------- *)
+
+(* B138: the deliver loop's [degraded] flag (no frontend thread ever loaded, so
+   nothing actually delivers) is runtime-only. Persist it into the instance dir
+   so `c2c doctor`/`c2c health` — which read persisted state, not the live loop —
+   can tell a healthy online-attached session from one whose delivery is
+   degraded, instead of overclaiming LIVE app-server delivery for both. *)
+let delivery_status_path ~instance_dir = instance_dir // "codex-delivery-status.json"
+
+(* Best-effort persist of the deliver-loop degraded signal. [degraded] = true
+   means the app-server unit is supervised but no thread was discovered to
+   inject into. Written at loop start (true) and flipped to false once a thread
+   loads. Never raises (delivery health must never wedge the session). *)
+let write_delivery_degraded ~instance_dir (degraded : bool) : unit =
+  try
+    (try if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir
+     with _ -> ());
+    let path = delivery_status_path ~instance_dir in
+    let j =
+      `Assoc [ ("degraded", `Bool degraded);
+               ("thread_loaded", `Bool (not degraded));
+               ("updated_at", `Float (Unix.gettimeofday ())) ]
+    in
+    let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+    let oc = open_out tmp in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc (Yojson.Safe.to_string j); output_string oc "\n");
+    (try Unix.rename tmp path with _ -> ())
+  with _ -> ()
+
+(* Read the persisted deliver-loop degraded signal for an instance. [None] means
+   no signal file exists (older session, non-app-server instance, or not yet
+   written) — callers treat that as "not known degraded" and do NOT downgrade a
+   healthy classification. Total — any read/parse error reads as [None]. *)
+let delivery_degraded_of_instance ~(instance_dir : string) : bool option =
+  match C2c_io.read_json_opt (delivery_status_path ~instance_dir) with
+  | Some (`Assoc a) ->
+      (match List.assoc_opt "degraded" a with
+       | Some (`Bool b) -> Some b
+       | _ -> None)
+  | _ -> None
+
 (* --------------------------- identity mapping ----------------------------- *)
 
 type mapping = {
@@ -391,6 +433,12 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
              last_pass := key;
              log_deliver_pass ~instance_dir po
            end);
+      on_degraded =
+        (* B138: persist the deliver-loop degraded signal so `c2c doctor`/
+           `c2c health` can read it. Fired true at loop start, false once a
+           frontend thread loads. Best-effort — write_delivery_degraded never
+           raises. *)
+        (fun degraded -> write_delivery_degraded ~instance_dir degraded);
       now = Unix.gettimeofday;
       sleep = (fun s -> try Unix.sleepf s with _ -> ());
       poll_interval_s = 1.0;
