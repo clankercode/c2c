@@ -60,11 +60,9 @@ brine
 brio
 brisk
 bristle
-broad
 brunt
 brush
 bubble
-buck
 burst
 bush
 butter
@@ -468,7 +466,6 @@ nallo
 naper
 naphtha
 narrow
-native
 nature
 nautical
 naval
@@ -709,7 +706,6 @@ quake
 quarry
 quart
 quarter
-queen
 quench
 query
 quest
@@ -922,7 +918,6 @@ skive
 sky
 slab
 slack
-slant
 slat
 slay
 sledge
@@ -940,7 +935,6 @@ slip
 slit
 sliver
 sloop
-slope
 slot
 slug
 sluice
@@ -1174,7 +1168,6 @@ tin
 tinder
 tine
 tinge
-tinker
 tint
 tip
 tissue
@@ -1427,7 +1420,6 @@ yarrow
 yawn
 year
 yeast
-yellow
 yew
 yield
 yoke

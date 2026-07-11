@@ -12,12 +12,14 @@ The OCaml drift test (ocaml/test/test_c2c_alias_words.ml) pins the
 embedded arrays byte-for-byte to these files.
 
 Content policy (B112 review): aliases are public agent identities, so the
-pool must stay family-friendly. Exclude any word with an established slur
-or derogatory sense targeting people or groups (removed on review: kink,
-paddy, pansy, spade, tramp, welch, tart, fruit). Words with mild vulgar
-slang senses whose primary meaning is overwhelmingly innocent and
-non-targeting (e.g. root, screw, buck, whip, master) are allowed. Apply
-the same bar to any future additions.
+pool must stay family-friendly. Exclude any word with a dictionary-labeled
+offensive/derogatory sense targeting people or groups — even when an
+innocent primary sense exists (removed on review: kink, paddy, pansy,
+spade, tramp, welch, tart, fruit, buck, broad, queen, tinker, yellow,
+slant, slope, native). Words with mild vulgar slang senses that do NOT
+target people or groups and whose primary meaning is overwhelmingly
+innocent (e.g. root, screw, whip, master) are allowed. Apply the same bar
+to any future additions.
 
 Usage:
   python3 tools/ci/codegen-alias-words.py           # regenerate
