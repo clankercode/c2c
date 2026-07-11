@@ -105,11 +105,13 @@ let run_hook ?(extra_env = []) ctx ~payload =
   let rc = Sys.command cmd in
   (rc, read_file out_path, read_file err_path)
 
-let payload ?(event = "SessionStart") ?(session_id = "") ?(cwd = "/tmp") ?source () =
+let payload ?(event = "SessionStart") ?(session_id = "") ?(cwd = "/tmp") ?source
+    ?agent_id () =
   let fields =
     [ ("hook_event_name", `String event); ("cwd", `String cwd) ]
     @ (if session_id = "" then [] else [ ("session_id", `String session_id) ])
     @ (match source with Some s -> [ ("source", `String s) ] | None -> [])
+    @ (match agent_id with Some a -> [ ("agent_id", `String a) ] | None -> [])
   in
   Yojson.Safe.to_string (`Assoc fields)
 
@@ -252,6 +254,92 @@ let test_subagent_quiet_guard () =
     check string "silent stdout" "" (String.trim stdout);
     check int "no registrations created" 0
       (List.length (C2c_mcp.Broker.list_registrations (broker ctx))))
+
+(* B130: the ONLY reliable subagent discriminator is the hook stdin `agent_id`
+   (Claude Code's own `isSubagent = !!agent_id`), NOT process env — a dispatched
+   subagent and its parent share session_id/ppid and both carry
+   CLAUDE_CODE_CHILD_SESSION=1. This SessionStart hook must suppress
+   onboarding/drain when the payload carries a non-empty agent_id, and must
+   deliver normally otherwise (even with CLAUDE_CODE_CHILD_SESSION=1 in env). *)
+let test_child_session_no_inbox_leak () =
+  with_ctx (fun ctx ->
+    let owner_sid = "managed-claude-e2e-b130-0001" in
+    let b = register ctx ~session_id:owner_sid ~alias:"zz-claude-b130-owner" in
+    ignore (register ctx ~session_id:"claude-e2e-b130-peer" ~alias:"zz-claude-b130-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-claude-b130-peer"
+      ~to_alias:"zz-claude-b130-owner" ~content:"secret coordinator DM" ();
+    (* Subagent turn: stdin payload carries agent_id (even though env resolves
+       the owner via C2C_MCP_SESSION_ID). Must be fully suppressed. *)
+    let rc, stdout, _ =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", owner_sid) ]
+        ~payload:
+          (payload ~session_id:owner_sid ~agent_id:"sub-agent-abc123" ())
+    in
+    check int "exit 0" 0 rc;
+    check string "subagent gets no injected context" "" (String.trim stdout);
+    check bool "DM body must not leak into subagent stdout" false
+      (contains ~haystack:stdout ~needle:"secret coordinator DM");
+    let remaining = C2c_mcp.Broker.read_inbox b ~session_id:owner_sid in
+    check int "owner DM not drained by subagent" 1 (List.length remaining))
+
+(* B130 no-regression: a TOP-LEVEL SessionStart (no agent_id) must deliver the
+   queued DM even when CLAUDE_CODE_CHILD_SESSION=1 is present in the env (it is,
+   on every Claude tool subprocess). Guards against the reverted env-based
+   gating that suppressed top-level delivery. *)
+let test_top_level_delivers_despite_child_session_env () =
+  with_ctx (fun ctx ->
+    let owner_sid = "managed-claude-e2e-b130-top-0001" in
+    let b = register ctx ~session_id:owner_sid ~alias:"zz-claude-b130-top" in
+    ignore (register ctx ~session_id:"claude-e2e-b130-top-peer" ~alias:"zz-claude-b130-tpeer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-claude-b130-tpeer"
+      ~to_alias:"zz-claude-b130-top" ~content:"top-level should receive this" ();
+    let rc, stdout, stderr =
+      run_hook ctx
+        ~extra_env:
+          [ ("C2C_MCP_SESSION_ID", owner_sid)
+          ; ("CLAUDE_CODE_CHILD_SESSION", "1")
+          ]
+        ~payload:(payload ~session_id:owner_sid ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "top-level DM delivered despite CHILD_SESSION env" true
+      (contains ~haystack:stdout ~needle:"top-level should receive this");
+    let remaining = C2c_mcp.Broker.read_inbox b ~session_id:owner_sid in
+    check int "top-level DM drained (delivered)" 0 (List.length remaining);
+    ignore stderr)
+
+(* B130: is_subagent_context is the B042 env OPT-OUT only (C2C_NO_AUTO_REGISTER).
+   Critically it must NOT treat CLAUDE_CODE_CHILD_SESSION as a subagent signal —
+   that var is set on every Claude tool subprocess of every session, so gating
+   on it suppresses top-level delivery. Subagent detection is stdin-based
+   (C2c_hook_lib.stdin_is_subagent_turn), covered by the hook e2e tests. *)
+let with_env_saved names f =
+  let saved = List.map (fun n -> (n, Sys.getenv_opt n)) names in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun (n, v) ->
+          match v with Some s -> Unix.putenv n s | None -> Unix.putenv n "")
+        saved)
+    f
+
+let test_is_subagent_context_signals () =
+  with_env_saved [ "C2C_NO_AUTO_REGISTER"; "CLAUDE_CODE_CHILD_SESSION" ] (fun () ->
+    let set = Unix.putenv in
+    let is () = C2c_mcp_helpers_post_broker.is_subagent_context () in
+    set "C2C_NO_AUTO_REGISTER" "";
+    set "CLAUDE_CODE_CHILD_SESSION" "";
+    check bool "empty env: not opt-out" false (is ());
+    (* CLAUDE_CODE_CHILD_SESSION must NOT flip the flag (it is set on top-level
+       tool shells too — gating on it regresses top-level delivery). *)
+    set "CLAUDE_CODE_CHILD_SESSION" "1";
+    check bool "CHILD_SESSION=1 is NOT treated as opt-out" false (is ());
+    (* Only the explicit B042 opt-out flips it. *)
+    set "C2C_NO_AUTO_REGISTER" "1";
+    check bool "C2C_NO_AUTO_REGISTER=1 is opt-out" true (is ());
+    set "C2C_NO_AUTO_REGISTER" "0";
+    check bool "C2C_NO_AUTO_REGISTER=0 is not opt-out" false (is ()))
 
 let test_session_end_deregisters_hook_auto_registration () =
   with_ctx (fun ctx ->
@@ -413,6 +501,12 @@ let () =
         ; test_case "env sid unregistered blocks auto-register" `Quick
             test_env_sid_unregistered_blocks_auto_register
         ; test_case "subagent-quiet guard" `Quick test_subagent_quiet_guard
+        ; test_case "B130: subagent (stdin agent_id) no inbox leak" `Quick
+            test_child_session_no_inbox_leak
+        ; test_case "B130: top-level delivers despite CHILD_SESSION env" `Quick
+            test_top_level_delivers_despite_child_session_env
+        ; test_case "B130: is_subagent_context is opt-out-only (not CHILD_SESSION)" `Quick
+            test_is_subagent_context_signals
         ; test_case "SessionEnd deregisters hook auto-registration" `Quick
             test_session_end_deregisters_hook_auto_registration
         ; test_case "SessionEnd keeps explicit registration" `Quick

@@ -31,6 +31,11 @@ let hook_post_tool_cmd =
       exit code
     in
     if C2c_hook_lib.is_subagent_quiet () then exit_floored 0;
+    (* B130: PostToolUse fires during a dispatched subagent's tool calls with a
+       non-empty stdin `agent_id`. Draining/injecting there would leak the
+       owner session's DMs into the unrelated subagent transcript. Top-level
+       turns omit agent_id, so delivery is unaffected. *)
+    if C2c_hook_lib.stdin_is_subagent_turn () then exit_floored 0;
     let session_id =
       match C2c_hook_lib.resolve_session_id () with
       | Ok "" -> exit_floored 0
@@ -56,6 +61,11 @@ let hook_stop_cmd =
   const (fun () ->
     (* Uses C2c_hook_lib for shared stdin-parsing + drain logic, matching
        the standalone c2c_stop_hook.exe behaviour exactly. *)
+    if C2c_hook_lib.is_subagent_quiet () then exit 0;
+    (* B130: suppress on a subagent turn (non-empty stdin agent_id). Claude Code
+       actually fires SubagentStop (not Stop) at a subagent turn end, so this is
+       defensive; top-level Stop turns omit agent_id and deliver normally. *)
+    if C2c_hook_lib.stdin_is_subagent_turn () then exit 0;
     let session_id =
       match C2c_hook_lib.resolve_session_id () with
       | Ok sid -> sid
@@ -624,6 +634,15 @@ let hook_claude_cmd =
          | None -> exit_floored 0
        in
        if not (List.mem event claude_session_events) then exit_floored 0;
+       (* B130: a dispatched subagent turn carries a non-empty stdin `agent_id`
+          (Claude Code's own `isSubagent = !!agent_id`). Never onboard / drain /
+          inject for a subagent — it would leak the owner session's context into
+          the subagent transcript. Top-level SessionStart omits agent_id, so
+          onboarding + cold-boot delivery is unaffected. (Empirically subagents
+          do not fire SessionStart, so this is defensive.) *)
+       (match payload_string_field payload "agent_id" with
+        | Some s when String.trim s <> "" -> exit_floored 0
+        | _ -> ());
        (* Auto-update the /c2c claude skill from the embedded blob on session
           start, so sessions pick up skill changes from a new binary without
           re-running `c2c install claude`. Best-effort, never prints. *)

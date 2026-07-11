@@ -229,6 +229,15 @@ let inbox_from_flag =
 
 let default_wait_timeout = "120s"
 
+(* B130 note: there is deliberately NO subagent guard on the bare CLI inbox
+   commands. A dispatched Claude Code subagent and a top-level session are
+   INDISTINGUISHABLE from a plain `c2c` process's point of view — both inherit
+   the same C2C_MCP_SESSION_ID and the same CLAUDE_CODE_CHILD_SESSION=1 (set on
+   every tool subprocess of every session), and the CLI has no hook-stdin
+   `agent_id` to consult. Any env-based guard here regresses the group-goal
+   "CLI: always-available fallback usable by any agent" by refusing top-level
+   sessions. The subagent leak is gated where it is actually detectable: the
+   hook injection path, via hook-stdin agent_id (C2c_hook_lib.stdin_is_subagent_turn). *)
 let run_poll_inbox ~cmd_name ~wait ~json ~peek ~session_id_opt ~alias_opt
     ~cross_repo ~timeout_opt ~poll_interval_opt ~from_opt =
   mcp_nudge_if_needed ~cmd:cmd_name;

@@ -903,16 +903,30 @@ let hook_client_type_conflict_with (reg : registration) =
       String.lowercase_ascii mine <> String.lowercase_ascii theirs
   | _ -> false
 
+(* B042: explicit auto-register opt-out. When C2C_NO_AUTO_REGISTER=1 an
+   operator/wrapper has declared this process must not auto-register or drain.
+
+   NOTE (B130): this is NOT a dispatched-subagent discriminator. An earlier
+   B130 attempt added CLAUDE_CODE_CHILD_SESSION here, but that env var is set on
+   EVERY hook fire and EVERY tool subprocess of EVERY Claude Code session
+   (top-level and subagent alike, same session_id/ppid) — gating on it silently
+   suppressed c2c delivery/onboarding for top-level sessions. A dispatched
+   subagent is only distinguishable via the hook STDIN `agent_id`
+   (C2c_hook_lib.stdin_is_subagent_turn), not process env. *)
+let is_subagent_context () =
+  match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
+  | Some v when String.trim v = "1" -> true
+  | _ -> false
+
 let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
   | Some alias ->
-  (* B042: skip auto-registration when C2C_NO_AUTO_REGISTER=1.
-     Spawned subagents inherit global c2c hooks and would auto-register
-     and spam the coordinator. Setting this env var silences them. *)
-  (match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
-   | Some v when String.trim v = "1" -> ()
-   | _ ->
+  (* B042: skip auto-registration when C2C_NO_AUTO_REGISTER=1 (explicit
+     operator/wrapper opt-out). See [is_subagent_context]. *)
+  (if is_subagent_context ()
+   then ()
+   else
   let session_id =
     match session_id_override with
     | Some sid when String.trim sid <> "" -> String.trim sid

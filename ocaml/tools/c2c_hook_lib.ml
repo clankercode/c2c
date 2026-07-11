@@ -157,34 +157,63 @@ let extract_json_string_field_prefix ~field raw =
   in
   scan 0 0
 
-let read_stdin_session_id () =
-  let chunk_size = 4096 in
-  let chunk = Bytes.create chunk_size in
-  let buf = Buffer.create 4096 in
-  let rec loop remaining =
-    if remaining <= 0 then None
-    else
-      let want = min chunk_size remaining in
-      match input stdin chunk 0 want with
-      | 0 ->
-          extract_json_string_field_prefix ~field:"session_id"
-            (Buffer.contents buf)
-      | n ->
-          Buffer.add_subbytes buf chunk 0 n;
-          let raw = Buffer.contents buf in
-          (match extract_json_string_field_prefix ~field:"session_id" raw with
-           | Some _ as found -> found
-           | None -> loop (remaining - n))
-  in
-  try loop max_stdin_scan_bytes with _ -> None
+(* Read the hook's stdin payload ONCE and memoize it. Claude Code / Codex hook
+   stdin can only be consumed a single time, but we need several fields
+   (session_id, agent_id) from it, so buffer it and extract from the buffer.
+   Bounded by max_stdin_scan_bytes — every field we read (session_id, agent_id,
+   agent_type) is emitted near the front of the payload by the harness, ahead
+   of any large tool_input/tool_response, so the cap is safe. *)
+let stdin_payload_cache : string option ref = ref None
 
-(* B042: detect subagent/silent context. When C2C_NO_AUTO_REGISTER=1 is set,
-   the session is a spawned subagent that should not auto-register or drain
-   inbox messages. Hooks should exit early when this returns true. *)
-let is_subagent_quiet () =
-  match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
-  | Some v when String.trim v = "1" -> true
-  | _ -> false
+let read_stdin_payload () =
+  match !stdin_payload_cache with
+  | Some s -> s
+  | None ->
+      let chunk_size = 4096 in
+      let chunk = Bytes.create chunk_size in
+      let buf = Buffer.create 4096 in
+      (try
+         let rec loop total =
+           if total >= max_stdin_scan_bytes then ()
+           else
+             let want = min chunk_size (max_stdin_scan_bytes - total) in
+             match input stdin chunk 0 want with
+             | 0 -> ()
+             | n -> Buffer.add_subbytes buf chunk 0 n; loop (total + n)
+         in
+         loop 0
+       with _ -> ());
+      let s = Buffer.contents buf in
+      stdin_payload_cache := Some s;
+      s
+
+let read_stdin_session_id () =
+  extract_json_string_field_prefix ~field:"session_id" (read_stdin_payload ())
+
+(* B130: the ONLY reliable discriminator between a dispatched Claude Code
+   subagent turn and a top-level session turn is the hook stdin JSON, NOT the
+   process env. Empirically (Claude Code 2.1.207):
+   - env `CLAUDE_CODE_CHILD_SESSION=1` is set on EVERY hook fire and EVERY tool
+     subprocess of EVERY session (top-level and subagent alike) — useless.
+   - the parent claude process and its subagents share ONE session_id, ppid,
+     and transcript_path — none discriminate.
+   - hook stdin carries `agent_id` + `agent_type` ONLY for subagent turns
+     (Claude Code's own check is `isSubagent = !!agent_id`). Top-level turns
+     omit both keys. A subagent's PostToolUse fires with `agent_id` set — that
+     is the actual leak path: its drain/inject lands in the subagent transcript.
+   So gate the hook drain/inject on a non-empty stdin `agent_id`. This is exact:
+   subagent turns suppressed, top-level turns (delivery/onboarding) untouched. *)
+let hook_stdin_agent_id () =
+  extract_json_string_field_prefix ~field:"agent_id" (read_stdin_payload ())
+
+let stdin_is_subagent_turn () =
+  match hook_stdin_agent_id () with Some s -> String.trim s <> "" | None -> false
+
+(* B042: silent/opt-out context — an operator/wrapper sets C2C_NO_AUTO_REGISTER=1
+   to keep a spawned helper from auto-registering or draining. This is an
+   explicit env opt-out (NOT a subagent discriminator — see stdin_is_subagent_turn
+   for that). Delegates to the canonical detector in C2c_mcp_helpers_post_broker. *)
+let is_subagent_quiet () = C2c_mcp_helpers_post_broker.is_subagent_context ()
 let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 

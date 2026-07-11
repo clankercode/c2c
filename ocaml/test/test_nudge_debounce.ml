@@ -141,6 +141,11 @@ let run_hook ?(env=[]) ~stdin_payload ~hook_name () : hook_result =
   with_hermetic_home @@ fun hermetic ->
   let base_env =
     [ Unset "C2C_MCP_BROKER_ROOT"
+    (* B130: keep the spawned hook out of subagent-quiet mode even when this
+       test suite is itself run from a dispatched Claude Code subagent (which
+       exports CLAUDE_CODE_CHILD_SESSION=1). *)
+    ; Unset "CLAUDE_CODE_CHILD_SESSION"
+    ; Unset "C2C_NO_AUTO_REGISTER"
     ; Set ("HOME", hermetic)
     ; Set ("C2C_STATE_HOME", hermetic)
     ]

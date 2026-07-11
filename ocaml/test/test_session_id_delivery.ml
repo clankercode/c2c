@@ -85,7 +85,7 @@ let test_send_session_writes_global_inbox () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
              send --session %s 'hello world' > %s 2>&1"
             (Filename.quote dir) (Filename.quote built_c2c)
@@ -121,7 +121,7 @@ let test_send_session_rejects_invalid_session_id () =
         let bad_sid = "../" ^ escaped_name in
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
              send --session %s 'hello world' > %s 2>&1"
             (Filename.quote dir) (Filename.quote built_c2c)
@@ -141,7 +141,7 @@ let test_send_session_rejects_reserved_sender () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
              send --from c2c --session %s 'hello world' > %s 2>&1"
             (Filename.quote dir) (Filename.quote built_c2c)
@@ -162,7 +162,7 @@ let test_send_session_rejects_reserved_sender_case_insensitive () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
              send --from C2C --session %s 'hello world' > %s 2>&1"
             (Filename.quote dir) (Filename.quote built_c2c)
@@ -197,7 +197,7 @@ let test_hook_reads_stdin_session_and_drains_global_inbox () =
            ~/.c2c broker. *)
         let cmd =
           Printf.sprintf
-            "printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
+            "printf %%s %s | env -u C2C_MCP_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u \
              C2C_MCP_BROKER_ROOT C2C_STATE_HOME=%s HOME=%s \
              C2C_POST_TOOL_FULL_INJECT=1 \
              C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
@@ -241,7 +241,7 @@ let test_cli_hook_reads_stdin_session_and_drains_global_inbox () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s hook < /dev/null > %s 2> %s"
             (Filename.quote sid) (Filename.quote dir) (Filename.quote dir)
             (Filename.quote built_c2c) (Filename.quote out)
@@ -286,7 +286,7 @@ let test_cli_hook_holds_deferrable_mid_turn () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s hook < /dev/null > %s 2> %s"
             (Filename.quote sid) (Filename.quote dir) (Filename.quote dir)
             (Filename.quote built_c2c) (Filename.quote out)
@@ -330,7 +330,7 @@ let test_hook_extracts_session_from_truncated_large_payload () =
            fallback into the empty temp dir (see the sibling hook test). *)
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_STATE_HOME=%s HOME=%s C2C_POST_TOOL_FULL_INJECT=1 \
              C2C_SESSIONS_BROKER_ROOT=%s %s < %s > %s 2> %s"
             (Filename.quote dir) (Filename.quote dir)
@@ -376,7 +376,7 @@ let test_hook_merges_message_and_cold_boot_context () =
           in
           let cmd =
             Printf.sprintf
-              "printf %%s %s | env C2C_MCP_SESSION_ID=%s \
+              "printf %%s %s | env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER C2C_MCP_SESSION_ID=%s \
                C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s \
                C2C_POST_TOOL_FULL_INJECT=1 %s > %s 2> %s"
               (Filename.quote stdin_payload) (Filename.quote sid)
@@ -429,7 +429,7 @@ let test_hook_rejects_invalid_stdin_session_id () =
            the drain, but keep the sandbox uniform + defensive). *)
         let cmd =
           Printf.sprintf
-            "printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
+            "printf %%s %s | env -u C2C_MCP_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u \
              C2C_MCP_BROKER_ROOT C2C_STATE_HOME=%s HOME=%s \
              C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
             (Filename.quote stdin_payload) (Filename.quote dir)
@@ -444,6 +444,63 @@ let test_hook_rejects_invalid_stdin_session_id () =
           (string_contains stdout "secret outside root");
         check int "escaped inbox remains untouched" 1
           (json_list_length escaped_path)))
+
+(* B130: the PostToolUse hook is the real leak path. Claude Code fires it
+   during a dispatched subagent's tool calls with a non-empty stdin `agent_id`.
+   The hook must suppress (no drain/inject) on that signal, and MUST still
+   deliver on a top-level turn even though CLAUDE_CODE_CHILD_SESSION=1 is in the
+   env (it always is, on every Claude tool subprocess). Both directions pinned.
+   Runs the standalone c2c_inbox_hook.exe with a seeded global session inbox. *)
+let run_post_tool_hook ~dir ~sid ~out ~payload =
+  let cmd =
+    Printf.sprintf
+      "printf %%s %s | env -u C2C_MCP_BROKER_ROOT -u C2C_NO_AUTO_REGISTER \
+       C2C_MCP_SESSION_ID=%s CLAUDE_CODE_CHILD_SESSION=1 C2C_STATE_HOME=%s HOME=%s \
+       C2C_POST_TOOL_FULL_INJECT=1 C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2>&1"
+      (Filename.quote payload) (Filename.quote sid) (Filename.quote dir)
+      (Filename.quote dir) (Filename.quote dir)
+      (Filename.quote built_inbox_hook) (Filename.quote out)
+  in
+  Sys.command cmd
+
+let test_post_tool_hook_subagent_no_leak_toplevel_delivers () =
+  with_temp_dir (fun dir ->
+    let out = Filename.temp_file "c2c-b130-pt" ".out" in
+    Fun.protect
+      ~finally:(fun () -> try Sys.remove out with _ -> ())
+      (fun () ->
+        (* Subagent turn: payload carries agent_id -> suppressed, no drain. *)
+        let sid_sub = "b130-pt-subagent-sid" in
+        let inbox_sub = Filename.concat dir (sid_sub ^ ".inbox.json") in
+        write_file inbox_sub
+          (Printf.sprintf
+             {|[{"from_alias":"peer-x","to_alias":%S,"content":"leak me","ts":1.0}]|}
+             sid_sub);
+        let payload_sub =
+          Printf.sprintf
+            {|{"session_id":%S,"agent_id":"sub-abc123","agent_type":"general-purpose","hook_event_name":"PostToolUse"}|}
+            sid_sub
+        in
+        let rc_sub = run_post_tool_hook ~dir ~sid:sid_sub ~out ~payload:payload_sub in
+        check int "subagent hook exits 0" 0 rc_sub;
+        check string "subagent hook emits nothing" "" (String.trim (read_file out));
+        check int "subagent hook did NOT drain owner inbox" 1
+          (json_list_length inbox_sub);
+        (* Top-level turn: no agent_id, but CHILD_SESSION=1 in env -> delivers. *)
+        let sid_top = "b130-pt-toplevel-sid" in
+        let inbox_top = Filename.concat dir (sid_top ^ ".inbox.json") in
+        write_file inbox_top
+          (Printf.sprintf
+             {|[{"from_alias":"peer-y","to_alias":%S,"content":"deliver me","ts":1.0}]|}
+             sid_top);
+        let payload_top =
+          Printf.sprintf {|{"session_id":%S,"hook_event_name":"PostToolUse"}|} sid_top
+        in
+        let rc_top = run_post_tool_hook ~dir ~sid:sid_top ~out ~payload:payload_top in
+        check int "top-level hook exits 0" 0 rc_top;
+        check bool "top-level hook delivered the DM (CHILD_SESSION env ignored)" true
+          (string_contains (read_file out) "deliver me");
+        check int "top-level hook drained the inbox" 0 (json_list_length inbox_top)))
 
 let () =
   Alcotest.run "session_id_delivery"
@@ -470,5 +527,9 @@ let () =
             test_hook_merges_message_and_cold_boot_context )
         ; ( "rejects invalid stdin session_id", `Quick,
             test_hook_rejects_invalid_stdin_session_id )
+        ] )
+    ; ( "b130-hook-gate",
+        [ ( "PostToolUse suppresses subagent turn (stdin agent_id), delivers top-level", `Quick,
+            test_post_tool_hook_subagent_no_leak_toplevel_delivers )
         ] )
     ]

@@ -19,8 +19,11 @@
  *)
 
 let () =
-  (* B042: skip hook entirely for subagent/silent sessions. *)
+  (* B042: skip hook entirely for the explicit C2C_NO_AUTO_REGISTER opt-out. *)
   if C2c_hook_lib.is_subagent_quiet () then exit 0;
+  (* B130: suppress on a subagent turn (non-empty stdin agent_id). Defensive —
+     Claude Code fires SubagentStop (not Stop) at a subagent turn end. *)
+  if C2c_hook_lib.stdin_is_subagent_turn () then exit 0;
   let session_id =
     match C2c_hook_lib.resolve_session_id () with
     | Ok sid -> sid
