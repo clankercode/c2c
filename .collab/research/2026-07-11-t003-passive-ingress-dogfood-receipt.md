@@ -11,9 +11,9 @@
 
 - `ocaml/c2c_codex_ingress.ml(i)` — module `C2c_codex_ingress`, wired into the
   `c2c_mcp` library (`ocaml/dune`). Not a public CLI subcommand.
-- `ocaml/test/test_c2c_codex_ingress.ml` — 17 fixture-gated Alcotest cases
+- `ocaml/test/test_c2c_codex_ingress.ml` — 18 fixture-gated Alcotest cases
   (scripted client seam; no live socket).
-- `ocaml/cli/test_c2c_codex_ingress_b098.ml` — 2 B098 injected-path inertness
+- `ocaml/cli/test_c2c_codex_ingress_b098.ml` — 3 B098 injected-path inertness (incl. a positive control)
   cases (drives the real `c2c await-reply` binary + checks the verdict dir).
 - `ocaml/test/dev_codex_ingress_dogfood.ml` — standalone driver that runs the
   REAL adapter injection path against a live endpoint (its own `(executable)`
@@ -150,6 +150,24 @@ adapter — the adapter has no turn surface.
 | full `dune build` | 0 |
 | `git diff --check` / `codegen-alias-words-check` / `check-broker-log-catalog.sh` / `check-connect-commands.py` | 0 |
 | `just check` | 1 — **sole failure PRE-EXISTING + unrelated**: the `git diff --exit-code -- .collab/skills .opencode/skills .codex/skills …` step reports Grok/Pi skill-codegen drift in `.codex`/`.opencode/skills/c2c/SKILL.md` (present vs `origin/master` too; T001 + T002 receipts note the identical drift). This slice touched NO skill files. Every OTHER step passes independently. |
+
+## Review
+
+Codex/ccc was out of quota (until ~21:00), Copilot is banned — an **opus
+adversarial subagent reviewer** was used instead (read-only, against every AC).
+Verdict: **PASS**, no BLOCKER/MAJOR; the three hard invariants (persist-first,
+no-turn/no-approval, B098 inertness) were judged structurally enforced +
+meaningfully tested, idempotency correct and honestly scoped to at-least-once
+across the ambiguous window. The MINOR/NIT findings were folded into a new commit
+(`efabe431`, never `--amend`): ledger flock (`with_ledger_lock`), budget
+accounting now debits only real injections (removes the backoff-starvation nit),
+`sanitize_reason` bounds/single-lines server-controlled error text before it
+reaches health/ledger/dead-letter, a literal duplicate-`message_id`-in-inbox
+test, a B098 positive control (real host-local verdict → `await-reply` exit 0),
+and an mli note on the inherent post-drain ephemeral limitation. Final counts:
+**18** fixture unit tests + **3** B098 tests; live dogfood re-run PASS.
+
+Commits: `882da0ab` (impl) → `6dbef2d3` (receipt) → `efabe431` (review hardening).
 
 ## What T007 (turn-waking) will need from this adapter
 
