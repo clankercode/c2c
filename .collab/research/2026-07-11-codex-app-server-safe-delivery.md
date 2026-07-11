@@ -7,7 +7,10 @@ Date: 2026-07-11
 Codex CLI 0.144.1 provides a viable non-PTY architecture for *new* interactive
 sessions: run an app-server endpoint, then attach the stock terminal UI using
 `codex --remote <ws-or-unix-endpoint>`. A separate c2c client can then use the
-app-server JSON-RPC protocol against that server.
+app-server JSON-RPC protocol against that server. The planned normal lifecycle
+is one app-server per `c2c start codex` session: it exits with the TUI. A closed
+session is therefore offline and receives durable queued mail rather than a
+background turn.
 
 The candidate passive-delivery primitive is `thread/inject_items`. Official
 documentation says it appends raw Responses API items to a loaded thread's
@@ -29,15 +32,22 @@ architecture is a no-go even if injection preserves the composer.
 ## Safe contract
 
 1. Persist every inbound c2c message in its broker inbox first.
-2. For app-server-managed remote sessions, inject only a validated passive
-   message item. Never use `turn/start`, `turn/steer`, `turn/interrupt`,
-   PTY writes, tmux `send-keys`, or Herdr submission for passive delivery.
-3. An incoming peer message remains data, not an instruction, approval, or
-   command. It must never execute or authorize anything by itself.
-4. Preserve the existing Codex hook delivery as the fallback.
-5. Keep the existing hooks+wake implementation opt-in: its tmux/Herdr nudge
+2. For an active app-server-managed session, inject a validated message item.
+   Local-broker mail may then start a Codex turn unless recipient DND is active;
+   DND queues without starting a turn. Never use `turn/steer`,
+   `turn/interrupt`, PTY writes, tmux `send-keys`, or Herdr submission.
+3. A message-triggered turn is a product delivery policy, not an approval
+   channel. Message content can never resolve an approval or write an approval
+   verdict; `allow`/`deny` strings remain inert to `await-reply`.
+4. When the normal TUI exits, stop its app-server and report later sends as
+   successful `queued_offline` delivery. Unknown aliases remain errors.
+5. Generate the default alias from the stable Codex/app-server identity;
+   `--alias` is an optional human override. `--yolo` must visibly forward only
+   to Codex `--dangerously-bypass-approvals-and-sandbox`.
+6. Preserve the existing Codex hook delivery as the fallback.
+7. Keep the existing hooks+wake implementation opt-in: its tmux/Herdr nudge
    writes text plus Enter and therefore cannot guarantee typed-draft safety.
-6. Do not expose an app-server endpoint to peer processes without a proven
+8. Do not expose an app-server endpoint to peer processes without a proven
    control boundary. A peer must be unable to start, steer, interrupt, or
    otherwise control the thread.
 
