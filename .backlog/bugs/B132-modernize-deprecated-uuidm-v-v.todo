@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-11T15:10:08Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-11T15:16:43Z"
 complexity: low
 created_at: "2026-07-11T15:08:54Z"
 depends_on: []
+duration_minutes: 6.586164673883333
 estimate_hours: 0.25
 id: B132
 priority: low
 started_at: "2026-07-11T15:10:08Z"
-status: in_progress
+status: done
 tags: []
 title: Modernize deprecated Uuidm.v `V4 in 2 test files (test_relay.ml:959, test_cross_host_e2e.ml:50)
-updated_at: "2026-07-11T15:10:08Z"
+updated_at: "2026-07-11T15:16:43Z"
 ---
 Two test call sites use the deprecated `Uuidm.v `V4` API, which emits a non-fatal deprecation warning (build stays green). Production code already uses the modern form `Uuidm.v4_gen (Random.State.make_self_init ()) ()` everywhere.
 
