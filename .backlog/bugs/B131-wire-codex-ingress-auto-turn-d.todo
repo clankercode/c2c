@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-11T14:43:16Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-11T14:06:13Z"
 depends_on: []
 estimate_hours: 1
 id: B131
 priority: high
-status: pending
+started_at: "2026-07-11T14:43:16Z"
+status: in_progress
 tags: []
 title: 'Wire codex ingress + auto-turn dispatcher into the live ''c2c start codex'' app-server session supervisor (turnkey E2E). P1 built+proved C2c_codex_ingress (T003) and C2c_codex_autoturn (T007) as modules + soak-tested via standalone dogfood harnesses, but NO production code drives them: c2c start codex launches the app-server+TUI (T006) yet never runs the inject/auto-turn loop. Needs: supervisor loop in the c2c start codex managed path that starts the ingress+autoturn dispatcher against the session''s authenticated app-server, lifecycle-bound (starts on attach, stops on TUI exit), + a live E2E driven by REAL ''c2c start codex'' (not a harness).'
-updated_at: "2026-07-11T14:06:13Z"
+updated_at: "2026-07-11T14:43:16Z"
 ---
 
 Wire codex ingress + auto-turn dispatcher into the live 'c2c start codex' app-server session supervisor (turnkey E2E). P1 built+proved C2c_codex_ingress (T003) and C2c_codex_autoturn (T007) as modules + soak-tested via standalone dogfood harnesses, but NO production code drives them: c2c start codex launches the app-server+TUI (T006) yet never runs the inject/auto-turn loop. Needs: supervisor loop in the c2c start codex managed path that starts the ingress+autoturn dispatcher against the session's authenticated app-server, lifecycle-bound (starts on attach, stops on TUI exit), + a live E2E driven by REAL 'c2c start codex' (not a harness).
