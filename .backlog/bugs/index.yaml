@@ -107,3 +107,4 @@ bugs:
     - file: B108-wake-watch-can-inject-into-a-s.todo
     - file: B109-when-listing-other-agents-we-s.todo
     - file: B110-c2c-should-install-a-start-hoo.todo
+    - file: B111-full-audit-of-what-is-publicly.todo

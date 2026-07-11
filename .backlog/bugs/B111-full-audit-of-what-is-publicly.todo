@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B111
+priority: high
+status: pending
+tags: []
+title: Full audit of what is publicly available/listable over the public relay.
+---
+
+Full audit of what is publicly available/listable over the public relay.
