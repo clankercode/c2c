@@ -52,19 +52,37 @@ Runtime seed: a fresh stable session id per new instance (persisted in
 `<instance_dir>/codex-session.json`); resume/restart reloads it ⇒ same alias. The
 Codex thread id (authoritative for resume) is stored separately (`thread_id`); a
 `--thread-id` conflict with the saved thread is rejected (`reconcile_thread` ⇒ Error),
-never guessed. `--alias` overrides the routing identity only; a conflict with a
-differently-owned saved alias is rejected. No routable alias is published before
+never guessed. `--alias` overrides the routing identity only; conflicts are rejected by the pure
+`resolve_identity` (returns `Error`): unknown resume alias, `new` reusing a taken alias,
+`--alias` naming a non-app-server-owned instance, `--thread-id` conflicting with the
+saved thread. (`start --alias X` naming an existing app-server mapping RESUMES it —
+adopt-by-alias — which is not a conflict.) These are unit-tested via injected
+`lookup`/`config_exists` (`identity-resolve/*`). No identity mapping is persisted before
 `C2c_codex_app_server.start` returns `Ok` (version/capability failures return a
 diagnostic first — AC7).
+
+**Routability caveat (honest scope).** On `Ok`, T006 persists the `codex-session.json`
+identity mapping — the authoritative, discoverable alias↔session record that
+`c2c instances`/status read. It does NOT yet auto-register the interactive frontend into
+the broker under that alias: that needs the codex-hook env threaded into the frontend
+child at spawn time, and T002's frontend-env builder injects only the auth token. That
+managed-env parity is **T005's** job. So today the derived alias is the persisted
+identity, not yet a live broker alias. (An earlier draft set that env via `putenv` after
+`start` returned — inert, since the frontend was already spawned; removed.)
 
 ## `--yolo` forwarding + non-persistence
 
 `frontend_extra_args ~yolo` prepends exactly `--dangerously-bypass-approvals-and-sandbox`
-and a conspicuous stderr warning prints on use. It is a per-launch argv element only —
-never written to the identity mapping or instance config, so a later resume without
-`--yolo` does not inherit it. Tests: `yolo/forwards bypass`, `yolo/absent by default`,
-`lifecycle-glue/hook mode uses fallback` (asserts the bypass flag reaches the hook
-fallback's extra_args).
+and a conspicuous stderr warning prints on use. It is a per-launch argv element only:
+the app-server identity mapping (`codex-session.json`) never records it, and a later
+resume without `--yolo` does not re-apply it. (Nuance: in the *hook fallback* path the
+flag does land in `config.json`'s `extra_args` via `cmd_start`'s `write_config`, but
+`resolve_effective_extra_args` deliberately ignores persisted `extra_args` on a plain
+re-launch, so it is still never re-applied on resume — the operational guarantee holds.)
+Tests: `yolo/forwards bypass`, `yolo/absent by default`, `yolo-persistence/yolo not
+persisted` (asserts the mapping file after a `--yolo` app-server launch contains neither
+the bypass flag nor a `yolo` marker), `lifecycle-glue/hook mode uses fallback` (asserts
+the bypass flag reaches the hook fallback's extra_args).
 
 ## `--` passthrough (coordinator items 2 & 3)
 
@@ -123,7 +141,7 @@ the pane tty (AC5).
 | command | rc |
 |---|---|
 | `scripts/dune-build-locked.sh build` (full build + suite) | 0 |
-| `test_c2c_codex_session.exe` (16 tests) | 0 |
+| `test_c2c_codex_session.exe` (24 tests) | 0 |
 | `test_c2c_start.exe` (197 tests, regression) | 0 |
 | `check-broker-log-catalog.sh` | 0 |
 | `check-connect-commands.py` (40 cmds) | 0 |
@@ -138,6 +156,26 @@ The `delivery=queued_offline` receipt for a known-offline alias depends on B127
 (durable offline delivery) and is intentionally NOT implemented here. Everything else
 (grammar, identity, `--yolo`, lifecycle, online attach) is complete and independent of
 B127. Unknown-alias sends remain an error.
+
+## Review round 1 (opus adversarial reviewer) → fixes
+
+An opus subagent reviewed against every AC. Addressed in new commits (no `--amend`):
+- **M1** — deleted a dead duplicate `and handle_thread` binding.
+- **M2** — corrected the "exact shortcut" claim: `c2c codex` shares the session
+  semantics/defaults but exposes a reduced flag surface (docs updated). Added default
+  `--auto-join` swarm-lounge parity to the hook fallback so a `c2c codex`/`new codex`
+  agent still joins the social room.
+- **M3** — removed the inert `putenv`-after-spawn; the frontend-env broker registration
+  is T005's managed-env parity job (receipt "Routability caveat" above).
+- **N1** — `resume codex` rejects a leading-`-` token mis-parsed as the alias.
+- **N2** — `-m/--model` now threads into the app-server path (was dropped there).
+- **N4** — `status_of_instance` cross-checks `server_pid`/`frontend_pid` liveness so a
+  hard-killed session shows `offline`, not a ghost `online-attached`.
+- **N5** — the empty instance dir created before a version-diagnostic fallback is removed.
+- **N7 + AC1 test gap** — `resolve_identity` refactored to a pure, injectable,
+  `result`-returning function; added `identity-resolve/*` tests (resume-unknown,
+  thread-conflict, config-owned, new-taken-alias rejections; start-adopt-by-alias resume;
+  deterministic derivation) and `yolo-persistence/yolo not persisted`. (16 → 24 tests.)
 
 ## Integration seams for later tasks
 

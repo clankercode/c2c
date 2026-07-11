@@ -270,6 +270,120 @@ let test_hook_mode_uses_fallback () =
     (List.mem "--dangerously-bypass-approvals-and-sandbox" !seen);
   Alcotest.(check bool) "passthrough preserved" true (List.mem "--model" !seen)
 
+(* ------------------------------------------------------------------ *)
+(* Identity resolution: ambiguous client/alias/thread combos rejected  *)
+(* ------------------------------------------------------------------ *)
+
+let mk_mapping ?(thread=None) ~sid ~alias () : S.mapping =
+  { S.session_id = sid; alias; thread_id = thread; created_at = 0.; updated_at = 0. }
+
+let no_lookup (_ : string) : S.mapping option = None
+let no_config (_ : string) = false
+
+let is_error = function Error _ -> true | Ok _ -> false
+
+let test_resolve_resume_unknown_rejected () =
+  Alcotest.(check bool) "resume of unknown alias is rejected" true
+    (is_error (S.resolve_identity ~mode:(S.Resume "nope") ~alias_override:None
+                 ~thread_id:None ~lookup:no_lookup ~config_exists:no_config))
+
+let test_resolve_resume_ok () =
+  let m = mk_mapping ~sid:"S1" ~alias:"quiet-harbor" ~thread:(Some "T1") () in
+  let lookup a = if a = "quiet-harbor" then Some m else None in
+  match S.resolve_identity ~mode:(S.Resume "quiet-harbor") ~alias_override:None
+          ~thread_id:None ~lookup ~config_exists:no_config with
+  | Ok r ->
+      Alcotest.(check string) "alias retained" "quiet-harbor" r.S.r_alias;
+      Alcotest.(check string) "seed retained" "S1" r.S.r_session_id;
+      Alcotest.(check (option string)) "thread retained" (Some "T1") r.S.r_thread_id
+  | Error e -> Alcotest.failf "resume should succeed: %s" e
+
+let test_resolve_alias_conflict_rejected () =
+  (* `new --alias X` where X is owned by a DIFFERENT session ⇒ reject (never
+     silently reuse). *)
+  let other = mk_mapping ~sid:"OTHER" ~alias:"taken-alias" () in
+  let lookup a = if a = "taken-alias" then Some other else None in
+  Alcotest.(check bool) "new --alias owned by other rejected" true
+    (is_error (S.resolve_identity ~mode:S.New ~alias_override:(Some "taken-alias")
+                 ~thread_id:(Some "sidX") ~lookup ~config_exists:no_config));
+  (* By contrast, `start --alias X` naming an existing mapping RESUMES it
+     (adopt-by-alias), adopting its seed — not a conflict. *)
+  (match S.resolve_identity ~mode:S.Start ~alias_override:(Some "taken-alias")
+           ~thread_id:None ~lookup ~config_exists:no_config with
+   | Ok r -> Alcotest.(check string) "start --alias resumes seed" "OTHER" r.S.r_session_id
+   | Error e -> Alcotest.failf "start --alias on existing mapping should resume: %s" e)
+
+let test_resolve_thread_conflict_rejected () =
+  let m = mk_mapping ~sid:"S1" ~alias:"a-b" ~thread:(Some "SAVED") () in
+  let lookup a = if a = "a-b" then Some m else None in
+  Alcotest.(check bool) "resume with conflicting --thread-id rejected" true
+    (is_error (S.resolve_identity ~mode:(S.Resume "a-b") ~alias_override:None
+                 ~thread_id:(Some "DIFFERENT") ~lookup ~config_exists:no_config))
+
+let test_resolve_config_owned_rejected () =
+  (* Start --alias where a non-app-server managed instance owns that name. *)
+  Alcotest.(check bool) "start --alias owned by non-app-server instance rejected" true
+    (is_error (S.resolve_identity ~mode:S.Start ~alias_override:(Some "legacy")
+                 ~thread_id:None ~lookup:no_lookup
+                 ~config_exists:(fun a -> a = "legacy")))
+
+let test_resolve_new_derives_deterministic () =
+  (* No --alias ⇒ derived from the thread_id seed, deterministic + distinct. *)
+  let r1 = S.resolve_identity ~mode:S.New ~alias_override:None ~thread_id:(Some "seedA")
+             ~lookup:no_lookup ~config_exists:no_config in
+  let r2 = S.resolve_identity ~mode:S.New ~alias_override:None ~thread_id:(Some "seedA")
+             ~lookup:no_lookup ~config_exists:no_config in
+  (match r1, r2 with
+   | Ok a, Ok b ->
+       Alcotest.(check string) "deterministic derived alias" a.S.r_alias b.S.r_alias;
+       Alcotest.(check string) "alias derived from seed"
+         (S.derive_alias ~session_id:"seedA" ~taken:(fun _ -> false)) a.S.r_alias;
+       Alcotest.(check string) "name == alias" a.S.r_alias a.S.r_name
+   | _ -> Alcotest.fail "derivation should succeed")
+
+let test_resolve_start_alias_resumes_mapping () =
+  (* Start with --alias naming an existing mapping resumes it (same seed). *)
+  let m = mk_mapping ~sid:"SEED9" ~alias:"my-agent" ~thread:(Some "TT") () in
+  let lookup a = if a = "my-agent" then Some m else None in
+  match S.resolve_identity ~mode:S.Start ~alias_override:(Some "my-agent")
+          ~thread_id:None ~lookup ~config_exists:no_config with
+  | Ok r ->
+      Alcotest.(check string) "resumes same seed" "SEED9" r.S.r_session_id;
+      Alcotest.(check (option string)) "resumes saved thread" (Some "TT") r.S.r_thread_id
+  | Error e -> Alcotest.failf "start --alias on existing mapping should resume: %s" e
+
+(* ------------------------------------------------------------------ *)
+(* --yolo is NEVER persisted into the identity mapping                 *)
+(* ------------------------------------------------------------------ *)
+
+let string_mem needle hay =
+  let nl = String.length needle and hl = String.length hay in
+  let rec go i = i + nl <= hl && (String.sub hay i nl = needle || go (i+1)) in
+  nl = 0 || go 0
+
+let test_yolo_not_persisted () =
+  let sid = unique_sid () in
+  let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      let clock = ref 0.0 in
+      let server = { status = Running_ } in
+      let frontend = { status = Exited 0 } in
+      let bk = scripted ~clock
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake ~id:111 server))
+          ~spawn_frontend:(fun ~argv:_ ~env:_ -> Ok (mk_fake ~id:222 frontend)) () in
+      (* Launch WITH --yolo. *)
+      let _ = S.run ~mode:S.Start ~yolo:true ~app_server:true ~extra_args:[]
+          ~thread_id:sid ~backend:bk ~fallback:(fun ~extra_args:_ () -> 0) () in
+      (* The persisted mapping file must contain NO bypass flag and NO yolo marker. *)
+      let raw =
+        let ic = open_in (S.mapping_path ~instance_dir:(C2c_start.instance_dir alias)) in
+        Fun.protect ~finally:(fun () -> close_in ic)
+          (fun () -> really_input_string ic (in_channel_length ic)) in
+      Alcotest.(check bool) "no bypass flag in mapping" false
+        (string_mem "dangerously-bypass" raw);
+      Alcotest.(check bool) "no yolo marker in mapping" false
+        (string_mem "yolo" raw))
+
 let () =
   let open Alcotest in
   run "c2c_codex_session"
@@ -288,6 +402,16 @@ let () =
         ; test_case "split_client_alias" `Quick test_split_client_alias_passthrough ] )
     ; ( "thread-conflict",
         [ test_case "reconcile" `Quick test_reconcile_thread ] )
+    ; ( "identity-resolve",
+        [ test_case "resume unknown rejected" `Quick test_resolve_resume_unknown_rejected
+        ; test_case "resume ok" `Quick test_resolve_resume_ok
+        ; test_case "alias conflict rejected" `Quick test_resolve_alias_conflict_rejected
+        ; test_case "thread conflict rejected" `Quick test_resolve_thread_conflict_rejected
+        ; test_case "config-owned alias rejected" `Quick test_resolve_config_owned_rejected
+        ; test_case "new derives deterministic" `Quick test_resolve_new_derives_deterministic
+        ; test_case "start --alias resumes mapping" `Quick test_resolve_start_alias_resumes_mapping ] )
+    ; ( "yolo-persistence",
+        [ test_case "yolo not persisted" `Quick test_yolo_not_persisted ] )
     ; ( "status",
         [ test_case "mapping" `Quick test_status_mapping ] )
     ; ( "mapping",

@@ -115,8 +115,21 @@ let status_of_app_server_state (s : C2c_codex_app_server.state) : status =
 
 let status_of_instance ~(instance_dir : string) : status option =
   match C2c_codex_app_server.load_persisted ~instance_dir with
-  | Some p -> Some (status_of_app_server_state p.C2c_codex_app_server.state)
   | None -> None
+  | Some p ->
+      let st = status_of_app_server_state p.C2c_codex_app_server.state in
+      (* A record that claims to be up but whose recorded pids are dead (hard
+         kill / crash — the supervisor never got to persist Offline) is really
+         offline. Cross-check liveness so `c2c instances` doesn't show a ghost
+         session as online-attached. *)
+      (match st with
+       | Starting | Online_attached ->
+           let alive = function Some pid -> C2c_codex_app_server.pid_alive pid | None -> false in
+           if alive p.C2c_codex_app_server.server_pid
+              || alive p.C2c_codex_app_server.frontend_pid
+           then Some st
+           else Some Offline
+       | _ -> Some st)
 
 (* --------------------------- identity mapping ----------------------------- *)
 
@@ -205,40 +218,48 @@ let report_diagnostic (d : C2c_codex_app_server.diagnostic) : unit =
                  \  upgrade codex and retry, or run without --app-server for hooks.\n";
   Printf.eprintf "  diagnostic: %s\n%!" (Yojson.Safe.to_string j)
 
-(* Resolve identity for a launch. Returns (name, session_id, alias, thread_id).
-   [name] is the managed instance key (== alias). Exits on unrecoverable
-   conflicts. *)
+type resolved = {
+  r_name : string;          (* managed instance key (== alias) *)
+  r_session_id : string;    (* stable identity seed *)
+  r_alias : string;         (* published/routing alias *)
+  r_thread_id : string option;
+}
+
+(* Pure identity resolution. [lookup] returns the saved mapping for an alias and
+   [config_exists] reports whether a non-app-server managed instance owns it —
+   both injected so this is unit-testable without touching the filesystem, and
+   returns a [result] (the CLI layer decides how to surface an [Error]). *)
 let resolve_identity ~(mode : launch_mode) ~(alias_override : string option)
-    ~(thread_id : string option) : string * string * string * string option =
-  let reject msg =
-    Printf.eprintf "%serror:%s %s\n%!" (red ()) (reset ()) msg; exit 1
-  in
-  (* thread_id conflict check against a saved mapping (pure {!reconcile_thread}). *)
-  let reconcile ~(saved : string option) : string option =
-    match reconcile_thread ~requested:thread_id ~saved with
-    | Ok v -> v
-    | Error msg -> reject msg
-  in
-  let from_saved (m : mapping) =
-    let alias =
-      match alias_override with
-      | Some a when a <> m.alias ->
-          if alias_taken_by_other ~our_session_id:m.session_id a then
-            reject (Printf.sprintf "--alias %s is already owned by a different session." a)
-          else a
-      | _ -> m.alias
-    in
-    (alias, m.session_id, reconcile ~saved:m.thread_id, alias)
+    ~(thread_id : string option) ~(lookup : string -> mapping option)
+    ~(config_exists : string -> bool) : (resolved, string) result =
+  let taken_by_other ~our_session_id a =
+    match lookup a with
+    | Some m -> m.session_id <> our_session_id
+    | None -> config_exists a
   in
   let fresh_sid () =
     match thread_id with Some t when String.trim t <> "" -> t | _ -> gen_session_id ()
   in
+  let mk name sid alias th = Ok { r_name = name; r_session_id = sid; r_alias = alias; r_thread_id = th } in
+  let from_saved (m : mapping) =
+    let alias_res =
+      match alias_override with
+      | Some a when a <> m.alias ->
+          if taken_by_other ~our_session_id:m.session_id a then
+            Error (Printf.sprintf "--alias %s is already owned by a different session." a)
+          else Ok a
+      | _ -> Ok m.alias
+    in
+    match alias_res, reconcile_thread ~requested:thread_id ~saved:m.thread_id with
+    | Error e, _ | _, Error e -> Error e
+    | Ok alias, Ok th -> mk alias m.session_id alias th
+  in
   match mode with
   | Resume alias -> (
-      match mapping_for_alias alias with
-      | Some m -> let (al, sid, th, name) = from_saved m in (name, sid, al, th)
+      match lookup alias with
+      | Some m -> from_saved m
       | None ->
-          reject (Printf.sprintf
+          Error (Printf.sprintf
             "no saved codex app-server session for alias '%s'. \
              Start one with `c2c codex --alias %s` or `c2c new codex`." alias alias))
   | Start -> (
@@ -246,41 +267,31 @@ let resolve_identity ~(mode : launch_mode) ~(alias_override : string option)
          explicitly selected (an --alias naming an existing mapping). *)
       match alias_override with
       | Some a -> (
-          match mapping_for_alias a with
-          | Some m -> let (al, sid, th, name) = from_saved m in (name, sid, al, th)
+          match lookup a with
+          | Some m -> from_saved m
           | None ->
-              if Sys.file_exists (C2c_start.config_path a) then
-                reject (Printf.sprintf
+              if config_exists a then
+                Error (Printf.sprintf
                   "alias '%s' is already owned by a non-app-server managed instance." a)
-              else let sid = fresh_sid () in (a, sid, a, thread_id))
+              else let sid = fresh_sid () in mk a sid a thread_id)
       | None ->
           let sid = fresh_sid () in
-          let alias = derive_alias ~session_id:sid ~taken:(alias_taken_by_other ~our_session_id:sid) in
-          (alias, sid, alias, thread_id))
+          let alias = derive_alias ~session_id:sid ~taken:(taken_by_other ~our_session_id:sid) in
+          mk alias sid alias thread_id)
   | New ->
       (* Always a fresh identity — never resume, even if --alias names a saved
          mapping (that is a conflict). *)
       let sid = fresh_sid () in
-      let alias =
-        match alias_override with
-        | Some a ->
-            if alias_taken_by_other ~our_session_id:sid a then
-              reject (Printf.sprintf
-                "--alias %s is already owned by a different session; \
-                 `new` refuses to reuse it." a)
-            else a
-        | None -> derive_alias ~session_id:sid ~taken:(alias_taken_by_other ~our_session_id:sid)
-      in
-      (alias, sid, alias, thread_id)
-
-(* Publish env so the stock codex frontend (which reads ~/.codex/config.toml
-   hooks) self-registers under our derived alias once it is live. Full managed
-   env parity is refined by T003/T005; here we set the minimum needed for the
-   alias to become routable. *)
-let publish_alias_env ~(name : string) ~(alias : string) : unit =
-  (try Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" alias with _ -> ());
-  (try Unix.putenv "C2C_MCP_SESSION_ID" name with _ -> ());
-  (try Unix.putenv "C2C_INSTANCE_NAME" name with _ -> ())
+      (match alias_override with
+       | Some a ->
+           if taken_by_other ~our_session_id:sid a then
+             Error (Printf.sprintf
+               "--alias %s is already owned by a different session; \
+                `new` refuses to reuse it." a)
+           else mk a sid a thread_id
+       | None ->
+           let alias = derive_alias ~session_id:sid ~taken:(taken_by_other ~our_session_id:sid) in
+           mk alias sid alias thread_id)
 
 (* Read the (possibly None) thread id off a live handle via its persisted view. *)
 let handle_thread (h : C2c_codex_app_server.handle) : string option =
@@ -292,7 +303,12 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
   let (name, session_id, alias, thread) =
-    resolve_identity ~mode ~alias_override ~thread_id in
+    match resolve_identity ~mode ~alias_override ~thread_id
+            ~lookup:mapping_for_alias
+            ~config_exists:(fun a -> Sys.file_exists (C2c_start.config_path a)) with
+    | Ok r -> (r.r_name, r.r_session_id, r.r_alias, r.r_thread_id)
+    | Error msg -> Printf.eprintf "%serror:%s %s\n%!" (red ()) (reset ()) msg; exit 1
+  in
   let instance_dir = C2c_start.instance_dir name in
   (try C2c_io.mkdir_p instance_dir with _ -> ());
   if yolo then Printf.eprintf "%s%s%s\n%!" (yellow ()) yolo_warning (reset ());
@@ -318,13 +334,22 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
   in
   match start cfg with
   | Error diag ->
+      (* No routable identity was persisted (start failed before Running), so
+         nothing to clean up here. Best-effort remove the empty instance dir we
+         created above so a fallback launch doesn't inherit a stray dir. *)
+      (try if Sys.readdir instance_dir = [||] then Unix.rmdir instance_dir with _ -> ());
       report_diagnostic diag;
       (* Graceful fallback to the hook-backed launch (AC7). Do NOT forward
          session identity; the hook path owns its own alias handling. *)
       fallback ~extra_args:(frontend_extra_args ~yolo ~extra:extra_args) ()
   | Ok handle ->
-      (* Session is up and attached: NOW publish the routing identity. *)
-      publish_alias_env ~name ~alias;
+      (* Session is up and attached. Persist the identity mapping — the
+         authoritative alias<->session record that `c2c instances`/status read.
+         NOTE: auto-registering the interactive frontend into the broker under
+         this alias needs the codex-hook env threaded into the frontend child at
+         spawn time; that managed-env parity is T005's job (T002's frontend-env
+         builder only injects the auth token). Until then the derived alias is
+         the persisted, discoverable identity, not yet a live broker alias. *)
       let now = Unix.gettimeofday () in
       let created =
         match load_mapping ~instance_dir with Some m -> m.created_at | None -> now in
@@ -347,10 +372,6 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
              (yellow ()) (reset ());
            1
        | _ -> 0)
-
-(* Read the (possibly None) thread id off a live handle via its persisted view. *)
-and handle_thread (h : C2c_codex_app_server.handle) : string option =
-  (C2c_codex_app_server.persisted_of h).C2c_codex_app_server.thread_id
 
 let run ~(mode : launch_mode) ?(alias_override : string option)
     ?(thread_id : string option) ~(yolo : bool) ~(app_server : bool)

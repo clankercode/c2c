@@ -918,7 +918,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | Subcommand | Description |
 |------------|-------------|
 | `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For `codex`, also accepts `--yolo`, `--app-server`, `--thread-id ID` (see the Codex session grammar below). |
-| `codex [--alias A] [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Exact shortcut for `c2c start codex`. See the Codex session grammar below. |
+| `codex [--alias A] [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
 | `new codex [--alias A] [--yolo] [--app-server] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
 | `resume codex ALIAS [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
@@ -935,8 +935,8 @@ Four command forms share one implementation path for managed Codex sessions:
 
 | Form | Meaning |
 |------|---------|
-| `c2c start codex …` | Canonical managed entry point. |
-| `c2c codex …` | Exact shortcut for `c2c start codex` (identical parsing, exit codes, defaults). |
+| `c2c start codex …` | Canonical managed entry point (full managed flag surface: `-n`, `-m`, `--worktree`, `--agent`, `--auto-join`, …). |
+| `c2c codex …` | Shortcut for `c2c start codex` with the same Codex session semantics (identity, `--yolo`, `--app-server`, `--thread-id`) and the same defaults. It exposes a reduced flag surface — pass codex options after `--`, and use `c2c start codex` when you need the full managed flags. |
 | `c2c new codex …` | Always a new Codex thread + a new c2c identity — never silently resumes. |
 | `c2c resume codex ALIAS …` | Resume the Codex thread saved for `ALIAS`. |
 

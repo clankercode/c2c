@@ -68,18 +68,22 @@ let require_codex_client = function
 (* The hook-backed (legacy) launch, invoked when the app-server path is not
    engaged or gracefully falls back after a version/capability diagnostic. *)
 let hook_fallback ~(mode : C2c_codex_session.launch_mode) ~(alias_override : string option)
-    () : extra_args:string list -> unit -> int =
+    ?(model_override : string option) () : extra_args:string list -> unit -> int =
+  (* Default swarm onboarding parity: a `c2c codex`/`new codex` launched agent
+     still joins the social room like `c2c start codex` does. *)
+  let auto_join_rooms = C2c_swarm_config.swarm_config_social_room () in
   fun ~extra_args () ->
     match mode with
     | C2c_codex_session.Resume alias ->
         C2c_start.cmd_start ~client:"codex" ~name:alias ~extra_args
+          ?model_override ~auto_join_rooms
           ~opencode_plugin_embedded:"" ()
     | New ->
         let name = match alias_override with
           | Some a -> a
           | None -> C2c_start.default_name "codex" in
         C2c_start.cmd_start ~client:"codex" ~name ~extra_args
-          ?alias_override ~new_session:true
+          ?alias_override ?model_override ~new_session:true ~auto_join_rooms
           ~alias_from_auto_gen:(alias_override = None)
           ~opencode_plugin_embedded:"" ()
     | Start ->
@@ -87,15 +91,15 @@ let hook_fallback ~(mode : C2c_codex_session.launch_mode) ~(alias_override : str
           | Some a -> a
           | None -> C2c_start.default_name "codex" in
         C2c_start.cmd_start ~client:"codex" ~name ~extra_args
-          ?alias_override
+          ?alias_override ?model_override ~auto_join_rooms
           ~alias_from_auto_gen:(alias_override = None)
           ~opencode_plugin_embedded:"" ()
 
 let dispatch ~(mode : C2c_codex_session.launch_mode) ~alias_override ~thread_id
-    ~yolo ~app_server ~extra_args () : int =
+    ~yolo ~app_server ?model_override ~extra_args () : int =
   C2c_codex_session.run ~mode ?alias_override ?thread_id ~yolo ~app_server
-    ~extra_args
-    ~fallback:(hook_fallback ~mode ~alias_override ())
+    ~extra_args ?model_override
+    ~fallback:(hook_fallback ~mode ~alias_override ?model_override ())
     ()
 
 (* -------------------------------- codex ----------------------------------- *)
@@ -113,11 +117,13 @@ let codex_term =
 
 let codex : unit Cmd.t =
   Cmd.v (Cmd.info "codex"
-           ~doc:"Start a managed Codex session (exact shortcut for `c2c start codex`)."
+           ~doc:"Start a managed Codex session (shortcut for `c2c start codex`)."
            ~man:[ `S "DESCRIPTION"
-                ; `P "Identical to $(b,c2c start codex): launches an interactive \
-                      Codex frontend with a generated c2c identity. Pass codex \
-                      options after $(b,--), e.g. $(b,c2c codex -- --model MODEL)." ])
+                ; `P "Shortcut for $(b,c2c start codex) with the same Codex session \
+                      semantics and defaults (generated identity, $(b,--yolo), \
+                      $(b,--app-server)). Exposes a reduced flag surface — pass codex \
+                      options after $(b,--), e.g. $(b,c2c codex -- --model MODEL); use \
+                      $(b,c2c start codex) for the full managed flags." ])
     codex_term
 
 (* --------------------------------- new ------------------------------------ *)
@@ -154,6 +160,12 @@ let resume_term =
   let (client, alias, extra_args) = strip_leading_client_alias positionals in
   require_codex_client client;
   (match alias with
+   | Some a when String.length a > 0 && a.[0] = '-' ->
+       (* Guard against a mis-parsed flag being taken as the alias (e.g.
+          `c2c resume codex -- --model x` with no alias). *)
+       Printf.eprintf "error: `c2c resume codex` requires an ALIAS before any `--`/options \
+                       (got '%s'). Usage: c2c resume codex <alias> [-- codex-options...]\n%!" a;
+       exit 1
    | Some a ->
        exit (dispatch ~mode:(C2c_codex_session.Resume a) ~alias_override:None
                ~thread_id ~yolo ~app_server ~extra_args ())
@@ -172,7 +184,7 @@ let resume_cmd : unit Cmd.t =
     resume_term
 
 (* Re-exported for c2c_managed_cmd so `c2c start codex` routes to the same path. *)
-let start_delegate ~alias_override ~thread_id ~yolo ~app_server ~extra_args
-    ~fallback () : int =
+let start_delegate ~alias_override ~thread_id ~yolo ~app_server ?model_override
+    ~extra_args ~fallback () : int =
   C2c_codex_session.run ~mode:C2c_codex_session.Start ?alias_override ?thread_id
-    ~yolo ~app_server ~extra_args ~fallback ()
+    ~yolo ~app_server ?model_override ~extra_args ~fallback ()

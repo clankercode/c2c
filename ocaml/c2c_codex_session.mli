@@ -99,6 +99,27 @@ type launch_mode =
   | New             (* always a fresh thread + identity; never resume *)
   | Resume of string (* resume the saved thread for this alias *)
 
+type resolved = {
+  r_name : string;
+  r_session_id : string;
+  r_alias : string;
+  r_thread_id : string option;
+}
+
+(** Pure identity resolution shared by all four command forms. [lookup] returns
+    the saved mapping for an alias; [config_exists] reports whether a
+    non-app-server managed instance already owns it. Returns [Error msg] for an
+    ambiguous/conflicting request (unknown resume alias, `--alias` owned by a
+    different session, `--thread-id` conflicting with the saved thread, `new`
+    reusing a taken alias) — the CLI layer surfaces the message and exits. *)
+val resolve_identity :
+  mode:launch_mode ->
+  alias_override:string option ->
+  thread_id:string option ->
+  lookup:(string -> mapping option) ->
+  config_exists:(string -> bool) ->
+  (resolved, string) result
+
 (** [run] is the single shared implementation path behind
     [c2c start codex] / [c2c codex] / [c2c new codex] / [c2c resume codex].
 

@@ -698,7 +698,7 @@ let start_cmd =
   if client = "codex" then
     exit (C2c_codex_cmd.start_delegate
             ~alias_override ~thread_id:thread_id_flag ~yolo:yolo_flag
-            ~app_server:app_server_flag ~extra_args:extra_argv
+            ~app_server:app_server_flag ?model_override ~extra_args:extra_argv
             ~fallback:cmd_start_with ())
   else begin
     ignore yolo_flag; ignore thread_id_flag; ignore app_server_flag;
