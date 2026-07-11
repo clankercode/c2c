@@ -310,6 +310,31 @@ let test_session_start_wake_note_and_cold_boot_once () =
            (contains ~haystack:context ~needle:"kind=\"cold-boot\"")
      | None -> ()))
 
+let test_hook_adopts_mcp_first_registration () =
+  (* B119 reverse direction: when the MCP server registered the payload
+     session_id FIRST (pid set, registered_by=None), a later SessionStart
+     hook fire must ADOPT that identity — wake note with the existing
+     alias, no re-register, no alias clobber. *)
+  with_ctx (fun ctx ->
+    let sid = "claude-e2e-b119-rev-0001" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-claude-e2e-mcpfirst");
+    let rc, stdout, stderr = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "exit 0" 0 rc;
+    let regs = C2c_mcp.Broker.list_registrations (broker ctx) in
+    check int "no duplicate registration" 1 (List.length regs);
+    (match find_reg ctx sid with
+     | None -> failf "registration vanished (stderr: %S)" stderr
+     | Some r ->
+         check string "alias preserved (hook adopted, did not clobber)"
+           "zz-claude-e2e-mcpfirst" r.alias;
+         check (option string) "not converted to a hook registration"
+           None r.registered_by);
+    (match parse_context stdout with
+     | Some (_, context) ->
+         check bool "wake note names the adopted alias" true
+           (contains ~haystack:context ~needle:"zz-claude-e2e-mcpfirst")
+     | None -> failf "expected wake note, got: %S" stdout))
+
 let test_compact_source_emits_post_compact_context () =
   with_ctx (fun ctx ->
     let sid = "claude-e2e-compact-0001" in
@@ -394,6 +419,8 @@ let () =
             test_session_end_keeps_explicit_registration
         ; test_case "SessionStart wake note + cold-boot once" `Quick
             test_session_start_wake_note_and_cold_boot_once
+        ; test_case "hook adopts MCP-first registration (B119 reverse)" `Quick
+            test_hook_adopts_mcp_first_registration
         ; test_case "compact source emits post-compact context" `Quick
             test_compact_source_emits_post_compact_context
         ; test_case "non-compact source has no post-compact context" `Quick
