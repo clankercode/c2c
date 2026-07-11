@@ -300,11 +300,11 @@ let test_relay_reregister_migrates_inbox () =
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   (* Bob sends 3 messages to alice while alice's lease is n1/s1 *)
   let (_: [> `Ok of float | `Duplicate of float | `Error of string * string]) =
-    Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg1" ~message_id:None in
+    Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg1" ~message_id:None ~pow_difficulty:(-1) in
   let (_: [> `Ok of float | `Duplicate of float | `Error of string * string]) =
-    Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg2" ~message_id:None in
+    Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg2" ~message_id:None ~pow_difficulty:(-1) in
   let (_: [> `Ok of float | `Duplicate of float | `Error of string * string]) =
-    Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg3" ~message_id:None in
+    Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg3" ~message_id:None ~pow_difficulty:(-1) in
   (* Alice re-registers with same node_id but new session_id (simulates restart/reconnect) *)
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1_new" ~alias:"alice" () in
   (* Alice polls her NEW session — with the F4 fix she should get all 3 migrated messages.
@@ -318,7 +318,7 @@ let test_relay_send_delivers_to_recipient () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-  match Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"bob" ~content:"hello bob" ~message_id:None with
+  match Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"bob" ~content:"hello bob" ~message_id:None ~pow_difficulty:(-1) with
   | `Ok ts ->
       if ts <= 0.0 then fail_fmt "ts should be positive";
       let inbox = Relay.InMemoryRelay.poll_inbox t ~node_id:"n2" ~session_id:"s2" in
@@ -331,7 +331,7 @@ let test_relay_send_delivers_to_recipient () =
 let test_relay_send_to_unknown_alias_goes_to_dead_letter () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  match Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"nobody" ~content:"hello" ~message_id:None with
+  match Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"nobody" ~content:"hello" ~message_id:None ~pow_difficulty:(-1) with
   | `Error (err, _) ->
       if err <> Relay.relay_err_unknown_alias then fail_fmt "expected unknown_alias, got %s" err;
       let dl = Relay.InMemoryRelay.dead_letter t in
@@ -343,7 +343,7 @@ let test_relay_poll_inbox_drains () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-  let _ = Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"bob" ~content:"msg1" ~message_id:None in
+  let _ = Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"bob" ~content:"msg1" ~message_id:None ~pow_difficulty:(-1) in
   let first = Relay.InMemoryRelay.poll_inbox t ~node_id:"n2" ~session_id:"s2" in
   if List.length first <> 1 then fail_fmt "first poll should return 1";
   let second = Relay.InMemoryRelay.poll_inbox t ~node_id:"n2" ~session_id:"s2" in
@@ -353,7 +353,7 @@ let test_relay_peek_inbox_does_not_drain () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-  let _ = Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"bob" ~content:"msg1" ~message_id:None in
+  let _ = Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"bob" ~content:"msg1" ~message_id:None ~pow_difficulty:(-1) in
   let first = Relay.InMemoryRelay.peek_inbox t ~node_id:"n2" ~session_id:"s2" in
   if List.length first <> 1 then fail_fmt "first peek should return 1";
   let second = Relay.InMemoryRelay.peek_inbox t ~node_id:"n2" ~session_id:"s2" in
@@ -700,7 +700,7 @@ let test_relay_sqlite_alias_retention_warns_and_releases () =
     let _ = Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"retention-room" () in
     let _ = Relay.SqliteRelay.join_room t ~alias:"bob" ~room_id:"retention-room" () in
     let _ = Relay.SqliteRelay.join_room t ~alias:"carol" ~room_id:"retention-room" () in
-    (match Relay.SqliteRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"queued-before-release" ~message_id:None with
+    (match Relay.SqliteRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"queued-before-release" ~message_id:None ~pow_difficulty:(-1) with
      | `Ok _ -> ()
      | _ -> fail_fmt "sqlite: setup send to alice should queue before release");
     let warning_last_seen = Unix.gettimeofday () -. Relay.alias_warning_after_s -. 60.0 in
@@ -767,7 +767,7 @@ let test_relay_sqlite_alias_retention_warns_and_releases () =
       fail_fmt "sqlite: heartbeat should not revive released alias, got %s" hb_status;
     if Relay.SqliteRelay.identity_pk_of t ~alias:"alice" <> None then
       fail_fmt "sqlite: heartbeat must not restore released identity";
-    (match Relay.SqliteRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"after release" ~message_id:None with
+    (match Relay.SqliteRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"after release" ~message_id:None ~pow_difficulty:(-1) with
      | `Error (err, _) ->
          if err <> Relay.relay_err_unknown_alias then
            fail_fmt "sqlite: direct send to released alias should be unknown_alias, got %s" err
@@ -971,7 +971,7 @@ let send_with_cross_host_check relay ~from_alias ~to_alias ~content =
       (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias)
   end else
     let deliver_to_alias = if opaque_host_route then to_alias else stripped in
-    match Relay.InMemoryRelay.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~message_id:None with
+    match Relay.InMemoryRelay.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~message_id:None ~pow_difficulty:(-1) with
     | `Ok ts -> `Ok ts
     | `Duplicate ts -> `Duplicate ts
     | `Error (err, msg) -> `Error (err, msg)

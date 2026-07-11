@@ -61,7 +61,7 @@ let handle_send_sim relay ~from_alias ~to_alias ~content =
     `Cross_host_rejected
       (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias)
   else
-    match R.InMemoryRelay.send relay ~from_alias ~to_alias:stripped_to_alias ~content ~message_id:None with
+    match R.InMemoryRelay.send relay ~from_alias ~to_alias:stripped_to_alias ~content ~message_id:None ~pow_difficulty:(-1) with
     | `Ok ts -> `Ok ts
     | `Duplicate ts -> `Duplicate ts
     | `Error (err, msg) -> `Error (err, msg)
