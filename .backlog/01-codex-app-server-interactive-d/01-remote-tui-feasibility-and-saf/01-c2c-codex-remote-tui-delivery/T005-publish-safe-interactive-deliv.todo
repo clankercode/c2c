@@ -1,4 +1,7 @@
 ---
+claimed_at: "2026-07-11T13:34:06Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on:
     - P1.M1.E1.T004
@@ -7,13 +10,11 @@ depends_on:
 estimate_hours: 6
 id: P1.M1.E1.T005
 priority: medium
-status: pending
-tags:
-    - codex
-    - docs
-    - doctor
-    - delivery
+started_at: "2026-07-11T13:34:06Z"
+status: in_progress
+tags: []
 title: Document and diagnose canonical managed Codex delivery
+updated_at: "2026-07-11T13:34:06Z"
 ---
 ## Objective
 
