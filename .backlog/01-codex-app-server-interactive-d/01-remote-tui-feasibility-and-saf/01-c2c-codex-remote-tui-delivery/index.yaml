@@ -39,7 +39,7 @@ tasks:
       file: T003-implement-passive-c2c-ingress.todo
       id: T003
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Implement passive c2c ingress through app-server thread injection
     - complexity: high
