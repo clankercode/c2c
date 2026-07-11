@@ -12,3 +12,38 @@ updated_at: "2026-07-11T11:04:10Z"
 ---
 
 Generalize '--' arg passthrough to all c2c client wrappers (c2c start/new <client> -- <client-opts>)
+
+## Context
+
+Introduced for codex under P1.M1.E1.T006: `c2c new codex -- <args>` forwards
+everything after `--` verbatim to the codex frontend (e.g.
+`c2c new codex -- --model gpt-5.3-codex-spark`), and we suggest a shell alias
+ending in `--` (e.g. `cx='c2c new codex --'`) so `cx --model gpt-5.3-codex-spark`
+Just Works. T006 owns this for codex ONLY.
+
+## Objective
+
+Make the `--` passthrough boundary consistent across ALL `c2c start`/`c2c new`
+client wrappers (claude, codex, opencode, kimi, pi, gemini), not just codex.
+Everything after `--` stops c2c's own option parsing and is forwarded verbatim
+to the launched client's argv; nothing after `--` is ever interpreted as a c2c
+flag. Only codex is currently *suggested* to be used this way, but the mechanism
+should be uniform so any wrapped client behaves predictably.
+
+## Acceptance criteria
+
+- `c2c start <client> -- <opts...>` and `c2c new <client> -- <opts...>` forward
+  `<opts...>` verbatim to the client for every supported client.
+- `--` is the explicit, tested boundary; pre-`--` flags parse as c2c flags,
+  post-`--` args never do (parser test per client, or one shared test).
+- Suggested shell-alias convention (alias ending in `--`) documented generally
+  in docs/commands.md, with codex as the primary worked example.
+- No regression to existing per-client launch behavior or the existing
+  `[client-options...]` handling.
+
+## Notes
+
+- Do this AFTER T006 lands (reuse/lift its codex passthrough implementation so
+  there is one shared code path, not per-client copies).
+- Origin: Max, 2026-07-11 — "it should work for any agent started with a c2c
+  wrapper (though only codex is suggested to be used like that currently)."
