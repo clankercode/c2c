@@ -149,6 +149,10 @@ type queued_reason =
   | Q_offline
   | Q_dnd
   | Q_active_turn
+  | Q_status_unknown
+      (** thread status could not be confirmed idle (read failed / malformed) —
+          fail-closed: queued, NOT fired, to avoid a turn concurrent with an
+          in-flight one. Retried on a later pass. *)
   | Q_ambiguous_held
   | Q_no_eligible
   | Q_remote_only

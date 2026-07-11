@@ -363,6 +363,7 @@ type queued_reason =
   | Q_offline
   | Q_dnd
   | Q_active_turn
+  | Q_status_unknown
   | Q_ambiguous_held
   | Q_no_eligible
   | Q_remote_only
@@ -373,6 +374,7 @@ let queued_reason_to_string = function
   | Q_offline -> "offline"
   | Q_dnd -> "dnd"
   | Q_active_turn -> "active_turn"
+  | Q_status_unknown -> "status_unknown"
   | Q_ambiguous_held -> "ambiguous_held"
   | Q_no_eligible -> "no_eligible"
   | Q_remote_only -> "remote_only"
@@ -568,10 +570,17 @@ let deliver_pass (cfg : config) : pass_outcome =
             cfg.turn_client.thread_status ~endpoint:cfg.ingress_cfg.endpoint ~token
               ~thread_id:cfg.ingress_cfg.thread_id
           in
-          if status = `Active then begin
-            (* someone else's turn is running — serialize behind it. *)
+          (* FIRE ONLY on an EXPLICIT `Idle. `Active → someone else's turn is
+             running (serialize behind it). `Unknown → the status read failed
+             (connection/read error or malformed/error response); we CANNOT
+             confirm the thread is idle, so we must fail closed and queue —
+             firing here could start a turn concurrent with an in-flight one
+             (the prohibited case). A later pass retries once the status is
+             confirmable. *)
+          if status <> `Idle then begin
             save_ledger cfg lg;
-            base_fields ~queued_reason:Q_active_turn ()
+            let qr = if status = `Active then Q_active_turn else Q_status_unknown in
+            base_fields ~queued_reason:qr ()
           end
           else begin
             let batch_ids =

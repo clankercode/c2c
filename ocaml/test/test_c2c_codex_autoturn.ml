@@ -163,6 +163,26 @@ let test_canonical_form_fails_closed () =
   Alcotest.(check (option string)) "canonical form queued (fail-closed)"
     (Some "remote_only") (qr o)
 
+let test_unknown_status_fails_closed () =
+  (* a status read that returns `Unknown (transient connection/read failure)
+     must NOT fire a turn — firing could start one concurrent with an in-flight
+     turn on the server. Fail closed + retry once status is confirmable. *)
+  let root = mk_root () in
+  seed_inbox ~root [ mk_msg ~from:"peer" ~message_id:"m1" "hi" ];
+  let ic, _ = mk_inject_client () in
+  let th = mk_turn_harness () in
+  th.status := `Unknown;
+  let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client () in
+  let o1 = A.deliver_pass h.cfg in
+  Alcotest.(check (option string)) "unknown status queued (fail-closed)"
+    (Some "status_unknown") (qr o1);
+  Alcotest.(check int) "NO turn fired on unknown status" 0 (n_starts th);
+  (* status becomes confirmable idle → fires exactly one turn now *)
+  th.status := `Idle;
+  let o2 = A.deliver_pass h.cfg in
+  Alcotest.(check bool) "turn fired once status idle" true (o2.A.po_turn_started <> None);
+  Alcotest.(check int) "exactly one turn after idle confirmed" 1 (n_starts th)
+
 let test_active_turn_batching_next_turn () =
   let root = mk_root () in
   seed_inbox ~root [ mk_msg ~from:"peer" ~message_id:"m1" "first" ];
@@ -328,6 +348,8 @@ let () =
           Alcotest.test_case "remote provenance: inject, no turn" `Quick test_remote_provenance_no_turn;
           Alcotest.test_case "canonical/#-form sender fails closed (no turn)" `Quick
             test_canonical_form_fails_closed;
+          Alcotest.test_case "unknown thread status fails closed (no concurrent turn)" `Quick
+            test_unknown_status_fails_closed;
           Alcotest.test_case "active-turn batching + next-turn separation" `Quick
             test_active_turn_batching_next_turn ] );
       ( "crash windows",
