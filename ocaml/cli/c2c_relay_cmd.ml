@@ -379,6 +379,17 @@ let print_result_and_exit ?alias_source result =
   in
   if ok then exit 0
   else begin
+    (* B121: protocol-skew responses already carry the upgrade sentence in
+       [error]; echo it on stderr so operators see it next to any other
+       hints even when stdout is piped/json-consumed. *)
+    if Relay.Relay_client.is_protocol_incompatible result then begin
+      match result with
+      | `Assoc fields ->
+          (match List.assoc_opt "error" fields with
+           | Some (`String msg) -> Printf.eprintf "%s\n%!" msg
+           | _ -> ())
+      | _ -> ()
+    end;
     (match alias_source with
      | Some src ->
          (match Relay_client_hints.hint_for_response ~alias_source:src result with

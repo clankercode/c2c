@@ -83,7 +83,20 @@ let check_relay_http () =
     let git_hash = Yojson.Safe.Util.(result |> member "git_hash" |> to_string_option |> Option.value ~default:"?") in
     let auth_mode = Yojson.Safe.Util.(result |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown") in
     let ok = Yojson.Safe.Util.(result |> member "ok") = `Bool true in
-    if ok then
+    (* B121: protocol skew is not "unreachable" — surface the upgrade text. *)
+    if Relay.Relay_client.is_transport_error result then
+      let err =
+        Yojson.Safe.Util.(result |> member "error" |> to_string_option
+                          |> Option.value ~default:"connection_error")
+      in
+      (`Red, Printf.sprintf "relay: unreachable (%s) (%s)" err url)
+    else if Relay.Relay_client.is_protocol_incompatible result then
+      let err =
+        Yojson.Safe.Util.(result |> member "error" |> to_string_option
+                          |> Option.value ~default:"incompatible protocol")
+      in
+      (`Red, Printf.sprintf "relay: incompatible — %s" err)
+    else if ok then
       let auth_str = match auth_mode with
         | "dev" -> " ⚠ dev mode (no auth)"
         | "prod" -> " prod mode"
