@@ -117,3 +117,4 @@ bugs:
     - file: B118-return-anonymous-listed-room-r.todo
     - file: B119-mcp-register-overwrites-hook-r.todo
     - file: B120-managed-codex-wake-broken-on-r.todo
+    - file: B121-client-should-surface-a-clear.todo
