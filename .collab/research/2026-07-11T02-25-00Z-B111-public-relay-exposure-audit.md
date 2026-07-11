@@ -95,8 +95,7 @@ or bootstrap paths:
   handlers validate a signed, expiring pairing token rather than requiring the
   global Ed25519 request header. `/ws/subscribe` validates its dedicated
   signature headers. The observer path is a peer route followed by an
-  additional binding-Bearer check. Device-pair paths are normal peer routes
-  and therefore need the global Ed25519 proof in production.
+  additional binding-Bearer check.
 
 These endpoint classes are included for completeness but are not anonymous
 listability surfaces. Do not infer authorization from untrusted message
