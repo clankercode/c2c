@@ -101,7 +101,7 @@ module Backend_http_tests (R : Relay.RELAY) = struct
     register_identity relay ~node_id:"attacker-node" ~session_id:"attacker-session"
       ~alias:"attacker" attacker;
     (match R.send relay ~from_alias:"attacker" ~to_alias:"victim"
-             ~content:"victim secret" ~message_id:None with
+             ~content:"victim secret" ~message_id:None ~pow_difficulty:(-1) with
      | `Ok _ -> ()
      | `Duplicate _ -> Alcotest.fail "unexpected duplicate message"
      | `Error (code, msg) -> failf "send failed: %s: %s" code msg);

@@ -690,6 +690,7 @@ let gate_mcp_message ?message_id ?(to_alias = "zz-gate-recv") ?(deferrable = fal
   ; ts = 1700000001.25
   ; ephemeral = false
   ; message_id
+  ; pow_difficulty = None
   }
 
 let test_aggregate_gate_mcp_inbox_rows () =

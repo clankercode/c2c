@@ -180,7 +180,7 @@ let test_relay_send_to_embedded_host_id_alias () =
   check string "register status" "ok" status;
   match Relay.InMemoryRelay.send t
           ~from_alias:"alice" ~to_alias:"lyra-quill@3d08761ae3f3"
-          ~content:"hello" ~message_id:None with
+          ~content:"hello" ~message_id:None ~pow_difficulty:(-1) with
   | `Ok _ ->
       let inbox = Relay.InMemoryRelay.poll_inbox t ~node_id:"n1" ~session_id:"s1" in
       check int "one delivered message" 1 (List.length inbox);
@@ -214,7 +214,7 @@ let test_sqlite_relay_send_to_embedded_host_id_alias () =
       "lyra-quill" (Relay.RegistrationLease.alias lease);
     match Relay.SqliteRelay.send t
             ~from_alias:"alice" ~to_alias:"lyra-quill@3d08761ae3f3"
-            ~content:"hello sqlite" ~message_id:None with
+            ~content:"hello sqlite" ~message_id:None ~pow_difficulty:(-1) with
     | `Ok _ ->
         let inbox = Relay.SqliteRelay.poll_inbox t ~node_id:"n1" ~session_id:"s1" in
         check int "one delivered sqlite message" 1 (List.length inbox);
@@ -233,7 +233,7 @@ let test_relay_query_messages_since_matches_reply_route () =
   check string "register status" "ok" status;
   let _ = Relay.InMemoryRelay.send t
       ~from_alias:"alice" ~to_alias:"lyra-quill@3d08761ae3f3"
-      ~content:"for backfill" ~message_id:None in
+      ~content:"for backfill" ~message_id:None ~pow_difficulty:(-1) in
   let msgs = Relay.InMemoryRelay.query_messages_since t
       ~alias:"lyra-quill" ~since_ts:0.0 in
   check int "query_messages_since sees opaque route message"
@@ -250,7 +250,7 @@ let test_sqlite_query_messages_since_matches_reply_route () =
     check string "register status" "ok" status;
     let _ = Relay.SqliteRelay.send t
         ~from_alias:"alice" ~to_alias:"lyra-quill@3d08761ae3f3"
-        ~content:"sqlite backfill" ~message_id:None in
+        ~content:"sqlite backfill" ~message_id:None ~pow_difficulty:(-1) in
     let msgs = Relay.SqliteRelay.query_messages_since t
         ~alias:"lyra-quill" ~since_ts:0.0 in
     check int "sqlite query_messages_since sees opaque route message"
