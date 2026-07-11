@@ -46,6 +46,14 @@ val sign_room_op_with_visibility :
   Relay_identity.t -> ctx:string -> room_id:string -> alias:string
   -> visibility:string -> signed_proof
 
+(** [sign_room_op_with_history_public identity ~ctx ~room_id ~alias
+    ~history_public] signs the B117 set_room_history_public op. The boolean is
+    rendered as "true"/"false" and covered by the signature:
+    room_id || alias || ("true"|"false") || identity_pk || ts || nonce. *)
+val sign_room_op_with_history_public :
+  Relay_identity.t -> ctx:string -> room_id:string -> alias:string
+  -> history_public:bool -> signed_proof
+
 (** [sign_room_op_with_target_pk identity ~ctx ~room_id ~alias ~target_pk]
     signs room ops whose body carries a target identity key, such as
     approve/deny knock:

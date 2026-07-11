@@ -301,7 +301,7 @@ let documented_endpoints =
     "POST /gc"; "GET  /device-login"; "POST /register"; "POST /heartbeat";
     "POST /send"; "POST /send_all"; "POST /poll_inbox"; "POST /peek_inbox";
     "POST /join_room"; "POST /leave_room"; "POST /send_room";
-    "POST /room_history" ]
+    "POST /room_history"; "POST /set_room_history_public" ]
 
 let t_endpoint_table_methods () =
   List.iter

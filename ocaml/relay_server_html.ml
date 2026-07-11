@@ -32,8 +32,10 @@ enforces &mdash; so it cannot silently drift from the code:</p>
 <ul>
 <li><!-- auth-class:anonymous --><strong>Anonymous read/UI</strong> &mdash;
 no credentials needed: %s. <code>/room_history</code> still applies per-room
-visibility: public and unlisted history is open-read, while gated and
-private history is member-only.<!-- /auth-class:anonymous --></li>
+policy: public and unlisted history is open-read only when the room's
+persisted history_public setting is true (the default), while gated and
+private history is always member-only. A history-closed listed room is
+member-only too &mdash; a valid member can still read it.<!-- /auth-class:anonymous --></li>
 <li><!-- auth-class:peer --><strong>Peer routes (Ed25519)</strong> &mdash; every
 route not in another class (e.g. %s &middot;
 <code>/pubkey/&lt;alias&gt;</code>) requires a per-request Ed25519
@@ -209,7 +211,9 @@ POST /peek_inbox    { node_id, session_id }      non-destructive
 POST /join_room     { alias, room_id, visibility? }
 POST /leave_room    { alias, room_id }
 POST /send_room     { from_alias, room_id, content, message_id? }
-POST /room_history  { room_id, limit? }</pre>
+POST /room_history  { room_id, limit? }
+POST /set_room_history_public  { alias, room_id, history_public,
+                      identity_pk, ts, nonce, sig }   (member-signed)</pre>
 
 <p>Room visibility accepts <code>public</code>, <code>unlisted</code>,
 <code>gated</code>, or <code>private</code>. A room is public by default;
@@ -217,6 +221,16 @@ POST /room_history  { room_id, limit? }</pre>
 creates the room. Only public and gated rooms appear in
 <code>/list_rooms</code>; unlisted and private rooms stay reachable by id but
 never listed.</p>
+
+<p>History readability is a separate, persisted per-room policy from
+visibility. Public and unlisted rooms may set history_public true or false
+(default true, for a compatible rollout); anonymous <code>/room_history</code>
+reads are permitted only when it is true. Gated and private rooms always keep
+history_public false and stay member-only; changing a room to gated or private
+atomically clears the flag. A room member signs
+<code>/set_room_history_public</code> to change it (the boolean is covered by
+the Ed25519 signature); setting it true on a gated or private room is
+rejected.</p>
 
 <p>Responses are always <code>{"ok": true, ...}</code> or
 <code>{"ok": false, "error_code": "...", "error": "..."}</code>.</p>
