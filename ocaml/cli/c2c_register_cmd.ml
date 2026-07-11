@@ -58,24 +58,24 @@ let register_cmd =
                Pass --session-id ID to specify explicitly.\n%!";
             exit 1)
   in
-  (* B135: alias is sticky per session_id — refuse explicit --alias rename. *)
-  (match alias_opt with
-   | Some requested ->
-       (match
-          C2c_mcp.Broker.sticky_alias_conflict broker ~session_id
-            ~requested_alias:requested
-        with
-        | Some existing_alias ->
-            let msg =
-              C2c_mcp.Broker.sticky_alias_error ~session_id ~existing_alias
-                ~requested_alias:requested
-            in
-            (if json then
-               print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
-             else
-               Printf.eprintf "error: %s\n%!" msg);
-            exit 1
-        | None -> ())
+  (* B135: alias is sticky per session_id — refuse rename via --alias OR
+     C2C_MCP_AUTO_REGISTER_ALIAS when it differs from the live registration.
+     (Env-only renames were the half-rename path that left peers on the old
+     name; check the resolved alias, not only the --alias flag.) *)
+  (match
+     C2c_mcp.Broker.sticky_alias_conflict broker ~session_id
+       ~requested_alias:alias
+   with
+   | Some existing_alias ->
+       let msg =
+         C2c_mcp.Broker.sticky_alias_error ~session_id ~existing_alias
+           ~requested_alias:alias
+       in
+       (if json then
+          print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
+        else
+          Printf.eprintf "error: %s\n%!" msg);
+       exit 1
    | None -> ());
   (* B071: C2C_MCP_CLIENT_PID env (managed launchers set it to the durable
      outer-loop pid) → stable agent-ancestor pid from /proc → None (unknown

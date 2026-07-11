@@ -3139,6 +3139,33 @@ let test_register_cmd_same_alias_refresh_allowed () =
           let regs = C2c_mcp.Broker.list_registrations broker in
           check string "alias unchanged" "keep-me" (List.hd regs).alias))
 
+(* B135: env-only C2C_MCP_AUTO_REGISTER_ALIAS rename is also refused. *)
+let test_register_cmd_env_alias_rename_refused_sticky_alias () =
+  with_temp_dir (fun dir ->
+      let session_id = "test-sess-b135-env" in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id ~alias:"env-original"
+        ~pid:None ~pid_start_time:None ();
+      let out = Filename.temp_file "c2c-b135-env" ".out" in
+      Fun.protect
+        ~finally:(fun () -> try Sys.remove out with _ -> ())
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s \
+               C2C_MCP_AUTO_REGISTER_ALIAS=env-renamed %s > %s 2>&1"
+              (Filename.quote dir) (Filename.quote session_id)
+              (c2c_cmd "c2c register")
+              (Filename.quote out)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file out in
+          check bool "env-alias rename exits non-zero" true (rc <> 0);
+          check bool "error mentions sticky" true
+            (string_contains content "sticky");
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check string "old alias remains" "env-original" (List.hd regs).alias))
+
 let run_capture command =
   let tmpfile = Filename.temp_file "c2c-cli-capture" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
@@ -4035,6 +4062,7 @@ let () =
         ; ( "init explicit rename refused sticky alias", `Quick, test_init_explicit_rename_refused_sticky_alias )
         ; ( "register cmd explicit rename refused sticky alias", `Quick, test_register_cmd_explicit_rename_refused_sticky_alias )
         ; ( "register cmd same-alias refresh allowed", `Quick, test_register_cmd_same_alias_refresh_allowed )
+        ; ( "register cmd env-alias rename refused sticky alias", `Quick, test_register_cmd_env_alias_rename_refused_sticky_alias )
         ] )
     ]
  
