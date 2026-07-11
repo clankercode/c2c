@@ -100,3 +100,36 @@ let pow_header_value challenge =
     challenge.difficulty challenge.epoch challenge.server_nonce challenge.ttl_s
 
 let pow_header challenge = (pow_header_name, pow_header_value challenge)
+
+(* B014: per-message PoW-difficulty metadata for delivered relay messages.
+   The scheme is sha256-leading-zeros-v1, so a difficulty of [d] leading-zero
+   bits costs a sender ~2^d hashes in expectation to mint. We surface both the
+   raw bit-count and the interpretable "expected hashes" weight so a recipient
+   agent can reason about how much work a sender's request represented without
+   knowing the PoW internals. Storage keeps only the int bit-count; the rich
+   object is derived at every JSON emission boundary. *)
+let pow_scheme = Pow.scheme_id
+
+let expected_hashes_of_difficulty difficulty =
+  if difficulty <= 0 then 0
+  else if difficulty >= 62 then max_int (* far beyond d_max; avoid overflow *)
+  else 1 lsl difficulty
+
+(* Sentinel stored when difficulty was not recorded (relay PoW disabled or the
+   sender's identity pubkey could not be resolved). Rows carrying it emit no
+   [pow] object. *)
+let pow_difficulty_unrecorded = -1
+
+let pow_meta_json ~difficulty =
+  `Assoc [
+    ("difficulty_bits", `Int difficulty);
+    ("expected_hashes", `Int (expected_hashes_of_difficulty difficulty));
+    ("scheme", `String pow_scheme);
+  ]
+
+(* Attach a [pow] object to a message's JSON field list when [difficulty] was
+   recorded (>= 0). Additive and outside any signed [content] field, so
+   signatures/encryption are unaffected (B014 constraint). *)
+let with_pow_meta ~difficulty fields =
+  if difficulty < 0 then fields
+  else fields @ [ ("pow", pow_meta_json ~difficulty) ]

@@ -194,6 +194,11 @@ type message =
   ; message_id : string option
     (** Set when the message arrived via the relay (which assigns a UUID).
         Used to anchor sticker reactions. *)
+  ; pow_difficulty : int option
+    (** B014: sender's PoW difficulty (leading-zero bits) at send-accept time,
+        for messages relayed from other agents. [None] for local-origin or
+        relays that did not record it. Surfaced on delivery as a self-describing
+        [pow] object ({ difficulty_bits, expected_hashes = 2^bits, scheme }). *)
   }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }

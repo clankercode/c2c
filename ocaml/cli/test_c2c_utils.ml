@@ -72,6 +72,7 @@ let mk_msg ?message_id ?(to_alias = "zz-j2recv") () : C2c_mcp.message =
   ; ts = 1700000000.5
   ; ephemeral = false
   ; message_id
+  ; pow_difficulty = None
   }
 
 let assoc_keys = function

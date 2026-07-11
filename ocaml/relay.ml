@@ -589,7 +589,7 @@ module InMemoryRelay : RELAY = struct
       !found
     )
 
-  let send t ~from_alias ~to_alias ~content ?(message_id = None) =
+  let send t ~from_alias ~to_alias ~content ?(message_id = None) ?(pow_difficulty = -1) =
     with_lock t (fun () ->
       let msg_id = match message_id with Some id -> id | None -> generate_uuid () in
       let ts = Unix.gettimeofday () in
@@ -629,10 +629,10 @@ module InMemoryRelay : RELAY = struct
           `Duplicate ts
         else begin
           let key = inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease) in
-          let msg = `Assoc [
+          let msg = `Assoc (Relay_pow_challenge.with_pow_meta ~difficulty:pow_difficulty [
             ("message_id", `String msg_id); ("from_alias", `String from_alias);
             ("to_alias", `String to_alias); ("content", `String content); ("ts", `Float ts);
-          ] in
+          ]) in
           let inbox = get_inbox t key in
           set_inbox t key (msg :: inbox);
           `Ok ts
@@ -1162,6 +1162,12 @@ module SqliteRelay : RELAY = struct
       Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN history_public INTEGER NOT NULL DEFAULT 1" |> ignore;
       Sqlite3.exec conn "UPDATE rooms SET history_public = 0 WHERE visibility IN ('gated','private')" |> ignore
     end;
+    (* B014: migrate older databases to the inboxes.pow_difficulty column. Add
+       it with DEFAULT -1 (= not recorded) so pre-existing queued messages emit
+       no [pow] object on delivery. Idempotent on fresh installs (declared in
+       sqlite_ddl). *)
+    if not (sqlite_table_has_column conn ~table:"inboxes" ~column:"pow_difficulty") then
+      Sqlite3.exec conn "ALTER TABLE inboxes ADD COLUMN pow_difficulty INTEGER NOT NULL DEFAULT -1" |> ignore;
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = if persist_dir = "" then None else Some (Filename.concat persist_dir "relay-server-identity.json") in
     let identity =
@@ -1425,7 +1431,7 @@ module SqliteRelay : RELAY = struct
       let msgs = ref [] in
       let min_ts = max since_ts (Unix.gettimeofday () -. 86400.0) in
       let stmt = prepare conn
-        "SELECT message_id, from_alias, to_alias, content, ts FROM inboxes \
+        "SELECT message_id, from_alias, to_alias, content, ts, pow_difficulty FROM inboxes \
          WHERE ts > ? \
          ORDER BY ts ASC LIMIT 500"
       in
@@ -1443,16 +1449,21 @@ module SqliteRelay : RELAY = struct
             | Some f -> f
             | None -> float_of_string (Data.to_string_exn col)
           in
+          let pow_difficulty =
+            match Data.to_int (column stmt 5) with
+            | Some i -> i
+            | None -> Relay_pow_challenge.pow_difficulty_unrecorded
+          in
           if alias_matches_display ~query:query_alias from_alias
              || alias_matches_display ~query:query_alias to_alias
           then
-            msgs := `Assoc [
+            msgs := `Assoc (Relay_pow_challenge.with_pow_meta ~difficulty:pow_difficulty [
               ("message_id", `String message_id);
               ("from_alias", `String from_alias);
               ("to_alias", `String to_alias);
               ("content", `String content);
               ("ts", `Float ts)
-            ] :: !msgs;
+            ]) :: !msgs;
           loop ()
         ) else if rc <> Rc.DONE then
           failwith ("query_messages_since step failed: " ^ Rc.to_string rc)
@@ -1854,7 +1865,7 @@ module SqliteRelay : RELAY = struct
       `Ok (List.rev !expired_aliases, pruned)
     )
 
-  let send t ~from_alias ~to_alias ~content ?(message_id=None) =
+  let send t ~from_alias ~to_alias ~content ?(message_id=None) ?(pow_difficulty = -1) =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
@@ -1890,7 +1901,7 @@ module SqliteRelay : RELAY = struct
             if rc2 = Rc.ROW then
               let recv_node_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 0) in
               let recv_session_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 1) in
-              let ins_stmt = Sqlite3.prepare conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts) VALUES (?, ?, ?, ?, ?, ?, ?)" in
+              let ins_stmt = Sqlite3.prepare conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts, pow_difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)" in
               Sqlite3.bind_text ins_stmt 1 recv_node_id |> ignore;
               Sqlite3.bind_text ins_stmt 2 recv_session_id |> ignore;
               Sqlite3.bind_text ins_stmt 3 msg_id |> ignore;
@@ -1898,6 +1909,7 @@ module SqliteRelay : RELAY = struct
               Sqlite3.bind_text ins_stmt 5 to_alias |> ignore;
               Sqlite3.bind_text ins_stmt 6 content |> ignore;
               Sqlite3.bind_double ins_stmt 7 ts |> ignore;
+              Sqlite3.bind_int ins_stmt 8 pow_difficulty |> ignore;
               Sqlite3.step ins_stmt |> ignore;
               `Ok ts
             else
@@ -1910,7 +1922,7 @@ module SqliteRelay : RELAY = struct
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let msgs = ref [] in
-      let sel_stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, to_alias, content, ts FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" in
+      let sel_stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, to_alias, content, ts, pow_difficulty FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" in
       Sqlite3.bind_text sel_stmt 1 node_id |> ignore;
       Sqlite3.bind_text sel_stmt 2 session_id |> ignore;
       let rec loop () =
@@ -1925,7 +1937,12 @@ module SqliteRelay : RELAY = struct
             | Some f -> f
             | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column sel_stmt 4))
           in
-          msgs := `Assoc [("message_id", `String message_id); ("from_alias", `String from_alias); ("to_alias", `String to_alias); ("content", `String content); ("ts", `Float ts)] :: !msgs;
+          let pow_difficulty =
+            match Sqlite3.Data.to_int (Sqlite3.column sel_stmt 5) with
+            | Some i -> i
+            | None -> Relay_pow_challenge.pow_difficulty_unrecorded
+          in
+          msgs := `Assoc (Relay_pow_challenge.with_pow_meta ~difficulty:pow_difficulty [("message_id", `String message_id); ("from_alias", `String from_alias); ("to_alias", `String to_alias); ("content", `String content); ("ts", `Float ts)]) :: !msgs;
           loop ()
         ) else if rc <> Rc.DONE then
           failwith ("poll_inbox step failed: " ^ Rc.to_string rc)
@@ -1942,7 +1959,7 @@ module SqliteRelay : RELAY = struct
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let msgs = ref [] in
-      let stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, to_alias, content, ts FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" in
+      let stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, to_alias, content, ts, pow_difficulty FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" in
       Sqlite3.bind_text stmt 1 node_id |> ignore;
       Sqlite3.bind_text stmt 2 session_id |> ignore;
       let rec loop () =
@@ -1957,7 +1974,12 @@ module SqliteRelay : RELAY = struct
             | Some f -> f
             | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 4))
           in
-          msgs := `Assoc [("message_id", `String message_id); ("from_alias", `String from_alias); ("to_alias", `String to_alias); ("content", `String content); ("ts", `Float ts)] :: !msgs;
+          let pow_difficulty =
+            match Sqlite3.Data.to_int (Sqlite3.column stmt 5) with
+            | Some i -> i
+            | None -> Relay_pow_challenge.pow_difficulty_unrecorded
+          in
+          msgs := `Assoc (Relay_pow_challenge.with_pow_meta ~difficulty:pow_difficulty [("message_id", `String message_id); ("from_alias", `String from_alias); ("to_alias", `String to_alias); ("content", `String content); ("ts", `Float ts)]) :: !msgs;
           loop ()
         ) else if rc <> Rc.DONE then
           failwith ("peek_inbox step failed: " ^ Rc.to_string rc)
@@ -3285,7 +3307,24 @@ end = struct
       | _ ->
         let message_id = get_opt_string body "message_id" in
         let deliver_to_alias = if opaque_host_route then to_alias else stripped_to_alias in
-        let result = R.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~message_id in
+        (* B014: record the sender's current PoW difficulty (leading-zero bits)
+           as sibling metadata on the delivered message. The policy keys cost by
+           identity pubkey (b64url, same normalization as the register handler),
+           so resolve the sender's pubkey via the lease table. Sentinel -1 when
+           relay PoW is off or the sender's identity is unresolved — such
+           messages carry no [pow] object on delivery. Read-only: we do NOT
+           accrue send-route cost here (no [record_route]). *)
+        let pow_difficulty =
+          let sender_actor_id =
+            match R.identity_pk_of relay ~alias:from_alias with
+            | Some pk when String.length pk = 32 -> b64url_nopad_encode pk
+            | _ -> ""
+          in
+          if relay_pow_enabled () && sender_actor_id <> "" then
+            pow_difficulty_for_actor ~enabled:true ~actor_id:sender_actor_id
+          else Relay_pow_challenge.pow_difficulty_unrecorded
+        in
+        let result = R.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~pow_difficulty ~message_id in
         (match result with
          | `Ok ts | `Duplicate ts ->
            (* Push to WS subscribers (slice 2) *)
@@ -3414,7 +3453,10 @@ end = struct
                               "from_alias, to_alias, and content are required")
                           else
                             let message_id = get_opt_string body "message_id" in
-                            match R.send relay ~from_alias ~to_alias ~content ~message_id with
+                            (* B014: forwarded-in from a peer relay — the origin
+                               relay's PoW difficulty is not available here, so
+                               record -1 (unrecorded). *)
+                            match R.send relay ~from_alias ~to_alias ~content ~message_id ~pow_difficulty:(-1) with
                             | `Ok ts ->
                               respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts])
                             | `Duplicate ts ->
