@@ -16,7 +16,7 @@ pool must stay family-friendly. Exclude any word with a dictionary-labeled
 offensive/derogatory sense targeting people or groups — even when an
 innocent primary sense exists (removed on review: kink, paddy, pansy,
 spade, tramp, welch, tart, fruit, buck, broad, queen, tinker, yellow,
-slant, slope, native). Words with mild vulgar slang senses that do NOT
+slant, slope, native, red). Words with mild vulgar slang senses that do NOT
 target people or groups and whose primary meaning is overwhelmingly
 innocent (e.g. root, screw, whip, master) are allowed. Apply the same bar
 to any future additions.

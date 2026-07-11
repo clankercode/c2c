@@ -4,12 +4,12 @@
 
    Single canonical home for the alias word pool (#388 converged the
    duplicated literals from c2c_start.ml and cli/c2c_setup.ml; B112
-   expanded the pool from 131 to 1440 words). Cartesian product gives
-   2,072,160 ordered non-identical pairs. Words are lowercase
+   expanded the pool from 131 to 1439 words). Cartesian product gives
+   2,069,282 ordered non-identical pairs. Words are lowercase
    alphanumeric, 3..12 chars, never contain '-' (the alias separator);
    drift vs the data files is pinned by test_c2c_alias_words.ml. *)
 
-(* Full pool — 1440 words. *)
+(* Full pool — 1439 words. *)
 let words = [|
     "aalto"; "abbey"; "aimu"; "aivi"; "alder"; "alloy"; "alm"; "alpine"; "alto"; "anchor";
     "anode"; "anvi"; "anvil"; "apple"; "aqua"; "arch"; "arctic"; "arid"; "armor"; "arrow";
@@ -85,76 +85,76 @@ let words = [|
     "quest"; "queue"; "quick"; "quill"; "quilt"; "quint"; "quip"; "quirk"; "quiver"; "quorum";
     "quota"; "quote"; "rabbet"; "radar"; "radial"; "radian"; "radiant"; "raft"; "rail"; "rain";
     "rake"; "rally"; "rambler"; "ramp"; "ranch"; "range"; "rapid"; "rattan"; "raven"; "ravine";
-    "rayon"; "razor"; "realm"; "reaper"; "rear"; "rebound"; "recess"; "recoil"; "red"; "reed";
-    "reflex"; "reflux"; "regal"; "region"; "relay"; "relic"; "relief"; "render"; "resin"; "rest";
-    "retro"; "revna"; "rhino"; "rhomb"; "rhythm"; "ribbon"; "rich"; "rider"; "rift"; "rigid";
-    "rilla"; "rim"; "ring"; "rinse"; "riot"; "ripple"; "rise"; "rite"; "river"; "rivet";
-    "roam"; "roan"; "roast"; "robot"; "rock"; "rocket"; "rod"; "rogue"; "roihu"; "roll";
-    "rook"; "root"; "rose"; "roster"; "rotor"; "rough"; "round"; "route"; "rover"; "row";
-    "rowan"; "royal"; "rubble"; "rudder"; "ruffle"; "rug"; "rule"; "rune"; "rung"; "runna";
-    "runnel"; "rural"; "rush"; "sable"; "sachet"; "saddle"; "saffron"; "sage"; "sail"; "saima";
-    "saint"; "saline"; "salmon"; "salt"; "salve"; "sample"; "sanctum"; "sapling"; "sarka"; "satin";
-    "saturn"; "sauce"; "savant"; "scale"; "scalp"; "scan"; "scar"; "scarab"; "scarf"; "scene";
-    "scent"; "scion"; "scoop"; "scope"; "scorch"; "score"; "scout"; "scrap"; "screen"; "screw";
-    "scroll"; "scrub"; "sculpt"; "scythe"; "seal"; "seam"; "sector"; "sediment"; "seed"; "segment";
-    "selka"; "sensor"; "sepal"; "sepia"; "sequel"; "sequin"; "serene"; "serf"; "serge"; "serum";
-    "servo"; "shard"; "sharp"; "sheaf"; "shear"; "sheath"; "shed"; "shelf"; "shell"; "shield";
-    "shift"; "shimmer"; "shingle"; "ship"; "shire"; "shiver"; "shoal"; "shock"; "shore"; "shot";
-    "shred"; "shrine"; "shunt"; "shutter"; "shuttle"; "sickle"; "side"; "sieve"; "sight"; "sigma";
-    "signal"; "signet"; "silica"; "silk"; "silo"; "silt"; "sinew"; "siren"; "sirocco"; "sirra";
-    "site"; "size"; "sketch"; "skiff"; "skill"; "skillet"; "skive"; "sky"; "slab"; "slack";
-    "slat"; "slay"; "sledge"; "sleek"; "sleep"; "sleet"; "sleeve"; "slice"; "slick"; "slide";
-    "slight"; "slim"; "sling"; "slip"; "slit"; "sliver"; "sloop"; "slot"; "slug"; "sluice";
-    "smart"; "smelt"; "smile"; "smith"; "smock"; "smooth"; "snag"; "snail"; "snake"; "snap";
-    "snare"; "snipe"; "socket"; "sodium"; "soft"; "sola"; "solar"; "solder"; "solid"; "solmu";
-    "solstice"; "solve"; "sonar"; "sonic"; "soon"; "sora"; "sorrel"; "sound"; "source"; "south";
-    "space"; "span"; "spanner"; "spare"; "sparrow"; "spatial"; "spawn"; "spear"; "speck"; "specter";
-    "speed"; "sphere"; "spice"; "spigot"; "spike"; "spill"; "spin"; "spindle"; "spine"; "spiral";
-    "spire"; "spirit"; "splice"; "spline"; "split"; "spoke"; "spool"; "spoon"; "spore"; "sport";
-    "spot"; "spout"; "spray"; "spread"; "sprig"; "spring"; "sprocket"; "sprout"; "spruce"; "spur";
-    "square"; "squash"; "squid"; "stable"; "stack"; "staff"; "stage"; "stain"; "stair"; "stake";
-    "stall"; "stamp"; "stance"; "stand"; "staple"; "star"; "starch"; "starling"; "static"; "stator";
-    "stave"; "steady"; "steam"; "steep"; "steer"; "stem"; "stencil"; "step"; "stereo"; "stern";
-    "stew"; "stick"; "stiff"; "still"; "stilt"; "sting"; "stitch"; "stock"; "stoker"; "stomp";
-    "stop"; "store"; "strain"; "strand"; "strap"; "strata"; "straw"; "streak"; "stream"; "street";
-    "stretch"; "stride"; "strike"; "string"; "strip"; "strobe"; "stroke"; "structure"; "stucco"; "stud";
-    "studio"; "stump"; "style"; "stylus"; "subtle"; "sugar"; "sula"; "sulfur"; "sum"; "summer";
-    "sun"; "sunder"; "super"; "surge"; "survey"; "suvi"; "swab"; "swallow"; "swamp"; "swan";
-    "swap"; "swarm"; "swatch"; "swath"; "sway"; "sweep"; "swell"; "swift"; "swing"; "switch";
-    "swivel"; "sword"; "sycamore"; "symbol"; "syrup"; "table"; "tablet"; "tack"; "tactic"; "taika";
-    "tala"; "tally"; "talon"; "tamp"; "tangent"; "tank"; "tannin"; "tape"; "taper"; "target";
-    "tarmac"; "tarot"; "tassel"; "tavi"; "teak"; "teal"; "team"; "tear"; "tectonic"; "telex";
-    "temper"; "temple"; "tempo"; "tenon"; "tensor"; "tent"; "tepal"; "terra"; "tessera"; "tether";
-    "tetra"; "thatch"; "thaw"; "theme"; "theory"; "thermal"; "thick"; "thimble"; "thin"; "thistle";
-    "thong"; "thread"; "thresh"; "thrift"; "thrill"; "throne"; "thrust"; "thyme"; "tiara"; "tick";
-    "tier"; "tiger"; "tile"; "tilia"; "tilt"; "time"; "tin"; "tinder"; "tine"; "tinge";
-    "tint"; "tip"; "tissue"; "titan"; "title"; "toad"; "toast"; "token"; "toll"; "tome";
-    "tone"; "tool"; "top"; "topaz"; "topic"; "torch"; "torque"; "torso"; "torus"; "total";
-    "touch"; "tough"; "tour"; "tovi"; "tow"; "tower"; "town"; "trace"; "track"; "tract";
-    "trade"; "trail"; "train"; "trait"; "trance"; "trap"; "trawl"; "tray"; "tread"; "treat";
-    "treble"; "tree"; "trellis"; "trench"; "trend"; "triad"; "trial"; "triangle"; "tribe"; "trick";
-    "trill"; "trim"; "trinity"; "trinket"; "triple"; "tripod"; "tritium"; "trope"; "trophy"; "tropic";
-    "trough"; "trout"; "trowel"; "troy"; "truce"; "truck"; "true"; "trunk"; "truss"; "trust";
-    "tube"; "tuck"; "tuft"; "tulip"; "tumble"; "tundra"; "tune"; "tunnel"; "turban"; "turbine";
-    "turf"; "turn"; "tusk"; "tuuli"; "tweed"; "twig"; "twill"; "twin"; "twine"; "twist";
-    "twitch"; "tyyni"; "ulma"; "unison"; "unite"; "unity"; "uranium"; "urban"; "urchin"; "urn";
-    "usher"; "usva"; "utmost"; "utter"; "vacuum"; "vague"; "valance"; "valley"; "valo"; "valve";
-    "vane"; "vanguard"; "vapor"; "varnish"; "vary"; "vase"; "vast"; "vault"; "vector"; "veil";
-    "vein"; "veldt"; "vellum"; "velu"; "velvet"; "veneer"; "vent"; "venue"; "verge"; "vermic";
-    "vernal"; "verse"; "vertex"; "veru"; "vesi"; "vessel"; "vest"; "vial"; "vibe"; "vicar";
-    "vice"; "view"; "vigil"; "vigor"; "viima"; "villa"; "vinyl"; "violet"; "violin"; "viper";
-    "viral"; "vireo"; "virtual"; "visa"; "visage"; "vision"; "visor"; "vista"; "visual"; "vital";
-    "vivid"; "vocal"; "vogue"; "void"; "volt"; "volume"; "vortex"; "voter"; "vouch"; "voyage";
-    "vulture"; "vuono"; "wafer"; "waffle"; "waft"; "wage"; "wagon"; "waif"; "wain"; "waist";
-    "wake"; "walk"; "wall"; "wallet"; "walnut"; "walrus"; "wand"; "wane"; "ward"; "warp";
-    "wash"; "wasp"; "watch"; "water"; "wealth"; "weapon"; "weave"; "wedge"; "weft"; "weight";
-    "weir"; "west"; "whale"; "wharf"; "wheat"; "wheel"; "whelk"; "whiff"; "whim"; "whip";
-    "whirl"; "whisk"; "white"; "whole"; "wick"; "wicket"; "widow"; "wild"; "willow"; "winch";
-    "wind"; "wing"; "wink"; "winnow"; "wire"; "wise"; "wisp"; "witch"; "woad"; "wolf";
-    "wood"; "wool"; "word"; "work"; "world"; "worm"; "wrap"; "wren"; "wrench"; "wrist";
-    "writ"; "xenon"; "xylem"; "yacht"; "yak"; "yam"; "yard"; "yarn"; "yarrow"; "yawn";
-    "year"; "yeast"; "yew"; "yield"; "yoke"; "yola"; "yolk"; "yonder"; "youth"; "yucca";
-    "zeal"; "zebra"; "zenith"; "zephyr"; "zero"; "zest"; "zinc"; "zinnia"; "zodiac"; "zone"
+    "rayon"; "razor"; "realm"; "reaper"; "rear"; "rebound"; "recess"; "recoil"; "reed"; "reflex";
+    "reflux"; "regal"; "region"; "relay"; "relic"; "relief"; "render"; "resin"; "rest"; "retro";
+    "revna"; "rhino"; "rhomb"; "rhythm"; "ribbon"; "rich"; "rider"; "rift"; "rigid"; "rilla";
+    "rim"; "ring"; "rinse"; "riot"; "ripple"; "rise"; "rite"; "river"; "rivet"; "roam";
+    "roan"; "roast"; "robot"; "rock"; "rocket"; "rod"; "rogue"; "roihu"; "roll"; "rook";
+    "root"; "rose"; "roster"; "rotor"; "rough"; "round"; "route"; "rover"; "row"; "rowan";
+    "royal"; "rubble"; "rudder"; "ruffle"; "rug"; "rule"; "rune"; "rung"; "runna"; "runnel";
+    "rural"; "rush"; "sable"; "sachet"; "saddle"; "saffron"; "sage"; "sail"; "saima"; "saint";
+    "saline"; "salmon"; "salt"; "salve"; "sample"; "sanctum"; "sapling"; "sarka"; "satin"; "saturn";
+    "sauce"; "savant"; "scale"; "scalp"; "scan"; "scar"; "scarab"; "scarf"; "scene"; "scent";
+    "scion"; "scoop"; "scope"; "scorch"; "score"; "scout"; "scrap"; "screen"; "screw"; "scroll";
+    "scrub"; "sculpt"; "scythe"; "seal"; "seam"; "sector"; "sediment"; "seed"; "segment"; "selka";
+    "sensor"; "sepal"; "sepia"; "sequel"; "sequin"; "serene"; "serf"; "serge"; "serum"; "servo";
+    "shard"; "sharp"; "sheaf"; "shear"; "sheath"; "shed"; "shelf"; "shell"; "shield"; "shift";
+    "shimmer"; "shingle"; "ship"; "shire"; "shiver"; "shoal"; "shock"; "shore"; "shot"; "shred";
+    "shrine"; "shunt"; "shutter"; "shuttle"; "sickle"; "side"; "sieve"; "sight"; "sigma"; "signal";
+    "signet"; "silica"; "silk"; "silo"; "silt"; "sinew"; "siren"; "sirocco"; "sirra"; "site";
+    "size"; "sketch"; "skiff"; "skill"; "skillet"; "skive"; "sky"; "slab"; "slack"; "slat";
+    "slay"; "sledge"; "sleek"; "sleep"; "sleet"; "sleeve"; "slice"; "slick"; "slide"; "slight";
+    "slim"; "sling"; "slip"; "slit"; "sliver"; "sloop"; "slot"; "slug"; "sluice"; "smart";
+    "smelt"; "smile"; "smith"; "smock"; "smooth"; "snag"; "snail"; "snake"; "snap"; "snare";
+    "snipe"; "socket"; "sodium"; "soft"; "sola"; "solar"; "solder"; "solid"; "solmu"; "solstice";
+    "solve"; "sonar"; "sonic"; "soon"; "sora"; "sorrel"; "sound"; "source"; "south"; "space";
+    "span"; "spanner"; "spare"; "sparrow"; "spatial"; "spawn"; "spear"; "speck"; "specter"; "speed";
+    "sphere"; "spice"; "spigot"; "spike"; "spill"; "spin"; "spindle"; "spine"; "spiral"; "spire";
+    "spirit"; "splice"; "spline"; "split"; "spoke"; "spool"; "spoon"; "spore"; "sport"; "spot";
+    "spout"; "spray"; "spread"; "sprig"; "spring"; "sprocket"; "sprout"; "spruce"; "spur"; "square";
+    "squash"; "squid"; "stable"; "stack"; "staff"; "stage"; "stain"; "stair"; "stake"; "stall";
+    "stamp"; "stance"; "stand"; "staple"; "star"; "starch"; "starling"; "static"; "stator"; "stave";
+    "steady"; "steam"; "steep"; "steer"; "stem"; "stencil"; "step"; "stereo"; "stern"; "stew";
+    "stick"; "stiff"; "still"; "stilt"; "sting"; "stitch"; "stock"; "stoker"; "stomp"; "stop";
+    "store"; "strain"; "strand"; "strap"; "strata"; "straw"; "streak"; "stream"; "street"; "stretch";
+    "stride"; "strike"; "string"; "strip"; "strobe"; "stroke"; "structure"; "stucco"; "stud"; "studio";
+    "stump"; "style"; "stylus"; "subtle"; "sugar"; "sula"; "sulfur"; "sum"; "summer"; "sun";
+    "sunder"; "super"; "surge"; "survey"; "suvi"; "swab"; "swallow"; "swamp"; "swan"; "swap";
+    "swarm"; "swatch"; "swath"; "sway"; "sweep"; "swell"; "swift"; "swing"; "switch"; "swivel";
+    "sword"; "sycamore"; "symbol"; "syrup"; "table"; "tablet"; "tack"; "tactic"; "taika"; "tala";
+    "tally"; "talon"; "tamp"; "tangent"; "tank"; "tannin"; "tape"; "taper"; "target"; "tarmac";
+    "tarot"; "tassel"; "tavi"; "teak"; "teal"; "team"; "tear"; "tectonic"; "telex"; "temper";
+    "temple"; "tempo"; "tenon"; "tensor"; "tent"; "tepal"; "terra"; "tessera"; "tether"; "tetra";
+    "thatch"; "thaw"; "theme"; "theory"; "thermal"; "thick"; "thimble"; "thin"; "thistle"; "thong";
+    "thread"; "thresh"; "thrift"; "thrill"; "throne"; "thrust"; "thyme"; "tiara"; "tick"; "tier";
+    "tiger"; "tile"; "tilia"; "tilt"; "time"; "tin"; "tinder"; "tine"; "tinge"; "tint";
+    "tip"; "tissue"; "titan"; "title"; "toad"; "toast"; "token"; "toll"; "tome"; "tone";
+    "tool"; "top"; "topaz"; "topic"; "torch"; "torque"; "torso"; "torus"; "total"; "touch";
+    "tough"; "tour"; "tovi"; "tow"; "tower"; "town"; "trace"; "track"; "tract"; "trade";
+    "trail"; "train"; "trait"; "trance"; "trap"; "trawl"; "tray"; "tread"; "treat"; "treble";
+    "tree"; "trellis"; "trench"; "trend"; "triad"; "trial"; "triangle"; "tribe"; "trick"; "trill";
+    "trim"; "trinity"; "trinket"; "triple"; "tripod"; "tritium"; "trope"; "trophy"; "tropic"; "trough";
+    "trout"; "trowel"; "troy"; "truce"; "truck"; "true"; "trunk"; "truss"; "trust"; "tube";
+    "tuck"; "tuft"; "tulip"; "tumble"; "tundra"; "tune"; "tunnel"; "turban"; "turbine"; "turf";
+    "turn"; "tusk"; "tuuli"; "tweed"; "twig"; "twill"; "twin"; "twine"; "twist"; "twitch";
+    "tyyni"; "ulma"; "unison"; "unite"; "unity"; "uranium"; "urban"; "urchin"; "urn"; "usher";
+    "usva"; "utmost"; "utter"; "vacuum"; "vague"; "valance"; "valley"; "valo"; "valve"; "vane";
+    "vanguard"; "vapor"; "varnish"; "vary"; "vase"; "vast"; "vault"; "vector"; "veil"; "vein";
+    "veldt"; "vellum"; "velu"; "velvet"; "veneer"; "vent"; "venue"; "verge"; "vermic"; "vernal";
+    "verse"; "vertex"; "veru"; "vesi"; "vessel"; "vest"; "vial"; "vibe"; "vicar"; "vice";
+    "view"; "vigil"; "vigor"; "viima"; "villa"; "vinyl"; "violet"; "violin"; "viper"; "viral";
+    "vireo"; "virtual"; "visa"; "visage"; "vision"; "visor"; "vista"; "visual"; "vital"; "vivid";
+    "vocal"; "vogue"; "void"; "volt"; "volume"; "vortex"; "voter"; "vouch"; "voyage"; "vulture";
+    "vuono"; "wafer"; "waffle"; "waft"; "wage"; "wagon"; "waif"; "wain"; "waist"; "wake";
+    "walk"; "wall"; "wallet"; "walnut"; "walrus"; "wand"; "wane"; "ward"; "warp"; "wash";
+    "wasp"; "watch"; "water"; "wealth"; "weapon"; "weave"; "wedge"; "weft"; "weight"; "weir";
+    "west"; "whale"; "wharf"; "wheat"; "wheel"; "whelk"; "whiff"; "whim"; "whip"; "whirl";
+    "whisk"; "white"; "whole"; "wick"; "wicket"; "widow"; "wild"; "willow"; "winch"; "wind";
+    "wing"; "wink"; "winnow"; "wire"; "wise"; "wisp"; "witch"; "woad"; "wolf"; "wood";
+    "wool"; "word"; "work"; "world"; "worm"; "wrap"; "wren"; "wrench"; "wrist"; "writ";
+    "xenon"; "xylem"; "yacht"; "yak"; "yam"; "yard"; "yarn"; "yarrow"; "yawn"; "year";
+    "yeast"; "yew"; "yield"; "yoke"; "yola"; "yolk"; "yonder"; "youth"; "yucca"; "zeal";
+    "zebra"; "zenith"; "zephyr"; "zero"; "zest"; "zinc"; "zinnia"; "zodiac"; "zone"
   |]
 
 (* easy_pool — 52 curated English-readable nature-themed words, a
