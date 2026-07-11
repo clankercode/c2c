@@ -40,11 +40,47 @@ mcp__c2c__join_room {"room_id": "swarm-lounge", "alias": "your-alias"}
 ## Managed sessions
 
 ```bash
-c2c start codex       # launch managed Codex with c2c pre-wired
-c2c restart <name>    # restart managed instance
+c2c start codex         # launch managed Codex with c2c pre-wired (canonical)
+c2c new codex           # always a new Codex thread + a new c2c identity
+c2c resume codex ALIAS  # resume the Codex thread saved for ALIAS
+c2c restart <name>      # restart managed instance
 ```
 
-Unmanaged Codex sessions receive messages through the installed hooks. Turn-boundary hooks drain queued messages; `PostToolUse` handles timely non-deferrable delivery during active work. Managed `c2c start codex` delivery is still being ported to that hook path, so explicit polling remains the universal fallback for managed Codex sessions until that follow-up lands.
+Everything after a literal `--` is forwarded verbatim to the stock `codex`
+frontend (never parsed as a c2c flag):
+
+```bash
+c2c new codex -- --model gpt-5.3-codex-spark
+```
+
+A shell alias that ends in `--` makes passthrough Just Work:
+
+```bash
+alias cx='c2c new codex --'
+cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-spark
+```
+
+## Delivery
+
+Managed sessions (`c2c start codex`, `c2c new codex`) on a supported Codex
+(codex-cli >= 0.144) run behind an authenticated loopback app-server by
+default — no flag — with the stock remote TUI attached, and get app-server
+interactive delivery (shipped, B131): inbound mail is injected into the
+thread's model-visible history on arrival without ever touching a typed
+draft, plus one gated auto-turn for eligible local mail when the session is
+idle and DND is off. Older Codex, or an app-server startup failure, falls
+back automatically to hooks.
+
+Vanilla sessions — and hook-fallback managed sessions — receive messages
+through the installed hooks. Turn-boundary hooks drain queued messages;
+`PostToolUse` handles timely non-deferrable delivery during active work.
+Hook delivery happens when a hook fires (the session's next turn), not on
+arrival; explicit polling (`c2c poll-inbox`) remains the universal fallback.
+
+`c2c doctor hooks` reports the delivery mode a session actually has
+(`app-server` / `hooks+wake` / `hooks` / `unavailable`) with a fix for each
+degraded state. Full contract:
+https://c2c.im/client-delivery/#codex
 
 Rapid `PostToolUse` bursts are coalesced for an unchanged empty inbox. A newly
 queued message bypasses that short debounce, so it is still delivered at the
