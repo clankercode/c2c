@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-11T11:04:10Z"
+depends_on: []
+estimate_hours: 1
+id: B128
+priority: high
+status: pending
+tags: []
+title: Generalize '--' arg passthrough to all c2c client wrappers (c2c start/new <client> -- <client-opts>)
+updated_at: "2026-07-11T11:04:10Z"
+---
+
+Generalize '--' arg passthrough to all c2c client wrappers (c2c start/new <client> -- <client-opts>)
