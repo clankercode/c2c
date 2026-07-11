@@ -41,9 +41,14 @@ let known_broker_roots ~primary_root =
       |> Array.to_list
       |> List.map (Filename.concat parent)
       |> List.filter (fun root ->
-             root <> primary_root
-             && Sys.is_directory root
-             && Sys.file_exists (Filename.concat root "registry.json"))
+             (* Sys.is_directory raises on a dangling symlink; a stray broken
+                link in the scanned parent (e.g. ~/.c2c/repos/) must not crash
+                an offline send. Treat any stat failure as "not a broker". *)
+             try
+               root <> primary_root
+               && Sys.is_directory root
+               && Sys.file_exists (Filename.concat root "registry.json")
+             with Sys_error _ -> false)
   in
   let configured_roots =
     match Sys.getenv_opt "C2C_BROKER_SCAN_DIRS" with
