@@ -1,4 +1,7 @@
 ---
+claimed_at: "2026-07-11T12:53:23Z"
+claimed_by: cli-user
+completed_at: null
 complexity: high
 depends_on:
     - P1.M1.E1.T001
@@ -8,13 +11,11 @@ depends_on:
 estimate_hours: 12
 id: P1.M1.E1.T007
 priority: high
-status: pending
-tags:
-    - codex
-    - app-server
-    - local-delivery
-    - dnd
+started_at: "2026-07-11T12:53:23Z"
+status: in_progress
+tags: []
 title: Start safe Codex turns for eligible local c2c mail
+updated_at: "2026-07-11T12:53:23Z"
 ---
 ## Objective
 

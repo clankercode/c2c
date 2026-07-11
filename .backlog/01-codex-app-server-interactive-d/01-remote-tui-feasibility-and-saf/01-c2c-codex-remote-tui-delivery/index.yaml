@@ -84,5 +84,6 @@ tasks:
       file: T007-trigger-an-app-server-turn-for.todo
       id: T007
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Start safe Codex turns for eligible local c2c mail
