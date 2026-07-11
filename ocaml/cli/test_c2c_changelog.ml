@@ -167,31 +167,34 @@ let test_downgrade_no_regress () =
 
 let test_remote_only_waits_then_shows () =
   let root = tmp_broker () in
-  (* Binary 0.11.0 (not embedded), last shown 0.10.0. No cache -> not covered
-     -> None, marker untouched. *)
+  (* Binary 99.0.0 (a sentinel version that will never be embedded), last shown
+     0.10.0. No cache -> not covered -> None, marker untouched. A real
+     release version must NOT be used here: once it lands in the embedded
+     changelog the remote-only path is no longer exercised and this assertion
+     flips (that is exactly what broke on the 0.11.0 release). *)
   C2c_changelog.write_marker ~broker_root:root ~client:"claude" ~version:"0.10.0";
   let out1 =
-    C2c_changelog.auto_show ~current:"0.11.0" ~broker_root:root ~client:"claude"
+    C2c_changelog.auto_show ~current:"99.0.0" ~broker_root:root ~client:"claude"
       ~now:0. ()
   in
   check (option string) "waits: no output yet" None out1;
   check (option string) "marker NOT advanced" (Some "0.10.0")
     (read_marker root "claude");
-  (* Background fetch lands a remote cache with a 0.11.0 feature. *)
+  (* Background fetch lands a remote cache with a 99.0.0 feature. *)
   let dir = C2c_changelog.broker_changelog_dir ~broker_root:root in
   (try Unix.mkdir dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
   let oc = open_out (C2c_changelog.remote_cache_path ~broker_root:root) in
   output_string oc
-    "## v0.11.0 — 2026-08-01\n\n### Remote feature\nsummary: A remote-only thing.\n";
+    "## v99.0.0 — 2026-08-01\n\n### Remote feature\nsummary: A remote-only thing.\n";
   close_out oc;
   let out2 =
-    C2c_changelog.auto_show ~current:"0.11.0" ~broker_root:root ~client:"claude"
+    C2c_changelog.auto_show ~current:"99.0.0" ~broker_root:root ~client:"claude"
       ~now:0. ()
   in
   (match out2 with
-   | None -> fail "expected 0.11.0 shown once cached"
+   | None -> fail "expected 99.0.0 shown once cached"
    | Some block -> check bool "shows remote feature" true (contains block "Remote feature"));
-  check (option string) "marker advanced to 0.11.0" (Some "0.11.0")
+  check (option string) "marker advanced to 99.0.0" (Some "99.0.0")
     (read_marker root "claude")
 
 let test_client_filter_in_autoshow () =
@@ -201,21 +204,24 @@ let test_client_filter_in_autoshow () =
   let dir = C2c_changelog.broker_changelog_dir ~broker_root:root in
   (try Unix.mkdir dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
   let oc = open_out (C2c_changelog.remote_cache_path ~broker_root:root) in
+  (* Sentinel versions (99.x) that will never be embedded — see
+     test_remote_only_waits_then_shows: a real future version here would flip
+     to "shown from embed" the moment it is released. *)
   output_string oc
-    "## v0.12.0 — 2026-09-01\n\n### Codex only\nsummary: codex thing.\nclients: codex\n";
+    "## v99.2.0 — 2026-09-01\n\n### Codex only\nsummary: codex thing.\nclients: codex\n";
   close_out oc;
-  C2c_changelog.write_marker ~broker_root:root ~client:"claude" ~version:"0.11.0";
+  C2c_changelog.write_marker ~broker_root:root ~client:"claude" ~version:"99.1.0";
   let out =
-    C2c_changelog.auto_show ~current:"0.12.0" ~broker_root:root ~client:"claude"
+    C2c_changelog.auto_show ~current:"99.2.0" ~broker_root:root ~client:"claude"
       ~now:0. ()
   in
   check (option string) "claude not shown codex-only entry" None out;
-  check (option string) "marker not advanced (no emit)" (Some "0.11.0")
+  check (option string) "marker not advanced (no emit)" (Some "99.1.0")
     (read_marker root "claude");
   (* codex IS shown it. *)
-  C2c_changelog.write_marker ~broker_root:root ~client:"codex" ~version:"0.11.0";
+  C2c_changelog.write_marker ~broker_root:root ~client:"codex" ~version:"99.1.0";
   let cout =
-    C2c_changelog.auto_show ~current:"0.12.0" ~broker_root:root ~client:"codex"
+    C2c_changelog.auto_show ~current:"99.2.0" ~broker_root:root ~client:"codex"
       ~now:0. ()
   in
   check bool "codex shown" true (Option.is_some cout)
