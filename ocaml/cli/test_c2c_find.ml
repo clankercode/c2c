@@ -274,6 +274,15 @@ let test_list_hides_dead_by_default_and_all_reveals () =
   check int "default list exits 0" 0 rc;
   check bool "alive peer listed" true (string_contains out "zzqfind-alpha-live");
   check bool "dead peer hidden" false (string_contains out "zzqfind-alpha-dead");
+  let rc_json, out_json, _ = run_c2c ~env [ "list"; "--json" ] in
+  check int "default JSON list exits 0" 0 rc_json;
+  (match Yojson.Safe.from_string out_json with
+   | `List [ entry ] ->
+       check string "default JSON keeps only the live peer" "zzqfind-alpha-live"
+         (str_member "alias" entry)
+   | `List entries ->
+       fail (Printf.sprintf "expected one visible JSON peer, got %d" (List.length entries))
+   | _ -> fail "default list --json did not produce a JSON list");
   let rc_all, out_all, _ = run_c2c ~env [ "list"; "--all" ] in
   check int "list --all exits 0" 0 rc_all;
   check bool "dead peer revealed by --all" true (string_contains out_all "zzqfind-alpha-dead")
