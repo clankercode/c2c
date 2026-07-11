@@ -257,6 +257,148 @@ let test_codex_trust_index_drift_reported () =
     check bool "reason mentions indices" true
       (C2c_doctor_hooks.contains r.C2c_doctor_hooks.config.reason "indices"))
 
+(* --- Codex delivery-mode classification (T005) ---------------------------- *)
+
+let classify = C2c_doctor_hooks.classify_codex_delivery
+let label d = C2c_doctor_hooks.codex_delivery_mode_label d.C2c_doctor_hooks.cd_mode
+
+let test_delivery_app_server_healthy () =
+  let d =
+    classify ~app_server_status:(Some "online-attached") ~hooks_installed:true
+      ~wake_target:true
+  in
+  check string "mode" "app-server" (label d);
+  check bool "healthy path has no remediation" true
+    (d.C2c_doctor_hooks.cd_remediation = None);
+  check bool "not input-injecting" false d.C2c_doctor_hooks.cd_input_injecting;
+  check bool "summary mentions draft-safety" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "draft-safe");
+  check bool "summary states the gated-turn rule (idle + DND off)" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "idle and DND is off")
+
+let test_delivery_app_server_starting_has_remediation () =
+  let d =
+    classify ~app_server_status:(Some "starting") ~hooks_installed:true
+      ~wake_target:false
+  in
+  check string "mode" "app-server" (label d);
+  check bool "starting carries an actionable next step" true
+    (d.C2c_doctor_hooks.cd_remediation <> None)
+
+let test_delivery_app_server_unavailable () =
+  let d =
+    classify ~app_server_status:(Some "failed-startup") ~hooks_installed:true
+      ~wake_target:false
+  in
+  check string "mode" "app-server-unavailable" (label d);
+  (match d.C2c_doctor_hooks.cd_remediation with
+   | None -> fail "app-server-unavailable must carry a remediation"
+   | Some fix ->
+       check bool "remediation says upgrade codex" true
+         (C2c_doctor_hooks.contains fix "upgrade codex"));
+  check bool "summary is truthful about the hook-boundary fallback" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "hook boundary");
+  (* Same failure without hooks: no delivery path at all, still actionable. *)
+  let d2 =
+    classify ~app_server_status:(Some "failed-startup") ~hooks_installed:false
+      ~wake_target:false
+  in
+  check string "mode (no hooks)" "app-server-unavailable" (label d2);
+  check bool "no-hooks fallback is called out" true
+    (C2c_doctor_hooks.contains d2.C2c_doctor_hooks.cd_summary "no delivery path")
+
+let test_delivery_hooks_wake_is_input_injecting () =
+  let d = classify ~app_server_status:None ~hooks_installed:true ~wake_target:true in
+  check string "mode" "hooks+wake" (label d);
+  check bool "input-injecting flagged" true d.C2c_doctor_hooks.cd_input_injecting;
+  check bool "summary is truthful about typing into the pane" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "TYPES");
+  (match d.C2c_doctor_hooks.cd_remediation with
+   | None -> fail "hooks+wake must carry a remediation"
+   | Some fix ->
+       check bool "remediation points at the app-server transport" true
+         (C2c_doctor_hooks.contains fix "--app-server"))
+
+let test_delivery_hooks_only () =
+  let d = classify ~app_server_status:None ~hooks_installed:true ~wake_target:false in
+  check string "mode" "hooks" (label d);
+  check bool "not input-injecting" false d.C2c_doctor_hooks.cd_input_injecting;
+  check bool "summary says idle sessions wait for the next turn" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "idle session");
+  check bool "remediation present" true (d.C2c_doctor_hooks.cd_remediation <> None)
+
+let test_delivery_unavailable () =
+  let d = classify ~app_server_status:None ~hooks_installed:false ~wake_target:false in
+  check string "mode" "unavailable" (label d);
+  check (option string) "remediation is the install command"
+    (Some "run `c2c install codex`") d.C2c_doctor_hooks.cd_remediation
+
+let test_delivery_offline_record_falls_back_to_hooks () =
+  (* An ended app-server unit is not a live delivery path — classify by what
+     actually delivers now. *)
+  let d = classify ~app_server_status:(Some "offline") ~hooks_installed:true
+      ~wake_target:false in
+  check string "offline record → hooks" "hooks" (label d)
+
+let test_delivery_never_claims_instant () =
+  let all =
+    [ classify ~app_server_status:(Some "online-attached") ~hooks_installed:true ~wake_target:false
+    ; classify ~app_server_status:(Some "starting") ~hooks_installed:true ~wake_target:false
+    ; classify ~app_server_status:(Some "failed-startup") ~hooks_installed:true ~wake_target:false
+    ; classify ~app_server_status:None ~hooks_installed:true ~wake_target:true
+    ; classify ~app_server_status:None ~hooks_installed:true ~wake_target:false
+    ; classify ~app_server_status:None ~hooks_installed:false ~wake_target:false
+    ]
+  in
+  List.iter
+    (fun d ->
+      check bool
+        (Printf.sprintf "summary of %s never claims 'instant'" (label d))
+        false
+        (C2c_doctor_hooks.contains
+           (String.lowercase_ascii d.C2c_doctor_hooks.cd_summary) "instant"))
+    all
+
+let test_delivery_report_structure () =
+  let rep =
+    C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true
+      ~instances:
+        [ ("cx-live", Some "online-attached", false)
+        ; ("cx-broken", Some "failed-startup", false)
+        ; ("cx-tmux", None, true)
+        ]
+      ()
+  in
+  check string "default is hooks (no wake target for vanilla)" "hooks"
+    (label rep.C2c_doctor_hooks.cdr_default);
+  let modes =
+    List.map
+      (fun i -> (i.C2c_doctor_hooks.ci_name, label i.C2c_doctor_hooks.ci_delivery))
+      rep.C2c_doctor_hooks.cdr_instances
+  in
+  check (list (pair string string)) "per-instance modes distinguished"
+    [ ("cx-live", "app-server")
+    ; ("cx-broken", "app-server-unavailable")
+    ; ("cx-tmux", "hooks+wake")
+    ]
+    modes;
+  (* JSON shape: mode/summary/remediation/input_injecting per row; no
+     endpoints, tokens, or bodies anywhere in the machine output. *)
+  let json =
+    Yojson.Safe.to_string (C2c_doctor_hooks.codex_delivery_report_to_json rep)
+  in
+  List.iter
+    (fun needle ->
+      check bool (Printf.sprintf "json mentions %s" needle) true
+        (C2c_doctor_hooks.contains json needle))
+    [ "app-server-unavailable"; "hooks+wake"; "input_injecting";
+      "app_server_status"; "remediation" ];
+  List.iter
+    (fun forbidden ->
+      check bool (Printf.sprintf "json never contains %s" forbidden) false
+        (C2c_doctor_hooks.contains json forbidden))
+    [ "ws://"; "token"; "127.0.0.1" ]
+
 let () =
   run "c2c_doctor_hooks"
     [ ( "dangling_detection"
@@ -275,5 +417,16 @@ let () =
         ; test_case "stale config reported" `Quick test_codex_stale_config_reported
         ; test_case "missing AGENTS.md reported" `Quick test_codex_missing_agents_block_reported
         ; test_case "trust index drift reported" `Quick test_codex_trust_index_drift_reported
+        ] )
+    ; ( "codex-delivery-mode"
+      , [ test_case "app-server healthy" `Quick test_delivery_app_server_healthy
+        ; test_case "app-server starting has next step" `Quick test_delivery_app_server_starting_has_remediation
+        ; test_case "app-server unavailable + remediation" `Quick test_delivery_app_server_unavailable
+        ; test_case "hooks+wake is input-injecting" `Quick test_delivery_hooks_wake_is_input_injecting
+        ; test_case "hooks-only fallback" `Quick test_delivery_hooks_only
+        ; test_case "unavailable → install codex" `Quick test_delivery_unavailable
+        ; test_case "offline record falls back to hooks" `Quick test_delivery_offline_record_falls_back_to_hooks
+        ; test_case "never claims instant delivery" `Quick test_delivery_never_claims_instant
+        ; test_case "report structure + json hygiene" `Quick test_delivery_report_structure
         ] )
     ]

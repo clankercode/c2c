@@ -106,6 +106,7 @@ let doctor_cmd =
           | None -> None
         in
         let hooks_r = C2c_doctor_hooks.check () in
+        let codex_delivery_r = C2c_doctor_hooks.codex_delivery_report () in
         if json then begin
           print_json
             (`Assoc [
@@ -118,6 +119,8 @@ let doctor_cmd =
                  | Some r -> C2c_doctor_schedule.to_json r
                  | None -> `Null));
               ("hooks", C2c_doctor_hooks.to_json hooks_r);
+              ("codex_delivery",
+               C2c_doctor_hooks.codex_delivery_report_to_json codex_delivery_r);
             ])
         end else begin
           Printf.printf "c2c doctor (degraded — not in c2c git repo)\n\n";
@@ -133,6 +136,8 @@ let doctor_cmd =
                Printf.printf "=== Schedule check ===\n\nSkipped (no alias set).\n\n");
           (* Hooks check — works without repo *)
           C2c_doctor_hooks.pp_human hooks_r;
+          (* Codex delivery-mode classification (T005) — works without repo *)
+          C2c_doctor_hooks.pp_codex_delivery_human codex_delivery_r;
           Printf.printf "\nNote: repo-specific checks (push-pending, worktree status, binary staleness, docs drift)\n";
           Printf.printf "are skipped outside the c2c source repo. Run 'c2c doctor' from within the repo for full output.\n"
         end;

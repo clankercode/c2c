@@ -109,7 +109,12 @@ let instances_cmd =
     in
     (* T006: app-server-backed codex sessions expose a lifecycle status
        (starting / online-attached / offline / failed-startup) alongside the
-       outer-loop status. Shared terminology with help/completions/resume. *)
+       outer-loop status. Shared terminology with help/completions/resume.
+       T005: delivery_mode (computed in C2c_health_cmd) uses the same
+       vocabulary as `c2c doctor` — "app-server" while the unit is live
+       (starting/online-attached), else the truthful hook-boundary label
+       ("hooks+wake" input-injecting wake / "hooks" / "unavailable"). Never
+       claim arrival-time delivery when only a hook boundary is available. *)
     let fields =
       match C2c_codex_session.status_of_instance
               ~instance_dir:(C2c_start.instance_dir inst.mi_name) with
