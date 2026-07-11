@@ -332,7 +332,15 @@ let test_merged_json_labels_and_fold () =
       in
       check int "no duplicate relay row for the folded self lease" 0
         (List.length dup_self_relay_rows);
-      (* relay-only peer: kind relay, scope relay *)
+      (* A confirmed-dead relay-only peer is hidden by default. *)
+      (match rows_with ~key:"alias" ~value:faraway_alias rows with
+       | [] -> ()
+       | rows ->
+           fail
+             (Printf.sprintf "expected dead relay-only peer hidden, got %d rows"
+                (List.length rows)));
+      (* --all restores the dead relay peer for diagnostics. *)
+      let rows = envelope_peers (merged_json ~tmp ~url [ "--all" ]) in
       match rows_with ~key:"alias" ~value:faraway_alias rows with
       | [ row ] ->
           check (option string) "relay-only kind" (Some "relay")
@@ -408,17 +416,21 @@ let test_kind_filter_relay () =
   let tmp = setup_broker () in
   with_fake_relay (fun url ->
       let rows = envelope_peers (merged_json ~tmp ~url [ "--kind"; "relay" ]) in
-      (* relay-registered identities only: the scope-both local row + the two
-         relay-only rows; the local-only alias is filtered out. *)
+      (* relay-registered visible identities only: the scope-both local row
+         plus the live relay-only row; the local-only alias is filtered out. *)
       check int "local-only row filtered out" 0
         (List.length (rows_with ~key:"alias" ~value:local_only_alias rows));
       check int "scope-both local row kept (identity IS relay-registered)" 1
         (List.length
            (rows_with ~key:"alias" ~value:self_alias rows
             |> rows_with ~key:"identity_scope" ~value:"both"));
-      check int "relay-only rows kept" 1
+      check int "confirmed-dead relay-only row hidden" 0
         (List.length (rows_with ~key:"alias" ~value:faraway_alias rows));
-      check int "three relay-registered identities total" 3 (List.length rows))
+      check int "two visible relay-registered identities total" 2 (List.length rows);
+      let all_rows = envelope_peers (merged_json ~tmp ~url [ "--kind"; "relay"; "--all" ]) in
+      check int "--all restores dead relay-only row" 1
+        (List.length (rows_with ~key:"alias" ~value:faraway_alias all_rows));
+      check int "three relay-registered identities with --all" 3 (List.length all_rows))
 
 let test_kind_filter_local () =
   let tmp = setup_broker () in
@@ -436,11 +448,14 @@ let test_kind_filter_local () =
 let test_match_and_alive_compose_with_relay () =
   let tmp = setup_broker () in
   with_fake_relay (fun url ->
-      (* --match applies to both sources *)
+      (* --match applies to both sources, but does not implicitly reveal a
+         confirmed-dead relay row. *)
       let rows = envelope_peers (merged_json ~tmp ~url [ "--match"; "faraway" ]) in
       check int "--match filters local rows out" 0
         (List.length (rows_with ~key:"source" ~value:"local" rows));
-      check int "--match keeps the matching relay row" 1 (List.length rows);
+      check int "--match leaves dead relay row hidden" 0 (List.length rows);
+      let rows = envelope_peers (merged_json ~tmp ~url [ "--match"; "faraway"; "--all" ]) in
+      check int "--all --match restores the matching relay row" 1 (List.length rows);
       check (option string) "matched row is the faraway peer"
         (Some faraway_alias) (assoc_string "alias" (List.hd rows));
       (* --alive drops the dead relay lease *)
