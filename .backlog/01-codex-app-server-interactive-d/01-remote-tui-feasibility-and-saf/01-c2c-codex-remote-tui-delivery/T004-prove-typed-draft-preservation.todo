@@ -1,4 +1,7 @@
 ---
+claimed_at: "2026-07-11T11:26:30Z"
+claimed_by: cli-user
+completed_at: null
 complexity: high
 depends_on:
     - P1.M1.E1.T002
@@ -6,14 +9,11 @@ depends_on:
 estimate_hours: 8
 id: P1.M1.E1.T004
 priority: critical
-status: pending
-tags:
-    - codex
-    - tmux
-    - e2e
-    - ux
-    - delivery
+started_at: "2026-07-11T11:26:30Z"
+status: in_progress
+tags: []
 title: Prove passive ingress preserves a real Codex TUI draft
+updated_at: "2026-07-11T11:26:30Z"
 ---
 ## Objective
 
