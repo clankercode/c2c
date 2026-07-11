@@ -272,22 +272,24 @@ let test_delivery_app_server_healthy () =
     (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "draft-safe");
   check bool "summary states the gated-turn rule (idle + DND off)" true
     (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "idle and DND is off");
-  (* Until the supervision wiring slice lands, the diagnostic must NOT claim
-     the injection/auto-turn stack is live: it is library-proven, and the
-     session's live inbound path is still the hook fallback. *)
-  check bool "summary says the stack is library-proven, not live" true
-    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "library-proven");
-  check bool "summary states the live hook-boundary fallback" true
-    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "hook fallback");
-  check bool "no-wake session is not input-injecting" false
+  (* B131: the delivery loop is now DRIVEN under managed supervision, so the
+     online-attached diagnostic reports LIVE arrival-time delivery — no
+     "library-proven, hook fallback" caveat. *)
+  check bool "summary says delivery is live/auto-injected" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "auto-injected");
+  check bool "healthy app-server delivery carries no remediation" true
+    (d.C2c_doctor_hooks.cd_remediation = None);
+  check bool "app-server delivery is data-injection, not input-injection" false
     d.C2c_doctor_hooks.cd_input_injecting;
-  (* With a wake target, the LIVE path today includes the input-injecting
-     wake — the flag must stay truthful even under the app-server label. *)
+  (* Even with a wake target present, an online-attached session's live path is
+     the draft-safe app-server data injection (B131) — it is NOT input-injecting;
+     the wake pane-typing path is only the hook fallback used when app-server is
+     unavailable. *)
   let dw =
     classify ~app_server_status:(Some "online-attached") ~hooks_installed:true
       ~wake_target:true
   in
-  check bool "wake-target session truthfully flags input injection" true
+  check bool "online-attached app-server delivery is never input-injecting" false
     dw.C2c_doctor_hooks.cd_input_injecting
 
 let test_delivery_app_server_starting_not_overclaimed () =
@@ -360,7 +362,7 @@ let test_delivery_hooks_wake_is_input_injecting () =
    | None -> fail "hooks+wake must carry a remediation"
    | Some fix ->
        check bool "remediation points at the app-server transport" true
-         (C2c_doctor_hooks.contains fix "--app-server"))
+         (C2c_doctor_hooks.contains fix "app-server transport"))
 
 let test_delivery_hooks_only () =
   let d = classify ~app_server_status:None ~hooks_installed:true ~wake_target:false in

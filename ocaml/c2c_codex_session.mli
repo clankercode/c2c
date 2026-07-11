@@ -123,12 +123,17 @@ val resolve_identity :
 (** [run] is the single shared implementation path behind
     [c2c start codex] / [c2c codex] / [c2c new codex] / [c2c resume codex].
 
-    - [fallback ~extra_args ()] launches the legacy hook-backed Codex path
-      (the existing {!C2c_start.cmd_start}); [run] calls it verbatim when the
-      app-server path is not engaged, and again as a graceful fallback when the
-      app-server startup returns a structured diagnostic.
-    - [app_server] forces the app-server path on (also enabled by
-      [C2C_CODEX_APP_SERVER=1]); default is the hook path.
+    - The app-server transport is the DEFAULT and ONLY managed path for a
+      supported Codex (≥ {!codex_min_version}). It launches `codex app-server`
+      plus a stock `codex --remote` TUI and drives the B131 delivery loop
+      ({!C2c_codex_deliver_loop}) so inbound c2c mail is auto-injected +
+      auto-turned while attached.
+    - [fallback ~extra_args ()] launches the hook-backed Codex path (the existing
+      {!C2c_start.cmd_start}). [run] calls it AUTOMATICALLY — never via a
+      user-selectable flag — when the app-server startup returns a structured
+      diagnostic (unsupported Codex / capability gap / spawn failure). A hidden
+      [C2C_CODEX_FORCE_HOOKS=1] env escape forces the hook path (operator testing
+      only; not a user-facing option).
     - [alias_override] sets the display/routing alias but never the authoritative
       Codex thread id; a conflict with a differently-owned saved alias is
       rejected.
@@ -144,7 +149,6 @@ val run :
   ?alias_override:string ->
   ?thread_id:string ->
   yolo:bool ->
-  app_server:bool ->
   extra_args:string list ->
   ?model_override:string ->
   ?backend:C2c_codex_app_server.backend ->

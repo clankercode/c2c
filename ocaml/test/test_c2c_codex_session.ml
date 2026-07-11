@@ -224,7 +224,10 @@ let test_glue_happy_publishes_after_start () =
           ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake ~id:111 server))
           ~spawn_frontend:(fun ~argv:_ ~env:_ -> Ok (mk_fake ~id:222 frontend)) () in
       let fallback_called = ref false in
-      let rc = S.run ~mode:S.Start ~yolo:false ~app_server:true
+      (* No --app-server flag: the app-server transport is now the default+only
+         managed path for a supported codex. A supported scripted codex must NOT
+         fall back to hooks. *)
+      let rc = S.run ~mode:S.Start ~yolo:false
           ~extra_args:[] ~thread_id:sid ~backend:bk
           ~fallback:(fun ~extra_args:_ () -> fallback_called := true; 99) () in
       Alcotest.(check bool) "fallback NOT used on happy path" false !fallback_called;
@@ -245,7 +248,9 @@ let test_glue_diagnostic_falls_back_no_publish () =
          so no routable alias is ever published. *)
       let bk = scripted ~clock ~codex_version:(Ok "codex-cli 0.100.0") () in
       let fallback_called = ref false in
-      let rc = S.run ~mode:S.Start ~yolo:false ~app_server:true
+      (* Unsupported codex (0.100.0) => the app-server start returns a version
+         diagnostic and run AUTOMATICALLY falls back to the hook path (no flag). *)
+      let rc = S.run ~mode:S.Start ~yolo:false
           ~extra_args:[ "--model"; "x" ] ~thread_id:sid ~backend:bk
           ~fallback:(fun ~extra_args () ->
               fallback_called := true;
@@ -259,12 +264,18 @@ let test_glue_diagnostic_falls_back_no_publish () =
         (Option.map (fun (m : S.mapping) -> m.alias)
            (S.load_mapping ~instance_dir:(C2c_start.instance_dir alias))))
 
-let test_hook_mode_uses_fallback () =
-  (* app_server:false => the legacy hook path (fallback) runs; --yolo still
-     forwards the bypass flag through the effective extra_args. *)
+let test_force_hooks_env_uses_fallback () =
+  (* The hidden C2C_CODEX_FORCE_HOOKS=1 escape (operator testing only) skips the
+     app-server path entirely and runs the hook fallback; --yolo still forwards
+     the bypass flag through the effective extra_args. *)
   let seen = ref [] in
-  let rc = S.run ~mode:S.Start ~yolo:true ~app_server:false ~extra_args:[ "--model"; "x" ]
-      ~fallback:(fun ~extra_args () -> seen := extra_args; 0) () in
+  Unix.putenv "C2C_CODEX_FORCE_HOOKS" "1";
+  let rc =
+    Fun.protect ~finally:(fun () -> Unix.putenv "C2C_CODEX_FORCE_HOOKS" "0")
+      (fun () ->
+        S.run ~mode:S.Start ~yolo:true ~extra_args:[ "--model"; "x" ]
+          ~fallback:(fun ~extra_args () -> seen := extra_args; 0) ())
+  in
   Alcotest.(check int) "fallback rc" 0 rc;
   Alcotest.(check bool) "yolo bypass forwarded to hook path" true
     (List.mem "--dangerously-bypass-approvals-and-sandbox" !seen);
@@ -372,7 +383,7 @@ let test_yolo_not_persisted () =
           ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake ~id:111 server))
           ~spawn_frontend:(fun ~argv:_ ~env:_ -> Ok (mk_fake ~id:222 frontend)) () in
       (* Launch WITH --yolo. *)
-      let _ = S.run ~mode:S.Start ~yolo:true ~app_server:true ~extra_args:[]
+      let _ = S.run ~mode:S.Start ~yolo:true ~extra_args:[]
           ~thread_id:sid ~backend:bk ~fallback:(fun ~extra_args:_ () -> 0) () in
       (* The persisted mapping file must contain NO bypass flag and NO yolo marker. *)
       let raw =
@@ -385,6 +396,13 @@ let test_yolo_not_persisted () =
         (string_mem "yolo" raw))
 
 let () =
+  (* B131: the app-server lifecycle glue now registers a routable broker alias
+     via the delivery loop. Isolate that side-effect to a throwaway broker root
+     so these identity/lifecycle tests never touch the real machine broker. *)
+  (let tmp = Filename.temp_file "c2c-codex-session-test" "" in
+   Sys.remove tmp;
+   (try Unix.mkdir tmp 0o755 with _ -> ());
+   Unix.putenv "C2C_MCP_BROKER_ROOT" tmp);
   let open Alcotest in
   run "c2c_codex_session"
     [ ( "deterministic-alias",
@@ -417,7 +435,8 @@ let () =
     ; ( "mapping",
         [ test_case "roundtrip" `Quick test_mapping_roundtrip ] )
     ; ( "lifecycle-glue",
-        [ test_case "happy publishes after start" `Quick test_glue_happy_publishes_after_start
-        ; test_case "diagnostic falls back, no publish" `Quick test_glue_diagnostic_falls_back_no_publish
-        ; test_case "hook mode uses fallback" `Quick test_hook_mode_uses_fallback ] )
+        [ test_case "default (no flag) engages app-server, publishes after start"
+            `Quick test_glue_happy_publishes_after_start
+        ; test_case "unsupported codex auto-falls-back, no publish" `Quick test_glue_diagnostic_falls_back_no_publish
+        ; test_case "force-hooks env uses fallback" `Quick test_force_hooks_env_uses_fallback ] )
     ]

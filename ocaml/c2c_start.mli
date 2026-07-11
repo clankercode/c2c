@@ -474,6 +474,11 @@ val broker_root : unit -> string
 (** Return the MCP broker root. Uses [C2C_MCP_BROKER_ROOT] env override when set,
     otherwise shells out to [git rev-parse --git-common-dir]. *)
 
+val clear_registration_pid : broker_root:string -> session_id:string -> unit
+(** Mark the registration for [session_id] as pid-cleared (offline) so peers stop
+    routing to it. Used by managed supervisors on clean teardown (the same path
+    the tmux/outer-loop launchers use). Best-effort; never raises. *)
+
 (** {1 Environment building} *)
 
 val build_env : ?broker_root_override:string option -> ?auto_join_rooms_override:string option -> ?role_class_opt:string option -> ?client:string option -> ?reply_to_override:string option -> ?tmux_location:string option -> ?alias_from_auto_gen:bool -> string -> string option -> string array

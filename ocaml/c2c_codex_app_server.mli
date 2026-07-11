@@ -217,6 +217,14 @@ val endpoint_of : handle -> endpoint
 val unit_id_of : handle -> string
 val token_env_var_of : handle -> string
 val token_sha256_of : handle -> string
+
+(** Memory-only capability token for the LIVE handle. The raw token already lives
+    only in this launcher process's memory; {!raw_token_of} hands it to an
+    in-process caller (the B131 deliver loop driving T003 ingress + T007 turns
+    over the authenticated control seam) WITHOUT widening the auth boundary — it
+    never reaches argv, disk, logs, or persisted/status JSON. Returns [""] once
+    {!stop} has scrubbed it. Callers must read it per-use and never persist it. *)
+val raw_token_of : handle -> string
 val persisted_of : handle -> persisted
 
 (* -------------------------------- driver ---------------------------------- *)
