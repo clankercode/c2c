@@ -117,6 +117,13 @@ let register_dead broker ~session_id ~alias ~client_type =
   C2c_mcp.Broker.register broker ~session_id ~alias ~pid:(Some dead_pid)
     ~pid_start_time:(Some 1) ~client_type:(Some client_type) ()
 
+(* A live PID without a captured start time is deliberately [Unknown], not
+   [Dead]. This models a registration that cannot be verified against PID
+   reuse; it must remain discoverable until an operator asks for --alive. *)
+let register_unknown broker ~session_id ~alias ~client_type =
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:(Some (Unix.getpid ()))
+    ~pid_start_time:None ~client_type:(Some client_type) ()
+
 (* Vanilla Codex hook registrations have no durable process PID. A fresh
    hook-activity lease is the available delivery signal and must appear as
    alive in both discovery commands. *)
@@ -287,6 +294,30 @@ let test_list_hides_dead_by_default_and_all_reveals () =
   check int "list --all exits 0" 0 rc_all;
   check bool "dead peer revealed by --all" true (string_contains out_all "zzqfind-alpha-dead")
 
+let test_list_keeps_unknown_by_default_but_alive_excludes_it () =
+  with_temp_dir @@ fun dir ->
+  let repo_root = dir // "repo-unknown" in
+  Unix.mkdir repo_root 0o755;
+  let broker = C2c_mcp.Broker.create ~root:repo_root in
+  register_unknown broker ~session_id:"sid-unknown-1" ~alias:"zzqfind-unknown"
+    ~client_type:"codex";
+  let env = [ ("C2C_MCP_BROKER_ROOT", repo_root) ] in
+  let rc, out, _ = run_c2c ~env [ "list" ] in
+  check int "default list exits 0" 0 rc;
+  check bool "unknown peer remains visible" true (string_contains out "zzqfind-unknown");
+  check bool "human output labels unknown state" true (string_contains out "unknown");
+  let rc_json, out_json, _ = run_c2c ~env [ "list"; "--json" ] in
+  check int "default JSON list exits 0" 0 rc_json;
+  (match Yojson.Safe.from_string out_json with
+   | `List [ entry ] ->
+       check string "unknown JSON alias" "zzqfind-unknown" (str_member "alias" entry);
+       check bool "unknown JSON alive is null" true (member "alive" entry = Some `Null);
+       check string "unknown JSON state" "unknown" (str_member "state" entry)
+   | _ -> fail "expected one unknown peer in default JSON list");
+  let rc_alive, out_alive, _ = run_c2c ~env [ "list"; "--alive" ] in
+  check int "strict alive list exits 0" 0 rc_alive;
+  check bool "unknown peer excluded by --alive" false (string_contains out_alive "zzqfind-unknown")
+
 let test_list_match_composes_with_json () =
   with_temp_dir @@ fun dir ->
   let env = seed_std dir in
@@ -375,6 +406,8 @@ let () =
     ; ( "list_filters",
         [ test_case "--alive suppresses dead" `Quick test_list_alive_filter
         ; test_case "default hides dead and --all reveals them" `Quick test_list_hides_dead_by_default_and_all_reveals
+        ; test_case "default keeps unknown while --alive excludes it" `Quick
+            test_list_keeps_unknown_by_default_but_alive_excludes_it
         ; test_case "--match composes with --alive --json" `Quick test_list_match_composes_with_json
         ] )
     ; ( "global_list",
