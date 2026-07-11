@@ -26,7 +26,7 @@ let ep : C2c_codex_app_server.endpoint = { transport = "ws"; host = "127.0.0.1";
 
 let mk_msg ~from ~content : C2c_mcp.message =
   { from_alias = from; to_alias = "sess"; content; deferrable = false; reply_via = None;
-    enc_status = None; ts = 1000.0; ephemeral = false; message_id = None }
+    enc_status = None; ts = 1000.0; ephemeral = false; message_id = None; pow_difficulty = None }
 
 (* Deliver a peer message that literally looks like an approval verdict, capture
    what got injected. *)

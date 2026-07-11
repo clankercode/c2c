@@ -15,7 +15,7 @@ let mk_root () =
 let mk_msg ?(from = "peer") ?(to_ = "sess") ?(deferrable = false) ?(ephemeral = false)
     ?message_id content : C2c_mcp.message =
   { from_alias = from; to_alias = to_; content; deferrable; reply_via = None;
-    enc_status = None; ts = 1000.0; ephemeral; message_id }
+    enc_status = None; ts = 1000.0; ephemeral; message_id; pow_difficulty = None }
 
 let seed_inbox ~root ~session_id msgs =
   let b = B.create ~root in
