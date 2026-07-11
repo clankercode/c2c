@@ -66,21 +66,23 @@ val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string ->
 
 val format_reply_hint : ?escape_text_for_xml:bool -> from:string -> to_alias:string -> unit -> string
 (** Build the [<system-reminder>] reply hint block. Sibling of the
-    [<c2c>] envelope; not inside it. Sender [from] is XML-escaped
-    and backtick/backslash-escaped before being interpolated into
-    the inline examples so a malicious peer cannot break out and
-    re-instruct the agent. Relay DMs (suffixed
-    `#<12-hex-host-hash>`) are treated as direct messages, not rooms.
+    [<c2c>] envelope; not inside it. Sender [from] and the undecorated
+    recipient identity are XML-escaped and backtick/backslash-escaped
+    before interpolation so a malicious alias cannot break out and
+    re-instruct the agent. Current relay DMs use [@host-id]; legacy
+    [#<12-hex-host-hash>] relay addresses remain direct messages, not rooms.
     Set [{!escape_text_for_xml}] for nested XML transports so example
     placeholders like [<your reply>] stay well-formed. *)
 
+(** True iff [to_alias] carries a `#<room-id>` suffix (per
+    [C2c_broker.fan_out_room_message]'s room-delivery convention).
+    A legacy 12-lowercase-hex relay suffix is not a room; current
+    [@host-id] relay addresses do not enter the room branch. *)
 val is_room_recipient : to_alias:string -> bool
+
 (** Strip room ([#room]) or relay ([@host-id], plus legacy [#12hex]) routing
     decoration from a recipient address for human-facing identity guidance. *)
 val recipient_identity : string -> string
-(** True iff [to_alias] carries a `#<room-id>` suffix (per
-    [C2c_broker.fan_out_room_message]'s room-delivery convention).
-    A 12-lowercase-hex suffix is the relay host-hash, not a room. *)
 
 type compacting = { started_at : float; reason : string option }
 type registration =
