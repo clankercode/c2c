@@ -57,6 +57,20 @@
  (libraries c2c_mcp alcotest yojson unix))
 
 (test
+ (name test_c2c_codex_app_server)
+ (modules test_c2c_codex_app_server)
+ (libraries c2c_mcp alcotest yojson unix))
+
+; Dogfood driver for the codex app-server launcher primitive (T002). NOT part
+; of the public `c2c` CLI — a standalone foreground executable meant to be run
+; inside a tmux pane so the `codex --remote` frontend inherits the pane tty.
+; Used only by the tmux dogfood receipt.
+(executable
+ (name dev_codex_app_server_dogfood)
+ (modules dev_codex_app_server_dogfood)
+ (libraries c2c_mcp unix))
+
+(test
  (name test_c2c_kimi_notifier)
  (modules test_c2c_kimi_notifier)
  (libraries c2c_mcp alcotest str unix))
