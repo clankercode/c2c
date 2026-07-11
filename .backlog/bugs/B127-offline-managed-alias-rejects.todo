@@ -1,12 +1,14 @@
 ---
+claimed_at: "2026-07-11T08:01:30Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 depends_on: []
 estimate_hours: 5
 id: B127
 priority: high
-started_at: null
-status: pending
+started_at: "2026-07-11T08:01:30Z"
+status: in_progress
 tags: []
 title: Offline managed alias rejects sends instead of queueing durable inbox mail
 updated_at: "2026-07-11T08:01:30Z"
