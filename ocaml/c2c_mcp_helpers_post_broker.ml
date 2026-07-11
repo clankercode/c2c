@@ -880,6 +880,27 @@ let pop_channel_test_code () =
   pending_channel_test_code := None;
   value
 
+(* B119: any same-session hook auto-registration (pid=None,
+   registered_by="claude-hook"/"codex-hook"), alias-agnostic. Shared by
+   [auto_register_impl] (adopt-or-skip) and [auto_join_rooms_impl]
+   (conflict → no room joins as the hook identity). *)
+let same_session_hook_identity_row ~existing ~session_id =
+  List.find_opt
+    (fun (reg : registration) ->
+      reg.session_id = session_id
+      && reg.pid = None
+      && Broker.is_hook_auto_registration reg)
+    existing
+
+(* B119: inherited-session-id contamination check — true when both this
+   process's C2C_MCP_CLIENT_TYPE and the hook row's client_type are known
+   and differ (e.g. a `kimi -p` child inheriting CLAUDE_SESSION_ID). *)
+let hook_client_type_conflict_with (reg : registration) =
+  match current_client_type (), reg.client_type with
+  | Some mine, Some theirs ->
+      String.lowercase_ascii mine <> String.lowercase_ascii theirs
+  | _ -> false
+
 let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
@@ -931,26 +952,15 @@ let auto_register_impl ~broker_root ?session_id_override () =
 
          Pidless rows with registered_by=None (post-OOM zombies, cleared
          managed rows) keep the #345 behavior: the fresh env alias wins. *)
-      let hook_identity_row =
-        (* Any same-session hook row, alias-agnostic: the client-type
-           conflict guard must fire even when the env alias happens to
-           casefold-match the hook alias (otherwise a conflicting client
-           would silently overwrite the row's pid/client_type/registered_by). *)
-        List.find_opt
-          (fun reg ->
-            reg.session_id = session_id
-            && reg.pid = None
-            && Broker.is_hook_auto_registration reg)
-          existing
-      in
+      (* Any same-session hook row, alias-agnostic: the client-type
+         conflict guard must fire even when the env alias happens to
+         casefold-match the hook alias (otherwise a conflicting client
+         would silently overwrite the row's pid/client_type/registered_by). *)
+      let hook_identity_row = same_session_hook_identity_row ~existing ~session_id in
       let hook_client_type_conflict =
         match hook_identity_row with
         | None -> false
-        | Some reg ->
-            (match current_client_type (), reg.client_type with
-             | Some mine, Some theirs ->
-                 String.lowercase_ascii mine <> String.lowercase_ascii theirs
-             | _ -> false)
+        | Some reg -> hook_client_type_conflict_with reg
       in
       let alias, adopted_registered_by =
         match hook_identity_row with
@@ -1098,10 +1108,16 @@ let auto_register_impl ~broker_root ?session_id_override () =
           | None -> ()
         in
         let target = Broker.alias_casefold alias in
+        (* B119 follow-up: logging predicates must match the actual guards
+           (incl. the Option.is_some pid clause) — otherwise a preserved
+           pid=None hook row emits a false "hijack_guard" diagnostic on the
+           client-type-conflict skip path. *)
         log_guard_if_fired ~label:"hijack_guard"
-          (fun reg -> reg.session_id = session_id && reg.alias <> alias && Broker.registration_is_alive reg);
+          (fun reg -> Option.is_some reg.pid && reg.session_id = session_id
+                      && reg.alias <> alias && Broker.registration_is_alive reg);
         log_guard_if_fired ~label:"alias_occupied_guard"
-          (fun reg -> Broker.alias_casefold reg.alias = target && reg.session_id <> session_id
+          (fun reg -> Option.is_some reg.pid && Broker.alias_casefold reg.alias = target
+                       && reg.session_id <> session_id
                        && reg.pid <> pid && Broker.registration_is_alive reg);
         log_guard_if_fired ~label:"same_session_alive_different_pid"
           (fun reg -> reg.session_id = session_id && reg.alias = alias && reg.pid <> None
@@ -1159,22 +1175,43 @@ let auto_join_rooms_impl ~broker_root ?session_id_override () =
       |> List.filter (fun s -> s <> "")
     in
     let broker = Broker.create ~root:broker_root in
-    let alias =
-      match
-        List.find_opt
-          (fun reg -> reg.session_id = session_id)
-          (Broker.list_registrations broker)
-      with
-      | Some reg -> reg.alias
-      | None -> alias
+    let existing = Broker.list_registrations broker in
+    (* B119 follow-up: on a hook client-type conflict the register path
+       skips, but the session lookup below would still resolve the
+       preserved hook row — joining rooms AS the hook identity from the
+       contaminating child. Skip auto-join entirely in that case. *)
+    let contaminated =
+      match same_session_hook_identity_row ~existing ~session_id with
+      | Some reg when hook_client_type_conflict_with reg ->
+          Printf.eprintf
+            "[auto_join_rooms] hook_client_type_conflict: skipping room \
+             auto-join — session_id=%S is owned by hook registration \
+             alias=%S (client_type=%s) but this process declares \
+             client_type=%s\n%!"
+            reg.session_id reg.alias
+            (Option.value reg.client_type ~default:"?")
+            (Option.value (current_client_type ()) ~default:"?");
+          true
+      | _ -> false
     in
-    List.iter
-      (fun room_id ->
-        if Broker.valid_room_id room_id then
-          ignore (Broker.join_room broker ~room_id ~alias ~session_id)
-        (* silently skip invalid room IDs so a misconfiguration doesn't
-           crash the server *))
-      rooms
+    if not contaminated then begin
+      let alias =
+        match
+          List.find_opt
+            (fun reg -> reg.session_id = session_id)
+            existing
+        with
+        | Some reg -> reg.alias
+        | None -> alias
+      in
+      List.iter
+        (fun room_id ->
+          if Broker.valid_room_id room_id then
+            ignore (Broker.join_room broker ~room_id ~alias ~session_id)
+          (* silently skip invalid room IDs so a misconfiguration doesn't
+             crash the server *))
+        rooms
+    end
   end
 
 let auto_join_rooms_startup ~broker_root = auto_join_rooms_impl ~broker_root ()

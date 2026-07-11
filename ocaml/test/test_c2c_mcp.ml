@@ -3394,6 +3394,97 @@ let test_auto_register_startup_same_alias_upgrade_keeps_hook_marker () =
           check (option string) "hook ownership marker preserved"
             (Some "claude-hook") reg.registered_by))
 
+let test_auto_join_rooms_skips_on_hook_client_type_conflict () =
+  (* B119 follow-up (codex review): on a hook client-type conflict the
+     register path skips, but auto-join must ALSO skip — otherwise the
+     inherited-session child resolves the preserved hook row and mutates
+     room membership AS the hook identity. Differing-alias variant. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"claude-b119-sid-0005" ~alias:"claude-hookid-b119e"
+        ~pid:None ~pid_start_time:None
+        ~client_type:(Some "claude")
+        ~registered_by:(Some "claude-hook")
+        ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "claude-b119-sid-0005";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-envid-b119e";
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "kimi";
+      Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_TYPE" "";
+          Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          C2c_mcp.auto_join_rooms_startup ~broker_root:dir;
+          let members =
+            C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge"
+          in
+          check int "no room membership mutated as hook identity" 0
+            (List.length members)))
+
+let test_auto_join_rooms_skips_on_same_alias_hook_client_type_conflict () =
+  (* B119 follow-up: same-alias conflict variant — env alias equals the hook
+     alias, client types differ. Auto-join must still skip. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"claude-b119-sid-0006" ~alias:"claude-hookid-b119f"
+        ~pid:None ~pid_start_time:None
+        ~client_type:(Some "claude")
+        ~registered_by:(Some "claude-hook")
+        ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "claude-b119-sid-0006";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "claude-hookid-b119f";
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "kimi";
+      Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_TYPE" "";
+          Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          C2c_mcp.auto_join_rooms_startup ~broker_root:dir;
+          let members =
+            C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge"
+          in
+          check int "no room membership mutated as hook identity" 0
+            (List.length members)))
+
+let test_auto_join_rooms_joins_under_adopted_hook_alias () =
+  (* B119 follow-up positive control: with NO client-type conflict the
+     adopted identity joins rooms under the hook alias. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"claude-b119-sid-0007" ~alias:"claude-hookid-b119g"
+        ~pid:None ~pid_start_time:None
+        ~client_type:(Some "claude")
+        ~registered_by:(Some "claude-hook")
+        ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "claude-b119-sid-0007";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "claude-envid-b119g";
+      Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          C2c_mcp.auto_join_rooms_startup ~broker_root:dir;
+          let members =
+            C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge"
+          in
+          check (list string) "joined under adopted hook alias"
+            [ "claude-hookid-b119g" ]
+            (List.map (fun m -> m.C2c_mcp.rm_alias) members)))
+
 let test_auto_join_rooms_startup_joins_listed_rooms () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
@@ -15183,6 +15274,12 @@ let () =
              test_auto_register_startup_same_alias_client_type_conflict_skips
          ; test_case "auto_register_startup same-alias upgrade keeps hook marker (B119)" `Quick
              test_auto_register_startup_same_alias_upgrade_keeps_hook_marker
+         ; test_case "auto_join_rooms skips on hook client-type conflict (B119 follow-up)" `Quick
+             test_auto_join_rooms_skips_on_hook_client_type_conflict
+         ; test_case "auto_join_rooms skips on same-alias hook client-type conflict (B119 follow-up)" `Quick
+             test_auto_join_rooms_skips_on_same_alias_hook_client_type_conflict
+         ; test_case "auto_join_rooms joins under adopted hook alias (B119 follow-up)" `Quick
+             test_auto_join_rooms_joins_under_adopted_hook_alias
          ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
              test_auto_join_rooms_startup_joins_listed_rooms
          ; test_case "auto_join_rooms_startup prefers current registered alias" `Quick
