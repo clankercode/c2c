@@ -46,11 +46,12 @@ let changelog_cmd =
   and+ fetch = fetch in
   let broker_root = resolve_broker_root () in
   if fetch then begin
-    (* Foreground refresh: spawn (fixture path copies synchronously; the real
-       path is detached, so give it a brief moment to land). *)
-    C2c_changelog.spawn_background_fetch ~broker_root;
-    if Sys.getenv_opt "C2C_CHANGELOG_FETCH_FIXTURE" = None then
-      (try Unix.sleepf 0.2 with _ -> ())
+    (* Foreground refresh: synchronous (waitpid) so the read below sees the
+       fresh cache. Fixture/disable gating handled inside. *)
+    if not (C2c_changelog.fetch_remote_sync ~broker_root) then
+      Printf.eprintf
+        "warning: could not refresh the remote changelog cache (offline?); \
+         showing locally-available entries.\n%!"
   end;
   let entries = C2c_changelog.merged_entries ~broker_root in
   let entries =

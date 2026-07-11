@@ -243,6 +243,42 @@ let test_fetch_fixture_populates_cache () =
   check bool "merged includes fixture version" true
     (List.exists (fun e -> e.C2c_changelog.version = "9.9.9") es)
 
+let test_sync_fetch_fixture () =
+  let root = tmp_broker () in
+  let fixture = Filename.temp_file "c2c_changelog_syncfix" ".md" in
+  let oc = open_out fixture in
+  output_string oc "## v8.8.8 — 2098-01-01\n\n### Sync fixture\nsummary: hi.\n";
+  close_out oc;
+  Unix.putenv "C2C_CHANGELOG_FETCH_FIXTURE" fixture;
+  let ok = C2c_changelog.fetch_remote_sync ~broker_root:root in
+  Unix.putenv "C2C_CHANGELOG_FETCH_FIXTURE" "";
+  check bool "sync fetch reports success" true ok;
+  check bool "cache exists after sync fetch" true
+    (Sys.file_exists (C2c_changelog.remote_cache_path ~broker_root:root))
+
+let test_sync_fetch_disabled_reports_absence () =
+  (* DISABLE=1 (set in main): no cache -> fetch_remote_sync must return false
+     without touching the network. *)
+  let root = tmp_broker () in
+  let ok = C2c_changelog.fetch_remote_sync ~broker_root:root in
+  check bool "disabled + no cache -> false" false ok
+
+let test_marker_lock_serialised_autoshow () =
+  (* Sanity: with_marker_lock does not deadlock sequential nesting-free use,
+     and auto_show (which takes the lock internally) still shows on upgrade. *)
+  let root = tmp_broker () in
+  C2c_changelog.write_marker ~broker_root:root ~client:"claude" ~version:"0.9.0";
+  let r1 =
+    C2c_changelog.with_marker_lock ~broker_root:root ~client:"claude"
+      (fun () -> C2c_changelog.read_marker ~broker_root:root ~client:"claude")
+  in
+  check (option string) "locked read sees marker" (Some "0.9.0") r1;
+  let out =
+    C2c_changelog.auto_show ~current:"0.10.0" ~broker_root:root ~client:"claude"
+      ~now:0. ()
+  in
+  check bool "auto_show under lock still shows" true (Option.is_some out)
+
 let test_embedded_nonempty () =
   let es = Lazy.force C2c_changelog.embedded_entries in
   check bool "embedded changelog has entries" true (List.length es > 0);
@@ -274,7 +310,13 @@ let () =
         ; test_case "per-client independent" `Quick test_per_client_independent ] )
     ; ( "fetch",
         [ test_case "fixture populates cache" `Quick
-            test_fetch_fixture_populates_cache ] )
+            test_fetch_fixture_populates_cache
+        ; test_case "sync fetch via fixture" `Quick test_sync_fetch_fixture
+        ; test_case "sync fetch disabled -> false" `Quick
+            test_sync_fetch_disabled_reports_absence ] )
+    ; ( "locking",
+        [ test_case "marker lock + auto_show" `Quick
+            test_marker_lock_serialised_autoshow ] )
     ; ( "embedded",
         [ test_case "embedded non-empty + verbatim setup" `Quick
             test_embedded_nonempty ] )

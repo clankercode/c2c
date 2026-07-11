@@ -369,7 +369,55 @@ let spawn_background_fetch ~broker_root : unit =
          (try Unix.close devnull with _ -> ())
        with _ -> ())
 
+(* Foreground fetch for the explicit `c2c changelog --fetch` path: same
+   fixture/disable gating as the background fetch, but the real network path
+   runs curl synchronously (waitpid) so the subsequent read sees the fresh
+   cache. Returns true when the cache file exists afterwards. *)
+let fetch_remote_sync ~broker_root : bool =
+  let dest = remote_cache_path ~broker_root in
+  (match Sys.getenv_opt "C2C_CHANGELOG_FETCH_FIXTURE" with
+   | Some fixture when String.trim fixture <> "" ->
+       spawn_background_fetch ~broker_root  (* fixture path is synchronous *)
+   | _ when Sys.getenv_opt "C2C_CHANGELOG_FETCH_DISABLE" = Some "1" -> ()
+   | _ ->
+       (try
+          mkdir_p (broker_changelog_dir ~broker_root);
+          let tmp = dest ^ ".sync.tmp" in
+          let pid =
+            Unix.create_process "curl"
+              [| "curl"; "-fsSL"; "--max-time"; "20"; github_raw_url; "-o"; tmp |]
+              Unix.stdin Unix.stderr Unix.stderr
+          in
+          (match Unix.waitpid [] pid with
+           | _, Unix.WEXITED 0 -> (try Sys.rename tmp dest with _ -> ())
+           | _ -> (try Sys.remove tmp with _ -> ()))
+        with _ -> ()));
+  Sys.file_exists dest
+
 (* ---- per-client auto-show state machine -------------------------------- *)
+
+(* Multi-process guard for the read-decide-write marker sequence: two hook
+   processes racing the same session start could both read the old marker and
+   double-inject. Serialise via lockf on a per-client .lock file (same
+   pattern as C2c_io.write_file_atomic_locked / broker_log). Degrades to
+   unlocked execution if the lock cannot be taken — the marker write itself
+   stays atomic; worst case is the pre-lock double-show. *)
+let with_marker_lock ~broker_root ~client (f : unit -> 'a) : 'a =
+  let lock_path = marker_path ~broker_root ~client ^ ".lock" in
+  match
+    (try
+       mkdir_p (broker_changelog_dir ~broker_root);
+       Some (Unix.openfile lock_path [ Unix.O_WRONLY; Unix.O_CREAT ] 0o600)
+     with _ -> None)
+  with
+  | None -> f ()
+  | Some fd ->
+      (try Unix.lockf fd Unix.F_LOCK 0 with _ -> ());
+      Fun.protect
+        ~finally:(fun () ->
+          (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+          (try Unix.close fd with _ -> ()))
+        f
 
 let read_marker ~broker_root ~client : string option =
   match read_file_opt (marker_path ~broker_root ~client) with
@@ -393,6 +441,7 @@ let write_marker ~broker_root ~client ~version : unit =
    for the current run's audience (interactive|autonomous|all). *)
 let auto_show ?current ?(audience = "all") ~broker_root ~client ~now () : string option =
   let current = match current with Some v -> v | None -> Version.version in
+  with_marker_lock ~broker_root ~client @@ fun () ->
   match read_marker ~broker_root ~client with
   | Some prev when prev = current ->
       None  (* already injected for this version *)
