@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""E2e tests for C2C_REQUIRE_SIGNED_ROOM_OPS gate (Phase 3 prerequisite).
+"""E2e tests for signed room-op / room-send enforcement (B114).
 
-Starts a local OCaml relay server with C2C_REQUIRE_SIGNED_ROOM_OPS=1 and
-verifies:
-  - unsigned join_room → rejected with relay_err_unsigned_room_op
-  - unsigned leave_room → rejected with relay_err_unsigned_room_op
-  - unsigned set_room_visibility → rejected with relay_err_unsigned_room_op
-  - unsigned knock_room → rejected with relay_err_unsigned_room_op
-  - signed join_room (with Ed25519 proof) → accepted
-  - signed gated knock/list/approve/deny request-to-join flows work
+Since B114, signed room-operation proofs and signed /send_room envelopes are
+MANDATORY by default. The legacy unsigned compatibility path exists only as an
+explicit development gate: C2C_REQUIRE_SIGNED_ROOM_OPS=0, and that gate is
+honored ONLY when the relay has no Bearer token configured (dev mode). A
+token-configured (production) relay always requires signed proofs/envelopes.
 
-These tests require the OCaml relay binary (c2c relay serve) and an Ed25519
-identity fixture (C2C_RELAY_IDENTITY_PATH). They are NOT run against the
-prod relay.
+Coverage (all against a locally spawned OCaml relay, token-configured unless
+stated otherwise):
+  - default (no env var): unsigned join/leave/set_visibility/knock/invite/
+    uninvite/list_knocks/approve/deny → rejected with unsigned_room_op
+  - default: envelope-less /send_room → rejected with unsigned_room_op
+  - signed room ops and signed /send_room envelopes → accepted
+  - dev gate (no token + C2C_REQUIRE_SIGNED_ROOM_OPS=0): unsigned ops and
+    envelope-less sends accepted (legacy path)
+  - prod ignores the dev gate (token + C2C_REQUIRE_SIGNED_ROOM_OPS=0):
+    unsigned ops / envelope-less sends still rejected
+
+These tests require the OCaml relay binary (c2c relay serve). They are NOT
+run against the prod relay.
 
 Requires: cryptography (pip install cryptography)
 """
@@ -87,10 +94,15 @@ class RelayClient:
 class OCamlRelayServer:
     """Context manager: starts OCaml relay server as a subprocess, tears it down on exit."""
 
-    def __init__(self, token: str, require_signed: bool = True,
+    def __init__(self, token: str | None, signed_env: str | None = None,
                  identity_path: str | None = None, port: int = TEST_PORT) -> None:
+        """token=None starts a dev-mode relay (no --token flag).
+
+        signed_env is the C2C_REQUIRE_SIGNED_ROOM_OPS value: None leaves the
+        variable unset (the secure source default), "0" requests the legacy
+        unsigned dev gate, "1" is the explicit strict setting."""
         self.token = token
-        self.require_signed = require_signed
+        self.signed_env = signed_env
         self.identity_path = identity_path
         self.port = port
         self._proc: subprocess.Popen | None = None
@@ -98,10 +110,10 @@ class OCamlRelayServer:
     def _build_env(self) -> dict:
         env = dict(os.environ)
         env.pop("C2C_MCP_SESSION_ID", None)
-        if self.require_signed:
-            env["C2C_REQUIRE_SIGNED_ROOM_OPS"] = "1"
-        else:
+        if self.signed_env is None:
             env.pop("C2C_REQUIRE_SIGNED_ROOM_OPS", None)
+        else:
+            env["C2C_REQUIRE_SIGNED_ROOM_OPS"] = self.signed_env
         if self.identity_path:
             env["C2C_RELAY_IDENTITY_PATH"] = self.identity_path
         return env
@@ -110,9 +122,10 @@ class OCamlRelayServer:
         cmd = [
             C2C, "relay", "serve",
             "--listen", f"127.0.0.1:{self.port}",
-            "--token", self.token,
             "--storage", "memory",
         ]
+        if self.token is not None:
+            cmd += ["--token", self.token]
         self._proc = subprocess.Popen(
             cmd,
             env=self._build_env(),
@@ -305,12 +318,45 @@ class SignedRoomOpHelper:
             "nonce": nonce,
         }
 
+    def sign_send_room(self, room_id: str, content: str) -> dict:
+        """Signed /send_room envelope (spec §2, ctx c2c/v1/room-send).
+
+        Mirrors OCaml Relay_signed_ops.sign_send_room: the canonical blob is
+        [room_id, from_alias, sender_pk_b64, enc, ct_hash, ts, nonce] and
+        ct is base64url-nopad of the UTF-8 content (enc="none" in v1)."""
+        ct = content.encode()
+        ct_b64 = self._b64url_nopad_encode(ct)
+        ct_hash = self._b64url_nopad_encode(hashlib.sha256(ct).digest())
+        enc = "none"
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        nonce = self._b64url_nopad_encode(os.urandom(16))
+        blob = "\x1f".join([
+            "c2c/v1/room-send",
+            room_id,
+            self.alias,
+            self.identity_pk_b64,
+            enc,
+            ct_hash,
+            ts,
+            nonce,
+        ])
+        sig = self._sign(blob)
+        return {
+            "ct": ct_b64,
+            "enc": enc,
+            "sender_pk": self.identity_pk_b64,
+            "sig": self._b64url_nopad_encode(sig),
+            "ts": ts,
+            "nonce": nonce,
+        }
+
 
 class RequireSignedRoomOpsTests(unittest.TestCase):
-    """Tests for C2C_REQUIRE_SIGNED_ROOM_OPS=1 gate.
+    """Tests for the secure source default (B114).
 
-    When the gate is ON, unsigned room ops must be rejected with
-    relay_err_unsigned_room_op = "unsigned_room_op".
+    C2C_REQUIRE_SIGNED_ROOM_OPS is left UNSET and the relay is
+    token-configured: unsigned room ops must be rejected with
+    relay_err_unsigned_room_op = "unsigned_room_op" out of the box.
     """
 
     server: OCamlRelayServer
@@ -318,7 +364,7 @@ class RequireSignedRoomOpsTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.server = OCamlRelayServer(token=TOKEN, require_signed=True)
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None)
         cls.server.start()
         cls.client = RelayClient(cls.server.base_url, token=TOKEN)
         cls.client.register("n", ALICE_SESSION, ALICE_ALIAS)
@@ -377,6 +423,115 @@ class RequireSignedRoomOpsKnockTests(RequireSignedRoomOpsTests):
                          f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
 
 
+class RequireSignedRoomOpsInviteTests(RequireSignedRoomOpsTests):
+    FAKE_PK = _b64url_nopad(b"\x01" * 32)
+
+    def _assert_unsigned_rejected(self, path: str, body: dict):
+        r = self.client.post(path, body)
+        self.assertFalse(r["ok"], f"unsigned {path} should be rejected: {r}")
+        self.assertEqual(r["error_code"], "unsigned_room_op",
+                         f"expected unsigned_room_op for {path}, "
+                         f"got {r.get('error_code')}: {r.get('error')}")
+
+    def test_unsigned_invite_room_rejected(self):
+        self._assert_unsigned_rejected("/invite_room", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID, "invitee_pk": self.FAKE_PK,
+        })
+
+    def test_unsigned_uninvite_room_rejected(self):
+        self._assert_unsigned_rejected("/uninvite_room", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID, "invitee_pk": self.FAKE_PK,
+        })
+
+    def test_unsigned_list_room_knocks_rejected(self):
+        self._assert_unsigned_rejected("/list_room_knocks", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID,
+        })
+
+    def test_unsigned_approve_room_knock_rejected(self):
+        self._assert_unsigned_rejected("/approve_room_knock", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID, "requester_pk": self.FAKE_PK,
+        })
+
+    def test_unsigned_deny_room_knock_rejected(self):
+        self._assert_unsigned_rejected("/deny_room_knock", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID, "requester_pk": self.FAKE_PK,
+        })
+
+
+class SendRoomEnvelopeEnforcementTests(unittest.TestCase):
+    """B114: /send_room must reject an absent envelope by default and accept a
+    valid signed envelope. Uses its own relay + a signed member identity."""
+
+    ALIAS = "send-e2e-alice"
+    ROOM = "send-e2e-room"
+
+    server: OCamlRelayServer
+    client: RelayClient
+    helper: SignedRoomOpHelper
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
+                                      port=TEST_PORT + 3)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        cls.helper = SignedRoomOpHelper(generate_identity(cls.ALIAS))
+        cls.client.register(
+            "n-send", "s-send", cls.ALIAS,
+            **cls.helper.sign_register(cls.server.base_url),
+        )
+        proof = cls.helper.sign_room_op("c2c/v1/room-join", cls.ROOM)
+        r = cls.client.post("/join_room", {
+            "alias": cls.ALIAS, "room_id": cls.ROOM, **proof,
+        })
+        assert r.get("ok"), f"signed join_room failed in setup: {r}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def test_envelope_less_send_room_rejected(self):
+        """An absent envelope must be rejected (unsigned_room_op), even from a
+        current member alias — anonymous impersonation closure (B111/B114)."""
+        r = self.client.post("/send_room", {
+            "from_alias": self.ALIAS,
+            "room_id": self.ROOM,
+            "content": "no envelope here",
+        })
+        self.assertFalse(r["ok"], f"envelope-less send_room should be rejected: {r}")
+        self.assertEqual(r["error_code"], "unsigned_room_op",
+                         f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
+
+    def test_signed_envelope_send_room_accepted(self):
+        content = "hello signed room"
+        envelope = self.helper.sign_send_room(self.ROOM, content)
+        r = self.client.post("/send_room", {
+            "from_alias": self.ALIAS,
+            "room_id": self.ROOM,
+            "content": content,
+            "envelope": envelope,
+        })
+        self.assertTrue(r["ok"], f"signed send_room should be accepted: {r}")
+
+    def test_forged_envelope_send_room_rejected(self):
+        """An envelope signed by a key that is not bound to from_alias must be
+        rejected — the envelope requirement must not be satisfiable by any
+        random self-signed envelope."""
+        imposter = SignedRoomOpHelper(generate_identity(self.ALIAS))
+        content = "imposter message"
+        envelope = imposter.sign_send_room(self.ROOM, content)
+        r = self.client.post("/send_room", {
+            "from_alias": self.ALIAS,
+            "room_id": self.ROOM,
+            "content": content,
+            "envelope": envelope,
+        })
+        self.assertFalse(r["ok"], f"forged-envelope send_room should be rejected: {r}")
+        self.assertEqual(r.get("error_code"), "alias_identity_mismatch",
+                         f"expected alias_identity_mismatch: {r}")
+
+
 class RequireSignedRoomOpsSignedJoinTests(RequireSignedRoomOpsTests):
     def test_signed_join_room_accepted(self):
         """Signed /join_room with Ed25519 proof must be accepted when identity is registered."""
@@ -395,36 +550,91 @@ class RequireSignedRoomOpsSignedJoinTests(RequireSignedRoomOpsTests):
         self.assertTrue(r["ok"], f"signed join_room should be accepted: {r}")
 
 
-class GateOffAcceptsUnsignedTests(unittest.TestCase):
-    """Verify that when C2C_REQUIRE_SIGNED_ROOM_OPS is OFF, unsigned ops are accepted.
-
-    This is the legacy behavior — a sanity check that the gate itself is functional.
-    """
+class DevGateAllowsUnsignedTests(unittest.TestCase):
+    """The legacy unsigned path survives ONLY as an explicit development gate:
+    C2C_REQUIRE_SIGNED_ROOM_OPS=0 on a token-less (dev-mode) relay."""
 
     server: OCamlRelayServer
     client: RelayClient
 
     @classmethod
     def setUpClass(cls):
-        cls.server = OCamlRelayServer(token=TOKEN, require_signed=False,
+        cls.server = OCamlRelayServer(token=None, signed_env="0",
                                       port=TEST_PORT + 1)
         cls.server.start()
-        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
-        cls.client.register("n", ALICE_SESSION + "-gateoff",
-                            ALICE_ALIAS + "-gateoff")
+        cls.client = RelayClient(cls.server.base_url, token=None)
+        cls.client.register("n", ALICE_SESSION + "-devgate",
+                            ALICE_ALIAS + "-devgate")
 
     @classmethod
     def tearDownClass(cls):
         cls.server.close()
 
-    def test_unsigned_join_room_accepted_when_gate_off(self):
-        """When gate is off, unsigned /join_room must be accepted (with warn log)."""
+    def test_unsigned_join_room_accepted_under_dev_gate(self):
         r = self.client.post("/join_room", {
-            "alias": ALICE_ALIAS + "-gateoff",
-            "room_id": ROOM_ID + "-gateoff",
+            "alias": ALICE_ALIAS + "-devgate",
+            "room_id": ROOM_ID + "-devgate",
         })
         self.assertTrue(r["ok"],
-                        f"unsigned join_room should be accepted when gate is off: {r}")
+                        f"unsigned join_room should be accepted under the dev gate: {r}")
+
+    def test_envelope_less_send_room_accepted_under_dev_gate(self):
+        # Membership first (unsigned join, allowed under the dev gate).
+        room = ROOM_ID + "-devgate-send"
+        j = self.client.post("/join_room", {
+            "alias": ALICE_ALIAS + "-devgate",
+            "room_id": room,
+        })
+        self.assertTrue(j["ok"], f"dev-gate join for send test failed: {j}")
+        r = self.client.post("/send_room", {
+            "from_alias": ALICE_ALIAS + "-devgate",
+            "room_id": room,
+            "content": "legacy dev-gate message",
+        })
+        self.assertTrue(r["ok"],
+                        f"envelope-less send_room should be accepted under the dev gate: {r}")
+
+
+class ProdIgnoresDevGateTests(unittest.TestCase):
+    """A token-configured (production) relay must ignore
+    C2C_REQUIRE_SIGNED_ROOM_OPS=0 — there is no unsigned downgrade in prod."""
+
+    server: OCamlRelayServer
+    client: RelayClient
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env="0",
+                                      port=TEST_PORT + 4)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        cls.client.register("n", ALICE_SESSION + "-prodgate",
+                            ALICE_ALIAS + "-prodgate")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def test_unsigned_join_room_still_rejected(self):
+        r = self.client.post("/join_room", {
+            "alias": ALICE_ALIAS + "-prodgate",
+            "room_id": ROOM_ID + "-prodgate",
+        })
+        self.assertFalse(r["ok"],
+                         f"token-configured relay must ignore the dev gate: {r}")
+        self.assertEqual(r["error_code"], "unsigned_room_op",
+                         f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
+
+    def test_envelope_less_send_room_still_rejected(self):
+        r = self.client.post("/send_room", {
+            "from_alias": ALICE_ALIAS + "-prodgate",
+            "room_id": ROOM_ID + "-prodgate",
+            "content": "should not land",
+        })
+        self.assertFalse(r["ok"],
+                         f"token-configured relay must ignore the dev gate for sends: {r}")
+        self.assertEqual(r["error_code"], "unsigned_room_op",
+                         f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
 
 
 class SignedRoomVisibilityE2ETests(unittest.TestCase):
@@ -457,7 +667,7 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.server = OCamlRelayServer(token=TOKEN, require_signed=True,
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
                                       port=TEST_PORT + 2)
         cls.server.start()
         cls.client = RelayClient(cls.server.base_url, token=TOKEN)
