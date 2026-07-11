@@ -202,7 +202,6 @@ frame
 fringe
 frond
 frontier
-fruit
 fuel
 fuse
 gable
@@ -565,7 +564,6 @@ ozone
 pace
 pack
 pact
-paddy
 padlock
 page
 paju
@@ -575,7 +573,6 @@ palm
 palo
 pane
 panel
-pansy
 pantry
 paper
 parade
@@ -978,7 +975,6 @@ sound
 source
 south
 space
-spade
 span
 spanner
 spare
@@ -1130,7 +1126,6 @@ taper
 target
 tarmac
 tarot
-tart
 tassel
 tavi
 teak
@@ -1214,7 +1209,6 @@ trade
 trail
 train
 trait
-tramp
 trance
 trap
 trawl
@@ -1382,7 +1376,6 @@ wedge
 weft
 weight
 weir
-welch
 west
 whale
 wharf

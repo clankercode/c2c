@@ -25,7 +25,7 @@ Alias convention:
   (e.g. `kimi-nova`, `opencode-local`, `codex-xertrov-x-game`). Written
   by `c2c install <client>` and `c2c configure-<client>`.
 - Ad-hoc Claude Code sessions get a randomly-assigned `<word>-<word>`
-  alias from the 1,455-word pool in `data/c2c_alias_words.txt`
+  alias from the ~1,450-word pool in `data/c2c_alias_words.txt`
   (~2.1M ordered combinations).
 - Codex is always `codex` with session id `codex-local`.
 

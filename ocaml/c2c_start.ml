@@ -2506,7 +2506,7 @@ let record_death ~broker_root ~name ~client ~exit_code ~duration_s ~inst_dir =
 
 (* alias word pool lives in [C2c_alias_words] (#388 — converged from
    the duplicated literal previously inlined here and in cli/c2c_setup.ml;
-   B112 — generated from data/c2c_alias_words.txt, 1,455 words). *)
+   B112 — generated from data/c2c_alias_words.txt, ~1,450 words). *)
 
 let generate_alias ?(no_nonce = false) () =
   let () = Random.self_init () in

@@ -7,9 +7,17 @@ Single source of truth:
 
 Every word must be lowercase alphanumeric starting with a letter, 3..12
 chars (hyphen is the alias separator, so words must never contain one),
-sorted and unique; the easy pool must be a subset of the full pool.
+sorted and unique; the easy pool must be a STRICT subset of the full pool.
 The OCaml drift test (ocaml/test/test_c2c_alias_words.ml) pins the
 embedded arrays byte-for-byte to these files.
+
+Content policy (B112 review): aliases are public agent identities, so the
+pool must stay family-friendly. Exclude any word with an established slur
+or derogatory sense targeting people or groups (removed on review: kink,
+paddy, pansy, spade, tramp, welch, tart, fruit). Words with mild vulgar
+slang senses whose primary meaning is overwhelmingly innocent and
+non-targeting (e.g. root, screw, buck, whip, master) are allowed. Apply
+the same bar to any future additions.
 
 Usage:
   python3 tools/ci/codegen-alias-words.py           # regenerate
