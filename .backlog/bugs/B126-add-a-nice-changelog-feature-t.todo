@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B126
+priority: high
+status: pending
+tags: []
+title: Add a nice changelog feature to tell agents about new features or suggestions, eg the new codex method and alias suggestions. the agent can then offer to set up any of that when a new version is used. we could, on a per-client level, show it when we detect a version update (for session start hook). we should also have a `c2c changelog` command that instructs the agent where to get recent changelogs (github). Hmm we'll need to think about this. might need a multistep process we can do in the bg where c2c will download any changelogs that it is missing in the bg so it can serve them with low latency. so the auto-show changelog thing would need to happen on the 2nd or later launch -- 1st launch gets the missing changelogs, 2nd or later launch shows them once available, then we update the 'last version chagnelog shown automatically' setting or whatever.
+---
+
+Add a nice changelog feature to tell agents about new features or suggestions, eg the new codex method and alias suggestions. the agent can then offer to set up any of that when a new version is used. we could, on a per-client level, show it when we detect a version update (for session start hook). we should also have a `c2c changelog` command that instructs the agent where to get recent changelogs (github). Hmm we'll need to think about this. might need a multistep process we can do in the bg where c2c will download any changelogs that it is missing in the bg so it can serve them with low latency. so the auto-show changelog thing would need to happen on the 2nd or later launch -- 1st launch gets the missing changelogs, 2nd or later launch shows them once available, then we update the 'last version chagnelog shown automatically' setting or whatever.
