@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-11T15:58:47Z"
+claimed_by: cli-user
+completed_at: null
 complexity: low
 created_at: "2026-07-11T15:58:40Z"
 depends_on: []
 estimate_hours: 1
 id: B136
 priority: medium
-status: pending
+started_at: "2026-07-11T15:58:47Z"
+status: in_progress
 tags: []
 title: 'Codex vanilla sessions: occasionally suggest app-server via ''c2c new codex'' / cx alias'
-updated_at: "2026-07-11T15:58:40Z"
+updated_at: "2026-07-11T15:58:47Z"
 ---
 Vanilla/hook-fallback codex sessions get hook-boundary (not arrival-time) delivery. Occasionally nudge the operator toward the better managed app-server path. Gate strictly on app-server mode: suppress when C2C_CODEX_INGRESS_LIVE is set (managed app-server session already has arrival-time delivery), eligible only when unset (vanilla/hook-fallback). Cadence: every Nth vanilla SessionStart (default N=5, env-overridable C2C_CODEX_APPSERVER_NUDGE_EVERY) via a persisted counter in the c2c state dir; hook must never fail the turn. Surface: append a short tip to the SessionStart onboarding note in c2c_hook_cmd.ml (codex_onboarding path). Tip: launch Codex via 'c2c new codex' for arrival-time delivery; add alias cx='c2c new codex --' then 'cx --model <model>'. Also add a one-line static reference to the AGENTS.md block (c2c_codex_hooks.ml agents_md_body) + codex skill source. Chain-slice on B131 (C2C_CODEX_INGRESS_LIVE added at c2c_codex_session.ml:324, local master only). Tests: nudge on 5th (or N=1) vanilla SessionStart, suppressed when C2C_CODEX_INGRESS_LIVE=1, not on non-SessionStart events. Doc the env vars in c2c-env-vars.md.
