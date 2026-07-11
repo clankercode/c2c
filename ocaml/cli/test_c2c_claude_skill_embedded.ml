@@ -236,8 +236,13 @@ let test_skill_leads_with_cli_not_mcp () =
   let content = C2c_claude_skill_embedded.content in
   check bool "skill mentions c2c send (CLI)" true (string_contains content "c2c send");
   check bool "skill mentions c2c monitor" true (string_contains content "c2c monitor");
-  check bool "skill has CLI-before-MCP command tables" true
-    (string_contains content "| Action | CLI | MCP tool (optional) |");
+  (* B122 made install/skill CLI-first and retired user-facing MCP paths, so the
+     command tables dropped the "MCP tool (optional)" column — they are now the
+     2-column CLI-first form. This assertion tracks that (still CLI-first, no MCP
+     column); the "does not say Prefer MCP" / "no mcp__ in first 500 chars"
+     checks below continue to guard the leads-with-CLI-not-MCP intent. *)
+  check bool "skill has CLI-first command tables" true
+    (string_contains content "| Action | CLI |");
   check bool "skill recommends plain personal monitor" true
     (string_contains content "command: \"c2c monitor\"");
   check bool "skill does not recommend --archive --all as primary monitor" false
