@@ -107,6 +107,15 @@ let instances_cmd =
       | Some r -> fields @ [ ("role", `String r) ]
       | None -> fields
     in
+    (* T006: app-server-backed codex sessions expose a lifecycle status
+       (starting / online-attached / offline / failed-startup) alongside the
+       outer-loop status. Shared terminology with help/completions/resume. *)
+    let fields =
+      match C2c_codex_session.status_of_instance
+              ~instance_dir:(C2c_start.instance_dir inst.mi_name) with
+      | Some st -> fields @ [ ("app_server_status", `String (C2c_codex_session.status_to_string st)) ]
+      | None -> fields
+    in
     `Assoc fields
   in
   let instances_json = List.map instance_to_json displayed in
@@ -149,8 +158,14 @@ let instances_cmd =
               | Some r -> " [" ^ r ^ "]"
               | None -> ""
             in
-            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s%s\n"
-              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str cwd_str created_str role_str
+            let app_server_str =
+              match C2c_codex_session.status_of_instance
+                      ~instance_dir:(C2c_start.instance_dir inst.mi_name) with
+              | Some st -> " app-server=" ^ C2c_codex_session.status_to_string st
+              | None -> ""
+            in
+            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s%s%s\n"
+              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str cwd_str created_str role_str app_server_str
           ) displayed
       end
 
