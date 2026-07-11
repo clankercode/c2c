@@ -1,0 +1,26 @@
+---
+complexity: high
+depends_on: []
+estimate_hours: 4
+id: B117
+priority: high
+status: pending
+tags: []
+title: Make public or unlisted room-history readability a persisted room setting
+---
+B111 established that public and unlisted room history is currently anonymously readable solely from room visibility. Make history readability a separate, persisted per-room policy.
+
+Required policy:
+- public and unlisted rooms may set history_public true or false; anonymous room-history reads are permitted only when true.
+- gated and private rooms must always have history_public=false and remain member-only.
+- changing a room to gated/private atomically clears history_public (or rejects the change until false; prefer atomic clear).
+- existing/new public and unlisted rooms should default true for compatible rollout; gated/private default false.
+
+Acceptance criteria:
+- Persist the setting across restart in both InMemoryRelay and SQLite paths, including a safe migration.
+- Add a member-authorized, signed mutation whose boolean is included in canonical signed bytes.
+- Anonymous /room_history passes/fails correctly for public/unlisted based on setting; a valid member can still read a history-closed listed room.
+- Setting history_public=true for gated/private fails.
+- Update relay landing/help copy and add InMemory, SQLite, signed-op, and HTTP matrix coverage.
+
+Source seams: relay_backend_contract, relay.ml room persistence/handle_room_history, relay_signed_ops, relay_sqlite_support. Evidence: B111 audit.

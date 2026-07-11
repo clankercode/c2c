@@ -113,3 +113,4 @@ bugs:
     - file: B114-require-authenticated-proofs-f.todo
     - file: B115-bind-relay-poll-and-peek-inbox.todo
     - file: B116-require-authorization-to-revok.todo
+    - file: B117-make-public-or-unlisted-room-h.todo
