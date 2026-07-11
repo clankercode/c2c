@@ -109,7 +109,7 @@ let init_cmd =
   in
   let easy_pool_flag =
     Arg.(value & flag & info ["easy-pool"]
-           ~doc:"Generate alias from the easy-pool word subset (52 nature-themed English-readable words) instead of the full 128-word pool.")
+           ~doc:"Generate alias from the easy-pool word subset (52 nature-themed English-readable words) instead of the full alias pool (~1,450 words).")
   in
   let require_easy_flag =
     Arg.(value & flag & info ["require-easy"]

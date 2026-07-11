@@ -158,6 +158,18 @@ codegen-claude-skill:
     } > "$out.tmp"
     mv -f "$out.tmp" "$out"
 
+# Regenerate ocaml/c2c_alias_words.ml from data/c2c_alias_words.txt (full
+# alias pool) and data/c2c_alias_words_easy.txt (curated easy subset).
+# The data files are the single source of truth (B112); edit them, run
+# this recipe, and commit both the data and the generated .ml. The drift
+# test test_c2c_alias_words.ml fails the build if they diverge.
+codegen-alias-words:
+    python3 tools/ci/codegen-alias-words.py
+
+# CI gate: fail if ocaml/c2c_alias_words.ml is stale vs the data files.
+codegen-alias-words-check:
+    python3 tools/ci/codegen-alias-words.py --check
+
 # Check llms.txt Docs section is up to date with docs/ front-matter.
 # The bulk of llms.txt is hand-maintained; this gate only checks the Docs
 # link-list so new docs/ pages (e.g. reference pages) appear automatically.
@@ -245,17 +257,17 @@ codegen-role-templates:
 #
 # Per-worktree flock (#parallel-dune-softlock) serialises same-worktree
 # concurrent builds while leaving cross-worktree builds parallel.
-build: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
+build: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
     mkdir -p _build && touch _build/.c2c-build.lock
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Build the OCaml CLI binary only (fast, for iterative CLI work)
-build-cli: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
+build-cli: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
     mkdir -p _build && touch _build/.c2c-build.lock
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build MCP server + hooks only (fast, for server/hook work)
-build-server: codegen-role-designer codegen-opencode-plugin codegen-claude-skill
+build-server: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
     mkdir -p _build && touch _build/.c2c-build.lock
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD" ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
@@ -390,6 +402,7 @@ check:
     just codegen-claude-skill
     just sync-skills-check
     git diff --exit-code -- .collab/skills .opencode/skills .codex/skills ocaml/cli/c2c_claude_skill_embedded.ml
+    just codegen-alias-words-check
     mkdir -p _build && touch _build/.c2c-build.lock
     flock _build/.c2c-build.lock scripts/dune-watchdog.sh ${DUNE_WATCHDOG_TIMEOUT:-900} opam exec -- dune build --root "$PWD"
     # #442: enforce broker-log-events.md catalog completeness — any new

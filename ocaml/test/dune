@@ -425,3 +425,13 @@
  (modules test_relay_fault_matrix)
  (libraries c2c_mcp relay_test_support alcotest yojson unix)
  (deps ../cli/c2c.exe))
+
+; B112: alias word pool — size floor, word validity, uniqueness,
+; easy_pool subset, embedded-array vs data-file drift, and
+; generate_alias drawing from the pool. The data files are deps so
+; the drift checks see them in the test sandbox.
+(test
+ (name test_c2c_alias_words)
+ (modules test_c2c_alias_words)
+ (libraries c2c_mcp alcotest)
+ (deps ../../data/c2c_alias_words.txt ../../data/c2c_alias_words_easy.txt))
