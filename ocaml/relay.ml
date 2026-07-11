@@ -146,8 +146,11 @@ module InMemoryRelay : RELAY = struct
                present and well-formed. Any incompleteness (missing visibility,
                missing/invalid history_public, unparseable file) fails closed —
                symmetric, defence-in-depth against a partial/tampered write. *)
+            (* canonical_visibility returns None for any unrecognized string,
+               so a garbage/tampered visibility fails the both-fields-valid
+               check below and falls through to fail_closed. *)
             let vis = match Yojson.Safe.Util.member "visibility" j with
-              | `String v -> Some (canonical_visibility_or_raw v) | _ -> None in
+              | `String v -> canonical_visibility v | _ -> None in
             let hp = match Yojson.Safe.Util.member "history_public" j with
               | `Bool b -> Some b | _ -> None in
             (match vis, hp with
