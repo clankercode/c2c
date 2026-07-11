@@ -471,6 +471,105 @@ let maybe_inject ?now ~(broker_root : string) ~(session_id : string) () : outcom
     Failed (Printexc.to_string e)
 
 (* ---------------------------------------------------------------------------
+ * B120: managed-codex resume identity split — follow the hook registration
+ * ---------------------------------------------------------------------------
+ *
+ * `c2c start codex -n <name>` registers the deliver sidecar keyed by the
+ * instance NAME and watches <name>.inbox.json. On resume (`codex resume
+ * --last`), the codex SessionStart hook cannot map the resumed conversation's
+ * thread-id back to the managed instance, so it auto-registers the resumed
+ * conversation's session UUID as a hook auto-registration (registered_by =
+ * "codex-hook") — and THAT is the identity peers' DMs route to. The sidecar
+ * then watches an inbox nobody writes to while the real inbox has no watcher:
+ * managed codex idle-wake is broken on resume.
+ *
+ * Both registrations share the same wake target: the managed startup captures
+ * tmux_location / herdr_pane from the pane env, and the hook captures the
+ * SAME pane env on SessionStart. So the sidecar can FOLLOW the hook-maintained
+ * registration by matching the wake target. This mirrors B119, where the MCP
+ * server ADOPTS the hook auto-registration as the identity authority
+ * (Broker.is_hook_auto_registration) instead of clobbering it — here the
+ * deliver/wake sidecar adopts it as its watch target.
+ *)
+
+(* Two registrations name the same pane when a tmux_location or a herdr_pane is
+   present on both and equal. cwd is deliberately NOT used: two codex sessions
+   can share a cwd, which would cross-wire unrelated sessions. *)
+let wake_target_shared
+    (a : C2c_mcp_helpers.registration) (b : C2c_mcp_helpers.registration) : bool =
+  let eq_some x y =
+    match x, y with
+    | Some x, Some y -> String.trim x <> "" && String.trim x = String.trim y
+    | _ -> false
+  in
+  eq_some a.tmux_location b.tmux_location || eq_some a.herdr_pane b.herdr_pane
+
+let has_wake_target (r : C2c_mcp_helpers.registration) : bool =
+  (match r.tmux_location with Some s -> String.trim s <> "" | None -> false)
+  || (match r.herdr_pane with Some s -> String.trim s <> "" | None -> false)
+
+(* Given the sidecar's configured session_id, return the session_id it should
+   actually watch:
+   - if the configured session_id's own registration is itself a hook
+     auto-registration, it IS the identity authority (the standalone
+     `c2c deliver wake-watch --alias` path resolves an alias straight to its
+     hook registration) — return it unchanged.
+   - otherwise (a managed instance-name registration), adopt a hook
+     auto-registration that shares this session's wake target. Prefer alive
+     rows, then the most-recently-active one.
+   Total: any failure, missing registration, or absent/ambiguous target
+   returns the input session_id unchanged, so fresh starts (where the hook and
+   startup agree, or no hook row exists yet) and the standalone path are
+   unaffected. *)
+let resolve_wake_watch_target ~(broker_root : string) ~(session_id : string) :
+    string =
+  try
+    let broker = C2c_broker.create ~root:broker_root in
+    let regs = C2c_broker.list_registrations broker in
+    match
+      List.find_opt
+        (fun (r : C2c_mcp_helpers.registration) -> r.session_id = session_id)
+        regs
+    with
+    | None -> session_id
+    | Some self when C2c_broker.is_hook_auto_registration self -> session_id
+    | Some self when not (has_wake_target self) -> session_id
+    | Some self ->
+        let candidates =
+          List.filter
+            (fun (r : C2c_mcp_helpers.registration) ->
+              r.session_id <> session_id
+              && C2c_broker.is_hook_auto_registration r
+              && wake_target_shared self r)
+            regs
+        in
+        (match candidates with
+         | [] -> session_id
+         | _ ->
+             let anchor (r : C2c_mcp_helpers.registration) =
+               match r.last_activity_ts with
+               | Some t -> t
+               | None -> (match r.registered_at with Some t -> t | None -> 0.0)
+             in
+             let alive (r : C2c_mcp_helpers.registration) =
+               C2c_broker.registration_liveness_state r = C2c_broker.Alive
+             in
+             let alive_candidates = List.filter alive candidates in
+             let pool =
+               if alive_candidates <> [] then alive_candidates else candidates
+             in
+             let best =
+               List.fold_left
+                 (fun acc r ->
+                   match acc with
+                   | None -> Some r
+                   | Some a -> if anchor r >= anchor a then Some r else acc)
+                 None pool
+             in
+             (match best with Some r -> r.session_id | None -> session_id))
+  with _ -> session_id
+
+(* ---------------------------------------------------------------------------
  * Watch loop — inotify on the broker dir with periodic fallback attempts
  * --------------------------------------------------------------------------- *)
 
@@ -493,11 +592,17 @@ let pid_is_alive pid =
    have run (tests). *)
 let watch_loop ~(broker_root : string) ~(session_id : string)
     ?(watched_pid : int option) ?(max_iterations : int option) () : unit =
-  let inbox_basename = session_id ^ ".inbox.json" in
   let iterations = ref 0 in
+  (* B120: re-resolve the watch target on every attempt so the sidecar FOLLOWS
+     the hook-maintained registration once it appears (the codex SessionStart
+     hook may register the resumed conversation's identity slightly after
+     startup — the race is handled by re-resolving here rather than binding the
+     target once). Resolves to [session_id] when there is no hook row to adopt,
+     so fresh starts and the standalone path are unchanged. *)
   let attempt () =
     incr iterations;
-    match maybe_inject ~broker_root ~session_id () with
+    let target = resolve_wake_watch_target ~broker_root ~session_id in
+    match maybe_inject ~broker_root ~session_id:target () with
     | Injected { backend; message_count } ->
         Printf.printf "[c2c-wake-inject] injected via %s (%d message(s))\n%!"
           backend message_count
@@ -545,7 +650,17 @@ let watch_loop ~(broker_root : string) ~(session_id : string)
             | _ :: _, _, _ -> (
                 match input_line ic with
                 | line ->
-                    if String.trim line = inbox_basename then attempt ();
+                    (* B120: fire on ANY inbox-file event, not just
+                       <session_id>.inbox.json. On resume the identity DMs
+                       route to is the hook-registered session UUID, whose
+                       inbox basename differs from the managed instance name;
+                       matching only the configured basename would miss those
+                       events (leaving the periodic re-attempt as the sole,
+                       slower path). attempt() re-resolves + injects for its
+                       own target only, and stays cheap + gated, so reacting to
+                       unrelated inbox writes is safe. *)
+                    if Filename.check_suffix (String.trim line) ".inbox.json"
+                    then attempt ();
                     loop ()
                 | exception (End_of_file | Sys_error _) ->
                     (* inotifywait died — degrade to polling. *)
