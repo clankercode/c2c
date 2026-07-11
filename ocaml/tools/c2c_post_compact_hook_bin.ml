@@ -9,10 +9,6 @@
  *)
 
 let () =
-  (* B130: a dispatched subagent inherits the parent's C2C_MCP_SESSION_ID and
-     would otherwise resolve the OWNER's alias and inject owner-scoped
-     post-compact context into the unrelated subagent transcript. Bail out. *)
-  if C2c_mcp_helpers_post_broker.is_subagent_context () then exit 0;
   let session_id =
     try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
   in

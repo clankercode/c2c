@@ -230,11 +230,6 @@ let context_for_session ~broker_root ~session_id =
           None
 
 let run () =
-  (* B130: a dispatched subagent inherits the parent's C2C_MCP_SESSION_ID and
-     would otherwise inject the OWNER's cold-boot context (logs / findings /
-     memory) into the unrelated subagent transcript AND consume the owner's
-     one-shot cold-boot marker, starving the real owner. Bail out silently. *)
-  if C2c_mcp_helpers_post_broker.is_subagent_context () then exit 0;
   let session_id =
     try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
   in

@@ -445,65 +445,62 @@ let test_hook_rejects_invalid_stdin_session_id () =
         check int "escaped inbox remains untouched" 1
           (json_list_length escaped_path)))
 
-(* B130: `c2c poll-inbox` with an implicit session (resolved from the inherited
-   C2C_MCP_SESSION_ID, no --session-id/--alias) run inside a dispatched subagent
-   (CLAUDE_CODE_CHILD_SESSION=1) must NOT drain the owner's inbox — the guard
-   short-circuits before broker/session resolution. The identical top-level
-   invocation (no CHILD_SESSION marker) DOES drain, proving the guard is the
-   only difference. *)
-let test_poll_inbox_child_session_refuses_implicit () =
+(* B130: the PostToolUse hook is the real leak path. Claude Code fires it
+   during a dispatched subagent's tool calls with a non-empty stdin `agent_id`.
+   The hook must suppress (no drain/inject) on that signal, and MUST still
+   deliver on a top-level turn even though CLAUDE_CODE_CHILD_SESSION=1 is in the
+   env (it always is, on every Claude tool subprocess). Both directions pinned.
+   Runs the standalone c2c_inbox_hook.exe with a seeded global session inbox. *)
+let run_post_tool_hook ~dir ~sid ~out ~payload =
+  let cmd =
+    Printf.sprintf
+      "printf %%s %s | env -u C2C_MCP_BROKER_ROOT -u C2C_NO_AUTO_REGISTER \
+       C2C_MCP_SESSION_ID=%s CLAUDE_CODE_CHILD_SESSION=1 C2C_STATE_HOME=%s HOME=%s \
+       C2C_POST_TOOL_FULL_INJECT=1 C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2>&1"
+      (Filename.quote payload) (Filename.quote sid) (Filename.quote dir)
+      (Filename.quote dir) (Filename.quote dir)
+      (Filename.quote built_inbox_hook) (Filename.quote out)
+  in
+  Sys.command cmd
+
+let test_post_tool_hook_subagent_no_leak_toplevel_delivers () =
   with_temp_dir (fun dir ->
-    let out = Filename.temp_file "c2c-b130-poll" ".out" in
-    let sid = "b130-poll-owner-sid" in
-    let inbox_path = Filename.concat dir (sid ^ ".inbox.json") in
-    let seed () =
-      (* Seed the sessions-broker inbox for [sid] with a DM. *)
-      let rc =
-        Sys.command
-          (Printf.sprintf
-             "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT C2C_CLI_FORCE=1 \
-              C2C_SESSIONS_BROKER_ROOT=%s %s send --session %s 'owner-only DM' \
-              > /dev/null 2>&1"
-             (Filename.quote dir) (Filename.quote built_c2c) (Filename.quote sid))
-      in
-      check int "seed send --session exits 0" 0 rc;
-      check int "seeded inbox has the DM" 1 (json_list_length inbox_path)
-    in
+    let out = Filename.temp_file "c2c-b130-pt" ".out" in
     Fun.protect
       ~finally:(fun () -> try Sys.remove out with _ -> ())
       (fun () ->
-        (* Subagent: implicit session via inherited C2C_MCP_SESSION_ID +
-           CLAUDE_CODE_CHILD_SESSION=1 -> guard fires, no drain. *)
-        seed ();
-        let cmd_child =
+        (* Subagent turn: payload carries agent_id -> suppressed, no drain. *)
+        let sid_sub = "b130-pt-subagent-sid" in
+        let inbox_sub = Filename.concat dir (sid_sub ^ ".inbox.json") in
+        write_file inbox_sub
+          (Printf.sprintf
+             {|[{"from_alias":"peer-x","to_alias":%S,"content":"leak me","ts":1.0}]|}
+             sid_sub);
+        let payload_sub =
           Printf.sprintf
-            "env -u C2C_MCP_BROKER_ROOT C2C_MCP_SESSION_ID=%s \
-             CLAUDE_CODE_CHILD_SESSION=1 C2C_CLI_FORCE=1 \
-             C2C_SESSIONS_BROKER_ROOT=%s %s poll-inbox --cross-repo --json > %s 2>&1"
-            (Filename.quote sid) (Filename.quote dir)
-            (Filename.quote built_c2c) (Filename.quote out)
+            {|{"session_id":%S,"agent_id":"sub-abc123","agent_type":"general-purpose","hook_event_name":"PostToolUse"}|}
+            sid_sub
         in
-        let rc_child = Sys.command cmd_child in
-        check int "subagent poll-inbox exits 0" 0 rc_child;
-        check string "subagent poll-inbox emits empty JSON (guard fired)" "[]"
-          (String.trim (read_file out));
-        check int "subagent did NOT drain the owner inbox" 1
-          (json_list_length inbox_path);
-        (* Top-level: identical invocation minus the subagent marker -> drains. *)
-        let cmd_top =
-          Printf.sprintf
-            "env -u C2C_MCP_BROKER_ROOT -u CLAUDE_CODE_CHILD_SESSION \
-             -u C2C_NO_AUTO_REGISTER C2C_MCP_SESSION_ID=%s C2C_CLI_FORCE=1 \
-             C2C_SESSIONS_BROKER_ROOT=%s %s poll-inbox --cross-repo --json > %s 2>&1"
-            (Filename.quote sid) (Filename.quote dir)
-            (Filename.quote built_c2c) (Filename.quote out)
+        let rc_sub = run_post_tool_hook ~dir ~sid:sid_sub ~out ~payload:payload_sub in
+        check int "subagent hook exits 0" 0 rc_sub;
+        check string "subagent hook emits nothing" "" (String.trim (read_file out));
+        check int "subagent hook did NOT drain owner inbox" 1
+          (json_list_length inbox_sub);
+        (* Top-level turn: no agent_id, but CHILD_SESSION=1 in env -> delivers. *)
+        let sid_top = "b130-pt-toplevel-sid" in
+        let inbox_top = Filename.concat dir (sid_top ^ ".inbox.json") in
+        write_file inbox_top
+          (Printf.sprintf
+             {|[{"from_alias":"peer-y","to_alias":%S,"content":"deliver me","ts":1.0}]|}
+             sid_top);
+        let payload_top =
+          Printf.sprintf {|{"session_id":%S,"hook_event_name":"PostToolUse"}|} sid_top
         in
-        let rc_top = Sys.command cmd_top in
-        check int "top-level poll-inbox exits 0" 0 rc_top;
-        check bool "top-level poll-inbox delivered the DM" true
-          (string_contains (read_file out) "owner-only DM");
-        check int "top-level DID drain the owner inbox" 0
-          (json_list_length inbox_path)))
+        let rc_top = run_post_tool_hook ~dir ~sid:sid_top ~out ~payload:payload_top in
+        check int "top-level hook exits 0" 0 rc_top;
+        check bool "top-level hook delivered the DM (CHILD_SESSION env ignored)" true
+          (string_contains (read_file out) "deliver me");
+        check int "top-level hook drained the inbox" 0 (json_list_length inbox_top)))
 
 let () =
   Alcotest.run "session_id_delivery"
@@ -531,8 +528,8 @@ let () =
         ; ( "rejects invalid stdin session_id", `Quick,
             test_hook_rejects_invalid_stdin_session_id )
         ] )
-    ; ( "cli-guard",
-        [ ( "B130 poll-inbox refuses implicit inherited session in subagent", `Quick,
-            test_poll_inbox_child_session_refuses_implicit )
+    ; ( "b130-hook-gate",
+        [ ( "PostToolUse suppresses subagent turn (stdin agent_id), delivers top-level", `Quick,
+            test_post_tool_hook_subagent_no_leak_toplevel_delivers )
         ] )
     ]

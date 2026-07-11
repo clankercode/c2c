@@ -195,8 +195,12 @@ and rotate_debug_log_if_needed path =
   with _ -> ()
 
 let () =
-  (* B042: skip hook entirely for subagent/silent sessions. *)
+  (* B042: skip hook entirely for the explicit C2C_NO_AUTO_REGISTER opt-out. *)
   if C2c_hook_lib.is_subagent_quiet () then exit 0;
+  (* B130: PostToolUse fires during a dispatched subagent's tool calls with a
+     non-empty stdin `agent_id`; draining/injecting would leak the owner's DMs
+     into the subagent transcript. Top-level turns omit agent_id. *)
+  if C2c_hook_lib.stdin_is_subagent_turn () then exit 0;
   let session_id =
     match C2c_hook_lib.resolve_session_id () with
     | Ok "" -> exit 0

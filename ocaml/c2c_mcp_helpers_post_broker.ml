@@ -903,53 +903,27 @@ let hook_client_type_conflict_with (reg : registration) =
       String.lowercase_ascii mine <> String.lowercase_ascii theirs
   | _ -> false
 
-(* B042 / B130: canonical dispatched-subagent detection, shared by every c2c
-   hook / injection entrypoint (this module, C2c_hook_lib, the standalone
-   cold-boot + post-compact hook binaries). A dispatched Claude Code subagent
-   inherits the parent session's env (incl. C2C_MCP_SESSION_ID /
-   CLAUDE_SESSION_ID) and fires the same c2c hooks; without gating, the parent
-   session's inbox DMs and owner-scoped context (logs / findings / memory,
-   post-compact) leak into the unrelated subagent transcript, and the
-   subagent even consumes the owner's one-shot cold-boot marker.
+(* B042: explicit auto-register opt-out. When C2C_NO_AUTO_REGISTER=1 an
+   operator/wrapper has declared this process must not auto-register or drain.
 
-   Two signals mark a subagent:
-   - C2C_NO_AUTO_REGISTER=1 (B042): explicit opt-out an operator/wrapper sets.
-   - CLAUDE_CODE_CHILD_SESSION (B130): Claude Code stamps every dispatched
-     Task-tool child process with this (value "1") — the robust,
-     harness-provided signal.
-
-   Parse semantics: the marker is a boolean-ish env var. Absent, empty, or an
-   explicit falsy spelling (0/false/no/off) means "not a subagent" (deliver
-   normally); any other present value (1/true/yes, or an unrecognised future
-   spelling) means "subagent" (suppress). This deliberately fails toward
-   ISOLATION rather than delivery: a suppressed delivery is recoverable (the
-   DM stays queued in the owner inbox and reaches the owner on its own turn),
-   whereas a leak into an unrelated transcript is not. It is also robust if the
-   harness changes CLAUDE_CODE_CHILD_SESSION's value string (e.g. "1" -> "true")
-   — a truthy-whitelist would silently fail OPEN there and re-introduce the
-   leak. There is no false-positive risk for real top-level sessions: neither
-   marker is ever set on a top-level Claude Code session — CLAUDE_CODE_CHILD_SESSION
-   is stamped only on dispatched children, and C2C_NO_AUTO_REGISTER is an
-   explicit operator opt-out. *)
-let subagent_env_present_and_not_false name =
-  match Sys.getenv_opt name with
-  | Some v ->
-      (match String.lowercase_ascii (String.trim v) with
-       | "" | "0" | "false" | "no" | "off" -> false
-       | _ -> true)
-  | None -> false
-
+   NOTE (B130): this is NOT a dispatched-subagent discriminator. An earlier
+   B130 attempt added CLAUDE_CODE_CHILD_SESSION here, but that env var is set on
+   EVERY hook fire and EVERY tool subprocess of EVERY Claude Code session
+   (top-level and subagent alike, same session_id/ppid) — gating on it silently
+   suppressed c2c delivery/onboarding for top-level sessions. A dispatched
+   subagent is only distinguishable via the hook STDIN `agent_id`
+   (C2c_hook_lib.stdin_is_subagent_turn), not process env. *)
 let is_subagent_context () =
-  subagent_env_present_and_not_false "C2C_NO_AUTO_REGISTER"
-  || subagent_env_present_and_not_false "CLAUDE_CODE_CHILD_SESSION"
+  match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
+  | Some v when String.trim v = "1" -> true
+  | _ -> false
 
 let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
   | Some alias ->
-  (* B042 / B130: skip auto-registration in a dispatched-subagent context —
-     spawned subagents inherit global c2c hooks / env and would auto-register
-     and spam the coordinator. See [is_subagent_context]. *)
+  (* B042: skip auto-registration when C2C_NO_AUTO_REGISTER=1 (explicit
+     operator/wrapper opt-out). See [is_subagent_context]. *)
   (if is_subagent_context ()
    then ()
    else
