@@ -2,7 +2,7 @@ complexity: medium
 depends_on: []
 estimate_hours: 54
 id: P1
-locked: false
+locked: true
 milestones:
     - complexity: high
       depends_on: []
@@ -12,7 +12,7 @@ milestones:
       locked: false
       name: Remote TUI feasibility and safe ingress
       path: 01-remote-tui-feasibility-and-saf
-      status: pending
+      status: done
 name: Codex app-server interactive delivery
 stats:
     blocked: 0
@@ -20,5 +20,5 @@ stats:
     in_progress: 0
     pending: 7
     total_tasks: 7
-status: pending
+status: done
 weeks: 3

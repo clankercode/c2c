@@ -12,11 +12,11 @@ phases:
       description: Canonical managed remote-TUI delivery architecture that preserves the operator composer; local messages may wake the recipient and start an agent turn under its delivery policy, but message content can never satisfy an approval or write an approval verdict.
       estimate_hours: 54
       id: P1
-      locked: false
+      locked: true
       name: Codex app-server interactive delivery
       path: 01-codex-app-server-interactive-d
       priority: high
-      status: pending
+      status: done
       weeks: 3
 project: c2c
 stats:

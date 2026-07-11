@@ -10,7 +10,7 @@ stats:
     in_progress: 0
     pending: 7
     total: 7
-status: pending
+status: done
 tasks:
     - complexity: high
       depends_on: []
@@ -62,7 +62,7 @@ tasks:
       file: T005-publish-safe-interactive-deliv.todo
       id: T005
       priority: medium
-      status: in_progress
+      status: done
       tags: []
       title: Document and diagnose canonical managed Codex delivery
     - complexity: high

@@ -9,7 +9,7 @@ epics:
       locked: false
       name: c2c Codex remote-TUI delivery
       path: 01-c2c-codex-remote-tui-delivery
-      status: pending
+      status: done
 estimate_hours: 54
 id: P1.M1
 locked: false
@@ -20,4 +20,4 @@ stats:
     in_progress: 0
     pending: 7
     total_tasks: 7
-status: pending
+status: done
