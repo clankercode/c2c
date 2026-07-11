@@ -741,11 +741,24 @@ let read_managed_instances () =
           let delivery_mode =
             if client <> "codex" then delivery_mode
             else
+              let instance_dir = C2c_start.instance_dir name in
               match
-                C2c_codex_session.status_of_instance
-                  ~instance_dir:(C2c_start.instance_dir name)
+                C2c_codex_session.status_of_instance ~instance_dir
               with
-              | Some C2c_codex_session.Online_attached -> "app-server"
+              | Some C2c_codex_session.Online_attached ->
+                  (* B138: online-attached is only LIVE app-server delivery when
+                     the deliver loop actually loaded a frontend thread. The
+                     fail-closed helper (shared with `c2c doctor`) trusts the
+                     unit-stamped persisted signal and reports degraded when no
+                     thread loaded — or when the record is absent/stale — instead
+                     of overclaiming "app-server". *)
+                  if (try C2c_codex_session.online_attached_delivery_degraded
+                            ~instance_dir
+                      with _ -> true)
+                  then
+                    C2c_doctor_hooks.codex_delivery_mode_label
+                      C2c_doctor_hooks.Cd_app_server_degraded
+                  else "app-server"
               | Some (C2c_codex_session.Starting | C2c_codex_session.Offline
                      | C2c_codex_session.Failed_startup)
               | None -> delivery_mode

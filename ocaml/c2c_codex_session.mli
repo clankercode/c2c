@@ -78,6 +78,34 @@ val status_of_app_server_state : C2c_codex_app_server.state -> status
     app-server-backed session was ever recorded for that instance. *)
 val status_of_instance : instance_dir:string -> status option
 
+(* ------------------------- deliver-loop health ---------------------------- *)
+
+(** [delivery_status_path ~instance_dir] is the JSON file the deliver loop
+    persists its degraded (no-thread-loaded) signal into (B138). *)
+val delivery_status_path : instance_dir:string -> string
+
+(** [write_delivery_degraded ~instance_dir ~unit_id degraded] persists the
+    deliver-loop degraded signal, STAMPED with the attached app-server unit's
+    generation [unit_id] (best-effort; never raises). [true] = the app-server
+    unit is supervised but no frontend thread has loaded, so nothing is actually
+    delivered; [false] = a thread loaded and delivery is live. *)
+val write_delivery_degraded : instance_dir:string -> unit_id:string -> bool -> unit
+
+(** [delivery_degraded_of_instance ~instance_dir ~unit_id] reads the persisted
+    signal, trusting it ONLY when its stamped unit_id matches [unit_id]. [None]
+    when the file is absent / unparseable / stamped for a DIFFERENT unit (a
+    stale record from a prior run on a reused instance dir). Total. *)
+val delivery_degraded_of_instance :
+  instance_dir:string -> unit_id:string -> bool option
+
+(** [online_attached_delivery_degraded ~instance_dir] decides, fail-closed,
+    whether an ONLINE-ATTACHED session's delivery loop is degraded (B138). Loads
+    the live unit_id and trusts the persisted signal only on a stamp match;
+    absence / staleness / a missing persisted record all read as [true] (fail
+    toward degraded — never overclaim LIVE). A genuinely healthy session (thread
+    loaded, matching stamp, degraded=false) still reads [false]. Total. *)
+val online_attached_delivery_degraded : instance_dir:string -> bool
+
 (* --------------------------- identity mapping ----------------------------- *)
 
 type mapping = {

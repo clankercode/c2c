@@ -54,6 +54,15 @@ type deps = {
   deregister : unit -> unit;       (** tear the registration down (idempotent) *)
   on_pass : C2c_codex_autoturn.pass_outcome -> unit;
       (** structured metrics/log sink — contains NO body/credential/composer *)
+  on_degraded : bool -> unit;
+      (** best-effort persisted-health sink for the degraded (no-thread) signal.
+          Fired [true] at loop start (registered but no frontend thread
+          discovered yet, so nothing actually delivers) and [false] the moment a
+          thread is first discovered (healthy). Lets the caller persist the
+          signal where `c2c doctor`/`c2c health` (which read persisted state) can
+          see it, so they don't overclaim LIVE app-server delivery for a session
+          whose deliver loop is degraded. Best-effort — the loop swallows any
+          exception it raises and never lets it wedge supervision. *)
   now : unit -> float;
   sleep : float -> unit;
   poll_interval_s : float;         (** main supervise+deliver cadence *)

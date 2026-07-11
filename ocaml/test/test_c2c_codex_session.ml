@@ -181,6 +181,78 @@ let test_mapping_roundtrip () =
           Alcotest.(check (option string)) "thread_id" m.thread_id m2.thread_id)
 
 (* ------------------------------------------------------------------ *)
+(* Deliver-loop degraded signal persistence (B138)                     *)
+(* ------------------------------------------------------------------ *)
+
+let test_delivery_degraded_roundtrip () =
+  with_tmp_dir (fun dir ->
+      let uid = "u-1" in
+      (* No signal file yet → None. *)
+      Alcotest.(check (option bool)) "absent signal reads as None"
+        None (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:uid);
+      (* Degraded at loop start. *)
+      S.write_delivery_degraded ~instance_dir:dir ~unit_id:uid true;
+      Alcotest.(check (option bool)) "persisted degraded=true (matching unit)"
+        (Some true) (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:uid);
+      (* Flip to healthy once a thread loads — later write wins. *)
+      S.write_delivery_degraded ~instance_dir:dir ~unit_id:uid false;
+      Alcotest.(check (option bool)) "flip to healthy persists degraded=false"
+        (Some false) (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:uid);
+      (* A DIFFERENT unit_id must NOT trust the record — stale prior-run value. *)
+      Alcotest.(check (option bool)) "mismatched unit_id reads as None (stale)"
+        None (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:"u-2");
+      (* File name is the documented path so doctor/health read the same place. *)
+      Alcotest.(check bool) "status file exists at the documented path" true
+        (Sys.file_exists (S.delivery_status_path ~instance_dir:dir)))
+
+(* Build a minimal Running app-server persisted record for the given unit_id so
+   online_attached_delivery_degraded can resolve the live unit. *)
+let write_persisted_unit ~dir ~unit_id =
+  let p : persisted =
+    { unit_id; instance_name = "tst"; alias = Some "x";
+      codex_version = "codex-cli 0.144.1";
+      endpoint = { transport = "ws"; host = "127.0.0.1"; port = 40123 };
+      token_env_var = "C2C_CODEX_REMOTE_TOKEN_TST";
+      token_sha256 = String.make 64 'a';
+      server_pid = Some (Unix.getpid ()); frontend_pid = None;
+      thread_id = None; state = Running; created_at = 1.0; updated_at = 2.0 }
+  in
+  match write_persisted ~instance_dir:dir p with
+  | Ok () -> () | Error e -> Alcotest.failf "write_persisted: %s" e
+
+let test_online_attached_degraded_fail_closed () =
+  (* The decision helper shared by `c2c doctor` + `c2c health`. Covers finding 2:
+     true, false, absent, and stale/mismatched-generation. *)
+  (* absent delivery record → fail-closed degraded (write-failure / mid-startup) *)
+  with_tmp_dir (fun dir ->
+      write_persisted_unit ~dir ~unit_id:"u-A";
+      Alcotest.(check bool) "no delivery record → fail-closed degraded" true
+        (S.online_attached_delivery_degraded ~instance_dir:dir));
+  (* matching degraded=true → degraded *)
+  with_tmp_dir (fun dir ->
+      write_persisted_unit ~dir ~unit_id:"u-A";
+      S.write_delivery_degraded ~instance_dir:dir ~unit_id:"u-A" true;
+      Alcotest.(check bool) "matching degraded=true → degraded" true
+        (S.online_attached_delivery_degraded ~instance_dir:dir));
+  (* matching degraded=false (thread loaded) → healthy (NOT weakened) *)
+  with_tmp_dir (fun dir ->
+      write_persisted_unit ~dir ~unit_id:"u-A";
+      S.write_delivery_degraded ~instance_dir:dir ~unit_id:"u-A" false;
+      Alcotest.(check bool) "matching degraded=false → healthy" false
+        (S.online_attached_delivery_degraded ~instance_dir:dir));
+  (* stale record from a prior run (healthy=false but WRONG unit) → fail-closed
+     degraded, so a reused dir never masks a new no-thread session *)
+  with_tmp_dir (fun dir ->
+      write_persisted_unit ~dir ~unit_id:"u-NEW";
+      S.write_delivery_degraded ~instance_dir:dir ~unit_id:"u-OLD" false;
+      Alcotest.(check bool) "stale healthy record (wrong unit) → fail-closed degraded"
+        true (S.online_attached_delivery_degraded ~instance_dir:dir));
+  (* no persisted app-server record at all → fail-closed degraded *)
+  with_tmp_dir (fun dir ->
+      Alcotest.(check bool) "no persisted record → fail-closed degraded" true
+        (S.online_attached_delivery_degraded ~instance_dir:dir))
+
+(* ------------------------------------------------------------------ *)
 (* Lifecycle glue: alias published only after start succeeds; graceful *)
 (* fallback on a startup diagnostic.                                   *)
 (* ------------------------------------------------------------------ *)
@@ -459,6 +531,9 @@ let () =
         [ test_case "mapping" `Quick test_status_mapping ] )
     ; ( "mapping",
         [ test_case "roundtrip" `Quick test_mapping_roundtrip ] )
+    ; ( "delivery-degraded",
+        [ test_case "persist + read + flip + stale roundtrip" `Quick test_delivery_degraded_roundtrip
+        ; test_case "online-attached decision fail-closed (true/false/absent/stale)" `Quick test_online_attached_degraded_fail_closed ] )
     ; ( "lifecycle-glue",
         [ test_case "default (no flag) engages app-server, publishes after start"
             `Quick test_glue_happy_publishes_after_start

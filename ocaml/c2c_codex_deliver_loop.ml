@@ -24,6 +24,7 @@ type deps = {
   register : unit -> unit;
   deregister : unit -> unit;
   on_pass : Autoturn.pass_outcome -> unit;
+  on_degraded : bool -> unit;
   now : unit -> float;
   sleep : float -> unit;
   poll_interval_s : float;
@@ -61,6 +62,13 @@ let is_terminal = function
 
 let run (d : deps) : outcome =
   d.register ();
+  let report_degraded b = try d.on_degraded b with _ -> () in
+  (* Registered but no frontend thread discovered yet — nothing actually
+     delivers until a thread loads. Persist the degraded signal immediately so
+     the doctor/health (which read persisted state) never overclaim LIVE
+     app-server delivery during the discovery window, nor for a session that
+     never loads a thread. Flipped to [false] the moment a thread is found. *)
+  report_degraded true;
   Fun.protect ~finally:(fun () -> try d.deregister () with _ -> ()) (fun () ->
       let start = d.now () in
       let thread = ref None in
@@ -74,7 +82,12 @@ let run (d : deps) : outcome =
         then begin
           last_discover := d.now ();
           match List.rev (try d.discover_threads () with _ -> []) with
-          | tid :: _ when String.trim tid <> "" -> thread := Some tid
+          | tid :: _ when String.trim tid <> "" ->
+              (* First thread discovered — the loop can now inject/deliver. This
+                 None -> Some transition fires exactly once (the [!thread = None]
+                 guard above), so [on_degraded false] is emitted once, on the
+                 healthy transition. *)
+              thread := Some tid; report_degraded false
           | _ -> ()
         end
       in
