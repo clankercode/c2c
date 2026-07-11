@@ -98,3 +98,4 @@ bugs:
     - file: B099-safety-adapters-do-not-inject.todo
     - file: B100-docs-the-cross-machine-golden.todo
     - file: B101-c2c-self-update-must-support-n.todo
+    - file: B102-offline-managed-alias-rejects.todo
