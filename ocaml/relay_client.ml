@@ -564,9 +564,10 @@ end = struct
     ])
 
   (* The relay's set_room_visibility handler requires [alias] (the caller must
-     be a room member) and, when C2C_REQUIRE_SIGNED_ROOM_OPS=1, a body-level
-     Ed25519 proof. Prefer [set_room_visibility_signed]; this unsigned form
-     still sends [alias] so it works on relays that don't require signing. *)
+     be a room member) and, since B114, a body-level Ed25519 proof by default.
+     Use [set_room_visibility_signed]; this unsigned form is only accepted by
+     a dev-gated relay (C2C_REQUIRE_SIGNED_ROOM_OPS=0, no token) and is kept
+     for tests/dev tooling. *)
   let set_room_visibility t ~alias ~room_id ~visibility =
     post t "/set_room_visibility" (`Assoc [
       ("alias", `String alias);

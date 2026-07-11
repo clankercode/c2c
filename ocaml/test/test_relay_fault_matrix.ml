@@ -463,19 +463,28 @@ let init_identity tmp =
   if rc <> 0 then
     Alcotest.fail (Printf.sprintf "relay identity init failed rc=%d: %s" rc err)
 
-(* Unsigned register (no identity): a pow_required challenge cannot be
-   minted without an actor id — must fail honestly after exactly ONE
-   request (no loop). *)
+(* No pre-existing identity: since B114 the CLI auto-creates an Ed25519
+   identity and registers SIGNED (the unsigned register fallback is gone,
+   so the old pow_actor_id_missing state is unreachable via the CLI). A
+   pow_required challenge therefore mints against the fresh identity and
+   retries exactly ONCE, then fails honestly — still bounded, no loop. *)
 let pow_unsigned_actor_missing () =
   let tmp = mkdtemp () in
   with_fault ~meth:"POST" ~path:"/register"
-    [ json_response ~status:429 (pow_required_body ()) ]
+    [ json_response ~status:429 (pow_required_body ());
+      json_response ~status:429 (pow_required_body ()) ]
     (fun srv url ->
-      assert_honest_failure ~what:"unsigned register vs pow_required"
-        ~needle:"pow_actor_id_missing"
+      assert_honest_failure ~what:"identity-less register vs pow_required"
+        ~needle:"pow_retry_failed"
         (run_c2c ~tmp (register_args ~url));
-      Alcotest.(check int) "exactly one request" 1
-        (List.length (requests_for ~path:"/register" srv)))
+      Alcotest.(check int) "exactly two requests (one minted retry, no loop)" 2
+        (List.length (requests_for ~path:"/register" srv));
+      (* The identity must have been auto-created in the isolated HOME. *)
+      let id_path =
+        Filename.concat tmp ".config/c2c/identity.json"
+      in
+      Alcotest.(check bool) "identity auto-created for signed register" true
+        (Sys.file_exists id_path))
 
 (* Garbage challenge: pow_required with a null/malformed [required] object
    must fail honestly (pow_bad_required) after ONE request — no loop. *)
@@ -861,7 +870,7 @@ let () =
         ] );
       ( "PoW adverse",
         [ Alcotest.test_case
-            "A083 unsigned pow_required fails honestly (actor id missing)"
+            "A083 identity-less register auto-signs; pow_required bounded"
             `Quick pow_unsigned_actor_missing;
           Alcotest.test_case "A088 garbage PoW challenge bounded honest fail"
             `Quick pow_garbage_challenge;

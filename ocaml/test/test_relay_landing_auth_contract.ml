@@ -268,8 +268,9 @@ let t_sections_advertise_only_own_class () =
         Relay_server_auth.self_auth_exact_routes)
      @ List.map (fun p -> p ^ "*") Relay_server_auth.self_auth_prefix_routes
      (* the prose names the operator switch for the legacy unsigned room-op
-        path; it is not a route *)
-     @ ["C2C_REQUIRE_SIGNED_ROOM_OPS=1"]);
+        dev gate (B114: unsigned rejected by default; =0 on a token-less
+        relay is the only opt-out); it is not a route *)
+     @ ["C2C_REQUIRE_SIGNED_ROOM_OPS=0"]);
   (* peer tokens have no exhaustive list (default class): every advertised
      token must CLASSIFY as a peer route, after normalizing the
      <alias> placeholder *)

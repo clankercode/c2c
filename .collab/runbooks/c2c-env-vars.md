@@ -179,6 +179,25 @@ Seconds the hook will block on `c2c await-reply` before falling closed
 
 ## E2E / Relay
 
+### `C2C_REQUIRE_SIGNED_ROOM_OPS` (B114 — dev-only downgrade gate)
+
+Server-side (relay) switch for the signed room-op / room-send requirement.
+Since B114 the secure behavior is the source default: room mutations
+(`/join_room`, `/leave_room`, `/set_room_visibility`, `/invite_room`,
+`/uninvite_room`, `/knock_room`, `/list_room_knocks`, `/approve_room_knock`,
+`/deny_room_knock`) require a body-level Ed25519 proof, and `/send_room`
+requires a signed envelope; unsigned/envelope-less requests are rejected with
+`unsigned_room_op`. Values:
+
+- unset or `1` — enforce (the default; `1` is a no-op kept for compatibility).
+- `0` — accept legacy unsigned room ops / envelope-less sends, honored ONLY
+  when the relay has **no Bearer token configured** (dev mode). A
+  token-configured (production) relay ignores `0` — there is no unsigned
+  downgrade in production. Startup logs report the effective mode
+  (`room ops: ...` line).
+
+HTTP regression coverage: `tests/test_relay_signed_room_ops_gate.py`.
+
 ### `C2C_RELAY_E2E_STRICT_V2`
 
 When truthy (`1`, `true`, `yes`, `on` — case-insensitive), the relay-e2e verifier rejects envelopes with `envelope_version < 2` before checking the signature. Default off — v1 envelopes continue to verify normally during the v1↔v2 cutover window. The flag is env-read on every verify, so ops can flip it without daemon restart. Used together with Slice B-min-version (per-peer downgrade pin): B handles once-seen-v2-stays-v2 attacks, C handles the global cutover for first-contact peers. See `.collab/design/2026-04-29-relay-crypto-crit-fix-plan-cairn.md` "Slice C — Strict-mode flip".

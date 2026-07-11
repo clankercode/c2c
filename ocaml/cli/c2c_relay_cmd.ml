@@ -344,6 +344,21 @@ let resolve_relay_token opt =
        | Some v when v <> "" -> Some v
        | _ -> relay_config_string_field "token")
 
+(* B114: room mutations on the relay REQUIRE a signed body proof/envelope
+   (the unsigned legacy path is dev-only server-side). The CLI therefore
+   always signs room ops — if no client identity exists yet, create one at
+   the resolved identity path (C2C_RELAY_IDENTITY_PATH override, else the
+   default ~/.config/c2c/identity.json), mirroring the broker's
+   load_or_create_ed25519_identity behavior. The alias is bound to the key
+   via TOFU on the first signed op. *)
+let load_or_create_client_identity ~alias_hint =
+  let path =
+    match Sys.getenv_opt "C2C_RELAY_IDENTITY_PATH" with
+    | Some p when p <> "" -> p
+    | _ -> Relay_identity.default_path ()
+  in
+  Relay_identity.load_or_create_at ~path ~alias_hint
+
 (* --- shared result rendering -----------------------------------------------
 
    Every relay subcommand ends by printing the relay's JSON response and
@@ -745,36 +760,31 @@ let relay_rooms_cmd =
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            (* --visibility is only meaningful for 'join', where it applies if
               the join creates the room. 'leave' ignores it. *)
+           (* B114: always sign — the relay rejects unsigned room ops. *)
+           let id = load_or_create_client_identity ~alias_hint:alias in
            let result =
-             match Relay_identity.load () with
-             | Ok id ->
-                 if subcmd = "join" then
-                   let p =
-                     match visibility with
-                     | None ->
-                         Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias
-                     | Some visibility_val ->
-                         Relay_signed_ops.sign_room_op_with_visibility id
-                           ~ctx:sign_ctx ~room_id ~alias
-                           ~visibility:(canonical_visibility_for_sig visibility_val)
-                   in
-                   Lwt_main.run (Relay.Relay_client.join_room_signed client
-                     ?visibility ~alias ~room_id
-                     ~identity_pk:p.Relay_signed_ops.identity_pk_b64
-                     ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
-                     ~sig_:p.Relay_signed_ops.sig_b64)
-                 else
-                   let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias in
-                   Lwt_main.run (Relay.Relay_client.leave_room_signed client
-                     ~alias ~room_id
-                     ~identity_pk:p.Relay_signed_ops.identity_pk_b64
-                     ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
-                     ~sig_:p.Relay_signed_ops.sig_b64)
-             | Error _ ->
-                 if subcmd = "join" then
-                   Lwt_main.run (Relay.Relay_client.join_room client ?visibility ~alias ~room_id)
-                 else
-                   Lwt_main.run (Relay.Relay_client.leave_room client ~alias ~room_id)
+             if subcmd = "join" then
+               let p =
+                 match visibility with
+                 | None ->
+                     Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias
+                 | Some visibility_val ->
+                     Relay_signed_ops.sign_room_op_with_visibility id
+                       ~ctx:sign_ctx ~room_id ~alias
+                       ~visibility:(canonical_visibility_for_sig visibility_val)
+               in
+               Lwt_main.run (Relay.Relay_client.join_room_signed client
+                 ?visibility ~alias ~room_id
+                 ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                 ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                 ~sig_:p.Relay_signed_ops.sig_b64)
+             else
+               let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias in
+               Lwt_main.run (Relay.Relay_client.leave_room_signed client
+                 ~alias ~room_id
+                 ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                 ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                 ~sig_:p.Relay_signed_ops.sig_b64)
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
   | "send" ->
@@ -794,23 +804,17 @@ let relay_rooms_cmd =
        | Some url, Some room_id, Some from_alias, ws ->
            let content = String.concat " " ws in
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           (* L4/4: sign the send with the local identity when available.
-              Falls back to legacy unsigned path if no identity is on disk
-              (spec soft-rollout). *)
+           (* B114: always send a signed envelope — the relay rejects
+              envelope-less sends. *)
+           let id = load_or_create_client_identity ~alias_hint:from_alias in
            let result =
-             match Relay_identity.load () with
-             | Ok id ->
-                 let envelope =
-                   Relay_signed_ops.sign_send_room id
-                     ~room_id ~from_alias ~content
-                 in
-                 Lwt_main.run
-                   (Relay.Relay_client.send_room_signed client
-                      ~from_alias ~room_id ~content ~envelope ())
-             | Error _ ->
-                 Lwt_main.run
-                   (Relay.Relay_client.send_room client
-                      ~from_alias ~room_id ~content ())
+             let envelope =
+               Relay_signed_ops.sign_send_room id
+                 ~room_id ~from_alias ~content
+             in
+             Lwt_main.run
+               (Relay.Relay_client.send_room_signed client
+                  ~from_alias ~room_id ~content ~envelope ())
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit from_alias) result)
   | "history" ->
@@ -905,22 +909,22 @@ let relay_rooms_cmd =
            let sign_ctx = if subcmd = "invite" then Relay.room_invite_sign_ctx
                           else Relay.room_uninvite_sign_ctx in
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           (* B114: always sign — the relay rejects unsigned room ops. The
+              invitee_pk (target) is authorization-relevant and must be bound
+              into the signature (review finding 2), so use the target-key
+              signer rather than the plain room-op signer. *)
+           let id = load_or_create_client_identity ~alias_hint:from_alias in
            let result =
-             match Relay_identity.load () with
-             | Ok id ->
-                 let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias:from_alias in
-                 let fn = if subcmd = "invite"
-                          then Relay.Relay_client.invite_room_signed
-                          else Relay.Relay_client.uninvite_room_signed in
-                 Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val
-                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
-                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
-                   ~sig_:p.Relay_signed_ops.sig_b64)
-             | Error _ ->
-                 let fn = if subcmd = "invite"
-                          then Relay.Relay_client.invite_room
-                          else Relay.Relay_client.uninvite_room in
-                 Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val)
+             let p = Relay_signed_ops.sign_room_op_with_target_pk id
+                       ~ctx:sign_ctx ~room_id ~alias:from_alias
+                       ~target_pk:invitee_pk_val in
+             let fn = if subcmd = "invite"
+                      then Relay.Relay_client.invite_room_signed
+                      else Relay.Relay_client.uninvite_room_signed in
+             Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val
+               ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+               ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+               ~sig_:p.Relay_signed_ops.sig_b64)
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit from_alias) result)
   | "set-visibility" ->
@@ -939,23 +943,18 @@ let relay_rooms_cmd =
            exit 1
        | Some url, Some room_id, Some alias, Some visibility_val ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           (* The relay requires the caller be a room member and (under
-              C2C_REQUIRE_SIGNED_ROOM_OPS) a signed proof — sign with the local
-              identity when available, falling back to the unsigned+alias form. *)
+           (* B114: the relay requires the caller be a room member AND a
+              signed proof — always sign. *)
+           let id = load_or_create_client_identity ~alias_hint:alias in
            let result =
-             match Relay_identity.load () with
-             | Ok id ->
-                 let p = Relay_signed_ops.sign_room_op_with_visibility id
-                           ~ctx:Relay.room_set_visibility_sign_ctx ~room_id ~alias
-                           ~visibility:(canonical_visibility_for_sig visibility_val) in
-                 Lwt_main.run (Relay.Relay_client.set_room_visibility_signed client
-                   ~alias ~room_id ~visibility:visibility_val
-                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
-                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
-                   ~sig_:p.Relay_signed_ops.sig_b64)
-             | Error _ ->
-                 Lwt_main.run (Relay.Relay_client.set_room_visibility client
-                   ~alias ~room_id ~visibility:visibility_val)
+             let p = Relay_signed_ops.sign_room_op_with_visibility id
+                       ~ctx:Relay.room_set_visibility_sign_ctx ~room_id ~alias
+                       ~visibility:(canonical_visibility_for_sig visibility_val) in
+             Lwt_main.run (Relay.Relay_client.set_room_visibility_signed client
+               ~alias ~room_id ~visibility:visibility_val
+               ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+               ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+               ~sig_:p.Relay_signed_ops.sig_b64)
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
   | _ ->
@@ -982,18 +981,20 @@ let relay_register_cmd =
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       let node_id = Printf.sprintf "cli-%s" alias in
       let session_id = node_id in
-      let result = (match Relay_identity.load () with
-        | Ok id ->
-            let p = Relay_signed_ops.sign_register id ~alias ~relay_url:url in
-            Lwt_main.run (Relay.Relay_client.register_signed client
-              ~node_id ~session_id ~alias ~client_type:"cli"
-              ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
-              ~sig_b64:p.Relay_signed_ops.sig_b64
-              ~nonce:p.Relay_signed_ops.nonce
-              ~ts:p.Relay_signed_ops.ts ())
-        | Error _ ->
-            Lwt_main.run (Relay.Relay_client.register client
-              ~node_id ~session_id ~alias ~client_type:"cli" ~identity_pk:"" ()))
+      (* B114: register with the same identity the signed room ops use
+         (C2C_RELAY_IDENTITY_PATH override, else the default path), creating
+         it if absent — otherwise the register-time binding and subsequent
+         room-op proofs can come from different keys, and every later signed
+         room op fails with alias_identity_mismatch. *)
+      let id = load_or_create_client_identity ~alias_hint:alias in
+      let result =
+        let p = Relay_signed_ops.sign_register id ~alias ~relay_url:url in
+        Lwt_main.run (Relay.Relay_client.register_signed client
+          ~node_id ~session_id ~alias ~client_type:"cli"
+          ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
+          ~sig_b64:p.Relay_signed_ops.sig_b64
+          ~nonce:p.Relay_signed_ops.nonce
+          ~ts:p.Relay_signed_ops.ts ())
       in
       (* No ~alias_source: register IS the binding-establishment command, so
          hinting "run c2c relay register" at a failing register is circular. *)

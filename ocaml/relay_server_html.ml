@@ -44,15 +44,15 @@ operator Bearer token only (Ed25519 rejected): %s &middot;
 <code>/list?include_dead=1</code> &middot; %s.<!-- /auth-class:admin --></li>
 <li><!-- auth-class:self-auth --><strong>Handler-checked (self-auth)</strong>
 &mdash; these routes bypass the outer header-auth gate; what happens next
-is route-specific, not a uniform check. Some handlers verify real proofs
-(<code>/register</code>: body-level Ed25519 + optional PoW; signed
-room-op bodies; mobile-pairing tokens; WebSocket signature headers), but
-others still accept legacy/unsigned requests &mdash; sometimes with
-no check at all beyond the identifiers in the request: room ops when the
-operator has not set <code>C2C_REQUIRE_SIGNED_ROOM_OPS=1</code>,
-<code>/send_room</code> without an envelope,
-<code>/poll_inbox</code>/<code>/peek_inbox</code> without an Ed25519
-header, and <code>/binding/*</code> revocation by bare binding ID.
+is route-specific, not a uniform check. Most handlers verify real proofs
+(<code>/register</code>: body-level Ed25519 + optional PoW; room ops and
+<code>/send_room</code>: mandatory signed bodies/envelopes &mdash; unsigned
+requests are rejected unless the operator explicitly enables the legacy
+dev-only gate <code>C2C_REQUIRE_SIGNED_ROOM_OPS=0</code> on a token-less
+relay; mobile-pairing tokens; WebSocket signature headers), but a few
+still accept requests with no check at all beyond the identifiers in the
+request: <code>/poll_inbox</code>/<code>/peek_inbox</code> without an
+Ed25519 header, and <code>/binding/*</code> revocation by bare binding ID.
 Routes: %s &middot;
 %s.<!-- /auth-class:self-auth --></li>
 </ul>

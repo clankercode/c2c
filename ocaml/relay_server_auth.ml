@@ -34,11 +34,13 @@ let err_unauthorized = "unauthorized"
 type route_class =
   | Anonymous_read  (* no credentials; handler may apply per-resource rules *)
   | Self_auth       (* bypasses the outer header-auth gate; what follows is
-                       route-specific handler policy — some handlers verify
-                       a body/handshake proof, others accept legacy/unsigned
-                       requests or apply no check beyond the identifiers in
-                       the request (headerless poll/peek, bare-ID /binding/*
-                       revoke) *)
+                       route-specific handler policy — room mutation routes
+                       and /register verify a body-level Ed25519 proof
+                       (unsigned bodies rejected since B114 unless the
+                       dev-only C2C_REQUIRE_SIGNED_ROOM_OPS=0 gate is active
+                       on a token-less relay), while others apply no check
+                       beyond the identifiers in the request (headerless
+                       poll/peek, bare-ID /binding/* revoke) *)
   | Bearer_admin    (* operator Bearer token; Ed25519 rejected *)
   | Peer_ed25519    (* per-request Ed25519 signature from a bound identity *)
 
@@ -54,12 +56,13 @@ let anonymous_read_routes =
    doesn't exist yet so per-request header auth can't work. handle_register
    does its own crypto verification; auth_decision just allows it through.
    Room mutation routes (join_room, leave_room, send_room, set_room_visibility,
-   invite/uninvite/knock/knock-decision) similarly carry body-level Ed25519 proof via verify_room_op_proof
-   and also accept an unsigned legacy path. Handler policy is route-specific
-   rather than uniform: some verify body/handshake proofs, some accept
-   legacy/unsigned requests, and some (headerless poll/peek, bare-ID
-   /binding/* revoke) apply no check beyond the request identifiers.
-   Bypassing header auth here lets signed AND unsigned bodies through. *)
+   invite/uninvite/knock/knock-decision) similarly carry body-level Ed25519 proof
+   via verify_room_op_proof (send_room via verify_room_send_envelope) and since
+   B114 REJECT unsigned bodies unless the dev-only unsigned gate is active
+   (C2C_REQUIRE_SIGNED_ROOM_OPS=0 on a token-less relay). Handler policy is
+   still route-specific rather than uniform: some routes (headerless poll/peek,
+   bare-ID /binding/* revoke) apply no check beyond the request identifiers.
+   Bypassing header auth here hands the body to the handler's own policy. *)
 let self_auth_exact_routes =
   [ "/register"; "/join_room"; "/leave_room"; "/send_room";
     "/set_room_visibility"; "/send_room_invite"; "/invite_room";

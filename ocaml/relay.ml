@@ -3203,11 +3203,15 @@ end = struct
     let msgs = Relay_remote_broker.get_messages ~session_id in
     respond_ok (json_ok [ ("messages", `List msgs) ])
 
-  (* Layer 4 slice 1: verify optional signed proof on room join/leave.
-     Returns [Ok ()] when either (a) no proof fields are present (legacy
-     path) or (b) all fields present and verify correctly. Returns
-     [Error (code, msg)] for any partial/invalid/forged proof. *)
-  let verify_room_op_proof relay ?(extra_signed_fields = []) ~sign_ctx ~room_id ~alias body =
+  (* Layer 4 slice 1 / B114: verify the signed proof on room mutations.
+     [require_signed] comes from [require_signed_room_ops] (true whenever the
+     relay is token-configured, and by default in dev mode too). Returns
+     [Ok ()] when all proof fields are present and verify correctly, or when
+     no proof fields are present AND [require_signed] is false (dev-gated
+     legacy path). Returns [Error (code, msg)] for any partial/invalid/forged
+     proof, and for absent proofs when [require_signed] is true. *)
+  let verify_room_op_proof relay ?(extra_signed_fields = []) ~require_signed
+      ~sign_ctx ~room_id ~alias body =
     let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
     let signature_b64 = get_opt_string body "sig" |> Option.value ~default:"" in
     let nonce_b64 = get_opt_string body "nonce" |> Option.value ~default:"" in
@@ -3225,13 +3229,14 @@ end = struct
       Res.Error (relay_err_missing_proof_field,
         "identity_pk, sig, nonce, and ts must all be present together")
     else if not has_proof then
-      if require_signed_room_ops () then
+      if require_signed then
         Res.Error (relay_err_unsigned_room_op,
-          "unsigned room op rejected; client must upgrade to sign room ops "
-          ^ "and/or set C2C_REQUIRE_SIGNED_ROOM_OPS=0 on the server")
+          "unsigned room op rejected; client must sign room ops "
+          ^ "(legacy unsigned is dev-only: C2C_REQUIRE_SIGNED_ROOM_OPS=0 "
+          ^ "on a relay with no Bearer token)")
       else
-        (Logs.warn (fun m -> m "unsigned room op %s for %S (no identity loaded — this is safe in dev but indicates a client gap in prod)" sign_ctx alias);
-         Res.Ok ())  (* legacy unsigned path — accept *)
+        (Logs.warn (fun m -> m "unsigned room op %s for %S accepted via dev gate (C2C_REQUIRE_SIGNED_ROOM_OPS=0, no token)" sign_ctx alias);
+         Res.Ok ())  (* dev-gated legacy unsigned path — accept *)
     else
       match decode_b64url identity_pk_b64 with
       | Res.Error _ -> Res.Error (err_bad_request, "identity_pk not base64url-nopad")
@@ -3255,12 +3260,22 @@ end = struct
               match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
               | Error code -> Error (code, "nonce already seen within TTL")
               | Ok () ->
-                (* Bind identity_pk to alias: must match any existing binding. *)
+                (* B114 (review finding 1): the proof only AUTHENTICATES the
+                   alias if [identity_pk] is the key already bound to it. A
+                   self-signed proof for an alias with no registered binding
+                   is meaningless (any attacker key would "verify"), so an
+                   absent binding is rejected — there is no first-proof TOFU
+                   pinning. The alias must have registered a signed identity
+                   first (register_signed binds the key). *)
                 (match R.identity_pk_of relay ~alias with
                  | Some bound when bound <> identity_pk ->
                    Error (relay_err_alias_identity_mismatch,
                      "identity_pk does not match registered binding")
-                 | _ ->
+                 | None ->
+                   Error (relay_err_alias_identity_mismatch,
+                     "alias has no registered identity binding; register a \
+                      signed identity before signing room ops")
+                 | Some _ ->
                            let blob =
                              Relay_identity.canonical_msg ~ctx:sign_ctx
                                ([ room_id; alias ] @ extra_signed_fields
@@ -3272,7 +3287,7 @@ end = struct
                      Error (relay_err_signature_invalid,
                        "Ed25519 signature does not verify"))
 
-  let handle_join_room relay body =
+  let handle_join_room relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     (* Optional visibility — only applied if this join creates the room. *)
@@ -3294,7 +3309,7 @@ end = struct
         | Some v when String.trim v <> "" -> [ requested_visibility ]
         | _ -> []
       in
-      match verify_room_op_proof relay ~sign_ctx:room_join_sign_ctx
+      match verify_room_op_proof relay ~require_signed ~sign_ctx:room_join_sign_ctx
               ~extra_signed_fields ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3324,7 +3339,7 @@ end = struct
           | `Error (code, msg) -> json_error code msg [])
 
   (* L4/5 — set_room_visibility. Signed by any existing room member. *)
-  let handle_set_room_visibility relay body =
+  let handle_set_room_visibility relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     let visibility_raw = get_string body "visibility" in
@@ -3336,7 +3351,7 @@ end = struct
       respond_bad_request (json_error_str err_bad_request
         "visibility must be \"public\", \"unlisted\", \"gated\", or \"private\"")
     | Some visibility ->
-      match verify_room_op_proof relay
+      match verify_room_op_proof relay ~require_signed
               ~sign_ctx:room_set_visibility_sign_ctx
               ~extra_signed_fields:[ visibility ]
               ~room_id ~alias body with
@@ -3359,7 +3374,7 @@ end = struct
         end
 
   (* L4/5 — invite / uninvite. Signed by any existing room member. *)
-  let handle_room_invite_op relay ~sign_ctx ~op body =
+  let handle_room_invite_op relay ~require_signed ~sign_ctx ~op body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     let target_pk = get_string body "invitee_pk" in
@@ -3367,7 +3382,12 @@ end = struct
       respond_bad_request (json_error_str err_bad_request
         "alias, room_id, and invitee_pk are required")
     else
-      match verify_room_op_proof relay ~sign_ctx ~room_id ~alias body with
+      (* B114 (review finding 2): invitee_pk is authorization-relevant and
+         MUST be covered by the signature, or an intermediary could substitute
+         the target key under an otherwise-valid member proof. Bind it as an
+         extra signed field (matches Relay_signed_ops.sign_room_op_with_target_pk). *)
+      match verify_room_op_proof relay ~require_signed ~sign_ctx
+              ~extra_signed_fields:[ target_pk ] ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
           respond_bad_request (json_error_str code msg)
@@ -3391,19 +3411,19 @@ end = struct
           ])
         end
 
-  let handle_invite_room relay body =
-    handle_room_invite_op relay ~sign_ctx:room_invite_sign_ctx ~op:`Invite body
+  let handle_invite_room relay ~require_signed body =
+    handle_room_invite_op relay ~require_signed ~sign_ctx:room_invite_sign_ctx ~op:`Invite body
 
-  let handle_uninvite_room relay body =
-    handle_room_invite_op relay ~sign_ctx:room_uninvite_sign_ctx ~op:`Uninvite body
+  let handle_uninvite_room relay ~require_signed body =
+    handle_room_invite_op relay ~require_signed ~sign_ctx:room_uninvite_sign_ctx ~op:`Uninvite body
 
-  let handle_knock_room relay body =
+  let handle_knock_room relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
     else
-      match verify_room_op_proof relay ~sign_ctx:room_knock_sign_ctx
+      match verify_room_op_proof relay ~require_signed ~sign_ctx:room_knock_sign_ctx
               ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3436,13 +3456,13 @@ end = struct
           | `Error (code, msg) ->
             respond_bad_request (json_error_str code msg)
 
-  let handle_list_room_knocks relay body =
+  let handle_list_room_knocks relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
     else
-      match verify_room_op_proof relay ~sign_ctx:room_list_knocks_sign_ctx
+      match verify_room_op_proof relay ~require_signed ~sign_ctx:room_list_knocks_sign_ctx
               ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3461,7 +3481,7 @@ end = struct
             ("knocks", `List (List.map json_of_room_knock knocks));
           ])
 
-  let handle_room_knock_decision relay ~sign_ctx ~decision body =
+  let handle_room_knock_decision relay ~require_signed ~sign_ctx ~decision body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     let requester_pk = get_string body "requester_pk" in
@@ -3469,7 +3489,7 @@ end = struct
       respond_bad_request (json_error_str err_bad_request
         "alias, room_id, and requester_pk are required")
     else
-      match verify_room_op_proof relay ~sign_ctx ~room_id ~alias
+      match verify_room_op_proof relay ~require_signed ~sign_ctx ~room_id ~alias
               ~extra_signed_fields:[ requester_pk ] body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3509,21 +3529,21 @@ end = struct
             in
             respond_ok (`Assoc fields)
 
-  let handle_approve_room_knock relay body =
-    handle_room_knock_decision relay
+  let handle_approve_room_knock relay ~require_signed body =
+    handle_room_knock_decision relay ~require_signed
       ~sign_ctx:room_approve_knock_sign_ctx ~decision:`Approve body
 
-  let handle_deny_room_knock relay body =
-    handle_room_knock_decision relay
+  let handle_deny_room_knock relay ~require_signed body =
+    handle_room_knock_decision relay ~require_signed
       ~sign_ctx:room_deny_knock_sign_ctx ~decision:`Deny body
 
-  let handle_leave_room relay body =
+  let handle_leave_room relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
     else
-      match verify_room_op_proof relay ~sign_ctx:room_leave_sign_ctx
+      match verify_room_op_proof relay ~require_signed ~sign_ctx:room_leave_sign_ctx
               ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3534,14 +3554,25 @@ end = struct
         let result = R.leave_room relay ~alias ~room_id in
         respond_ok (json_of_room_join_result result)
 
-  (* Layer 4 slice 2: verify optional signed envelope on /send_room.
+  (* Layer 4 slice 2 / B114: verify the signed envelope on /send_room.
      Envelope shape per spec §2: {ct, enc, sender_pk, sig, ts, nonce}.
      In v1, `ct` is base64url-nopad of the UTF-8 message text; relay
-     still fans out `content` verbatim. Soft rollout: no envelope → legacy
-     path. Envelope present → verify end-to-end before send_room. *)
-  let verify_room_send_envelope relay ~from_alias ~room_id ~content body =
+     still fans out `content` verbatim. B114: an absent envelope is
+     rejected when [require_signed] is true (mandatory in production and
+     the source default); the envelope-less legacy path survives only
+     behind the dev gate. Envelope present → verify end-to-end before
+     send_room. *)
+  let verify_room_send_envelope relay ~require_signed ~from_alias ~room_id ~content body =
     match List.assoc_opt "envelope" (match body with `Assoc l -> l | _ -> []) with
-    | None -> Ok ()  (* legacy unsigned path *)
+    | None ->
+      if require_signed then
+        Res.Error (relay_err_unsigned_room_op,
+          "room send requires a signed envelope; client must send a signed "
+          ^ "envelope (legacy envelope-less send is dev-only: "
+          ^ "C2C_REQUIRE_SIGNED_ROOM_OPS=0 on a relay with no Bearer token)")
+      else
+        (Logs.warn (fun m -> m "envelope-less send_room from %S to room %S accepted via dev gate (C2C_REQUIRE_SIGNED_ROOM_OPS=0, no token)" from_alias room_id);
+         Res.Ok ())  (* dev-gated legacy envelope-less path — accept *)
     | Some env ->
       let es k = match env with
         | `Assoc l ->
@@ -3593,11 +3624,21 @@ end = struct
                     match R.check_register_nonce relay ~nonce ~ts:ts_client with
                     | Error code -> Error (code, "nonce already seen within TTL")
                     | Ok () ->
+                      (* B114 (review finding 1): as with room ops, the
+                         envelope only authenticates [from_alias] when
+                         [sender_pk] is the key bound to it. An absent binding
+                         is rejected (no first-proof TOFU) — the sender must
+                         have registered a signed identity. *)
                       (match R.identity_pk_of relay ~alias:from_alias with
                        | Some bound when bound <> sender_pk ->
                          Error (relay_err_alias_identity_mismatch,
                            "sender_pk does not match registered binding")
-                       | _ ->
+                       | None ->
+                         Error (relay_err_alias_identity_mismatch,
+                           "alias has no registered identity binding; register \
+                            a signed identity before sending signed room \
+                            messages")
+                       | Some _ ->
                          let ct_hash = body_sha256_b64 ct_bytes in
                          let blob =
                            Relay_identity.canonical_msg ~ctx:Relay_signed_ops.room_send_sign_ctx
@@ -3610,14 +3651,14 @@ end = struct
                            Error (relay_err_signature_invalid,
                              "Ed25519 envelope signature does not verify"))
 
-  let handle_send_room relay body =
+  let handle_send_room relay ~require_signed body =
     let from_alias = get_string body "from_alias" in
     let room_id = get_string body "room_id" in
     let content = get_string body "content" in
     if from_alias = "" || room_id = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias, room_id, and content are required")
     else
-      match verify_room_send_envelope relay ~from_alias ~room_id ~content body with
+      match verify_room_send_envelope relay ~require_signed ~from_alias ~room_id ~content body with
       | Error (code, msg) ->
         if code = err_bad_request
            || code = relay_err_missing_proof_field
@@ -4174,6 +4215,13 @@ end = struct
         try Res.Ok (Yojson.Safe.from_string body_str)
         with Yojson.Json_error msg -> Res.Error msg
       in
+      (* B114: room mutations require signed body proofs / envelopes.
+         Mandatory whenever a Bearer token is configured (production);
+         in dev mode (no token) it is still the default, with an explicit
+         C2C_REQUIRE_SIGNED_ROOM_OPS=0 legacy escape hatch. *)
+      let require_signed =
+        require_signed_room_ops ~token_configured:(token <> None)
+      in
       match meth, path with
       (* === S4: Observer WebSocket endpoint === *)
       | `GET, path when String.length path > 10 && String.sub path 0 10 = "/observer/" ->
@@ -4466,61 +4514,61 @@ end = struct
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_join_room relay j)
+         | Ok j -> handle_join_room relay ~require_signed j)
 
       | `POST, "/leave_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_leave_room relay j)
+         | Ok j -> handle_leave_room relay ~require_signed j)
 
       | `POST, "/set_room_visibility" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_set_room_visibility relay j)
+         | Ok j -> handle_set_room_visibility relay ~require_signed j)
 
       | `POST, "/invite_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_invite_room relay j)
+         | Ok j -> handle_invite_room relay ~require_signed j)
 
       | `POST, "/uninvite_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_uninvite_room relay j)
+         | Ok j -> handle_uninvite_room relay ~require_signed j)
 
       | `POST, "/knock_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_knock_room relay j)
+         | Ok j -> handle_knock_room relay ~require_signed j)
 
       | `POST, "/list_room_knocks" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_list_room_knocks relay j)
+         | Ok j -> handle_list_room_knocks relay ~require_signed j)
 
       | `POST, "/approve_room_knock" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_approve_room_knock relay j)
+         | Ok j -> handle_approve_room_knock relay ~require_signed j)
 
       | `POST, "/deny_room_knock" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_deny_room_knock relay j)
+         | Ok j -> handle_deny_room_knock relay ~require_signed j)
 
       | `POST, "/send_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_send_room relay j)
+         | Ok j -> handle_send_room relay ~require_signed j)
 
       | `POST, "/room_history" ->
         let json = parse_body () in
@@ -4632,6 +4680,20 @@ end = struct
     (match token with
      | Some _ -> Printf.printf "auth: Bearer token required\n%!"
      | None -> Printf.printf "auth: DISABLED (no token set — do not expose publicly)\n%!");
+    (* B114: report the effective signed-room-op mode at startup so the
+       deployed configuration is operator-visible. *)
+    (match Sys.getenv_opt "C2C_REQUIRE_SIGNED_ROOM_OPS", token with
+     | Some "0", Some _ ->
+       Printf.printf
+         "room ops: signed proofs REQUIRED (C2C_REQUIRE_SIGNED_ROOM_OPS=0 \
+          IGNORED — a token-configured relay never accepts unsigned room ops)\n%!"
+     | Some "0", None ->
+       Printf.printf
+         "room ops: DEV GATE ACTIVE — unsigned room ops and envelope-less \
+          sends accepted (C2C_REQUIRE_SIGNED_ROOM_OPS=0, no token; do not \
+          expose publicly)\n%!"
+     | _ ->
+       Printf.printf "room ops: signed proofs + send envelopes required\n%!");
     if gc_interval > 0.0 then
       Printf.printf "gc: running every %.0fs\n%!" gc_interval
     else
