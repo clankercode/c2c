@@ -115,3 +115,4 @@ bugs:
     - file: B116-require-authorization-to-revok.todo
     - file: B117-make-public-or-unlisted-room-h.todo
     - file: B118-return-anonymous-listed-room-r.todo
+    - file: B119-mcp-register-overwrites-hook-r.todo
