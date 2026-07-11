@@ -132,13 +132,18 @@ module Backend_http_tests (R : Relay.RELAY) = struct
   (* B115: the unsigned legacy inbox path now requires BOTH a tokenless
      relay AND the explicit development-only env gate
      C2C_RELAY_ALLOW_UNSIGNED_INBOX=1. [with_unsigned_inbox_gate] arms the
-     gate for one test body and always disarms it after (empty value =
-     fail closed; OCaml's Unix has no unsetenv). *)
+     gate for one test body and restores the caller's prior value after
+     (empty value = fail closed; OCaml's Unix has no unsetenv). *)
   let with_unsigned_inbox_gate f =
-    Unix.putenv "C2C_RELAY_ALLOW_UNSIGNED_INBOX" "1";
-    Fun.protect
-      ~finally:(fun () -> Unix.putenv "C2C_RELAY_ALLOW_UNSIGNED_INBOX" "")
-      f
+    let var = "C2C_RELAY_ALLOW_UNSIGNED_INBOX" in
+    let previous = Sys.getenv_opt var in
+    let restore () =
+      match previous with
+      | Some v -> Unix.putenv var v
+      | None -> Unix.putenv var ""
+    in
+    Unix.putenv var "1";
+    Fun.protect ~finally:restore f
 
   let test_unsigned_dev_request_keeps_existing_policy relay =
     let _victim, _attacker = prime_victim_inbox relay in
