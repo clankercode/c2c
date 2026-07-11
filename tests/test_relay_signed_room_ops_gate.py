@@ -532,6 +532,173 @@ class SendRoomEnvelopeEnforcementTests(unittest.TestCase):
                          f"expected alias_identity_mismatch: {r}")
 
 
+class UnboundAliasProofRejectionTests(unittest.TestCase):
+    """B114 review finding 1 (blocker): a valid *self-signed* proof/envelope
+    for an alias that has NO registered identity binding must be REJECTED. A
+    signed proof only authenticates the alias if the signing key is the one
+    bound to that alias — otherwise any attacker key impersonates any
+    unsigned-registered (unbound) alias. No first-proof TOFU pinning: room
+    ops require a pre-existing matching binding."""
+
+    VICTIM = "unbound-victim"
+    ROOM = "unbound-room"
+
+    server: OCamlRelayServer
+    client: RelayClient
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
+                                      port=TEST_PORT + 5)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        # Register the victim WITHOUT an identity proof (legacy unsigned
+        # register) — the alias exists but has no bound identity_pk.
+        cls.client.register("n-unbound", "s-unbound", cls.VICTIM)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def test_arbitrary_key_join_as_unbound_alias_rejected(self):
+        attacker = SignedRoomOpHelper(generate_identity(self.VICTIM))
+        proof = attacker.sign_room_op("c2c/v1/room-join", self.ROOM)
+        r = self.client.post("/join_room", {
+            "alias": self.VICTIM, "room_id": self.ROOM, **proof,
+        })
+        self.assertFalse(r["ok"],
+                         f"self-signed join for an unbound alias must be rejected: {r}")
+        self.assertEqual(r.get("error_code"), "alias_identity_mismatch",
+                         f"expected alias_identity_mismatch: {r}")
+
+    def test_arbitrary_key_send_as_unbound_alias_rejected(self):
+        attacker = SignedRoomOpHelper(generate_identity(self.VICTIM))
+        content = "impersonated content"
+        envelope = attacker.sign_send_room(self.ROOM, content)
+        r = self.client.post("/send_room", {
+            "from_alias": self.VICTIM, "room_id": self.ROOM,
+            "content": content, "envelope": envelope,
+        })
+        self.assertFalse(r["ok"],
+                         f"self-signed send for an unbound alias must be rejected: {r}")
+        self.assertEqual(r.get("error_code"), "alias_identity_mismatch",
+                         f"expected alias_identity_mismatch: {r}")
+
+
+class InviteTargetBindingTests(unittest.TestCase):
+    """B114 review finding 2 (major): the invite/uninvite signature must bind
+    invitee_pk so the authorized target cannot be substituted by an
+    intermediary. Also covers positive signed invite/uninvite/leave (missing
+    from the original suite)."""
+
+    ALIAS = "invite-e2e-owner"
+    ROOM = "invite-e2e-room"
+
+    server: OCamlRelayServer
+    client: RelayClient
+    helper: SignedRoomOpHelper
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
+                                      port=TEST_PORT + 6)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        cls.helper = SignedRoomOpHelper(generate_identity(cls.ALIAS))
+        cls.client.register(
+            "n-inv", "s-inv", cls.ALIAS,
+            **cls.helper.sign_register(cls.server.base_url),
+        )
+        # Owner creates a gated room (so invites are meaningful).
+        proof = cls.helper.sign_room_op_with_visibility(
+            "c2c/v1/room-join", cls.ROOM, "gated")
+        r = cls.client.post("/join_room", {
+            "alias": cls.ALIAS, "room_id": cls.ROOM,
+            "visibility": "gated", **proof,
+        })
+        assert r.get("ok"), f"gated join failed in setup: {r}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def _target_pk(self) -> str:
+        return SignedRoomOpHelper(generate_identity("some-invitee")).identity_pk_b64
+
+    def test_signed_invite_accepted(self):
+        target = self._target_pk()
+        proof = self.helper.sign_room_op_with_extra(
+            "c2c/v1/room-invite", self.ROOM, target)
+        r = self.client.post("/invite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target, **proof,
+        })
+        self.assertTrue(r["ok"], f"signed invite should be accepted: {r}")
+        self.assertIn(target, r.get("invited_members", []),
+                      f"invited target must be in ACL: {r}")
+
+    def test_invitee_pk_substitution_rejected(self):
+        """A proof produced for target A must NOT authorize inviting a
+        substituted target B — invitee_pk is authorization-relevant and must
+        be covered by the signature."""
+        target_a = self._target_pk()
+        target_b = self._target_pk()
+        proof = self.helper.sign_room_op_with_extra(
+            "c2c/v1/room-invite", self.ROOM, target_a)
+        r = self.client.post("/invite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target_b, **proof,
+        })
+        self.assertFalse(r["ok"],
+                         f"substituted invitee_pk must be rejected: {r}")
+        self.assertEqual(r.get("error_code"), "signature_invalid",
+                         f"expected signature_invalid: {r}")
+
+    def test_unbound_extra_field_invite_rejected(self):
+        """The old unbound-target signature form (no invitee_pk in the blob)
+        must no longer verify — proves the fix actually binds the target."""
+        target = self._target_pk()
+        proof = self.helper.sign_room_op("c2c/v1/room-invite", self.ROOM)
+        r = self.client.post("/invite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target, **proof,
+        })
+        self.assertFalse(r["ok"],
+                         f"target-less invite signature must be rejected: {r}")
+
+    def test_signed_uninvite_accepted(self):
+        target = self._target_pk()
+        # First invite (target-bound), then uninvite (target-bound).
+        p_inv = self.helper.sign_room_op_with_extra(
+            "c2c/v1/room-invite", self.ROOM, target)
+        self.client.post("/invite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target, **p_inv,
+        })
+        p_uninv = self.helper.sign_room_op_with_extra(
+            "c2c/v1/room-uninvite", self.ROOM, target)
+        r = self.client.post("/uninvite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target, **p_uninv,
+        })
+        self.assertTrue(r["ok"], f"signed uninvite should be accepted: {r}")
+        self.assertNotIn(target, r.get("invited_members", []),
+                         f"uninvited target must be gone from ACL: {r}")
+
+    def test_signed_leave_accepted(self):
+        room = self.ROOM + "-leave"
+        p_join = self.helper.sign_room_op("c2c/v1/room-join", room)
+        j = self.client.post("/join_room", {
+            "alias": self.ALIAS, "room_id": room, **p_join,
+        })
+        self.assertTrue(j["ok"], f"join for leave test failed: {j}")
+        p_leave = self.helper.sign_room_op("c2c/v1/room-leave", room)
+        r = self.client.post("/leave_room", {
+            "alias": self.ALIAS, "room_id": room, **p_leave,
+        })
+        self.assertTrue(r["ok"], f"signed leave should be accepted: {r}")
+
+
 class RequireSignedRoomOpsSignedJoinTests(RequireSignedRoomOpsTests):
     def test_signed_join_room_accepted(self):
         """Signed /join_room with Ed25519 proof must be accepted when identity is registered."""
