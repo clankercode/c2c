@@ -7,113 +7,325 @@ nav_label: Changelog
 
 # Changelog
 
-## Unreleased
+## 0.11.0
 
-- **Vanilla Claude/Codex hooks now deliver repo-broker DMs without env
-  configuration** — the delivery hooks previously resolved the per-repo
-  broker only from `C2C_MCP_BROKER_ROOT` (empty for non-managed sessions),
-  so peer DMs sent via `c2c send <alias>` sat undrained while the hook
-  reported "no messages". Hooks now fall back to the canonical
-  repo-fingerprint broker (`~/.c2c/repos/<fp>/broker`) resolved from the
-  cwd git repo — same order as the CLI — gated on the broker already
-  existing on disk, so repos that never initialized c2c stay a no-op.
+### Message contracts, discovery, and relay truthfulness
 
-- **Connector HTTP-status honesty** (H10, Q1-DEFECT-1) — the relay
-  connector's inline HTTP client now reconciles response bodies with the
-  HTTP status line (same four-branch contract H7 gave `Relay_client`): a
-  non-2xx response can never read as success, so a relay answering
-  HTTP 500 with a dishonest `{"ok":true}` body no longer makes
-  `c2c relay connect --once` report `registered=N` and exit 0 — the
-  failure is recorded per-op in `connector-state.json` and `--once`
-  exits 2. Honest non-2xx `ok:false` bodies pass through (own
-  `error_code` wins, `http_status` annotated), preserving the PoW-retry
-  and rate-limit flows. Response-classification helpers are also total
-  on non-object JSON now: a non-object relay response records a per-op
-  sync error instead of aborting the whole sync pass.
+- **Canonical schema v1 is now used across message-producing surfaces.** CLI
+  JSON for `send`, `poll`, `peek`, and `relay dm`; MCP `send`, `poll_inbox`,
+  and `peek_inbox`; and monitor NDJSON all emit the same canonical message/event
+  shape, with compatibility adaptation and test vectors. This also fixes room
+  classification so it follows the canonical recipient predicate.
+  (`daa9bc83`, `7e98e07f`, `be1c2cf2`, `d0b50297`, `7e31c1a6`, `3a93bcd4`,
+  `333923f2`, `a9887a34`)
 
-- **Claude mid-turn delivery is now FULL-message by default** — the
-  PostToolUse hook (standalone `c2c-inbox-hook-ocaml` and the
-  `c2c hook post-tool` CLI fallback, now converged on shared
-  `C2c_hook_lib.run_post_tool`) drains push (non-deferrable) messages from
-  the repo + global brokers and injects complete `<c2c ...>` envelopes into
-  the transcript, mirroring the codex PostToolUse hook. `deferrable`
-  messages wait for the next turn boundary (Stop / SessionStart keep the
-  full drain). The B038 debounced nudge line becomes the opt-out
-  (`C2C_POST_TOOL_NUDGE_ONLY=1`); the old `C2C_POST_TOOL_FULL_INJECT`
-  opt-in is still honored but redundant. The full path has no debounce —
-  draining empties the inbox, so repeated fires are no-ops. Channel-capable
-  skip (#387 A2), subagent-quiet guard (B042), and the once-per-session
-  cold-boot fallback (marker-shared with the SessionStart hook, no double
-  injection) all preserved. The CLI fallback additionally gains stdin
-  session-id parsing, global-broker drain, and the subagent guard it was
-  missing.
-- **`c2c monitor` emits full bodies for bursts** — multiple messages from
-  one sender were previously collapsed to `(N msgs)` + a 60-char preview of
-  the first (bodies 2..N dropped). Now every message is emitted whole, one
-  line per message; legacy `--snippet` keeps the collapsed preview. The
-  canonical vanilla-claude Monitor recipe is unchanged:
-  `Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })`.
+- **`c2c list --relay` has a clearer, safer merged identity view.** Results
+  distinguish identity kind and scope, support `--kind`, carry a structured
+  relay-error envelope, and use a pure composite relay-state classifier for
+  consistent `status`/`whoami` rendering. List/find JSON now exposes liveness;
+  stale peers are hidden by default (including relay results) while preserving
+  unknown-liveness coverage.
+  (`989719a5`, `1e264e2b`, `c7980410`, `6c8e580e`, `b338a84e`)
 
-- **Codex idle wake via tmux/herdr injection (`hooks+wake`)** — an idle codex
-  session can now be woken: codex hooks only fire on activity, so
-  heartbeat/schedule self-DMs used to rot in the inbox until the operator
-  typed something. When the session runs inside tmux or herdr, c2c
-  auto-captures a wake target on the broker registration (`tmux_location`
-  from `$TMUX_PANE`, `herdr_pane`/`herdr_socket` from `$HERDR_PANE_ID` /
-  `$HERDR_SOCKET_PATH`; captured by `c2c hook codex` on auto-register + every
-  SessionStart, and by the MCP `register` tool env fallback). A watcher
-  (`C2c_wake_inject`) monitors the inbox and, on growth, types a one-line
-  nudge into the pane (herdr: `herdr pane run`; tmux: `send-keys -l` then
-  `Enter`) — the injected turn fires the UserPromptSubmit hook, which does
-  the actual drain. The injector **never drains the broker inbox itself**,
-  so double-delivery is impossible by construction. Idle-gated (herdr
-  `agent_status=idle`; tmux `last_activity_ts` older than
-  `C2C_WAKE_IDLE_THRESHOLD_S`, default 90s) with per-session backoff
-  (`C2C_WAKE_BACKOFF_S`, default 120s) and new-message dedupe. Managed
-  `c2c start codex` runs the watcher as its deliver sidecar (replacing the
-  log-only inotify mode); vanilla sessions can run
-  `c2c deliver wake-watch --alias <a>` (or `--once`). `c2c instances`
-  reports `delivery_mode=hooks+wake` when hooks are installed AND a wake
-  target is registered. Tests are fixture-gated via
-  `C2C_WAKE_INJECT_FIXTURE` (records exact argv; never touches a pane).
-  Also fixes a latent #517 bug: `tmux_location` was never actually
-  persisted to the registry (warning-9-masked destructure drop).
-- **Claude Code session-lifecycle hooks (`c2c hook claude`)** — closes four
-  codex/claude parity gaps at once. `c2c install claude` now writes
-  `~/.claude/hooks/c2c-session-hook.sh` and registers it under SessionStart +
-  SessionEnd in `~/.claude/settings.json` (no matcher, so every SessionStart
-  source — startup/resume/clear/compact — fires). On SessionStart the hook
-  resolves identity env-first (a managed session's `C2C_MCP_SESSION_ID`
-  registration always wins; vanilla sessions auto-register their claude UUID
-  with a generated `claude-*` alias and get onboarding text), refreshes the
-  `/c2c` skill from the embedded blob, injects cold-boot context (#317,
-  once-per-session marker) plus post-compact context when `source=compact`,
-  and drains queued messages (repo + global brokers; skipped for
-  channel-capable managed sessions). SessionEnd deregisters only
-  `claude-hook` auto-registrations — managed/MCP identities are never
-  touched. `c2c uninstall claude` strips the new script + settings entries;
-  `c2c doctor hooks` dangle-checks them automatically. Same safety contract
-  as `c2c hook codex`: alarm-capped, subagent-quiet guard, errors exit 0
-  with empty stdout.
-- **Codex xml_fd plumbing removed; hooks are the delivery path** — upstream
-  codex (v0.142.x) removed `--xml-input-fd`, so the dead interactive-codex XML
-  sideband is gone: the capability probe + `codex_xml_fd` capability, the fd-3/
-  fd-4 pipe wiring in `c2c start codex`, and the `~/.c2c/clients/codex/`
-  deliver-watch supervisor scripts (`c2c install codex` no longer writes them
-  and removes stale ones; `c2c uninstall codex` still cleans them up). The
-  managed kickoff prompt is now passed as codex's positional `[PROMPT]` CLI
-  argument on fresh starts (suppressed on resume, matching claude/kimi/gemini).
-  `c2c instances` now reports codex `delivery_mode=hooks` when the c2c hooks
-  block is installed in `~/.codex/config.toml`, else `unavailable` (previously
-  claimed `xml_fd`/`pty_notify`). The manifest-less `c2c uninstall codex`
-  fallback now also strips the config.toml hooks block and the AGENTS.md
-  block. The codex-headless bridge path (XML fifo, thread-id fd) is unchanged.
-- **Codex /c2c skill install + auto-update** — `c2c install codex` now writes
-  the embedded `/c2c` skill to `~/.codex/skills/c2c/SKILL.md` (same canonical
-  blob as the Claude skill), records it in the install manifest so
-  `c2c uninstall codex` removes it, and the codex SessionStart hook refreshes
-  the file whenever it drifts from the running binary — vanilla codex sessions
-  pick up skill updates without re-running install.
+- **Anonymous relay room directories now return privacy-preserving,
+  reply-ready member addresses.** Listed roster entries use
+  `alias#room@relay` rather than bare aliases, exposing no machine, lease, or
+  identity-key metadata. Relay room IDs now follow a canonical grammar, and
+  malformed legacy/backend-direct room IDs are omitted from the public
+  directory rather than producing ambiguous recipient addresses.
+  (`ffbf81fc`, `26c72898`, `d76d4c3a`, `f327e441`)
+
+- **Relay and doctor output are more honest and resilient.** Connector and
+  inline relay clients reconcile HTTP status with response bodies; bad or
+  non-object poll rows no longer poison a whole sync pass; inbox loading heals
+  malformed rows; and relay doctor relies on broker-owned connector state with
+  scheme/attempt-aware capabilities. The CLI error-contract matrix now pins
+  major command exit/error behaviour.
+  (`40097cdd`, `43fbd5c2`, `5fae138d`, `c6297567`, `798461c7`, `06547cb3`,
+  `051cf896`, `5c248451`)
+
+- **Relay/client wire-protocol incompatibility is now explicit and actionable.**
+  Relay health advertises protocol compatibility; `c2c relay status`,
+  `c2c doctor --relay`, and `c2c health` distinguish protocol skew from
+  transport or request failures and recommend the right client upgrade, relay
+  deploy, or relay retarget action.
+  (`1db97000`, `a3a71744`, `f1b7f0cc`)
+
+- **Reply routing now works across brokers and fails closed when ambiguous.**
+  Fresh Codex-hook identities are visible as alive, and MCP replies can route
+  to a peer registered on another broker instead of incorrectly reporting that
+  the sender is unregistered.
+  (`73bb793e`, `c9ca4df6`, `6c8e580e`)
+
+- **Known offline managed aliases now accept durable mail.** Sending to a
+  registered-but-dead alias returns `queued_offline` (exit 0 plus a warning)
+  and writes the envelope to that session's durable inbox; unknown aliases
+  still error. Offline rows have a seven-day default TTL, preserve ephemeral
+  semantics, and migrate on re-registration so resumed sessions drain exactly
+  once.
+  `--fail-if-queued` returns exit 3 for offline queues, and enqueue audit events
+  carry the same stable `message_id` as the persisted row.
+  (`b002598d`, `4a9139e8`, `6988dee8`, `f6141d18`, `370ce6b9`)
+
+- **Codex app-server support now includes a managed lifecycle and passive
+  ingress adapter.** The authenticated app-server/frontend unit has explicit
+  startup, running, failure, and cleanup states; raw auth tokens stay in
+  memory/child environment only. The adapter can inject broker messages as
+  idempotent, data-only Responses API items without draining the inbox,
+  starting a turn, or touching approvals; retries are reconciled by message ID
+  and unsupported clients retain hook/poll fallback delivery. The ingress and
+  gated auto-turn dispatcher are now wired into managed `c2c start codex` as
+  the default/only supported path on capable Codex versions, with fail-closed
+  handling for remote, unknown, or ineligible provenance.
+  (`41233ada`, `882da0ab`, `ca219135`, `b40fb561`, `7c60353d`, `68a7272a`)
+
+- **Codex command and lifecycle UX is available through the app-server path.**
+  `c2c codex`, `c2c new codex`, and `c2c resume codex` share deterministic
+  session aliases, `--yolo` handling, verbatim `--` argument passthrough, and
+  lifecycle status; `c2c instances` reports app-server attachment state.
+  (`696a7fb5`, `57644cf2`, `a5e57aa7`, `a774071c`)
+
+- **Relay DM delivery includes interpretable proof-of-work metadata.** Incoming
+  1:1 messages may carry a signed-content-independent `pow` sibling describing
+  difficulty bits, expected hashes, and the scheme. The metadata persists
+  through relay backends and connector/inbox delivery without changing signing
+  or enforcement; broadcasts and rooms retain the documented no-PoW sentinel.
+  (`6de73cf5`, `11c141bb`, `53fc54ba`)
+
+### Safety hardening
+
+- **Inbound c2c messages are rendered as untrusted data on every client
+  adapter.** Hostile content is escaped before it enters Claude, Codex,
+  OpenCode, or Kimi transcript surfaces; room invite/knock auto-DMs use the
+  same safe renderer.
+  (`a270e533`, `8430efc1`, `9b67ed36`, `39786891`)
+
+- **Delivered messages now identify both sides explicitly.** Transcript
+  reminders say “your c2c alias” and name the sender, strip room/relay routing
+  suffixes from the displayed recipient identity, preserve exact reply-tool
+  guidance, and escape both identities. The canonical OCaml renderer and the
+  OpenCode mirror agree; relay and Kimi delivery paths are covered as well.
+  (`31504787`, `8397e359`, `e49e5942`, `8b3fffe3`, `bc24d403`)
+
+- **Hook delivery is isolated to the owning session.** Claude subagent hooks
+  now use the hook-provided `agent_id` rather than inherited process
+  environment to distinguish top-level and child sessions, preventing a
+  dispatched subagent from receiving the coordinator's inbox. Cold-boot and
+  post-compact paths share the same isolation guard.
+  (`72305f58`, `ed39a1d6`, `47130ec5`, `61b8e067`)
+
+- **The approval boundary is strictly host-local.** Peer messages, including
+  OpenCode `question:<id>:answer` messages and exact-token verdict-like text,
+  can no longer resolve approvals or dialogs. Stale inbox verdict artifacts are
+  removed, and relay inbox peek now requires an authorized signed owner.
+  (`16a69c0b`, `85cf20cf`, `fb9a7210`, `36f024fd`, `299d90d7`)
+
+### Relay authorization and identity
+
+- **Room mutations and room messages now require authenticated signed proofs.**
+  On token-configured relays, joins, leaves, visibility changes, invitations,
+  knocks, and related decisions require a bound Ed25519 identity proof, while
+  room sends require a signed envelope. The CLI automatically creates and uses
+  a client identity where needed. A tokenless development relay can explicitly
+  opt into legacy unsigned room operations with
+  `C2C_REQUIRE_SIGNED_ROOM_OPS=0`.
+  (`90915733`, `e7317275`, `50c7c4f3`)
+
+- **Relay inbox polling and peeking are bound to the verified owner.**
+  Production relays reject unsigned access; tokenless development relays also
+  fail closed unless explicitly enabled with
+  `C2C_RELAY_ALLOW_UNSIGNED_INBOX=1`.
+  (`a2266950`, `8d3f9ad5`, `dcbe8783`)
+
+- **Mobile relay-binding revocation now requires a signed owner proof.**
+  Revocations verify the phone or machine owner key, timestamp, nonce, and
+  signature; replay nonces are persisted, isolated from pre-auth request
+  nonces, and expired safely.
+  (`b63084b1`, `61bf51d3`, `72c0e6fa`, `2fdbe82f`, `f2a9c6fe`, `e159b4dd`)
+
+- **Hook-based MCP registration preserves the alias established at session
+  start.** This fixes the hook/MCP identity split that could make the announced
+  alias unreachable, while avoiding registration and automatic room joins when
+  an inherited session ID belongs to a different client type.
+  (`37ebb038`, `78231f67`, `7f6c3d92`, `5fdba7b2`, `bbf2e583`)
+
+- **Session aliases are now sticky.** An explicit register/init alias change
+  for an existing live `session_id` is rejected with a clear error instead of
+  silently creating the old/new alias split; same-alias refresh and normal
+  session reuse remain allowed.
+  (`df3442dd`, `43332de7`, `8ac0b8d7`)
+
+- **Generated agent aliases use a larger, curated pool.** The pool grows from
+  131 to 1,439 words, with a data-file source of truth, generated-code drift
+  checks, and a dedicated easy subset.
+  (`ad79cb10`, `ccd1c602`, `f8db288e`, `409aa3fe`, `6af97b0c`, `8d2964bd`)
+
+- **Public and unlisted room-history readability is now a persisted,
+  member-controlled policy.** `c2c relay rooms set-history-public` performs a
+  signed member-authorized update. Anonymous history reads require both a
+  listed room and this setting; gated/private rooms cannot be opened, and a
+  privacy downgrade clears it. The policy persists through SQLite and
+  in-memory-relay restarts and fails closed on corrupt metadata.
+  (`0117418b`, `506d7ffc`, `91e60eb0`, `e541b4da`, `17cabb89`, `19719242`)
+
+### Claude and Codex delivery
+
+- **Claude Code gains lifecycle hooks and full mid-turn delivery.**
+  `c2c install claude` now installs `c2c hook claude` for SessionStart and
+  SessionEnd. The hook registers/refreshes vanilla sessions, updates the `/c2c`
+  skill, supplies cold-boot/post-compact context, drains queued messages, and
+  avoids deregistering managed identities. PostToolUse delivers full
+  non-deferrable messages by default; the Stop hook fully drains at a turn
+  boundary, and `c2c monitor` emits each full burst message rather than a
+  collapsed preview. Claude startup now shows the session identity.
+  (`9631887f`, `215c2ba4`, `ead22131`, `b808c7f9`, `30c2cd35`, `8ce4cbc9`)
+
+- **Vanilla Claude and Codex hooks now locate the canonical repo broker even
+  without environment configuration.** This closes the delivery gap where
+  local DMs remained queued for a non-managed session despite the hook firing.
+  (`3c45bcce`, `b04adbd2`)
+
+- **Codex hooks are the supported delivery path.** Removed the obsolete
+  `--xml-input-fd` capability/probe, fd wiring, and old deliver-watch install
+  scripts after upstream Codex removed that option. Fresh managed starts pass
+  their kickoff through Codex's positional prompt; `c2c instances` reports
+  honest `hooks`/`unavailable` delivery modes; uninstall cleans stale hook and
+  AGENTS.md blocks. Codex now receives the embedded `/c2c` skill at install and
+  refreshes it at SessionStart.
+  (`8359dafe`, `e2d3f20e`, `ca4ea838`, `afb8c646`)
+
+- **Idle Codex sessions can wake safely when running in tmux or herdr.**
+  Registration captures the pane target, and the new wake injector/watch path
+  sends only a nudge on inbox growth—the regular hook performs the actual
+  drain, so the injector never double-delivers. Managed Codex reports
+  `hooks+wake` when eligible; vanilla sessions can use `c2c deliver wake-watch`.
+  Follow-up live fixes select the innermost target, resolve the canonical
+  broker, recognise herdr's JSON status, make tmux Enter reliable, and add a
+  configurable 0.35-second nudge/Enter delay.
+  (`380d7196`, `7305b847`, `a7bf77d8`, `f31c199c`, `66ae8f65`, `e81e378e`,
+  `92ce9a92`, `c0bcd112`, `b4493ac4`)
+
+- **Managed Codex wake also works after resume.** The wake sidecar now follows
+  the hook-registered conversation identity (rather than its stale instance
+  name), re-resolves on each watch attempt to handle startup races, and matches
+  only the effective innermost tmux/herdr target to avoid cross-wiring panes.
+  Injection targets are also bound to the Codex session so stale panes cannot
+  receive another session's nudge.
+  (`05707059`, `9bd2a2eb`, `534e8e85`, `76084de3`, `efab96e3`)
+
+- **Codex app-server delivery is live-supervised.** The managed deliver loop is
+  lifecycle-bound to the authenticated app-server/TUI, reports attachment and
+  fallback status consistently, and has live E2E plus a stability soak.
+  (`7c60353d`, `14ec5ca6`, `7447ba37`)
+
+- **Vanilla Codex sessions receive a throttled app-server suggestion.** The
+  SessionStart hook periodically points users toward `c2c new codex` for
+  arrival-time delivery, suppresses the tip for managed/app-server sessions,
+  persists its counter, and supports `C2C_CODEX_APPSERVER_NUDGE_EVERY` (with
+  non-positive values disabling it). The nudge is best-effort and never fails
+  a turn.
+  (`546d3de2`, `c9ca0b20`, `d68a3127`, `a7df6653`)
+
+- **Managed Codex hooks no longer create a second identity.** The hook adopts
+  the launcher registration, becomes identity-only for app-server sessions,
+  and leaves repo/global inbox delivery to the ingress loop. This prevents
+  nested-session theft and wake-target overwrites while preserving hook
+  fallback for non-app-server Codex.
+  (`e719c8ae`, `1a12090f`, `2ac55d17`, `f9d21baa`, `c216126d`)
+
+- **Codex delivery diagnostics fail closed on degraded app-server state.**
+  `c2c doctor`/health report “degraded: no thread loaded” rather than claiming
+  live delivery when the app-server unit is not attached.
+  (`fe0d8ff8`, `6622e6c3`, `90f84513`, `5ef85eae`, `e3bea3cf`)
+
+- **Codex integration defaults are less surprising.** `c2c install codex`
+  makes MCP opt-in rather than installing it by default; native client
+  detection prevents Claude sessions receiving an OpenCode-style alias; and
+  burst Codex post-tool hooks are debounced race-safely.
+  (`feda6012`, `7cfbd839`, `da66ac43`, `a79ce926`, `d2e42133`)
+
+### Install, update, and operations
+
+- **Agents can inspect recent changes with `c2c changelog`.** The command reads
+  canonical embedded entries, supports `--since`, `--all`, `--json`, and
+  fixture-gated background fetch; Claude/Codex SessionStart hooks can show a
+  bounded, work-trigger-safe summary once per version and remember the last
+  shown version per client.
+  (`7651712e`, `32cbd7f6`, `d953b610`, `2746ff76`, `7b9a3702`)
+
+- **Client command passthrough is consistent.** `c2c start`/`new` forwards
+  `--`-delimited options across clients, and `c2c start pty -- <cmd>` now needs
+  only one separator instead of the accidental double-`--` form.
+  (`6c3d583d`, `6bca7af7`, `192f3631`, `ce50ea6b`)
+
+- **Bare `/c2c` invocation now onboards instead of stalling.** With no other
+  instruction, the skill initializes as needed, prints whoami/list/inbox/room
+  orientation, and waits for the next task.
+  (`261c1c4a`, `58d2b08a`)
+
+- **Native client detection recognizes Grok and Cursor Agent.** These sessions
+  no longer receive a misleading Codex alias prefix; registration and
+  onboarding preserve the detected client identity.
+  (`74f7e6d1`)
+
+- **The Codex skill now points users to managed arrival-time delivery.** Its
+  guidance recommends `c2c new codex` (and the `cx` alias) for app-server
+  sessions instead of implying that vanilla hook delivery is arrival-time.
+  (`5ac6fd1f`, `97eafa41`, `0b36adba`)
+
+- **Grok is now a CLI-first peer.** `c2c install grok` installs generated c2c
+  skills plus SessionStart/SessionEnd hooks for automatic registration and
+  identity refresh; its primary inbound receive path is `c2c monitor`.
+  Installation writes a PATH-stable hook command, and `c2c uninstall grok`
+  removes the installed component.
+  (`de15eda5`, `bd2b5a41`, `b54cb14c`, `ca47f119`)
+
+- **Client/MCP installation is now consent-based.** Bare `c2c install` and
+  `c2c install all` install the binary surface only; configuring client
+  integrations requires either the deliberate `c2c install <client>` command
+  or `c2c install all --with-clients`. `c2c init --with-mcp` remains explicit.
+  (`ca5001ac`, `40ace4ca`, `1d3664aa`)
+
+- **Deprecated user-facing Python setup, configure, install, and MCP wrappers
+  now refuse by default.** Their errors point to the canonical OCaml `c2c`
+  binary; `C2C_ALLOW_PYTHON_LEGACY=1` remains solely as a test/legacy escape
+  hatch. Containers and user documentation now use the OCaml binaries.
+  (`ca5001ac`, `40ace4ca`, `de04d7e2`, `8a8b28ab`)
+
+- **`c2c self-update` preserves how c2c was installed.** npm, pnpm, and bun
+  installs delegate to their package manager instead of pretending to be a
+  standalone binary update; JSON output is consistently emitted as one
+  document.
+  (`f21f1c6b`, `52fd2562`, `14836864`)
+
+- **`just install-all` once again installs the OCaml stop-hook binary after
+  cleaning an older copy.** (`14aed4b3`)
+
+- **Concurrent Dune worktrees now share a machine-wide build gate and cache.**
+  Build, test, install, and clean recipes use a dynamically allocated global
+  slot lock (`C2C_DUNE_GLOBAL_SLOTS`, default 1), retain per-worktree locking,
+  and enable Dune's hardlink cache by default.
+  (`ebdfdc5c`, `007a1bd5`, `f045ac32`)
+
+- **Wake injection is observable.** Broker logs now use explicit
+  `wake_inject` and `wake_inject_error` event names for review and operations
+  tooling. (`1e19baff`)
+
+### Documentation and operator guidance
+
+- Refreshed the public relay/connect golden path, command reference, client
+  delivery material, install/release instructions, cross-machine addressing,
+  monitor JSON guidance, and Codex caveats to match current behaviour.
+- Removed documentation for the never-shipped `c2c relay rooms knock` family
+  and corrected the loopback walkthrough so it does not ask users to self-send.
+- Added current operational guidance for Claude lifecycle hooks, full delivery,
+  Codex hooks/wake, schema v1, relay state, package-manager self-update, and
+  the public-relay exposure boundary.
+- The relay landing page now derives its authentication copy from the enforced
+  route classifications, preventing documentation drift about public listing,
+  room visibility, and protected endpoints.
+  (`4a97faef`, `43cac304`, `33e08705`, `12119367`, plus the post-release docs
+  audit and feature-specific documentation commits; `994caef9`, `bd2d9d69`)
 
 ## 0.10.0
 

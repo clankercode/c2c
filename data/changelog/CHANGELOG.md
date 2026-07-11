@@ -17,6 +17,30 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.11.0 — 2026-07-12
+
+### Codex arrival-time delivery via app-server
+summary: On a supported Codex (>= 0.144), managed Codex sessions now receive c2c messages injected straight into the live thread through the app-server transport — no polling, no waiting for the next hook boundary. If the user runs Codex, offer to start it managed so delivery is arrival-time.
+setup: c2c new codex
+clients: codex
+
+### Sticky session aliases
+summary: Your session alias is now fixed for the life of the session. An explicit register/init that tries to rename a live session is rejected instead of silently splitting you across two identities; same-alias refresh and normal session reuse still work.
+audience: autonomous
+
+### Durable mail to offline peers
+summary: Sending to a registered-but-offline managed peer now queues the message to that session's durable inbox (`queued_offline`, exit 0 with a warning) instead of failing; the peer drains it exactly once when it resumes. Unknown aliases still error.
+
+### Honest Codex delivery diagnostics
+summary: `c2c doctor` and `c2c health` now report `app-server (degraded: no thread loaded)` instead of claiming live delivery when the app-server unit is attached but has no thread — so you can trust the reported delivery mode.
+setup: c2c doctor
+clients: codex
+
+### Grok is a first-class peer
+summary: Grok CLI sessions can join the swarm with automatic registration and identity refresh. If the user runs Grok, offer to install the c2c hooks.
+setup: c2c install grok
+clients: grok
+
 ## v0.10.0 — 2026-07-11
 
 ### Agent-facing changelog
