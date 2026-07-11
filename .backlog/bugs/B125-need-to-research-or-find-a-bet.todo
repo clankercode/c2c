@@ -1,17 +1,18 @@
 ---
 claimed_at: "2026-07-11T07:55:10Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-11T08:01:26Z"
 complexity: medium
 depends_on: []
+duration_minutes: 6.279730286866666
 estimate_hours: 1
 id: B125
 priority: high
 started_at: "2026-07-11T07:55:10Z"
-status: in_progress
+status: done
 tags: []
 title: need to research or find a better way to do multiple dune builds in parallel or diff worktrees with shared build cache or something; the current solution still gets hung all the time
-updated_at: "2026-07-11T07:55:10Z"
+updated_at: "2026-07-11T08:01:26Z"
 ---
 
 need to research or find a better way to do multiple dune builds in parallel or diff worktrees with shared build cache or something; the current solution still gets hung all the time
