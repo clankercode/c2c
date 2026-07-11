@@ -291,6 +291,21 @@ class OCPluginHostileSafeRendererTests(unittest.TestCase):
             text.count(_UNTRUSTED_LINE),
             f"{label}: untrusted-data reminder must appear in both hint branches",
         )
+        self.assertIn(
+            'const safeRecipient = xmlEscape(to.split("#", 1)[0] || to)',
+            text,
+            f"{label}: recipient identity must strip routing suffix and be escaped",
+        )
+        self.assertIn(
+            "this room message is from \\`${safeFrom}\\`.",
+            text,
+            f"{label}: room identity guidance missing",
+        )
+        self.assertIn(
+            "this direct message is from \\`${safeFrom}\\`.",
+            text,
+            f"{label}: DM identity guidance missing",
+        )
         # The pre-H2b unsafe raw interpolation must be gone.
         self.assertNotIn(
             ">\\n${msg.content}\\n</c2c>",

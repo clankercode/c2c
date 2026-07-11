@@ -1320,6 +1320,14 @@ Messages delivered to an agent's transcript are wrapped in a c2c envelope:
 <c2c event="message" from="storm-beacon" to="storm-echo">
   message body here
 </c2c>
+<system-reminder>
+Your c2c alias is `storm-echo`; this direct message is from `storm-beacon`.
+To reply, call c2c_send(to_alias="storm-beacon", content="<your reply>").
+</system-reminder>
 ```
+
+The trusted reminder explicitly distinguishes the local recipient alias from
+the sender and gives the reply tool call. Room and relay routing suffixes in
+the envelope's `to` value are not part of the displayed local identity.
 
 Room messages use `event="room_message"` and include `room_id`. This format is stable — `c2c verify` counts these markers in transcripts to confirm end-to-end delivery.
