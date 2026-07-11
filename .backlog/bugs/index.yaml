@@ -134,3 +134,4 @@ bugs:
     - file: B135-alias-rename-claude-quip-neura.todo
     - file: B136-codex-vanilla-sessions-occasio.todo
     - file: B137-codex-frontend-hook-self-regis.todo
+    - file: B138-c2c-doctor-overclaims-live-app.todo

@@ -1,0 +1,13 @@
+---
+complexity: low
+created_at: "2026-07-11T16:20:42Z"
+depends_on: []
+estimate_hours: 1
+id: B138
+priority: low
+status: pending
+tags: []
+title: c2c doctor overclaims LIVE app-server delivery in the degraded no-thread-loaded case
+updated_at: "2026-07-11T16:20:42Z"
+---
+c2c doctor/health classifies an 'online-attached' app-server codex session as LIVE managed delivery even when the deliver loop is DEGRADED because no frontend thread ever loaded (C2c_codex_deliver_loop outcome.degraded=true, thread_id=None). The degraded flag is runtime-only and not persisted where the doctor (which reads persisted state) can see it. Fix: persist the degraded/thread-loaded signal (e.g. into the instance/registration state the doctor reads) and surface 'app-server (degraded: no thread loaded)' with remediation instead of a bare LIVE. Found in B131 opus review (deferred out-of-scope there).
