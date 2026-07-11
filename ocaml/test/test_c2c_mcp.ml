@@ -4841,6 +4841,17 @@ let test_sweep_reaps_expired_codex_hook_auto_registration () =
 
 let test_auto_register_startup_redelivers_dead_letter_messages () =
   with_temp_dir (fun dir ->
+      (* Force offline-mail TTL off so sweep still dead-letters non-empty
+         dead-session inboxes (B127 default is 7d hold for resume drain).
+         This test exercises the dead-letter → auto-register redelivery path. *)
+      let prev_ttl = Sys.getenv_opt "C2C_OFFLINE_MAIL_TTL_S" in
+      Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "0.0";
+      Fun.protect
+        ~finally:(fun () ->
+          match prev_ttl with
+          | None -> (try Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "" with _ -> ())
+          | Some v -> Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" v)
+        (fun () ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       let dead = dead_pid () in
       C2c_mcp.Broker.register broker
@@ -4890,7 +4901,7 @@ let test_auto_register_startup_redelivers_dead_letter_messages () =
                 !lines)
           in
           check int "redelivered records removed from dead-letter" 0
-            (List.length remaining)))
+            (List.length remaining))))
 
 let test_register_evicts_prior_reg_with_same_alias () =
   with_temp_dir (fun dir ->
@@ -14147,6 +14158,16 @@ let test_stop_self_handler_happy_path () =
    dropped_regs and deleted_inboxes matching what Broker.sweep produces. *)
 let test_sweep_handler_drops_dead_reg () =
   with_temp_dir (fun dir ->
+      (* B127: default offline-mail TTL holds non-empty dead inboxes. This
+         test wants destructive sweep → dead-letter; force TTL off. *)
+      let prev_ttl = Sys.getenv_opt "C2C_OFFLINE_MAIL_TTL_S" in
+      Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "0.0";
+      Fun.protect
+        ~finally:(fun () ->
+          match prev_ttl with
+          | None -> (try Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "" with _ -> ())
+          | Some v -> Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" v)
+        (fun () ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       (* Register a dead session (pid that will never be alive). *)
       let dead = 0x7f00_0000 in
@@ -14188,7 +14209,7 @@ let test_sweep_handler_drops_dead_reg () =
           in
           check int "one deleted inbox via handler" 1 (List.length deleted);
           check string "deleted inbox sid" "session-dead-sweep"
-            (List.hd deleted |> to_string))
+            (List.hd deleted |> to_string)))
 
 let test_set_compact_marks_session () =
   with_temp_dir (fun dir ->
