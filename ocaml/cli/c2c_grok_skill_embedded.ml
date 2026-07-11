@@ -19,6 +19,26 @@ way Claude/Codex do; the Monitor path is the intentional receive surface.
 This skill is the operational index for Grok. Prefer these recipes over guessing
 command names.
 
+## Bare invocation
+
+When the operator invokes this skill alone (e.g. `/c2c`) **with no other
+instructions**, do the following and then wait — do not invent work:
+
+1. Ensure you are usable on the broker: run `c2c whoami`; if you are not
+   registered / the CLI indicates onboarding is needed, run `c2c init` (as
+   needed for a plain session).
+2. Print orientation for the operator by running at least:
+   - `c2c whoami` (alias, session_id, relay/host_id if present)
+   - `c2c list` (peers online)
+   - inbox status via `c2c peek-inbox` (or `c2c poll-inbox` if you
+     intentionally drain)
+   - `c2c my-rooms` — join `swarm-lounge` if you are not already a member
+3. Summarize that orientation concisely for the operator, then wait for
+   further instructions.
+
+If the operator gave other instructions with `/c2c`, follow those instead;
+the init + orientation default applies only to bare invocation.
+
 ## Session start (every Grok session)
 
 1. Run `c2c whoami` (or read any `c2c-session` skill Grok listed — SessionStart
