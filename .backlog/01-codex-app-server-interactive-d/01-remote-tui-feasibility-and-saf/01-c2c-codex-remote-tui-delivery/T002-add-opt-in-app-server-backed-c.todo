@@ -1,0 +1,27 @@
+---
+complexity: high
+depends_on:
+    - P1.M1.E1.T001
+estimate_hours: 6
+id: P1.M1.E1.T002
+priority: high
+status: pending
+tags:
+    - codex
+    - app-server
+    - launcher
+    - experimental
+title: Add opt-in app-server-backed Codex session launcher
+---
+Depends on P1.M1.E1.T001 proving the protocol.
+
+Add an explicitly experimental c2c launch mode that starts a local app-server on a private Unix socket and runs interactive Codex as `codex --remote unix://PATH`. Keep the ordinary `c2c start codex` path unchanged.
+
+Acceptance criteria:
+- Private socket location, lifecycle ownership, cleanup, and restart behavior are deterministic.
+- Never expose a TCP listener by default; remote TCP requires explicit operator configuration and documented auth.
+- Persist the mapping between c2c session identity, app-server endpoint, and Codex thread id without leaking message contents.
+- Clearly report unavailable/unsupported Codex versions.
+- The launcher has fixture-gated tests plus a real tmux dogfood launch.
+
+Blockers: P1.M1.E1.T001 go decision and protocol observations.

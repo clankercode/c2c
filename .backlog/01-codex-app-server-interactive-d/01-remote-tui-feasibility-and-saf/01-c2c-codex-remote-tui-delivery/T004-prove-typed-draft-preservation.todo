@@ -1,0 +1,29 @@
+---
+complexity: high
+depends_on:
+    - P1.M1.E1.T002
+    - P1.M1.E1.T003
+estimate_hours: 6
+id: P1.M1.E1.T004
+priority: critical
+status: pending
+tags:
+    - codex
+    - tmux
+    - e2e
+    - ux
+    - delivery
+title: Prove typed-draft preservation in real tmux Codex sessions
+---
+Depends on the remote launcher and passive ingress adapter.
+
+Build a real-tmux E2E harness using existing scripts. It must deliberately leave non-empty text in the Codex composer, send inbound c2c mail, and inspect behavior before and after submit.
+
+Acceptance criteria:
+- The exact composer text and cursor position are unchanged when a message arrives.
+- No turn is started, cancelled, or steered merely by message arrival.
+- The passive message becomes available to Codex at a validated lifecycle point, and multi-message ordering/dedupe is checked.
+- Cover idle, actively-generating, disconnected app-server, and ordinary non-remote Codex fallback.
+- Capture reproducible tmux receipts and run the tests inside the slice worktree.
+
+Blockers: P1.M1.E1.T002 and P1.M1.E1.T003.

@@ -1,0 +1,18 @@
+complexity: medium
+depends_on: []
+estimate_hours: 32
+id: P1
+locked: false
+milestones:
+    - complexity: high
+      depends_on: []
+      description: Prove the documented app-server plus codex --remote path and establish a non-interrupting c2c ingress contract before any rollout.
+      estimate_hours: 32
+      id: M1
+      locked: false
+      name: Remote TUI feasibility and safe ingress
+      path: 01-remote-tui-feasibility-and-saf
+      status: pending
+name: Codex app-server interactive delivery
+status: pending
+weeks: 3

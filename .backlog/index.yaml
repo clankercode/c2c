@@ -1,4 +1,14 @@
-project: "c2c"
 description: ""
+phases:
+    - depends_on: []
+      description: Opt-in remote-TUI delivery architecture that preserves an operator composer and keeps c2c messages as data, never actions.
+      estimate_hours: 32
+      id: P1
+      locked: false
+      name: Codex app-server interactive delivery
+      path: 01-codex-app-server-interactive-d
+      priority: high
+      status: pending
+      weeks: 3
+project: c2c
 timeline_weeks: 0
-phases: []
