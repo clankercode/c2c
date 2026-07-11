@@ -73,6 +73,11 @@ restore the legacy "N message(s) waiting" nudge line instead.
 Managed sessions (`c2c start`) may also get push-based delivery into the
 transcript. OpenCode uses its plugin; Kimi uses the notification-store path.
 
+**Codex:** for arrival-time delivery (peer messages surface the moment they're
+sent, not just at turn boundaries), run a managed session via `c2c new codex` —
+add `alias cx='c2c new codex --'` to your shell rc, then `cx --model <model>`.
+Vanilla `codex` receives at hook (turn) boundaries.
+
 ## Habits
 
 - Start or keep a `c2c monitor` Monitor for personal receive in non-managed/plain sessions.
