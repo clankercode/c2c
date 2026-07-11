@@ -73,7 +73,7 @@ Probed directly this slice (scratchpad `probe_status.py`, isolated CODEX_HOME):
 - App-server does NOT self-serialize (T004 Finding B) → the dispatcher owns the
   queue-if-active gate.
 
-## State-matrix — unit tests (fixture-gated, no live socket): 12/12 PASS
+## State-matrix — unit tests (fixture-gated, no live socket): 14/14 PASS
 
 `ocaml/test/test_c2c_codex_autoturn.ml` (scripted T003 inject client + scripted
 T007 turn client):
@@ -94,7 +94,7 @@ T007 turn client):
 | metrics hygiene | pass_outcome JSON leaks no body (`SECRET-BODY-XYZ`), no raw managed id; recipient is `rcpt-…` | PASS |
 
 Run: `dune exec --root "$PWD" ocaml/test/test_c2c_codex_autoturn.exe` (via
-`scripts/dune-build-locked.sh exec …`) → `Test Successful … 12 tests run`.
+`scripts/dune-build-locked.sh exec …`) → `Test Successful … 14 tests run` (incl. `remote provenance`, `canonical/#-form fail-closed`, `unknown thread status fail-closed`).
 
 ## B098 approval-isolation — 3/3 PASS (incl. positive control)
 
@@ -111,7 +111,18 @@ approval verdict path; the turn only makes injected DATA model-visible.
 Run: `dune exec --root "$PWD" ocaml/cli/test_c2c_codex_autoturn_b098.exe` →
 `Test Successful … 3 tests run`.
 
-## Live tmux E2E — real codex 0.144.1, gpt-5.3-codex-spark: VERDICT PASS
+## Provenance is FAIL-CLOSED (coordinator steer)
+
+`default_provenance` treats a sender as `Local` ONLY when `from_alias` carries no
+routing marker at all; ANY `@host` (relay-forwarded — exactly the broker's own
+`is_remote_alias` marker, `String.exists ((=) '@')`) OR `#` (canonical
+cross-host/room form) → `Remote` → durable+queued, never auto-turned. This is
+stricter than a bare `@` test so a relay/canonical-form sender can never slip
+into an auto-turn; anything ambiguous fails closed to queued. Tested by
+`remote provenance` (`peer@relay-a`) and `canonical/#-form sender fails closed`
+(`peer#somerepo`) unit rows.
+
+## Live tmux E2E (smoke, 2 msgs) — real codex 0.144.1, gpt-5.3-codex-spark: VERDICT PASS
 
 Harness `scripts/codex-autoturn-e2e.py` (isolated CODEX_HOME with copied
 `auth.json` + minimal `config.toml`, NO user hooks; disposable broker root)
@@ -144,13 +155,71 @@ Draft-safety of a turn (that it cannot clobber a live composer draft) is proven
 by **T004** (linked above) — not re-proven here (this slice adds no new draft
 risk: the same app-server turn seam T004 exercised).
 
+## SOAK / stability E2E — real codex 0.144.1, gpt-5.3-codex-spark: VERDICT PASS
+
+Headline stability evidence (coordinator/Max requirement). Harness
+`scripts/codex-autoturn-soak.py` drives a SUSTAINED back-and-forth through the
+REAL dispatcher: 15 rounds each direction (peer → managed codex auto-turns and
+the model RESPONDS → thread returns to idle → next round), with 3 BURST rounds
+(5, 10, 14) that inject 3 messages — one fired, then 2 more arriving mid-turn —
+to test batching/serialization UNDER LOAD. Cumulative inbox (broker never
+drains) so idempotency is exercised on every pass. Exact command:
+
+```sh
+SOAK_ROUNDS=15 SOAK_BURST_ROUNDS=5,10,14 python3 scripts/codex-autoturn-soak.py
+```
+
+Actual run (thread `019f515a-0b67-7f10-985e-56fc042a25fa`):
+
+- **rounds_ok = 15/15**; `dropped_or_stuck = []` — every message auto-turned and
+  the model responded (thread returned to idle each round); none stuck queued.
+- **Serialization under load:** every burst round (5, 10, 14) reported
+  `caught_active=True` (a REAL active window observed) + `mid_turn_blocked=True`
+  (a pass while the turn was active fired NO second turn) + the two mid-turn
+  arrivals batched into ONE follow-up turn (`extra_fired=[('s-rN-1','s-rN-2')]`).
+- **18 turns fired, 18 DISTINCT turn ids** (no overlapping/duplicate turns);
+  `dup_turn_ids = []`; `duplicate_batched_msg = []` — no message turned twice.
+- **Idempotency at rest:** a final 2-pass re-run fired ZERO extra turns
+  (`rerun_extra_turns = []`).
+- **No drop + ordering:** the final echo turn listed **21/21** `C2C_SOAK_*`
+  markers (`all_markers_seen=true`, `missing=[]`) in send order
+  (`ordering_ok=true`).
+- **No resource leak:** app-server proc-group child count + open-fd count were
+  `{before:[2,20], after:[2,20]}` — zero growth over 18 turns + ~60 transient WS
+  connections (each inject/turn/status call opens+closes one connection).
+  `leak=false`.
+- **No latency creep:** single-message rounds stayed ~1.6–3.1 s throughout
+  (r1 3.11, r8 1.63, r15 1.87); burst rounds 4.8–7.5 s. No monotonic growth.
+- **No crash / wedge / ledger corruption** across the whole run; clean teardown
+  (owned app-server pid alive_before=True/after=False; CODEX_HOME + broker_root
+  removed; pre-existing codex pids untouched; no orphaned app-server).
+
+A short 3-round variant (`SOAK_ROUNDS=3 SOAK_BURST_ROUNDS=2`) is the CI-fast
+smoke of the same harness (also PASS).
+
+## Review round — codex (`/ccc-review-cx`, gpt-5.6-terra xhigh)
+
+**Round 1: FAIL → fixed.** One legitimate BLOCKER: the pre-fire serialization
+gate at `c2c_codex_autoturn.ml` only blocked on `` `Active ``, so an `` `Unknown ``
+thread status (transient status-read failure / malformed-or-error response from
+`real_thread_status`) fell through to `turn/start` — able to start a turn
+concurrent with an in-flight one (the prohibited case). Fixed in a new commit
+(never `--amend`): the gate now fires **ONLY on explicit `` `Idle ``**; both
+`` `Active `` and `` `Unknown `` queue (`queued_reason` `active_turn` /
+`status_unknown`, fail-closed) and retry on a later confirmable pass. Added
+regression test `test_unknown_status_fails_closed` (asserts zero starts on
+`` `Unknown ``, exactly one after `` `Idle `` is confirmed). This mirrors
+`advance_active`, which already kept a running batch blocked on
+`` `Active | `Unknown ``. **Round 2: re-review → PASS.**
+
 ## Verification (return codes)
 
 | command | rc | notes |
 |---|---|---|
 | `just build` | 0 | |
 | `just check` | 1 | **sole failure PRE-EXISTING + unrelated**: `git diff --exit-code -- .collab/skills .opencode/skills .codex/skills …` reports the Grok/Pi skill-codegen drift in `.codex`/`.opencode/skills/c2c/SKILL.md` (identical to the T001–T004 receipts' note). This slice touched NO skill files; the later check steps (`check-broker-log-catalog.sh` rc 0, `check-connect-commands.py` rc 0, `codegen-changelog-check` rc 0, `dune build`) all pass when run individually. |
-| `dune exec --root "$PWD" ocaml/test/test_c2c_codex_autoturn.exe` | 0 | 12/12 |
+| `dune exec --root "$PWD" ocaml/test/test_c2c_codex_autoturn.exe` | 0 | 14/14 |
+| `python3 scripts/codex-autoturn-soak.py` (SOAK_ROUNDS=15) | 0 | soak VERDICT PASS (must run inside tmux) |
 | `dune exec --root "$PWD" ocaml/cli/test_c2c_codex_autoturn_b098.exe` | 0 | 3/3 |
 | `dune exec --root "$PWD" ocaml/cli/test_c2c_approval_paths.exe` | 0 | existing approval suite still green |
 | `python3 scripts/codex-autoturn-e2e.py` | 0 | live E2E VERDICT PASS (must run inside tmux) |
