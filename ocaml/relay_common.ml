@@ -166,6 +166,30 @@ let canonical_visibility_or_raw v =
 let format_room_roster_address ~alias ~room_id =
   Printf.sprintf "%s#%s@relay" alias room_id
 
+(* B118: canonical relay room-id grammar — the SAME grammar the local broker
+   enforces (C2c_broker.valid_room_id): a non-empty string of
+   [A-Za-z0-9_-]. This deliberately excludes both address delimiters `#`
+   and `@`, which guarantees that a [format_room_roster_address] output is
+   unambiguous: the sole `#` separates alias from room id and the sole `@`
+   introduces the host, so the room id can never inject an extra delimiter
+   that would defeat the recipient parser. The relay room-op boundary
+   (handle_join_room) validates against this so an out-of-grammar room id
+   can never enter the anonymous directory. (An all-lowercase-12-hex room id
+   is *within* this grammar and still round-trips: the canonical reply
+   classifier [C2c_mcp_helpers.is_room_recipient] runs on the FULL
+   host-attached address `alias#<12hex>@relay`, whose `#` suffix
+   `<12hex>@relay` is not a bare 12-hex host hash, so it classifies as a
+   room, not a cross-host DM.) *)
+let valid_relay_room_id room_id =
+  room_id <> ""
+  && String.for_all
+       (fun c ->
+          (c >= 'a' && c <= 'z')
+          || (c >= 'A' && c <= 'Z')
+          || (c >= '0' && c <= '9')
+          || c = '-' || c = '_')
+       room_id
+
 (* S5a: Mobile pair token signing context *)
 let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"
 

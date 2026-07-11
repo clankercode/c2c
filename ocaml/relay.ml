@@ -3390,6 +3390,15 @@ end = struct
     in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
+    else if not (valid_relay_room_id room_id) then
+      (* B118: enforce the canonical room-id grammar ([A-Za-z0-9_-], no `#`/`@`)
+         at the room-op boundary — matches the local broker's valid_room_id.
+         This keeps the anonymous /list_rooms directory address
+         (alias#room@relay) unambiguous: an out-of-grammar room id could
+         otherwise inject an extra `#`/`@` delimiter that defeats the
+         recipient parser. *)
+      respond_bad_request (json_error_str err_bad_request
+        "room_id must match [A-Za-z0-9_-] and be non-empty")
     else match requested_visibility with
     | None ->
       respond_bad_request (json_error_str err_bad_request

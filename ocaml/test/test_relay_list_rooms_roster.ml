@@ -164,28 +164,53 @@ let test_sqlite_no_metadata_leak () =
 
 (* --- 4. Round-trip through the existing recipient parser --- *)
 
-let test_address_round_trips () =
-  let addr =
-    Relay.format_room_roster_address ~alias:"alice" ~room_id:"b118-pub" in
-  check string "emitted address" "alice#b118-pub@relay" addr;
-  (* split host: alias#room@relay -> ("alice#b118-pub", Some "relay") *)
+(* Round-trip a single (alias, room_id) pair through BOTH parse orders:
+   (a) the canonical reply classifier [is_room_recipient] on the FULL
+       host-attached directory address (the order c2c_utils /
+       schema_v1_msg_type_of_recipient uses to route a room reply); and
+   (b) host-strip-then-classify (the @host-aware router order), which must
+       leave `alias#room` and recover (alias, room_id) via split '#'.
+   Both must agree that the address is a room addressed to (alias, room_id). *)
+let assert_round_trip ~alias ~room_id =
+  let addr = Relay.format_room_roster_address ~alias ~room_id in
+  check string "emitted address"
+    (Printf.sprintf "%s#%s@relay" alias room_id) addr;
+  (* (a) canonical classifier on the FULL address -> room, never a DM. This
+     is the case that matters for a 12-hex room id: the `#` suffix
+     `<room>@relay` is not a bare 12-hex host hash. *)
+  check bool ("full address is a room recipient (" ^ room_id ^ ")")
+    true (C2c_mcp_helpers.is_room_recipient ~to_alias:addr);
+  (* (b) host-strip order *)
   let base, host = Relay_host_routing.split_alias_host addr in
-  check string "host stripped leaves alias#room" "alice#b118-pub" base;
+  check string "host stripped leaves alias#room"
+    (Printf.sprintf "%s#%s" alias room_id) base;
   check (option string) "host is literal relay" (Some "relay") host;
-  (* the "relay" host is accepted regardless of the relay's own self_host *)
   check bool "host_acceptable (self_host None)" true
     (Relay_host_routing.host_acceptable ~self_host:None host);
   check bool "host_acceptable (self_host Some other)" true
     (Relay_host_routing.host_acceptable ~self_host:(Some "some.relay.example") host);
-  (* the base classifies as a room recipient, not a DM *)
-  check bool "base is a room recipient"
-    true (C2c_mcp_helpers.is_room_recipient ~to_alias:base);
-  (* and split '#' recovers (alias, room_id) *)
-  (match String.split_on_char '#' base with
-   | [ alias; room ] ->
-     check string "recovered alias" "alice" alias;
-     check string "recovered room_id" "b118-pub" room
-   | _ -> fail "base did not split into [alias; room]")
+  (* NB: we do NOT assert is_room_recipient on the *stripped* base here. The
+     host-strip-first order is the @host-aware DM router's path, not a
+     room-reply path; and for an all-12-hex room id the shared classifier
+     treats a bare `alias#<12hex>` as a legacy host-hash DM (a pre-existing
+     property of the address scheme, not introduced by B118). Room replies
+     use the canonical full-address classifier asserted above, which is
+     unambiguous because `@relay` keeps the `#` suffix non-12-hex. *)
+  match String.split_on_char '#' base with
+  | [ a; r ] ->
+    check string "recovered alias" alias a;
+    check string "recovered room_id" room_id r
+  | _ -> fail "base did not split into [alias; room]"
+
+let test_address_round_trips () =
+  (* realistic grammar shapes: hyphen, underscore, mixed-case, digits *)
+  assert_round_trip ~alias:"alice" ~room_id:"b118-pub";
+  assert_round_trip ~alias:"lyra-quill" ~room_id:"swarm_lounge";
+  assert_round_trip ~alias:"bob" ~room_id:"Room123";
+  (* an all-lowercase 12-hex room id is within the canonical grammar; it must
+     still round-trip via the canonical full-address classifier (reviewer
+     edge case). *)
+  assert_round_trip ~alias:"carol" ~room_id:"abcdef012345"
 
 (* --- 5. Visibility filter preserved --- *)
 
@@ -263,6 +288,44 @@ let test_http_anonymous_list_rooms () =
     check bool "session_id sentinel absent" false (contains sentinel_sess);
     check bool "identity_pk sentinel absent" false (contains sentinel_pk))
 
+(* --- 7. Room-op boundary rejects out-of-grammar room ids (B118) so the
+   directory address can never carry an extra `#`/`@` delimiter. --- *)
+
+let test_http_join_rejects_bad_room_id () =
+  RTSR.with_server (fun ~base_url ~relay ->
+    let open Lwt.Infix in
+    let _ = Relay.InMemoryRelay.register relay
+        ~node_id:"n-eve" ~session_id:"s-eve" ~alias:"eve" () in
+    let join room_id =
+      RTSR.call_json ~base_url ~meth:`POST ~path:"/join_room"
+        ~body:(`Assoc [ ("alias", `String "eve"); ("room_id", `String room_id) ]) ()
+    in
+    let mentions_grammar r =
+      let re = Str.regexp_string "room_id must match" in
+      try ignore (Str.search_forward re r.RTSR.body_text 0); true
+      with Not_found -> false
+    in
+    (* a `#` in the room id would inject a second alias/room separator *)
+    join "bad#room" >>= fun r_hash ->
+    (* an `@` in the room id would collide with the host separator *)
+    join "bad@room" >>= fun r_at ->
+    (* a well-formed room id passes the grammar gate (it then fails later on
+       the room-op proof check in this signed-ops harness, i.e. NOT 400). *)
+    join "b118-ok" >|= fun r_ok ->
+    check int "join with '#' room id rejected (400)" 400 (RTSR.status_code r_hash);
+    check bool "'#' rejection cites room_id grammar" true (mentions_grammar r_hash);
+    check int "join with '@' room id rejected (400)" 400 (RTSR.status_code r_at);
+    check bool "'@' rejection cites room_id grammar" true (mentions_grammar r_at);
+    (* grammar gate fires BEFORE auth: the valid id is not a 400 grammar reject *)
+    check bool "grammar-valid room id passes grammar gate (not 400)" true
+      (RTSR.status_code r_ok <> 400);
+    (* the out-of-grammar rooms never entered the directory *)
+    let listed = Relay.InMemoryRelay.list_rooms relay in
+    check bool "bad#room not in directory" false
+      (find_room listed "bad#room" <> None);
+    check bool "bad@room not in directory" false
+      (find_room listed "bad@room" <> None))
+
 let () =
   run "test_relay_list_rooms_roster"
     [ "roster formatting", [
@@ -280,6 +343,8 @@ let () =
           test_sqlite_no_metadata_leak;
         test_case "HTTP anonymous /list_rooms formatted + no leak" `Quick
           test_http_anonymous_list_rooms;
+        test_case "room-op boundary rejects out-of-grammar room ids" `Quick
+          test_http_join_rejects_bad_room_id;
       ];
       "visibility filter", [
         test_case "InMemory public/gated listed, unlisted/private omitted"
