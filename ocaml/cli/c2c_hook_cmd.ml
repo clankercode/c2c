@@ -424,6 +424,19 @@ let hook_codex_cmd =
              installer alias hint is used only after step 2 proves a managed
              `c2c start codex` owns this payload thread; vanilla codex exec
              sessions get a fresh per-thread alias instead. *)
+       (* True when [sid] resolves to a live codex-family registration — the
+          launcher/hook already owns this identity. Guards managed-env adoption
+          so a codex subprocess that merely inherited another client's
+          C2C_MCP_SESSION_ID (e.g. a codex spawned inside managed claude) can
+          never hijack that non-codex identity. *)
+       let managed_codex_family_reg sid =
+         List.exists
+           (fun (r : C2c_mcp.registration) ->
+              r.session_id = sid
+              && (r.client_type = Some "codex-app-server"
+                  || r.client_type = Some "codex"))
+           (regs ())
+       in
        let resolved =
          let step1 =
            match payload_sid with
@@ -435,6 +448,23 @@ let hook_codex_cmd =
            | Some sid when registered sid -> Some sid
            | None -> None
            | Some _ -> None
+         in
+         (* B137: adopt the managed launcher's existing registration instead of
+            self-registering a second identity (dual-identity). A managed
+            `c2c start/new codex` frontend inherits C2C_MCP_SESSION_ID (set by
+            build_env to the managed session id under which the app-server
+            deliver loop — or a prior hook-fallback fire — already registered).
+            The payload thread-id is NOT that registered session id, and on a
+            fresh app-server start the thread->instance mapping (step2) is not
+            yet persisted, so without this step the hook would mint a duplicate
+            per-thread identity. Runs even when a payload session_id is present
+            (unlike step3), reads env ONLY (no statefile fallback), and is gated
+            on a codex-family client_type so it can only adopt a genuine managed
+            codex session. *)
+         let step_managed_env () =
+           match C2c_mcp.session_id_from_env () with
+           | Some sid when managed_codex_family_reg sid -> Some sid
+           | _ -> None
          in
           let step3 () =
             match payload_sid with
@@ -450,9 +480,12 @@ let hook_codex_cmd =
              (match step2 () with
               | Some _ as r -> r
               | None ->
-                  (match step3 () with
+                  (match step_managed_env () with
                    | Some _ as r -> r
-                   | None -> None))
+                   | None ->
+                       (match step3 () with
+                        | Some _ as r -> r
+                        | None -> None)))
        in
        let session_id, onboarded_alias =
          match resolved with
@@ -566,8 +599,24 @@ let hook_codex_cmd =
           messages, respecting sender intent. Ephemeral no-archive semantics
           are handled inside the broker drain. *)
        let full_drain = event = "SessionStart" || event = "UserPromptSubmit" in
+       (* B137: when this session's identity is an app-server-backed managed
+          codex (client_type "codex-app-server"), the C2c_codex_ingress loop
+          owns arrival-time delivery of this inbox. The hook must NOT also
+          drain it — a second drainer would race the ingress loop and steal
+          messages before they are injected. Skip delivery entirely; identity
+          was still resolved/adopted above so no duplicate registration is
+          created. Hook-fallback managed codex (client_type "codex") is
+          unaffected — hooks remain its delivery path. *)
+       let ingress_owned =
+         List.exists
+           (fun (r : C2c_mcp.registration) ->
+              r.session_id = session_id
+              && r.client_type = Some "codex-app-server")
+           (regs ())
+       in
        let repo_broker, messages =
-         if full_drain then begin
+         if ingress_owned then (Some broker, [])
+         else if full_drain then begin
            let repo_messages =
              if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then []
              else C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id

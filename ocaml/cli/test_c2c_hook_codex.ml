@@ -164,6 +164,16 @@ let register ?(pid = Some (Unix.getpid ())) ?(from_auto_gen = false) ctx
     ~client_type:(Some "codex") ~from_auto_gen ();
   b
 
+(* Register a managed app-server launcher identity: session_id = managed sid,
+   client_type = "codex-app-server" (as C2c_codex_session.run_delivery_loop
+   does). Returns the broker handle. *)
+let register_app_server ?(pid = Some (Unix.getpid ())) ctx ~session_id ~alias =
+  let b = broker ctx in
+  let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
+  C2c_mcp.Broker.register b ~session_id ~alias ~pid ~pid_start_time
+    ~client_type:(Some "codex-app-server") ();
+  b
+
 let write_codex_config_alias ctx alias =
   mkdir_p (ctx.home // ".codex");
   write_file (ctx.home // ".codex" // "config.toml")
@@ -510,6 +520,111 @@ let test_managed_session_auto_register_honors_installer_alias_hint () =
               check bool "onboarding mentions managed alias" true
                 (contains ~haystack:context ~needle:hint_alias)
           | None -> failf "expected managed onboarding output, got: %S" stdout)))
+
+(* --- B137: managed codex frontend adopts launcher alias (no dual-identity) ---
+
+   A managed `c2c start/new codex` app-server session: the launcher (deliver
+   loop) has already registered under the managed session id with client_type
+   "codex-app-server", and the stock frontend inherits C2C_MCP_SESSION_ID =
+   that managed session id. The frontend's `c2c hook codex` fires with a
+   payload session_id = codex thread-id that is NOT the registered session id
+   and (on a fresh start) has no thread->instance mapping yet. The hook must
+   ADOPT the launcher identity via C2C_MCP_SESSION_ID rather than mint a
+   second per-thread identity, AND must not drain the launcher inbox (the
+   ingress loop owns arrival-time delivery). *)
+let test_b137_managed_app_server_adopts_launcher_alias () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-b137-appserver" in
+    let thread_id = "codex-thread-b137-fresh" in
+    let launcher_alias = "zz-codex-b137-launcher" in
+    let b = register_app_server ctx ~session_id:managed_sid ~alias:launcher_alias in
+    ignore (register ctx ~session_id:"codex-b137-peer" ~alias:"zz-codex-b137-peer");
+    (* Mail addressed to the launcher identity: the ingress loop owns delivery,
+       so the hook must leave it queued. *)
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-b137-peer"
+      ~to_alias:launcher_alias ~content:"ingress owns this" ();
+    let regs_before = C2c_mcp.Broker.list_registrations (broker ctx) in
+    let rc, stdout, stderr =
+      run_hook
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", managed_sid) ]
+        ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    let regs_after = C2c_mcp.Broker.list_registrations (broker ctx) in
+    (* No second identity: nothing registered under the payload thread id. *)
+    check bool "no payload-thread fork" false
+      (List.exists
+         (fun (r : C2c_mcp.registration) -> r.session_id = thread_id)
+         regs_after);
+    (* The launcher registration is untouched and still the only one for it. *)
+    check int "exactly one registration for the managed session" 1
+      (List.length
+         (List.filter
+            (fun (r : C2c_mcp.registration) -> r.session_id = managed_sid)
+            regs_after));
+    check int "registration count unchanged" (List.length regs_before)
+      (List.length regs_after);
+    (match
+       List.find_opt
+         (fun (r : C2c_mcp.registration) -> r.session_id = managed_sid)
+         regs_after
+     with
+     | Some r ->
+         check string "launcher alias preserved" launcher_alias r.alias;
+         check (option string) "launcher client_type preserved"
+           (Some "codex-app-server") r.client_type
+     | None -> failf "launcher registration vanished (stderr %S)" stderr);
+    (* Ingress-owned: the hook must not drain the launcher inbox. *)
+    check int "launcher inbox NOT drained by hook" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
+    check bool "message body not surfaced by hook" false
+      (contains ~haystack:stdout ~needle:"ingress owns this"))
+
+(* Guard: a codex subprocess that merely inherited C2C_MCP_SESSION_ID from a
+   NON-codex managed parent (e.g. a codex spawned inside managed claude) must
+   NOT adopt that parent's identity — it self-registers a fresh codex identity
+   instead. Proves the codex-family client_type guard on managed-env adoption. *)
+let test_b137_non_codex_env_session_not_adopted () =
+  with_ctx (fun ctx ->
+    let parent_sid = "managed-b137-claude-parent" in
+    let thread_id = "codex-thread-b137-nested" in
+    let b = broker ctx in
+    let pid = Some (Unix.getpid ()) in
+    C2c_mcp.Broker.register b ~session_id:parent_sid ~alias:"zz-claude-b137-parent"
+      ~pid ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time pid)
+      ~client_type:(Some "claude") ();
+    let rc, _stdout, stderr =
+      run_hook
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", parent_sid) ]
+        ctx
+        ~payload:(payload ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    let regs = C2c_mcp.Broker.list_registrations (broker ctx) in
+    (* Did NOT adopt the claude parent: a fresh codex identity landed under the
+       payload thread id. *)
+    (match
+       List.find_opt
+         (fun (r : C2c_mcp.registration) -> r.session_id = thread_id)
+         regs
+     with
+     | Some r ->
+         check (option string) "self-registered as codex" (Some "codex")
+           r.client_type;
+         check bool "fresh generated codex alias" true
+           (alias_looks_generated_for_codex r.alias)
+     | None ->
+         failf "expected fresh codex self-registration for %s (stderr %S)"
+           thread_id stderr);
+    (* Parent claude registration is untouched (no hijack). *)
+    (match
+       List.find_opt
+         (fun (r : C2c_mcp.registration) -> r.session_id = parent_sid)
+         regs
+     with
+     | Some r -> check string "parent alias intact" "zz-claude-b137-parent" r.alias
+     | None -> fail "parent registration vanished"))
 
 let test_deferrable_held_until_turn_boundary () =
   with_ctx (fun ctx ->
@@ -887,6 +1002,10 @@ let () =
             test_vanilla_auto_register_second_thread_ignores_statefile
         ; test_case "managed auto-register honors installer alias hint" `Quick
             test_managed_session_auto_register_honors_installer_alias_hint
+        ; test_case "B137 managed app-server adopts launcher alias" `Quick
+            test_b137_managed_app_server_adopts_launcher_alias
+        ; test_case "B137 non-codex env session not adopted" `Quick
+            test_b137_non_codex_env_session_not_adopted
         ; test_case "deferrable held until turn boundary" `Quick
             test_deferrable_held_until_turn_boundary
         ; test_case "session-start wake note" `Quick test_session_start_wake_note
