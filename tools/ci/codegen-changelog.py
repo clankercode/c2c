@@ -19,12 +19,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC = REPO_ROOT / "data" / "changelog" / "CHANGELOG.md"
 OUT = REPO_ROOT / "ocaml" / "cli" / "c2c_changelog_embedded.ml"
+VERSION_ML = REPO_ROOT / "ocaml" / "version.ml"
 
 # OCaml quoted-string delimiter: {DELIM|...|DELIM}. Must be lowercase letters
 # and underscores only (no digits — OCaml rejects them). Content must not
@@ -60,6 +62,27 @@ def main() -> int:
         return 1
     md = SRC.read_text(encoding="utf-8")
     generated = render(md)
+
+    # Version <-> CHANGELOG coupling gate: the auto-show coverage check
+    # requires a `## v<Version.version>` section for the shipping version;
+    # a bumped ocaml/version.ml without a matching CHANGELOG section would
+    # make the session-start auto-show silently never fire for that upgrade.
+    version = None
+    if VERSION_ML.exists():
+        m = re.search(r'^let version = "([^"]+)"', VERSION_ML.read_text(encoding="utf-8"), re.M)
+        if m:
+            version = m.group(1)
+    if version is None:
+        print(f"error: could not read version from {VERSION_ML}", file=sys.stderr)
+        return 1
+    if not re.search(rf"^## v{re.escape(version)}(\s|$)", md, re.M):
+        print(
+            f"error: {SRC} has no '## v{version}' section for the current "
+            f"binary version (ocaml/version.ml) — add one so the "
+            f"session-start auto-show can fire for this release.",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.check:
         existing = OUT.read_text(encoding="utf-8") if OUT.exists() else ""

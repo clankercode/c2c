@@ -53,11 +53,11 @@ let changelog_cmd =
         "warning: could not refresh the remote changelog cache (offline?); \
          showing locally-available entries.\n%!"
   end;
-  let entries = C2c_changelog.merged_entries ~broker_root in
+  let all_known = C2c_changelog.merged_entries ~broker_root in
   let entries =
     match since with
-    | Some v -> C2c_changelog.entries_since ~version:v entries
-    | None -> entries
+    | Some v -> C2c_changelog.entries_since ~version:v all_known
+    | None -> all_known
   in
   let entries =
     if show_all then entries
@@ -72,12 +72,16 @@ let changelog_cmd =
   if json then
     print_json (`List (List.map C2c_changelog.entry_json entries))
   else if entries = [] then begin
-    match since with
-    | Some v ->
-        Printf.printf "No changelog entries newer than %s.\n" v
-    | None ->
-        print_string github_source_hint;
-        print_newline ()
+    (* Distinguish "no source at all" (point at GitHub) from "your filters
+       matched nothing" (source is fine — say so plainly). *)
+    if all_known = [] then begin
+      print_string github_source_hint;
+      print_newline ()
+    end
+    else
+      match since with
+      | Some v -> Printf.printf "No changelog entries newer than %s.\n" v
+      | None -> Printf.printf "No entries selected (see --all / -n).\n"
   end
   else begin
     Printf.printf "%s\n" (C2c_changelog.render_human entries)

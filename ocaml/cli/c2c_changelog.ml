@@ -70,21 +70,18 @@ let parse_header (line : string) : (string * string option) option =
     let split_on_sep () =
       List.find_map
         (fun sep ->
-           match String.index_opt rest sep.[0] with
-           | _ ->
-               (* find substring [sep] *)
-               let n = String.length rest and m = String.length sep in
-               let rec find i =
-                 if i + m > n then None
-                 else if String.sub rest i m = sep then Some i
-                 else find (i + 1)
-               in
-               (match find 0 with
-                | Some i ->
-                    let ver = String.sub rest 0 i in
-                    let dt = String.sub rest (i + m) (n - i - m) in
-                    Some (ver, Some (String.trim dt))
-                | None -> None))
+           let n = String.length rest and m = String.length sep in
+           let rec find i =
+             if i + m > n then None
+             else if String.sub rest i m = sep then Some i
+             else find (i + 1)
+           in
+           match find 0 with
+           | Some i ->
+               let ver = String.sub rest 0 i in
+               let dt = String.sub rest (i + m) (n - i - m) in
+               Some (ver, Some (String.trim dt))
+           | None -> None)
         seps
     in
     let ver_tok, date =
