@@ -214,8 +214,9 @@ let report_diagnostic (d : C2c_codex_app_server.diagnostic) : unit =
    | Some cur, Some min ->
        Printf.eprintf "  codex version %s; minimum supported for app-server mode is %s.\n" cur min
    | _ -> ());
-  Printf.eprintf "  falling back to the hook-backed Codex launch. To require app-server mode,\n\
-                 \  upgrade codex and retry, or run without --app-server for hooks.\n";
+  Printf.eprintf "  falling back to the hook-backed Codex launch automatically. To get\n\
+                 \  arrival-time app-server delivery, upgrade codex (>= %s) and relaunch.\n"
+    (let (a, b, c) = codex_min_version in Printf.sprintf "%d.%d.%d" a b c);
   Printf.eprintf "  diagnostic: %s\n%!" (Yojson.Safe.to_string j)
 
 type resolved = {
@@ -297,6 +298,126 @@ let resolve_identity ~(mode : launch_mode) ~(alias_override : string option)
 let handle_thread (h : C2c_codex_app_server.handle) : string option =
   (C2c_codex_app_server.persisted_of h).C2c_codex_app_server.thread_id
 
+(* B131: append a structured, secret-free deliver-pass metric line to the
+   instance's delivery log (JSONL). The T007 pass_outcome JSON contains NO body,
+   NO credential, NO composer state (redacted recipient only). *)
+let log_deliver_pass ~(instance_dir : string) (po : C2c_codex_autoturn.pass_outcome) : unit =
+  try
+    let path = instance_dir // "codex-deliver.log" in
+    let line =
+      `Assoc [ ("ts", `Float (Unix.gettimeofday ()));
+               ("pass", C2c_codex_autoturn.pass_outcome_to_json po) ]
+      |> Yojson.Safe.to_string
+    in
+    C2c_io.append_jsonl path line
+  with _ -> ()
+
+(* Drive the B131 delivery loop for a live, attached app-server session. Wires
+   the C2c_codex_deliver_loop seams to the real ingress/turn clients + broker,
+   installs SIGTERM/SIGINT teardown, and returns the terminal supervision
+   result. Registration lifetime is bound to the loop (register on entry,
+   deregister in the loop's finally + the signal path). *)
+let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
+    ~(alias : string) ~(instance_dir : string) : C2c_codex_app_server.supervise_result =
+  (* Unlock the real WS clients in THIS launcher process only (the frontend was
+     already spawned with its env captured, so this does not leak into it). *)
+  Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
+  let broker_root = try C2c_start.broker_root () with _ -> "" in
+  let endpoint = C2c_codex_app_server.endpoint_of handle in
+  let token_provider () =
+    match C2c_codex_app_server.raw_token_of handle with "" -> None | t -> Some t
+  in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let my_pid = Unix.getpid () in
+  let register () =
+    (try
+       C2c_mcp.Broker.register broker ~session_id:name ~alias
+         ~pid:(Some my_pid)
+         ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time my_pid)
+         ~client_type:(Some "codex-app-server") ()
+     with _ -> ());
+    (* Swarm onboarding parity: join the social room like other managed sessions. *)
+    (let rooms =
+       C2c_swarm_config.swarm_config_social_room ()
+       |> String.split_on_char ',' |> List.map String.trim |> List.filter ((<>) "")
+     in
+     List.iter
+       (fun room_id ->
+         try ignore (C2c_mcp.Broker.join_room broker ~room_id ~alias ~session_id:name)
+         with _ -> ())
+       rooms)
+  in
+  let deregistered = ref false in
+  let deregister () =
+    if not !deregistered then begin
+      deregistered := true;
+      (try C2c_start.clear_registration_pid ~broker_root ~session_id:name with _ -> ())
+    end
+  in
+  let deps : C2c_codex_deliver_loop.deps =
+    { broker_root;
+      session_id = name;
+      managed_identity = alias;
+      endpoint;
+      token_provider;
+      inject_client = C2c_codex_ingress.real_client ();
+      turn_client = C2c_codex_autoturn.real_turn_client ();
+      discover_threads =
+        (fun () ->
+          match token_provider () with
+          | None -> []
+          | Some token -> C2c_codex_ingress.real_loaded_threads ~endpoint ~token);
+      supervise_step = (fun () -> C2c_codex_app_server.supervise_step handle);
+      session_active =
+        (fun () -> C2c_codex_app_server.current_state handle = C2c_codex_app_server.Running);
+      is_dnd = (fun () -> try C2c_mcp.Broker.is_dnd broker ~session_id:name with _ -> false);
+      register;
+      deregister;
+      on_pass =
+        (* Collapse runs of identical passes into a single log line — log only
+           when the structured outcome CHANGES. An idle session polls once/sec and
+           each idle pass returns the same benign outcome; logging every one grows
+           codex-deliver.log unbounded (~86k lines/day). Dedup-on-change keeps
+           every state transition while dropping the steady-state repeats.
+           (po_injected_count is a session cumulative, so it cannot be used as a
+           per-pass "did work" signal — hence compare the whole outcome.)
+           B131 review (2026-07-12). *)
+        (let last_pass = ref "" in
+         fun po ->
+           let key =
+             Yojson.Safe.to_string (C2c_codex_autoturn.pass_outcome_to_json po)
+           in
+           if key <> !last_pass then begin
+             last_pass := key;
+             log_deliver_pass ~instance_dir po
+           end);
+      now = Unix.gettimeofday;
+      sleep = (fun s -> try Unix.sleepf s with _ -> ());
+      poll_interval_s = 1.0;
+      discover_interval_s = 2.0;
+      max_wall_s = infinity }
+  in
+  (* Hard-termination path: a SIGTERM/SIGINT to the launcher must reap the
+     app-server unit AND clear the registration (Fun.protect finally does not run
+     on exit). Idempotent with the loop's own deregister. *)
+  let prev_term = Sys.signal Sys.sigterm (Sys.Signal_handle (fun _ ->
+      (try C2c_codex_app_server.stop handle with _ -> ()); deregister (); exit 0)) in
+  let prev_int = Sys.signal Sys.sigint (Sys.Signal_handle (fun _ ->
+      (try C2c_codex_app_server.stop handle with _ -> ()); deregister (); exit 0)) in
+  let restore () =
+    (try Sys.set_signal Sys.sigterm prev_term with _ -> ());
+    (try Sys.set_signal Sys.sigint prev_int with _ -> ())
+  in
+  Fun.protect ~finally:restore (fun () ->
+      let o = C2c_codex_deliver_loop.run deps in
+      if o.C2c_codex_deliver_loop.degraded then
+        Printf.eprintf
+          "%s[codex app-server]%s delivery loop ran DEGRADED: no frontend thread \
+           was ever loaded, so c2c mail was not auto-delivered this session \
+           (session was still supervised). alias=%s\n%!"
+          (yellow ()) (reset ()) alias;
+      o.C2c_codex_deliver_loop.final)
+
 let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     ~(thread_id : string option) ~(yolo : bool) ~(extra_args : string list)
     ?(model_override : string option)
@@ -345,11 +466,10 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
   | Ok handle ->
       (* Session is up and attached. Persist the identity mapping — the
          authoritative alias<->session record that `c2c instances`/status read.
-         NOTE: auto-registering the interactive frontend into the broker under
-         this alias needs the codex-hook env threaded into the frontend child at
-         spawn time; that managed-env parity is T005's job (T002's frontend-env
-         builder only injects the auth token). Until then the derived alias is
-         the persisted, discoverable identity, not yet a live broker alias. *)
+         B131: the derived alias becomes a LIVE, routable broker alias below —
+         [run_delivery_loop] registers it into the broker on entry and tears the
+         registration down on TUI exit. The mapping persisted here is the durable
+         identity record; the broker registration is the in-flight routing entry. *)
       let now = Unix.gettimeofday () in
       let created =
         match load_mapping ~instance_dir with Some m -> m.created_at | None -> now in
@@ -360,7 +480,15 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       Printf.eprintf "%s[codex app-server]%s online-attached: alias=%s endpoint=%s\n%!"
         (yellow ()) (reset ()) alias
         (C2c_codex_app_server.endpoint_uri (C2c_codex_app_server.endpoint_of handle));
-      let final = C2c_codex_app_server.supervise_until_exit handle in
+      (* B131: drive the proven T003 ingress + T007 auto-turn pipeline against
+         THIS live session while the frontend is attached. The loop registers a
+         routable broker alias, discovers the frontend's loaded thread, injects
+         inbound c2c mail as DATA + auto-turns eligible local mail, and tears the
+         registration + loop down on TUI exit. Falls back to plain supervision
+         (degraded) if no thread is ever loaded — never crashes the session. *)
+      let final =
+        run_delivery_loop ~handle ~name ~alias ~instance_dir
+      in
       C2c_codex_app_server.stop handle;
       (* Refresh the mapping's updated_at + thread on clean shutdown. *)
       (match load_mapping ~instance_dir with
@@ -374,17 +502,21 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
        | _ -> 0)
 
 let run ~(mode : launch_mode) ?(alias_override : string option)
-    ?(thread_id : string option) ~(yolo : bool) ~(app_server : bool)
+    ?(thread_id : string option) ~(yolo : bool)
     ~(extra_args : string list) ?(model_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
-  let engage =
-    app_server || (match Sys.getenv_opt "C2C_CODEX_APP_SERVER" with Some "1" -> true | _ -> false)
+  (* B131 / coordinator directive: the app-server transport is the DEFAULT and
+     ONLY managed codex path for a supported codex. Unsupported codex (<0.144) or
+     a genuine app-server startup failure returns a structured diagnostic from
+     [run_app_server], which then falls back to the hook-backed launch
+     automatically — hooks are the fallback, never a user-selectable mode. The
+     hidden [C2C_CODEX_FORCE_HOOKS=1] escape skips the app-server path entirely
+     (operator testing / emergency only; not a user-facing option). *)
+  let force_hooks =
+    match Sys.getenv_opt "C2C_CODEX_FORCE_HOOKS" with Some "1" -> true | _ -> false
   in
-  if not engage then
-    (* Legacy hook-backed path — the live default. --yolo still forwards the
-       bypass flag; it is never persisted (extra_args is not saved on plain
-       re-launch, per resolve_effective_extra_args). *)
+  if force_hooks then
     fallback ~extra_args:(frontend_extra_args ~yolo ~extra:extra_args) ()
   else
     run_app_server ~mode ~alias_override ~thread_id ~yolo ~extra_args

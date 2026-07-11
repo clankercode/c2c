@@ -312,13 +312,8 @@ let start_cmd =
   in
   let thread_id_flag =
     Cmdliner.Arg.(value & opt (some string) None & info [ "thread-id" ] ~docv:"ID"
-      ~doc:"CLIENT=codex app-server only. Exact Codex thread id to select; a \
-            conflict with the saved thread is rejected rather than guessed.")
-  in
-  let app_server_flag =
-    Cmdliner.Arg.(value & flag & info [ "app-server" ]
-      ~doc:"CLIENT=codex only. Use the app-server-backed remote-TUI transport \
-            instead of the hook-backed launch (also via C2C_CODEX_APP_SERVER=1).")
+      ~doc:"CLIENT=codex only. Exact Codex thread id to select; a conflict with \
+            the saved thread is rejected rather than guessed.")
   in
   let+ client = client
   and+ name_opt = name
@@ -345,8 +340,7 @@ let start_cmd =
   and+ relay_url_opt = relay_url_opt
   and+ interval_opt = interval_opt
   and+ yolo_flag = yolo_flag
-  and+ thread_id_flag = thread_id_flag
-  and+ app_server_flag = app_server_flag in
+  and+ thread_id_flag = thread_id_flag in
   (* #470: extra_argv is now string list. The positional converter was changed
      from `pos_right 1 (list string) []` (which split each token on commas, so
      `c2c start claude -- --prompt "Hello, world"` would arrive as
@@ -697,10 +691,10 @@ let start_cmd =
   if client = "codex" then
     exit (C2c_codex_cmd.start_delegate
             ~alias_override ~thread_id:thread_id_flag ~yolo:yolo_flag
-            ~app_server:app_server_flag ?model_override ~extra_args:extra_argv
+            ?model_override ~extra_args:extra_argv
             ~fallback:cmd_start_with ())
   else begin
-    ignore yolo_flag; ignore thread_id_flag; ignore app_server_flag;
+    ignore yolo_flag; ignore thread_id_flag;
     exit (cmd_start_with ~extra_args:extra_argv ())
   end
 

@@ -561,7 +561,7 @@ let test_live_auth_boundary () =
    (the hook-backed codex path + all non-codex clients go through
    C2c_start.prepare_launch_args' `args @ extra_args`; the app-server frontend
    goes through build_frontend_argv' `@ cfg.extra_frontend_args`). Prove that
-   `c2c start codex --app-server -- <opts>` forwards <opts> verbatim as the
+   `c2c start codex -- <opts>` forwards <opts> verbatim as the
    frontend argv tail, after the fixed --remote/--remote-auth-token-env prefix,
    commas preserved. *)
 let test_frontend_argv_appends_extra_frontend_args_verbatim_b128 () =

@@ -33,12 +33,6 @@ let thread_id_t =
     ~doc:"Exact Codex thread id to select (escape hatch). A conflict with the \
           saved thread for the alias is rejected rather than guessed.")
 
-let app_server_t =
-  Arg.(value & flag & info [ "app-server" ]
-    ~doc:"Use the app-server-backed remote-TUI transport instead of the \
-          hook-backed launch. Also enabled by C2C_CODEX_APP_SERVER=1. Falls \
-          back to hooks with an actionable message if the local codex is too old.")
-
 (* pos_all captures every positional token, including whatever follows a literal
    `--` (cmdliner ends option parsing there). [strip_leading_client] /
    [strip_leading_client_alias] peel the fixed leading positionals and an
@@ -96,8 +90,8 @@ let hook_fallback ~(mode : C2c_codex_session.launch_mode) ~(alias_override : str
           ~opencode_plugin_embedded:"" ()
 
 let dispatch ~(mode : C2c_codex_session.launch_mode) ~alias_override ~thread_id
-    ~yolo ~app_server ?model_override ~extra_args () : int =
-  C2c_codex_session.run ~mode ?alias_override ?thread_id ~yolo ~app_server
+    ~yolo ?model_override ~extra_args () : int =
+  C2c_codex_session.run ~mode ?alias_override ?thread_id ~yolo
     ~extra_args ?model_override
     ~fallback:(hook_fallback ~mode ~alias_override ?model_override ())
     ()
@@ -109,20 +103,23 @@ let codex_term =
   let+ alias_override = alias_t
   and+ yolo = yolo_t
   and+ thread_id = thread_id_t
-  and+ app_server = app_server_t
   and+ positionals = positionals_t in
   let extra_args = drop_sep positionals in
   exit (dispatch ~mode:C2c_codex_session.Start ~alias_override ~thread_id ~yolo
-          ~app_server ~extra_args ())
+          ~extra_args ())
 
 let codex : unit Cmd.t =
   Cmd.v (Cmd.info "codex"
            ~doc:"Start a managed Codex session (shortcut for `c2c start codex`)."
            ~man:[ `S "DESCRIPTION"
                 ; `P "Shortcut for $(b,c2c start codex) with the same Codex session \
-                      semantics and defaults (generated identity, $(b,--yolo), \
-                      $(b,--app-server)). Exposes a reduced flag surface — pass codex \
-                      options after $(b,--), e.g. $(b,c2c codex -- --model MODEL); use \
+                      semantics and defaults (generated identity, $(b,--yolo)). The \
+                      app-server transport (identity + auto-delivery of inbound c2c \
+                      mail + auto-turn) is the default and only managed path for a \
+                      supported Codex; it falls back to the hook-backed launch \
+                      automatically if Codex is too old or the app-server fails to \
+                      start. Exposes a reduced flag surface — pass codex options after \
+                      $(b,--), e.g. $(b,c2c codex -- --model MODEL); use \
                       $(b,c2c start codex) for the full managed flags." ])
     codex_term
 
@@ -133,12 +130,11 @@ let new_term =
   let+ alias_override = alias_t
   and+ yolo = yolo_t
   and+ thread_id = thread_id_t
-  and+ app_server = app_server_t
   and+ positionals = positionals_t in
   let (client, extra_args) = strip_leading_client positionals in
   require_codex_client client;
   exit (dispatch ~mode:C2c_codex_session.New ~alias_override ~thread_id ~yolo
-          ~app_server ~extra_args ())
+          ~extra_args ())
 
 let new_cmd : unit Cmd.t =
   Cmd.v (Cmd.info "new"
@@ -155,7 +151,6 @@ let resume_term =
   let open Term.Syntax in
   let+ yolo = yolo_t
   and+ thread_id = thread_id_t
-  and+ app_server = app_server_t
   and+ positionals = positionals_t in
   let (client, alias, extra_args) = strip_leading_client_alias positionals in
   require_codex_client client;
@@ -168,7 +163,7 @@ let resume_term =
        exit 1
    | Some a ->
        exit (dispatch ~mode:(C2c_codex_session.Resume a) ~alias_override:None
-               ~thread_id ~yolo ~app_server ~extra_args ())
+               ~thread_id ~yolo ~extra_args ())
    | None ->
        Printf.eprintf "error: `c2c resume codex` requires an ALIAS. \
                        Usage: c2c resume codex <alias> [-- codex-options...]\n%!";
@@ -184,7 +179,7 @@ let resume_cmd : unit Cmd.t =
     resume_term
 
 (* Re-exported for c2c_managed_cmd so `c2c start codex` routes to the same path. *)
-let start_delegate ~alias_override ~thread_id ~yolo ~app_server ?model_override
+let start_delegate ~alias_override ~thread_id ~yolo ?model_override
     ~extra_args ~fallback () : int =
   C2c_codex_session.run ~mode:C2c_codex_session.Start ?alias_override ?thread_id
-    ~yolo ~app_server ?model_override ~extra_args ~fallback ()
+    ~yolo ?model_override ~extra_args ~fallback ()

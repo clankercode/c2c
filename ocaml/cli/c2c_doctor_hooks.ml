@@ -155,10 +155,10 @@ let classify_codex_hook_fallback ~(hooks_installed : bool)
          injected turn's hook drains the inbox. Delivery is \
          hook-boundary, not arrival-time";
       cd_remediation =
-        Some "this input-injecting wake stays the supported idle path \
-              until the app-server delivery wiring lands; `c2c start \
-              codex --app-server` becomes the injection-free, draft-safe \
-              replacement then";
+        Some "this input-injecting wake is the idle path for the hook \
+              fallback; the default managed path (`c2c start codex`, \
+              app-server transport) is the injection-free, draft-safe \
+              arrival-time delivery when codex >= 0.144 is available";
       cd_input_injecting = true }
   else
     { cd_mode = Cd_hooks_only;
@@ -168,33 +168,30 @@ let classify_codex_hook_fallback ~(hooks_installed : bool)
          does not see mail until its next turn";
       cd_remediation =
         Some "run the session inside tmux/herdr to enable idle wake \
-              (`c2c start codex --app-server` becomes the injection-free \
-              path once its delivery wiring lands)";
+              (or use `c2c start codex` on codex >= 0.144 — the default \
+              app-server transport delivers arrival-time without hooks)";
       cd_input_injecting = false }
 
 let classify_codex_delivery ~(app_server_status : string option)
     ~(hooks_installed : bool) ~(wake_target : bool) : codex_delivery =
   match app_server_status with
   | Some "online-attached" ->
-      (* Healthy TRANSPORT (remote TUI attached over the authenticated
-         loopback boundary). The delivery stack for this transport
-         (arrival-time injection + gated auto-turn) is library-proven but not
-         yet driven by `c2c start codex` supervision — until that wiring
-         slice lands, the session's live inbound path is still the hook
-         fallback, and this diagnostic must say so. The wiring slice flips
-         this summary when it surfaces the dispatcher under supervision. *)
-      let fb = classify_codex_hook_fallback ~hooks_installed ~wake_target in
+      (* Healthy TRANSPORT + LIVE delivery (B131). The remote TUI is attached
+         over the authenticated loopback boundary AND the managed supervisor now
+         drives the proven arrival-time data-injection + gated auto-turn loop
+         against this session. Inbound c2c mail is auto-delivered (draft-safe
+         data injection) and eligible LOCAL mail auto-turns when the thread is
+         idle and DND is off — no hook boundary needed. This is a healthy path;
+         no remediation. The delivery is data-injection, never input-injection. *)
       { cd_mode = Cd_app_server;
         cd_summary =
           "healthy app-server remote TUI (transport online-attached over the \
-           authenticated loopback boundary). Its delivery contract — \
-           arrival-time data injection, draft-safe (the operator's composer \
-           is never touched), plus one gated turn for eligible LOCAL mail \
-           when the thread is idle and DND is off — is library-proven; until \
-           the supervision wiring slice lands, inbound mail still surfaces \
-           via the hook fallback: " ^ fb.cd_summary;
-        cd_remediation = fb.cd_remediation;
-        cd_input_injecting = fb.cd_input_injecting }
+           authenticated loopback boundary) with LIVE managed delivery: inbound \
+           c2c mail is auto-injected as arrival-time DATA (draft-safe — the \
+           operator's composer is never touched) and eligible LOCAL mail starts \
+           one gated auto-turn when the thread is idle and DND is off (B131)";
+        cd_remediation = None;
+        cd_input_injecting = false }
   | Some "starting" ->
       (* Not yet a healthy remote TUI — the frontend has not attached. Report
          the delivery the session actually has right now (the hook fallback),
@@ -221,8 +218,9 @@ let classify_codex_delivery ~(app_server_status : string option)
           ^ fb.cd_summary;
         cd_remediation =
           Some "upgrade codex (`npm i -g @openai/codex`), then relaunch with \
-                `c2c start codex --app-server`; `c2c dev diag <name>` shows \
-                the structured startup diagnostic";
+                `c2c start codex` (the app-server transport is the default \
+                managed path); `c2c dev diag <name>` shows the structured \
+                startup diagnostic";
         cd_input_injecting = fb.cd_input_injecting }
   | Some _ (* "offline" or unknown *) | None ->
       classify_codex_hook_fallback ~hooks_installed ~wake_target
