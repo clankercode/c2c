@@ -3242,6 +3242,97 @@ let test_guard4_pidless_zombie_does_not_trigger_same_pid_alive () =
           check bool "new registration succeeded (Guard 4 did not fire on pidless)"
             true (Option.is_some new_reg)))
 
+let test_auto_register_startup_adopts_claude_hook_alias () =
+  (* B119: the SessionStart hook auto-registers a per-session alias
+     (pid=None, registered_by="claude-hook") before the MCP server connects.
+     The MCP server's auto-register (static install-time env alias) must
+     ADOPT the hook's alias for the same session_id — not clobber it with
+     a fresh identity the model never learns about. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"claude-b119-sid-0001" ~alias:"claude-hookid-b119"
+        ~pid:None ~pid_start_time:None
+        ~client_type:(Some "claude")
+        ~registered_by:(Some "claude-hook")
+        ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "claude-b119-sid-0001";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "claude-envid-b119";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "1";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check int "one registration (identity adopted, not forked)" 1
+            (List.length regs);
+          let reg = List.hd regs in
+          check string "hook alias adopted" "claude-hookid-b119" reg.alias;
+          check string "session preserved" "claude-b119-sid-0001" reg.session_id;
+          check bool "MCP upgraded the row with a live pid" true
+            (reg.pid <> None);
+          check (option string) "hook ownership marker preserved"
+            (Some "claude-hook") reg.registered_by))
+
+let test_auto_register_startup_adopts_codex_hook_alias () =
+  (* B119 symmetry: codex hook auto-registrations are equally the identity
+     authority for their session_id. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"codex-b119-sid-0001" ~alias:"codex-hookid-b119"
+        ~pid:None ~pid_start_time:None
+        ~client_type:(Some "codex")
+        ~registered_by:(Some "codex-hook")
+        ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "codex-b119-sid-0001";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "codex-envid-b119";
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "codex";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_TYPE" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check int "one registration" 1 (List.length regs);
+          let reg = List.hd regs in
+          check string "hook alias adopted" "codex-hookid-b119" reg.alias))
+
+let test_auto_register_startup_client_type_conflict_skips_hook_row () =
+  (* B119 hardening: a child process (e.g. `kimi -p` inheriting
+     CLAUDE_SESSION_ID) with its own client type must NOT adopt the hook
+     identity NOR clobber it — it skips registration entirely. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"claude-b119-sid-0002" ~alias:"claude-hookid-b119b"
+        ~pid:None ~pid_start_time:None
+        ~client_type:(Some "claude")
+        ~registered_by:(Some "claude-hook")
+        ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "claude-b119-sid-0002";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-envid-b119";
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "kimi";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_TYPE" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check int "one registration (conflicting client skipped)" 1
+            (List.length regs);
+          let reg = List.hd regs in
+          check string "hook alias preserved" "claude-hookid-b119b" reg.alias;
+          check bool "hook row untouched (pid still None)" true
+            (reg.pid = None)))
+
 let test_auto_join_rooms_startup_joins_listed_rooms () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
@@ -15021,6 +15112,12 @@ let () =
              test_guard2_pidless_zombie_does_not_block_post_oom_resume
          ; test_case "guard4 pidless zombie does not trigger same-pid alive (#345)" `Quick
              test_guard4_pidless_zombie_does_not_trigger_same_pid_alive
+         ; test_case "auto_register_startup adopts claude-hook alias for same session (B119)" `Quick
+             test_auto_register_startup_adopts_claude_hook_alias
+         ; test_case "auto_register_startup adopts codex-hook alias for same session (B119)" `Quick
+             test_auto_register_startup_adopts_codex_hook_alias
+         ; test_case "auto_register_startup client-type conflict skips hook row (B119)" `Quick
+             test_auto_register_startup_client_type_conflict_skips_hook_row
          ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
              test_auto_join_rooms_startup_joins_listed_rooms
          ; test_case "auto_join_rooms_startup prefers current registered alias" `Quick
