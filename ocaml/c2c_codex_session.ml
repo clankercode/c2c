@@ -448,11 +448,10 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
   | Ok handle ->
       (* Session is up and attached. Persist the identity mapping — the
          authoritative alias<->session record that `c2c instances`/status read.
-         NOTE: auto-registering the interactive frontend into the broker under
-         this alias needs the codex-hook env threaded into the frontend child at
-         spawn time; that managed-env parity is T005's job (T002's frontend-env
-         builder only injects the auth token). Until then the derived alias is
-         the persisted, discoverable identity, not yet a live broker alias. *)
+         B131: the derived alias becomes a LIVE, routable broker alias below —
+         [run_delivery_loop] registers it into the broker on entry and tears the
+         registration down on TUI exit. The mapping persisted here is the durable
+         identity record; the broker registration is the in-flight routing entry. *)
       let now = Unix.gettimeofday () in
       let created =
         match load_mapping ~instance_dir with Some m -> m.created_at | None -> now in

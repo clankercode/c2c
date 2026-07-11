@@ -239,6 +239,31 @@ let test_glue_happy_publishes_after_start () =
           Alcotest.(check string) "published alias" alias m.alias;
           Alcotest.(check string) "seed persisted" sid m.session_id)
 
+let test_glue_new_mode_default_engages_app_server () =
+  (* AC (B131): plain `c2c new codex` (mode=New, NO --app-server flag) must select
+     the app-server path on a supported codex — never the hook fallback. Mirrors
+     the Start-mode happy path but exercises the New launch mode the `c2c new
+     codex` command uses. *)
+  let sid = unique_sid () in
+  let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      let clock = ref 0.0 in
+      let server = { status = Running_ } in
+      let frontend = { status = Exited 0 } in
+      let bk = scripted ~clock
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake ~id:111 server))
+          ~spawn_frontend:(fun ~argv:_ ~env:_ -> Ok (mk_fake ~id:222 frontend)) () in
+      let fallback_called = ref false in
+      let rc = S.run ~mode:S.New ~yolo:false
+          ~extra_args:[ "--model"; "gpt-5.3-codex-spark" ] ~thread_id:sid ~backend:bk
+          ~fallback:(fun ~extra_args:_ () -> fallback_called := true; 99) () in
+      Alcotest.(check bool) "new codex on supported codex does NOT fall back to hooks"
+        false !fallback_called;
+      Alcotest.(check int) "clean exit" 0 rc;
+      match S.load_mapping ~instance_dir:(C2c_start.instance_dir alias) with
+      | None -> Alcotest.fail "new codex should publish the mapping after Running"
+      | Some m -> Alcotest.(check string) "published alias" alias m.alias)
+
 let test_glue_diagnostic_falls_back_no_publish () =
   let sid = unique_sid () in
   let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
@@ -437,6 +462,8 @@ let () =
     ; ( "lifecycle-glue",
         [ test_case "default (no flag) engages app-server, publishes after start"
             `Quick test_glue_happy_publishes_after_start
+        ; test_case "new codex (default, no flag) engages app-server"
+            `Quick test_glue_new_mode_default_engages_app_server
         ; test_case "unsupported codex auto-falls-back, no publish" `Quick test_glue_diagnostic_falls_back_no_publish
         ; test_case "force-hooks env uses fallback" `Quick test_force_hooks_env_uses_fallback ] )
     ]
