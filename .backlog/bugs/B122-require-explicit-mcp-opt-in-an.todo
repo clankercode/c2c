@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-07-11T07:05:48Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B122
 priority: high
-status: pending
+started_at: "2026-07-11T07:05:48Z"
+status: in_progress
 tags: []
 title: Require explicit MCP opt-in and retire user-facing Python MCP paths
 ---

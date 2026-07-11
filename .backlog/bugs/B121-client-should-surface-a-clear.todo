@@ -1,15 +1,15 @@
 ---
+claimed_at: "2026-07-11T07:05:48Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B121
 priority: medium
-status: pending
-tags:
-    - relay
-    - client
-    - diagnosability
-    - ux
+started_at: "2026-07-11T07:05:48Z"
+status: in_progress
+tags: []
 title: Client should surface a clear 'incompatible relay version' error when the relay has updated to a wire-incompatible version
 ---
 SYMPTOM: When the relay (e.g. relay.c2c.im) is redeployed with a newer, wire-incompatible version, an older c2c client that can no longer use it fails with OPAQUE, misleading errors instead of a clear "your client is too old for this relay" message. Depending on what changed, the user sees generic `signature_invalid`, `bad_request`, `pow_required`/unknown PoW scheme, `http_error_4xx/5xx`, or a bare transport/connection error — none of which point at the real cause (client/relay version skew) or the fix (upgrade the client).
