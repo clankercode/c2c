@@ -506,12 +506,22 @@ let hook_codex_cmd =
                 | None -> "")
              else ""
        in
+       (* Changelog auto-show (B126): per-client, once per binary version
+          change. Try-guarded — never break the turn. *)
+       let changelog_context =
+         if event = "SessionStart" then
+           try
+             Option.value
+               (C2c_changelog.auto_show ~broker_root ~client:"codex"
+                  ~now:(Unix.gettimeofday ()) ())
+               ~default:""
+           with _ -> ""
+         else ""
+       in
        let context =
-         match (intro, messages_text) with
-         | "", "" -> ""
-         | "", m -> m
-         | i, "" -> i ^ "\n"
-         | i, m -> i ^ "\n\n" ^ m
+         [ intro; changelog_context; messages_text ]
+         |> List.filter (fun s -> String.trim s <> "")
+         |> String.concat "\n\n"
        in
        if context <> "" then begin
          let json : Yojson.Safe.t =
@@ -781,8 +791,21 @@ let hook_claude_cmd =
          C2c_hook_lib.format_messages_as_text ~repo_broker:(Some broker)
            (repo_messages @ global_messages)
        in
+       (* Part 5: changelog auto-show (B126). Per-client, once per binary
+          version change. Try-guarded — never break the turn. *)
+       let changelog_context =
+         if event = "SessionStart" then
+           try
+             Option.value
+               (C2c_changelog.auto_show ~broker_root ~client:"claude"
+                  ~now:(Unix.gettimeofday ()) ())
+               ~default:""
+           with _ -> ""
+         else ""
+       in
        let context =
-         [ intro; post_compact_context; cold_boot_context; messages_text ]
+         [ intro; changelog_context; post_compact_context; cold_boot_context
+         ; messages_text ]
          |> List.filter (fun s -> String.trim s <> "")
          |> String.concat "\n\n"
        in

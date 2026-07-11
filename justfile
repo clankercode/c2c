@@ -149,6 +149,14 @@ codegen-alias-words:
 codegen-alias-words-check:
     python3 tools/ci/codegen-alias-words.py --check
 
+# Regenerate ocaml/cli/c2c_changelog_embedded.ml from data/changelog/CHANGELOG.md (B126).
+codegen-changelog:
+    python3 tools/ci/codegen-changelog.py
+
+# CI gate: fail if ocaml/cli/c2c_changelog_embedded.ml is stale vs the source.
+codegen-changelog-check:
+    python3 tools/ci/codegen-changelog.py --check
+
 # Check llms.txt Docs section is up to date with docs/ front-matter.
 # The bulk of llms.txt is hand-maintained; this gate only checks the Docs
 # link-list so new docs/ pages (e.g. reference pages) appear automatically.
@@ -238,15 +246,15 @@ codegen-role-templates:
 # See scripts/dune-build-locked.sh and
 # .collab/findings/2026-07-11T08-00-00Z-b125-parallel-dune-global-gate.md.
 # Tunables: C2C_DUNE_GLOBAL_SLOTS (default 1), C2C_DUNE_CACHE, DUNE_WATCHDOG_TIMEOUT.
-build: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
+build: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words codegen-changelog
     scripts/dune-build-locked.sh build ./ocaml/cli/c2c.exe ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Build the OCaml CLI binary only (fast, for iterative CLI work)
-build-cli: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
+build-cli: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words codegen-changelog
     scripts/dune-build-locked.sh build ./ocaml/cli/c2c.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe
 
 # Build MCP server + hooks only (fast, for server/hook work)
-build-server: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words
+build-server: codegen-role-designer codegen-opencode-plugin codegen-claude-skill codegen-alias-words codegen-changelog
     scripts/dune-build-locked.sh build ./ocaml/server/c2c_mcp_server.exe ./ocaml/tools/c2c_inbox_hook.exe ./ocaml/tools/c2c_stop_hook.exe ./ocaml/tools/c2c_cold_boot_hook.exe ./ocaml/tools/c2c_post_compact_hook_bin.exe
 
 # Alias for build-all (back-compat)
@@ -380,6 +388,7 @@ check:
     just sync-skills-check
     git diff --exit-code -- .collab/skills .opencode/skills .codex/skills ocaml/cli/c2c_claude_skill_embedded.ml
     just codegen-alias-words-check
+    just codegen-changelog-check
     scripts/dune-build-locked.sh build
     # #442: enforce broker-log-events.md catalog completeness — any new
     # `"event", `String "<name>"` emitter in ocaml/ must be cataloged.
