@@ -1,16 +1,18 @@
 ---
 claimed_at: "2026-06-26T13:49:45Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-11T09:02:10Z"
 complexity: medium
 depends_on: []
+duration_minutes: 21312.420171039867
 estimate_hours: 1
 id: B001
 priority: high
 started_at: "2026-06-26T13:49:45Z"
-status: in_progress
+status: done
 tags: []
 title: add relay support to mcp
+updated_at: "2026-07-11T09:02:10Z"
 ---
 
 add relay support to mcp
