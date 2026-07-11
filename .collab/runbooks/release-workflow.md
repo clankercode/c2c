@@ -33,11 +33,26 @@ python3 tools/ci/release.py validate --version X.Y.Z
 just codegen-role-designer
 just codegen-role-templates
 just codegen-opencode-plugin
+just codegen-changelog        # bumping version.ml requires a matching `## vX.Y.Z` in data/changelog/CHANGELOG.md
 git diff --exit-code -- .c2c ocaml data
 just check
+just test-ocaml              # REQUIRED — `just check` only *builds* the OCaml tests; the release
+                             # ci-gate *runs* them. A release-sensitive runtime failure (e.g. a
+                             # changelog auto-show test that hardcoded the new version as a
+                             # "future/not-embedded" sentinel) will pass `just check` and then fail
+                             # the ci-gate. Run the suite locally before tagging to avoid a
+                             # ~15-min failed CI round-trip. See
+                             # .collab/findings/2026-07-12T03-52-00Z-*-changelog-test-version-landmine.md
 ```
 
 Commit version/changelog/generated-file updates before tagging.
+
+If the ci-gate fails *after* you already pushed the tag but *before* anything
+published (verify: `gh release view vX.Y.Z` = not found and `npm view <pkg>
+version` still shows the old version), it is safe to fix, move the tag to the
+corrected commit (`git tag -d vX.Y.Z; git push origin :refs/tags/vX.Y.Z;
+git tag -a vX.Y.Z -m ...; git push origin vX.Y.Z`), and let it re-run. Do NOT
+move a tag once a GitHub Release or npm package exists for it.
 
 ## Tag
 
