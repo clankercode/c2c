@@ -164,6 +164,18 @@ let test_mem_incomplete_meta_fails_closed () =
     check bool "meta.json missing history_public fails closed" false
       (Relay.InMemoryRelay.history_public_of t ~room_id:"partial"))
 
+let test_mem_meta_missing_visibility_fails_closed () =
+  (* meta.json parses and has history_public:true but omits visibility ⇒
+     incomplete metadata ⇒ fail closed (symmetric with missing history_public). *)
+  with_temp_dir (fun dir ->
+    write_file (Filename.concat dir "rooms/novis/history.jsonl")
+      "{\"message_id\":\"m1\",\"from_alias\":\"alice\",\"content\":\"hi\",\"ts\":1.0}\n";
+    write_file (Filename.concat dir "rooms/novis/meta.json")
+      "{\"history_public\":true}";
+    let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+    check bool "meta.json missing visibility fails closed" false
+      (Relay.InMemoryRelay.history_public_of t ~room_id:"novis"))
+
 let test_mem_unknown_room_default () =
   let t = Relay.InMemoryRelay.create () in
   (* No such room stored: default is open (public default), matching the
@@ -276,6 +288,7 @@ let () =
         test_case "legacy room without meta stays open" `Quick test_mem_legacy_room_without_meta_stays_open;
         test_case "corrupt meta fails closed" `Quick test_mem_corrupt_meta_fails_closed;
         test_case "incomplete meta fails closed" `Quick test_mem_incomplete_meta_fails_closed;
+        test_case "meta missing visibility fails closed" `Quick test_mem_meta_missing_visibility_fails_closed;
         test_case "unknown room default" `Quick test_mem_unknown_room_default;
       ];
       "SqliteRelay", [

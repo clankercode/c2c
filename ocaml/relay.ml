@@ -142,11 +142,18 @@ module InMemoryRelay : RELAY = struct
           match (try Some (Yojson.Safe.from_file path) with _ -> None) with
           | None -> fail_closed ()
           | Some j ->
-            (match Yojson.Safe.Util.member "visibility" j with
-             | `String v -> Hashtbl.replace room_visibility room_id (canonical_visibility_or_raw v)
-             | _ -> ());
-            (match Yojson.Safe.Util.member "history_public" j with
-             | `Bool b -> Hashtbl.replace room_history_public room_id b
+            (* Accept the persisted OPEN value only when BOTH fields are
+               present and well-formed. Any incompleteness (missing visibility,
+               missing/invalid history_public, unparseable file) fails closed —
+               symmetric, defence-in-depth against a partial/tampered write. *)
+            let vis = match Yojson.Safe.Util.member "visibility" j with
+              | `String v -> Some (canonical_visibility_or_raw v) | _ -> None in
+            let hp = match Yojson.Safe.Util.member "history_public" j with
+              | `Bool b -> Some b | _ -> None in
+            (match vis, hp with
+             | Some v, Some b ->
+               Hashtbl.replace room_visibility room_id v;
+               Hashtbl.replace room_history_public room_id b
              | _ -> fail_closed ())
         end
       ) entries
