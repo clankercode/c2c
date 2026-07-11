@@ -702,10 +702,10 @@ let test_send_not_found_error_mentions_scanned_brokers () =
           check bool "error mentions sessions broker scan" true
             (string_contains content "sessions broker")))
 
-(* B072: a registration that EXISTS but whose pid is dead must NOT be
-   reported as "not registered" — that error sent operators chasing the
-   wrong problem. It must name the dead pid and hint at re-registering. *)
-let test_send_dead_alias_reports_dead_not_unregistered () =
+(* B072/B127: a registration that EXISTS but whose pid is dead must NOT be
+   reported as "not registered". B127: the send must durable-queue offline,
+   exit 0, and surface queued_offline (human + machine). *)
+let test_send_dead_alias_queues_offline () =
   with_temp_dir (fun parent_dir ->
       let broker_dir = Filename.concat parent_dir "broker" in
       Unix.mkdir broker_dir 0o755;
@@ -727,16 +727,52 @@ let test_send_dead_alias_reports_dead_not_unregistered () =
           in
           let rc = Sys.command cmd in
           let content = read_file outfile in
-          check bool "send to dead alias exits non-zero" true (rc <> 0);
-          check bool
-            (Printf.sprintf "dead alias error names the dead pid (output: %s)" content)
-            true
-            (string_contains content "looks dead"
-             && string_contains content "99999999");
-          check bool "dead alias error hints re-register" true
-            (string_contains content "c2c register --alias b072-dead-target");
-          check bool "dead alias error does NOT claim unregistered" false
-            (string_contains content "is not registered")))
+          check int
+            (Printf.sprintf "send to dead alias exits 0 (output: %s)" content)
+            0 rc;
+          check bool "human reports queued_offline" true
+            (string_contains content "queued_offline -> b072-dead-target");
+          check bool "warns offline durable queue" true
+            (string_contains content "offline"
+             && string_contains content "durable inbox");
+          check bool "does NOT claim unregistered" false
+            (string_contains content "is not registered");
+          let inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"b072-dead-sid"
+          in
+          check int "message persisted in dead session inbox" 1
+            (List.length inbox)))
+
+let test_send_dead_alias_json_queued_offline () =
+  with_temp_dir (fun parent_dir ->
+      let broker_dir = Filename.concat parent_dir "broker" in
+      Unix.mkdir broker_dir 0o755;
+      let broker = C2c_mcp.Broker.create ~root:broker_dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b127j-sender-sid" ~alias:"b127j-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"b127j-dead-sid" ~alias:"b127j-dead-target"
+        ~pid:(Some 99999999) ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-dead-json" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b127j-sender-sid \
+             %s send --json b127j-dead-target 'hello json offline' > %s 2>&1"
+            (Filename.quote broker_dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int
+            (Printf.sprintf "offline --json send exits 0 (output: %s)" content)
+            0 rc;
+          check bool "json delivery.state is queued_offline" true
+            (string_contains content "\"state\": \"queued_offline\"");
+          check bool "json top-level queued_offline true" true
+            (string_contains content "\"queued_offline\": true");
+          check bool "json does not claim delivered" false
+            (string_contains content "\"state\": \"delivered\"")))
 
 (* B071/B072: a registration with pid=None (unknown liveness) MUST route —
    unknown is the documented fallback when no stable agent pid is found. *)
@@ -3677,7 +3713,8 @@ let () =
         ; ( "send falls back when auto-registration fails (B078)", `Quick, test_send_auto_register_failure_falls_back_to_raw_session_id )
         ; ( "send cross-broker fallback routes to sibling broker", `Quick, test_send_cross_broker_fallback )
         ; ( "send not-found error mentions scanned brokers", `Quick, test_send_not_found_error_mentions_scanned_brokers )
-        ; ( "send to dead alias reports dead, not unregistered (B072)", `Quick, test_send_dead_alias_reports_dead_not_unregistered )
+        ; ( "send to dead alias queues offline (B072/B127)", `Quick, test_send_dead_alias_queues_offline )
+        ; ( "send to dead alias --json reports queued_offline (B127)", `Quick, test_send_dead_alias_json_queued_offline )
         ; ( "send to unknown-liveness alias routes (B071/B072)", `Quick, test_send_unknown_liveness_alias_routes )
         ; ( "send to remote @host reports queued, not ok (B088)", `Quick, test_send_remote_target_reports_queued_not_ok )
         ; ( "send to remote @host --json surfaces delivery.state queued (B088)", `Quick, test_send_remote_target_json_delivery_state_queued )

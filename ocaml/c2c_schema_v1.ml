@@ -10,6 +10,7 @@ type msg_type =
 
 type delivery_state =
   | Queued
+  | Queued_offline
   | Accepted
   | Delivered
 
@@ -78,11 +79,13 @@ let msg_type_of_string = function
 
 let string_of_delivery_state = function
   | Queued -> "queued"
+  | Queued_offline -> "queued_offline"
   | Accepted -> "accepted"
   | Delivered -> "delivered"
 
 let delivery_state_of_string = function
   | "queued" -> Some Queued
+  | "queued_offline" -> Some Queued_offline
   | "accepted" -> Some Accepted
   | "delivered" -> Some Delivered
   | _ -> None

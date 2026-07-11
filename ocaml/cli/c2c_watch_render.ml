@@ -718,15 +718,10 @@ let footer_for (tab : C2c_watch_state.tab) : string =
 let caret = "\xe2\x96\x8f" (* ▏ U+258F *)
 
 (* Map a [send_result] to the status-line string (spec §4.4). PURE.
-   Three distinct outcomes, three glyphs:
-     ✓ clean success (DM sent, or a room post that delivered with no warning);
-     ⚠ a room post that SUCCEEDED (the message is persisted to history.jsonl)
-       but the broker flagged a [sr_warning] — e.g. the room has 0 members, so
-       nobody received it live. Spec §4.3 calls this a "soft warning, NOT an
-       exception": it is NOT a failure, but it must NOT read as a clean ✓
-       either, or the operator is misled into thinking it was delivered. The
-       warning text is appended verbatim.
-     ✗ an actual failure ([Send_failed]: unknown/dead recipient, reserved
+   Outcomes:
+     ✓ clean success (DM sent live, or a room post that delivered with no warning);
+     ⚠ soft success: offline durable queue (B127) or room soft warning;
+     ✗ an actual failure ([Send_failed]: unknown recipient, reserved
        from_alias, self-send, invalid room). *)
 let status_of_send (target : C2c_watch_state.compose_target)
     (r : C2c_watch_data.send_result) : string =
@@ -736,6 +731,14 @@ let status_of_send (target : C2c_watch_state.compose_target)
       | C2c_watch_state.Compose_dm a -> Printf.sprintf "\xe2\x9c\x93 sent to %s" a
       | C2c_watch_state.Compose_room room ->
           Printf.sprintf "\xe2\x9c\x93 sent to %s" room)
+  | C2c_watch_data.Sent_dm_offline -> (
+      match target with
+      | C2c_watch_state.Compose_dm a ->
+          Printf.sprintf
+            "\xe2\x9a\xa0 queued offline for %s (will deliver on resume)" a
+      | C2c_watch_state.Compose_room room ->
+          Printf.sprintf
+            "\xe2\x9a\xa0 queued offline for %s (will deliver on resume)" room)
   | C2c_watch_data.Sent_room { delivered; skipped; warning } ->
       let room =
         match target with

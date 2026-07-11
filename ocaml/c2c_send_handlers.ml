@@ -318,6 +318,7 @@ let build_send_receipt
       ~recipient_dnd
       ~recipient_compacting
       ~deferrable
+      ~offline
   : string =
   let receipt_fields = ref
     [ ("queued", `Bool true)
@@ -325,6 +326,8 @@ let build_send_receipt
     ; ("to_alias", `String to_alias)
     ]
   in
+  if offline then
+    receipt_fields := !receipt_fields @ [ ("queued_offline", `Bool true) ];
   (match pp_extras.pp_self_pass_warning with
    | Some (`Warn msg) ->
        receipt_fields := !receipt_fields @ [("self_pass_warning", `String msg)]
@@ -345,6 +348,19 @@ let build_send_receipt
        receipt_fields := !receipt_fields @ [("compacting_warning", `String warning)]
    | None -> ());
   if deferrable then receipt_fields := !receipt_fields @ [("deferrable", `Bool true)];
+  if offline then
+    receipt_fields :=
+      !receipt_fields
+      @ [ ( "delivery_warning"
+          , `String
+              (Printf.sprintf
+                 "recipient '%s' is offline; message queued to durable inbox \
+                  (will deliver on next start/resume)"
+                 to_alias) )
+        ];
+  let delivery_state =
+    if offline then C2c_schema_v1.Queued_offline else C2c_schema_v1.Queued
+  in
   let v1 : C2c_schema_v1.t =
     { schema_version = C2c_schema_v1.schema_version
     ; msg_type = C2c_schema_v1.Dm
@@ -355,10 +371,21 @@ let build_send_receipt
     ; source = None
     ; content
     ; in_reply_to = None
-    ; delivery_state = Some C2c_schema_v1.Queued
+    ; delivery_state = Some delivery_state
     }
   in
-  C2c_schema_v1.serialize_with_legacy v1 ~legacy:!receipt_fields
+  let delivery_extra =
+    if offline then
+      [ ( "warning"
+        , `String
+            (Printf.sprintf
+               "recipient '%s' is offline; message queued to durable inbox \
+                (will deliver on next start/resume)"
+               to_alias) )
+      ]
+    else []
+  in
+  C2c_schema_v1.serialize_with_legacy ~delivery_extra v1 ~legacy:!receipt_fields
   |> Yojson.Safe.to_string
 
 let send ~broker ~session_id_override ~arguments =
@@ -432,14 +459,16 @@ let send ~broker ~session_id_override ~arguments =
                         Lwt.return (tool_err msg)
                     | `Warn _ | `Allow ->
                         match
-                           try Some (Broker.enqueue_message delivery_broker
-                                       ~from_alias ~to_alias ~content:s
-                                       ~deferrable ~ephemeral ())
+                           try
+                             Some
+                               (Broker.enqueue_message_with_result delivery_broker
+                                  ~from_alias ~to_alias ~content:s ~deferrable
+                                  ~ephemeral ())
                            with Invalid_argument _ -> None
                          with
                          | None ->
                              Lwt.return (tool_err (Printf.sprintf "send failed: alias '%s' is not registered; message not queued" to_alias))
-                         | Some () ->
+                         | Some enqueue_result ->
                              (match session_id_override with
                               | Some sid -> Broker.touch_session broker ~session_id:sid
                               | None ->
@@ -469,6 +498,11 @@ let send ~broker ~session_id_override ~arguments =
                                     | None -> None)
                                | None -> None
                              in
+                             let offline =
+                               match enqueue_result with
+                               | Broker.Local_offline _ -> true
+                               | Broker.Local_live _ | Broker.Relay_outbox -> false
+                             in
                              let receipt =
                                build_send_receipt
                                  ~pp_extras
@@ -479,6 +513,7 @@ let send ~broker ~session_id_override ~arguments =
                                  ~recipient_dnd
                                  ~recipient_compacting
                                  ~deferrable
+                                 ~offline
                              in
                              Lwt.return (tool_ok receipt)))))
 

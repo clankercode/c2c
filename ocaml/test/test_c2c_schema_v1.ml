@@ -81,7 +81,7 @@ let test_valid_all_delivery_states () =
           st
       in
       check_ok (Printf.sprintf "delivery.state=%s" st) s)
-    [ "queued"; "accepted"; "delivered" ]
+    [ "queued"; "queued_offline"; "accepted"; "delivered" ]
 
 let test_valid_all_sources () =
   List.iter
@@ -734,7 +734,7 @@ let test_aggregate_gate_mcp_send_receipt () =
       (C2c_send_handlers.build_send_receipt ~pp_extras ~ts:1700000002.5
          ~from_alias:"zz-gate-send" ~to_alias:"zz-gate-recv"
          ~content:"aggregate gate probe" ~recipient_dnd ~recipient_compacting
-         ~deferrable)
+         ~deferrable ~offline:false)
   in
   gate_check ~what:"mcp send receipt (plain)" (receipt ());
   gate_check ~what:"mcp send receipt (dnd+deferrable)"

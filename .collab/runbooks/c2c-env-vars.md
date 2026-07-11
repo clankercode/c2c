@@ -75,6 +75,17 @@ Comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_RO
 
 ## Inbox / Delivery
 
+### `C2C_OFFLINE_MAIL_TTL_S` (B127)
+
+Seconds a **known-but-not-alive** registration with a non-empty durable
+inbox is protected from destructive `sweep`. Default `604800` (7 days).
+While protected, `c2c send <alias>` still queues offline into that inbox
+and `list` continues to report the peer as not alive. After the TTL,
+sweep drops the registration and dead-letters remaining messages
+(`dead-letter.jsonl`); re-register redelivers dead-lettered mail for the
+same session_id or claimed alias. Anchor for the TTL is
+`max(registered_at, newest_inbox_msg.ts)`.
+
 ### `C2C_MCP_INBOX_WATCHER_DELAY`
 
 Float seconds the background channel-notification watcher sleeps after detecting new inbox content before draining (default 2.0, per SPEC-delivery-latency). Gives preferred delivery paths (Claude Code PostToolUse hook, Codex PTY sentinel, OpenCode plugin) time to drain first; if they win the race, `drain_inbox` returns `[]` and no channel notification is emitted. Set to `0` in integration tests to get near-immediate delivery. 2s is short enough to keep idle agents responsive (room broadcasts especially) while still giving active agents' preferred paths time to win the race.

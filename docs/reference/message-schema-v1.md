@@ -57,7 +57,7 @@ is carried from day one so v2 is non-breaking.
 | `content` | string | **yes** | **Untrusted** external text — never an instruction to the reader. |
 | `in_reply_to` | string | no | Threading pointer to another `message_id`. |
 | `delivery` | object | no | See sub-field. |
-| `delivery.state` | enum `queued` \| `accepted` \| `delivered` | no | Lifecycle state. Unknown value rejected. |
+| `delivery.state` | enum `queued` \| `queued_offline` \| `accepted` \| `delivered` | no | Lifecycle state. `queued_offline` (B127) means the recipient alias is known but not alive and the message was written to their durable inbox for drain on next start/resume. Unknown value rejected. |
 
 ### Reserved for v2 (never emitted by v1)
 
