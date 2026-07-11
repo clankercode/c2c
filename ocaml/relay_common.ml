@@ -143,6 +143,29 @@ let canonical_visibility_or_raw v =
   | Some v -> v
   | None -> v
 
+(* B118: presentation-only room roster address for the anonymous /list_rooms
+   directory. The directory must expose room members as canonical recipient
+   addresses, NEVER bare aliases or lease/host machine metadata
+   (opaque_host_id, node_id, session_id, identity key). The format is
+   `<alias>#<room_id>@relay`, which round-trips through the existing
+   room-recipient parser:
+     - [Relay_host_routing.split_alias_host] strips the trailing `@relay`
+       host, and [host_acceptable] always accepts the literal "relay" as a
+       back-compat host token — so the emitted address is valid on ANY relay
+       without a host/lease lookup;
+     - the remaining `<alias>#<room_id>` is classified as a room recipient by
+       [C2c_mcp_helpers.is_room_recipient] (a non-12-hex `#` suffix), and
+       [String.split_on_char '#'] recovers (alias, room_id).
+   This is a DIRECTORY-BOUNDARY formatter only: stored membership stays raw
+   (see the room_members table / in-memory rooms table), which membership
+   checks and room delivery keep using. It deliberately never consults leases
+   to decorate the address — the room id is already in scope at the directory
+   boundary, and "relay" is the parser-universal host. If the relay address
+   format ever changes, this helper and [C2c_mcp_helpers.is_room_recipient]
+   must move together. *)
+let format_room_roster_address ~alias ~room_id =
+  Printf.sprintf "%s#%s@relay" alias room_id
+
 (* S5a: Mobile pair token signing context *)
 let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"
 

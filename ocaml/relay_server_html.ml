@@ -69,7 +69,9 @@ local testing only &mdash; never expose a tokenless relay publicly.</p>
 requires a registered Ed25519 identity (Bearer works
 only for the admin-scoped <code>?include_dead=1</code> form). Aliases are
 still not secret, though: anonymous callers get the member roster of every
-listed room from <code>/list_rooms</code>, and <code>/room_history</code>
+listed room from <code>/list_rooms</code> &mdash; each entry is a
+presentation-only <code>alias#room@relay</code> recipient address (no machine
+id, node/session id, or identity key) &mdash; and <code>/room_history</code>
 on a public or unlisted room shows sender aliases.</p>
 |}
     (route_codes Relay_server_auth.anonymous_read_routes)
@@ -194,7 +196,7 @@ let landing_html_tail = {|
 <pre>GET  /              this page                            (anonymous)
 GET  /health        liveness probe                       (anonymous)
 GET  /list          list peers — Ed25519 peer auth       (?include_dead=1 → Bearer admin)
-GET  /list_rooms    list rooms: public + gated, with member rosters   (anonymous)
+GET  /list_rooms    list rooms: public + gated; rosters as alias#room@relay  (anonymous)
 GET  /dead_letter   dead-letter queue                    (Bearer admin)
 POST /gc            run gc now                           (Bearer admin)
 GET  /device-login  phone pairing UI                     (anonymous)

@@ -931,7 +931,12 @@ module InMemoryRelay : RELAY = struct
           `Assoc [
             ("room_id", `String room_id);
             ("member_count", `Int (List.length members));
-            ("members", `List (List.map (fun a -> `String a) members));
+            (* B118: directory boundary — expose members as presentation-only
+               alias#room@relay recipient addresses, never bare aliases or
+               lease/host metadata. Stored membership ([members]) stays raw
+               for membership checks and delivery. *)
+            ("members", `List (List.map (fun a ->
+               `String (format_room_roster_address ~alias:a ~room_id)) members));
           ] :: acc
       ) t.rooms []
     )
@@ -2125,7 +2130,11 @@ module SqliteRelay : RELAY = struct
               failwith ("list_rooms aliases step failed: " ^ Rc.to_string rc3)
           in
           collect_aliases ();
-          rooms := `Assoc [("room_id", `String room_id); ("member_count", `Int member_count); ("members", `List (List.map (fun a -> `String a) !aliases))] :: !rooms;
+          (* B118: directory boundary — expose members as presentation-only
+             alias#room@relay recipient addresses, never bare aliases or
+             lease/host metadata. The room_members rows stay raw for
+             membership checks and delivery. *)
+          rooms := `Assoc [("room_id", `String room_id); ("member_count", `Int member_count); ("members", `List (List.map (fun a -> `String (format_room_roster_address ~alias:a ~room_id)) !aliases))] :: !rooms;
           loop ()
         else if rc <> Rc.DONE then
           failwith ("list_rooms step failed: " ^ Rc.to_string rc)
