@@ -71,11 +71,15 @@ and codex_result = {
    One shared vocabulary for `c2c doctor`, `c2c dev instances`, and `c2c
    status`:
 
-     app-server              healthy app-server-backed remote TUI (T002/T006):
-                             inbound c2c mail is injected into the thread
-                             history as data on arrival (draft-safe, T004);
-                             eligible LOCAL mail can start one gated turn when
-                             the thread is idle and DND is off (T007).
+     app-server              healthy app-server-backed remote TUI (T002/T006,
+                             online-attached only). The transport's delivery
+                             stack — arrival-time data injection (draft-safe,
+                             T003/T004) + one gated turn for eligible LOCAL
+                             mail when the thread is idle and DND is off
+                             (T007) — is library-proven; until the
+                             supervision wiring slice lands, the session's
+                             live inbound path is still the hook fallback and
+                             the summary states that explicitly.
      app-server-unavailable  an app-server launch was attempted but failed
                              (codex too old / capability probe failed / spawn
                              failure). Live delivery, if any, is the hook
@@ -151,8 +155,10 @@ let classify_codex_hook_fallback ~(hooks_installed : bool)
          injected turn's hook drains the inbox. Delivery is \
          hook-boundary, not arrival-time";
       cd_remediation =
-        Some "prefer the app-server transport (`c2c start codex \
-              --app-server`) for injection-free, draft-safe delivery";
+        Some "this input-injecting wake stays the supported idle path \
+              until the app-server delivery wiring lands; `c2c start \
+              codex --app-server` becomes the injection-free, draft-safe \
+              replacement then";
       cd_input_injecting = true }
   else
     { cd_mode = Cd_hooks_only;
@@ -161,25 +167,34 @@ let classify_codex_hook_fallback ~(hooks_installed : bool)
          fires (session activity / turn boundaries); an idle session \
          does not see mail until its next turn";
       cd_remediation =
-        Some "run the session inside tmux/herdr to enable idle wake, or \
-              use the app-server transport (`c2c start codex \
-              --app-server`)";
+        Some "run the session inside tmux/herdr to enable idle wake \
+              (`c2c start codex --app-server` becomes the injection-free \
+              path once its delivery wiring lands)";
       cd_input_injecting = false }
 
 let classify_codex_delivery ~(app_server_status : string option)
     ~(hooks_installed : bool) ~(wake_target : bool) : codex_delivery =
   match app_server_status with
   | Some "online-attached" ->
+      (* Healthy TRANSPORT (remote TUI attached over the authenticated
+         loopback boundary). The delivery stack for this transport
+         (arrival-time injection + gated auto-turn) is library-proven but not
+         yet driven by `c2c start codex` supervision — until that wiring
+         slice lands, the session's live inbound path is still the hook
+         fallback, and this diagnostic must say so. The wiring slice flips
+         this summary when it surfaces the dispatcher under supervision. *)
+      let fb = classify_codex_hook_fallback ~hooks_installed ~wake_target in
       { cd_mode = Cd_app_server;
         cd_summary =
-          "healthy app-server remote TUI: inbound c2c mail is injected into \
-           the thread history as data on arrival over the authenticated \
-           loopback app-server (draft-safe — the operator's composer is never \
-           touched); the model reads injected mail on its next turn, and \
-           eligible LOCAL mail can start one gated turn when the thread is \
-           idle and DND is off";
-        cd_remediation = None;
-        cd_input_injecting = false }
+          "healthy app-server remote TUI (transport online-attached over the \
+           authenticated loopback boundary). Its delivery contract — \
+           arrival-time data injection, draft-safe (the operator's composer \
+           is never touched), plus one gated turn for eligible LOCAL mail \
+           when the thread is idle and DND is off — is library-proven; until \
+           the supervision wiring slice lands, inbound mail still surfaces \
+           via the hook fallback: " ^ fb.cd_summary;
+        cd_remediation = fb.cd_remediation;
+        cd_input_injecting = fb.cd_input_injecting }
   | Some "starting" ->
       (* Not yet a healthy remote TUI — the frontend has not attached. Report
          the delivery the session actually has right now (the hook fallback),

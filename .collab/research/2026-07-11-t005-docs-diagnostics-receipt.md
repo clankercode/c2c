@@ -43,7 +43,7 @@ explicitly idle and DND is off; `active`/unknown status → queued
   rows; live gather is read-only and injectable for tests). Distinguishes:
   | mode | meaning | remediation |
   |---|---|---|
-  | `app-server` | healthy app-server remote TUI, `online-attached` ONLY (arrival-time data injection, draft-safe, gated auto-turn — the transport contract) | none (healthy) |
+  | `app-server` | healthy app-server remote TUI, `online-attached` ONLY. Summary states the transport contract (arrival-time data injection, draft-safe, gated auto-turn) as **library-proven** and explicitly says the live inbound path is still the hook fallback until the supervision wiring slice lands (round-2 F2 fix) | inherits the live hook-fallback remediation |
   | `app-server-unavailable` | app-server startup failed / codex incompatible; live delivery (if any) is the hook boundary | upgrade codex (`npm i -g @openai/codex`), relaunch with `c2c start codex --app-server`; `c2c dev diag <name>` for the structured diagnostic |
   | `hooks+wake` | legacy **input-injecting** idle wake (watcher TYPES a nudge into the tmux/herdr pane); hook-boundary delivery | prefer `c2c start codex --app-server` for injection-free, draft-safe delivery |
   | `hooks` | hook-boundary only; idle session sees mail on its next turn | run inside tmux/herdr for idle wake, or use `--app-server` |
@@ -62,11 +62,13 @@ explicitly idle and DND is off; `active`/unknown status → queued
   in-repo path picks the new classification up via
   `scripts/c2c-doctor.sh` → `c2c doctor hooks --compact`.
 - `ocaml/cli/c2c_health_cmd.ml` — single-point delivery-mode unification:
-  a codex instance whose T006 app-server unit is live
-  (`starting`/`online-attached`, ghost-proof via dead-pid cross-check)
-  reports `delivery_mode=app-server`; failed/offline app-server records keep
-  the truthful hook-boundary label. Propagates to `c2c status`,
-  `c2c dev instances`, `c2c health` — one vocabulary everywhere.
+  ONLY a codex instance whose T006 app-server unit is `online-attached`
+  (healthy remote TUI, ghost-proof via dead-pid cross-check) reports
+  `delivery_mode=app-server`; `starting`, failed, and offline records keep
+  the truthful hook-boundary label (lifecycle detail stays in
+  `app_server_status`). Propagates to `c2c status`, `c2c dev instances`,
+  `c2c health` — one vocabulary everywhere. (Round-1 F2 fix; the earlier
+  starting→app-server mapping is superseded.)
 - `ocaml/cli/c2c_instances_cmd.ml` — vocabulary-parity comment on the T006
   `app_server_status` field (display already flows from health).
 - `ocaml/cli/test_c2c_doctor_hooks.ml` — 9 new `codex-delivery-mode` cases:
@@ -148,7 +150,7 @@ Codex delivery: default=hooks; codex-tovi-olmu-6dek=hooks, wake-test-codex=hooks
 {
   "mode": "hooks",
   "summary": "hook-boundary delivery only: messages surface when a codex hook fires (session activity / turn boundaries); an idle session does not see mail until its next turn",
-  "remediation": "run the session inside tmux/herdr to enable idle wake, or use the app-server transport (`c2c start codex --app-server`)",
+  "remediation": "run the session inside tmux/herdr to enable idle wake (`c2c start codex --app-server` becomes the injection-free path once its delivery wiring lands)",
   "input_injecting": false
 }
 ```
@@ -160,7 +162,7 @@ Human section (excerpt):
 
   default (vanilla codex session on this machine): hooks
     hook-boundary delivery only: messages surface when a codex hook fires (session activity / turn boundaries); an idle session does not see mail until its next turn
-    → run the session inside tmux/herdr to enable idle wake, or use the app-server transport (`c2c start codex --app-server`)
+    → run the session inside tmux/herdr to enable idle wake (`c2c start codex --app-server` becomes the injection-free path once its delivery wiring lands)
 ```
 
 The `app-server` / `app-server-unavailable` / `hooks+wake` rows are proven by
@@ -227,7 +229,22 @@ gets once wiring lands), never as live managed behavior.
   `app-server`. Regression tests updated
   (`starting is not overclaimed as app-server`, incl. the no-hooks case).
 
-**Round 2: re-review → PASS** (see `Round 2` note below).
+**Round 2: FAIL → three narrower findings fixed in new commits:**
+
+- **F1 (BLOCKER)** — the idle-wake tail (`docs/client-delivery.md`) and the
+  doctor `hooks`/`hooks+wake` remediations still recommended
+  `--app-server` *now* for injection-free delivery. Fixed: qualified as the
+  post-wiring replacement everywhere.
+- **F2 (BLOCKER)** — the doctor `online-attached` summary claimed arrival
+  injection + auto-turn as live. Fixed: mode label stays `app-server`
+  (lifecycle truth), but the summary states the stack is library-proven,
+  names the live hook fallback, and the row inherits the fallback's
+  remediation + truthful `input_injecting` flag (a wake-target session
+  flags input injection even under the app-server label). Tests updated.
+- **F3 (MEDIUM)** — this receipt's health-mapping paragraph still described
+  the superseded starting→app-server mapping. Fixed above.
+
+**Round 3: re-review → PASS.**
 
 ## Boundaries honored
 

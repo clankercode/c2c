@@ -265,16 +265,30 @@ let label d = C2c_doctor_hooks.codex_delivery_mode_label d.C2c_doctor_hooks.cd_m
 let test_delivery_app_server_healthy () =
   let d =
     classify ~app_server_status:(Some "online-attached") ~hooks_installed:true
-      ~wake_target:true
+      ~wake_target:false
   in
   check string "mode" "app-server" (label d);
-  check bool "healthy path has no remediation" true
-    (d.C2c_doctor_hooks.cd_remediation = None);
-  check bool "not input-injecting" false d.C2c_doctor_hooks.cd_input_injecting;
   check bool "summary mentions draft-safety" true
     (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "draft-safe");
   check bool "summary states the gated-turn rule (idle + DND off)" true
-    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "idle and DND is off")
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "idle and DND is off");
+  (* Until the supervision wiring slice lands, the diagnostic must NOT claim
+     the injection/auto-turn stack is live: it is library-proven, and the
+     session's live inbound path is still the hook fallback. *)
+  check bool "summary says the stack is library-proven, not live" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "library-proven");
+  check bool "summary states the live hook-boundary fallback" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "hook fallback");
+  check bool "no-wake session is not input-injecting" false
+    d.C2c_doctor_hooks.cd_input_injecting;
+  (* With a wake target, the LIVE path today includes the input-injecting
+     wake — the flag must stay truthful even under the app-server label. *)
+  let dw =
+    classify ~app_server_status:(Some "online-attached") ~hooks_installed:true
+      ~wake_target:true
+  in
+  check bool "wake-target session truthfully flags input injection" true
+    dw.C2c_doctor_hooks.cd_input_injecting
 
 let test_delivery_app_server_starting_not_overclaimed () =
   (* A starting unit has no attached remote TUI yet — it must NOT get the

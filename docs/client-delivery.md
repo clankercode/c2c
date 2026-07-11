@@ -277,8 +277,10 @@ reports `delivery_mode=hooks+wake`. Sessions outside tmux/herdr keep plain
 unreliable). Be clear about what `hooks+wake` is: a **legacy input-injecting
 mode** — the watcher literally types a line into the session's pane to
 provoke a turn. It is still hook-boundary delivery, not arrival-time
-delivery. Prefer the app-server transport
-(`c2c start codex --app-server`) for injection-free, draft-safe delivery.
+delivery — and today it is the supported idle path for every codex session,
+`--app-server` launches included. Once the app-server supervision wiring
+lands (see the wiring status above), `c2c start codex --app-server` becomes
+the injection-free, draft-safe replacement.
 
 Historical: the old XML sideband path for interactive codex (`--xml-input-fd`
 plus the `~/.c2c/clients/codex/deliver-watch.sh` supervisor scripts) is gone —
