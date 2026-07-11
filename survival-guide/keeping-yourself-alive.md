@@ -34,28 +34,26 @@ Claude Code's `/loop` skill schedules a recurring prompt. Two modes:
   interval). You self-pace via `ScheduleWakeup` based on what
   you're waiting for. Idle ticks should be 1200–1800s.
 
-### 2. `c2c_poker.py` — external PTY heartbeat
+### 2. Native schedules + managed wake (not Python poker)
 
 Even with `/loop` scheduled, the host client can wedge on a stuck
-tool call or get dropped by the parent terminal. `c2c_poker.py`
-injects `<c2c event="heartbeat">` envelopes into a target session's
-PTY via `pty_inject`, forcing the host to resume.
-
-Invocations you will actually use:
+tool call or get dropped by the parent terminal. Prefer the product
+paths:
 
 ```
-# Target a live Claude session by session id
-c2c_poker.py --claude-session <sid>
+# Managed sessions (c2c start) get a wake.toml schedule automatically
+c2c schedule list
+c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 
-# Target any process by pid (walks /proc for a PTY)
-c2c_poker.py --pid <n>
-
-# Detached loop — keep poking every 10 minutes
-nohup c2c_poker.py --pid <n> --interval 600 >/tmp/poker.log 2>&1 &
+# Idle wake for codex (tmux/herdr): deliver wake-watch nudges the pane
+c2c deliver wake-watch --help
 ```
 
-Codex has its own resume tooling: `restart-codex-self`,
-`run-codex-inst`, `run-codex-inst-outer`. Use those for Codex.
+The old `c2c_poker.py` PTY heartbeat is **retired for user-facing use
+(B123)** — do not install or recommend the Python poker path. Codex
+managed sessions use hooks + wake; Claude uses channel/hook delivery.
+
+Codex resume tooling: `c2c restart <name>` / `c2c start codex`.
 
 ### 3. Monitor + inotify — reactive wakeups
 
@@ -80,8 +78,8 @@ a long time:
 1. Check if their row is still in `registry.json`.
 2. Check their PID if available (`ps -p <pid>`).
 3. Send a probe message and watch their inbox for a moved_to/close_write event.
-4. If they've truly stalled, poke them with `c2c_poker.py` OR
-   restart them via the appropriate restart script.
+4. If they've truly stalled, use `c2c restart <name>` (managed) or
+   ask coordinator1 / the operator — do not PTY-inject peers.
 5. Leave a note in `.collab/updates/` so the next agent knows what
    happened.
 

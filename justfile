@@ -500,8 +500,27 @@ bi: install-all
 bii: install-all
     ./restart-self
 
-# Legacy: install Python wrapper scripts to ~/.local/bin
+# DEPRECATED (B123): was installing Python root wrappers into ~/.local/bin.
+# Refuses by default. The OCaml path is canonical: `just install-all` / `c2c install`.
+# Escape hatch for tests only: C2C_ALLOW_PYTHON_LEGACY=1 just install-python-legacy
 install-python-legacy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "${C2C_ALLOW_PYTHON_LEGACY:-}" != "1" ]; then
+        echo "error: just install-python-legacy is retired (B123)." >&2
+        echo "" >&2
+        echo "Do NOT install Python root wrappers into PATH." >&2
+        echo "Use the OCaml binary instead:" >&2
+        echo "  just install-all" >&2
+        echo "  # or:" >&2
+        echo "  c2c install self" >&2
+        echo "  c2c install <client>" >&2
+        echo "" >&2
+        echo "Escape hatch (tests/emergency only):" >&2
+        echo "  C2C_ALLOW_PYTHON_LEGACY=1 just install-python-legacy" >&2
+        exit 2
+    fi
+    echo "warning: install-python-legacy running under C2C_ALLOW_PYTHON_LEGACY=1" >&2
     python3 c2c_install.py
 
 # Quick c2c broker status

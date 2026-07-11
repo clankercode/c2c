@@ -46,6 +46,8 @@ class C2CPollInboxTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.env = {
+            # B123: repo-root ./c2c prefers OCaml; Python poll/peek tests force legacy.
+            "C2C_ALLOW_PYTHON_LEGACY": "1",
             "C2C_REGISTRY_PATH": str(Path(self.temp_dir.name) / "registry.yaml"),
             "C2C_ALIAS_WORDS_PATH": str(self.words_path),
             "C2C_SEND_MESSAGE_FIXTURE": "1",
