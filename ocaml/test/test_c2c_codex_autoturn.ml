@@ -149,6 +149,20 @@ let test_remote_provenance_no_turn () =
   Alcotest.(check (option string)) "remote_only queued" (Some "remote_only") (qr o);
   Alcotest.(check int) "remote_pending counted" 1 o.A.po_remote_pending
 
+let test_canonical_form_fails_closed () =
+  (* a canonical cross-host / room-form sender (carrying a `#` routing marker)
+     must FAIL CLOSED → treated as remote → injected as DATA, never turned. *)
+  let root = mk_root () in
+  seed_inbox ~root [ mk_msg ~from:"peer#somerepo" ~message_id:"c1" "canonical form" ];
+  let ic, injected = mk_inject_client () in
+  let th = mk_turn_harness () in
+  let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client () in
+  let o = A.deliver_pass h.cfg in
+  Alcotest.(check int) "canonical-form message injected as data" 1 (List.length !injected);
+  Alcotest.(check int) "no turn for canonical/#-form sender" 0 (n_starts th);
+  Alcotest.(check (option string)) "canonical form queued (fail-closed)"
+    (Some "remote_only") (qr o)
+
 let test_active_turn_batching_next_turn () =
   let root = mk_root () in
   seed_inbox ~root [ mk_msg ~from:"peer" ~message_id:"m1" "first" ];
@@ -312,6 +326,8 @@ let () =
           Alcotest.test_case "DND clear: reevaluate + turn" `Quick test_dnd_clear_reeval;
           Alcotest.test_case "idle local: inject + one turn" `Quick test_idle_local_turn;
           Alcotest.test_case "remote provenance: inject, no turn" `Quick test_remote_provenance_no_turn;
+          Alcotest.test_case "canonical/#-form sender fails closed (no turn)" `Quick
+            test_canonical_form_fails_closed;
           Alcotest.test_case "active-turn batching + next-turn separation" `Quick
             test_active_turn_batching_next_turn ] );
       ( "crash windows",

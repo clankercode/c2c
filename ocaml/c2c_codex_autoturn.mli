@@ -37,9 +37,11 @@ type provenance = [ `Local | `Remote ]
 
 val provenance_to_string : provenance -> string
 
-(** Default provenance: [`Remote] iff [from_alias] carries an `@host` relay
-    marker (relay-forwarded mail), else [`Local]. Overridable in {!config} so a
-    future trust policy can widen what counts as auto-turn-eligible. *)
+(** Default provenance, FAIL-CLOSED: [`Local] only when [from_alias] carries no
+    routing marker at all; any `@host` (relay-forwarded, the broker's own
+    remote-alias marker) or `#` (canonical cross-host/room form) → [`Remote] →
+    durable+queued, never auto-turned. Overridable in {!config} so a future trust
+    policy can widen what counts as auto-turn-eligible. *)
 val default_provenance : C2c_mcp.message -> provenance
 
 (* ------------------------------ turn client ------------------------------- *)
