@@ -1,0 +1,41 @@
+---
+complexity: medium
+created_at: "2026-07-11T15:52:53Z"
+depends_on: []
+estimate_hours: 1
+id: B135
+priority: medium
+status: pending
+tags:
+    - alias
+    - register
+    - rename
+title: Alias rename (claude-quip-neural-57cb → amaroo-coord) does not stick — peer still appears under old alias
+updated_at: "2026-07-11T15:52:53Z"
+---
+## Symptom
+Peer `claude-quip-neural-57cb` renamed self to `amaroo-coord`, but continues to show up as `claude-quip-neural-57cb` (list / whoami / addressing / room membership still keyed to the old alias).
+
+Live report (2026-07-12): operator observed rename did not propagate; identity remains the auto-gen `claude-…` alias.
+
+## Expected (pick one and enforce)
+Either:
+1. **Disallow renaming** — refuse `register`/`init --alias` changes that would replace an existing live session's alias; tell the agent the alias is sticky for this session_id and how to start fresh if they truly need a new name; or
+2. **Rename must update everywhere** — changing alias for a session_id must atomically update registry, default-session/statefile, room memberships, relay registration (if any), archives/addressing indexes, and any cached list views so peers see the new alias immediately.
+
+Half-renames (local belief ≠ broker identity) are worse than either strict policy.
+
+## Likely investigation pointers
+- B046 session_id→alias reuse on `c2c init` / re-register may ignore or fight an explicit `--alias` change.
+- Room membership / history keyed by alias string rather than session_id.
+- Relay alias lease vs local broker alias divergence.
+- `c2c list` / MCP list reading stale registration fields.
+
+## Acceptance
+- [ ] Documented policy: rename forbidden XOR rename is a first-class, consistent operation.
+- [ ] If forbidden: clear error when agent attempts rename; old alias remains authoritative.
+- [ ] If allowed: after rename, `whoami`, `list`, room membership, and send targeting all use the new alias; no dual identity for the same session_id.
+- [ ] Regression test covering the chosen policy.
+
+## Discovery
+Max report 2026-07-12 while waiting on B133/B134 follow-up: `claude-quip-neural-57cb` → `amaroo-coord` rename did not stick.
