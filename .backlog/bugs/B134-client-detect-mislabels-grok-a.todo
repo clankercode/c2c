@@ -1,0 +1,52 @@
+---
+complexity: medium
+created_at: "2026-07-11T15:25:53Z"
+depends_on: []
+estimate_hours: 1
+id: B134
+priority: medium
+status: pending
+tags:
+    - client-detect
+    - alias
+    - grok
+    - cursor
+    - onboarding
+title: Client detect mislabels Grok (and Cursor) as codex- alias prefix
+updated_at: "2026-07-11T15:25:53Z"
+---
+## Symptom
+Grok sessions are not correctly detected as `grok` and instead get a `codex-` alias prefix (and often `client: "codex"` in registration / default-session state). The same happens for Cursor Agent sessions even though Cursor is not an officially supported client — they still should not be labeled as Codex.
+
+Live receipt (2026-07-12, Cursor Agent on host xsm):
+- Env clearly Cursor: `CURSOR_AGENT=1`, `CURSOR_INVOKED_AS=cursor-agent`
+- `c2c whoami` → alias `codex-maxim-strain-3oi5`
+- `<broker>/default-session.json` → `"client": "codex"`, prior alias `codex-focus-varnish-yhe9`
+- Session resolved via init fallback note (not a managed `c2c start` session)
+
+Operator report: Grok likewise gets `codex-` instead of `grok-`.
+
+## Likely causes (investigation pointers)
+Detection is split across surfaces and already inconsistent:
+
+1. **`c2c init` `native_client_type_from_env`** (`ocaml/cli/c2c_init_cmd.ml`) checks `CODEX_THREAD_ID` / Claude / OpenCode keys but **does not check `GROK_SESSION_ID`** (MCP helper `inferred_client_type_from_env` in `c2c_mcp_helpers_post_broker.ml` *does* check grok — drift).
+2. **PATH uniqueness fallback** in `detect_client` only considers `[opencode; claude; codex; kimi]` — **no `grok`**, and no Cursor signals.
+3. **No Cursor markers** consulted anywhere (`CURSOR_AGENT`, `CURSOR_INVOKED_AS=cursor-agent`, etc.).
+4. When detection fails / is wrong, auto-gen aliases use `default_alias_prefix client` → wrong `codex-…` prefix; default-session.json then persists the wrong client for later CLI fallback.
+
+Related prior: B102 (PATH-order mislabel Claude as opencode) — same family of detect bugs.
+
+## Expected
+- Grok (official): detect as `grok`, alias prefix `grok-`, registration/`default-session` client=`grok`. Prefer native env (`GROK_SESSION_ID`, install/MCP markers) over PATH guessing; keep init and MCP inference in sync.
+- Cursor Agent (unofficial / best-effort): detect as something non-codex (e.g. `cursor` or a neutral `agent`) so aliases are `cursor-…` / `agent-…`, not `codex-…`. Full install/hooks parity is **not** required; correct identity labeling is.
+- When multiple clients are on PATH and no native env is present, do **not** silently pick Codex (fail closed / ask `--client`, per B102 spirit).
+
+## Acceptance
+- [ ] Grok session with grok-native env (or sole/clear grok signals) → `whoami`/register client=`grok`, alias starts with `grok-`.
+- [ ] Cursor Agent session with `CURSOR_AGENT=1` (or equivalent) → not labeled `codex`; alias does not use `codex-` prefix.
+- [ ] `c2c init` native-env detection includes `GROK_SESSION_ID` (parity with MCP `inferred_client_type_from_env`).
+- [ ] Regression tests for grok + cursor detect paths; document Cursor as unofficial best-effort labeling only.
+- [ ] No change to Codex detection when `CODEX_THREAD_ID` / managed codex is genuinely present.
+
+## Discovery
+Max report 2026-07-12 after Cursor `/c2c` session showed `codex-` identity; same class of bug observed for Grok.
