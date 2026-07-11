@@ -3955,16 +3955,146 @@ let dead_pid () =
       in
       wait 20
 
-let test_enqueue_to_dead_peer_raises () =
+(* B127: known offline alias queues into durable inbox instead of raising. *)
+let test_enqueue_to_dead_peer_queues_offline () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       let dead = dead_pid () in
-      C2c_mcp.Broker.register broker ~session_id:"session-dead" ~alias:"storm-dead" ~pid:(Some dead) ~pid_start_time:None ();
-      check_raises "dead recipient raises Invalid_argument"
-        (Invalid_argument "recipient is not alive: storm-dead")
+      C2c_mcp.Broker.register broker ~session_id:"session-dead" ~alias:"storm-dead"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      let result =
+        C2c_mcp.Broker.enqueue_message_with_result broker
+          ~from_alias:"storm-sender" ~to_alias:"storm-dead" ~content:"ping" ()
+      in
+      (match result with
+       | C2c_mcp.Broker.Local_offline { session_id } ->
+           check string "offline queue targets dead session" "session-dead" session_id
+       | C2c_mcp.Broker.Local_live _ ->
+           failwith "expected Local_offline, got Local_live"
+       | C2c_mcp.Broker.Relay_outbox ->
+           failwith "expected Local_offline, got Relay_outbox");
+      let inbox =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-dead"
+      in
+      check int "offline durable inbox got message" 1 (List.length inbox);
+      check string "content preserved" "ping" (List.hd inbox).content;
+      (* Peer must still report as not alive — offline queue must not fake liveness. *)
+      let reg =
+        List.find
+          (fun (r : C2c_mcp.registration) -> r.session_id = "session-dead")
+          (C2c_mcp.Broker.list_registrations broker)
+      in
+      check bool "dead peer still not alive" false
+        (C2c_mcp.Broker.registration_is_alive reg);
+      (* Ephemeral flag is preserved on the offline durable row. *)
+      ignore
+        (C2c_mcp.Broker.enqueue_message_with_result broker
+           ~from_alias:"storm-sender" ~to_alias:"storm-dead"
+           ~content:"ephemeral-offline" ~ephemeral:true ());
+      let inbox2 =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-dead"
+      in
+      check int "second offline message appended" 2 (List.length inbox2);
+      let eph = List.find (fun (m : C2c_mcp.message) -> m.content = "ephemeral-offline") inbox2 in
+      check bool "ephemeral flag preserved offline" true eph.ephemeral)
+
+let test_enqueue_unknown_alias_still_rejects () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      check_raises "unknown alias still raises"
+        (Invalid_argument
+           "enqueue_message rejected: alias 'nobody-is-this' is not registered; message not queued")
         (fun () ->
-          C2c_mcp.Broker.enqueue_message broker
-            ~from_alias:"storm-dead" ~to_alias:"storm-dead" ~content:"ping" ()))
+          ignore
+            (C2c_mcp.Broker.enqueue_message_with_result broker
+               ~from_alias:"sender" ~to_alias:"nobody-is-this" ~content:"x" ())))
+
+(* B127: offline-queued mail survives re-register under a new session_id
+   (alias claim migrates the inbox) and drains exactly once. *)
+let test_offline_queue_migrates_on_reregister_new_session () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker ~session_id:"old-sid" ~alias:"storm-offline"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      ignore
+        (C2c_mcp.Broker.enqueue_message_with_result broker
+           ~from_alias:"sender" ~to_alias:"storm-offline"
+           ~content:"hold for resume" ());
+      (* Resume with a fresh session_id claiming the same alias. *)
+      C2c_mcp.Broker.register broker ~session_id:"new-sid" ~alias:"storm-offline"
+        ~pid:(Some (Unix.getpid ()))
+        ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
+        ();
+      let old_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"old-sid" in
+      let new_inbox = C2c_mcp.Broker.read_inbox broker ~session_id:"new-sid" in
+      check int "old inbox migrated away" 0 (List.length old_inbox);
+      check int "new inbox has offline mail" 1 (List.length new_inbox);
+      check string "migrated content" "hold for resume" (List.hd new_inbox).content;
+      let drained =
+        C2c_mcp.Broker.drain_inbox ~drained_by:"test" broker ~session_id:"new-sid"
+      in
+      check int "exactly-once drain" 1 (List.length drained);
+      check int "inbox empty after drain" 0
+        (List.length (C2c_mcp.Broker.read_inbox broker ~session_id:"new-sid")))
+
+(* B127: sweep keeps a dead reg with non-empty offline mail inside the TTL. *)
+let test_sweep_keeps_dead_reg_with_offline_mail () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let dead = dead_pid () in
+      C2c_mcp.Broker.register broker ~session_id:"session-dead" ~alias:"storm-dead"
+        ~pid:(Some dead) ~pid_start_time:None ();
+      ignore
+        (C2c_mcp.Broker.enqueue_message_with_result broker
+           ~from_alias:"sender" ~to_alias:"storm-dead" ~content:"keep me" ());
+      let result = C2c_mcp.Broker.sweep broker in
+      check int "no dropped regs while offline mail pending" 0
+        (List.length result.dropped_regs);
+      check int "inbox not deleted" 0 (List.length result.deleted_inboxes);
+      check int "registry still has dead peer" 1
+        (List.length (C2c_mcp.Broker.list_registrations broker));
+      check int "offline mail still in durable inbox" 1
+        (List.length
+           (C2c_mcp.Broker.read_inbox broker ~session_id:"session-dead")))
+
+(* B127: after offline TTL, sweep drops reg and dead-letters remaining mail. *)
+let test_sweep_after_offline_ttl_dead_letters () =
+  with_temp_dir (fun dir ->
+      let prev = Sys.getenv_opt "C2C_OFFLINE_MAIL_TTL_S" in
+      Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "0.0";
+      Fun.protect
+        ~finally:(fun () ->
+          match prev with
+          | None ->
+              (* best-effort clear: empty string falls back to default TTL *)
+              (try Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "" with _ -> ())
+          | Some v -> Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" v)
+        (fun () ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let dead = dead_pid () in
+          C2c_mcp.Broker.register broker ~session_id:"session-dead"
+            ~alias:"storm-dead" ~pid:(Some dead) ~pid_start_time:None ();
+          ignore
+            (C2c_mcp.Broker.enqueue_message_with_result broker
+               ~from_alias:"sender" ~to_alias:"storm-dead" ~content:"expire me"
+               ());
+          (* Make the message timestamp ancient so TTL (0) fails. *)
+          let msgs =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"session-dead"
+          in
+          let aged =
+            List.map
+              (fun (m : C2c_mcp.message) -> { m with ts = 1.0 })
+              msgs
+          in
+          C2c_mcp.Broker.save_inbox broker ~session_id:"session-dead" aged;
+          let result = C2c_mcp.Broker.sweep broker in
+          check int "dropped dead reg after TTL" 1
+            (List.length result.dropped_regs);
+          check int "dead-letter preserved messages" 1 result.preserved_messages;
+          check bool "inbox file gone" false
+            (Sys.file_exists (Filename.concat dir "session-dead.inbox.json"))))
 
 let test_enqueue_picks_live_when_zombie_shares_alias () =
   with_temp_dir (fun dir ->
@@ -4711,6 +4841,17 @@ let test_sweep_reaps_expired_codex_hook_auto_registration () =
 
 let test_auto_register_startup_redelivers_dead_letter_messages () =
   with_temp_dir (fun dir ->
+      (* Force offline-mail TTL off so sweep still dead-letters non-empty
+         dead-session inboxes (B127 default is 7d hold for resume drain).
+         This test exercises the dead-letter → auto-register redelivery path. *)
+      let prev_ttl = Sys.getenv_opt "C2C_OFFLINE_MAIL_TTL_S" in
+      Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "0.0";
+      Fun.protect
+        ~finally:(fun () ->
+          match prev_ttl with
+          | None -> (try Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "" with _ -> ())
+          | Some v -> Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" v)
+        (fun () ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       let dead = dead_pid () in
       C2c_mcp.Broker.register broker
@@ -4760,7 +4901,7 @@ let test_auto_register_startup_redelivers_dead_letter_messages () =
                 !lines)
           in
           check int "redelivered records removed from dead-letter" 0
-            (List.length remaining)))
+            (List.length remaining))))
 
 let test_register_evicts_prior_reg_with_same_alias () =
   with_temp_dir (fun dir ->
@@ -14017,6 +14158,16 @@ let test_stop_self_handler_happy_path () =
    dropped_regs and deleted_inboxes matching what Broker.sweep produces. *)
 let test_sweep_handler_drops_dead_reg () =
   with_temp_dir (fun dir ->
+      (* B127: default offline-mail TTL holds non-empty dead inboxes. This
+         test wants destructive sweep → dead-letter; force TTL off. *)
+      let prev_ttl = Sys.getenv_opt "C2C_OFFLINE_MAIL_TTL_S" in
+      Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "0.0";
+      Fun.protect
+        ~finally:(fun () ->
+          match prev_ttl with
+          | None -> (try Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "" with _ -> ())
+          | Some v -> Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" v)
+        (fun () ->
       let broker = C2c_mcp.Broker.create ~root:dir in
       (* Register a dead session (pid that will never be alive). *)
       let dead = 0x7f00_0000 in
@@ -14058,7 +14209,7 @@ let test_sweep_handler_drops_dead_reg () =
           in
           check int "one deleted inbox via handler" 1 (List.length deleted);
           check string "deleted inbox sid" "session-dead-sweep"
-            (List.hd deleted |> to_string))
+            (List.hd deleted |> to_string)))
 
 let test_set_compact_marks_session () =
   with_temp_dir (fun dir ->
@@ -15312,7 +15463,16 @@ let () =
              test_j4_host_hash_to_alias_classified_as_dm
          ; test_case "J4 send/poll/peek descriptions reference schema-v1" `Quick
              test_j4_tool_descriptions_reference_schema_v1
-         ; test_case "enqueue to dead peer raises" `Quick test_enqueue_to_dead_peer_raises
+         ; test_case "enqueue to dead peer queues offline (B127)" `Quick
+             test_enqueue_to_dead_peer_queues_offline
+         ; test_case "enqueue unknown alias still rejects (B127)" `Quick
+             test_enqueue_unknown_alias_still_rejects
+         ; test_case "offline queue migrates on re-register (B127)" `Quick
+             test_offline_queue_migrates_on_reregister_new_session
+         ; test_case "sweep keeps dead reg with offline mail (B127)" `Quick
+             test_sweep_keeps_dead_reg_with_offline_mail
+         ; test_case "sweep after offline TTL dead-letters (B127)" `Quick
+             test_sweep_after_offline_ttl_dead_letters
          ; test_case "enqueue picks live when zombie shares alias" `Quick
              test_enqueue_picks_live_when_zombie_shares_alias
          ; test_case "registration without pid field is treated as alive" `Quick

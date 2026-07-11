@@ -31,11 +31,13 @@ type msg_type =
   | Room
   | System
 
-(** Delivery lifecycle state. Lean v1 stops at [Delivered]; a [read]
+(** Delivery lifecycle state. Lean v1 stops at [Delivered] plus the
+    offline-durable queue state [Queued_offline] (B127); a [read]
     receipt state is deferred to I004 and is therefore NOT accepted as a
     valid v1 delivery state. *)
 type delivery_state =
   | Queued
+  | Queued_offline
   | Accepted
   | Delivered
 

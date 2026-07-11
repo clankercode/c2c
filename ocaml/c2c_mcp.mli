@@ -469,7 +469,33 @@ module Broker : sig
       [All_recipients_dead] branch, attempts pid-refresh self-heal via
       /proc scan. *)
 
+  type enqueue_result =
+    | Local_live of { session_id : string }
+    | Local_offline of { session_id : string }
+    | Relay_outbox
+  (** Outcome of [enqueue_message_with_result]. [Local_live] = durable inbox
+      write for an alive peer; [Local_offline] = durable inbox write for a
+      known-but-not-alive peer (B127); [Relay_outbox] = remote alias@host
+      staged for the relay connector. Unknown aliases still raise
+      [Invalid_argument]. *)
+
+  val enqueue_message_with_result :
+    t ->
+    from_alias:string ->
+    to_alias:string ->
+    content:string ->
+    ?deferrable:bool ->
+    ?ephemeral:bool ->
+    unit ->
+    enqueue_result
+  (** Like [enqueue_message] but returns the delivery classification so CLI/MCP
+      can report [queued_offline] honestly. Queues into the dead session's
+      durable inbox when the alias is registered but not alive. *)
+
   val enqueue_message : t -> from_alias:string -> to_alias:string -> content:string -> ?deferrable:bool -> ?ephemeral:bool -> unit -> unit
+  (** Unit-returning wrapper around [enqueue_message_with_result] for call sites
+      that only need the write side-effect. *)
+
   val enqueue_session_message : t -> from_alias:string -> session_id:string -> content:string -> ?ephemeral:bool -> unit -> unit
   (** Enqueue a new locally-sent message directly to [session_id], applying
       sender validation and local message-id stamping. *)

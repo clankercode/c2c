@@ -161,6 +161,12 @@ let remote_queued_warning () =
      (or `c2c managed start relay-connect`) or use `c2c relay dm send` to \
      ship it."
 
+let offline_queued_warning to_alias =
+  Printf.sprintf
+    "recipient '%s' is offline; message queued to durable inbox \
+     (will deliver on next start/resume)"
+    to_alias
+
 let send_cmd =
   let args =
     Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"TARGET MSG" ~doc:"Recipient alias followed by message body, or message body when --session is set.")
@@ -329,6 +335,9 @@ let send_cmd =
        try C2c_mcp.Broker.root broker
        with _ -> "<unknown>"
      in
+     (* B127: track enqueue classification so offline durable queue reports
+        [queued_offline] instead of falsely claiming live delivery. *)
+     let enqueue_status : C2c_mcp.Broker.enqueue_result option ref = ref None in
      let compacting_warning, json_target_fields, human_target =
        match target with
        | `Alias to_alias ->
@@ -340,95 +349,79 @@ let send_cmd =
            flush stderr;
            (* B039: try primary broker first, then cross-broker fallback *)
            (try
-              C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ~ephemeral ();
+              let result =
+                C2c_mcp.Broker.enqueue_message_with_result broker ~from_alias
+                  ~to_alias ~content ~ephemeral ()
+              in
+              enqueue_status := Some result;
               if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
               flush stderr
             with Invalid_argument msg
               when not (String.contains to_alias '@') ->
-              (* B072: distinguish the broker's rejection reasons so the
-                 operator-facing error matches reality. *)
-              let dead_recipient =
-                String.starts_with ~prefix:"recipient is not alive" msg
-              in
+              (* B072/B127: unknown local alias still errors. Offline known
+                 aliases no longer raise (they queue); reserved/spoof rejects
+                 and genuine unknown rejections still land here. *)
               let unknown_alias =
                 String.starts_with ~prefix:"enqueue_message rejected" msg
               in
-              if not (dead_recipient || unknown_alias) then begin
+              if not unknown_alias then begin
                 (* Unrelated rejection (e.g. reserved from_alias spoof guard) —
                    report as-is rather than misdiagnosing it as routing. *)
                 Printf.eprintf "error: %s\n%!" msg;
                 exit 1
               end;
               (* Primary broker can't route this alias — scan other brokers.
-                 Only route to a broker whose matching registration passes the
-                 liveness check (pid=None counts as unknown → routable); a
-                 dead match elsewhere is no better than the one here. *)
-              let matches =
-                find_alias_in_all_brokers ~primary_root to_alias
-                |> List.filter (fun (_root, r) ->
-                       C2c_mcp.Broker.registration_is_alive r)
+                 Prefer a live registration elsewhere; fall back to offline
+                 queue on any matching registration (B127). *)
+              let all_matches = find_alias_in_all_brokers ~primary_root to_alias in
+              let live_matches =
+                List.filter
+                  (fun (_root, r) -> C2c_mcp.Broker.registration_is_alive r)
+                  all_matches
               in
-              match matches with
+              match live_matches with
               | (alt_root, _reg) :: _ ->
-                  (* Found in another broker — route there *)
                   if debug_enabled then Printf.eprintf
                     "[DEBUG send_cmd] cross-broker routing: %s found in %s\n%!" to_alias alt_root;
                   let alt_broker = C2c_mcp.Broker.create ~root:alt_root in
-                  C2c_mcp.Broker.enqueue_message alt_broker
-                    ~from_alias ~to_alias ~content ~ephemeral ();
+                  let result =
+                    C2c_mcp.Broker.enqueue_message_with_result alt_broker
+                      ~from_alias ~to_alias ~content ~ephemeral ()
+                  in
+                  enqueue_status := Some result;
                   if debug_enabled then Printf.eprintf "[DEBUG send_cmd] cross-broker enqueue_message returned\n%!"
-              | [] when dead_recipient ->
-                  (* B072: the registration EXISTS but its pid failed the
-                     liveness check — saying "not registered" here was a lie
-                     that sent operators chasing the wrong problem. *)
-                  let target_cf = C2c_mcp.Broker.alias_casefold to_alias in
-                  let reg_opt =
-                    try
-                      List.find_opt
-                        (fun (r : C2c_mcp.registration) ->
-                          C2c_mcp.Broker.alias_casefold r.alias = target_cf)
-                        (C2c_mcp.Broker.list_registrations broker)
-                    with _ -> None
-                  in
-                  let pid_str =
-                    match reg_opt with
-                    | Some r ->
-                        (match r.pid with
-                         | Some p -> string_of_int p
-                         | None -> "unknown")
-                    | None -> "unknown"
-                  in
-                  Printf.eprintf
-                    "error: alias '%s' is registered but its process (pid %s) looks dead; message not queued.\n"
-                    to_alias pid_str;
-                  Printf.eprintf "  Primary broker: %s\n" primary_root;
-                  Printf.eprintf
-                    "  hint: from the recipient's live session, re-register: c2c register --alias %s\n"
-                    to_alias;
-                  Printf.eprintf
-                    "  (register pins a stable agent pid found via /proc ancestry; when none is\n";
-                  Printf.eprintf
-                    "   found it records unknown liveness, which stays routable.)\n%!";
-                  exit 1
               | [] ->
-                  (* Not found anywhere — provide actionable error *)
-                  let is_room =
-                    (try
-                       let rooms = C2c_mcp.Broker.list_rooms broker in
-                       List.exists (fun r -> r.C2c_mcp.Broker.ri_room_id = to_alias) rooms
-                     with _ -> false)
-                  in
-                  if is_room then begin
-                    Printf.eprintf "error: '%s' is a room, not a peer alias.\n" to_alias;
-                    Printf.eprintf "hint:  use `c2c room send %s <message>` to send to a room.\n%!" to_alias
-                  end else begin
-                    Printf.eprintf "error: alias '%s' is not registered.\n" to_alias;
-                    Printf.eprintf "  Primary broker: %s\n" primary_root;
-                    Printf.eprintf "  Also scanned: sessions broker, per-repo brokers, C2C_BROKER_SCAN_DIRS, sibling dirs.\n";
-                    Printf.eprintf "  hint: pass --root <broker-root> to target a specific broker,\n";
-                    Printf.eprintf "  or use `c2c list --global` to see all registered peers across brokers.\n%!"
-                  end;
-                  exit 1);
+                  (match all_matches with
+                   | (alt_root, _reg) :: _ ->
+                       (* Dead-but-known on another broker — durable offline queue. *)
+                       if debug_enabled then Printf.eprintf
+                         "[DEBUG send_cmd] cross-broker offline queue: %s in %s\n%!"
+                         to_alias alt_root;
+                       let alt_broker = C2c_mcp.Broker.create ~root:alt_root in
+                       let result =
+                         C2c_mcp.Broker.enqueue_message_with_result alt_broker
+                           ~from_alias ~to_alias ~content ~ephemeral ()
+                       in
+                       enqueue_status := Some result
+                   | [] ->
+                       (* Not found anywhere — provide actionable error *)
+                       let is_room =
+                         (try
+                            let rooms = C2c_mcp.Broker.list_rooms broker in
+                            List.exists (fun r -> r.C2c_mcp.Broker.ri_room_id = to_alias) rooms
+                          with _ -> false)
+                       in
+                       if is_room then begin
+                         Printf.eprintf "error: '%s' is a room, not a peer alias.\n" to_alias;
+                         Printf.eprintf "hint:  use `c2c room send %s <message>` to send to a room.\n%!" to_alias
+                       end else begin
+                         Printf.eprintf "error: alias '%s' is not registered.\n" to_alias;
+                         Printf.eprintf "  Primary broker: %s\n" primary_root;
+                         Printf.eprintf "  Also scanned: sessions broker, per-repo brokers, C2C_BROKER_SCAN_DIRS, sibling dirs.\n";
+                         Printf.eprintf "  hint: pass --root <broker-root> to target a specific broker,\n";
+                         Printf.eprintf "  or use `c2c list --global` to see all registered peers across brokers.\n%!"
+                       end;
+                       exit 1));
            let compacting_warning =
              let regs = C2c_mcp.Broker.list_registrations broker in
              match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = to_alias) regs with
@@ -451,45 +444,61 @@ let send_cmd =
            in
            C2c_mcp.Broker.enqueue_session_message sessions_broker
              ~from_alias ~session_id ~content ~ephemeral ();
+           enqueue_status := Some (C2c_mcp.Broker.Local_live { session_id });
            ( None
            , [ ("target_session_id", `String session_id) ]
            , "session " ^ session_id )
      in
-     (* B088: classify delivery. A remote [alias@host] target is only ever
-        queued to the local relay outbox by this command — synchronous relay
-        contact is [c2c relay dm send]'s job — so it is always [queued] from
-        here. Local/session targets are written straight to the recipient's
-        inbox and are genuinely [delivered]. *)
+     (* B088/B127: classify delivery.
+        - remote alias@host → [queued] (relay outbox only)
+        - known offline local peer → [queued_offline] (durable inbox)
+        - live local / session → [delivered] *)
      let delivery_state_v1, delivery_warning_opt =
-       match target with
-       | `Alias a when C2c_mcp.Broker.is_remote_alias a ->
+       match !enqueue_status with
+       | Some (C2c_mcp.Broker.Relay_outbox) ->
            (C2c_schema_v1.Queued, Some (remote_queued_warning ()))
-       | `Alias _ | `Session _ ->
-           (C2c_schema_v1.Delivered, None)
+       | Some (C2c_mcp.Broker.Local_offline { session_id = _ }) ->
+           let a =
+             match target with `Alias a -> a | `Session sid -> sid
+           in
+           (C2c_schema_v1.Queued_offline, Some (offline_queued_warning a))
+       | Some (C2c_mcp.Broker.Local_live _) | None ->
+           (match target with
+            | `Alias a when C2c_mcp.Broker.is_remote_alias a ->
+                (C2c_schema_v1.Queued, Some (remote_queued_warning ()))
+            | `Alias _ | `Session _ ->
+                (C2c_schema_v1.Delivered, None))
      in
      let delivery_state =
        C2c_schema_v1.string_of_delivery_state delivery_state_v1
      in
      begin match output_mode with
      | Json ->
-         (* B088: delivery.state lets machine consumers tell a
-            remote-only-queued send ([queued], not delivered) from a
-            synchronous local delivery ([delivered]). J2: the receipt is
-            now the canonical schema-v1 shape; every legacy key ([queued]
-            top-level bool, [ts], [from_alias], [delivery.state]/
-            [delivery.warning], [to_alias]/[target_session_id],
-            [compacting_warning]) is retained verbatim for back-compat. *)
+         (* B088/B127: delivery.state lets machine consumers tell remote-only
+            [queued], offline durable [queued_offline], and synchronous local
+            [delivered] apart. J2: the receipt is the canonical schema-v1
+            shape; legacy keys are retained for back-compat. B127 also emits
+            top-level [queued_offline:true] when applicable. *)
          let to_v1 =
            match target with `Alias a -> a | `Session sid -> sid
+         in
+         let legacy_target_fields =
+           match delivery_state_v1 with
+           | C2c_schema_v1.Queued_offline ->
+               json_target_fields @ [ ("queued_offline", `Bool true) ]
+           | _ -> json_target_fields
          in
          print_json
            (C2c_utils.cli_send_receipt_json ~ts ~from_alias ~to_:to_v1
               ~content ~delivery_state:delivery_state_v1
               ?delivery_warning:delivery_warning_opt
-              ~legacy_target_fields:json_target_fields
+              ~legacy_target_fields
               ?compacting_warning ())
      | Human ->
          (match delivery_state with
+          | "queued_offline" ->
+              (* B127: known offline peer — durable local inbox write. *)
+              Printf.printf "queued_offline -> %s (from %s)" human_target from_alias
           | "queued" ->
               (* B088: never print bare [ok ->] for a remote-only-queued
                  message — it implied delivery. [queued ->] is the honest
@@ -505,7 +514,9 @@ let send_cmd =
      end;
      (* B088: opt-in strict exit. Default stays 0 (fire-and-forget
         back-compat) — only [--fail-if-queued] turns a remote-only-queued
-        send into a non-zero exit so scripts can detect non-delivery. *)
+        send into a non-zero exit so scripts can detect non-delivery.
+        B127: offline durable queue is intentionally exit 0 and is NOT
+        treated as fail-if-queued (mail is persisted locally). *)
      if fail_if_queued && delivery_state = "queued" then exit 3
    with Invalid_argument msg ->
      (* Catch-all for errors from Session sends or other paths. *)

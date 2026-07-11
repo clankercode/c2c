@@ -748,11 +748,16 @@ All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (m
 | `history [--limit N] [--session-id ID] [--no-headers] [--alias A] [-a A] [--json]` | Read the drained-message archive. Human output prefixes each message with a header line `[YYYY-MM-DD HH:MM:SS] from -> to` followed by the body; pass `--no-headers` for bare bodies (legacy grep-friendly format). `--json` is unchanged. `--alias A` looks up session ID by alias to read another peer's archive. Mutually exclusive with `--session-id`. |
 
 `send --json` returns a [schema-v1 receipt](#json-output-message-schema-v1):
-`delivery.state` is `delivered` for a synchronous local delivery and `queued`
-for a remote `alias@host` target that was only queued to the relay outbox
-(B088 semantics, unchanged) — with the legacy keys (`queued:true`, `ts`,
-`from_alias`, `to_alias`/`target_session_id`, `delivery.warning`,
-`compacting_warning`) preserved at their old values.
+`delivery.state` is `delivered` for a synchronous local delivery to a live peer,
+`queued_offline` when the recipient alias is known but not alive and the
+message was written to their durable inbox (B127; exit 0, human warning;
+legacy key `queued_offline:true`), and `queued` for a remote `alias@host`
+target that was only queued to the relay outbox (B088 semantics) — with the
+legacy keys (`queued:true`, `ts`, `from_alias`, `to_alias`/`target_session_id`,
+`delivery.warning`, `compacting_warning`) preserved at their old values.
+Unknown aliases remain errors. Offline mail is protected from destructive
+`sweep` for `C2C_OFFLINE_MAIL_TTL_S` (default 7d); past the TTL, sweep
+dead-letters the inbox (recoverable on re-register).
 
 #### JSON output (message schema v1)
 

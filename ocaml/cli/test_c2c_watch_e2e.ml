@@ -112,7 +112,7 @@ let test_dm_round_trip () =
           ~content:"e2e ping 12345"
       in
       (match r with
-       | Data.Sent_dm -> ()
+       | Data.Sent_dm | Data.Sent_dm_offline -> ()
        | Data.Sent_room _ -> failf "send_dm returned Sent_room"
        | Data.Send_failed m -> failf "send_dm returned Send_failed: %s" m);
       let inbox = Broker.read_inbox t ~session_id:recipient_sid in
@@ -170,7 +170,8 @@ let test_room_round_trip () =
       in
       (match r with
        | Data.Sent_room _ -> ()
-       | Data.Sent_dm -> failf "send_room_message returned Sent_dm"
+       | Data.Sent_dm | Data.Sent_dm_offline ->
+           failf "send_room_message returned a DM result"
        | Data.Send_failed m -> failf "send_room_message => Send_failed: %s" m);
       let history = Broker.read_room_history t ~room_id:room2_id ~limit:100 () in
       let landed =

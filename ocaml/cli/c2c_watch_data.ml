@@ -201,6 +201,7 @@ let build_snapshot (t : Broker.t) : snapshot =
 
 type send_result =
   | Sent_dm
+  | Sent_dm_offline
   | Sent_room of { delivered : int; skipped : int; warning : string option }
   | Send_failed of string
 
@@ -218,7 +219,8 @@ let reserved_from_guard (from_alias : string) : send_result option =
 
 (* DM send. [from_alias] is the operator identity (the --as value, default
    "operator"); the broker stamps it as the sender. Reserved-system and
-   self-sends are refused here; any broker rejection -> [Send_failed]. *)
+   self-sends are refused here; any broker rejection -> [Send_failed].
+   B127: known offline peers succeed as [Sent_dm_offline] (durable queue). *)
 let send_dm (t : Broker.t) ~(from_alias : string) ~(to_alias : string)
     ~(content : string) : send_result =
   match reserved_from_guard from_alias with
@@ -229,8 +231,11 @@ let send_dm (t : Broker.t) ~(from_alias : string) ~(to_alias : string)
       (Printf.sprintf "cannot send a message to yourself (%s)" from_alias)
   else
     try
-      Broker.enqueue_message t ~from_alias ~to_alias ~content ();
-      Sent_dm
+      match
+        Broker.enqueue_message_with_result t ~from_alias ~to_alias ~content ()
+      with
+      | Broker.Local_offline _ -> Sent_dm_offline
+      | Broker.Local_live _ | Broker.Relay_outbox -> Sent_dm
     with
     | Invalid_argument msg -> Send_failed msg
     | e -> Send_failed (Printexc.to_string e)

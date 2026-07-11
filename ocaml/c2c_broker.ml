@@ -2448,110 +2448,208 @@ open C2c_mcp_helpers
   let generate_msg_id () =
     Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
 
-    let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false) ?(ephemeral = false) () =
-    if debug_enabled then Printf.eprintf "[DEBUG enqueue ENTER] from=%s to=%s\n%!" from_alias to_alias;
+  (* B127: result of a local/relay enqueue. [Local_live] = written to an
+     alive peer's durable inbox; [Local_offline] = written to a known but
+     not-alive peer's durable inbox (will drain on next start/resume);
+     [Relay_outbox] = remote alias@host staged for the relay connector. *)
+  type enqueue_result =
+    | Local_live of { session_id : string }
+    | Local_offline of { session_id : string }
+    | Relay_outbox
+
+  (* B127: how long a dead registration with a non-empty offline inbox is
+     protected from destructive sweep. After the TTL, sweep drops the reg and
+     dead-letters the inbox (recoverable via register redelivery). Override
+     with C2C_OFFLINE_MAIL_TTL_S (seconds). Default 7 days. *)
+  let offline_mail_ttl_s () =
+    match Sys.getenv_opt "C2C_OFFLINE_MAIL_TTL_S" with
+    | Some v -> (try float_of_string v with _ -> 7. *. 24. *. 3600.)
+    | None -> 7. *. 24. *. 3600.
+
+  (* Prefer the most recently registered match so offline mail lands on the
+     newest incarnation of an alias (same preference re-register uses when
+     migrating inboxes from conflicting rows). *)
+  let pick_offline_session_id (matches : registration list) : string option =
+    let scored =
+      List.map
+        (fun (reg : registration) ->
+          let score =
+            match reg.registered_at with Some t -> t | None -> 0.
+          in
+          (score, reg.session_id))
+        matches
+    in
+    match List.sort (fun (a, _) (b, _) -> compare b a) scored with
+    | (_, sid) :: _ -> Some sid
+    | [] -> None
+
+  let matching_regs_for_alias t alias =
+    let target = alias_casefold alias in
+    load_registrations t
+    |> List.filter (fun (reg : registration) ->
+           alias_casefold reg.alias = target
+           && not (is_expired_codex_hook_auto_registration reg))
+
+  (* Shared local-inbox write used by live + offline enqueue paths. *)
+  let write_local_dm_to_session t ~from_alias ~to_alias ~content ~deferrable
+      ~ephemeral ~session_id ~offline =
+    (* Docker lease touch only for live peers — offline pids don't need a
+       lease keep-alive and may not exist. *)
+    if not offline then
+      (try
+         if in_docker_mode () then begin
+           (match docker_broker_root () with
+            | Error e ->
+                Printf.eprintf "[enqueue_message] docker_broker_root error: %s\n%!" e
+            | Ok root ->
+                let dir = Filename.concat root docker_lease_dir_name in
+                mkdir_p ~mode:0o755 dir;
+                let path = Filename.concat dir session_id in
+                let fd =
+                  Unix.openfile path
+                    [ Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY ]
+                    0o644
+                in
+                Unix.close fd;
+                Unix.utimes path 0.0 (Unix.gettimeofday ()))
+         end
+       with Unix.Unix_error _ -> ());
+    if debug_enabled then
+      Printf.eprintf
+        "[DEBUG enqueue] from=%s to=%s session_id=%s offline=%b\n%!" from_alias
+        to_alias session_id offline;
+    flush stderr;
+    with_inbox_lock t ~session_id (fun () ->
+        let current = load_inbox t ~session_id in
+        let next =
+          current
+          @ [ { from_alias
+              ; to_alias
+              ; content
+              ; deferrable
+              ; reply_via = None
+              ; enc_status = None
+              ; ts = Unix.gettimeofday ()
+              ; ephemeral
+              ; message_id = Some (generate_msg_id ())
+              }
+            ]
+        in
+        let ipath = inbox_path t ~session_id in
+        if debug_enabled then
+          Printf.eprintf
+            "[DEBUG enqueue] inbox_path=%s current_len=%d next_len=%d\n%!" ipath
+            (List.length current) (List.length next);
+        flush stderr;
+        (try
+           let broker_root = root t in
+           let ts = Unix.gettimeofday () in
+           let fields =
+             [ ("ts", `Float ts)
+             ; ("msg_type", `String "enqueue_message")
+             ; ("from_alias", `String from_alias)
+             ; ("to_alias", `String to_alias)
+             ; ("resolved_session_id", `String session_id)
+             ; ("inbox_path", `String ipath)
+             ; ("offline", `Bool offline)
+             ]
+           in
+           log_broker_event ~broker_root "dm_enqueue" fields
+         with _ -> ());
+        save_inbox t ~session_id next);
+    (* Pending-verdict DM interception: if the message body contains
+       [c2c:pending-verdict:<perm_id>:<approve|deny>] and the sender is
+       in the entry's supervisors list, resolve the pending entry. The DM
+       is already delivered above — this is a pure side-effect. *)
+    (try
+       match parse_pending_verdict content with
+       | Some (perm_id, v) ->
+           (match find_pending_permission t perm_id with
+            | Some pending
+              when List.mem (alias_casefold from_alias)
+                     (List.map alias_casefold pending.supervisors) ->
+                let _changed =
+                  mark_pending_resolved t ~perm_id
+                    ~ts:(Unix.gettimeofday ()) ~verdict:(Some v) ()
+                in
+                if debug_enabled then
+                  Printf.eprintf
+                    "[pending-verdict] resolved perm_id=%s verdict=%s by %s\n%!"
+                    perm_id
+                    (match v with `Approve -> "approve" | `Deny -> "deny")
+                    from_alias
+            | _ ->
+                if debug_enabled then
+                  Printf.eprintf
+                    "[pending-verdict] perm_id not found or sender not supervisor\n%!")
+       | None -> ()
+     with _ -> ());
+    if offline then Local_offline { session_id }
+    else Local_live { session_id }
+
+  let enqueue_message_with_result t ~from_alias ~to_alias ~content
+      ?(deferrable = false) ?(ephemeral = false) () =
+    if debug_enabled then
+      Printf.eprintf "[DEBUG enqueue ENTER] from=%s to=%s\n%!" from_alias to_alias;
     (* Hardening B: check shell-launch-location mismatch and warn if sender's
        cwd has drifted from the expected path at launch time. Called here for
        all sends (reserved-alias check is separate below). *)
     check_worktree_mismatch t ~from_alias;
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
     if is_reserved_system_alias from_alias then
-      invalid_arg (Printf.sprintf
-        "send rejected: from_alias '%s' is a reserved system alias" from_alias)
-    else if is_remote_alias to_alias then
+      invalid_arg
+        (Printf.sprintf
+           "send rejected: from_alias '%s' is a reserved system alias" from_alias)
+    else if is_remote_alias to_alias then begin
       (* Remote alias: append to relay outbox for async forwarding by sync loop.
          Note: ephemeral semantics over the relay are not yet wired in v1 —
          the relay outbox path persists by design. Cross-host ephemeral is a
          follow-up. For now, [ephemeral] only takes effect on local delivery. *)
-      C2c_relay_connector.append_outbox_entry t.root ~from_alias ~to_alias ~content ()
-    else
-    with_registry_lock t (fun () ->
-        match resolve_live_session_id_by_alias t to_alias with
-        | Unknown_alias ->
-            (* #silent-send Bug 3: if the alias is not a remote alias (no @),
-               it should exist locally. Unknown_alias here means it's genuinely
-               unknown — not registered on this broker and not a remote target.
-               Reject with a clear error rather than silently dropping to relay. *)
-            if not (is_remote_alias to_alias) then
-              invalid_arg
-                ("enqueue_message rejected: alias '" ^ to_alias
-                 ^ "' is not registered; message not queued")
-            else
-              (* Remote alias: append to relay outbox for async forwarding. *)
-              C2c_relay_connector.append_outbox_entry t.root ~from_alias ~to_alias ~content ()
-        | All_recipients_dead ->
-            invalid_arg ("recipient is not alive: " ^ to_alias)
-        | Resolved session_id ->
-            (* Docker: touch the recipient's lease so they stay alive while
-               messages are queued for them. Inlined touch_lease here since
-               touch_session is defined later and OCaml requires forward refs. *)
-            (try
-               if in_docker_mode () then begin
-                 (match docker_broker_root () with
-                  | Error e ->
-                      Printf.eprintf "[enqueue_message] docker_broker_root error: %s\n%!" e
-                  | Ok root ->
-                      let dir = Filename.concat root docker_lease_dir_name in
-                      mkdir_p ~mode:0o755 dir;
-                      let path = Filename.concat dir session_id in
-                      let fd = Unix.openfile path [Unix.O_CREAT; Unix.O_NOCTTY; Unix.O_NONBLOCK; Unix.O_WRONLY] 0o644 in
-                      Unix.close fd;
-                      Unix.utimes path 0.0 (Unix.gettimeofday ()))
-                end
-             with Unix.Unix_error _ -> ());
-            if debug_enabled then Printf.eprintf "[DEBUG enqueue] from=%s to=%s session_id=%s\n%!"
-              from_alias to_alias session_id;
-            flush stderr;
-            with_inbox_lock t ~session_id (fun () ->
-                let current = load_inbox t ~session_id in
-                let next =
-                  current @ [ { from_alias; to_alias; content; deferrable; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral; message_id = Some (generate_msg_id ()) } ]
-                in
-                let ipath = inbox_path t ~session_id in
-                if debug_enabled then Printf.eprintf "[DEBUG enqueue] inbox_path=%s current_len=%d next_len=%d\n%!"
-                  ipath (List.length current) (List.length next);
-                flush stderr;
-                (* Per-DM trace: record to_alias + resolved session_id + inbox path
-                   for every enqueue. This is the primary diagnostic for the #488
-                   routing-mismatch tripwires (coordinator1→cedar delivered to birch,
-                   birch→cedar self-DM-echo, test-agent willow-DM conflated). Logged
-                   unconditionally because the bug manifested without debug_enabled. *)
-                (try
-                  let broker_root = root t in
-                  let ts = Unix.gettimeofday () in
-                  let fields =
-                    [ ("ts", `Float ts)
-                    ; ("msg_type", `String "enqueue_message")
-                    ; ("from_alias", `String from_alias)
-                    ; ("to_alias", `String to_alias)
-                    ; ("resolved_session_id", `String session_id)
-                    ; ("inbox_path", `String ipath)
-                    ]
-                  in
-                  log_broker_event ~broker_root "dm_enqueue" fields
-                with _ -> ());
-                save_inbox t ~session_id next);
-            (* Pending-verdict DM interception: if the message body contains
-               [c2c:pending-verdict:<perm_id>:<approve|deny>] and the sender is
-               in the entry's supervisors list, resolve the pending entry. The DM
-               is already delivered above — this is a pure side-effect. *)
-            (try
-              match parse_pending_verdict content with
-               | Some (perm_id, v) ->
-                   (match find_pending_permission t perm_id with
-                    | Some pending when List.mem (alias_casefold from_alias)
-                                         (List.map alias_casefold pending.supervisors) ->
-                        let _changed = mark_pending_resolved t ~perm_id ~ts:(Unix.gettimeofday ()) ~verdict:(Some v) () in
-                        if debug_enabled then
-                          Printf.eprintf "[pending-verdict] resolved perm_id=%s verdict=%s by %s\n%!"
-                            perm_id
-                            (match v with `Approve -> "approve" | `Deny -> "deny")
-                            from_alias
-                   | _ ->
-                       if debug_enabled then
-                         Printf.eprintf "[pending-verdict] perm_id not found or sender not supervisor\n%!")
-              | None -> ()
-            with _ -> ()))
+      C2c_relay_connector.append_outbox_entry t.root ~from_alias ~to_alias
+        ~content ();
+      Relay_outbox
+    end else
+      with_registry_lock t (fun () ->
+          match resolve_live_session_id_by_alias t to_alias with
+          | Unknown_alias ->
+              (* #silent-send Bug 3: if the alias is not a remote alias (no @),
+                 it should exist locally. Unknown_alias here means it's genuinely
+                 unknown — not registered on this broker and not a remote target.
+                 Reject with a clear error rather than silently dropping to relay. *)
+              if not (is_remote_alias to_alias) then
+                invalid_arg
+                  ("enqueue_message rejected: alias '" ^ to_alias
+                   ^ "' is not registered; message not queued")
+              else begin
+                C2c_relay_connector.append_outbox_entry t.root ~from_alias
+                  ~to_alias ~content ();
+                Relay_outbox
+              end
+          | All_recipients_dead ->
+              (* B127: known alias, no live process — queue into the durable
+                 inbox of the most recent matching registration. Unknown
+                 aliases still raise above. Does NOT fake liveness. *)
+              (match
+                 pick_offline_session_id (matching_regs_for_alias t to_alias)
+               with
+               | None ->
+                   (* Defensive: resolve said matches existed; if none remain,
+                      treat as unknown rather than silent drop. *)
+                   invalid_arg
+                     ("enqueue_message rejected: alias '" ^ to_alias
+                      ^ "' is not registered; message not queued")
+               | Some session_id ->
+                   write_local_dm_to_session t ~from_alias ~to_alias ~content
+                     ~deferrable ~ephemeral ~session_id ~offline:true)
+          | Resolved session_id ->
+              write_local_dm_to_session t ~from_alias ~to_alias ~content
+                ~deferrable ~ephemeral ~session_id ~offline:false)
+
+  let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false)
+      ?(ephemeral = false) () =
+    ignore
+      (enqueue_message_with_result t ~from_alias ~to_alias ~content ~deferrable
+         ~ephemeral ())
 
   type send_all_result =
     { sent_to : string list
@@ -3221,15 +3319,41 @@ open C2c_mcp_helpers
             ignore (send_all t ~from_alias:"broker" ~content ~exclude_aliases:[dead_reg.alias]))
           !dead_confirmed_regs
     in
+    (* B127: keep a dead registration (and its inbox) when it still holds
+       offline-queued mail within C2C_OFFLINE_MAIL_TTL_S. Anchor is the max of
+       registered_at and newest inbox message ts. Past the TTL, reg drops and
+       non-empty inboxes still go to dead-letter.jsonl (recoverable on
+       re-register). Does NOT mark the peer alive. *)
+    let offline_mail_protects t (reg : registration) =
+      let msgs = load_inbox t ~session_id:reg.session_id in
+      match msgs with
+      | [] -> false
+      | _ ->
+          let newest =
+            List.fold_left (fun acc (m : message) -> max acc m.ts) 0. msgs
+          in
+          let anchor =
+            match reg.registered_at with Some ra -> max ra newest | None -> newest
+          in
+          Unix.gettimeofday () -. anchor < offline_mail_ttl_s ()
+    in
     let result =
       with_registry_lock t (fun () ->
           let regs = load_registrations t in
           (* Dead: PID-based liveness check failed OR provisional registration
              that has never been confirmed and has timed out. *)
           let alive, dead = List.partition is_sweep_keepable regs in
+          (* B127: offline-mail hold — keep dead regs with non-empty durable
+             mail still inside the offline TTL so resume can drain exactly once. *)
+          let protected, dead =
+            List.partition (fun reg -> offline_mail_protects t reg) dead
+          in
+          let alive = alive @ protected in
           (* #383: capture confirmed dead aliases for peer_offline broadcast.
              Only confirmed registrations (confirmed_at = Some) were fully alive;
-             provisional-only timeouts don't emit peer_offline. *)
+             provisional-only timeouts don't emit peer_offline.
+             Offline-mail-protected regs are NOT broadcast as peer_offline here
+             (they remain registered as known-offline mailboxes). *)
           dead_confirmed_regs :=
             List.fold_left
               (fun acc reg ->

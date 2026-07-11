@@ -290,6 +290,7 @@ let is_send_failed = function
 let send_failed_msg = function
   | Data.Send_failed m -> m
   | Data.Sent_dm -> "<Sent_dm>"
+  | Data.Sent_dm_offline -> "<Sent_dm_offline>"
   | Data.Sent_room _ -> "<Sent_room>"
 
 let contains_sub (hay : string) (needle : string) : bool =
@@ -326,18 +327,19 @@ let test_send_dm_self_send () =
       check bool "message mentions yourself" true
         (contains_sub (send_failed_msg r) "yourself"))
 
-(* DM to a DEAD recipient (registered, pid has no /proc) -> Send_failed
-   ("recipient is not alive"). Proves the All_recipients_dead branch is
-   caught, not raised. *)
+(* DM to a DEAD recipient (registered, pid has no /proc) -> Sent_dm_offline
+   (B127 durable offline queue). Proves the All_recipients_dead branch queues
+   instead of raising / Send_failed. *)
 let test_send_dm_dead_recipient () =
   with_broker (fun t ->
       let r =
         Data.send_dm t ~from_alias:"operator" ~to_alias:dead_alias
           ~content:"are you there?"
       in
-      check bool "dead recipient => Send_failed" true (is_send_failed r);
-      check bool "message mentions not alive" true
-        (contains_sub (send_failed_msg r) "not alive"))
+      check bool "dead recipient => Sent_dm_offline" true
+        (match r with Data.Sent_dm_offline -> true | _ -> false);
+      let inbox = C2c_mcp.Broker.read_inbox t ~session_id:dead_sid in
+      check int "offline mail landed in dead session inbox" 1 (List.length inbox))
 
 (* RESERVED from_alias ("c2c") -> Send_failed (broker rejects spoofed system
    sender). Proves the reserved-from Invalid_argument is caught. *)
@@ -374,7 +376,8 @@ let test_send_room_zero_members () =
           check bool
             (Printf.sprintf "0-member room => non-raising Send_failed: %s" m)
             true true
-      | Data.Sent_dm -> failf "send_room_message returned Sent_dm")
+      | Data.Sent_dm | Data.Sent_dm_offline ->
+          failf "send_room_message returned a DM result")
 
 (* Room send to an INVALID room_id -> Send_failed (broker raises
    Invalid_argument "invalid room_id"). Caught, not raised. *)
@@ -410,7 +413,7 @@ let test_send_room_reserved_from () =
 let send_tests =
   [ "dm unknown recipient => Send_failed", `Quick, test_send_dm_unknown_recipient
   ; "dm self-send => Send_failed",         `Quick, test_send_dm_self_send
-  ; "dm dead recipient => Send_failed",    `Quick, test_send_dm_dead_recipient
+  ; "dm dead recipient => Sent_dm_offline (B127)", `Quick, test_send_dm_dead_recipient
   ; "dm reserved from => Send_failed",     `Quick, test_send_dm_reserved_from
   ; "room 0 members => warning, no raise", `Quick, test_send_room_zero_members
   ; "room invalid id => Send_failed",      `Quick, test_send_room_invalid_id
