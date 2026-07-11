@@ -164,6 +164,7 @@ fawn
 feather
 fenna
 fennel
+fern
 ferni
 ferry
 fiber

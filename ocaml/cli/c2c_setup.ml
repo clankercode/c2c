@@ -162,8 +162,8 @@ let json_read_file path =
 (* --- subcommand: setup --------------------------------------------------- *)
 
 (* alias word pool lives in [C2c_alias_words] (#388 — converged from
-   the duplicated 128-entry literal previously inlined here and in
-   c2c_start.ml). *)
+   the duplicated literal previously inlined here and in c2c_start.ml;
+   B112 — generated from data/c2c_alias_words.txt, 1,456 words). *)
 
 let generate_alias ?(no_nonce = false) () =
   let words = C2c_alias_words.words in
@@ -175,7 +175,7 @@ let generate_alias ?(no_nonce = false) () =
   in
   loop ()
 
-(* easy-pool alias generation — uses C2c_alias_words.easy_pool (~42 nature-themed
+(* easy-pool alias generation — uses C2c_alias_words.easy_pool (52 nature-themed
    words). Generates an alias from the restricted pool. Raises if the pool is
    too small to form a non-identical pair (structurally impossible with 50+ words). *)
 let generate_alias_easy ?(no_nonce = false) () =
