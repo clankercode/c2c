@@ -298,3 +298,11 @@
  (modules test_c2c_hook_grok)
  (libraries c2c_mcp alcotest yojson unix)
  (deps c2c.exe))
+
+; T001 spike: fixture-gated Codex app-server remote-TUI / passive-injection
+; safety-invariant guard. Default-SKIP (green without codex); set
+; C2C_CODEX_APPSERVER_PROBE=1 to run scripts/codex-app-server-probe.py live.
+(test
+ (name test_c2c_codex_app_server_probe)
+ (modules test_c2c_codex_app_server_probe)
+ (libraries alcotest yojson unix))
