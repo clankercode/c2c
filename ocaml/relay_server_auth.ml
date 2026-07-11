@@ -47,7 +47,12 @@ let auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified =
      Room mutation routes (join_room, leave_room, send_room, set_room_visibility,
      invite/uninvite/knock/knock-decision) similarly carry body-level Ed25519 proof via verify_room_op_proof
      and also accept an unsigned legacy path. They do their own auth at the handler
-     level; bypassing header auth here lets signed AND unsigned bodies through. *)
+     level; bypassing header auth here lets signed AND unsigned bodies through.
+     B115: /poll_inbox and /peek_inbox are deliberately NOT in this set. They
+     are ordinary peer routes: reading or draining an inbox requires a verified
+     Ed25519 request whose bound alias owns the node/session (checked in the
+     handlers). Only dev mode (no Bearer token configured) keeps the legacy
+     unauthenticated path. Same rule as /send and /heartbeat. *)
   let is_self_auth =
     path = "/register"
     || path = "/join_room"
@@ -64,8 +69,6 @@ let auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified =
     || path = "/mobile-pair/prepare"
     || path = "/mobile-pair"
     || path = "/forward"
-    || path = "/poll_inbox"
-    || path = "/peek_inbox"
     || path = "/ws/subscribe"
     || String.starts_with ~prefix:"/binding/" path
   in

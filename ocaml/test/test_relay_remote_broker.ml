@@ -245,6 +245,71 @@ module Backend_http_tests (R : Relay.RELAY) = struct
       Alcotest.(check int) "peek returns the message without draining" 1
         (List.length (json_messages result.json)))
 
+  (* === B115 direct-handler negatives: the owner gate must hold inside
+     the handlers themselves, independently of the outer route classifier
+     (defense in depth). [require_owner:true] mirrors a token-configured
+     (prod) relay. *)
+
+  let run_handler h =
+    Lwt_main.run
+      (h >>= fun (resp, body) ->
+       Cohttp_lwt.Body.to_string body >|= fun text ->
+       let json =
+         try Yojson.Safe.from_string text
+         with Yojson.Json_error msg ->
+           failf "handler response was not JSON: %s; body=%s" msg text
+       in
+       (Cohttp.Code.code_of_status (Cohttp.Response.status resp), json))
+
+  let owner_handler_message_count relay =
+    let status, json =
+      run_handler
+        (RS.handle_peek_inbox relay ~verified_alias:(Some "victim")
+           ~require_owner:true victim_body)
+    in
+    Alcotest.(check int) "owner-verified handler peek is accepted" 200 status;
+    List.length (json_messages json)
+
+  let test_handler_unverified_poll_rejected_when_owner_required relay =
+    let _ = prime_victim_inbox relay in
+    let status, json =
+      run_handler
+        (RS.handle_poll_inbox relay ~verified_alias:None ~require_owner:true
+           victim_body)
+    in
+    Alcotest.(check int) "handler refuses unverified poll (owner required)"
+      401 status;
+    Alcotest.(check string) "unauthorized error code" "unauthorized"
+      (json_string_field "error_code" json);
+    Alcotest.(check int) "refused poll did NOT drain the inbox" 1
+      (owner_handler_message_count relay)
+
+  let test_handler_unverified_peek_rejected_when_owner_required relay =
+    let _ = prime_victim_inbox relay in
+    let status, _ =
+      run_handler
+        (RS.handle_peek_inbox relay ~verified_alias:None ~require_owner:true
+           victim_body)
+    in
+    Alcotest.(check int) "handler refuses unverified peek (owner required)"
+      401 status
+
+  let test_handler_cross_alias_poll_rejected_even_without_owner_required relay =
+    (* Ownership mismatch rejects regardless of [require_owner]: a verified
+       signer may never touch someone else's session, dev mode included. *)
+    let _ = prime_victim_inbox relay in
+    let status, json =
+      run_handler
+        (RS.handle_poll_inbox relay ~verified_alias:(Some "attacker")
+           ~require_owner:false victim_body)
+    in
+    Alcotest.(check int) "handler refuses cross-alias poll" 403 status;
+    Alcotest.(check string) "ownership mismatch uses signature error"
+      Relay.relay_err_signature_invalid
+      (json_string_field "error_code" json);
+    Alcotest.(check int) "refused poll did NOT drain the inbox" 1
+      (owner_handler_message_count relay)
+
   let test_dev_unsigned_poll_still_allowed relay =
     (* Development-only escape: with NO Bearer token configured the relay is
        in dev mode (auth_mode "dev" in /health) and unsigned poll keeps the
@@ -343,6 +408,24 @@ let b115_prod_tests = [
     sqlite_prod Sqlite_http.test_prod_owner_signed_peek_ok;
   "SQLite dev: unsigned poll still allowed (no token)", `Quick,
     sqlite_prod Sqlite_http.test_dev_unsigned_poll_still_allowed;
+  "InMemory handler: unverified poll rejected (owner required)", `Quick,
+    in_memory_prod
+      In_memory_http.test_handler_unverified_poll_rejected_when_owner_required;
+  "InMemory handler: unverified peek rejected (owner required)", `Quick,
+    in_memory_prod
+      In_memory_http.test_handler_unverified_peek_rejected_when_owner_required;
+  "InMemory handler: cross-alias poll rejected (owner not required)", `Quick,
+    in_memory_prod
+      In_memory_http.test_handler_cross_alias_poll_rejected_even_without_owner_required;
+  "SQLite handler: unverified poll rejected (owner required)", `Quick,
+    sqlite_prod
+      Sqlite_http.test_handler_unverified_poll_rejected_when_owner_required;
+  "SQLite handler: unverified peek rejected (owner required)", `Quick,
+    sqlite_prod
+      Sqlite_http.test_handler_unverified_peek_rejected_when_owner_required;
+  "SQLite handler: cross-alias poll rejected (owner not required)", `Quick,
+    sqlite_prod
+      Sqlite_http.test_handler_cross_alias_poll_rejected_even_without_owner_required;
 ]
 
 let prefix_len = 14

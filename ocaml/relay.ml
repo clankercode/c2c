@@ -2436,6 +2436,25 @@ module Relay_server(R : RELAY) : sig
     ed25519_verified:bool ->
     bool * string option
 
+  (* B115: inbox read handlers — exposed for unit testing the owner gate
+     independently of the outer route classifier (defense in depth).
+     [require_owner] mirrors [token <> None] at the dispatch site: on a
+     token-configured (prod) relay an unverified request must be refused
+     here even if the route classifier ever regresses. *)
+  val handle_poll_inbox :
+    R.t ->
+    verified_alias:string option ->
+    require_owner:bool ->
+    Yojson.Safe.t ->
+    Cohttp_lwt_unix.Server.response Lwt.t
+
+  val handle_peek_inbox :
+    R.t ->
+    verified_alias:string option ->
+    require_owner:bool ->
+    Yojson.Safe.t ->
+    Cohttp_lwt_unix.Server.response Lwt.t
+
   val start_server :
     host:string ->
     port:int ->
@@ -3165,7 +3184,15 @@ end = struct
             end
       end
 
-  let handle_poll_inbox relay ~verified_alias body =
+  (* B115: /poll_inbox and /peek_inbox expose inbox contents, so they are
+     bound to a verified owner. [require_owner] is true whenever the relay
+     runs with a Bearer token configured (auth_mode "prod" in /health); in
+     that mode an unverified request is rejected here even if the outer
+     route classifier ever regresses (defense in depth — auth_decision
+     already refuses these routes without a verified Ed25519 header).
+     The unverified legacy path survives ONLY in dev mode (no token
+     configured), the explicit development-only setting. *)
+  let handle_inbox_read relay ~verified_alias ~require_owner ~route ~read body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     if node_id = "" || session_id = "" then
@@ -3175,29 +3202,24 @@ end = struct
       | Some v ->
         (match R.alias_of_session relay ~node_id ~session_id with
          | Some owner when owner = v ->
-           let msgs = R.poll_inbox relay ~node_id ~session_id in
+           let msgs = read relay ~node_id ~session_id in
            respond_ok (json_ok [ ("messages", `List msgs) ])
          | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
       | None ->
-        let msgs = R.poll_inbox relay ~node_id ~session_id in
-        respond_ok (json_ok [ ("messages", `List msgs) ])
+        if require_owner then
+          respond_unauthorized (json_error_str err_unauthorized
+            (route ^ " requires an Ed25519-signed request from the session owner"))
+        else
+          let msgs = read relay ~node_id ~session_id in
+          respond_ok (json_ok [ ("messages", `List msgs) ])
 
-  let handle_peek_inbox relay ~verified_alias body =
-    let node_id = get_string body "node_id" in
-    let session_id = get_string body "session_id" in
-    if node_id = "" || session_id = "" then
-      respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
-    else
-      match verified_alias with
-      | Some v ->
-        (match R.alias_of_session relay ~node_id ~session_id with
-         | Some owner when owner = v ->
-           let msgs = R.peek_inbox relay ~node_id ~session_id in
-           respond_ok (json_ok [ ("messages", `List msgs) ])
-         | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
-      | None ->
-        let msgs = R.peek_inbox relay ~node_id ~session_id in
-        respond_ok (json_ok [ ("messages", `List msgs) ])
+  let handle_poll_inbox relay ~verified_alias ~require_owner body =
+    handle_inbox_read relay ~verified_alias ~require_owner
+      ~route:"poll_inbox" ~read:R.poll_inbox body
+
+  let handle_peek_inbox relay ~verified_alias ~require_owner body =
+    handle_inbox_read relay ~verified_alias ~require_owner
+      ~route:"peek_inbox" ~read:R.peek_inbox body
 
   let handle_remote_inbox session_id =
     let msgs = Relay_remote_broker.get_messages ~session_id in
@@ -4454,13 +4476,17 @@ end = struct
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_poll_inbox relay ~verified_alias j)
+         | Ok j ->
+           handle_poll_inbox relay ~verified_alias
+             ~require_owner:(token <> None) j)
 
       | `POST, "/peek_inbox" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_peek_inbox relay ~verified_alias j)
+         | Ok j ->
+           handle_peek_inbox relay ~verified_alias
+             ~require_owner:(token <> None) j)
 
       | `POST, "/join_room" ->
         let json = parse_body () in
