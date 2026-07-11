@@ -99,10 +99,59 @@ module InMemoryRelay : RELAY = struct
        close_out oc
      with _ -> ())
 
+  (* B117: per-room metadata (visibility + history_public) persisted alongside
+     the history jsonl so a persist_dir-backed InMemoryRelay retains the
+     policy across a restart. Without this, a restart reloads room history but
+     defaults visibility/history_public, re-opening a deliberately-closed
+     room's history to anonymous readers. *)
+  let room_meta_json_path persist_dir room_id =
+    Filename.concat (Filename.concat persist_dir ("rooms/" ^ room_id)) "meta.json"
+
+  let write_room_meta persist_dir room_id ~visibility ~history_public =
+    let path = room_meta_json_path persist_dir room_id in
+    let dir = Filename.dirname path in
+    (try
+       C2c_io.mkdir_p dir;
+       let j = `Assoc [
+         ("visibility", `String visibility);
+         ("history_public", `Bool history_public);
+       ] in
+       let tmp = path ^ ".tmp" in
+       let oc = open_out tmp in
+       output_string oc (Yojson.Safe.to_string j);
+       close_out oc;
+       Sys.rename tmp path
+     with _ -> ())
+
+  let load_room_meta_from_disk persist_dir room_visibility room_history_public =
+    let rooms_dir = Filename.concat persist_dir "rooms" in
+    if not (Sys.file_exists rooms_dir) then ()
+    else begin
+      let entries = try Array.to_list (Sys.readdir rooms_dir) with Sys_error _ -> [] in
+      List.iter (fun room_id ->
+        let path = room_meta_json_path persist_dir room_id in
+        if Sys.file_exists path then
+          try
+            let j = Yojson.Safe.from_file path in
+            (match Yojson.Safe.Util.member "visibility" j with
+             | `String v -> Hashtbl.replace room_visibility room_id (canonical_visibility_or_raw v)
+             | _ -> ());
+            (match Yojson.Safe.Util.member "history_public" j with
+             | `Bool b -> Hashtbl.replace room_history_public room_id b
+             | _ -> ())
+          with _ -> ()
+      ) entries
+    end
+
   let create ?(dedup_window = 10000) ?persist_dir ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
     let room_history = Hashtbl.create 16 in
     (* Load persisted room history on startup *)
     Option.iter (fun d -> load_room_history_from_disk d room_history) persist_dir;
+    (* B117: reload persisted per-room metadata (visibility + history_public)
+       so the policy survives a restart on the persist_dir-backed path. *)
+    let room_visibility = Hashtbl.create 16 in
+    let room_history_public = Hashtbl.create 16 in
+    Option.iter (fun d -> load_room_meta_from_disk d room_visibility room_history_public) persist_dir;
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = Option.map (fun d -> Filename.concat d "relay-server-identity.json") persist_dir in
     let identity =
@@ -118,8 +167,8 @@ module InMemoryRelay : RELAY = struct
       inboxes = Hashtbl.create 16;
       dead_letter = Queue.create ();
       rooms = Hashtbl.create 16;
-      room_visibility = Hashtbl.create 16;
-      room_history_public = Hashtbl.create 16;
+      room_visibility;
+      room_history_public;
       room_invites = Hashtbl.create 16;
       room_knocks = Hashtbl.create 16;
       allowed_identities = Hashtbl.create 16;
@@ -577,6 +626,18 @@ module InMemoryRelay : RELAY = struct
   let add_dead_letter t msg =
     with_lock t (fun () -> Queue.add msg t.dead_letter)
 
+  (* B117: flush a room's visibility + history_public to disk (no-op without a
+     persist_dir). Call after any mutation of either field, under the lock. *)
+  let persist_room_meta t room_id =
+    match t.persist_dir with
+    | None -> ()
+    | Some d ->
+      let visibility = match Hashtbl.find_opt t.room_visibility room_id with
+        | Some v -> canonical_visibility_or_raw v | None -> "public" in
+      let history_public = match Hashtbl.find_opt t.room_history_public room_id with
+        | Some b -> b | None -> history_public_default_for_visibility visibility in
+      write_room_meta d room_id ~visibility ~history_public
+
   let join_room t ?(visibility = "public") ~alias ~room_id () =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
@@ -599,7 +660,8 @@ module InMemoryRelay : RELAY = struct
           (* B117: seed the history_public default from the creation
              visibility (public/unlisted → true, gated/private → false). *)
           Hashtbl.replace t.room_history_public room_id
-            (history_public_default_for_visibility visibility)
+            (history_public_default_for_visibility visibility);
+          persist_room_meta t room_id
         end;
         let already_member = List.mem alias members in
         let members' = if already_member then members else alias :: members in
@@ -721,7 +783,8 @@ module InMemoryRelay : RELAY = struct
          history_public on a downgrade. public/unlisted preserve the current
          stored value (never silently re-open a deliberately-closed room). *)
       if visibility = "gated" || visibility = "private" then
-        Hashtbl.replace t.room_history_public room_id false)
+        Hashtbl.replace t.room_history_public room_id false;
+      persist_room_meta t room_id)
 
   (* B117: default per visibility when no explicit value has been stored. *)
   let history_public_of t ~room_id =
@@ -735,7 +798,8 @@ module InMemoryRelay : RELAY = struct
 
   let set_room_history_public t ~room_id ~history_public =
     with_lock t (fun () ->
-      Hashtbl.replace t.room_history_public room_id history_public)
+      Hashtbl.replace t.room_history_public room_id history_public;
+      persist_room_meta t room_id)
 
   let invite_to_room t ~room_id ~identity_pk_b64 =
     with_lock t (fun () ->

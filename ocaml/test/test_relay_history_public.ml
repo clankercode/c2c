@@ -86,6 +86,39 @@ let test_mem_visibility_downgrade_clears () =
   check bool "gated->public preserves cleared history_public" false
     (Relay.InMemoryRelay.history_public_of t ~room_id:"flip")
 
+let test_mem_persists_across_restart () =
+  (* B117 (review blocker): a persist_dir-backed InMemoryRelay must retain the
+     history_public policy across a restart — otherwise a deliberately-closed
+     public room re-opens to anonymous readers on reboot. *)
+  with_temp_dir (fun dir ->
+    (let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+     register_and_join_mem t ~alias:"alice" ~room_id:"mem-persist" ~visibility:"public";
+     Relay.InMemoryRelay.set_room_history_public t ~room_id:"mem-persist" ~history_public:false;
+     check bool "closed before restart" false
+       (Relay.InMemoryRelay.history_public_of t ~room_id:"mem-persist"));
+    (* Fresh relay on the same persist_dir — the setting AND visibility must
+       reload so open_read stays closed. *)
+    let t2 = Relay.InMemoryRelay.create ~persist_dir:dir () in
+    check bool "history_public=false survives restart" false
+      (Relay.InMemoryRelay.history_public_of t2 ~room_id:"mem-persist");
+    check string "visibility survives restart" "public"
+      (Relay.InMemoryRelay.room_visibility_of t2 ~room_id:"mem-persist"))
+
+let test_mem_visibility_downgrade_persists () =
+  (* A gated/private downgrade clears history_public and that clear must
+     survive a restart too. *)
+  with_temp_dir (fun dir ->
+    (let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+     register_and_join_mem t ~alias:"alice" ~room_id:"mem-dg" ~visibility:"public";
+     Relay.InMemoryRelay.set_room_visibility t ~room_id:"mem-dg" ~visibility:"gated";
+     check bool "cleared before restart" false
+       (Relay.InMemoryRelay.history_public_of t ~room_id:"mem-dg"));
+    let t2 = Relay.InMemoryRelay.create ~persist_dir:dir () in
+    check bool "downgrade-cleared value survives restart" false
+      (Relay.InMemoryRelay.history_public_of t2 ~room_id:"mem-dg");
+    check string "downgraded visibility survives restart" "gated"
+      (Relay.InMemoryRelay.room_visibility_of t2 ~room_id:"mem-dg"))
+
 let test_mem_unknown_room_default () =
   let t = Relay.InMemoryRelay.create () in
   (* No such room stored: default is open (public default), matching the
@@ -193,6 +226,8 @@ let () =
         test_case "private defaults false" `Quick test_mem_private_defaults_false;
         test_case "set history_public false/true" `Quick test_mem_set_history_public_false;
         test_case "visibility downgrade clears" `Quick test_mem_visibility_downgrade_clears;
+        test_case "persists across restart" `Quick test_mem_persists_across_restart;
+        test_case "downgrade persists across restart" `Quick test_mem_visibility_downgrade_persists;
         test_case "unknown room default" `Quick test_mem_unknown_room_default;
       ];
       "SqliteRelay", [
