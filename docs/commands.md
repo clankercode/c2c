@@ -711,13 +711,13 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 
 ### Setup & onboarding (Tier 2/3)
 
-`init` is Tier 2 lifecycle/setup. `install` and `uninstall` are Tier 3 operator commands; agents should normally use the MCP surface already configured by `c2c install`.
+`init` is Tier 2 lifecycle/setup. `install` and `uninstall` are Tier 3 operator commands. Client MCP is never installed by default — use `c2c install <client>` (or `c2c init --with-mcp`) only when deliberately enabling MCP. CLI messaging (`c2c send` / `c2c monitor` / `c2c poll-inbox`) works without MCP.
 
 | Subcommand | Tier | Description |
 |------------|------|-------------|
-| `install` (no subcommand) | 3 | Interactive TUI: detect installed clients, configure each (default behaviour: install binary + every detected client). |
-| `install self [--dest DIR] [--mcp-server]` | 3 | Install the running c2c binary to `~/.local/bin`. |
-| `install all` | 3 | Scriptable equivalent of the install TUI default — install binary + auto-configure every detected client. Prints restart guidance and `Run 'c2c ping --verify' to confirm delivery is live`. |
+| `install` (no subcommand) | 3 | Interactive TUI: binary-only by default. Client MCP/hooks are never pre-selected (B122); press `c` to customize (client prompts default to no). |
+| `install self [--dest DIR] [--mcp-server]` | 3 | Install the running c2c binary to `~/.local/bin`. Optional `--mcp-server` also installs `c2c-mcp-server` (OCaml). |
+| `install all [--with-clients]` | 3 | Scriptable binary install only by default. Does **not** configure client MCP unless `--with-clients` (explicit bulk opt-in). Prefer `c2c install <client>`. |
 | `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | 3 | Configure one client for c2c messaging (writes the client's MCP config + auto-join + auto-register env vars). `claude` also wires hooks into `~/.claude/settings.json`: PostToolUse (drain), Stop (text-only-turn delivery), and SessionStart/SessionEnd (`~/.claude/hooks/c2c-session-hook.sh` running `c2c hook claude` — onboarding/wake text, cold-boot + post-compact context, message drain, deregister-on-end). `claude` and `codex` also install the embedded `/c2c` skill (`~/.claude/skills/c2c/SKILL.md` / `~/.codex/skills/c2c/SKILL.md`; both copies auto-refresh on SessionStart via the c2c hooks). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. |
 | `install git-hook [--dry-run]` | 3 | Install the c2c pre-commit hook into `.git/hooks`. |
 | `uninstall claude [--target-dir DIR]` | 3 | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` — including `c2c-session-hook.sh` — and the PostToolUse/Stop/SessionStart/SessionEnd entries in `~/.claude/settings.json`). |
@@ -728,7 +728,7 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `uninstall git-hook` | 3 | Remove the c2c pre-commit/pre-push hooks from `.git/hooks` only if they match the c2c source. |
 | `uninstall git-shim` | 3 | Remove the swarm git shim binaries from `$XDG_STATE_HOME/c2c/bin/` and per-instance copies. |
 | `uninstall all` | 3 | Uninstall every component above (clients first, then git pieces, then `self` last). |
-| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | 2 | One-command project onboarding: configure client MCP, register, join `swarm-lounge` (or `--room`). Run once per project. On success, prints `Run 'c2c ping --verify' to confirm delivery is live`. |
+| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup] [--with-mcp] [--hooks]` | 2 | One-command project onboarding: register + join `swarm-lounge` (or `--room`). MCP/hooks are **off by default** — pass `--with-mcp` / `--hooks` deliberately. CLI messaging works without MCP. |
 
 All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (machine-readable output). `uninstall` also accepts `--target-dir DIR` for project-scoped clients and `--alias A` to locate the wake schedule when the install manifest is missing.
 
@@ -1085,7 +1085,7 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `git [ARG…]` | Git wrapper that auto-injects `--author` when `git.attribution=true` in `.c2c/config.toml`. |
 | `install [--client CLIENT] [--dry-run]` | Install c2c binary and/or client integrations. |
 | `install self [--dest DIR] [--mcp-server]` | Install the c2c binary to `~/.local/bin`. |
-| `install all [--dry-run]` | Install binary + configure all detected clients. |
+| `install all [--dry-run] [--with-clients]` | Install binary only by default; `--with-clients` opts into configuring detected clients. |
 | `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client. Prints an install summary and `c2c uninstall <component>` hint. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
 | `uninstall claude\|codex\|kimi\|opencode\|self\|git-hook\|git-shim\|all [--dry-run] [--json] [--target-dir DIR] [--alias A]` | Remove c2c artifacts for a component. Manifest-driven with recompute fallback; shared files are surgically stripped. |

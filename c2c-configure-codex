@@ -1,3 +1,12 @@
 #!/usr/bin/env bash
+# Deprecated user-facing wrapper (B122). Python configure paths are retired.
 set -euo pipefail
-exec "$(dirname "$(readlink -f "$0")")/c2c_configure_codex.py" "$@"
+cat >&2 <<'EOF'
+error: c2c-configure-codex is retired (Python MCP path).
+
+Use the OCaml installer instead:
+  c2c install codex
+
+MCP server binary: c2c-mcp-server (not python3 c2c_mcp.py)
+EOF
+exit 1

@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Deprecated user-facing wrapper (B122). crush is also a retired client.
 set -euo pipefail
-SCRIPT_DIR="$(dirname "$0")"
-exec python3 "$SCRIPT_DIR/c2c_configure_crush.py" "$@"
+cat >&2 <<'EOF'
+error: c2c-configure-crush is retired.
+
+crush is no longer a supported c2c client. Use:
+  c2c install claude|codex|opencode|kimi|grok
+EOF
+exit 1

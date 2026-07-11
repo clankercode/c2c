@@ -472,7 +472,7 @@ let connect_dashboard ~root ~broker ~output_mode =
     if not root_exists then
       "broker root not found — run 'c2c init' to get started"
     else if not any_configured then
-      "no clients configured — run 'c2c install <client>' (or 'c2c install all')"
+      "no clients configured — run 'c2c install <client>' (explicit MCP opt-in)"
     else if not all_installed then
       let missing = List.filter (fun c -> client_status c <> `Installed) supported_clients in
       Printf.sprintf "partially configured — run 'c2c install %s' for missing clients"

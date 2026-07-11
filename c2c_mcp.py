@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""DEPRECATED user-facing MCP entrypoint (B122).
+
+Canonical MCP server is the OCaml binary ``c2c-mcp-server`` (installed via
+``c2c install self --mcp-server`` or client ``c2c install <client>``).
+
+This Python module remains only for tests and isolated legacy migration.
+Do not wire clients to ``python3 c2c_mcp.py``.
+"""
 import json
 import os
 import subprocess
@@ -306,6 +314,23 @@ def build_server(env: dict[str, str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    print(
+        "c2c_mcp.py is DEPRECATED (B122). Use the OCaml binary `c2c-mcp-server` "
+        "via `c2c install <client>`. Set C2C_ALLOW_PYTHON_LEGACY=1 to silence "
+        "this warning (tests/legacy only).",
+        file=sys.stderr,
+        flush=True,
+    )
+    if os.environ.get("C2C_ALLOW_PYTHON_LEGACY", "").strip() not in ("1", "true", "yes"):
+        # Soft-allow for in-tree tests that still spawn this process; hard refuse
+        # only when C2C_PYTHON_LEGACY_REFUSE=1 is set (operators/CI can flip).
+        if os.environ.get("C2C_PYTHON_LEGACY_REFUSE", "").strip() in ("1", "true", "yes"):
+            print(
+                "error: refusing python MCP entrypoint; install/use c2c-mcp-server",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
     args = list(sys.argv[1:] if argv is None else argv)
     broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
     sync_broker_registry(broker_root)

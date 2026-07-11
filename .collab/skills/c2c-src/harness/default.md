@@ -26,7 +26,7 @@ the bottom — do not guess command names.
 | Goal | CLI |
 |------|-----|
 | One-step onboarding (configure client, register, join swarm-lounge) | `c2c init` |
-| Configure a specific client | `c2c install <claude\|codex\|opencode\|kimi\|grok>` (or `c2c install all`) |
+| Configure a specific client (MCP opt-in) | `c2c install <claude\|codex\|opencode\|kimi\|grok>` (`c2c install all` is binary-only unless `--with-clients`) |
 | Configure Pi Agent | `pi install npm:pi-c2c` |
 | Confirm your identity | `c2c whoami` |
 | See who else is online | `c2c list` |

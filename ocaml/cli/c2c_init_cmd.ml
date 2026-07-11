@@ -689,22 +689,22 @@ let upgrade_alias =
 
 let install =
   let info = Cmdliner.Cmd.info "install"
-    ~doc:"Install c2c — binary and/or client integrations."
+    ~doc:"Install c2c — binary by default; client MCP is explicit opt-in."
     ~man:
       [ `S "DESCRIPTION"
-      ; `P "With no subcommand, $(b,c2c install) runs an interactive TUI that \
-            detects which clients are on PATH and offers to configure each. \
-            Press $(b,Enter) to accept the defaults (install c2c binary + \
-            configure detected clients that aren't already set up; Codex is \
-            opt-in), \
-            $(b,c) to customize, or $(b,n) to abort."
+      ; `P "With no subcommand, $(b,c2c install) runs an interactive TUI. \
+            Defaults are $(b,binary-only): install the c2c CLI if missing. \
+            Client MCP/hooks are never selected by default (B122). Press \
+            $(b,Enter) for binary-only, $(b,c) to customize (client prompts \
+            default to no), or $(b,n) to abort."
       ; `P
-          ("Use the subcommands for scriptable (non-interactive) installs: \
-            $(b,c2c install self) installs only the binary; \
-            $(b,c2c install " ^ C2c_setup.install_client_pipe_list ^ ") configures one \
-            client; $(b,c2c install all) does the same as the TUI's default \
-            path without prompting. Codex is always explicit: use \
-            $(b,c2c install codex).")
+          ("Scriptable installs: $(b,c2c install self) installs only the binary \
+            (add $(b,--mcp-server) to also install $(b,c2c-mcp-server)); \
+            $(b,c2c install " ^ C2c_setup.install_client_pipe_list ^ ") configures \
+            one client deliberately; $(b,c2c install all) installs the binary only \
+            unless $(b,--with-clients) is passed. Prefer naming a single client. \
+            Claude $(b,--global) (writes $(b,~/.claude.json)) is advanced and never \
+            implied.")
       ]
   in
   Cmdliner.Cmd.group ~default:C2c_setup.install_default_term info
