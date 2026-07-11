@@ -462,7 +462,38 @@ let hook_codex_cmd =
              installer alias hint is used only after step 2 proves a managed
              `c2c start codex` owns this payload thread; vanilla codex exec
              sessions get a fresh per-thread alias instead. *)
+       (* True when [sid] resolves to a live codex-family registration — the
+          launcher/hook already owns this identity. Guards managed-env adoption
+          so a codex subprocess that merely inherited another client's
+          C2C_MCP_SESSION_ID (e.g. a codex spawned inside managed claude) can
+          never hijack that non-codex identity. *)
+       let managed_codex_family_reg sid =
+         List.exists
+           (fun (r : C2c_mcp.registration) ->
+              r.session_id = sid
+              && (r.client_type = Some "codex-app-server"
+                  || r.client_type = Some "codex"))
+           (regs ())
+       in
        let resolved =
+         (* B137: a managed `c2c new codex` app-server frontend hands its broker
+            session id to its hooks via the inherited env marker
+            C2C_CODEX_APPSERVER_SESSION (exported by C2c_codex_session.run_app_server
+            BEFORE the frontend is spawned; reset on hook-fallback so only a live
+            app-server frontend carries it). That session is the identity the
+            app-server deliver loop (C2c_codex_ingress) already owns. Adopt it
+            directly and unconditionally — a real app-server session sets NO
+            C2C_MCP_SESSION_ID and its thread->instance mapping (step2) is not the
+            legacy config.json the hook reads, so it otherwise resolves as VANILLA
+            and mints a SECOND per-thread identity (the B137 dual-identity). The
+            marker is race-free (does not depend on the launcher's broker
+            registration having landed yet) and unambiguous (set only by the
+            app-server launcher), so it is the most authoritative signal. *)
+         let step_appserver_marker () =
+           match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
+           | Some s when String.trim s <> "" -> Some (String.trim s)
+           | _ -> None
+         in
          let step1 =
            match payload_sid with
            | Some sid when registered sid -> Some sid
@@ -474,6 +505,21 @@ let hook_codex_cmd =
            | None -> None
            | Some _ -> None
          in
+         (* Hook-fallback managed codex (NOT app-server): build_env sets
+            C2C_MCP_SESSION_ID to the managed session id under which a prior fire
+            (or the MCP server auto-register) already registered. Adopt it rather
+            than mint a duplicate per-thread identity. Runs even when a payload
+            session_id is present (unlike step3), reads env ONLY (no statefile
+            fallback), and is gated on a codex-family client_type so a codex
+            subprocess that merely inherited another client's C2C_MCP_SESSION_ID
+            (e.g. codex spawned inside managed claude) cannot hijack that
+            identity. App-server sessions set no C2C_MCP_SESSION_ID, so this step
+            is for the hook-fallback path only. *)
+         let step_managed_env () =
+           match C2c_mcp.session_id_from_env () with
+           | Some sid when managed_codex_family_reg sid -> Some sid
+           | _ -> None
+         in
           let step3 () =
             match payload_sid with
             | Some _ -> None
@@ -482,15 +528,21 @@ let hook_codex_cmd =
                  | Some sid when registered sid -> Some sid
                  | _ -> None)
           in
-         match step1 with
+         match step_appserver_marker () with
+         | Some _ as r -> r
+         | None ->
+         (match step1 with
          | Some _ -> step1
          | None ->
              (match step2 () with
               | Some _ as r -> r
               | None ->
-                  (match step3 () with
+                  (match step_managed_env () with
                    | Some _ as r -> r
-                   | None -> None))
+                   | None ->
+                       (match step3 () with
+                        | Some _ as r -> r
+                        | None -> None))))
        in
        let session_id, onboarded_alias =
          match resolved with
@@ -562,6 +614,26 @@ let hook_codex_cmd =
                          ~session_id:sid ~alias ~client:(Some "codex"));
                   (sid, Some alias))
        in
+       (* B137: is this an app-server-backed managed codex session? Detected by
+          the inherited launcher marker (C2C_CODEX_APPSERVER_SESSION — present
+          even before the launcher's broker registration lands, so the earliest
+          hook fire is covered too) OR by the resolved session already carrying a
+          "codex-app-server" registration. For such a session the app-server
+          C2c_codex_ingress loop owns delivery and the launcher owns the
+          registration — the hook is IDENTITY-ONLY (adopted above; it does not
+          register, drain, or touch wake targets). Hook-fallback managed codex
+          (client_type "codex") is NOT ingress-owned — hooks remain its delivery
+          + wake path. *)
+       let ingress_owned =
+         (match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
+          | Some s when String.trim s <> "" -> true
+          | _ -> false)
+         || List.exists
+              (fun (r : C2c_mcp.registration) ->
+                 r.session_id = session_id
+                 && r.client_type = Some "codex-app-server")
+              (regs ())
+       in
        (* Wake-target capture (codex-wake-inject): the hook runs with the
           codex process's env, so $TMUX/$TMUX_PANE and $HERDR_PANE_ID /
           $HERDR_SOCKET_PATH identify this session's pane for BOTH vanilla
@@ -584,8 +656,13 @@ let hook_codex_cmd =
          && not (C2c_wake_inject.binding_owns_current_process
                    ~broker_root ~session_id)
        in
-       (if event = "SessionStart" || Option.is_some onboarded_alias
-           || binding_moved then begin
+       (* Never refresh wake targets for an app-server session: it delivers via
+          the ingress loop (not wake-inject), so the targets are unused, and a
+          NESTED codex that inherited the marker could otherwise overwrite the
+          parent registration's pane. *)
+       (if (not ingress_owned)
+           && (event = "SessionStart" || Option.is_some onboarded_alias
+               || binding_moved) then begin
           let tmux_location, herdr_pane, herdr_socket =
             C2c_wake_inject.refresh_wake_targets ~broker_root ~session_id ()
           in
@@ -605,7 +682,20 @@ let hook_codex_cmd =
           are handled inside the broker drain. *)
        let full_drain = event = "SessionStart" || event = "UserPromptSubmit" in
        let repo_broker, messages =
-         if full_drain then begin
+         if ingress_owned then
+           (* B137: app-server session — the hook drains NOTHING. The
+              C2c_codex_ingress loop owns arrival-time delivery of the repo
+              inbox; a second drainer here would race it and steal messages
+              before injection. The global cross-repo inbox is deliberately not
+              drained either: doing so from the frontend hook would let a NESTED
+              codex that inherited C2C_CODEX_APPSERVER_SESSION consume mail
+              addressed to the parent app-server identity (misrouting into the
+              wrong transcript). Global-inbox delivery for app-server sessions
+              belongs to a future extension of the ingress loop, not this hook.
+              Identity was still adopted above, so no duplicate registration is
+              created — which is all B137 requires of the hook. *)
+           (Some broker, [])
+         else if full_drain then begin
            let repo_messages =
              if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then []
              else C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id

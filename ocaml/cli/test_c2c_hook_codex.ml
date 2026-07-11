@@ -164,6 +164,16 @@ let register ?(pid = Some (Unix.getpid ())) ?(from_auto_gen = false) ctx
     ~client_type:(Some "codex") ~from_auto_gen ();
   b
 
+(* Register a managed app-server launcher identity: session_id = managed sid,
+   client_type = "codex-app-server" (as C2c_codex_session.run_delivery_loop
+   does). Returns the broker handle. *)
+let register_app_server ?(pid = Some (Unix.getpid ())) ctx ~session_id ~alias =
+  let b = broker ctx in
+  let pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid in
+  C2c_mcp.Broker.register b ~session_id ~alias ~pid ~pid_start_time
+    ~client_type:(Some "codex-app-server") ();
+  b
+
 let write_codex_config_alias ctx alias =
   mkdir_p (ctx.home // ".codex");
   write_file (ctx.home // ".codex" // "config.toml")
@@ -510,6 +520,243 @@ let test_managed_session_auto_register_honors_installer_alias_hint () =
               check bool "onboarding mentions managed alias" true
                 (contains ~haystack:context ~needle:hint_alias)
           | None -> failf "expected managed onboarding output, got: %S" stdout)))
+
+(* --- B137: managed app-server frontend adopts launcher identity (no dual-id) --
+
+   A real managed `c2c new codex` app-server session, as it appears to the hook
+   (per the B136 live finding): it sets NO C2C_MCP_SESSION_ID, its thread does
+   NOT map through the legacy config.json (managed_sid_for_payload = None), and
+   its broker registration is under the managed instance name (client_type
+   "codex-app-server") — NOT the payload thread id. The launcher instead hands
+   the hook its identity via the inherited marker C2C_CODEX_APPSERVER_SESSION.
+   The frontend's `c2c hook codex` fires with a payload session_id = codex
+   thread-id. The hook must ADOPT the launcher identity via the marker (not mint
+   a second per-thread identity) AND must not drain the launcher inbox (the
+   ingress loop owns arrival-time delivery). *)
+let test_b137_managed_app_server_adopts_launcher_alias () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-b137-appserver" in
+    let thread_id = "codex-thread-b137-fresh" in
+    let launcher_alias = "zz-codex-b137-launcher" in
+    let b = register_app_server ctx ~session_id:managed_sid ~alias:launcher_alias in
+    ignore (register ctx ~session_id:"codex-b137-peer" ~alias:"zz-codex-b137-peer");
+    (* Mail addressed to the launcher identity: the ingress loop owns delivery,
+       so the hook must leave it queued. *)
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-b137-peer"
+      ~to_alias:launcher_alias ~content:"ingress owns this" ();
+    let regs_before = C2c_mcp.Broker.list_registrations (broker ctx) in
+    let rc, stdout, stderr =
+      run_hook
+        (* Real app-server env: managed marker + launcher session marker, and
+           deliberately NO C2C_MCP_SESSION_ID (app-server does not set it). *)
+        ~extra_env:
+          [ ("C2C_CODEX_MANAGED", "1")
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid) ]
+        ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    let regs_after = C2c_mcp.Broker.list_registrations (broker ctx) in
+    (* No second identity: nothing registered under the payload thread id. *)
+    check bool "no payload-thread fork" false
+      (List.exists
+         (fun (r : C2c_mcp.registration) -> r.session_id = thread_id)
+         regs_after);
+    (* The launcher registration is untouched and still the only one for it. *)
+    check int "exactly one registration for the managed session" 1
+      (List.length
+         (List.filter
+            (fun (r : C2c_mcp.registration) -> r.session_id = managed_sid)
+            regs_after));
+    check int "registration count unchanged" (List.length regs_before)
+      (List.length regs_after);
+    (match
+       List.find_opt
+         (fun (r : C2c_mcp.registration) -> r.session_id = managed_sid)
+         regs_after
+     with
+     | Some r ->
+         check string "launcher alias preserved" launcher_alias r.alias;
+         check (option string) "launcher client_type preserved"
+           (Some "codex-app-server") r.client_type
+     | None -> failf "launcher registration vanished (stderr %S)" stderr);
+    (* Ingress-owned: the hook must not drain the launcher inbox. *)
+    check int "launcher inbox NOT drained by hook" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
+    check bool "message body not surfaced by hook" false
+      (contains ~haystack:stdout ~needle:"ingress owns this"))
+
+(* Race window: the earliest SessionStart hook can fire BEFORE the app-server
+   deliver loop has landed its broker registration. The marker is inherited from
+   process spawn, so it is present even then. The hook must still adopt it (no
+   per-thread fork) and must not drain — otherwise fire-1 forks a vanilla
+   identity and fire-2 (post-registration) adopts the launcher, leaving the
+   dual-identity B137 is meant to kill. *)
+let test_b137_app_server_marker_adopts_before_registration () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-b137-prereg" in
+    let thread_id = "codex-thread-b137-prereg" in
+    let rc, _stdout, _stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_MANAGED", "1")
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid) ]
+        ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    let regs = C2c_mcp.Broker.list_registrations (broker ctx) in
+    (* Hook created NO registration: not under the thread id (no fork)... *)
+    check bool "no payload-thread fork before registration" false
+      (List.exists
+         (fun (r : C2c_mcp.registration) -> r.session_id = thread_id)
+         regs);
+    (* ...and not under the managed sid either (the launcher, not the hook,
+       owns that registration). *)
+    check int "hook self-registers nothing" 0 (List.length regs))
+
+(* The app-server hook is identity-only: it drains NOTHING (neither the repo
+   inbox — owned by the ingress loop — nor the global cross-repo inbox). The
+   global skip is deliberate: draining it from the frontend hook would let a
+   NESTED codex that inherited C2C_CODEX_APPSERVER_SESSION steal cross-repo mail
+   addressed to the parent identity. Regression guard for the codex-review
+   MEDIUM (marker leak → nested theft) — and, symmetrically, proof there is no
+   double-drain vs the ingress loop. *)
+let test_b137_app_server_hook_drains_nothing () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-b137-global" in
+    let thread_id = "codex-thread-b137-global" in
+    let launcher_alias = "zz-codex-b137-global-recv" in
+    let b = register_app_server ctx ~session_id:managed_sid ~alias:launcher_alias in
+    ignore (register ctx ~session_id:"codex-b137-global-peer" ~alias:"zz-codex-b137-gpeer");
+    (* Seed a wake target on the launcher registration; a nested marker-bearing
+       hook fired from a different pane must NOT overwrite it. *)
+    C2c_mcp.Broker.update_wake_targets b ~session_id:managed_sid
+      ~tmux_location:(Some "%5") ();
+    (* Repo inbox message — ingress owns it, hook must NOT drain. *)
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-b137-gpeer"
+      ~to_alias:launcher_alias ~content:"repo owned by ingress" ();
+    (* Global (cross-repo) inbox message — the hook must NOT drain it either
+       (a nested codex would otherwise steal it). *)
+    let global = C2c_mcp.Broker.create ~root:ctx.global_root in
+    let pid = Some (Unix.getpid ()) in
+    let pst = C2c_mcp.Broker.capture_pid_start_time pid in
+    C2c_mcp.Broker.register global ~session_id:managed_sid ~alias:launcher_alias
+      ~pid ~pid_start_time:pst ();
+    C2c_mcp.Broker.register global ~session_id:"codex-b137-global-peer"
+      ~alias:"zz-codex-b137-gpeer" ~pid ~pid_start_time:pst ();
+    C2c_mcp.Broker.enqueue_message global ~from_alias:"zz-codex-b137-gpeer"
+      ~to_alias:launcher_alias ~content:"cross-repo stays queued" ();
+    let regs_before = List.length (C2c_mcp.Broker.list_registrations (broker ctx)) in
+    let rc, stdout, stderr =
+      run_hook
+        (* thread_id here is NOT the launcher's registered session — i.e. the
+           same shape as a NESTED codex that inherited the marker. It must not
+           steal the parent's mail nor register a new identity. *)
+        ~extra_env:
+          [ ("C2C_CODEX_MANAGED", "1")
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid)
+          (* A real, owned pane env — proves the hook still declines to touch
+             the parent's wake target (suppressed for ingress-owned). *)
+          ; ("TMUX", "/tmp/tmux-1000/default,1234,0")
+          ; ("TMUX_PANE", "%9")
+          ; ("C2C_WAKE_TARGET_OWNERSHIP_FIXTURE", "owned") ]
+        ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    check int "hook registered nothing (no fork)" regs_before
+      (List.length (C2c_mcp.Broker.list_registrations (broker ctx)));
+    (* Parent wake target untouched (not overwritten to %9). *)
+    (match
+       List.find_opt
+         (fun (r : C2c_mcp.registration) -> r.session_id = managed_sid)
+         (C2c_mcp.Broker.list_registrations (broker ctx))
+     with
+     | Some r ->
+         check (option string) "parent wake target not overwritten"
+           (Some "%5") r.tmux_location
+     | None -> fail "launcher registration vanished");
+    (* Hook emitted no message content at all. *)
+    check bool "repo message not surfaced" false
+      (contains ~haystack:stdout ~needle:"repo owned by ingress");
+    check bool "global message not surfaced (no nested theft)" false
+      (contains ~haystack:stdout ~needle:"cross-repo stays queued");
+    ignore stderr;
+    (* Both inboxes are left intact for their proper owner. *)
+    check int "repo inbox left for ingress loop" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
+    check int "global inbox left queued (not drained by hook)" 1
+      (List.length (C2c_mcp.Broker.read_inbox global ~session_id:managed_sid)))
+
+(* The OTHER arm of ingress_owned: even with NO env marker, a session whose
+   resolved registration is client_type "codex-app-server" is ingress-owned and
+   the hook must not drain it. Here the payload session_id IS the registered
+   app-server session (step1 resolves it), so ingress_owned fires via the
+   registration, not the marker. *)
+let test_b137_app_server_registration_arm_drains_nothing () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-b137-regarm" in
+    let launcher_alias = "zz-codex-b137-regarm" in
+    let b = register_app_server ctx ~session_id:managed_sid ~alias:launcher_alias in
+    ignore (register ctx ~session_id:"codex-b137-regarm-peer" ~alias:"zz-codex-b137-rpeer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-b137-rpeer"
+      ~to_alias:launcher_alias ~content:"reg-arm ingress owned" ();
+    (* No C2C_CODEX_APPSERVER_SESSION marker; payload resolves the app-server
+       registration directly. *)
+    let rc, stdout, _ =
+      run_hook ctx ~payload:(payload ~event:"SessionStart" ~session_id:managed_sid ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "message not surfaced (reg-arm ingress owned)" false
+      (contains ~haystack:stdout ~needle:"reg-arm ingress owned");
+    check int "repo inbox left for ingress loop" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid)))
+
+(* Guard: a codex subprocess that merely inherited C2C_MCP_SESSION_ID from a
+   NON-codex managed parent (e.g. a codex spawned inside managed claude) must
+   NOT adopt that parent's identity — it self-registers a fresh codex identity
+   instead. Proves the codex-family client_type guard on managed-env adoption. *)
+let test_b137_non_codex_env_session_not_adopted () =
+  with_ctx (fun ctx ->
+    let parent_sid = "managed-b137-claude-parent" in
+    let thread_id = "codex-thread-b137-nested" in
+    let b = broker ctx in
+    let pid = Some (Unix.getpid ()) in
+    C2c_mcp.Broker.register b ~session_id:parent_sid ~alias:"zz-claude-b137-parent"
+      ~pid ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time pid)
+      ~client_type:(Some "claude") ();
+    let rc, _stdout, stderr =
+      run_hook
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", parent_sid) ]
+        ctx
+        ~payload:(payload ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    let regs = C2c_mcp.Broker.list_registrations (broker ctx) in
+    (* Did NOT adopt the claude parent: a fresh codex identity landed under the
+       payload thread id. *)
+    (match
+       List.find_opt
+         (fun (r : C2c_mcp.registration) -> r.session_id = thread_id)
+         regs
+     with
+     | Some r ->
+         check (option string) "self-registered as codex" (Some "codex")
+           r.client_type;
+         check bool "fresh generated codex alias" true
+           (alias_looks_generated_for_codex r.alias)
+     | None ->
+         failf "expected fresh codex self-registration for %s (stderr %S)"
+           thread_id stderr);
+    (* Parent claude registration is untouched (no hijack). *)
+    (match
+       List.find_opt
+         (fun (r : C2c_mcp.registration) -> r.session_id = parent_sid)
+         regs
+     with
+     | Some r -> check string "parent alias intact" "zz-claude-b137-parent" r.alias
+     | None -> fail "parent registration vanished"))
 
 let test_deferrable_held_until_turn_boundary () =
   with_ctx (fun ctx ->
@@ -946,6 +1193,16 @@ let () =
             test_vanilla_auto_register_second_thread_ignores_statefile
         ; test_case "managed auto-register honors installer alias hint" `Quick
             test_managed_session_auto_register_honors_installer_alias_hint
+        ; test_case "B137 managed app-server adopts launcher alias" `Quick
+            test_b137_managed_app_server_adopts_launcher_alias
+        ; test_case "B137 app-server marker adopts before registration" `Quick
+            test_b137_app_server_marker_adopts_before_registration
+        ; test_case "B137 app-server hook drains nothing" `Quick
+            test_b137_app_server_hook_drains_nothing
+        ; test_case "B137 app-server registration arm drains nothing" `Quick
+            test_b137_app_server_registration_arm_drains_nothing
+        ; test_case "B137 non-codex env session not adopted" `Quick
+            test_b137_non_codex_env_session_not_adopted
         ; test_case "deferrable held until turn boundary" `Quick
             test_deferrable_held_until_turn_boundary
         ; test_case "session-start wake note" `Quick test_session_start_wake_note
