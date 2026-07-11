@@ -129,3 +129,4 @@ bugs:
     - file: B130-c2c-dm-to-coordinator-session.todo
     - file: B131-wire-codex-ingress-auto-turn-d.todo
     - file: B132-modernize-deprecated-uuidm-v-v.todo
+    - file: B133-c2c-skill-bare-c2c-with-no-oth.todo
