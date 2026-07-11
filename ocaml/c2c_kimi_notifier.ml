@@ -157,6 +157,7 @@ let write_notification
     ~session_dir
     ~notification_id
     ~from_alias
+    ~to_alias
     ~body =
   if is_system_event ~from_alias then begin
     Printf.eprintf
@@ -170,17 +171,37 @@ let write_notification
   let event_path = ndir // "event.json" in
   let delivery_path = ndir // "delivery.json" in
   let ts = now () in
+  let is_room = C2c_mcp.is_room_recipient ~to_alias in
+  let recipient = C2c_mcp.recipient_identity to_alias in
+  let event_type, title =
+    if is_room then
+      let room_id =
+        match String.index_opt to_alias '#' with
+        | Some i -> String.sub to_alias (i + 1) (String.length to_alias - i - 1)
+        | None -> "<room id>"
+      in
+      ( "c2c-room",
+        Printf.sprintf
+          "c2c: your alias is %s; room message from %s; reply via c2c_send_room(room_id=\"%s\")"
+          recipient from_alias room_id )
+    else
+      ( "c2c-dm",
+        Printf.sprintf
+          "c2c: your alias is %s; direct message from %s; reply via c2c_send(to_alias=\"%s\")"
+          recipient from_alias from_alias )
+  in
   let event_json =
     Printf.sprintf
       "{\"version\":1,\"id\":%s,\"category\":\"agent\",\
-       \"type\":\"c2c-dm\",\"source_kind\":%s,\"source_id\":%s,\
+       \"type\":%s,\"source_kind\":%s,\"source_id\":%s,\
        \"title\":%s,\"body\":%s,\"severity\":\"info\",\
        \"created_at\":%.6f,\"payload\":{},\
        \"targets\":[\"llm\",\"shell\"],\"dedupe_key\":%s}"
       (json_string notification_id)
+      (json_string event_type)
       (json_string from_alias)
       (json_string from_alias)
-      (json_string (Printf.sprintf "c2c DM from %s" from_alias))
+      (json_string title)
       (json_string body)
       ts
       (json_string notification_id)
@@ -403,7 +424,7 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
                (Printexc.to_string exn));
           (* JSON notification store: skip system events (#475 identity-confusion guard). *)
           (try write_notification ~session_dir:sdir ~notification_id:nid
-                 ~from_alias ~body;
+                 ~from_alias ~to_alias:msg.to_alias ~body;
            delivered := msg :: !delivered
            with exn ->
              Printf.eprintf "[kimi-notifier] write failed: %s\n%!"
@@ -491,7 +512,8 @@ let poll_once_global ~session_id ~alias ~tmux_pane =
              with exn ->
                Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
                  (Printexc.to_string exn));
-            (try write_notification ~session_dir:sdir ~notification_id:nid ~from_alias ~body;
+            (try write_notification ~session_dir:sdir ~notification_id:nid
+                   ~from_alias ~to_alias:msg.to_alias ~body;
              delivered := msg :: !delivered
              with exn ->
                Printf.eprintf "[kimi-notifier] global write failed: %s\n%!"

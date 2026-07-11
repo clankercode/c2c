@@ -785,13 +785,11 @@ let test_channel_notification_room_to_alias_uses_room_hint () =
   check bool "room hint mentions room_id" true (string_contains content "room_id")
 
 let test_channel_notification_relay_dm_uses_dm_hint () =
-  (* Relay DM to_alias is `<name>#<12-hex-host-hash>` per
-     deriveRelayAlias in the c2c main project. The 12-hex suffix
-     distinguishes relay DMs from room deliveries; relay DMs reply
-     via c2c_send like any DM. *)
+  (* Current relay DM to_alias is `<name>@<host-id>`; relay DMs reply via
+     c2c_send like any DM and display only the local recipient identity. *)
   let json =
     C2c_mcp.channel_notification
-      (mk_msg ~to_alias:"bob#0123456789ab" ())
+      (mk_msg ~to_alias:"bob@0123456789ab" ())
   in
   let open Yojson.Safe.Util in
   let content = json |> member "params" |> member "content" |> to_string in
@@ -813,7 +811,7 @@ let test_format_reply_hint_basic_dm () =
 
 let test_format_reply_hint_room_detection () =
   let room_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#swarm-lounge" () in
-  let relay_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob#0123456789ab" () in
+  let relay_hint = C2c_mcp.format_reply_hint ~from:"alice" ~to_alias:"bob@0123456789ab" () in
   check bool "room hint asks for c2c_send_room" true (string_contains room_hint "c2c_send_room");
   check bool "relay hint asks for c2c_send (not room)" true
     (string_contains relay_hint "c2c_send("
@@ -861,6 +859,8 @@ let test_is_room_recipient () =
     (C2c_mcp.is_room_recipient ~to_alias:"bob#swarm-lounge");
   check bool "relay DM has 12-hex host hash (NOT a room)" false
     (C2c_mcp.is_room_recipient ~to_alias:"bob#0123456789ab");
+  check bool "current @host relay DM is not a room" false
+    (C2c_mcp.is_room_recipient ~to_alias:"bob@host-id");
   check bool "empty to_alias is not a room" false
     (C2c_mcp.is_room_recipient ~to_alias:"")
 

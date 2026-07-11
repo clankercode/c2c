@@ -13,11 +13,11 @@
 - `C2c_mcp_helpers_post_broker.channel_notification` calls the same helper for Claude channel push.
 - `opencode-c2c/c2c.ts` mirrors the helper because OpenCode injects its own transcript-visible envelope; its embedded OCaml artifact is generated from this source.
 - Codex hooks render through `C2c_hook_lib.format_messages_as_text` and the canonical envelope helper.
-- Kimi's canonical notification-store path carries broker messages into Kimi; the removed/deprecated wire bridge is not a current independent contract.
+- Kimi's canonical notification-store path is an independent structured delivery seam. Its notification title must carry the undecorated local identity, sender, and DM/room reply route while its peer-authored body remains verbatim data; the removed/deprecated wire bridge is not current.
 - Root Python renderers are legacy/deprecated compatibility surfaces; the OCaml binary is the source of truth. B124 should not expand changes into deprecated paths unless a current test proves they are live.
 
 ## Wording decision
 
 Use: `Your c2c alias is <recipient>; this direct/room message is from <sender>.` This is concise and less ambiguous than “you received ... from ...”, explicitly binds both roles, and leaves the existing exact reply call immediately below it.
 
-For `recipient#room-id` and `recipient#12hexhost`, display only `recipient`; the decorated value remains in the envelope's `to` metadata for routing context.
+For `recipient#room-id`, current `recipient@host-id` relay addresses, and the legacy `recipient#12hexhost` form, display only `recipient`; the decorated value remains in delivery metadata for routing context.

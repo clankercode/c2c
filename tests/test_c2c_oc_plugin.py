@@ -292,7 +292,7 @@ class OCPluginHostileSafeRendererTests(unittest.TestCase):
             f"{label}: untrusted-data reminder must appear in both hint branches",
         )
         self.assertIn(
-            'const safeRecipient = xmlEscape(to.split("#", 1)[0] || to)',
+            'const safeRecipient = xmlEscape(to.split(/[#@]/, 1)[0] || to)',
             text,
             f"{label}: recipient identity must strip routing suffix and be escaped",
         )

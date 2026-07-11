@@ -108,16 +108,19 @@ val write_chat_log :
   body:string ->
   unit
 
-(** [write_notification ~session_dir ~notification_id ~from_alias ~body]
+(** [write_notification ~session_dir ~notification_id ~from_alias ~to_alias ~body]
     writes [event.json] + [delivery.json] under
     [<session_dir>/notifications/<notification_id>/], unless
     [is_system_event ~from_alias] is true — in which case the write is
     skipped (system events are operator-visibility only, never injected
-    into the kimi user-turn stream). Exposed for unit tests. *)
+    into the kimi user-turn stream). The structured title identifies the
+    undecorated local recipient, sender, and correct reply tool while [body]
+    remains byte-for-byte peer content. Exposed for unit tests. *)
 val write_notification :
   session_dir:string ->
   notification_id:string ->
   from_alias:string ->
+  to_alias:string ->
   body:string ->
   unit
 

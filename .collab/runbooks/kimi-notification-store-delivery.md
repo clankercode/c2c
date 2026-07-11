@@ -44,7 +44,7 @@ broker DM for kimi alias K
 kimi-cli's NotificationManager (in-process, per-session)
     │
     ├── shell-sink watcher (continuous async, 1s poll)
-    │       → toast in TUI: "[c2c-dm] c2c DM from <sender>"
+    │       → toast identifies local alias, sender, and reply tool
     │
     └── llm-sink (drained at agent turn boundary)
             → injects <notification>...</notification> as
@@ -82,7 +82,7 @@ Notification store lives inside the kimi session directory:
   "type": "c2c-dm",
   "source_kind": "<sender-alias>",
   "source_id": "<sender-alias>",
-  "title": "c2c DM from <sender-alias>",
+  "title": "c2c: your alias is <recipient>; direct message from <sender>; reply via c2c_send(to_alias=\"<sender>\")",
   "body": "<DM body>",
   "severity": "info",
   "created_at": <epoch-seconds>,
@@ -91,6 +91,12 @@ Notification store lives inside the kimi session directory:
   "dedupe_key": "<same-as-id>"
 }
 ```
+
+Room notifications use `type: "c2c-room"` and name
+`c2c_send_room(room_id="<room>")` in the title. Relay routing decoration
+(`@host-id`) and room suffixes are omitted from the displayed local identity.
+The peer-authored `body` remains verbatim structured data; identity and reply
+guidance live in the separate notification title.
 
 ### Notification ID
 

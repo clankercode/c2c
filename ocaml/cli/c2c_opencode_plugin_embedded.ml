@@ -1383,7 +1383,7 @@ const C2CDelivery: Plugin = async (ctx) => {
     // The routing `to` may be decorated as alias#room or alias#host-hash.
     // Show the local identity only; the full routing value remains in the
     // envelope attribute.
-    const safeRecipient = xmlEscape(to.split("#", 1)[0] || to).replace(/[`\\]/g, "\\$&");
+    const safeRecipient = xmlEscape(to.split(/[#@]/, 1)[0] || to).replace(/[`\\]/g, "\\$&");
     const isRoom = /#[A-Za-z0-9_-]+/.test(to) && !/^[^#]*#[0-9a-f]{12}$/.test(to);
     const hint = isRoom
       ? `<system-reminder>

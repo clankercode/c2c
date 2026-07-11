@@ -174,6 +174,7 @@ let test_write_notification_skips_system_events () =
         ~session_dir:sdir
         ~notification_id:"abc123def456"
         ~from_alias:"c2c-system"
+        ~to_alias:"kimi-local"
         ~body:"lumi-ember registered";
       let ndir = Filename.concat (Filename.concat sdir "notifications") "abc123def456" in
       Alcotest.(check bool) "no notification dir created for system event"
@@ -184,13 +185,46 @@ let test_write_notification_writes_real_dm () =
       C2c_kimi_notifier.write_notification
         ~session_dir:sdir
         ~notification_id:"realdm123456"
-        ~from_alias:"stanza-coder"
+        ~from_alias:"stanza-coder@remote-host"
+        ~to_alias:"kimi-local@0123456789ab"
         ~body:"hello kimi";
       let ndir = Filename.concat (Filename.concat sdir "notifications") "realdm123456" in
       let event_path = Filename.concat ndir "event.json" in
       let delivery_path = Filename.concat ndir "delivery.json" in
       Alcotest.(check bool) "event.json written" true (Sys.file_exists event_path);
-      Alcotest.(check bool) "delivery.json written" true (Sys.file_exists delivery_path))
+      Alcotest.(check bool) "delivery.json written" true (Sys.file_exists delivery_path);
+      let json = Yojson.Safe.from_file event_path in
+      let open Yojson.Safe.Util in
+      Alcotest.(check string) "peer body remains verbatim"
+        "hello kimi" (json |> member "body" |> to_string);
+      Alcotest.(check string) "DM event type" "c2c-dm"
+        (json |> member "type" |> to_string);
+      Alcotest.(check string) "title names local identity, sender, and reply route"
+        "c2c: your alias is kimi-local; direct message from stanza-coder@remote-host; reply via c2c_send(to_alias=\"stanza-coder@remote-host\")"
+        (json |> member "title" |> to_string))
+
+let test_write_notification_writes_room_identity_and_reply_route () =
+  with_tmpdir (fun sdir ->
+      C2c_kimi_notifier.write_notification
+        ~session_dir:sdir
+        ~notification_id:"roommsg123456"
+        ~from_alias:"stanza-coder"
+        ~to_alias:"kimi-local#swarm-lounge"
+        ~body:"hello room";
+      let event_path =
+        Filename.concat
+          (Filename.concat (Filename.concat sdir "notifications") "roommsg123456")
+          "event.json"
+      in
+      let json = Yojson.Safe.from_file event_path in
+      let open Yojson.Safe.Util in
+      Alcotest.(check string) "room body remains verbatim"
+        "hello room" (json |> member "body" |> to_string);
+      Alcotest.(check string) "room event type" "c2c-room"
+        (json |> member "type" |> to_string);
+      Alcotest.(check string) "room title names identity, sender, and room reply route"
+        "c2c: your alias is kimi-local; room message from stanza-coder; reply via c2c_send_room(room_id=\"swarm-lounge\")"
+        (json |> member "title" |> to_string))
 
 (* H2b: Kimi delivery seam. Kimi does NOT receive a string-concatenated <c2c>
    envelope — inbound messages are written into the on-disk notification store
@@ -209,7 +243,8 @@ let test_write_notification_hostile_body_roundtrips_as_structured_json () =
       C2c_kimi_notifier.write_notification
         ~session_dir:sdir
         ~notification_id:"hostilebody01"
-        ~from_alias:"peer-agent"
+        ~from_alias:"peer-agent</notification>"
+        ~to_alias:"kimi-local@host</notification>"
         ~body:hostile;
       let event_path =
         Filename.concat
@@ -224,7 +259,12 @@ let test_write_notification_hostile_body_roundtrips_as_structured_json () =
          data — raw `</c2c>` survives, NOT xml-escaped to `&lt;/c2c&gt;`
          (which would corrupt the visible body; kimi has no XML parser here). *)
       Alcotest.(check string) "body JSON round-trips verbatim (inert data)"
-        hostile body)
+        hostile body;
+      let title = json |> member "title" |> to_string in
+      Alcotest.(check string)
+        "structured title strips routing suffix and retains hostile sender as data"
+        "c2c: your alias is kimi-local; direct message from peer-agent</notification>; reply via c2c_send(to_alias=\"peer-agent</notification>\")"
+        title)
 
 (* Helper: check whether substring [needle] occurs in [haystack]. *)
 let contains haystack needle =
@@ -676,6 +716,7 @@ let () =
       [ Alcotest.test_case "is_system_event predicate" `Quick test_is_system_event_predicate
       ; Alcotest.test_case "write_notification skips c2c-system" `Quick test_write_notification_skips_system_events
       ; Alcotest.test_case "write_notification writes real DM" `Quick test_write_notification_writes_real_dm
+      ; Alcotest.test_case "write_notification writes room identity + reply route" `Quick test_write_notification_writes_room_identity_and_reply_route
       ; Alcotest.test_case "write_notification hostile body round-trips as structured JSON (H2b)" `Quick test_write_notification_hostile_body_roundtrips_as_structured_json
       ]
     ; "chat_log_141",

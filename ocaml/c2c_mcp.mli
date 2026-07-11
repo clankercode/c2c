@@ -75,6 +75,9 @@ val format_reply_hint : ?escape_text_for_xml:bool -> from:string -> to_alias:str
     placeholders like [<your reply>] stay well-formed. *)
 
 val is_room_recipient : to_alias:string -> bool
+(** Strip room ([#room]) or relay ([@host-id], plus legacy [#12hex]) routing
+    decoration from a recipient address for human-facing identity guidance. *)
+val recipient_identity : string -> string
 (** True iff [to_alias] carries a `#<room-id>` suffix (per
     [C2c_broker.fan_out_room_message]'s room-delivery convention).
     A 12-lowercase-hex suffix is the relay host-hash, not a room. *)

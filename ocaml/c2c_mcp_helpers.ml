@@ -759,19 +759,22 @@ let escape_reminder_literal s =
   Buffer.contents b
 
 let recipient_identity to_alias =
-  match String.index_opt to_alias '#' with
-  | Some i -> String.sub to_alias 0 i
-  | None -> to_alias
+  let routing_suffix_at =
+    List.filter_map (fun c -> String.index_opt to_alias c) [ '#'; '@' ]
+  in
+  match routing_suffix_at with
+  | [] -> to_alias
+  | indexes -> String.sub to_alias 0 (List.fold_left min max_int indexes)
 
 (** Build the `<system-reminder>…</system-reminder>` block that follows
     an inbound c2c envelope. The block explicitly distinguishes the
     recipient's local c2c identity from the sender, gives the exact tool
     call shape, and tells the LLM NOT to reply in plain text.
 
-    Sender [from] is XML-escaped and additionally backtick/backslash
-    escaped before being interpolated into the code-fenced example.
-    A malicious peer who forges an alias with backticks or backslashes
-    cannot break out of the fenced region and re-instruct the agent.
+    Sender [from] and the undecorated recipient identity derived from
+    [to_alias] are XML-escaped and additionally backtick/backslash escaped
+    before interpolation. A malicious alias cannot break out of the fenced
+    region and re-instruct the agent.
 
     For room messages ([to_alias] has a non-12-hex `#` suffix), the
     reminder directs the agent to [c2c_send_room] with the room id
