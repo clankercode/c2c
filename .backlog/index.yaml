@@ -1,8 +1,16 @@
+critical_path:
+    - P1.M1.E1.T001
+    - P1.M1.E1.T002
+    - P1.M1.E1.T003
+    - P1.M1.E1.T004
+    - P1.M1.E1.T007
+    - P1.M1.E1.T005
 description: ""
+next_available: P1.M1.E1.T001
 phases:
     - depends_on: []
-      description: Opt-in remote-TUI delivery architecture that preserves an operator composer and keeps c2c messages as data, never actions.
-      estimate_hours: 32
+      description: Canonical managed remote-TUI delivery architecture that preserves the operator composer; local messages may wake the recipient and start an agent turn under its delivery policy, but message content can never satisfy an approval or write an approval verdict.
+      estimate_hours: 54
       id: P1
       locked: false
       name: Codex app-server interactive delivery
@@ -11,4 +19,10 @@ phases:
       status: pending
       weeks: 3
 project: c2c
+stats:
+    blocked: 0
+    done: 115
+    in_progress: 6
+    pending: 18
+    total_tasks: 141
 timeline_weeks: 0

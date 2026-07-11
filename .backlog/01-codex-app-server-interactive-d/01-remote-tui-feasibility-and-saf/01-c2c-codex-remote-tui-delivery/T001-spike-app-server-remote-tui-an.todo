@@ -14,15 +14,135 @@ title: Spike app-server remote TUI and passive item injection
 ---
 Origin: I001.
 
-Implement a disposable, fixture-gated protocol probe for the installed Codex version. Launch `codex app-server --listen unix://PATH`, connect `codex --remote unix://PATH`, and use a second protocol client to resume the live thread and attempt `thread/inject_items`.
+## Objective
 
-Acceptance criteria:
-- Generate and commit no version-specific schema artifact; generate it under /tmp during the probe and record the Codex version plus relevant request/response shape in a research receipt.
-- Prove whether injected items are accepted while the remote TUI is idle and while a turn is active.
-- Verify that injection starts no new turn and does not use `turn/steer` or `turn/interrupt`.
-- Treat all c2c message content as data; injection must not create an approval or execute an action.
-- Establish the app-server control boundary before considering delivery: attempt unauthorized same-UID local-client connections and requests for `turn/start`, `turn/steer`, `turn/interrupt`, and other non-passive methods. A private Unix-path name or file mode alone is not evidence of isolation.
-- Record the exact boundary (for example an authenticated transport plus protected secret, or an OS/container identity boundary), its threat model, and its failure behavior. If no boundary prevents another swarm process from controlling the server, return a no-go for this architecture rather than proceeding.
-- Record exact failure modes and a go/no-go decision for implementation tasks.
+Produce reproducible evidence for the *installed* Codex CLI that the stock remote
+terminal frontend and app-server can support safe, passive c2c delivery. The
+spike must answer three independent questions before implementation proceeds:
 
-Blockers: none; this is the evidence-producing prerequisite, including the control-boundary go/no-go.
+1. What JSON-RPC schema and lifecycle does this installed version actually
+   expose for remote TUI attachment and `thread/inject_items`?
+2. What authenticated or OS-enforced boundary prevents another same-UID swarm
+   process from using the app-server's active control methods?
+3. Is there a reliable, machine-readable signal that the interactive TUI's
+   composer is empty, so a later task can decide whether it is safe to wake a
+   turn without touching or racing a user's draft?
+
+## Scope and non-goals
+
+- Build a disposable, fixture-gated protocol probe and drive the real Codex TUI
+  in tmux using `scripts/c2c_tmux.py` and `scripts/tui-snapshot.sh` where useful.
+- Generate schemas and logs under `/tmp`; commit only the probe/tests and a
+  sanitized research receipt under `.collab/research/`.
+- Exercise passive injection while the TUI is idle, while a turn is active, and
+  while a non-empty unsent draft is present.
+- This task does **not** implement a production launcher, public CLI grammar,
+  c2c inbox integration, automatic `turn/start`, or changes to approval policy.
+- Do not test live peers outside tmux and do not use ad-hoc `c2c start codex`
+  processes; follow the repository live-agent rule.
+
+## References
+
+- Research baseline and prior observations:
+  `.collab/research/2026-07-11-codex-app-server-safe-delivery.md`.
+- Official Codex app-server protocol/remote TUI documentation:
+  <https://learn.chatgpt.com/docs/app-server>.
+- Official Codex hooks documentation and current fallback:
+  <https://learn.chatgpt.com/docs/hooks>.
+- Installed-version truth: `codex --version`, `codex --help`,
+  `codex app-server --help`, and the installed binary's schema-generation
+  command shown by that help output. Do not assume the 0.144.1 research schema
+  still matches.
+- Existing live-TUI harness: `scripts/c2c_tmux.py`,
+  `scripts/tui-snapshot.sh`, and `.collab/runbooks/agent-wake-setup.md`.
+- Existing Codex delivery/fallback behavior: `ocaml/cli/c2c_codex_hooks.ml`,
+  `ocaml/tools/c2c_hook_lib.ml`, `docs/client-delivery.md`, and
+  `docs/clients/feature-matrix.md`.
+- Approval isolation invariant: `ocaml/cli/c2c_approval_paths.ml`,
+  `ocaml/cli/c2c_approval_cmd.ml`, `ocaml/cli/test_c2c_await_reply.ml`, and
+  `docs/security/pending-permissions.md`.
+
+## Required experiment and state matrix
+
+Start one app-server on a unique `/tmp` endpoint, attach the stock frontend with
+`codex --remote <endpoint>` in a tmux pane, and connect a separate probe client.
+Use the installed schema to perform initialization and thread discovery/resume;
+do not hard-code a request shape copied from an older version.
+
+Capture sanitized request/response/notification evidence for every cell:
+
+- frontend connected, idle, composer empty;
+- frontend connected, idle, composer contains an unsent distinctive draft;
+- frontend connected, turn running;
+- frontend disconnected while app-server remains temporarily reachable;
+- app-server unavailable/restarted;
+- authorized probe versus an unrelated same-UID process with no capability.
+
+For each cell record whether `thread/inject_items` is accepted, where the item
+appears (model history and/or TUI), whether any turn starts, whether the draft
+changes, and which protocol notification or observable state distinguishes the
+cell. Explicitly search the schema/event stream for a composer-empty/draft-
+present signal. If none exists, record that absence as a blocker; visual tmux
+observation is proof of preservation but is not a production composer signal.
+
+Probe the control boundary by attempting, without the proposed credential or OS
+capability, to connect and invoke at least `thread/inject_items`, `turn/start`,
+`turn/steer`, `turn/interrupt`, and representative shell/filesystem-capable
+methods exposed by the installed schema. Unix path obscurity and mode bits alone
+do not count as same-UID isolation. Never point destructive probes at a real
+user thread or workspace; use a disposable directory and harmless commands.
+
+## Deliverables and receipt
+
+- A fixture-gated probe/test that can be rerun against a future Codex version.
+- A dated `.collab/research/` receipt containing: Codex version and binary path;
+  exact launch/schema commands; endpoint and auth design; sanitized JSON-RPC
+  request/response/notification excerpts; the completed state matrix; cleanup
+  result; and separate `protocol`, `control_boundary`, and `composer_signal`
+  verdicts.
+- A final overall `GO`, `CONDITIONAL_GO`, or `NO_GO` decision. A conditional
+  decision must name the exact prerequisite task/feature still required.
+- No access tokens, full prompts, user drafts, home paths beyond what is needed
+  to identify the binary, or version-generated schemas committed to git.
+
+## Acceptance criteria
+
+- The installed schema, not memory or web documentation alone, establishes the
+  exact initialization, thread attach/resume, injection, and notification forms.
+- A real tmux session proves remote TUI attach and passive injection across the
+  entire state matrix, including a non-empty unsent composer draft.
+- Evidence proves injection itself starts no turn and never calls
+  `turn/start`, `turn/steer`, or `turn/interrupt`.
+- The receipt identifies a production-usable composer-state signal, or clearly
+  blocks automatic wake-on-message until one exists. No inference from process
+  idleness or elapsed time counts as composer-empty proof.
+- The receipt identifies and demonstrates an authenticated transport or true OS
+  identity boundary. An unauthorized same-UID probe cannot exercise active
+  controls. If this cannot be achieved with installed Codex, the verdict is
+  `NO_GO` for T002/T003 rather than weakening the boundary.
+- Injected message content remains a data item: the spike does not execute it,
+  create an approval verdict, or make `await-reply` succeed.
+- App-server and tmux processes/endpoints are removed at the end, including on
+  probe failure.
+
+## Verification commands
+
+Record exact return codes in the receipt. At minimum run:
+
+```sh
+codex --version
+codex --help
+codex app-server --help
+./scripts/c2c_tmux.py list
+just build
+just check
+```
+
+Also run the new focused fixture test and its documented tmux probe command.
+
+## Blockers
+
+None. This is the evidence-producing prerequisite. T002 and T003 remain blocked
+unless the protocol and control-boundary verdicts are positive; any automatic
+turn-wake work also remains blocked unless a reliable composer-state signal is
+found or Codex gains one.

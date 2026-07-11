@@ -4,14 +4,20 @@ epics:
     - complexity: high
       depends_on: []
       description: Build only after protocol and typed-draft preservation are demonstrated against the installed Codex version. I001 is the originating intake.
-      estimate_hours: 32
+      estimate_hours: 54
       id: E1
       locked: false
       name: c2c Codex remote-TUI delivery
       path: 01-c2c-codex-remote-tui-delivery
       status: pending
-estimate_hours: 32
+estimate_hours: 54
 id: P1.M1
 locked: false
 name: Remote TUI feasibility and safe ingress
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 7
+    total_tasks: 7
 status: pending

@@ -37,9 +37,11 @@ architecture is a no-go even if injection preserves the composer.
    and the normal TUI has no in-progress composer draft; either condition queues
    without starting a turn. Never use `turn/steer`,
    `turn/interrupt`, PTY writes, tmux `send-keys`, or Herdr submission.
-3. A message-triggered turn is a product delivery policy, not an approval
-   channel. Message content can never resolve an approval or write an approval
-   verdict; `allow`/`deny` strings remain inert to `await-reply`.
+3. Local c2c messages are trusted peer communication and may wake the recipient
+   and start a Codex turn under that recipient's delivery policy. This is still
+   not an approval channel: message content can never resolve an approval or
+   write an approval verdict; `allow`/`deny` strings remain inert to
+   `await-reply`.
 4. When the normal TUI exits, stop its app-server and report later sends as
    successful `queued_offline` delivery. Unknown aliases remain errors.
 5. Generate the default alias from the stable Codex/app-server identity;
@@ -71,10 +73,16 @@ architecture is a no-go even if injection preserves the composer.
 The work is in backlog phase `P1`, derived from idea `I001`:
 
 - `P1.M1.E1.T001`: protocol and remote-TUI spike.
-- `P1.M1.E1.T002`: opt-in app-server-backed session launcher.
+- `P1.M1.E1.T002`: internal app-server-backed session launcher primitive used by the canonical managed Codex path.
 - `P1.M1.E1.T003`: passive c2c ingress adapter.
 - `P1.M1.E1.T004`: real-tmux typed-draft preservation proof.
 - `P1.M1.E1.T005`: safe profile, installer, doctor, and documentation.
+- `P1.M1.E1.T006`: canonical `start`/`new`/`resume` commands, generated
+  aliases, optional `--alias`, and explicit `--yolo` forwarding.
+- `P1.M1.E1.T007`: start a turn for active local mail when recipient policy
+  permits, while DND and a non-empty composer keep the message queued.
+- `B127`: durable local-broker mail for a known alias while its managed session
+  is offline, with `queued_offline` receipts and exact-once resume delivery.
 
 The spike must explicitly prove the behavior with a non-empty composer before
 the rest proceeds.
