@@ -3985,7 +3985,18 @@ let test_enqueue_to_dead_peer_queues_offline () =
           (C2c_mcp.Broker.list_registrations broker)
       in
       check bool "dead peer still not alive" false
-        (C2c_mcp.Broker.registration_is_alive reg))
+        (C2c_mcp.Broker.registration_is_alive reg);
+      (* Ephemeral flag is preserved on the offline durable row. *)
+      ignore
+        (C2c_mcp.Broker.enqueue_message_with_result broker
+           ~from_alias:"storm-sender" ~to_alias:"storm-dead"
+           ~content:"ephemeral-offline" ~ephemeral:true ());
+      let inbox2 =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"session-dead"
+      in
+      check int "second offline message appended" 2 (List.length inbox2);
+      let eph = List.find (fun (m : C2c_mcp.message) -> m.content = "ephemeral-offline") inbox2 in
+      check bool "ephemeral flag preserved offline" true eph.ephemeral)
 
 let test_enqueue_unknown_alias_still_rejects () =
   with_temp_dir (fun dir ->
@@ -4050,10 +4061,15 @@ let test_sweep_keeps_dead_reg_with_offline_mail () =
 (* B127: after offline TTL, sweep drops reg and dead-letters remaining mail. *)
 let test_sweep_after_offline_ttl_dead_letters () =
   with_temp_dir (fun dir ->
+      let prev = Sys.getenv_opt "C2C_OFFLINE_MAIL_TTL_S" in
       Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "0.0";
       Fun.protect
         ~finally:(fun () ->
-          try Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "" with _ -> ())
+          match prev with
+          | None ->
+              (* best-effort clear: empty string falls back to default TTL *)
+              (try Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" "" with _ -> ())
+          | Some v -> Unix.putenv "C2C_OFFLINE_MAIL_TTL_S" v)
         (fun () ->
           let broker = C2c_mcp.Broker.create ~root:dir in
           let dead = dead_pid () in
