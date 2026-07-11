@@ -1,10 +1,15 @@
 ---
+claimed_at: "2026-07-11T04:29:09Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T06:00:14Z"
 complexity: medium
 depends_on: []
+duration_minutes: 91.09550650775
 estimate_hours: 3
 id: B115
 priority: critical
-status: pending
+started_at: "2026-07-11T04:29:09Z"
+status: done
 tags: []
 title: Bind relay poll and peek inbox access to a verified owner
 ---
