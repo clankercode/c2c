@@ -43,11 +43,16 @@ explicitly idle and DND is off; `active`/unknown status → queued
   rows; live gather is read-only and injectable for tests). Distinguishes:
   | mode | meaning | remediation |
   |---|---|---|
-  | `app-server` | healthy app-server remote TUI (arrival-time data injection, draft-safe, gated auto-turn) | none (healthy); `starting` carries "inspect with `c2c dev diag <name>`" |
+  | `app-server` | healthy app-server remote TUI, `online-attached` ONLY (arrival-time data injection, draft-safe, gated auto-turn — the transport contract) | none (healthy) |
   | `app-server-unavailable` | app-server startup failed / codex incompatible; live delivery (if any) is the hook boundary | upgrade codex (`npm i -g @openai/codex`), relaunch with `c2c start codex --app-server`; `c2c dev diag <name>` for the structured diagnostic |
   | `hooks+wake` | legacy **input-injecting** idle wake (watcher TYPES a nudge into the tmux/herdr pane); hook-boundary delivery | prefer `c2c start codex --app-server` for injection-free, draft-safe delivery |
   | `hooks` | hook-boundary only; idle session sees mail on its next turn | run inside tmux/herdr for idle wake, or use `--app-server` |
   | `unavailable` | no delivery path configured | `run \`c2c install codex\`` |
+
+  A `starting` unit (remote TUI not attached yet) is NOT labeled `app-server`
+  — it reports the hook fallback the session actually has right now, with a
+  summary naming the starting unit and a "`c2c dev diag <name>`" next step
+  (review round 1 fix, F2).
   Wired into `c2c doctor hooks` human / `--json` (`codex_delivery` key) /
   `--compact`. Summaries never claim "instant" delivery (tested). Doctor
   observes only — no mutation; no endpoints, tokens, or bodies in any output
@@ -189,17 +194,40 @@ semantics from B127's merged tests).
 | `dune exec --root "$PWD" ocaml/test/test_c2c_doctor_capabilities.exe` | 0 | 23/23 (unchanged suite, still green) |
 | docs build (`cd docs && bundle exec jekyll build`) | n/a | jekyll is not installable in this environment (`bundle install` fails building `jekyll-relative-links` — pre-existing toolchain gap, not caused by this slice). Per `docs/CLAUDE.md`, text-only edits fall back to a Markdown diff review: performed + a fence/link lint over all six changed docs pages (all OK; no front-matter/layout changes made) |
 
-## Wiring-status honesty note (self-review finding)
+## Wiring-status honesty (self-review + codex review round 1)
 
 `C2c_codex_autoturn` / `C2c_codex_ingress` ship in the c2c library and are
 proven by the T003/T004/T007 harnesses, but are **not yet driven by
-`c2c start codex --app-server` supervision** (T007 receipt: follow-up slice).
-The docs therefore state the app-server contract as the canonical documented
-behavior AND carry an explicit wiring-status paragraph
-(`docs/client-delivery.md`) + a SKIP note in e2e row 2b, so nothing promises
-managed-session arrival-time delivery before the wiring slice lands. The
-doctor `app-server` classification is a transport-state report (unit live),
-with the contract in its summary.
+`c2c start codex --app-server` supervision** (T007 receipt: follow-up slice;
+confirmed by source scan — nothing outside tests/dogfood drivers calls them).
+Every documented surface therefore leads with the wiring status and states
+that, until the wiring slice lands, app-server-launched sessions still
+receive at the hook boundary; the app-server delivery semantics are presented
+as the implemented-and-proven **library contract** (what a managed session
+gets once wiring lands), never as live managed behavior.
+
+## Review round — codex (`/ccc-review-cx`, --yolo @cx-reviewer)
+
+**Round 1: FAIL → both findings fixed in new commits (never --amend):**
+
+- **F1 (BLOCKER)** — public docs claimed managed `--app-server` sessions
+  already deliver by injection/auto-turn while the same page said supervision
+  wiring is a follow-up. Fixed across `docs/client-delivery.md` (wiring
+  status is now the first thing in the app-server section; the receive
+  overview says "today all Codex sessions receive at the hook boundary"),
+  `docs/clients/feature-matrix.md` (quick-ref cell, detailed breakdown, tier
+  summary), `docs/clients/e2e-checklist.md` (row 2 conditioned; row 2b now
+  starts with the wiring gate), `docs/commands.md`, `docs/get-started.md`,
+  `.collab/runbooks/agent-wake-setup.md`, and `CLAUDE.md`.
+- **F2 (MAJOR)** — `starting` was labeled the healthy `app-server` mode
+  before a remote TUI attached. Fixed: doctor classifies `starting` as the
+  live hook fallback (summary names the starting unit; remediation =
+  `c2c dev diag <name>`; no hooks ⇒ `unavailable`), and the
+  `c2c_health_cmd` override now maps ONLY `Online_attached` to
+  `app-server`. Regression tests updated
+  (`starting is not overclaimed as app-server`, incl. the no-hooks case).
+
+**Round 2: re-review → PASS** (see `Round 2` note below).
 
 ## Boundaries honored
 

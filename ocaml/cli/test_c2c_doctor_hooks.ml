@@ -276,14 +276,29 @@ let test_delivery_app_server_healthy () =
   check bool "summary states the gated-turn rule (idle + DND off)" true
     (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "idle and DND is off")
 
-let test_delivery_app_server_starting_has_remediation () =
+let test_delivery_app_server_starting_not_overclaimed () =
+  (* A starting unit has no attached remote TUI yet — it must NOT get the
+     healthy app-server label; the session's actual delivery is the hook
+     fallback, annotated with the starting state + an actionable next step. *)
   let d =
     classify ~app_server_status:(Some "starting") ~hooks_installed:true
       ~wake_target:false
   in
-  check string "mode" "app-server" (label d);
-  check bool "starting carries an actionable next step" true
-    (d.C2c_doctor_hooks.cd_remediation <> None)
+  check string "starting reports the live hook fallback, not app-server"
+    "hooks" (label d);
+  check bool "summary names the starting unit" true
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "starting");
+  (match d.C2c_doctor_hooks.cd_remediation with
+   | None -> fail "starting must carry an actionable next step"
+   | Some fix ->
+       check bool "remediation points at dev diag" true
+         (C2c_doctor_hooks.contains fix "c2c dev diag"));
+  (* Without hooks, a starting unit means no live delivery path at all. *)
+  let d2 =
+    classify ~app_server_status:(Some "starting") ~hooks_installed:false
+      ~wake_target:false
+  in
+  check string "starting without hooks → unavailable" "unavailable" (label d2)
 
 let test_delivery_app_server_unavailable () =
   let d =
@@ -420,7 +435,7 @@ let () =
         ] )
     ; ( "codex-delivery-mode"
       , [ test_case "app-server healthy" `Quick test_delivery_app_server_healthy
-        ; test_case "app-server starting has next step" `Quick test_delivery_app_server_starting_has_remediation
+        ; test_case "starting is not overclaimed as app-server" `Quick test_delivery_app_server_starting_not_overclaimed
         ; test_case "app-server unavailable + remediation" `Quick test_delivery_app_server_unavailable
         ; test_case "hooks+wake is input-injecting" `Quick test_delivery_hooks_wake_is_input_injecting
         ; test_case "hooks-only fallback" `Quick test_delivery_hooks_only

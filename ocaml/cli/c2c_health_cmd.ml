@@ -731,13 +731,13 @@ let read_managed_instances () =
             C2c_start.delivery_mode ~client ~name ~binary_path ~start_time:created_at ()
           in
           (* T005: one delivery-mode vocabulary across status/instances/doctor.
-             A codex instance with a live app-server unit reports "app-server"
-             (arrival-time data injection over the authenticated loopback
-             app-server, T002/T003) instead of the hook-boundary label. A
-             failed/offline app-server record keeps the hook classification —
-             the hook boundary is what actually delivers, and we must not
-             overclaim. status_of_instance is ghost-proof (dead pids read as
-             offline). *)
+             ONLY a codex instance whose app-server unit is online-attached
+             (healthy remote TUI) reports "app-server". Starting units have no
+             attached TUI yet, and failed/offline records are not a live path
+             — all of those keep the truthful hook-boundary label; the
+             app_server_status field carries the lifecycle detail. Never
+             overclaim delivery. status_of_instance is ghost-proof (dead pids
+             read as offline). *)
           let delivery_mode =
             if client <> "codex" then delivery_mode
             else
@@ -745,9 +745,9 @@ let read_managed_instances () =
                 C2c_codex_session.status_of_instance
                   ~instance_dir:(C2c_start.instance_dir name)
               with
-              | Some (C2c_codex_session.Online_attached | C2c_codex_session.Starting) ->
-                  "app-server"
-              | Some (C2c_codex_session.Offline | C2c_codex_session.Failed_startup)
+              | Some C2c_codex_session.Online_attached -> "app-server"
+              | Some (C2c_codex_session.Starting | C2c_codex_session.Offline
+                     | C2c_codex_session.Failed_startup)
               | None -> delivery_mode
           in
           let tmux_location =

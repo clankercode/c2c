@@ -157,16 +157,20 @@ now the canonical framing.)
   `C2C_CODEX_APP_SERVER=1`) runs `codex app-server` on an **authenticated
   loopback WebSocket** (`--ws-auth capability-token`; NEVER a bare listener —
   T001 proved a bare listener gives any same-UID process `turn/start` +
-  `fs/*`) with the stock remote TUI attached. Inbound mail is injected into
-  the thread's model-visible history on arrival (draft-safe — the composer is
-  frontend-only state the app-server can't touch, T004; there is NO
-  composer-empty gate and none is needed); eligible **local** mail starts one
-  gated turn when the thread is explicitly idle and DND is off — active/
-  unknown status and any `@host`/`#` remote-origin sender stay queued
-  (fail-closed), mid-turn arrivals batch into ONE follow-up turn (T007).
-  `delivery_mode` reports `app-server`/`hooks+wake`/`hooks`/`unavailable`
-  (one vocabulary across `c2c dev instances`/`c2c status`/`c2c doctor`;
-  `c2c doctor hooks` adds `app-server-unavailable` + remediation).
+  `fs/*`) with the stock remote TUI attached. Its delivery stack — mail
+  injected into the thread's model-visible history on arrival (draft-safe —
+  the composer is frontend-only state the app-server can't touch, T004;
+  there is NO composer-empty gate and none is needed); one gated turn for
+  eligible **local** mail when the thread is explicitly idle and DND is off
+  (active/unknown status and any `@host`/`#` remote-origin sender stay
+  queued fail-closed; mid-turn arrivals batch into ONE follow-up turn,
+  T007) — is **library-proven; wiring it into `c2c start codex`
+  supervision is the follow-up slice, so until that lands app-server
+  sessions too receive at the hook boundary.**
+  `delivery_mode` reports `app-server` (only while `online-attached`)/
+  `hooks+wake`/`hooks`/`unavailable` (one vocabulary across
+  `c2c dev instances`/`c2c status`/`c2c doctor`; `c2c doctor hooks` adds
+  `app-server-unavailable` + remediation).
   **Hook fallback** (vanilla + hook-mode managed; also what a too-old codex
   falls back to): `c2c install codex` writes
   UserPromptSubmit/PostToolUse/SessionStart/SessionEnd hooks running `c2c hook codex`

@@ -133,6 +133,39 @@ let codex_delivery_mode_label = function
    "failed-startup"), or [None] for a vanilla session / no app-server record.
    An "offline" record classifies like [None]: the app-server unit ended, so
    the live question is what the hook fallback provides. *)
+let classify_codex_hook_fallback ~(hooks_installed : bool)
+    ~(wake_target : bool) : codex_delivery =
+  if not hooks_installed then
+    { cd_mode = Cd_unavailable;
+      cd_summary =
+        "no codex delivery path is configured (no c2c hooks block in \
+         ~/.codex/config.toml, no app-server session)";
+      cd_remediation = Some "run `c2c install codex`";
+      cd_input_injecting = false }
+  else if wake_target then
+    { cd_mode = Cd_hooks_wake;
+      cd_summary =
+        "legacy input-injecting idle wake: hooks deliver at hook \
+         boundaries, and when the session idles in a tmux/herdr pane the \
+         wake watcher TYPES a one-line nudge into that pane so the \
+         injected turn's hook drains the inbox. Delivery is \
+         hook-boundary, not arrival-time";
+      cd_remediation =
+        Some "prefer the app-server transport (`c2c start codex \
+              --app-server`) for injection-free, draft-safe delivery";
+      cd_input_injecting = true }
+  else
+    { cd_mode = Cd_hooks_only;
+      cd_summary =
+        "hook-boundary delivery only: messages surface when a codex hook \
+         fires (session activity / turn boundaries); an idle session \
+         does not see mail until its next turn";
+      cd_remediation =
+        Some "run the session inside tmux/herdr to enable idle wake, or \
+              use the app-server transport (`c2c start codex \
+              --app-server`)";
+      cd_input_injecting = false }
+
 let classify_codex_delivery ~(app_server_status : string option)
     ~(hooks_installed : bool) ~(wake_target : bool) : codex_delivery =
   match app_server_status with
@@ -148,13 +181,17 @@ let classify_codex_delivery ~(app_server_status : string option)
         cd_remediation = None;
         cd_input_injecting = false }
   | Some "starting" ->
-      { cd_mode = Cd_app_server;
+      (* Not yet a healthy remote TUI — the frontend has not attached. Report
+         the delivery the session actually has right now (the hook fallback),
+         never the aspirational app-server label. *)
+      let fb = classify_codex_hook_fallback ~hooks_installed ~wake_target in
+      { fb with
         cd_summary =
-          "app-server transport starting — the remote TUI is not attached yet";
+          "app-server unit is starting (remote TUI not attached yet); until \
+           it attaches, " ^ fb.cd_summary;
         cd_remediation =
           Some "if the instance stays in 'starting', inspect it with \
-                `c2c dev diag <name>`";
-        cd_input_injecting = false }
+                `c2c dev diag <name>`" }
   | Some "failed-startup" ->
       let fallback =
         if hooks_installed then
@@ -175,36 +212,7 @@ let classify_codex_delivery ~(app_server_status : string option)
                 the structured startup diagnostic";
         cd_input_injecting = false }
   | Some _ (* "offline" or unknown *) | None ->
-      if not hooks_installed then
-        { cd_mode = Cd_unavailable;
-          cd_summary =
-            "no codex delivery path is configured (no c2c hooks block in \
-             ~/.codex/config.toml, no app-server session)";
-          cd_remediation = Some "run `c2c install codex`";
-          cd_input_injecting = false }
-      else if wake_target then
-        { cd_mode = Cd_hooks_wake;
-          cd_summary =
-            "legacy input-injecting idle wake: hooks deliver at hook \
-             boundaries, and when the session idles in a tmux/herdr pane the \
-             wake watcher TYPES a one-line nudge into that pane so the \
-             injected turn's hook drains the inbox. Delivery is \
-             hook-boundary, not arrival-time";
-          cd_remediation =
-            Some "prefer the app-server transport (`c2c start codex \
-                  --app-server`) for injection-free, draft-safe delivery";
-          cd_input_injecting = true }
-      else
-        { cd_mode = Cd_hooks_only;
-          cd_summary =
-            "hook-boundary delivery only: messages surface when a codex hook \
-             fires (session activity / turn boundaries); an idle session \
-             does not see mail until its next turn";
-          cd_remediation =
-            Some "run the session inside tmux/herdr to enable idle wake, or \
-                  use the app-server transport (`c2c start codex \
-                  --app-server`)";
-          cd_input_injecting = false }
+      classify_codex_hook_fallback ~hooks_installed ~wake_target
 
 (* Read-only live gather of managed codex instances:
    (name, app_server_status, wake_target). Total — any failure reads as an

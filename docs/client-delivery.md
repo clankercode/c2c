@@ -82,18 +82,19 @@ minimal swarm intro.
 
 ### Non-Claude receiving
 
-- **Codex**: two transports. Managed sessions launched with
-  `c2c start codex --app-server` receive over an **authenticated loopback
-  app-server**: inbound mail is injected into the thread's model-visible
-  history on arrival (draft-safe — the operator's composer is never touched),
-  and eligible local mail can start one gated turn. The fallback for vanilla
-  and hook-mode sessions is Codex hooks: `c2c install codex` installs
-  `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks
-  running `c2c hook codex`, which auto-registers the session, drains inbound
-  broker messages, and returns them through
-  `hookSpecificOutput.additionalContext` — delivery happens at hook
-  boundaries, not on arrival. Explicit polling remains the portable fallback.
-  See [Codex](#codex) below for the full contract.
+- **Codex**: today, all Codex sessions — vanilla and managed — receive at the
+  **hook boundary**: `c2c install codex` installs `UserPromptSubmit`,
+  `PostToolUse`, `SessionStart`, and `SessionEnd` hooks running
+  `c2c hook codex`, which auto-registers the session, drains inbound broker
+  messages, and returns them through `hookSpecificOutput.additionalContext` —
+  delivery happens when a hook fires, not on arrival. The canonical direction
+  is the **app-server transport** (`c2c start codex --app-server`): its
+  delivery stack (draft-safe arrival-time injection over an authenticated
+  loopback app-server, plus a gated turn for eligible local mail) is
+  implemented and proven at the library level, with managed supervision
+  wiring landing as a follow-up slice. Explicit polling remains the portable
+  fallback. See [Codex](#codex) below for the full contract and wiring
+  status.
 - **Pi Agent**: `pi install npm:pi-c2c` installs the external Pi extension. It
   registers through the `c2c` CLI, watches the broker inbox, drains with
   `c2c poll-inbox`, and injects messages via `pi.sendMessage`.
@@ -162,8 +163,22 @@ delivery when only a hook boundary is available.
 ### App-server transport (`c2c start codex --app-server`)
 
 `--app-server` (or `C2C_CODEX_APP_SERVER=1`) launches `codex app-server` plus
-the stock remote TUI attached to it, and delivers c2c mail over the
-app-server's control channel:
+the stock remote TUI attached to it over an authenticated loopback boundary.
+
+**Wiring status (2026-07-11) — read this first.** The app-server *transport*
+(launch, auth boundary, lifecycle, `app_server_status` reporting) is live in
+`c2c start codex --app-server`. The inbound *delivery stack* for it — the
+passive injection adapter and the gated auto-turn dispatcher — is implemented
+and proven at the **library level** (live harnesses:
+`scripts/codex-ingress-dogfood.py`, `scripts/codex-draft-preservation-e2e.py`,
+`scripts/codex-autoturn-e2e.py`); surfacing it under managed supervision is
+the follow-up slice. **Until that lands, an app-server-launched session still
+receives inbound c2c mail at the hook boundary** (see the hook fallback
+below). `c2c doctor hooks` always reports the mode a session actually has and
+never claims more.
+
+The contract of the app-server delivery stack — implemented and proven, and
+what a managed session gets once the supervision wiring lands:
 
 - **Authenticated local boundary (required).** The app-server always listens
   on loopback with `--ws-auth capability-token` and a per-unit 256-bit
@@ -205,22 +220,15 @@ app-server's control channel:
   Verdicts come only from the host-local `c2c approval-reply` path
   (mode-0600 verdict file). Regression-proven by the B098 cases in
   `test_c2c_codex_autoturn_b098.ml` and `test_c2c_await_reply.ml`.
-- **Diagnostics.** `c2c instances` shows `delivery_mode=app-server` plus the
+- **Diagnostics.** `c2c instances` shows `delivery_mode=app-server` only
+  while the unit is `online-attached` (a healthy remote TUI), alongside the
   lifecycle field `app_server_status` (`starting` / `online-attached` /
-  `offline` / `failed-startup`). If the installed Codex is too old or lacks
+  `offline` / `failed-startup`); starting/failed/offline units keep the
+  truthful hook-boundary label. If the installed Codex is too old or lacks
   the app-server capability set, startup fails **before** any routable alias
   is published, prints the minimum-version message, and falls back to the
   hook launch — `c2c doctor hooks` then reports `app-server-unavailable`
   with the remediation (upgrade Codex, relaunch with `--app-server`).
-
-*Wiring status (2026-07-11):* the injection adapter and the gated auto-turn
-dispatcher ship in the c2c library and are proven live by the T003/T004/T007
-harnesses (`scripts/codex-ingress-dogfood.py`,
-`scripts/codex-draft-preservation-e2e.py`, `scripts/codex-autoturn-e2e.py`);
-surfacing them under `c2c start codex --app-server` supervision is the
-follow-up slice. Until that lands, an app-server session's live inbound path
-is still the hook boundary — `c2c doctor hooks` always reports the mode a
-session actually has, and never claims more.
 
 Supported Codex: **codex-cli ≥ 0.144** (validated on 0.144.1). The app-server
 protocol and hook events are upstream surfaces that can drift across Codex
