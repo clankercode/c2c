@@ -28,7 +28,8 @@ tasks:
       file: T002-add-opt-in-app-server-backed-c.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Add app-server-backed Codex session launcher primitive
     - complexity: high
       depends_on:
