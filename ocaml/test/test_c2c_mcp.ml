@@ -3333,6 +3333,67 @@ let test_auto_register_startup_client_type_conflict_skips_hook_row () =
           check bool "hook row untouched (pid still None)" true
             (reg.pid = None)))
 
+let test_auto_register_startup_same_alias_client_type_conflict_skips () =
+  (* B119 review follow-up: the client-type conflict guard must fire even
+     when the conflicting process's env alias MATCHES the hook row's alias —
+     otherwise it silently overwrites the row's pid/client_type/registered_by. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"claude-b119-sid-0003" ~alias:"claude-hookid-b119c"
+        ~pid:None ~pid_start_time:None
+        ~client_type:(Some "claude")
+        ~registered_by:(Some "claude-hook")
+        ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "claude-b119-sid-0003";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "claude-hookid-b119c";
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "kimi";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_TYPE" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check int "one registration" 1 (List.length regs);
+          let reg = List.hd regs in
+          check string "alias preserved" "claude-hookid-b119c" reg.alias;
+          check bool "hook row untouched (pid still None)" true (reg.pid = None);
+          check (option string) "client_type not overwritten" (Some "claude")
+            reg.client_type;
+          check (option string) "registered_by not overwritten"
+            (Some "claude-hook") reg.registered_by))
+
+let test_auto_register_startup_same_alias_upgrade_keeps_hook_marker () =
+  (* B119: when the env alias equals the hook alias (no rename needed), the
+     MCP upgrade must still preserve registered_by so SessionEnd hook cleanup
+     recognises its own auto-registration. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"claude-b119-sid-0004" ~alias:"claude-hookid-b119d"
+        ~pid:None ~pid_start_time:None
+        ~client_type:(Some "claude")
+        ~registered_by:(Some "claude-hook")
+        ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" "claude-b119-sid-0004";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "claude-hookid-b119d";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check int "one registration" 1 (List.length regs);
+          let reg = List.hd regs in
+          check string "alias unchanged" "claude-hookid-b119d" reg.alias;
+          check bool "MCP upgraded the row with a live pid" true
+            (reg.pid <> None);
+          check (option string) "hook ownership marker preserved"
+            (Some "claude-hook") reg.registered_by))
+
 let test_auto_join_rooms_startup_joins_listed_rooms () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-social";
@@ -15118,6 +15179,10 @@ let () =
              test_auto_register_startup_adopts_codex_hook_alias
          ; test_case "auto_register_startup client-type conflict skips hook row (B119)" `Quick
              test_auto_register_startup_client_type_conflict_skips_hook_row
+         ; test_case "auto_register_startup same-alias client-type conflict skips (B119)" `Quick
+             test_auto_register_startup_same_alias_client_type_conflict_skips
+         ; test_case "auto_register_startup same-alias upgrade keeps hook marker (B119)" `Quick
+             test_auto_register_startup_same_alias_upgrade_keeps_hook_marker
          ; test_case "auto_join_rooms_startup joins listed rooms" `Quick
              test_auto_join_rooms_startup_joins_listed_rooms
          ; test_case "auto_join_rooms_startup prefers current registered alias" `Quick

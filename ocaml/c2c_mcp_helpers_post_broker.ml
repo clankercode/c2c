@@ -932,14 +932,15 @@ let auto_register_impl ~broker_root ?session_id_override () =
          Pidless rows with registered_by=None (post-OOM zombies, cleared
          managed rows) keep the #345 behavior: the fresh env alias wins. *)
       let hook_identity_row =
+        (* Any same-session hook row, alias-agnostic: the client-type
+           conflict guard must fire even when the env alias happens to
+           casefold-match the hook alias (otherwise a conflicting client
+           would silently overwrite the row's pid/client_type/registered_by). *)
         List.find_opt
           (fun reg ->
             reg.session_id = session_id
             && reg.pid = None
-            && (match reg.registered_by with
-                | Some "claude-hook" | Some "codex-hook" -> true
-                | _ -> false)
-            && Broker.alias_casefold reg.alias <> Broker.alias_casefold alias)
+            && Broker.is_hook_auto_registration reg)
           existing
       in
       let hook_client_type_conflict =
@@ -954,6 +955,9 @@ let auto_register_impl ~broker_root ?session_id_override () =
       let alias, adopted_registered_by =
         match hook_identity_row with
         | Some reg when not hook_client_type_conflict ->
+            (* Adopt the hook alias; carry registered_by so SessionEnd hook
+               cleanup still recognises its own auto-registration (also when
+               the aliases already match). *)
             (reg.alias, reg.registered_by)
         | _ -> (alias, None)
       in

@@ -389,10 +389,17 @@ open C2c_mcp_helpers
   let alias_casefold s = String.lowercase_ascii s
 
   let codex_hook_registered_by = "codex-hook"
+  let claude_hook_registered_by = "claude-hook"
   let codex_hook_auto_registration_ttl_s = 24.0 *. 60.0 *. 60.0
 
   let is_codex_hook_auto_registration reg =
     reg.registered_by = Some codex_hook_registered_by
+
+  (* B119: hook auto-registrations (SessionStart hooks of any client) are the
+     identity authority for their session_id — the MCP server adopts them. *)
+  let is_hook_auto_registration reg =
+    reg.registered_by = Some codex_hook_registered_by
+    || reg.registered_by = Some claude_hook_registered_by
 
   let codex_hook_activity_anchor reg =
     match reg.last_activity_ts with
