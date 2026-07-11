@@ -89,10 +89,41 @@ let check_injected_verdict_is_inert verdict () =
   Alcotest.(check int) ("await-reply stays inert (exit 1) for " ^ verdict) 1 rc;
   Alcotest.(check string) "no verdict printed" "" out
 
+(* Positive control: proves the inert assertion above is NOT vacuous. A genuine
+   host-local verdict file (the ONLY legitimate approval path) makes await-reply
+   succeed — so exit-1 in the inert cases really means "message stayed inert",
+   not "await-reply always fails". *)
+let test_host_local_verdict_positive_control () =
+  let root = mk_root () in
+  let token = "ka_b098_pos" in
+  (* seed a pending binding so approval-reply accepts the reviewer *)
+  let now = Unix.gettimeofday () in
+  let pending =
+    `List [ `Assoc
+      [ ("perm_id", `String token); ("kind", `String "permission");
+        ("requester_session_id", `String "sess"); ("requester_alias", `String "sess");
+        ("supervisors", `List [ `String "local-operator" ]);
+        ("created_at", `Float now); ("expires_at", `Float (now +. 600.0));
+        ("fallthrough_fired_at", `List []); ("resolved_at", `Null); ("verdict", `Null) ] ]
+  in
+  let oc = open_out (Filename.concat root "pending_permissions.json") in
+  output_string oc (Yojson.Safe.to_string pending); close_out oc;
+  let reply_cmd =
+    Printf.sprintf
+      "C2C_MCP_BROKER_ROOT=%s %s approval-reply %s allow --reviewer local-operator --broker-root %s >/dev/null 2>/dev/null"
+      (Filename.quote root) c2c_binary (Filename.quote token) (Filename.quote root)
+  in
+  Alcotest.(check int) "approval-reply writes verdict" 0 (Sys.command reply_cmd);
+  let rc, out = run_await ~root ~token ~timeout_s:1.0 in
+  Alcotest.(check int) "await-reply consumes the real host-local verdict" 0 rc;
+  Alcotest.(check string) "verdict printed" "allow" out
+
 let () =
   Alcotest.run "c2c_codex_ingress_b098"
     [ ( "B098 injected-path inertness",
         [ Alcotest.test_case "injected 'allow' cannot resolve approval" `Quick
             (check_injected_verdict_is_inert "allow");
           Alcotest.test_case "injected 'deny' cannot resolve approval" `Quick
-            (check_injected_verdict_is_inert "deny") ] ) ]
+            (check_injected_verdict_is_inert "deny");
+          Alcotest.test_case "positive control: real host-local verdict works" `Quick
+            test_host_local_verdict_positive_control ] ) ]

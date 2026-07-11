@@ -24,6 +24,14 @@
      is reconciled to one item when the protocol permits a history lookup, and
      is otherwise an explicitly-tested, documented AT-LEAST-ONCE.
 
+   Ephemeral durability: the adapter never archives, so an ephemeral message's
+   no-archive contract is preserved and its durability EQUALS normal mail for the
+   whole window it is inbox-resident (the active injection attempt included).
+   Limitation: once the broker's hook/poll path drains an ephemeral message it is
+   (by the ephemeral contract) not archived, so it cannot be re-surfaced later —
+   e.g. after a post-drain compact. That is inherent to ephemeral semantics, not
+   a gap in this adapter.
+
    Ownership boundaries: T006 owns public grammar/aliases; T007 owns turn policy;
    T005 owns doctor/status wiring. This module embeds no CLI policy. *)
 

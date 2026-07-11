@@ -232,12 +232,34 @@ let save_ledger (cfg : config) (lg : ledger) : unit =
   close_out oc;
   Sys.rename tmp path
 
+(* Serialize a whole delivery pass against the on-disk ledger. The broker inbox
+   has its own lock; this guards the ledger's load→mutate→save so two adapters on
+   the same session (a misconfiguration, but be robust) can't interleave and
+   clobber a state transition. Advisory flock on <ledger>.lock. *)
+let with_ledger_lock (cfg : config) (fn : unit -> 'a) : 'a =
+  let dir = ingress_dir ~broker_root:cfg.broker_root in
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> () | _ -> ());
+  let lock_path = ledger_path ~broker_root:cfg.broker_root ~session_id:cfg.session_id ^ ".lock" in
+  let fd = Unix.openfile lock_path [ Unix.O_CREAT; Unix.O_RDWR ] 0o644 in
+  Fun.protect
+    ~finally:(fun () -> (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ()); (try Unix.close fd with _ -> ()))
+    (fun () -> Unix.lockf fd Unix.F_LOCK 0; fn ())
+
 let ledger_entry (cfg : config) ~message_id : ledger_entry option =
   let lg = load_ledger cfg in
   Hashtbl.find_opt lg.lg_entries message_id
 
 let ledger_state (cfg : config) ~message_id : delivery_state option =
   Option.map (fun e -> e.le_state) (ledger_entry cfg ~message_id)
+
+(* Server-controlled JSON-RPC error text is echoed into health/ledger/dead-letter
+   for diagnostics. Defensively bound + single-line it so a hostile/echoing
+   app-server can't smuggle injected-payload content or newlines into the
+   structured health signal (AC: health carries NO message content). *)
+let sanitize_reason s =
+  let s = String.map (fun c -> if c = '\n' || c = '\r' || c = '\t' then ' ' else c) s in
+  let max_len = 160 in
+  if String.length s <= max_len then s else String.sub s 0 max_len ^ "…"
 
 let append_dead_letter (cfg : config) ~message_id ~reason =
   let dir = ingress_dir ~broker_root:cfg.broker_root in
@@ -316,8 +338,12 @@ let backoff_delay (cfg : config) ~retry_count =
   let d = cfg.backoff_base_s *. (2.0 ** float_of_int retry_count) in
   Float.min d cfg.backoff_max_s
 
-(* Advance one message. Mutates [lg]. Returns unit. *)
-let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id : unit =
+(* Advance one message. Mutates [lg]. Returns [true] iff it issued an
+   inject_items request this pass (so the caller can debit the batch budget only
+   for real injections — a backoff-blocked or terminal message costs no slot).
+   When [can_inject] is false the injection site is skipped and the entry is left
+   untouched for a later pass; non-injecting transitions still run. *)
+let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id ~can_inject : bool =
   let now = cfg.now () in
   let existing = Hashtbl.find_opt lg.lg_entries message_id in
   let entry =
@@ -330,9 +356,9 @@ let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id 
   in
   Hashtbl.replace lg.lg_entries message_id entry;
   match entry.le_state with
-  | Injected | Dead_lettered | Fallback_pending -> ()  (* terminal / owned elsewhere *)
+  | Injected | Dead_lettered | Fallback_pending -> false  (* terminal / owned elsewhere *)
   | Persisted | Pending_injection | Injecting ->
-      if now < entry.le_next_eligible then ()  (* backoff not elapsed *)
+      if now < entry.le_next_eligible then false  (* backoff not elapsed *)
       else begin
         (* Ambiguous-ack recovery: an entry still in Injecting means a prior pass
            wrote the request but never saw the ack. Reconcile via history if the
@@ -349,8 +375,12 @@ let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id 
             | _ -> false
           else false
         in
-        if reconciled then
-          Hashtbl.replace lg.lg_entries message_id { entry with le_state = Injected }
+        if reconciled then begin
+          Hashtbl.replace lg.lg_entries message_id { entry with le_state = Injected };
+          false  (* reconcile is a read-only history probe, not an injection *)
+        end
+        else if not can_inject then
+          false  (* batch budget exhausted — leave untouched for the next pass *)
         else begin
           match cfg.token_provider () with
           | None ->
@@ -360,7 +390,8 @@ let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id 
                 { entry with le_state = Pending_injection; le_retry_count = rc;
                   le_last_attempt = now; le_next_eligible = now +. backoff_delay cfg ~retry_count:rc;
                   le_last_error = Some (recoverable_to_string Auth_failed) };
-              lg.lg_last_error <- Some (recoverable_to_string Auth_failed)
+              lg.lg_last_error <- Some (recoverable_to_string Auth_failed);
+              false
           | Some token ->
               (* WRITE-AHEAD: persist Injecting before sending, so a crash mid
                  request leaves a reconcilable marker. *)
@@ -385,7 +416,7 @@ let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id 
                      { injecting with le_state = Injecting; le_retry_count = rc;
                        le_next_eligible = now +. backoff_delay cfg ~retry_count:rc;
                        le_last_error = Some ("ambiguous_ack") };
-                   lg.lg_last_protocol_error <- Some why;
+                   lg.lg_last_protocol_error <- Some (sanitize_reason why);
                    lg.lg_last_error <- Some "ambiguous_ack"
                | Inj_recoverable r ->
                    let rc = injecting.le_retry_count + 1 in
@@ -397,14 +428,15 @@ let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id 
                | Inj_unsupported why ->
                    Hashtbl.replace lg.lg_entries message_id
                      { injecting with le_state = Fallback_pending; le_last_error = Some "unsupported" };
-                   lg.lg_last_protocol_error <- Some why;
+                   lg.lg_last_protocol_error <- Some (sanitize_reason why);
                    lg.lg_last_error <- Some "fallback:unsupported"
                | Inj_malformed why ->
                    Hashtbl.replace lg.lg_entries message_id
                      { injecting with le_state = Dead_lettered; le_last_error = Some "malformed" };
-                   append_dead_letter cfg ~message_id ~reason:why;
-                   lg.lg_last_protocol_error <- Some why;
-                   lg.lg_last_error <- Some "dead_letter:malformed")
+                   append_dead_letter cfg ~message_id ~reason:(sanitize_reason why);
+                   lg.lg_last_protocol_error <- Some (sanitize_reason why);
+                   lg.lg_last_error <- Some "dead_letter:malformed");
+              true  (* an inject_items request was issued this pass *)
         end
       end
 
@@ -435,6 +467,7 @@ let compute_health (cfg : config) (lg : ledger) : health =
     last_protocol_error = lg.lg_last_protocol_error }
 
 let deliver_pass (cfg : config) : health =
+  with_ledger_lock cfg @@ fun () ->
   (* 1. persist-first: durable inbox + stable ids BEFORE any injection. *)
   let msgs = persist_message_ids cfg in
   (* 2. load ledger, seed Persisted for any new message. *)
@@ -453,24 +486,16 @@ let deliver_pass (cfg : config) : health =
           end)
     msgs;
   save_ledger cfg lg;
-  (* 3. advance up to max_batch messages, preserving inbox order. Never drains. *)
+  (* 3. advance messages in inbox order, spending the batch budget only on real
+     injections (backoff-blocked/terminal messages cost no slot). Never drains. *)
   let budget = ref cfg.max_batch in
   List.iter
     (fun (m : C2c_mcp.message) ->
       match m.message_id with
       | None -> ()
       | Some mid ->
-          if !budget > 0 then begin
-            let before = Hashtbl.find_opt lg.lg_entries mid in
-            let terminal =
-              match before with
-              | Some e -> (match e.le_state with Injected | Dead_lettered | Fallback_pending -> true | _ -> false)
-              | None -> false
-            in
-            (* Only spend budget on messages that actually attempt an injection. *)
-            if not terminal then decr budget;
-            step_message cfg lg m ~message_id:mid
-          end)
+          let injected = step_message cfg lg m ~message_id:mid ~can_inject:(!budget > 0) in
+          if injected then decr budget)
     msgs;
   save_ledger cfg lg;
   compute_health cfg lg

@@ -105,6 +105,19 @@ let test_stable_id_across_retries () =
   let id2 = match (read_inbox ~root ~session_id:"sess") with [ m ] -> m.message_id | _ -> None in
   Alcotest.(check (option string)) "id stable across retries" id1 id2
 
+let test_duplicate_message_id_in_inbox () =
+  (* Two inbox rows sharing one message_id (a literal duplicate enqueue) must
+     inject exactly once — the ledger is keyed by message_id. *)
+  let root = mk_root () in
+  seed_inbox ~root ~session_id:"sess"
+    [ mk_msg ~message_id:"dup" "copy-1"; mk_msg ~message_id:"dup" "copy-2" ];
+  let client, calls = mk_client [ I.Inj_ok; I.Inj_ok ] in
+  let c = cfg ~root ~client () in
+  let _ = I.deliver_pass c in
+  Alcotest.(check int) "duplicate message_id injects exactly once" 1 (ncalls calls);
+  Alcotest.(check (option string)) "state injected" (Some "injected")
+    (Option.map I.delivery_state_to_string (state_of c "dup"))
+
 let test_idempotent_duplicate_pass () =
   let root = mk_root () in
   seed_inbox ~root ~session_id:"sess" [ mk_msg ~message_id:"m1" "hi" ];
@@ -307,7 +320,8 @@ let () =
           Alcotest.test_case "persist-first before inject" `Quick test_persist_first;
           Alcotest.test_case "stable message_id across retries" `Quick test_stable_id_across_retries ] );
       ( "idempotency",
-        [ Alcotest.test_case "duplicate pass injects once" `Quick test_idempotent_duplicate_pass;
+        [ Alcotest.test_case "duplicate message_id in inbox injects once" `Quick test_duplicate_message_id_in_inbox;
+          Alcotest.test_case "duplicate pass injects once" `Quick test_idempotent_duplicate_pass;
           Alcotest.test_case "ambiguous-ack reconcile exactly-once" `Quick test_ambiguous_ack_reconcile_exactly_once;
           Alcotest.test_case "ambiguous-ack no-history at-least-once" `Quick test_ambiguous_ack_no_history_at_least_once ] );
       ( "recoverable",
