@@ -104,6 +104,20 @@ let sign_send_room identity ~room_id ~from_alias ~content =
     ("nonce", `String nonce);
   ]
 
+(** B116: sign a binding-revocation proof for DELETE /binding/<binding_id>.
+    The signer key must be the machine or phone Ed25519 key stored on the
+    binding; ts is Unix epoch seconds. Blob:
+    binding_revoke_sign_ctx || binding_id || pk_b64 || ts || nonce. *)
+let sign_binding_revoke identity ~binding_id =
+  let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
+  let ts = Printf.sprintf "%.6f" (Unix.gettimeofday ()) in
+  let nonce = random_nonce_b64 () in
+  let blob = Relay_identity.canonical_msg
+    ~ctx:Relay_common.binding_revoke_sign_ctx
+    [ binding_id; pk_b64; ts; nonce ] in
+  let sig_ = Relay_identity.sign identity blob in
+  { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
+
 (** Build the Authorization header value for a peer route request (spec §5.1).
     Returns: "Ed25519 alias=<a>,ts=<t>,nonce=<n>,sig=<s>" for use in the
     Authorization HTTP header. The signature covers the canonical request blob:

@@ -50,9 +50,11 @@ let loopback_socket () =
   | _ -> Lwt.fail_with "loopback_socket: expected INET socket"
 
 (* Serve the production relay callback on a loopback port for the duration
-   of [f ~base_url ~relay]. Fresh InMemoryRelay per bracket; dev auth
-   (token = None); optional caller-supplied rate limiter. *)
-let with_server ?rate_limiter f =
+   of [f ~base_url ~relay]. Fresh InMemoryRelay per bracket; dev auth by
+   default (token = None) — pass [?token] for a token-configured
+   (production auth mode) bracket, e.g. the B116 binding-revoke suite;
+   optional caller-supplied rate limiter. *)
+let with_server ?token ?rate_limiter f =
   Lwt_main.run
     (loopback_socket () >>= fun (fd, port) ->
      let relay = Relay.InMemoryRelay.create () in
@@ -63,7 +65,7 @@ let with_server ?rate_limiter f =
      in
      let stop, wake_stop = Lwt.wait () in
      let callback (conn, _) req body =
-       RS.make_callback relay None conn req body ?broker_root:None
+       RS.make_callback relay token conn req body ?broker_root:None
          ~rate_limiter
      in
      let spec = Cohttp_lwt_unix.Server.make ~callback () in
