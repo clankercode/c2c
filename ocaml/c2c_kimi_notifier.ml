@@ -172,7 +172,13 @@ let write_notification
   let delivery_path = ndir // "delivery.json" in
   let ts = now () in
   let is_room = C2c_mcp.is_room_recipient ~to_alias in
-  let recipient = C2c_mcp.recipient_identity to_alias in
+  (* kimi renders [title] as raw XML text inside <notification>, whereas it
+     applies escapeXmlAttr to source_kind/source_id itself. Escape only title
+     interpolations here (pre-escaping the attribute fields would double
+     escape them). Keep the peer-authored body byte-for-byte unchanged. *)
+  let xml_text = C2c_mcp.xml_escape in
+  let recipient = to_alias |> C2c_mcp.recipient_identity |> xml_text in
+  let safe_from = xml_text from_alias in
   let event_type, title =
     if is_room then
       let room_id =
@@ -183,12 +189,12 @@ let write_notification
       ( "c2c-room",
         Printf.sprintf
           "c2c: your alias is %s; room message from %s; reply via c2c_send_room(room_id=\"%s\")"
-          recipient from_alias room_id )
+          recipient safe_from (xml_text room_id) )
     else
       ( "c2c-dm",
         Printf.sprintf
           "c2c: your alias is %s; direct message from %s; reply via c2c_send(to_alias=\"%s\")"
-          recipient from_alias from_alias )
+          recipient safe_from safe_from )
   in
   let event_json =
     Printf.sprintf

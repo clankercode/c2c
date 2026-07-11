@@ -723,15 +723,13 @@ let format_ts_hhmm (t : float) : string = C2c_time.hhmm t
     so the recipient can recognise them on drain without consulting
     room state.
 
-    Cross-machine relay DMs ALSO carry a `#`-suffixed [to_alias] (the
-    receiver's relay address is `<name>#<12-hex-host-hash>`, see
-    [derive_relay_alias] in the c2c main project). Those are direct
-    messages that must reply via [c2c_send], not [c2c_send_room].
+    Current cross-machine relay DMs use [<name>@<host-id>] and therefore do
+    not enter the [#] room branch. Legacy relay addresses used
+    [<name>#<12-hex-host-hash>]; retain that compatibility so archived or
+    mixed-version messages remain direct messages that reply via [c2c_send].
 
     Disambiguate by suffix shape: a 12-lowercase-hex suffix is the
-    relay host hash; anything else is treated as a room id. If the
-    relay address format ever changes, this helper and the relay
-    address derivation must move together. *)
+    legacy relay host hash; anything else is treated as a room id. *)
 let is_room_recipient ~to_alias : bool =
   match String.index_opt to_alias '#' with
   | None -> false

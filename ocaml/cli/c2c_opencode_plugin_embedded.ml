@@ -1380,7 +1380,8 @@ const C2CDelivery: Plugin = async (ctx) => {
     // backslash-escaped (so it cannot break out of the fenced region). This
     // is the TS mirror of the OCaml escape_reminder_literal contract.
     const safeFrom = xmlEscape(from).replace(/[`\\]/g, "\\$&");
-    // The routing `to` may be decorated as alias#room or alias#host-hash.
+    // The routing `to` may be decorated as current alias@host-id,
+    // alias#room, or the legacy alias#12hex relay form.
     // Show the local identity only; the full routing value remains in the
     // envelope attribute.
     const safeRecipient = xmlEscape(to.split(/[#@]/, 1)[0] || to).replace(/[`\\]/g, "\\$&");
