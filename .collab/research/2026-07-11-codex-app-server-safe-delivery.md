@@ -33,8 +33,9 @@ architecture is a no-go even if injection preserves the composer.
 
 1. Persist every inbound c2c message in its broker inbox first.
 2. For an active app-server-managed session, inject a validated message item.
-   Local-broker mail may then start a Codex turn unless recipient DND is active;
-   DND queues without starting a turn. Never use `turn/steer`,
+   Local-broker mail may then start a Codex turn only when recipient DND is off
+   and the normal TUI has no in-progress composer draft; either condition queues
+   without starting a turn. Never use `turn/steer`,
    `turn/interrupt`, PTY writes, tmux `send-keys`, or Herdr submission.
 3. A message-triggered turn is a product delivery policy, not an approval
    channel. Message content can never resolve an approval or write an approval
