@@ -5,7 +5,7 @@ depends_on:
     - P1.M1.E1.T002
     - P1.M1.E1.T003
     - P1.M1.E1.T004
-estimate_hours: 8
+estimate_hours: 12
 id: P1.M1.E1.T007
 priority: high
 status: pending
@@ -14,18 +14,81 @@ tags:
     - app-server
     - local-delivery
     - dnd
-title: Trigger an app-server turn for local c2c mail unless DND is active
+title: Start safe Codex turns for eligible local c2c mail
 ---
-Implement the requested local-delivery policy for an active managed app-server session: local-broker mail may create a Codex turn so the agent can receive and respond without a human submit, but only when the recipient is not in DND and the normal TUI has no in-progress composer draft. If either gate applies, persist the message and defer the turn.
+## Objective
 
-Acceptance criteria:
-- The trigger is restricted to local-broker delivery; remote/relay mail remains queued unless a later explicit policy extends it.
-- A delivered message is persisted before the trigger and appears in the thread with accurate c2c attribution.
-- The turn starts only through the validated app-server path; no PTY/tmux/Herdr input injection is used.
-- DND suppresses the automatic turn and retains the message in the durable inbox; clearing DND makes queued mail available according to the documented policy.
-- A real TUI with deliberately non-empty composer text and a positioned cursor never receives an automatic turn. The message remains queued; exact composer text and cursor are unchanged. This is proven in the live tmux E2E before the auto-turn path ships.
-- This changes the prior bus-not-RPC behavior only for local message-to-turn delivery. It MUST NOT let a message resolve an approval: `allow`/`deny` content remains inert to `await-reply` and approval verdict files remain host-local.
-- E2E covers receiver response, DND and composer suppression, duplicate/retry idempotency, and ordinary TUI typed-draft preservation.
-- With an approval pending, an automatic local-delivery turn containing literal `allow` or `deny` must prove that no verdict file is written and `await-reply` remains unresolved.
+For an active managed Codex app-server session, turn eligible local-broker mail into an immediate Codex turn so the agent can act and respond. Persist first, never disturb an operator draft, honor DND, batch safely around active turns, and preserve the host-local approval boundary.
 
-Blockers: P1.M1.E1.T001, P1.M1.E1.T002, P1.M1.E1.T003, and P1.M1.E1.T004.
+## Scope and non-goals
+
+- Trigger only messages whose transport provenance is the local broker. Relay/remote messages remain durable and queued unless a later explicit trust policy changes that rule.
+- Use the authenticated/isolated app-server control path proven by T001 and T002. Never use PTY writes, tmux/Herdr input injection, `turn/steer`, or `turn/interrupt`.
+- This task does not define command grammar, endpoint security, passive ingress mechanics, or offline mailbox behavior.
+- If reliable composer-state observation or turn serialization cannot be implemented within this slice, record the missing prerequisite and recommend a blocker/split to the coordinator; do not create a new task ID.
+
+## References
+
+- Policy research: `.collab/research/2026-07-11-codex-app-server-safe-delivery.md`
+- Passive ingress and draft proof: T003 implementation and T004 receipt
+- DND semantics: `docs/dnd-mode-spec.md`, `ocaml/c2c_broker.ml`, `ocaml/c2c_agent_state_handlers.ml`, and `ocaml/c2c_mcp_helpers.ml`
+- Approval isolation: `ocaml/cli/c2c_approval_paths.ml`, `ocaml/cli/c2c_approval_cmd.ml`, `ocaml/cli/test_c2c_approval_paths.ml`, and the B098 regression cases
+- Envelope/idempotency integration: `ocaml/c2c_broker.ml` and the T003 message-ID contract
+- Official turn/app-server protocol: https://learn.chatgpt.com/docs/app-server
+
+## State and ownership boundaries
+
+- Broker inbox is authoritative for durable receipt, provenance, order, delivery state, and message ID. Persist before any app-server request.
+- The app-server is authoritative for thread ID, active-turn state, composer-state signal, and `turn/start` result. Do not infer composer emptiness from idle time, terminal title, process liveness, or a scraped prompt glyph.
+- The dispatcher owns a per-recipient serialization gate and durable transition from queued to submitted/acknowledged. A crash/retry produces one model-visible batch/turn when acknowledgement or reconciliation proves acceptance; an ambiguous acknowledgement retains durable unknown state and must not be blindly replayed.
+- Approval verdict files remain writable only through the existing host-local approval command path. Message text is data even when it says `allow` or `deny`.
+
+## State policy
+
+| Recipient state | Required action |
+| --- | --- |
+| Offline/app-server unavailable | Leave durable queued; do not start a hidden server or turn. B127 defines sender result. |
+| DND active | Leave queued; do not inject/start. On explicit/expiry DND clear, reevaluate once through the same serialized dispatcher. |
+| Composer state unknown | Fail closed: leave queued and emit diagnosable state; never assume empty. |
+| Composer non-empty | Leave queued without modifying text/cursor; reevaluate only on a trustworthy composer-empty event or explicit poll. |
+| Active turn | Accumulate eligible mail in arrival order; do not steer/interrupt. After completion, reevaluate and start at most one batched follow-up turn. |
+| Idle, composer positively known empty, DND off | Atomically claim eligible queued mail and start one turn through app-server. |
+
+## Batching and idempotency contract
+
+- Coalesce all eligible messages observed before the serialized claim into one turn, ordered by broker sequence/time and carrying each immutable c2c message ID plus sender attribution.
+- Messages arriving after `turn/start` acknowledgement belong to the next batch; they never steer the active turn.
+- Use a stable batch/idempotency key derived from recipient thread ID and ordered message IDs. Persist claim and app-server acknowledgement so acknowledged/reconciled restart retries cannot create a second turn or duplicate items; preserve an observable unknown/at-least-once state when acceptance cannot be proven.
+- On ambiguous timeout, reconcile against app-server/thread history and durable claim state before retrying. Never drop or blindly replay.
+- Partial/ineligible batches (DND transition, remote provenance, unknown composer) remain queued without blocking later explicit recovery and with actionable diagnostics.
+
+## Acceptance criteria
+
+- Every trigger satisfies: local provenance, active managed session, DND off, composer positively known empty, no active turn, and durable unclaimed message(s). Unknown state fails closed.
+- Persist-before-trigger is proven by killing the dispatcher between persistence, claim, request, and acknowledgement. Recovery yields one ordered model-visible copy and at most one turn when acknowledgement/reconciliation proves acceptance; the ambiguous-ack case remains durably held, is not blindly replayed, and reports its unknown/at-least-once outcome.
+- A successful turn contains accurate c2c envelope attribution and stable message IDs, and the agent can use normal tools/respond according to its configured Codex approval/sandbox policy.
+- DND-on, DND-clear, unknown composer, non-empty composer with positioned cursor, active turn, idle-empty composer, offline server, and relay-origin messages each match the state table.
+- Burst/retry E2E proves ordered batching, next-turn separation for mid-turn arrivals, and T003's acknowledged/reconciled idempotency guarantee; the ambiguous-ack case remains explicitly observable rather than being misreported as exactly-once.
+- Literal `allow` and `deny` in local auto-turn messages cannot satisfy `await-reply`, invoke `authorize`, or create/modify verdict files. Test with an approval pending and assert unresolved state plus unchanged verdict directory.
+- Metrics/logs expose queued reason, batch/message IDs, trigger/reconcile outcome, and redacted recipient identity without logging bodies, credentials, or composer contents.
+
+## Deliverables and receipts
+
+- Dispatcher/state-machine implementation with focused unit/property tests, crash-window fixtures, and real tmux E2E additions.
+- A `.collab/research/` receipt containing the state-matrix results, batch/turn/message IDs, DND transitions, composer proof link to T004, approval-isolation proof, supported Codex version, and exact commands.
+- If composer state is not an authoritative app-server capability, stop and recommend an explicit blocker or narrower follow-up split; do not weaken fail-closed behavior.
+
+## Verification
+
+```sh
+just build
+just check
+dune exec --root "$PWD" ocaml/cli/test_c2c_approval_paths.exe
+./scripts/test-codex-delivery-tmux-e2e.sh
+```
+
+Add and run focused dispatcher tests for every state-table row and crash window. Drive the live Codex session only through `scripts/c2c_tmux.py` and capture it with `scripts/tui-snapshot.sh`.
+
+## Blockers
+
+T001 must prove the control boundary and required app-server observations; T002 must expose the managed primitive; T003 must provide durable passive ingress and stable IDs; T004 must prove composer preservation and identify a trustworthy composer-state signal. A missing authoritative composer signal is a hard blocker, not permission to infer emptiness.

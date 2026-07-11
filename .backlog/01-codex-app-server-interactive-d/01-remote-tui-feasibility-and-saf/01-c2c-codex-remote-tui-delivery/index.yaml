@@ -1,9 +1,15 @@
 complexity: high
 depends_on: []
-estimate_hours: 32
+estimate_hours: 54
 id: P1.M1.E1
 locked: false
 name: c2c Codex remote-TUI delivery
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 7
+    total: 7
 status: pending
 tasks:
     - complexity: high
@@ -22,7 +28,7 @@ tasks:
       id: T002
       priority: high
       status: pending
-      title: Add opt-in app-server-backed Codex session launcher
+      title: Add app-server-backed Codex session launcher primitive
     - complexity: high
       depends_on:
         - P1.M1.E1.T001
@@ -37,38 +43,41 @@ tasks:
       depends_on:
         - P1.M1.E1.T002
         - P1.M1.E1.T003
-      estimate_hours: 6
+      estimate_hours: 8
       file: T004-prove-typed-draft-preservation.todo
       id: T004
       priority: critical
       status: pending
-      title: Prove typed-draft preservation in real tmux Codex sessions
+      title: Prove passive ingress preserves a real Codex TUI draft
     - complexity: medium
       depends_on:
         - P1.M1.E1.T004
-      estimate_hours: 4
+        - P1.M1.E1.T006
+        - P1.M1.E1.T007
+      estimate_hours: 6
       file: T005-publish-safe-interactive-deliv.todo
       id: T005
       priority: medium
       status: pending
-      title: Publish safe interactive-delivery profile and operator docs
-    - complexity: medium
+      title: Document and diagnose canonical managed Codex delivery
+    - complexity: high
       depends_on:
         - P1.M1.E1.T002
-      estimate_hours: 4
+      estimate_hours: 8
       file: T006-add-named-codex-session-comman.todo
       id: T006
       priority: high
       status: pending
-      title: Add named Codex session commands and generated aliases
+      title: Ship managed Codex command grammar, identity, and lifecycle
     - complexity: high
       depends_on:
         - P1.M1.E1.T001
         - P1.M1.E1.T002
         - P1.M1.E1.T003
-      estimate_hours: 8
+        - P1.M1.E1.T004
+      estimate_hours: 12
       file: T007-trigger-an-app-server-turn-for.todo
       id: T007
       priority: high
       status: pending
-      title: Trigger an app-server turn for local c2c mail unless DND is active
+      title: Start safe Codex turns for eligible local c2c mail

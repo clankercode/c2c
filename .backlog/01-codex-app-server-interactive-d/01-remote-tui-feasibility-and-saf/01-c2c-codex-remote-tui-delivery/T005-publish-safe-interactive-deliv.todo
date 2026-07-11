@@ -2,26 +2,71 @@
 complexity: medium
 depends_on:
     - P1.M1.E1.T004
+    - P1.M1.E1.T006
     - P1.M1.E1.T007
-estimate_hours: 4
+estimate_hours: 6
 id: P1.M1.E1.T005
 priority: medium
 status: pending
 tags:
     - codex
     - docs
-    - install
+    - doctor
     - delivery
-title: Publish safe interactive-delivery profile and operator docs
+title: Document and diagnose canonical managed Codex delivery
 ---
-Depends on end-to-end typed-draft preservation and the local auto-turn policy.
+## Objective
 
-Expose an opt-in safe interactive Codex profile, document its version/transport requirements, fallback behavior, and privacy/security boundaries. Update install/doctor output to distinguish passive app-server delivery from legacy hooks and input-injecting wake behavior.
+Make the app-server-backed behavior shipped by T002/T006/T007 the documented and diagnosable managed Codex path. Operators and agents must be able to identify the active transport, its lifecycle, its DND/composer deferral behavior, and the hook fallback without an opt-in profile or hand-edited configuration.
 
-Acceptance criteria:
-- Replace the broad B098 bus-not-RPC wording in AGENTS/runbooks with the implemented policy: eligible local-broker mail may start a Codex turn, but a message never resolves an approval or writes an approval verdict. State the DND and non-empty-composer deferral gates exactly.
-- `hooks+wake` is accurately labeled as input injection and is not enabled by the safe profile.
-- App-server remote-TUI security guidance covers Unix socket default, localhost/SSH only, and WebSocket authentication for non-local listeners.
-- Docs are reviewed against the actual tested commands and default behavior.
+## Scope and non-goals
 
-Blockers: P1.M1.E1.T004 and P1.M1.E1.T007 acceptance receipts.
+- Update public/reference docs, install output, status/instances output, and `c2c doctor` capability reporting for the canonical managed path.
+- This is documentation and diagnostics work. Do not add a second "safe profile," change command grammar, or implement delivery policy here.
+- Preserve ordinary Codex hooks as the unmanaged/unsupported-version fallback and describe `hooks+wake` truthfully as an input-injecting mode.
+
+## References
+
+- Implemented behavior receipts: T004 and T007 `.collab/research/` artifacts
+- Research: `.collab/research/2026-07-11-codex-app-server-safe-delivery.md`
+- Documentation rules: `.collab/runbooks/documentation-hygiene.md`, `docs/CLAUDE.md`, `docs/clients/feature-matrix.md`, `docs/clients/e2e-checklist.md`, `docs/get-started.md`, and `docs/commands.md`
+- Current operational surfaces: `ocaml/cli/c2c_doctor_cmd.ml`, `ocaml/cli/c2c_doctor_hooks.ml`, `ocaml/cli/c2c_instances_cmd.ml`, `ocaml/cli/test_c2c_doctor_hooks.ml`, and `ocaml/test/test_c2c_doctor_capabilities.ml`
+- DND contract: `docs/dnd-mode-spec.md`
+- Approval isolation: `ocaml/cli/c2c_approval_paths.ml`, `ocaml/cli/c2c_approval_cmd.ml`, and `ocaml/cli/test_c2c_approval_paths.ml`
+- Official app-server and hook docs: https://learn.chatgpt.com/docs/app-server and https://learn.chatgpt.com/docs/hooks
+
+## State and ownership boundaries
+
+- T006 owns command names, flags, alias generation, resume, and process lifecycle; T007 owns auto-turn/deferral policy; B127 owns offline queue semantics.
+- Doctor/status may observe and explain app-server endpoint health, TUI attachment, DND, and delivery mode, but must not mutate them.
+- Never print socket credentials, authentication tokens, message bodies, or composer contents. Redact private endpoint components if required by the T001 boundary.
+
+## Acceptance criteria
+
+- Managed `c2c start codex` is documented as canonical, with generated alias default, optional `--alias`, `--yolo` warning, `new`/`resume`/shortcut grammar, TUI-exit lifecycle, and offline behavior exactly matching T006/B127.
+- Docs replace the broad B098 statement with the implemented rule: eligible local broker mail can cause a Codex turn; message content still cannot resolve approvals or write verdict files. Relay policy and trust boundaries are explicit.
+- DND, non-empty/unknown composer state, active-turn batching, and idle behavior match T007 verbatim enough to be operationally testable.
+- `c2c doctor` and machine-readable output distinguish at least: healthy app-server remote TUI, app-server unavailable/incompatible, hooks-only fallback, and legacy `hooks+wake` input injection. Each degraded state includes an actionable remediation.
+- Install/status/instances output uses the same delivery-mode vocabulary and never claims instant delivery when only a hook boundary is available.
+- Transport guidance defaults to the proven local boundary from T001. Any TCP/WebSocket guidance requires authentication and explicit exposure warnings; no unauthenticated listener is recommended.
+- Command/help examples are copied from tested commands, and docs contain links to official app-server/hooks references for version drift.
+
+## Deliverables and receipts
+
+- Updated public docs, AGENTS/runbooks where policy changed, doctor/status/install tests, and generated docs if the repository workflow requires them.
+- A docs/diagnostics receipt listing every changed surface, tested output snippets, supported Codex version/capabilities, and links to T004/T007 evidence.
+
+## Verification
+
+```sh
+just build
+just check
+dune exec --root "$PWD" ocaml/cli/test_c2c_doctor_hooks.exe
+dune exec --root "$PWD" ocaml/test/test_c2c_doctor_capabilities.exe
+```
+
+Also run the repository's docs build/check command named by `docs/CLAUDE.md`, plus focused tests for any changed install/status/instances module.
+
+## Blockers
+
+P1.M1.E1.T004 and T007 must supply live behavioral receipts; P1.M1.E1.T006 must freeze the public grammar and lifecycle before documentation is finalized.

@@ -3,7 +3,7 @@ complexity: high
 depends_on:
     - P1.M1.E1.T002
     - P1.M1.E1.T003
-estimate_hours: 6
+estimate_hours: 8
 id: P1.M1.E1.T004
 priority: critical
 status: pending
@@ -13,17 +13,72 @@ tags:
     - e2e
     - ux
     - delivery
-title: Prove typed-draft preservation in real tmux Codex sessions
+title: Prove passive ingress preserves a real Codex TUI draft
 ---
-Depends on the remote launcher and passive ingress adapter.
+## Objective
 
-Build a real-tmux E2E harness using existing scripts. It must deliberately leave non-empty text in the Codex composer, send inbound c2c mail, and inspect behavior before and after submit.
+Validate the passive ingress implemented by T003 against the stock Codex remote TUI in a real tmux session. Prove with reproducible snapshots that delivery never edits or submits an operator's draft, while preserving message order and the exact idempotency guarantee T003 establishes for each acknowledgement state.
 
-Acceptance criteria:
-- The exact composer text and cursor position are unchanged when a message arrives.
-- No turn is started, cancelled, or steered merely by message arrival.
-- The passive message becomes available to Codex at a validated lifecycle point, and multi-message ordering/dedupe is checked.
-- Cover idle, actively-generating, disconnected app-server, and ordinary non-remote Codex fallback.
-- Capture reproducible tmux receipts and run the tests inside the slice worktree.
+## Scope and non-goals
 
-Blockers: P1.M1.E1.T002 and P1.M1.E1.T003.
+- Extend the existing tmux harness; do not create an ad-hoc launcher or use a non-TTY child process.
+- Exercise T003's app-server protocol path. This task does not implement ingress, command grammar, automatic `turn/start`, or offline mailbox semantics.
+- Test the ordinary hook-backed Codex path only as a fallback/control case; do not redesign it.
+- Do not use `tmux send-keys`, PTY injection, Herdr, `turn/steer`, or `turn/interrupt` as the delivery mechanism. Harness keystrokes are allowed solely to set up and submit a test draft.
+
+## References
+
+- Research and protocol decision: `.collab/research/2026-07-11-codex-app-server-safe-delivery.md`
+- Live-session rules: `AGENTS.md` and `.collab/runbooks/git-workflow.md`
+- Existing harnesses: `scripts/c2c_tmux.py`, `scripts/test-codex-delivery-tmux-e2e.sh`, and `scripts/tui-snapshot.sh`
+- Current Codex wake behavior: `ocaml/c2c_wake_inject.ml` and `.collab/runbooks/agent-wake-setup.md`
+- Official app-server/remote-TUI protocol: https://learn.chatgpt.com/docs/app-server
+- Official hook fallback: https://learn.chatgpt.com/docs/hooks
+
+## State and ownership boundaries
+
+- The broker owns durable message/order/idempotency state; T003 owns the passive injection acknowledgement and retry contract.
+- Codex owns composer text, cursor, thread history, and turn state. The test must observe these without treating terminal pixels as authoritative protocol state.
+- The harness owns isolated aliases, socket paths, tmux sessions, logs, and cleanup. Use fixture gates for external effects and never collide with live aliases.
+
+## Required scenario matrix
+
+Run every row with a unique message ID and record before-arrival, after-arrival, and after-submit snapshots plus protocol/broker logs:
+
+| Receiver state | Composer | Delivery expectation | Turn expectation | Required proof |
+| --- | --- | --- | --- | --- |
+| Idle remote TUI | empty | T003 item becomes available at its documented lifecycle point | no turn from passive arrival | thread/protocol receipt and unchanged empty composer |
+| Idle remote TUI | non-empty, cursor in middle | persist/inject without editing draft | no start, steer, cancel, or submit | byte-exact draft and cursor coordinates before/after |
+| Active generation | empty | persist; inject/defer per T003 contract | current turn is neither steered nor interrupted | same turn ID completes and message appears only at the documented point |
+| Active generation | non-empty draft if TUI permits | persist/defer | no extra turn | draft/cursor unchanged and current turn ID stable |
+| App-server disconnect/reconnect | non-empty draft | no loss; retry follows T003's acknowledged versus ambiguous-ack contract | no turn | one model-visible item when acceptance is provable; otherwise an observable at-least-once result, same draft/cursor |
+| Ordinary non-remote Codex | non-empty draft | hook fallback waits for a natural hook boundary | no arrival-time turn | no draft mutation; message appears after deliberate submit/poll only |
+
+Also send a three-message burst in known order and retry the middle message with the same ID. Prove visible order `1,2,3` with exactly one `2` for acknowledged/reconciled delivery, then separately exercise and record the ambiguous-ack outcome allowed by T003.
+
+## Acceptance criteria
+
+- The non-empty draft contains multibyte text and multiple lines; captured content is byte-for-byte equal before and after every arrival.
+- Cursor row/column is derived from a deterministic terminal snapshot (not visual judgment) and is identical before/after arrival.
+- App-server notifications/logs prove no new turn ID and no `turn/start`, `turn/steer`, `turn/interrupt`, or cancellation caused by passive arrival.
+- Each scenario has deterministic timeouts, teardown, and actionable failure output; no fixed sleeps are used where the harness can wait on a state/event.
+- The scenario matrix and burst retry pass inside this slice worktree against the supported installed Codex version.
+
+## Deliverables and receipts
+
+- Checked-in harness/test changes and a short receipt under `.collab/research/` containing Codex/c2c versions, commands, matrix results, snapshot paths or sanitized excerpts, turn IDs, message IDs, and cleanup result.
+- Record the exact T003 lifecycle point at which injected items become model-visible and any unsupported state as a finding, not an assumption.
+
+## Verification
+
+```sh
+just build
+just check
+./scripts/test-codex-delivery-tmux-e2e.sh
+```
+
+If the implementation introduces a more focused app-server E2E command, document and run that exact command in the receipt as well. Run `./scripts/tui-snapshot.sh` through the canonical harness rather than directly inventing a second capture path.
+
+## Blockers
+
+P1.M1.E1.T002 must provide the managed app-server/TUI primitive and P1.M1.E1.T003 must provide passive ingress with stable message IDs and observable acknowledgements.

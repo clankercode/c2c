@@ -1,26 +1,179 @@
 ---
 complexity: high
 depends_on: []
-estimate_hours: 5
+estimate_hours: 12
 id: B127
 priority: high
 status: pending
 tags:
     - delivery
     - offline
-    - codex
+    - local-broker
     - managed-session
 title: Offline managed alias rejects sends instead of queueing durable inbox mail
 ---
-Requested behavior: a closed normal managed Codex session is offline. `c2c send <alias> <message>` must persist the message for the alias and return a clear successful-but-offline warning; it must not silently drop the message or reject it as an unknown recipient. The next explicit session start/resume must drain the durable inbox.
+## Problem
 
-Current evidence (2026-07-11): `C2c_mcp.Broker.send` resolves a matching dead registration as `All_recipients_dead` and raises `Invalid_argument ("recipient is not alive: " ^ to_alias)` at `ocaml/c2c_broker.ml:2350-2351`. This prevents the requested offline queueing behavior. No existing backlog entry matched this failure.
+A known local alias becomes temporarily unroutable when its managed process
+exits. `C2c_broker.resolve_live_session_id_by_alias` then returns
+`All_recipients_dead`; `C2c_broker.enqueue_message` rejects the send, and the
+CLI's `dead_recipient` branch in `ocaml/cli/c2c_send_cmd.ml` prints "message not
+queued". This breaks the normal messaging expectation that mail sent to a
+known, resumable identity waits until that identity returns.
 
-Acceptance criteria:
-- Stable managed alias records survive normal frontend/server shutdown long enough for offline queueing, without presenting them as alive.
-- Direct send returns exit 0 with a machine-readable queued_offline result and a human-readable warning; an unknown alias remains an error.
-- Queueing preserves c2c envelope, ordering, ephemeral/archive semantics, and sender-side error reporting.
-- Explicit start/resume redelivers exactly once; expiry/dead-letter policy is documented and tested.
-- Cover local and relay routing, and do not use sweep during active managed-session operation.
+This slice is deliberately **local-broker only**. It must not change unknown
+alias handling, `alias@host` relay routing, relay acknowledgements, room fanout,
+or cross-broker ambiguity rules.
 
-Blockers: none; this is required before any offline managed-Codex delivery promise.
+## Required identity and mailbox model
+
+- A local alias is known offline only when the target broker already contains
+  exactly one registration for that alias (case-insensitive), its liveness is
+  dead, and there is no live registration for the alias in another scanned
+  broker. An alias with no registration remains `Unknown_alias`; multiple
+  plausible broker owners remain an ambiguity error.
+- The durable mailbox owner is the dead registration's `session_id`, not the
+  sender's spelling of the alias and not a newly generated placeholder ID.
+  Queue to the existing `<broker>/<session_id>.inbox.json` under the existing
+  registry-then-inbox lock order. This makes the current registration path's
+  same-alias inbox migration in `C2c_broker.register` carry mail into a resumed
+  or replacement session.
+- Keep the dead registration visibly dead. Offline queueing must not touch its
+  PID lease, mark it alive, launch a process, invoke Codex app-server, or wake a
+  frontend.
+- A normal enqueue creates one UUID `message_id` before the durable write. The
+  locked read-modify-write either commits that ID once or reports failure; a
+  retry after an acknowledged success is a new message, while recovery from an
+  ambiguous write failure must compare the retained ID and must not append it a
+  second time. Preserve FIFO order across offline mail and concurrent sends.
+- Process death between resolution and append must converge to the same offline
+  path while holding the registry lock. Re-registration races must serialize
+  registry -> old inbox -> new inbox, so a message is present in exactly one
+  inbox after migration. A crash after the atomic `save_inbox` rename is a
+  successful durable enqueue; a crash before it leaves the previous inbox
+  unchanged. Never delete offline mail during ordinary stop/resume or liveness
+  cleanup.
+
+Relevant implementation seams:
+
+- `ocaml/c2c_broker.ml`: `resolve_live_session_id_by_alias`,
+  `enqueue_message`, `with_registry_lock`, `with_inbox_lock`, `load_inbox`,
+  `save_inbox`, `generate_msg_id`, and the inbox-migration block in `register`.
+- `ocaml/cli/c2c_send_cmd.ml`: `find_alias_in_all_brokers`, the
+  `dead_recipient` fallback, delivery classification, human output, and
+  `--fail-if-queued`.
+- `ocaml/c2c_send_handlers.ml`: `resolve_delivery_broker`, `send`, and
+  `build_send_receipt` for MCP parity.
+- Schema contract: `ocaml/c2c_schema_v1.ml`, `ocaml/cli/c2c_utils.ml` and
+  `docs/reference/message-schema-v1.md`.
+
+## Receipt contract
+
+For a successfully persisted offline message, both CLI and MCP return success
+with the same machine-readable classification:
+
+```json
+{
+  "schema_version": 1,
+  "type": "dm",
+  "from": {"alias": "sender"},
+  "to": "recipient",
+  "content": "...",
+  "delivery": {
+    "state": "queued",
+    "reason": "recipient_offline",
+    "warning": "recipient is offline; message queued for the next start or resume"
+  },
+  "result": "queued_offline",
+  "queued": true,
+  "queued_offline": true,
+  "from_alias": "sender",
+  "to_alias": "recipient"
+}
+```
+
+`delivery.state` remains the schema-v1 enum value `queued`; the additive
+`delivery.reason`, `result`, and `queued_offline` fields provide the requested
+exact classification without inventing an incompatible fourth v1 state. CLI
+human output is `queued (offline) -> <alias> (from <sender>)` on stdout plus the
+warning on stderr, with exit status 0. `--fail-if-queued` continues to return 3
+because the message is queued rather than synchronously delivered. Unknown
+aliases and ambiguous ownership remain non-zero errors. A live local CLI send
+retains its current `delivered` receipt; an MCP send retains its current queued
+receipt but does not set `queued_offline`.
+
+## Ephemeral and retention semantics
+
+- `ephemeral:true` offline mail is still durable while waiting in the inbox;
+  otherwise it could not be delivered. On drain it follows the existing
+  `C2c_mcp_helpers.message.ephemeral` rule: deliver normally but skip recipient
+  archive append. It is not a no-disk promise.
+- Non-ephemeral mail follows existing inbox/archive behavior. Do not introduce
+  expiry or dead-letter deletion in this slice. Mail remains until successful
+  drain, explicit operator removal under an existing documented command, or a
+  future separately specified retention policy.
+- Do not change the documented v1 limitation that remote relay outboxes persist
+  even when `--ephemeral` is requested.
+
+## Acceptance criteria
+
+- A send to one known-dead local registration is atomically persisted in its
+  session inbox and returns the exact CLI/MCP receipts above.
+- Start/resume with the same identity drains each queued message once and in
+  FIFO order; registration under a replacement session ID migrates the old
+  alias mailbox without loss or duplication.
+- Unknown local aliases still reject without creating registration or inbox
+  files. Multiple owners remain ambiguous. Live local and remote relay sends
+  retain their current behavior and receipt shapes.
+- Offline queueing never marks the recipient alive, touches a dead lease,
+  starts a turn, or triggers approval handling. Message delivery may later wake
+  or start a turn under the recipient's delivery policy, but message content
+  can never satisfy an approval or write a host-local approval verdict.
+- Offline ephemeral messages survive restart, deliver once, and are absent
+  from recipient archive after drain. Non-ephemeral messages are archived as
+  today.
+- Broker logs distinguish `queued_offline` from live enqueue and include
+  `message_id`, alias, resolved session ID, and inbox path without message
+  content.
+
+## Tests and verification
+
+Add focused tests in `ocaml/test/test_c2c_mcp.ml`,
+`ocaml/test/test_c2c_send_handlers.ml`, and `ocaml/test/test_c2c_cli.ml` for:
+
+1. known-dead enqueue, exact JSON and human receipts, exit 0, and
+   `--fail-if-queued` exit 3;
+2. unknown and ambiguous aliases with no mailbox side effects;
+3. FIFO delivery and exactly-once migration to a replacement session ID;
+4. enqueue-versus-register concurrency and a simulated save failure/retry with
+   no duplicate `message_id`;
+5. ephemeral offline persistence followed by delivery without archive append;
+6. unchanged live-local and `alias@host` relay behavior.
+
+Update `docs/commands.md`, `docs/client-delivery.md`,
+`docs/reference/message-schema-v1.md`, and
+`.collab/runbooks/ephemeral-dms.md`. Document that "offline" means known local
+identity with no live process, queue success is exit 0, `--fail-if-queued`
+remains strict, and offline ephemeral mail is durable until drain.
+
+Run at minimum:
+
+```sh
+dune exec --root . ocaml/test/test_c2c_mcp.exe
+dune exec --root . ocaml/test/test_c2c_send_handlers.exe
+dune exec --root . ocaml/test/test_c2c_cli.exe
+just check
+```
+
+Then dogfood in tmux using `scripts/c2c_tmux.py`: stop a disposable managed
+Codex session, send two messages (one ephemeral), resume it, and capture proof
+that both arrive in order, once, without the ephemeral message entering
+history. Do not use `sweep` during the test.
+
+## Blockers and estimate
+
+Estimate: 12 hours. The main risk is preserving lock ordering and exactly-once
+migration under concurrent re-registration, not the CLI formatting. There is
+no external blocker, but T002/T006 must consume this mailbox contract before
+claiming closed managed-Codex delivery; T007's active-turn wake policy is
+orthogonal and must not be implemented here.

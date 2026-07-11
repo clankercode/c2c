@@ -14,14 +14,139 @@ tags:
     - safety
 title: Implement passive c2c ingress through app-server thread injection
 ---
-Depends on the protocol spike and managed remote-TUI launcher.
+## Objective
 
-Create a c2c adapter that writes an inbound message to the durable broker inbox first, then uses only the validated `thread/inject_items` form to make it model-visible without starting or steering a turn.
+Implement durable, passive c2c ingress for an active app-server-managed Codex
+thread. Persist the message in the canonical broker inbox first, then make that
+same message model-visible through the T001-validated `thread/inject_items`
+request. Delivery is exactly-once when acknowledgement or history
+reconciliation can prove acceptance; the explicitly tested ambiguous-ack
+window is otherwise observable at-least-once. This task must never start,
+steer, interrupt, or approve a turn.
 
-Acceptance criteria:
-- Never use PTY writes, `tmux send-keys`, Herdr pane run, `turn/start`, `turn/steer`, or `turn/interrupt` for passive delivery.
-- Preserve c2c envelope, sender attribution, ephemeral/archive behavior, and the bus-not-RPC invariant.
-- Make retry/idempotency and app-server disconnection behavior explicit; messages remain readable from the broker on every failure.
-- Feature-gate the integration by proven Codex version/capabilities and retain hooks as fallback.
+## Scope and non-goals
 
-Blockers: P1.M1.E1.T001 protocol result and P1.M1.E1.T002 live remote-TUI lifecycle.
+- Consume canonical local-broker messages for the managed identity supplied by
+  T002 and inject a data-only Codex history item into its loaded thread.
+- Own durable delivery state, retries, reconnect/reload handling, bounded
+  backpressure, idempotency, and fallback to existing hook/poll delivery.
+- Preserve DM/room envelope, sender attribution, `message_id`, timestamps,
+  deferrable metadata, and existing ephemeral/archive semantics.
+- This task does **not** call `turn/start` (T007), inspect or decide composer/DND
+  wake policy (T007), add public commands (T006), or change approval handling.
+- Do not use PTY writes, `tmux send-keys`, Herdr pane execution,
+  `turn/steer`, or `turn/interrupt` under any condition.
+
+## References
+
+- T001 protocol receipt/schema evidence and T002's authenticated lifecycle API.
+- Official `thread/inject_items` documentation:
+  <https://learn.chatgpt.com/docs/app-server>.
+- Canonical broker/message definitions: `ocaml/c2c_mcp.ml` (`Broker`, message
+  record, inbox drain/enqueue paths), `docs/reference/message-schema-v1.md`,
+  `docs/monitor-json-schema.md`, and `docs/MSG_IO_METHODS.md`.
+- Existing Codex fallback: `ocaml/cli/c2c_codex_hooks.ml`,
+  `ocaml/tools/c2c_hook_lib.ml`, `docs/client-delivery.md`, and
+  `docs/clients/feature-matrix.md`.
+- Idempotency/relay examples: `docs/cross-machine-broker.md`,
+  `ocaml/test/test_session_id_delivery.ml`, and relay tests containing stable
+  `message_id` retry cases.
+- Approval invariant: `ocaml/cli/c2c_approval_paths.ml`,
+  `ocaml/cli/test_c2c_await_reply.ml`, and
+  `docs/security/pending-permissions.md`.
+
+## Architecture and delivery state machine
+
+The broker inbox remains the source of truth. Never acknowledge/remove a
+message merely because an app-server request was attempted. Track delivery by
+stable c2c `message_id`; if an old local message lacks one, assign and persist a
+stable ID before the first attempt rather than generating a new ID per retry.
+
+Use an explicit state machine such as:
+
+`Persisted -> Pending_injection -> Injecting -> Injected`
+
+Recoverable paths return to `Pending_injection` with bounded exponential
+backoff: server unavailable, authentication/reconnect failure, thread unloaded,
+request timeout, transient protocol error, and process restart. Unsupported
+schema/capability moves to `Fallback_pending`, where hooks or explicit polling
+remain able to deliver the broker copy. Permanent malformed-message failure is
+observable/dead-lettered without losing the original broker record.
+
+Store an idempotency ledger keyed by `(managed identity, thread id,
+message_id)`. Define atomic ordering between request completion and ledger
+commit. Because a connection can fail after the server accepted the request but
+before the response arrives, include `message_id` in the injected item's
+machine-readable metadata/content envelope and reconcile loaded thread history
+before retry when the protocol permits. If installed Codex offers no lookup or
+deduplication mechanism, document and implement the safest at-least-once
+behavior; do not claim exactly-once across the ambiguous-ack window.
+
+Bound queue size/concurrency and preserve ordering for a single recipient.
+Overload must leave messages durably pending, coalesce wake/reconnect work, and
+emit a structured health/status signal rather than dropping or spawning
+unbounded requests.
+
+## Deliverables and receipt
+
+- A focused ingress adapter module using T002's authenticated client/lifecycle
+  seam, with no public CLI policy embedded in it.
+- Durable idempotency/delivery-state storage plus fixture-gated tests for every
+  state transition and failure window.
+- Structured diagnostics/metrics sufficient for `doctor` or status integration
+  in a later task: pending count, oldest age, retry count, fallback reason, and
+  last protocol error, without message content or credentials.
+- A tmux dogfood receipt showing two distinct messages and a retry of the same
+  `message_id`, with sanitized app-server/broker evidence.
+
+## Acceptance criteria
+
+- Every inbound message is durably present in the canonical broker inbox before
+  injection begins; killing the adapter at any instruction boundary cannot make
+  the message unreadable from broker/fallback paths.
+- The injected item preserves the c2c envelope and stable `message_id`, clearly
+  identifies peer content as a c2c message/data item, and does not forge a local
+  user approval or operator input.
+- Re-delivering the same `message_id` during normal acknowledged retry produces
+  one model-visible item. The ambiguous-ack crash case is explicitly tested and
+  either reconciled to one item or documented/statused as at-least-once.
+- Tests cover: clean delivery; duplicate enqueue; disconnect before request;
+  disconnect after write/before response; authentication rejection; server
+  restart; thread unloaded/resumed; unsupported method/version; malformed
+  payload; queue overload; adapter restart with pending state; hook fallback;
+  and ordered delivery of multiple messages.
+- No code path invokes `turn/start`, `turn/steer`, `turn/interrupt`, PTY/tmux/
+  Herdr submission, shell/filesystem app-server methods, or approval APIs.
+- Literal peer content such as `allow`, `deny`, or a valid-looking approval
+  token cannot create a verdict file or make `c2c await-reply` succeed.
+- When app-server is unavailable or unsupported, the message remains queued and
+  available to the existing Codex hooks/explicit poll path without duplicate
+  deletion or archive corruption.
+- Ephemeral messages retain their existing no-archive contract while remaining
+  durable enough for the active delivery attempt; the task documents the exact
+  crash/restart limitation if ephemeral durability cannot equal archived mail.
+- Backpressure is bounded and observable; overload never drops messages or
+  creates unbounded children/connections/retry loops.
+
+## Verification commands
+
+Run all focused adapter/idempotency/fault-injection tests plus:
+
+```sh
+just build
+just check
+./scripts/c2c_tmux.py list
+```
+
+Use `scripts/c2c_tmux.py` for the real remote-TUI dogfood. The receipt must
+include broker pending state before injection, model-visible evidence after
+injection, duplicate/reconnect evidence, and exact return codes with message
+contents sanitized.
+
+## Blockers
+
+Blocked on P1.M1.E1.T001 and P1.M1.E1.T002. Do not proceed if T001 lacks a
+positive protocol/control-boundary decision, if T002 does not expose an
+authenticated client/lifecycle seam, or if stable thread identity cannot be
+obtained. Composer-state feasibility does not block passive injection itself;
+it blocks T007's automatic wake policy.
