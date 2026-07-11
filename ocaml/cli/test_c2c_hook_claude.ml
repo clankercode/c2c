@@ -217,6 +217,10 @@ let test_env_first_no_duplicate_registration () =
      | Some (_, context) ->
          check bool "wake note names managed alias" true
            (contains ~haystack:context ~needle:"zz-claude-e2e-managed");
+         check bool "wake note shows managed session id" true
+           (contains ~haystack:context ~needle:managed_sid);
+         check bool "wake note directs managed session to the /c2c skill" true
+           (contains ~haystack:context ~needle:"`/c2c`");
          check bool "queued message delivered" true
            (contains ~haystack:context ~needle:"hello managed claude")
      | None ->
