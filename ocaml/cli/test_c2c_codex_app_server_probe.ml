@@ -95,8 +95,12 @@ let test_probe_invariants () =
         (bool_at j [ "composer_signal"; "present" ]);
       check (option bool) "schema invariants hold" (Some true)
         (bool_at j [ "schema"; "ok" ]);
-      check (option bool) "control boundary invariants hold" (Some true)
-        (bool_at j [ "boundary"; "ok" ])
+      (* Boundary mode is opt-in on the `websockets` package. Accept either a
+         clean pass or an explicit skip (host without the package). *)
+      let boundary_ok = bool_at j [ "boundary"; "ok" ] = Some true in
+      let boundary_skipped = bool_at j [ "boundary"; "skipped" ] = Some true in
+      check bool "control boundary invariants hold (or skipped)" true
+        (boundary_ok || boundary_skipped)
   end
 
 let () =

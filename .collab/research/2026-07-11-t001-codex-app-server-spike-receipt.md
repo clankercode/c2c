@@ -156,10 +156,18 @@ protocol** on this codex version.
 ## Deliverables
 
 - `scripts/codex-app-server-probe.py` — reusable, version-agnostic probe.
-  Modes: `schema` (protocol invariants), `stdio` (inject accepted + no
-  turn/started; no cost), `--boundary` (bare vs `--ws-auth` loopback ws). Prints
-  a machine-readable JSON verdict; exit 0 iff all invariants hold; self-cleans
-  every app-server it spawns.
+  Modes: `schema` (protocol invariants + **whole-bundle** composer-signal search:
+  337 schema files / 1976 schema names scanned, excluding the app-UI
+  `composerIcon*`/`showInComposer*` fields), `stdio` (inject accepted + no
+  `turn/started` + **positive `thread/read` idle confirmation** + **inertness**:
+  injected fake `allow` verdict + `c2c await-reply` rc≠0 + no verdict file),
+  `--boundary` (bare listener grants unauthenticated `initialize` AND an active
+  `fs/readFile`; `--ws-auth` listener returns **explicit HTTP 401** for
+  no-token/wrong-token, accepts correct bearer). Prints a machine-readable JSON
+  verdict; exit 0 iff all invariants hold; self-cleans every app-server it spawns
+  (process-group kill). The claims in the sections above are all reproduced by
+  this committed probe (an independent codex review flagged earlier drafts where
+  they were manual-only; they are now automated).
 - `ocaml/cli/test_c2c_codex_app_server_probe.ml` (+ dune `(test)` stanza) —
   fixture-gated Alcotest. Default (env unset) SKIPS and passes (green without
   codex); `C2C_CODEX_APPSERVER_PROBE=1` runs the probe live and asserts the
@@ -233,3 +241,15 @@ safe on codex 0.144.1, **subject to two prerequisites**:
 Passive-injection tasks (T002 launcher, T003 passive ingress, T004 typed-draft
 proof) may proceed under prerequisite (1). The turn-waking task (T007) is
 gated by prerequisite (2).
+
+## Review
+
+`/gpt55` is unavailable in this harness (confirmed against project memory
+`no-copilot-for-reviews.md`; the Copilot mapping is banned). The Max-documented
+fallback — **codex via `ccc-review-cx`** — was used instead. Codex (gpt-5.6-terra,
+xhigh) returned PARTIAL, with the substantive finding that several receipt claims
+(explicit 401, bare-listener active access, await-reply inertness, whole-schema
+composer search) were originally demonstrated by hand but under-proven by the
+committed probe. All of those were then folded into the committed probe (see
+Deliverables) so the reproducible evidence now matches the conclusions; the
+strengthened probe passes end-to-end (exit 0) and the gated Alcotest passes.
