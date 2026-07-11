@@ -25,29 +25,26 @@
      and it NEVER satisfies or triggers an approval.
 
    Concretely, the PreToolUse approval path (this module + [c2c_approval_cmd]'s
-   [approval-reply] / [authorize] / [await-reply]) is reachable ONLY by the
-   local operator and the locally-configured supervisors for a given token:
+   [approval-reply] / [authorize] / [await-reply]) is reachable ONLY through
+   host-local CLI and filesystem operations:
 
      - [approval-reply] / [authorize] are LOCAL CLI subcommands. They write a
        verdict FILE ([verdict_file]) on the local filesystem (mode 0600). No
        remote peer can invoke them; a message body that happens to contain the
        text "c2c approval-reply ..." is inert unless a local operator/agent
        chooses to run it. c2c itself never auto-executes message content.
-     - [await-reply] (run inside the kimi PreToolUse hook) trusts the verdict
-       FILE as the primary anchor. The legacy inbox-DM verdict path is GATED
-       by [inbox_verdict_if_trusted] below: a broker/relay-delivered DM can
-       satisfy an approval ONLY when its sender is a member of the
-       locally-configured [supervisors] list bound to that token via
-       [open-pending-reply]. A DM from any other peer — or any DM when there
-       is no supervisor binding — is refused. (Supervisors may themselves be
-       remote peers; what matters is that they were *locally* configured.)
+     - [await-reply] (run inside the kimi PreToolUse hook) trusts only that
+       verdict FILE. It never reads broker inboxes or relay-delivered messages.
+       A configured supervisor alias changes CLI authorization metadata; it
+       does not upgrade that alias's messages into verdicts.
 
    Why this is load-bearing: without the supervisor gate, any peer who learns a
    token (tokens travel in the awareness DM body) could inject
    "<token> allow" into the supervised agent's inbox and force the PreToolUse
    hook to exit 0 (allow) — a privilege escalation to "run any gated tool".
-   The gate makes that impossible by construction and makes the impossibility
-   unit-testable. See [test_remote_message_cannot_reach_approval_path].
+   Keeping all message transports outside the verdict reader makes that
+   impossible by construction and unit-testable at the CLI seam. See
+   [test_c2c_await_reply.ml]'s B098 safety cases.
 
    If you add any NEW way for a message to resolve an approval, you are
    deleting this invariant — review with that weight. *)
@@ -460,52 +457,6 @@ let make_verdict_payload ~token ~verdict ~reason ~reviewer_alias ~ts =
   Printf.sprintf
     "{\"token\":\"%s\",\"verdict\":\"%s\",\"reason\":\"%s\",\"reviewer_alias\":\"%s\",\"ts\":%d}\n"
     (escape token) (escape verdict) (escape reason) (escape reviewer_alias) ts
-
-(** [inbox_verdict_if_trusted] — the trust gate for the legacy inbox-DM
-    verdict path in [C2c_approval_cmd.await_reply_cmd].
-
-    Returns [Some "allow"] or [Some "deny"] iff ALL of the following hold:
-      - [from_alias] is a member of [supervisors] (case-folded comparison,
-        matching [Broker.alias_casefold]), AND
-      - [content] contains [token] (case-insensitive substring), AND
-      - [content] contains "allow" or "deny" (case-insensitive substring).
-
-    Returns [None] otherwise — in particular when [supervisors] is empty
-    (no [open-pending-reply] binding exists for the token). In that state
-    the legacy inbox-DM path is REFUSED entirely; only the local verdict
-    file (written by the local operator's [approval-reply] CLI) can satisfy
-    the approval. This is the hard form of the "bus, never RPC" invariant
-    documented at the top of this file: a peer message is DATA and can
-    never be a verdict.
-
-    [supervisors] is the locally-configured list for this token; the caller
-    obtains it from [Broker.find_pending_permission]. Supervisors may be
-    remote peers — what makes them trusted is local configuration, not
-    network origin. *)
-let inbox_verdict_if_trusted ~supervisors ~from_alias ~content ~token =
-  let cf = String.lowercase_ascii in
-  let lower_contains haystack needle =
-    let h = cf haystack and n = cf needle in
-    let hl = String.length h and nl = String.length n in
-    if nl = 0 then true
-    else if nl > hl then false
-    else
-      let rec scan i =
-        if i + nl > hl then false
-        else if String.sub h i nl = n then true
-        else scan (i + 1)
-      in
-      scan 0
-  in
-  let is_supervisor =
-    let f = cf from_alias in
-    List.exists (fun s -> cf s = f) supervisors
-  in
-  if not is_supervisor then None
-  else if not (lower_contains content token) then None
-  else if lower_contains content "allow" then Some "allow"
-  else if lower_contains content "deny" then Some "deny"
-  else None
 
 (** Extract the "verdict" string from a verdict JSON payload. Returns
     None on parse failure. Tolerant: minimal scan for `"verdict":"..."` —

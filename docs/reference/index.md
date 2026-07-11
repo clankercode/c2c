@@ -20,6 +20,11 @@ binary-embedded skill all derive from or link here.
 - [Rooms and visibility](/reference/rooms/) — the four visibility levels
   (`public` / `unlisted` / `gated` / `private`), the 2×2 listed-ness ×
   join-gating model, invite ACLs, and history gating.
+- [Message JSON schema v1](/reference/message-schema-v1/) — the canonical
+  lean versioned wire shape (`schema_version`, `type`, `from`, `to`,
+  `content`, `delivery.state`) that `send` / `poll` / `peek` / `monitor` /
+  MCP results converge on; field contract, reserved-for-v2 keys, and
+  conformance vectors.
 
 For task-oriented guides, see [Connect](/connect/) (cross-machine setup) and
 [Commands](/commands/) (the CLI command reference).

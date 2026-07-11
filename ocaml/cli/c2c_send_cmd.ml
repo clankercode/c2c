@@ -460,35 +460,34 @@ let send_cmd =
         contact is [c2c relay dm send]'s job — so it is always [queued] from
         here. Local/session targets are written straight to the recipient's
         inbox and are genuinely [delivered]. *)
-     let delivery_state, delivery_warning_opt =
+     let delivery_state_v1, delivery_warning_opt =
        match target with
        | `Alias a when C2c_mcp.Broker.is_remote_alias a ->
-           ("queued", Some (remote_queued_warning ()))
+           (C2c_schema_v1.Queued, Some (remote_queued_warning ()))
        | `Alias _ | `Session _ ->
-           ("delivered", None)
+           (C2c_schema_v1.Delivered, None)
+     in
+     let delivery_state =
+       C2c_schema_v1.string_of_delivery_state delivery_state_v1
      in
      begin match output_mode with
      | Json ->
-         (* B088: surface delivery.state so machine consumers can tell a
+         (* B088: delivery.state lets machine consumers tell a
             remote-only-queued send ([queued], not delivered) from a
-            synchronous local delivery ([delivered]). [queued] (top-level
-            bool) is retained verbatim for back-compat with existing scripts. *)
-         let delivery_fields =
-           ("state", `String delivery_state)
-           :: (match delivery_warning_opt with
-               | Some w -> [("warning", `String w)]
-               | None -> [])
+            synchronous local delivery ([delivered]). J2: the receipt is
+            now the canonical schema-v1 shape; every legacy key ([queued]
+            top-level bool, [ts], [from_alias], [delivery.state]/
+            [delivery.warning], [to_alias]/[target_session_id],
+            [compacting_warning]) is retained verbatim for back-compat. *)
+         let to_v1 =
+           match target with `Alias a -> a | `Session sid -> sid
          in
-         let fields =
-           [ ("queued", `Bool true)
-           ; ("ts", `Float ts)
-           ; ("from_alias", `String from_alias)
-           ; ("delivery", `Assoc delivery_fields)
-           ]
-           @ json_target_fields
-         in
-         let fields = match compacting_warning with Some w -> fields @ [("compacting_warning", `String w)] | None -> fields in
-         print_json (`Assoc fields)
+         print_json
+           (C2c_utils.cli_send_receipt_json ~ts ~from_alias ~to_:to_v1
+              ~content ~delivery_state:delivery_state_v1
+              ?delivery_warning:delivery_warning_opt
+              ~legacy_target_fields:json_target_fields
+              ?compacting_warning ())
      | Human ->
          (match delivery_state with
           | "queued" ->

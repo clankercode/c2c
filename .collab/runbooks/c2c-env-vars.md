@@ -19,6 +19,8 @@ Generic `XDG_STATE_HOME` is **no longer honored** for broker-root resolution: ag
 
 The fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of the same upstream share a broker), falling back to `git rev-parse --show-toplevel`. This sidesteps `.git/`-RO sandboxes permanently. Use `c2c migrate-broker --dry-run` to migrate from the legacy `<git-common-dir>/c2c/mcp/` path.
 
+**Hook delivery falls back to canonical repo-fp resolution (hook-repo-broker slice, 2026-07-11).** The Claude/Codex delivery hooks used to derive the repo broker root *only* from `C2C_MCP_BROKER_ROOT` — which is empty for vanilla (non-managed) sessions — so they never drained the per-repo broker: peer DMs sent via `c2c send <alias>` sat undrained while the PostToolUse/Stop hook reported "no messages". Hooks now resolve via `C2c_hook_lib.resolve_hook_broker_root`: `C2C_MCP_BROKER_ROOT` (nonempty) still wins verbatim; otherwise they fall back to the same canonical repo-fingerprint broker (`$C2C_STATE_HOME|$HOME/.c2c/repos/<fp>/broker`, fp from the cwd git repo) as the CLI and the codex hook. The fallback is **existence-gated** — it returns the fp broker only when its `registry.json` already exists on disk, so a hook in a repo that never initialized c2c stays a silent no-op and never creates broker directories as a side effect. Affects `c2c_inbox_hook` (PostToolUse), `c2c_stop_hook` (Stop), and the `c2c hook post-tool` / `c2c hook stop` CLI fallbacks; `c2c hook claude` / `c2c hook codex` already resolved the repo broker correctly and are unchanged.
+
 ### `C2C_STATE_HOME`
 
 c2c-specific state-relocation escape hatch for broker-root resolution (see order above). Only set this if you genuinely want to relocate c2c broker state; unlike `XDG_STATE_HOME` it is never exported by agent harnesses, so it cannot fragment the shared broker by accident. Setting it also suppresses the split-brain warning (deliberate relocation).
@@ -29,10 +31,11 @@ c2c-specific state-relocation escape hatch for broker-root resolution (see order
 
 Global broker root override for session-ID-addressed delivery. Used by
 `c2c send --session <session_id> <message>` and the Claude PostToolUse inbox
-hook. When unset, the global root is `${XDG_STATE_HOME:-$HOME/.c2c}/sessions/broker`.
-This root is intentionally not repo-fingerprinted: it lets the hook deliver to
-Claude sessions that never configured c2c for the current repo. Tests should set
-this to a temp directory.
+hook. When unset, the global root is `$HOME/.c2c/sessions/broker`; generic
+`XDG_STATE_HOME` is deliberately not used because agent harnesses may repurpose
+it per profile and fragment peer visibility. This root is intentionally not
+repo-fingerprinted: it lets the hook deliver to Claude sessions that never
+configured c2c for the current repo. Tests should set this to a temp directory.
 
 ### `C2C_BROKER_SCAN_DIRS`
 
@@ -52,15 +55,17 @@ Explicit session ID override. Set this when launching one-shot child CLI probes 
 
 ### Client-native session keys (read, not set, by c2c)
 
-When `C2C_MCP_SESSION_ID` is unset, session resolution falls back to the host client's own export: `CLAUDE_SESSION_ID` (legacy Claude Code; wins when both are set) then `CLAUDE_CODE_SESSION_ID` (current Claude Code >= v2.1.x Bash-tool env), `CODEX_THREAD_ID` (codex), `C2C_OPENCODE_SESSION_ID` (opencode). kimi/gemini have no native key. If none is present, the CLI additionally falls back to the per-repo `<broker_root>/default-session.json` statefile written by `c2c init` (validated against the registry; last-resort, single identity per repo, CLI-only — the MCP server never reads it).
+When `C2C_MCP_SESSION_ID` is unset, session resolution falls back to the host client's own export: `CLAUDE_SESSION_ID` (legacy Claude Code; wins when both are set) then `CLAUDE_CODE_SESSION_ID` (current Claude Code >= v2.1.x Bash-tool env), `CODEX_THREAD_ID` (codex), `C2C_OPENCODE_SESSION_ID` (opencode), `GROK_SESSION_ID` (Grok Build TUI; also injected into Grok hook processes). kimi/gemini have no native key. If none is present, the CLI additionally falls back to the per-repo `<broker_root>/default-session.json` statefile written by `c2c init` (validated against the registry; last-resort, single identity per repo, CLI-only — the MCP server never reads it).
 
 ### `C2C_MCP_AUTO_REGISTER_ALIAS`
 
 Alias the broker auto-registers on startup, so you keep a stable alias across restarts without calling `register` manually. Also written by `c2c install`.
 
+**Hook registrations win (B119).** If the session_id already has a hook auto-registration (`registered_by="claude-hook"`/`"codex-hook"`, pid=None — written by `c2c hook claude`/`c2c hook codex` on SessionStart, which also bakes that alias into the injected onboarding context), the MCP server's auto-register **adopts** that alias instead of registering this env var's value: the hook is the identity authority, the MCP server a joiner (it upgrades the row in place with its live pid/keys/metadata). If the hook row's `client_type` differs from `C2C_MCP_CLIENT_TYPE` (inherited-session-id contamination, e.g. a `kimi -p` child), the auto-register is skipped entirely rather than adopting or clobbering. Pidless rows without a hook `registered_by` marker keep the #345 post-OOM semantics (this env alias wins). The MCP `register` tool likewise reuses an existing same-session alias unless an explicit `alias` argument requests a rename.
+
 ### `C2C_TMUX_LOCATION`
 
-Tmux `session:window.pane` target for managed sessions (set by `c2c start`). Used by the inner MCP server to include `tmux_location` in its broker registration, so `c2c list` shows which tmux pane each peer is running in. Format: `session:window.pane` (e.g. `0:0.0`). For managed sessions this is read from the per-instance `tmux.json` file at startup and passed via this env var. Unmanaged / foreign MCP clients do not set this.
+Tmux target for managed sessions (set by `c2c start`). Used by the inner MCP server to include `tmux_location` in its broker registration, so `c2c list` shows which tmux pane each peer is running in and the codex wake injector can target the pane. Format: `session:window.pane` (e.g. `0:0.0`) or a raw pane id (e.g. `%5` — what `c2c hook codex` captures from `$TMUX_PANE`); both are valid `tmux send-keys -t` targets. For managed sessions this is read from the per-instance `tmux.json` file at startup and passed via this env var. Unmanaged / foreign MCP clients do not set this. The MCP `register` tool also reads `$HERDR_PANE_ID` / `$HERDR_SOCKET_PATH` as fallbacks for the analogous `herdr_pane` / `herdr_socket` registration fields.
 
 ### `C2C_MCP_AUTO_JOIN_ROOMS`
 
@@ -74,9 +79,47 @@ Comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_RO
 
 Float seconds the background channel-notification watcher sleeps after detecting new inbox content before draining (default 2.0, per SPEC-delivery-latency). Gives preferred delivery paths (Claude Code PostToolUse hook, Codex PTY sentinel, OpenCode plugin) time to drain first; if they win the race, `drain_inbox` returns `[]` and no channel notification is emitted. Set to `0` in integration tests to get near-immediate delivery. 2s is short enough to keep idle agents responsive (room broadcasts especially) while still giving active agents' preferred paths time to win the race.
 
+### `C2C_POST_TOOL_NUDGE_ONLY`
+
+Claude PostToolUse hook (both the standalone `c2c-inbox-hook-ocaml` binary and the `c2c hook post-tool` CLI fallback — they share `C2c_hook_lib.run_post_tool`). **Full message delivery is the default** (claude-full-delivery slice): the hook drains push (non-deferrable) messages from the repo + global brokers and injects the full `<c2c ...>` envelopes as `additionalContext`, with no debounce (the drain empties the inbox, so repeated fires are cheap no-ops). Set `C2C_POST_TOOL_NUDGE_ONLY=1` to restore the legacy B038 behaviour: a non-draining, 60s-debounced `c2c: N message(s) waiting` nudge line. The channel-capable skip (#387 A2) and the B042 subagent-quiet guard apply in both modes.
+
+### `C2C_POST_TOOL_FULL_INJECT`
+
+Legacy opt-in for full PostToolUse injection, from when the debounced nudge was the default. Still honored for backward compat and outranks `C2C_POST_TOOL_NUDGE_ONLY` when both are set — but it is now redundant: full injection is the default.
+
 ### `deferrable` (MCP send flag)
 
 `deferrable=true` means no push (#303): the MCP `send` tool's `deferrable` flag (and the equivalent `~deferrable:true` on `Broker.enqueue_message`) marks a message as low-priority. `drain_inbox_push` filters deferrable messages out, so neither the watcher nor the PostToolUse hook will surface them. The recipient only sees them on their next explicit `poll_inbox` (or the deliver daemon's idle flush). Rooms NEVER use `deferrable` (`fan_out_room_message` hardcodes `false`), which is why room broadcasts always push. Production opter-in: `relay_nudge.ml` (intentionally — its job is "nudge a poll-late agent without pushing again"). User opt-in: `mcp__c2c__send` with `deferrable: true`. If you actually want a DM to surface promptly, omit the flag. See `.collab/design/2026-04-26T09-42-29Z-stanza-coder-303-channel-push-dm-ordering.md` for full investigation + probe data; #307b dropped `deferrable` from the send-memory handoff. **Visibility tool (#307a)**: `c2c doctor delivery-mode --alias <a> [--since 1h] [--last N]` prints a histogram of recent archived inbound messages by deferrable flag, broken down by sender. Counts measure sender INTENT (the flag at write time), not delivery actuals — see the doctor subcommand's NOTE footer.
+
+---
+
+## Codex wake-inject (codex-wake-inject slice)
+
+Idle wake for codex sessions in tmux/herdr panes: a watcher (`C2c_wake_inject` — the managed codex deliver sidecar, or `c2c deliver wake-watch` for vanilla sessions) peeks the inbox and types a one-line nudge into the pane when the session is idle; the injected turn's UserPromptSubmit hook does the actual drain. The injector never drains the inbox.
+
+### `C2C_WAKE_IDLE_THRESHOLD_S`
+
+Float seconds (default `90`). Tmux-backend idle gate: inject only when the broker `last_activity_ts` is at least this old. (The herdr backend uses `herdr agent get` `agent_status=idle` instead — a real busy signal.)
+
+### `C2C_WAKE_BACKOFF_S`
+
+Float seconds (default `120`). Minimum time between injects for the same session. Independent of the backoff, a re-inject also requires a message NEWER than the newest one seen at the last inject (per-session state under `<broker_root>/wake-inject/<session_id>.json`).
+
+### `C2C_WAKE_POLL_S`
+
+Float seconds (default `20`). Watch-loop periodic re-attempt cadence (also the inotify select timeout), so a message that arrived while the session was busy still gets its nudge once the session goes idle. Attempts are cheap: the injector's own gates (empty inbox, backoff, dedupe, idle) short-circuit.
+
+### `C2C_WAKE_ENTER_DELAY_S`
+
+Float seconds (default `0.35`). Tmux backend only: pause between typing the nudge text and sending the submit Enter. Agent TUIs paste-detect rapid input — text+Enter in the same burst is treated as a paste and the Enter becomes a newline, leaving the nudge unsubmitted in the composer (live-caught 2026-07-10; same reason the legacy pty_inject path did "bracketed paste + delay + Enter"). Skipped in fixture mode.
+
+### `C2C_WAKE_INJECT_FIXTURE`
+
+Test fixture gate. When set to a path, the injector records every external command it would run (one JSON line per command: `{"argv": [...], "env": {...}}`) to that file instead of executing — no tmux/herdr pane is ever touched. All wake-inject tests use this.
+
+### `C2C_WAKE_INJECT_HERDR_STATUS`
+
+Test-only companion to the fixture gate: the `agent_status` value the herdr idle probe reports in fixture mode (default `idle`; set `working` to test the never-inject-into-working-pane gate). Ignored outside fixture mode.
 
 ---
 
@@ -136,6 +179,41 @@ Seconds the hook will block on `c2c await-reply` before falling closed
 
 ## E2E / Relay
 
+### `C2C_REQUIRE_SIGNED_ROOM_OPS` (B114 — dev-only downgrade gate)
+
+Server-side (relay) switch for the signed room-op / room-send requirement.
+Since B114 the secure behavior is the source default: room mutations
+(`/join_room`, `/leave_room`, `/set_room_visibility`, `/invite_room`,
+`/uninvite_room`, `/knock_room`, `/list_room_knocks`, `/approve_room_knock`,
+`/deny_room_knock`) require a body-level Ed25519 proof, and `/send_room`
+requires a signed envelope; unsigned/envelope-less requests are rejected with
+`unsigned_room_op`. Values:
+
+- unset or `1` — enforce (the default; `1` is a no-op kept for compatibility).
+- `0` — accept legacy unsigned room ops / envelope-less sends, honored ONLY
+  when the relay has **no Bearer token configured** (dev mode). A
+  token-configured (production) relay ignores `0` — there is no unsigned
+  downgrade in production. Startup logs report the effective mode
+  (`room ops: ...` line).
+
+HTTP regression coverage: `tests/test_relay_signed_room_ops_gate.py`.
+
 ### `C2C_RELAY_E2E_STRICT_V2`
 
 When truthy (`1`, `true`, `yes`, `on` — case-insensitive), the relay-e2e verifier rejects envelopes with `envelope_version < 2` before checking the signature. Default off — v1 envelopes continue to verify normally during the v1↔v2 cutover window. The flag is env-read on every verify, so ops can flip it without daemon restart. Used together with Slice B-min-version (per-peer downgrade pin): B handles once-seen-v2-stays-v2 attacks, C handles the global cutover for first-contact peers. See `.collab/design/2026-04-29-relay-crypto-crit-fix-plan-cairn.md` "Slice C — Strict-mode flip".
+
+### `C2C_RELAY_ALLOW_UNSIGNED_INBOX` (B115)
+
+Server-side, development-only. `/poll_inbox` and `/peek_inbox` on the OCaml
+relay require a valid Ed25519 request header whose bound alias owns the
+requested `node_id`/`session_id` — by default even on a tokenless relay, so a
+production deploy whose token secret goes missing fails closed for inbox
+reads instead of reopening the B111 read/drain primitive. Setting
+`C2C_RELAY_ALLOW_UNSIGNED_INBOX=1` (also `true`/`TRUE`/`yes`) on the relay
+process re-enables the legacy unauthenticated poll/peek path **only when no
+Bearer token is configured**; a token-configured (prod) relay ignores this
+gate entirely, so env alone can never downgrade production. Read per-request
+(`inbox_owner_required` in `ocaml/relay.ml`). Used by the local/dev docker
+compose harnesses (`docker-compose.yml`, `docker-compose.e2e-multi-agent.yml`)
+whose agents register without Ed25519 identities. Regression coverage:
+`ocaml/test/test_relay_remote_broker.ml` (`b115_inbox_owner_auth` suite).

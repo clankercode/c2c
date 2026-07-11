@@ -72,6 +72,20 @@ let sign_room_op_with_visibility identity ~ctx ~room_id ~alias ~visibility =
   let sig_ = Relay_identity.sign identity blob in
   { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
 
+(* B117: proof for the set_room_history_public op. The boolean is rendered as
+   the canonical "true"/"false" token and inserted between alias and
+   identity_pk — matching the server's extra_signed_fields:[hp_str]. Covering
+   the boolean prevents an intermediary from flipping the policy. *)
+let sign_room_op_with_history_public identity ~ctx ~room_id ~alias ~history_public =
+  let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
+  let ts = now_rfc3339_utc () in
+  let nonce = random_nonce_b64 () in
+  let hp_str = if history_public then "true" else "false" in
+  let blob = Relay_identity.canonical_msg ~ctx
+    [ room_id; alias; hp_str; pk_b64; ts; nonce ] in
+  let sig_ = Relay_identity.sign identity blob in
+  { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
+
 let sign_room_op_with_target_pk identity ~ctx ~room_id ~alias ~target_pk =
   let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
   let ts = now_rfc3339_utc () in
@@ -103,6 +117,21 @@ let sign_send_room identity ~room_id ~from_alias ~content =
     ("ts", `String ts);
     ("nonce", `String nonce);
   ]
+
+(** B116: sign a binding-revocation proof for DELETE /binding/<binding_id>.
+    The signer key must be the machine or phone Ed25519 key stored on the
+    binding; ts is Unix epoch seconds (same freshness window + nonce
+    replay store as signed peer requests). Blob:
+    binding_revoke_sign_ctx || binding_id || pk_b64 || ts || nonce. *)
+let sign_binding_revoke identity ~binding_id =
+  let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
+  let ts = Printf.sprintf "%.6f" (Unix.gettimeofday ()) in
+  let nonce = random_nonce_b64 () in
+  let blob = Relay_identity.canonical_msg
+    ~ctx:Relay_common.binding_revoke_sign_ctx
+    [ binding_id; pk_b64; ts; nonce ] in
+  let sig_ = Relay_identity.sign identity blob in
+  { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
 
 (** Build the Authorization header value for a peer route request (spec §5.1).
     Returns: "Ed25519 alias=<a>,ts=<t>,nonce=<n>,sig=<s>" for use in the

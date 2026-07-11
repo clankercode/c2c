@@ -197,6 +197,58 @@ let t_ws_subscribe_no_header_auth_allowed () =
   Alcotest.(check bool) "/ws/subscribe allowed without Ed25519 header (X-header auth)" true
     (allowed (decide ~path:"/ws/subscribe" ~token:(Some "t0p") ~auth:None ~ed:false ()))
 
+(* --- Inbox routes: /poll_inbox and /peek_inbox are PEER routes (B115) ---
+   B111 found both were outer-auth bypasses: without an Ed25519 header the
+   handlers trusted caller-supplied node_id/session_id, letting anyone who
+   learned those identifiers read (peek) or drain (poll) an inbox. They must
+   behave exactly like /send and /heartbeat at THIS layer: Ed25519 required
+   in prod (token configured), Bearer rejected, dev mode (token=None)
+   allowed through the classifier. End-to-end the handlers additionally
+   fail closed on tokenless relays unless C2C_RELAY_ALLOW_UNSIGNED_INBOX=1
+   (covered in test_relay_remote_broker.ml). *)
+
+let t_poll_inbox_no_auth_rejected_when_token_set () =
+  Alcotest.(check bool) "/poll_inbox + no auth rejected (token set)" false
+    (allowed (decide ~path:"/poll_inbox" ()))
+
+let t_poll_inbox_ed25519_ok () =
+  Alcotest.(check bool) "/poll_inbox + verified Ed25519 ok" true
+    (allowed (decide ~path:"/poll_inbox" ~ed:true ~auth:ed_hdr ()))
+
+let t_poll_inbox_bearer_rejected () =
+  Alcotest.(check bool) "/poll_inbox + Bearer rejected" false
+    (allowed (decide ~path:"/poll_inbox" ~auth:bearer ()))
+
+let t_poll_inbox_dev_mode_no_auth_allowed () =
+  Alcotest.(check bool) "/poll_inbox + no auth allowed when token=None (dev)" true
+    (allowed (decide ~path:"/poll_inbox" ~token:None ()))
+
+let t_peek_inbox_no_auth_rejected_when_token_set () =
+  Alcotest.(check bool) "/peek_inbox + no auth rejected (token set)" false
+    (allowed (decide ~path:"/peek_inbox" ()))
+
+let t_peek_inbox_ed25519_ok () =
+  Alcotest.(check bool) "/peek_inbox + verified Ed25519 ok" true
+    (allowed (decide ~path:"/peek_inbox" ~ed:true ~auth:ed_hdr ()))
+
+let t_peek_inbox_bearer_rejected () =
+  Alcotest.(check bool) "/peek_inbox + Bearer rejected" false
+    (allowed (decide ~path:"/peek_inbox" ~auth:bearer ()))
+
+let t_peek_inbox_dev_mode_no_auth_allowed () =
+  Alcotest.(check bool) "/peek_inbox + no auth allowed when token=None (dev)" true
+    (allowed (decide ~path:"/peek_inbox" ~token:None ()))
+
+(* /heartbeat regression lock (B115 AC-4): heartbeat must stay a plain peer
+   route — Ed25519 required in prod — and never join the self-auth bypass. *)
+let t_heartbeat_no_auth_rejected_when_token_set () =
+  Alcotest.(check bool) "/heartbeat + no auth rejected (token set)" false
+    (allowed (decide ~path:"/heartbeat" ()))
+
+let t_heartbeat_ed25519_ok () =
+  Alcotest.(check bool) "/heartbeat + verified Ed25519 ok" true
+    (allowed (decide ~path:"/heartbeat" ~ed:true ~auth:ed_hdr ()))
+
 let () =
   Alcotest.run "relay_auth_matrix" [
     "unauth", [
@@ -246,6 +298,25 @@ let () =
         t_deny_room_knock_no_header_auth_allowed;
       Alcotest.test_case "/ws/subscribe no header allowed" `Quick
         t_ws_subscribe_no_header_auth_allowed;
+    ];
+    "inbox_peer_routes", [
+      Alcotest.test_case "/poll_inbox no auth rejected (token set)" `Quick
+        t_poll_inbox_no_auth_rejected_when_token_set;
+      Alcotest.test_case "/poll_inbox Ed25519 ok" `Quick t_poll_inbox_ed25519_ok;
+      Alcotest.test_case "/poll_inbox Bearer rejected" `Quick
+        t_poll_inbox_bearer_rejected;
+      Alcotest.test_case "/poll_inbox no auth allowed (dev)" `Quick
+        t_poll_inbox_dev_mode_no_auth_allowed;
+      Alcotest.test_case "/peek_inbox no auth rejected (token set)" `Quick
+        t_peek_inbox_no_auth_rejected_when_token_set;
+      Alcotest.test_case "/peek_inbox Ed25519 ok" `Quick t_peek_inbox_ed25519_ok;
+      Alcotest.test_case "/peek_inbox Bearer rejected" `Quick
+        t_peek_inbox_bearer_rejected;
+      Alcotest.test_case "/peek_inbox no auth allowed (dev)" `Quick
+        t_peek_inbox_dev_mode_no_auth_allowed;
+      Alcotest.test_case "/heartbeat no auth rejected (token set)" `Quick
+        t_heartbeat_no_auth_rejected_when_token_set;
+      Alcotest.test_case "/heartbeat Ed25519 ok" `Quick t_heartbeat_ed25519_ok;
     ];
     "admin", [
       Alcotest.test_case "/gc Bearer ok" `Quick t_admin_gc_bearer_ok;

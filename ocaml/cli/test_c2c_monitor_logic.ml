@@ -313,6 +313,187 @@ let test_decide_relay_watch_gating () =
     (Option.get (dec_session_id (L.decide_relay_watch ~my_alias:(Some "me")
        ~relay_url:(Some "http://r") ~identity:None ~node_id_override:None ~session_id_override:None ())))
 
+(* ---------- claude-full-delivery: full-body burst rendering ---------- *)
+
+let long_body = String.concat " " (List.init 40 (fun i -> Printf.sprintf "w%d" i))
+
+let test_burst_full_body_one_line_per_message () =
+  (* Full-body mode must emit every body in a burst, whole — no collapse,
+     no truncation (the old collapse truncated the first body to 60 chars
+     and dropped bodies 2..N entirely). *)
+  let bodies = [ long_body; "second full body"; "third full body" ] in
+  Alcotest.(check (list string)) "one full subject per message"
+    [ Printf.sprintf "\"%s\"" long_body
+    ; "\"second full body\""
+    ; "\"third full body\"" ]
+    (L.burst_subjects ~full_body:true bodies)
+
+let test_burst_full_body_single_untruncated () =
+  Alcotest.(check (list string)) "single full body untruncated"
+    [ Printf.sprintf "\"%s\"" long_body ]
+    (L.burst_subjects ~full_body:true [ long_body ])
+
+let test_burst_snippet_single_truncates_80 () =
+  match L.burst_subjects ~full_body:false [ long_body ] with
+  | [ s ] ->
+      Alcotest.(check bool) "shorter than the full body" true
+        (String.length s < String.length long_body);
+      Alcotest.(check bool) "carries truncation marker" true
+        (let n = String.length s in
+         n > 4 && String.sub s (n - 4) 4 = "\xE2\x80\xA6\"")
+  | other ->
+      Alcotest.failf "expected one subject, got %d" (List.length other)
+
+let test_burst_snippet_collapses_with_count () =
+  match L.burst_subjects ~full_body:false [ long_body; "b2"; "b3" ] with
+  | [ s ] ->
+      Alcotest.(check bool) "has (3 msgs) count" true
+        (String.length s >= 8 && String.sub s 0 8 = "(3 msgs)")
+  | other ->
+      Alcotest.failf "expected collapsed subject, got %d" (List.length other)
+
+let test_burst_empty () =
+  Alcotest.(check (list string)) "empty burst -> no subjects" []
+    (L.burst_subjects ~full_body:true [])
+
+(* ---------- H3: connector-managed relay peek key resolution ---------- *)
+
+(* Core H3 identity fix: a connector-managed broker registers alias inboxes
+   under (machine_node_id, local_session_id), NOT cli-<alias>. When the impure
+   caller detects a connector manages this alias, that key must become the
+   DEFAULT the bare monitor peeks — otherwise cross-host DMs pile up unseen. *)
+let test_connector_key_becomes_default () =
+  let ck = Some L.{ node_id = "host-abc123"; session_id = "sess-42" } in
+  let k = L.resolve_relay_peek_key ~alias:"me"
+            ~node_id_override:None ~session_id_override:None ~connector_key:ck () in
+  Alcotest.(check string) "connector node_id used" "host-abc123" k.L.node_id;
+  Alcotest.(check string) "connector session_id used" "sess-42" k.L.session_id
+
+let test_no_connector_falls_back_to_cli_alias () =
+  let k = L.resolve_relay_peek_key ~alias:"me"
+            ~node_id_override:None ~session_id_override:None ~connector_key:None () in
+  Alcotest.(check string) "node_id = cli-<alias>" "cli-me" k.L.node_id;
+  Alcotest.(check string) "session_id = cli-<alias>" "cli-me" k.L.session_id
+
+let test_explicit_override_beats_connector_key () =
+  let ck = Some L.{ node_id = "host-abc123"; session_id = "sess-42" } in
+  (* explicit --relay-node-id / --relay-session-id win over the connector default *)
+  let k = L.resolve_relay_peek_key ~alias:"me"
+            ~node_id_override:(Some "manual-node") ~session_id_override:(Some "manual-sess")
+            ~connector_key:ck () in
+  Alcotest.(check string) "override node_id wins" "manual-node" k.L.node_id;
+  Alcotest.(check string) "override session_id wins" "manual-sess" k.L.session_id;
+  (* --relay-node-id alone still implies node/node even with a connector key *)
+  let k2 = L.resolve_relay_peek_key ~alias:"me"
+             ~node_id_override:(Some "manual-node") ~session_id_override:None
+             ~connector_key:ck () in
+  Alcotest.(check string) "node-only override => session = node" "manual-node" k2.L.session_id
+
+let test_decide_relay_watch_uses_connector_key () =
+  let ck = Some L.{ node_id = "host-xyz"; session_id = "sess-9" } in
+  match L.decide_relay_watch ~my_alias:(Some "me") ~relay_url:(Some "https://r")
+          ~identity:None ~node_id_override:None ~session_id_override:None
+          ~connector_key:ck () with
+  | L.Relay_watch { node_id; session_id } ->
+      Alcotest.(check string) "watch node_id = connector node" "host-xyz" node_id;
+      Alcotest.(check string) "watch session_id = connector session" "sess-9" session_id
+  | L.Relay_watch_off r -> Alcotest.failf "expected on, got off: %s" r
+
+(* ---------- H3: relay /peek_inbox response classification ---------- *)
+
+let outcome_msgs = function L.Peek_ok m -> contents m | _ -> [ "<not-ok>" ]
+
+let str_contains haystack needle =
+  let hl = String.length haystack and nl = String.length needle in
+  if nl = 0 then true
+  else if nl > hl then false
+  else
+    let found = ref false and i = ref 0 in
+    while (not !found) && !i <= hl - nl do
+      if String.sub haystack !i nl = needle then found := true;
+      incr i
+    done;
+    !found
+
+let test_classify_ok_true_yields_messages () =
+  let m = msg ~mid:"r1" ~from:"remote" ~to_:"me" "hi" in
+  (match L.classify_relay_response (relay_resp [ m ]) with
+   | L.Peek_ok out -> Alcotest.(check (list string)) "ok:true -> messages" [ "hi" ] (contents out)
+   | _ -> Alcotest.fail "expected Peek_ok")
+
+let test_classify_legacy_no_ok_field_is_ok () =
+  (* A relay that omits `ok` (legacy) is treated as success — messages are data. *)
+  let m = msg ~mid:"r1" ~from:"remote" ~to_:"me" "hi" in
+  let resp = `Assoc [ ("messages", `List [ m ]) ] in
+  Alcotest.(check (list string)) "legacy no-ok -> messages" [ "hi" ]
+    (outcome_msgs (L.classify_relay_response resp))
+
+let test_classify_auth_error_is_terminal () =
+  let resp = `Assoc [ ("ok", `Bool false)
+                    ; ("error_code", `String "signature_invalid")
+                    ; ("error", `String "Ed25519 request signature does not verify") ] in
+  (match L.classify_relay_response resp with
+   | L.Peek_terminal detail ->
+       Alcotest.(check bool) "detail names the code" true
+         (str_contains detail "signature_invalid")
+   | _ -> Alcotest.fail "expected Peek_terminal for signature_invalid")
+
+let test_classify_unauthorized_is_terminal () =
+  let resp = `Assoc [ ("ok", `Bool false); ("error_code", `String "unauthorized")
+                    ; ("error", `String "missing Authorization header") ] in
+  (match L.classify_relay_response resp with
+   | L.Peek_terminal _ -> ()
+   | _ -> Alcotest.fail "expected Peek_terminal for unauthorized")
+
+let test_classify_connection_error_is_transient () =
+  (* relay_client.connection_error shape: network/timeout/invalid-json *)
+  let resp = `Assoc [ ("ok", `Bool false); ("error_code", `String "connection_error")
+                    ; ("error", `String "request_timeout") ] in
+  (match L.classify_relay_response resp with
+   | L.Peek_transient _ -> ()
+   | _ -> Alcotest.fail "expected Peek_transient for connection_error")
+
+let test_classify_unknown_code_defaults_transient () =
+  (* An unrecognized error_code must NOT kill the monitor — default transient. *)
+  let resp = `Assoc [ ("ok", `Bool false); ("error_code", `String "rate_limited")
+                    ; ("error", `String "429") ] in
+  (match L.classify_relay_response resp with
+   | L.Peek_transient _ -> ()
+   | _ -> Alcotest.fail "expected Peek_transient for unknown code")
+
+let test_classify_malformed_is_transient () =
+  (match L.classify_relay_response (`String "garbage") with
+   | L.Peek_transient _ -> ()
+   | _ -> Alcotest.fail "expected Peek_transient for non-object")
+
+let test_is_terminal_error_code_taxonomy () =
+  List.iter (fun c -> Alcotest.(check bool) (c ^ " terminal") true (L.is_terminal_error_code c))
+    [ "unauthorized"; "signature_invalid"; "timestamp_out_of_window"
+    ; "missing_proof_field"; "not_found"; "unknown_node"; "not_registered"; "bad_request" ];
+  List.iter (fun c -> Alcotest.(check bool) (c ^ " transient") false (L.is_terminal_error_code c))
+    [ "connection_error"; "pow_required"; "rate_limited"; ""; "peer_timeout" ]
+
+(* Lock the classifier to the EXACT JSON the public HTTPS relay
+   (https://relay.c2c.im) returns, captured live 2026-07-10 via a read-only
+   /peek_inbox probe. Guards against the relay contract drifting away from the
+   classifier's assumptions. *)
+let test_classify_real_relay_json_strings () =
+  let ok_empty = Yojson.Safe.from_string {|{"ok":true,"messages":[]}|} in
+  Alcotest.(check (list string)) "real ok:true empty -> []" []
+    (outcome_msgs (L.classify_relay_response ok_empty));
+  let bad_req =
+    Yojson.Safe.from_string
+      {|{"ok":false,"error_code":"bad_request","error":"node_id and session_id are required"}|}
+  in
+  (match L.classify_relay_response bad_req with
+   | L.Peek_terminal _ -> ()
+   | _ -> Alcotest.fail "real bad_request should classify terminal")
+
+let test_exit_code_distinct () =
+  (* relay-terminal exit code must be distinct from generic usage/startup exit 1 *)
+  Alcotest.(check bool) "relay terminal exit <> 1" true (L.exit_relay_terminal <> 1);
+  Alcotest.(check bool) "relay terminal exit <> 0" true (L.exit_relay_terminal <> 0)
+
 let () =
   Alcotest.run "c2c_monitor_logic"
     [ ( "alias-resolution-order",
@@ -342,5 +523,30 @@ let () =
         ; Alcotest.test_case "relay surface cross-source dedup" `Quick test_relay_surface_cross_source_dedup
         ; Alcotest.test_case "relay surface order preserving" `Quick test_relay_surface_order_preserving
         ; Alcotest.test_case "decide_relay_watch gating" `Quick test_decide_relay_watch_gating
+        ] )
+    ; ( "full-body-burst",
+        [ Alcotest.test_case "full body: one line per message" `Quick test_burst_full_body_one_line_per_message
+        ; Alcotest.test_case "full body: single untruncated" `Quick test_burst_full_body_single_untruncated
+        ; Alcotest.test_case "snippet: single truncates at 80" `Quick test_burst_snippet_single_truncates_80
+        ; Alcotest.test_case "snippet: burst collapses with count" `Quick test_burst_snippet_collapses_with_count
+        ; Alcotest.test_case "empty burst" `Quick test_burst_empty
+        ] )
+    ; ( "connector-managed-key",
+        [ Alcotest.test_case "connector key becomes default" `Quick test_connector_key_becomes_default
+        ; Alcotest.test_case "no connector falls back to cli-alias" `Quick test_no_connector_falls_back_to_cli_alias
+        ; Alcotest.test_case "explicit override beats connector key" `Quick test_explicit_override_beats_connector_key
+        ; Alcotest.test_case "decide_relay_watch uses connector key" `Quick test_decide_relay_watch_uses_connector_key
+        ] )
+    ; ( "relay-response-classification",
+        [ Alcotest.test_case "ok:true yields messages" `Quick test_classify_ok_true_yields_messages
+        ; Alcotest.test_case "legacy no-ok field is ok" `Quick test_classify_legacy_no_ok_field_is_ok
+        ; Alcotest.test_case "auth error is terminal" `Quick test_classify_auth_error_is_terminal
+        ; Alcotest.test_case "unauthorized is terminal" `Quick test_classify_unauthorized_is_terminal
+        ; Alcotest.test_case "connection error is transient" `Quick test_classify_connection_error_is_transient
+        ; Alcotest.test_case "unknown code defaults transient" `Quick test_classify_unknown_code_defaults_transient
+        ; Alcotest.test_case "malformed is transient" `Quick test_classify_malformed_is_transient
+        ; Alcotest.test_case "terminal error code taxonomy" `Quick test_is_terminal_error_code_taxonomy
+        ; Alcotest.test_case "real public-relay json strings" `Quick test_classify_real_relay_json_strings
+        ; Alcotest.test_case "relay terminal exit code distinct" `Quick test_exit_code_distinct
         ] )
     ]

@@ -190,7 +190,24 @@ session between other triggers.
   coordination-heavy work).
 - You want to see cross-agent traffic, not just your own inbox.
 
-**How to arm (canonical broad watcher):**
+**How to arm (canonical personal watcher — vanilla claude receive path):**
+```
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+```
+
+This is the canonical full-delivery Monitor recipe (claude-full-delivery
+slice): `c2c monitor` auto-resolves your alias, watches the archive plus
+your live inbox, and emits **full message bodies** — one line per message,
+bursts never collapsed or truncated (`--snippet` restores the legacy
+preview). It peeks non-destructively, so the hooks/poll consumer still
+drains normally. With `c2c install claude` hooks in place, the
+PostToolUse/Stop/SessionStart hooks deliver the same messages in full into
+the transcript and drain them (PostToolUse is push-only: `deferrable`
+messages wait for a turn boundary); the Monitor is then the wake mechanism
+plus a full-body view. Do NOT arm it on managed channel-push sessions (see
+below).
+
+**How to arm (broad awareness watcher):**
 ```
 Monitor({
   summary: "c2c inbox watcher (all sessions)",
@@ -220,8 +237,11 @@ broad monitor is already running. Duplicate monitors spam events.
 - ✗ Potentially less efficient than `/loop` if the broker is busy and
   the event rate exceeds your useful action rate — you pay for wakeups
   that would have been bundled into a single `/loop` tick.
-- ✗ You still need to poll_inbox on wake; the event is just "something
-  changed," not "here's the message."
+- ✗ The broad `--all` watcher is awareness, not delivery — messages to
+  other peers are not yours to drain. Your OWN messages DO arrive in
+  full in the personal `c2c monitor` output (and via the hooks), so no
+  poll_inbox round-trip is needed to read them; poll/hook-drain still
+  owns the actual inbox clear.
 
 ## Option 3: both (coordinator pattern)
 
@@ -348,6 +368,44 @@ poll inbox, pick up the next slice, advance the north-star goal.
 Never "acknowledge the heartbeat and stop." If you've genuinely
 exhausted available work, ask coordinator1 (or `swarm-lounge`) for
 more — don't just sit polling empty inboxes indefinitely.
+
+## Codex idle wake (tmux/herdr injection)
+
+Codex hooks (`c2c hook codex`) only fire on session activity, so a schedule
+or heartbeat self-DM cannot by itself wake an idle codex session — the
+message sits in the inbox until the next turn. The codex-wake-inject slice
+closes this gap **for sessions running inside tmux or herdr only** (PTY
+injection was rejected as unreliable; sessions outside tmux/herdr have no
+idle wake):
+
+1. Schedule/heartbeat fires → self-DM via `Broker.enqueue_message` → the
+   session's inbox file grows.
+2. A watcher (`C2c_wake_inject.watch_loop`) sees the growth (inotify on the
+   broker dir, plus a periodic re-attempt every `C2C_WAKE_POLL_S`, default
+   20s, for messages that arrived while the session was busy).
+3. If the session is idle (herdr: `agent_status=idle` via `herdr agent get`;
+   tmux: broker `last_activity_ts` older than `C2C_WAKE_IDLE_THRESHOLD_S`,
+   default 90s) and outside the backoff window (`C2C_WAKE_BACKOFF_S`,
+   default 120s, plus a newer-message-required dedupe), it types
+   `c2c: N message(s) waiting - poll your inbox` into the pane and submits
+   (herdr: `herdr pane run`; tmux: `send-keys -l` then `Enter`).
+4. The injected turn fires the UserPromptSubmit hook → full drain. The
+   injector never drains the inbox itself, so double delivery is impossible.
+
+Setup: nothing, usually. Wake targets (`tmux_location` from `$TMUX_PANE`,
+`herdr_pane`/`herdr_socket` from the herdr env) are captured on the broker
+registration automatically by `c2c hook codex` on auto-register and every
+SessionStart. Managed `c2c start codex` runs the watcher as its deliver
+sidecar; for a vanilla codex session run the watcher yourself:
+
+```
+c2c deliver wake-watch --alias <codex-alias>
+```
+
+(`--once` for a single attempt; `--session-id` instead of `--alias` works
+too.) `c2c instances` shows `delivery_mode=hooks+wake` when the wake path is
+armed. Env-var reference: `.collab/runbooks/c2c-env-vars.md` § Codex
+wake-inject.
 
 ## See also
 

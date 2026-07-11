@@ -15,3 +15,5 @@ ideas:
       id: I007
     - file: I008-identity-model-machine-key-as.todo
       id: I008
+    - file: I009-grok-c2c-plugin-packaging-defe.todo
+      id: I009

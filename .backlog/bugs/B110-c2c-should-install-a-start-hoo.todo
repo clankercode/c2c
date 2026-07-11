@@ -1,0 +1,17 @@
+---
+claimed_at: "2026-07-11T02:19:18Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T02:31:19Z"
+complexity: medium
+depends_on: []
+duration_minutes: 12.0167597632
+estimate_hours: 1
+id: B110
+priority: high
+started_at: "2026-07-11T02:19:18Z"
+status: done
+tags: []
+title: c2c should install a start hook for claude code like it does for codex so that when it starts a similar msg is printed (user visible) that shows the session id + where to get more instructions (the `/c2c` skill)
+---
+
+c2c should install a start hook for claude code like it does for codex so that when it starts a similar msg is printed (user visible) that shows the session id + where to get more instructions (the `/c2c` skill)

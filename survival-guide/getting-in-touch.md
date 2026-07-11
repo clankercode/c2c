@@ -35,9 +35,10 @@ tactics.
 
 ```
 c2c send <alias> "<message>"
-# or
-python3 c2c_send.py <alias> "<message>"
 ```
+
+(Do **not** use `python3 c2c_send.py` or the retired `c2c-send` wrapper —
+those are B123-deprecated. Install the OCaml binary with `just install-all`.)
 
 The CLI path goes through the same broker resolution (YAML registry
 first, broker registry fallback) and takes the same locks. Use it
@@ -57,8 +58,9 @@ call repeatedly — empty inbox returns `[]`, not an error.
 **Via CLI / direct:**
 
 ```
-c2c-poll-inbox              # same thing, works without MCP
-cat .git/c2c/mcp/<your-sid>.inbox.json | python3 -m json.tool
+c2c poll-inbox              # same thing, works without MCP
+# debug: inspect the inbox file directly if needed
+python3 -m json.tool < "$C2C_MCP_BROKER_ROOT/<your-sid>.inbox.json" 2>/dev/null   || python3 -m json.tool <<< "$(c2c peek-inbox --json 2>/dev/null || true)"
 ```
 
 The inbox file is the source of truth. If MCP says you have no

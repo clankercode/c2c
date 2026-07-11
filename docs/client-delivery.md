@@ -25,7 +25,7 @@ Every inbound c2c message first lands in the recipient's broker inbox. A client
 then receives it through one of these paths:
 
 1. **Client integration** — the preferred path. Claude Code uses a PostToolUse
-   hook, Codex uses the XML sideband when available, Pi Agent uses the
+   hook, Codex uses hooks installed by `c2c install codex`, Pi Agent uses the
    `pi-c2c` extension, OpenCode uses its native plugin, and Kimi uses
    notification-store delivery.
 2. **MCP polling** — MCP-managed fallback. Call `mcp__c2c__poll_inbox {}` to
@@ -44,21 +44,27 @@ Claude Code has three relevant receive mechanisms:
 - **PostToolUse hook**: `c2c install claude` installs
   `~/.claude/hooks/c2c-inbox-check.sh` and registers it in
   `~/.claude/settings.json`. After each non-MCP tool call, the hook runs
-  `c2c-inbox-hook-ocaml`, drains the session inbox, and returns
-  `hookSpecificOutput.additionalContext` so messages appear in the transcript.
-  Restart Claude Code after install, or run `/reload-plugins`, before expecting
-  this to work.
-- **Monitor tool awareness**: for long-running Claude sessions, run a persistent
-  Monitor with the current recommended command:
+  `c2c-inbox-hook-ocaml` (falling back to `c2c hook post-tool` — both share
+  the same delivery core) and delivers **full message bodies** as
+  `hookSpecificOutput.additionalContext` in the transcript. The mid-turn
+  drain is push-only: `deferrable` messages wait for a turn boundary (the
+  Stop and SessionStart hooks do the full drain). Set
+  `C2C_POST_TOOL_NUDGE_ONLY=1` to opt back into the legacy debounced
+  "N message(s) waiting" nudge line. Restart Claude Code after install, or
+  run `/reload-plugins`, before expecting this to work.
+- **Monitor tool full-body receive**: for long-running Claude sessions, run a
+  persistent Monitor with the canonical recipe:
 
   ```text
-  Monitor({command: "c2c monitor --archive --all", persistent: true})
+  Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
   ```
 
-  `--archive` avoids racing the PostToolUse hook after it drains the live inbox,
-  and `--all` gives swarm-wide visibility instead of only your alias. Treat
-  monitor ticks as prompts to call `poll_inbox` or act on visible archive events;
-  the monitor line itself is not the durable message store.
+  `c2c monitor` defaults to archive mode (no race with the PostToolUse hook
+  drain), also peeks your live inbox non-destructively, and emits **full
+  message bodies** — one line per message, bursts never collapsed or
+  truncated (`--snippet` restores the legacy preview). Add `--all` only for
+  swarm-wide situational awareness. The monitor line is delivery-grade
+  content but not the durable message store — the archive is.
 - **Claude MCP channel notifications**: `notifications/claude/channel` remains
   experimental. It only fires when the client declares the
   `experimental.claude/channel` capability; standard Claude Code builds do not.
@@ -76,9 +82,11 @@ minimal swarm intro.
 
 ### Non-Claude receiving
 
-- **Codex**: managed `c2c start codex` prefers the `--xml-input-fd` XML sideband,
-  so messages can arrive as first-class user turns. If the Codex binary lacks
-  that flag, delivery falls back to explicit polling / notify behaviour.
+- **Codex**: `c2c install codex` installs `UserPromptSubmit`, `PostToolUse`,
+  `SessionStart`, and `SessionEnd` hooks. The hooks run `c2c hook codex`, which
+  can auto-register the session, drain inbound broker messages, and return them
+  through `hookSpecificOutput.additionalContext`. Explicit polling remains the
+  portable fallback.
 - **Pi Agent**: `pi install npm:pi-c2c` installs the external Pi extension. It
   registers through the `c2c` CLI, watches the broker inbox, drains with
   `c2c poll-inbox`, and injects messages via `pi.sendMessage`.
@@ -89,6 +97,11 @@ minimal swarm intro.
   `c2c-deliver-inbox --client kimi` to write notification files into Kimi's
   notification store. Kimi reads them on its own cadence; no PTY injection is
   used for the current production path.
+- **Grok**: `c2c install grok` is **CLI-first** (no MCP by default). Preferred
+  inbound is a persistent Monitor on `c2c monitor` (Grok injects each line into
+  the conversation). SessionStart runs `c2c hook grok` to auto-register and
+  write a `c2c-session` identity skill — Grok does **not** support Claude/Codex
+  `additionalContext` transcript inject. Fallback: `c2c poll-inbox`.
 - **Generic / unmanaged clients**: use MCP or CLI polling. Where available,
   `c2c-deliver-inbox --inotify --loop` can watch an inbox and bridge messages to
   a client-specific delivery mode, but the portable baseline is still
@@ -98,26 +111,56 @@ minimal swarm intro.
 
 ## Claude Code
 
-PostToolUse hook fires after every tool call, drains inboxes, and emits
-`hookSpecificOutput.additionalContext` into the transcript. No separate daemon.
+`c2c install claude` also installs a SessionStart/SessionEnd hook.  On every
+SessionStart it emits a visible c2c context line with the resolved alias and
+session ID, and tells the user to run the `/c2c` skill for the full reference.
+PostToolUse hook fires after every tool call, drains push (non-deferrable)
+messages from the repo + global brokers, and emits their full bodies as
+`hookSpecificOutput.additionalContext` into the transcript (deferrable
+messages wait for the Stop/SessionStart full drain; `C2C_POST_TOOL_NUDGE_ONLY=1`
+restores the legacy nudge line). No separate daemon.
 Session ID comes from `$CLAUDE_SESSION_ID`. Restart via `c2c restart <name>` or
 `/reload-plugins` in Claude Code.
 
 ## Codex
 
-Preferred: XML sideband via `--xml-input-fd` — messages land as first-class user
-turns in the TUI. Fallback: PTY notify daemon injects a sentinel string, agent
-calls `poll_inbox`. Session ID exported by `c2c start codex`. Restart via
-`c2c restart <name>`.
+Hooks installed by `c2c install codex` are the delivery path for both vanilla
+and managed sessions. The Codex hook set covers `UserPromptSubmit`,
+`PostToolUse`, `SessionStart`, and `SessionEnd`; each hook runs
+`c2c hook codex`, which can auto-register, drain broker inbox messages, and
+surface them via `hookSpecificOutput.additionalContext`. `c2c instances`
+reports `delivery_mode=hooks` when the hooks block is present in
+`~/.codex/config.toml`, else `unavailable`. Managed `c2c start codex` passes
+the kickoff prompt as the positional `[PROMPT]` CLI argument on fresh starts
+(suppressed on resume). Hooks only fire on session activity, so explicit
+polling (`poll_inbox` / `c2c wait-inbox`) remains the universal fallback.
+Restart via `c2c restart <name>`.
 
-Headless mode available via `c2c start codex-headless` (uses
-`codex-turn-start-bridge` in XML mode).
+**Idle wake (tmux/herdr only).** Hooks cannot wake an idle session, so codex
+supports an injection-based idle wake when the session runs inside tmux or
+herdr. The wake target is captured automatically on the broker registration
+(`tmux_location` from `$TMUX_PANE`; `herdr_pane`/`herdr_socket` from the
+herdr pane env) by `c2c hook codex` on auto-register and every SessionStart.
+A watcher monitors the session's inbox; on growth, if the session looks idle
+(herdr `agent_status=idle`, or tmux `last_activity_ts` older than
+`C2C_WAKE_IDLE_THRESHOLD_S`, default 90s), it types a one-line nudge into the
+pane and submits it (herdr: `herdr pane run`; tmux: `send-keys -l` then
+`Enter`) — the injected turn fires the UserPromptSubmit hook, which drains as
+usual. The injector never drains the inbox itself, so hooks and injection
+cannot double-deliver. Managed sessions get the watcher automatically (it is
+the codex deliver sidecar); vanilla sessions can run
+`c2c deliver wake-watch --alias <a>` (add `--once` for a single attempt).
+When hooks are installed and a wake target is registered, `c2c instances`
+reports `delivery_mode=hooks+wake`. Sessions outside tmux/herdr keep plain
+`hooks` — there is no idle wake for them (PTY injection was rejected as
+unreliable).
 
-**B013 note**: Deliver-daemon start failures are now surfaced instead of
-silently going dark — if the daemon can't start, the managed session will
-report the error rather than appearing healthy with no delivery. Also fixed
-XML delivery being shadowed by `--inotify` in `deliver-inbox`. Run
-`just codex-deliver-e2e` to exercise the delivery regression guard.
+Historical: the old XML sideband path for interactive codex (`--xml-input-fd`
+plus the `~/.c2c/clients/codex/deliver-watch.sh` supervisor scripts) is gone —
+the maintained Codex binary removed that flag, and `c2c install codex` no
+longer writes the supervisor scripts (re-install removes stale ones). The
+`codex-turn-start-bridge` headless bridge still consumes the XML frame format
+via its own broker-owned fifo.
 
 ## Pi Agent
 
@@ -141,6 +184,25 @@ Notification-store push (`C2c_kimi_notifier`) writes notification JSON files int
 kimi's session directory. Tmux idle-wake fires when pane is idle. No PTY
 injection. Alias auto-registered via `C2C_MCP_AUTO_REGISTER_ALIAS`. Restart via
 `c2c stop <name>` + `c2c start kimi -n <name>`.
+
+## Grok
+
+`c2c install grok` writes:
+
+- `~/.grok/skills/c2c/SKILL.md` — assembled Grok skill (CLI-first cookbook)
+- `~/.grok/hooks/c2c-session.json` — SessionStart/SessionEnd → `c2c hook grok`
+
+**No MCP config** is written. Preferred receive:
+
+```
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+```
+
+SessionStart auto-registers (`registered_by=grok-hook`), refreshes the skill, and
+writes `~/.grok/skills/c2c-session/SKILL.md` with the live alias (Grok cannot
+inject Claude-style `additionalContext`). Session ID from `$GROK_SESSION_ID` or
+the hook payload. Restart Grok (new session) after install. Plugin packaging is
+deferred (backlog I009).
 
 ---
 

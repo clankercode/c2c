@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-D1c-knock-residue",
+  "node_id": "impl-D1c",
+  "kind": "output",
+  "summary_path": "artifacts/D1c-knock-residue/summary.md",
+  "raw_path": "artifacts/D1c-knock-residue/receipt.md",
+  "hash": "sha256:b32e8fad784af2a6a6c30e1096b872efda4a10e1118b2022c2dda57a0f12eabf",
+  "bytes": 1824,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:53:36Z",
+  "redaction_status": "none"
+}

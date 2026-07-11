@@ -1,0 +1,44 @@
+---
+claimed_at: "2026-07-10T10:42:37Z"
+claimed_by: cli-user
+completed_at: "2026-07-10T11:15:14Z"
+complexity: medium
+depends_on: []
+duration_minutes: 32.62442405585
+estimate_hours: 1
+id: B104
+priority: high
+started_at: "2026-07-10T10:42:37Z"
+status: done
+tags: []
+title: 'Reply path broken: successful c2c send does not make sender alias resolvable, recipient reply fails with ''not registered'''
+---
+## Summary
+
+A peer that successfully RECEIVES a c2c message cannot reply to the sender: the reply fails with "alias '<sender>' is not registered; message not queued", even though the original send reported success. The send path and the reply path resolve the sender alias asymmetrically.
+
+## Repro (observed 2026-07-10)
+
+1. Session A registers a per-repo alias: `c2c register --alias amaroo-wf2-claude` (default per-repo broker; host_id 3d08761ae3f3).
+2. A sends to a codex peer on another session/host:
+   `c2c send codex-kaari-palo-54rr "<msg>"` -> prints `ok -> codex-kaari-palo-54rr (from amaroo-wf2-claude)`.
+3. The codex peer receives the message and calls its reply:
+   `c2c.send({to_alias: "amaroo-wf2-claude", content: "..."})`
+   -> `send failed: alias 'amaroo-wf2-claude' is not registered; message not queued`.
+4. Session A never receives the reply. On A: `c2c peek-inbox`, `c2c wait-inbox --from codex-kaari-palo-54rr`, `c2c history`, `c2c peek-inbox --global-broker`, and `c2c dead-letter` are all empty. `c2c status` shows `sent=1 recv=0 pending`.
+
+## Expected
+
+If `c2c send A -> B` succeeds, B must be able to reply to A. Either the send should fail up front if the sender is not resolvable by the recipient, or (better) a successful delivery should make the sender alias resolvable for a reply — otherwise "ok ->" is misleading and replies are silently lost.
+
+## Actual
+
+Outbound delivery to the peer succeeds, but the recipient cannot resolve the sender alias to reply. The sender's per-repo registration is apparently not visible on the broker/relay the recipient uses to resolve reply targets, so the reply is rejected as "not registered" and not queued. No dead-letter is recorded on either side, so the message is lost with only a local error on the recipient.
+
+## Likely area
+
+Cross-broker / relay alias federation and the reply-target resolution path. The sender was registered on the per-repo broker only; the recipient (different session, `[repo]`-tagged, likely resolving via relay/global sessions broker) could be delivered TO but could not resolve the reply alias. Registering the same alias additionally via `--global-broker` afterward is a manual workaround; the tool should not require the sender to pre-register on every broker the recipient might use.
+
+## Impact
+
+Any request-reply exchange between agents on different brokers/hosts drops the reply silently. The initiator waits on `wait-inbox` forever (or until timeout) with no signal that the reply was rejected on the other end.

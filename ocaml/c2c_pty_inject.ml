@@ -58,10 +58,13 @@ let pid_is_alive pid =
  *
  *   XML sideband delivery (xml_output_fd) takes precedence over --inotify.
  *
- * Codex's entire managed delivery contract is the XML fd (codex reads frames
- * via --xml-input-fd). When inotifywait is present on PATH, start_deliver_daemon
- * (c2c_start.ml) auto-adds --inotify, so the codex deliver daemon receives BOTH
- * --xml-output-fd AND --inotify. The old dispatch checked use_inotify first and
+ * Historically codex's managed delivery contract was the XML fd (the codex
+ * fork read frames via --xml-input-fd; that flag was removed upstream and
+ * interactive codex now uses config.toml hooks). The XML sideband survives
+ * for the codex-headless bridge, which reads the same frame format from a
+ * broker-owned fifo. When inotifywait is present on PATH, start_deliver_daemon
+ * (c2c_start.ml) auto-adds --inotify, so an XML deliver daemon can receive BOTH
+ * an XML output AND --inotify. The old dispatch checked use_inotify first and
  * routed non-generic clients to the log-only inotify path (which printed a
  * preview to stdout = /dev/null in the daemon and NEVER wrote XML to the fd) —
  * so codex silently went dark. Checking xml_output_fd before use_inotify fixes
@@ -70,9 +73,11 @@ let pid_is_alive pid =
 
 type delivery_mode =
   | Mode_pty of int            (* PTY master fd (S4) *)
-  | Mode_xml_fd of int         (* XML sideband to fd — codex managed path *)
+  | Mode_xml_fd of int         (* XML sideband to fd — codex-headless bridge path *)
   | Mode_inotify_drain         (* generic client: event-driven destructive drain *)
   | Mode_inotify_print         (* non-generic, non-xml, --inotify: log-only (manual/debug) *)
+  | Mode_wake_inject           (* codex: tmux/herdr wake-nudge watcher — never drains;
+                                  codex hooks deliver bodies on the injected turn *)
   | Mode_poll                  (* generic/kimi polling loop *)
 
 let select_delivery_mode
@@ -86,7 +91,15 @@ let select_delivery_mode
       (match xml_output_fd with
        | Some fd -> Mode_xml_fd fd        (* precedence over --inotify *)
        | None ->
-           if use_inotify then
+           (* codex-wake-inject: interactive codex delivery is owned by the
+              config.toml hooks; the sidecar daemon's only job is to WAKE an
+              idle session (tmux/herdr nudge) when the inbox grows. The old
+              routing sent codex to the log-only Mode_inotify_print, which
+              did nothing useful post-xmlfd-removal. C2c_wake_inject handles
+              its own inotify/poll fallback, so use_inotify is irrelevant
+              here. codex-headless is NOT affected (matches "codex" only). *)
+           if client = "codex" then Mode_wake_inject
+           else if use_inotify then
              if client = "generic" then Mode_inotify_drain
              else Mode_inotify_print
            else Mode_poll)
@@ -158,9 +171,11 @@ let pty_deliver_loop_daemon
     !total_delivered;
   flush stdout
 
-(* xml_deliver_loop_daemon: daemon-mode XML sideband delivery loop for Codex.
+(* xml_deliver_loop_daemon: daemon-mode XML sideband delivery loop.
    Polls the broker inbox every poll_interval seconds and writes XML sideband
-   frames to the given output fd. Codex reads these via --xml-input-fd.
+   frames to the given output fd. The codex-headless bridge reads these from
+   its broker-owned stdin fifo (the interactive-codex --xml-input-fd consumer
+   was removed upstream).
 
    The XML frame format (per Codex client spec) is:
      <message type="user" queue="AfterAnyItem"><c2c event="message" from="..." to="...">...</c2c></message>

@@ -29,7 +29,24 @@ type check_result = {
 
 let status_str = function Pass -> "PASS" | Fail -> "FAIL" | Inconclusive -> "INCONCLUSIVE"
 
-let docs_relay = "https://c2c.im/docs/relay"
+(* Canonical relay docs permalink lives in the shared core module so the
+   subscribe guard, doctor, and tests never drift on the target URL. *)
+let docs_relay = Relay_doctor.docs_url
+
+(* Adapt a pure Relay_doctor.check_result (shared with the subscribe command)
+   into the doctor-local check_result shape used by the renderers. *)
+let status_of_rd = function
+  | Relay_doctor.Pass -> Pass
+  | Relay_doctor.Fail -> Fail
+  | Relay_doctor.Inconclusive -> Inconclusive
+
+let of_rd (r : Relay_doctor.check_result) =
+  { check_id = r.Relay_doctor.check_id
+  ; status = status_of_rd r.Relay_doctor.status
+  ; message = r.Relay_doctor.message
+  ; detail = r.Relay_doctor.detail
+  ; fix_command = r.Relay_doctor.fix_command
+  ; docs_url = r.Relay_doctor.docs_url }
 
 (* ---------------------------------------------------------------------------
  * Helpers
@@ -166,10 +183,32 @@ let probe_relay ~url ~token ~identity ~signing_alias =
           let peers = extract_peers list_resp in
           let na = needs_auth list_resp in
           let list_error = if na then None else list_error_of list_resp in
+          (* H7: Relay_client never raises — transport failures (connection
+             refused, timeout, unparseable response) come back as a locally
+             SYNTHESIZED ok:false JSON carrying transport:true. Fold those
+             back into the unreachable branch (health = None + health_error)
+             so relay.reachable / relay.lease / relay.capabilities judge a
+             dead relay honestly instead of treating the client's own error
+             object as proof the relay responded (C047 false PASS). *)
+          let health, health_error =
+            if Relay.Relay_client.is_transport_error health then
+              let err =
+                match health with
+                | `Assoc fs ->
+                    (match List.assoc_opt "error" fs with
+                     | Some (`String s) -> s
+                     | _ -> "connection_error")
+                | _ -> "connection_error"
+              in
+              (None, Some err)
+            else (Some health, None)
+          in
           Lwt.return
-            { url; url_source = ""; health = Some health; health_error = None;
+            { url; url_source = ""; health; health_error;
               peers; list_error; list_needs_auth = na })
        (fun e ->
+          (* Defensive only: with the H7 contract Relay_client no longer
+             raises, so this branch should be dead — kept as a safety net. *)
           Lwt.return
             { url; url_source = ""; health = None;
               health_error = Some (Printexc.to_string e);
@@ -212,12 +251,21 @@ let check_reachable ~probe =
       let version = j |> member "version" |> to_string_option |> Option.value ~default:"?" in
       let git_hash = j |> member "git_hash" |> to_string_option |> Option.value ~default:"?" in
       let auth_mode = j |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown" in
-      if ok then
+      (* B121: protocol-skew health is rewritten to ok:false/incompatible_client
+         by Relay_client.health — still proves the host is up; the dedicated
+         relay.protocol check carries the FAIL + upgrade guidance. *)
+      if ok || Relay.Relay_client.is_protocol_incompatible j then
+        let version =
+          if version = "?" then
+            j |> member "server_version" |> to_string_option
+            |> Option.value ~default:"?"
+          else version
+        in
         { check_id = "relay.reachable"
         ; status = Pass
         ; message = sprintf "relay reachable — %s @ %s (auth: %s)"
             version git_hash auth_mode
-        ; detail = Some (sprintf "GET %s/health → ok" probe.url)
+        ; detail = Some (sprintf "GET %s/health → responded" probe.url)
         ; fix_command = None
         ; docs_url = Some docs_relay }
       else
@@ -225,7 +273,9 @@ let check_reachable ~probe =
            (e.g. "unknown endpoint /health" on an older relay version).
            Receiving a coherent HTTP/JSON reply PROVES reachability; ok=false
            here is an endpoint/detail nuance, NOT an unreachability condition.
-           The genuine unreachable path is the exception handler (health_error). *)
+           Client-synthesized transport errors never reach this branch:
+           probe_relay folds them (via Relay_client.is_transport_error) into
+           health = None, which lands in the FAIL branch above (H7). *)
         { check_id = "relay.reachable"
         ; status = Pass
         ; message =
@@ -234,6 +284,106 @@ let check_reachable ~probe =
         ; detail = Some (Yojson.Safe.pretty_to_string j)
         ; fix_command = None
         ; docs_url = Some docs_relay }
+
+(* B121: wire protocol compatibility. Distinct from reachability — the relay
+   can be up while this client is too old (or too new) for its wire version. *)
+let check_protocol ~probe =
+  match probe.health with
+  | None ->
+      { check_id = "relay.protocol"
+      ; status = Inconclusive
+      ; message = "protocol check skipped (relay unreachable)"
+      ; detail = None; fix_command = None; docs_url = Some docs_relay }
+  | Some j when Relay.Relay_client.is_protocol_incompatible j ->
+      let open Yojson.Safe.Util in
+      let msg =
+        j |> member "error" |> to_string_option
+        |> Option.value
+             ~default:(sprintf
+               "relay %s speaks an incompatible protocol; upgrade c2c \
+                (git pull && just install-all)"
+               probe.url)
+      in
+      (* Prefer the structured too-new/too-old signal when present so the
+         fix_command matches the error direction (upgrade client vs wait
+         for relay deploy). Fall back to upgrade-client for rewritten
+         health bodies that only carry the error string. *)
+      let client_pv =
+        match j |> member "client_protocol_version" with
+        | `Int i -> i
+        | _ -> Version.relay_protocol_version
+      in
+      let server_pv =
+        match j |> member "server_protocol_version" with
+        | `Int i -> Some i
+        | _ -> None
+      in
+      let fix_command =
+        match server_pv with
+        | Some sp when client_pv > sp ->
+            Some (sprintf
+              "wait for relay deploy, or: c2c relay setup --url <matching-relay>   \
+               # client v%d is newer than relay protocol v%d"
+              client_pv sp)
+        | _ ->
+            Some "git pull && just install-all   # then retry c2c relay status"
+      in
+      { check_id = "relay.protocol"
+      ; status = Fail
+      ; message = msg
+      ; detail = Some (Yojson.Safe.pretty_to_string j)
+      ; fix_command
+      ; docs_url = Some docs_relay }
+  | Some j ->
+      (match Relay.Relay_client.protocol_compat_of_health j with
+       | Relay.Relay_client.Compatible ->
+           let open Yojson.Safe.Util in
+           let pv =
+             match j |> member "protocol_version" with
+             | `Int i -> string_of_int i
+             | _ -> string_of_int Version.relay_protocol_version
+           in
+           { check_id = "relay.protocol"
+           ; status = Pass
+           ; message = sprintf "protocol compatible (v%s)" pv
+           ; detail = None; fix_command = None; docs_url = Some docs_relay }
+       | Relay.Relay_client.Unknown ->
+           { check_id = "relay.protocol"
+           ; status = Pass
+           ; message =
+               "protocol version not advertised (pre-B121 relay; assuming compatible)"
+           ; detail = None; fix_command = None; docs_url = Some docs_relay }
+       | Relay.Relay_client.Client_too_old _ as compat ->
+           let msg =
+             match Relay.Relay_client.upgrade_message ~url:probe.url compat with
+             | Some m -> m
+             | None -> "incompatible relay protocol"
+           in
+           { check_id = "relay.protocol"
+           ; status = Fail
+           ; message = msg
+           ; detail = Some (Yojson.Safe.pretty_to_string j)
+           ; fix_command =
+               Some "git pull && just install-all   # then retry c2c relay status"
+           ; docs_url = Some docs_relay }
+       | Relay.Relay_client.Client_too_new {
+           server_protocol; client_protocol; _
+         } as compat ->
+           let msg =
+             match Relay.Relay_client.upgrade_message ~url:probe.url compat with
+             | Some m -> m
+             | None -> "incompatible relay protocol"
+           in
+           { check_id = "relay.protocol"
+           ; status = Fail
+           ; message = msg
+           ; detail = Some (Yojson.Safe.pretty_to_string j)
+           ; fix_command =
+               Some (sprintf
+                 "wait for relay deploy, or: c2c relay setup --url <matching-relay>   \
+                  # client v%d is newer than relay protocol v%d"
+                 client_protocol server_protocol)
+           ; docs_url = Some docs_relay })
 
 let check_lease ~probe ~local_aliases ~local_total =
   if probe.health = None then
@@ -344,79 +494,12 @@ let check_lease ~probe ~local_aliases ~local_total =
                   probe.url)
       ; docs_url = Some docs_relay }
 
-let check_connector ~broker_root ~probe =
-  let procs = detect_connector_processes () in
-  let state = C2c_relay_connector.read_connector_state broker_root in
-  let now = Unix.gettimeofday () in
-  match procs, state with
-  | [], None ->
-      { check_id = "relay.connector"
-      ; status = Fail
-      ; message = "no relay connector running and no prior sync state"
-      ; detail = Some "Outbound remote-alias messages will queue in remote-outbox.jsonl indefinitely."
-      ; fix_command =
-          Some (sprintf "c2c relay connect --relay-url %s &" probe.url)
-      ; docs_url = Some docs_relay }
-  | [], Some st ->
-      let stale_s = now -. st.C2c_relay_connector.cs_last_sync_ts in
-      if stale_s < 120.0 then
-        { check_id = "relay.connector"
-        ; status = Inconclusive
-        ; message = sprintf "connector not running (last sync %s ago)"
-            (age_str now st.C2c_relay_connector.cs_last_sync_ts)
-        ; detail = Some "May be restarting; re-run shortly."
-        ; fix_command = Some (sprintf "c2c relay connect --relay-url %s &" probe.url)
-        ; docs_url = Some docs_relay }
-      else
-        { check_id = "relay.connector"
-        ; status = Fail
-        ; message = sprintf "connector not running (last sync %s ago)"
-            (age_str now st.C2c_relay_connector.cs_last_sync_ts)
-        ; detail = Some "Outbox will not drain until a connector restarts."
-        ; fix_command = Some (sprintf "c2c relay connect --relay-url %s &" probe.url)
-        ; docs_url = Some docs_relay }
-  | _ :: _, _ ->
-      (match state with
-       | None ->
-           { check_id = "relay.connector"
-           ; status = Pass
-           ; message =
-               sprintf "connector running (%d process(es)); no state file yet"
-                 (List.length procs)
-           ; detail = Some "First sync may still be in flight."
-           ; fix_command = None; docs_url = Some docs_relay }
-       | Some st ->
-           let last_err = match st.C2c_relay_connector.cs_last_error_detail with
-             | Some e -> sprintf " last error: %s" e
-             | None -> ""
-           in
-           let recent_err =
-             match st.C2c_relay_connector.cs_last_error_ts with
-             | Some ts when (now -. ts) < 300.0 -> true
-             | _ -> false
-           in
-           let status, detail =
-             if recent_err then
-               let op = Option.value st.C2c_relay_connector.cs_last_error_op ~default:"?" in
-               let ts = Option.value st.C2c_relay_connector.cs_last_error_ts ~default:0.0 in
-                 (Fail,
-                  Some (sprintf "recent error %s ago on %s%s"
-                          (age_str now ts) op last_err))
-             else
-               (Pass,
-                Some (sprintf "last ok sync %s ago; fwd=%d failed=%d dlq=%d inbound=%d"
-                        (age_str now st.C2c_relay_connector.cs_last_ok_ts)
-                        st.C2c_relay_connector.cs_outbox_forwarded
-                        st.C2c_relay_connector.cs_outbox_failed
-                        st.C2c_relay_connector.cs_outbox_dlqed
-                        st.C2c_relay_connector.cs_inbound_delivered))
-           in
-           { check_id = "relay.connector"
-           ; status
-           ; message =
-               sprintf "connector running (%d); last sync %s ago%s"
-                 (List.length procs) (age_str now st.C2c_relay_connector.cs_last_sync_ts) last_err
-           ; detail; fix_command = None; docs_url = Some docs_relay })
+(* Broker-owned connector check: machine-global pgrep matches are scoped to
+   this broker root (Relay_doctor.scope_connector_lines) so an unrelated
+   connector on the same box can't falsely report "running" here (B093). All
+   the branch/staleness/fix logic is the pure Relay_doctor.connector_check. *)
+let check_connector ~relay_url ~scoped_procs ~state ~now =
+  of_rd (Relay_doctor.connector_check ~relay_url ~scoped_procs ~state ~now)
 
 let check_outbox ~broker_root =
   let entries = C2c_relay_connector.read_outbox broker_root in
@@ -468,33 +551,14 @@ let check_outbox ~broker_root =
     ; fix_command
     ; docs_url = Some docs_relay }
 
-(* Capabilities matrix: send / subscribe / connect / poll readiness for the
-   configured relay scheme. *)
+(* Scheme/attempt-aware capabilities matrix (Relay_doctor.capabilities_check):
+   subscribe reflects the actual `c2c relay subscribe` outcome for the
+   configured scheme (no over TLS), and connect reflects the broker-owned
+   connector signal — never a machine-global false positive. *)
 let check_capabilities ~probe ~connector_running =
-  let reachable = probe.health <> None in
-  let lc = String.lowercase_ascii probe.url in
-  let https = String.length lc >= 5 && String.sub lc 0 5 = "https" in
-  let yn b = if b then "yes" else "no" in
-  let matrix =
-    [ sprintf "  %-12s %-7s  %s" "send" (if reachable then "ready" else "no") "POST /send (DMs)"
-    ; sprintf "  %-12s %-7s  %s" "subscribe" (if reachable then "ready" else "no") "relay observer/push delivery"
-    ; sprintf "  %-12s %-7s  %s" "connect" (if connector_running then "ready" else "no") "live connector bridge"
-    ; sprintf "  %-12s %-7s  %s" "poll" (if reachable then "ready" else "no") "POST /poll_inbox (fallback fetch)"
-    ]
-  in
-  let all_ready = reachable && connector_running in
-  { check_id = "relay.capabilities"
-  ; status = if all_ready then Pass else Inconclusive
-  ; message =
-      sprintf "send=%s subscribe=%s connect=%s poll=%s (%s)"
-        (yn reachable) (yn reachable) (yn connector_running) (yn reachable)
-        (if https then "TLS" else "plaintext")
-  ; detail = Some (String.concat "\n" matrix)
-  ; fix_command =
-      if not connector_running then
-        Some (sprintf "c2c relay connect --relay-url %s &" probe.url)
-      else None
-  ; docs_url = Some docs_relay }
+  of_rd
+    (Relay_doctor.capabilities_check ~url:probe.url
+       ~reachable:(probe.health <> None) ~connector_running)
 
 (* ---------------------------------------------------------------------------
  * Run all checks
@@ -532,12 +596,24 @@ let run_checks () =
       ; peers = []; list_error = None; list_needs_auth = false }
   in
   let probe = { probe with url_source } in
-  let connector_running = detect_connector_processes () <> [] in
+  (* Scope machine-global pgrep matches to THIS broker root, then derive the
+     broker-owned connector signal (scoped process OR fresh state file). Both
+     the connector check and the capabilities matrix consume this — no more
+     machine-global false positive (B093). *)
+  let now = Unix.gettimeofday () in
+  let scoped_procs =
+    Relay_doctor.scope_connector_lines ~broker_root (detect_connector_processes ())
+  in
+  let state = C2c_relay_connector.read_connector_state broker_root in
+  let connector_running =
+    Relay_doctor.connector_running ~scoped_procs ~state ~now
+  in
   let checks =
     [ check_configured ~probe
     ; check_reachable ~probe
+    ; check_protocol ~probe
     ; check_lease ~probe ~local_aliases ~local_total
-    ; check_connector ~broker_root ~probe
+    ; check_connector ~relay_url:probe.url ~scoped_procs ~state ~now
     ; check_outbox ~broker_root
     ; check_capabilities ~probe ~connector_running
     ]

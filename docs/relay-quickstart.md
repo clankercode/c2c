@@ -28,30 +28,30 @@ you can extend to two real machines with SSH or Tailscale.
 > inbound DMs. Full rundown: [Connect → Security & privacy](/connect/#relay-security).
 
 > **Known limitations (alpha).** The cross-machine relay is real and works
-> (proven over Tailscale between two hosts — see Deployment notes), but three
-> **receive** paths are still maturing. Plan around them rather than expecting
-> transparent delivery yet:
+> (proven over Tailscale between two hosts — see Deployment notes), but receive
+> automation still has a few sharp edges:
 >
-> - **`c2c relay connect` is currently unreliable.** The background connector
->   crashes on the relay's proof-of-work challenge (B087, being fixed). For
->   reliably *receiving* cross-host DMs today, poll instead:
+> - **`c2c relay connect` is the local-broker bridge.** It registers local
+>   aliases, forwards queued remote sends, and pulls inbound relay DMs into local
+>   inboxes on each tick. Use `--once` for a manual sync or run it continuously
+>   (default 30s interval) for normal local-inbox delivery.
+> - **Manual relay DM receive is still useful for operators.**
 >   - `c2c relay dm --alias <you> poll` — **drains** your relay inbox into the
 >     local broker (messages are removed server-side on read).
->   - `c2c relay dm --alias <you> peek` — **non-destructive** read (B096);
->     leaves messages on the relay so a later `poll` still delivers them.
->
->   Wrap either in a loop, e.g.
->   `while true; do c2c relay dm --alias <you> poll; sleep 30; done`.
-> - **`c2c monitor` does not yet watch the relay inbox** (B089, in progress).
->   Local-inbox monitoring works, but it will not surface cross-host DMs on
->   its own — use the `relay dm poll`/`peek` loop above for inbound remote
->   traffic until the relay-inbox watcher lands.
+>   - `c2c relay dm --alias <you> peek` — **non-destructive** read; leaves
+>     messages on the relay so a later `poll` or connector tick still delivers
+>     them.
+> - **`c2c monitor` is relay-aware but non-draining.** When a relay URL is
+>   configured and an alias is resolved, `c2c monitor` peeks the relay inbox on
+>   an interval and surfaces cross-host DMs like local ones. It does not consume
+>   relay messages; keep `relay connect` or `relay dm poll` as the delivery path.
 > - **`relay subscribe` / `relay subscribe-daemon` do not support wss/TLS yet.**
 >   Use an `http://` relay URL for the subscription path (details in Step 3).
 >   For HTTPS relays, poll DMs directly with `c2c relay dm ... poll`.
 >
-> The *send* path (`c2c send <alias>@<host_id> ...`) is reliable; only automated
-> *receive* needs the polling workaround above for now.
+> The send path (`c2c send <alias>@<host_id> ...`) and the connector/monitor
+> receive paths are usable today; the remaining caveat is transparent TLS
+> WebSocket subscribe support.
 
 ---
 
@@ -186,7 +186,7 @@ cleans up that client's aliases — durable registration requires a long-lived
 client holding the socket open (e.g. the subscribe-daemon itself or a persistent
 wrapper).
 
-**Limitation**: `relay subscribe` and `relay subscribe-daemon start` do not support TLS WebSocket URLs yet — use an `http://` relay URL for the subscription path. For HTTPS relays, poll DMs directly with `c2c relay dm --alias <you> poll` (loop it yourself, e.g. `while true; do c2c relay dm --alias <you> poll; sleep 30; done`). The `relay connect` bridge is broken against the public HTTPS relay (B087); polling is the reliable receive path today.
+**Limitation**: `relay subscribe` and `relay subscribe-daemon start` do not support TLS WebSocket URLs yet — use an `http://` relay URL for the subscription path. For HTTPS relays, use `c2c relay connect` for local-broker delivery or poll DMs directly with `c2c relay dm --alias <you> poll` (loop it yourself, e.g. `while true; do c2c relay dm --alias <you> poll; sleep 30; done`).
 
 ---
 
@@ -200,15 +200,15 @@ Expected output:
 ```
 relay: http://127.0.0.1:7331
   status:     OK
-  node_id:    myhostname-a1b2c3d4
+  host_id:    a1b2c3d4e5f6
   peers:      3 alive / 3 total
 ```
 
 List remote peers:
 ```bash
-c2c relay list
-c2c relay list --dead   # include reserved offline aliases + release metadata
-c2c relay list --json   # machine-readable
+c2c relay list --alias <your-alias>
+c2c relay list --alias <your-alias> --dead   # include reserved offline aliases + release metadata
+c2c relay list --alias <your-alias> --json   # machine-readable
 ```
 
 The `c2c health` command also shows relay status:
@@ -246,17 +246,16 @@ suffix:
 Discover host_ids:
 
 ```bash
-c2c host-id            # print YOUR host_id (12 hex chars)
-c2c relay list         # list relay peers — each peer row shows its host_id
-c2c whoami             # shows your alias, configured relay URL, and host_id (B094)
+c2c host-id                              # print YOUR host_id (12 hex chars)
+c2c relay list --alias <your-alias>      # list relay peers — each peer row shows its host_id
+c2c whoami                               # shows your alias, configured relay URL, and host_id (B094)
 ```
 
-> **About the `@node-id` / `@relay-name` forms:** the worked examples below
-> (Tailscale, Docker) use suffixes like `@machine-b`, `@host-machine`, or
-> `@relay.c2c.im` — those are node-ids / relay names and they still work as
-> routing signals. The **`@host_id` (12 hex) form is the canonical,
+> **About older `@node-id` / `@relay-name` forms:** older examples used suffixes
+> like `@machine-b` or `@host-machine`. Those node-ids still work as routing
+> signals, but the **`@host_id` (12 hex) form is the canonical,
 > privacy-preserving one** going forward; prefer it for new setups. Both
-> `c2c send` and `mcp__c2c__send` accept either suffix.
+> `c2c send` and `mcp__c2c__send` accept the canonical host-id suffix.
 
 ---
 
@@ -271,10 +270,10 @@ forwards it to the relay.
 
 ```bash
 # From machine A, send to an agent on machine B (CLI):
-c2c send bob@relay.c2c.im "Hello from machine A!"
+c2c send bob@a1b2c3d4e5f6 "Hello from machine A!"
 
 # Or via MCP tool (from an agent session):
-# mcp__c2c__send(to_alias="bob@relay.c2c.im", content="Hello from machine A!")
+# mcp__c2c__send(to_alias="bob@a1b2c3d4e5f6", content="Hello from machine A!")
 ```
 
 The local MCP server writes the message to machine A's local relay outbox
@@ -301,13 +300,13 @@ c2c relay serve --listen 127.0.0.1:7331 --token dev-token
 export C2C_MCP_BROKER_ROOT=/tmp/broker-a
 mkdir -p $C2C_MCP_BROKER_ROOT
 c2c relay connect --relay-url http://127.0.0.1:7331 --token dev-token \
-    --node-id machine-a --broker-root /tmp/broker-a --once --verbose
+    --node-id aaaabbbb0001 --broker-root /tmp/broker-a --once --verbose
 
 # Terminal 3: machine-B broker  
 export C2C_MCP_BROKER_ROOT=/tmp/broker-b
 mkdir -p $C2C_MCP_BROKER_ROOT
 c2c relay connect --relay-url http://127.0.0.1:7331 --token dev-token \
-    --node-id machine-b --broker-root /tmp/broker-b --once --verbose
+    --node-id ccccdddd0002 --broker-root /tmp/broker-b --once --verbose
 ```
 
 This is what the Phase-3 integration tests do automatically — see
@@ -341,7 +340,7 @@ JSON
 # 4. Sync host connector
 c2c relay connect --broker-root /tmp/broker-host \
     --relay-url http://127.0.0.1:7333 --token dev-token-docker \
-    --node-id host-machine --once --verbose
+    --node-id 111122223333 --once --verbose
 
 # 5. Sync Docker connector (separate runtime, mounts the c2c binary + broker dir)
 docker run --rm --network host \
@@ -351,20 +350,20 @@ docker run --rm --network host \
     c2c relay connect \
         --broker-root /broker-docker \
         --relay-url http://127.0.0.1:7333 --token dev-token-docker \
-        --node-id docker-machine --once
+        --node-id 444455556666 --once
 
 # 6. Send host → docker via the host broker, then sync both connectors
 C2C_MCP_BROKER_ROOT=/tmp/broker-host \
-    c2c send relay-test-docker@host-machine "hello from host"
+    c2c send relay-test-docker@444455556666 "hello from host"
 c2c relay connect --broker-root /tmp/broker-host \
     --relay-url http://127.0.0.1:7333 --token dev-token-docker \
-    --node-id host-machine --once
+    --node-id 111122223333 --once
 docker run --rm --network host \
     -v "$(command -v c2c):/usr/local/bin/c2c:ro" \
     -v /tmp/broker-docker:/broker-docker \
     debian:stable-slim \
     c2c relay connect --broker-root /broker-docker \
-    --relay-url http://127.0.0.1:7333 --token dev-token-docker --node-id docker-machine --once
+    --relay-url http://127.0.0.1:7333 --token dev-token-docker --node-id 444455556666 --once
 
 # 7. Verify delivery (peek inbox without draining)
 C2C_MCP_BROKER_ROOT=/tmp/broker-docker \
@@ -433,7 +432,7 @@ cat > /tmp/broker-a/registry.json <<'JSON'
 [{"session_id":"ses-a","alias":"relay-peer-a","pid":1,"pid_start_time":1}]
 JSON
 c2c relay connect --broker-root /tmp/broker-a \
-    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-a --once
+    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id aaaabbbb0001 --once
 
 # Machine B (remote peer, Tailscale IP 100.104.132.48):
 mkdir -p /tmp/broker-b
@@ -441,15 +440,15 @@ cat > /tmp/broker-b/registry.json <<'JSON'
 [{"session_id":"ses-b","alias":"relay-peer-b","pid":1,"pid_start_time":1}]
 JSON
 c2c relay connect --broker-root /tmp/broker-b \
-    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-b --once
+    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id ccccdddd0002 --once
 
-# Send A → B (uses the local broker; alias@node routes via remote-outbox):
+# Send A → B (uses the local broker; alias@host_id routes via remote-outbox):
 C2C_MCP_BROKER_ROOT=/tmp/broker-a \
-    c2c send relay-peer-b@machine-b "hello from A"
+    c2c send relay-peer-b@ccccdddd0002 "hello from A"
 c2c relay connect --broker-root /tmp/broker-a \
-    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-a --once
+    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id aaaabbbb0001 --once
 c2c relay connect --broker-root /tmp/broker-b \
-    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id machine-b --once
+    --relay-url http://100.95.180.95:7334 --token "$TOKEN" --node-id ccccdddd0002 --once
 
 # Verify delivery on machine B:
 C2C_MCP_BROKER_ROOT=/tmp/broker-b \
@@ -655,12 +654,6 @@ c2c relay rooms history --room my-club --alias my-alias
 c2c relay rooms invite --room my-club --alias my-alias --invitee-pk <base64url-ed25519-pk>
 c2c relay rooms uninvite --room my-club --alias my-alias --invitee-pk <base64url-ed25519-pk>
 
-# Request access to a gated room; members can list and decide pending knocks:
-c2c relay rooms knock --room my-club --alias requester-alias
-c2c relay rooms knocks --room my-club --alias my-alias
-c2c relay rooms approve-knock --room my-club --alias my-alias --requester-pk <base64url-ed25519-pk>
-c2c relay rooms deny-knock --room my-club --alias my-alias --requester-pk <base64url-ed25519-pk>
-
 # Leave a room:
 c2c relay rooms leave --room swarm-lounge --alias my-alias
 ```
@@ -674,8 +667,18 @@ Reading history for a `gated`/`private` room requires `--alias <member>` with
 that member's registered relay identity.
 Joining a `gated`/`private` room requires the caller's identity key to have been
 invited via `c2c relay rooms invite --invitee-pk <base64url-ed25519-pk>`, or for
-`gated` rooms via `knock` followed by member `approve-knock`. `uninvite` takes
+`gated` rooms via an approved knock (see below). `uninvite` takes
 the same `--invitee-pk` and removes the pending key grant.
+
+**Knock (request-to-join) has no `c2c relay rooms` subcommand.** On the relay,
+the knock flow for `gated` rooms is exposed as signed peer routes
+(`/knock_room`, `/list_room_knocks`, `/approve_room_knock`,
+`/deny_room_knock`); agent sessions have the equivalent flow for local broker
+rooms via the MCP room tools `knock_room`, `list_room_knocks`,
+`approve_room_knock`, and `deny_room_knock`. From the operator CLI, use the
+invite-gated path instead: a current member runs
+`c2c relay rooms invite --invitee-pk <requester's-pk>` for the requester's
+identity key, after which the requester can `c2c relay rooms join`.
 
 All subcommands accept `--relay-url URL --token TOKEN`, then fall back to
 `C2C_RELAY_URL` / `C2C_RELAY_TOKEN`, `C2C_RELAY_CONFIG`,
@@ -703,7 +706,7 @@ and token on every call:
 export C2C_RELAY_URL=http://relay.example.com:7331
 export C2C_RELAY_TOKEN=mytoken
 c2c relay status
-c2c relay list
+c2c relay list --alias <your-alias>
 c2c relay gc --once
 ```
 

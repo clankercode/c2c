@@ -344,6 +344,21 @@ let resolve_relay_token opt =
        | Some v when v <> "" -> Some v
        | _ -> relay_config_string_field "token")
 
+(* B114: room mutations on the relay REQUIRE a signed body proof/envelope
+   (the unsigned legacy path is dev-only server-side). The CLI therefore
+   always signs room ops — if no client identity exists yet, create one at
+   the resolved identity path (C2C_RELAY_IDENTITY_PATH override, else the
+   default ~/.config/c2c/identity.json), mirroring the broker's
+   load_or_create_ed25519_identity behavior. The alias is bound to the key
+   via TOFU on the first signed op. *)
+let load_or_create_client_identity ~alias_hint =
+  let path =
+    match Sys.getenv_opt "C2C_RELAY_IDENTITY_PATH" with
+    | Some p when p <> "" -> p
+    | _ -> Relay_identity.default_path ()
+  in
+  Relay_identity.load_or_create_at ~path ~alias_hint
+
 (* --- shared result rendering -----------------------------------------------
 
    Every relay subcommand ends by printing the relay's JSON response and
@@ -364,6 +379,17 @@ let print_result_and_exit ?alias_source result =
   in
   if ok then exit 0
   else begin
+    (* B121: protocol-skew responses already carry the upgrade sentence in
+       [error]; echo it on stderr so operators see it next to any other
+       hints even when stdout is piped/json-consumed. *)
+    if Relay.Relay_client.is_protocol_incompatible result then begin
+      match result with
+      | `Assoc fields ->
+          (match List.assoc_opt "error" fields with
+           | Some (`String msg) -> Printf.eprintf "%s\n%!" msg
+           | _ -> ())
+      | _ -> ()
+    end;
     (match alias_source with
      | Some src ->
          (match Relay_client_hints.hint_for_response ~alias_source:src result with
@@ -687,7 +713,7 @@ let fetch_relay_peers_for_list ~timeout ?relay_url ?token ?alias () =
 
 let relay_rooms_cmd =
   let subcmd =
-    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|set-visibility" ~doc:"Rooms subcommand.")
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|set-visibility|set-history-public" ~doc:"Rooms subcommand.")
   in
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
@@ -710,6 +736,9 @@ let relay_rooms_cmd =
   let visibility =
     Cmdliner.Arg.(value & opt (some string) None & info [ "visibility" ] ~docv:"public|unlisted|gated|private" ~doc:"Room visibility: 'public' (listed + open join), 'unlisted' (unlisted + open join), 'gated' (listed + invite-gated join), or 'private' (unlisted + invite-gated join). Required for set-visibility; optional for join, where it applies only when the join creates the room.")
   in
+  let history_public =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "history-public" ] ~docv:"true|false" ~doc:"History readability policy for 'set-history-public': 'true' allows anonymous room-history reads on a public/unlisted room, 'false' makes it member-only. Rejected for gated/private rooms (always member-only).")
+  in
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"Message body for 'send' (joined with spaces).")
   in
@@ -726,6 +755,7 @@ let relay_rooms_cmd =
   and+ alias = alias
   and+ invitee_pk = invitee_pk
   and+ visibility = visibility
+  and+ history_public = history_public
   and+ words = words in
   match subcmd with
   | "join" | "leave" ->
@@ -745,36 +775,31 @@ let relay_rooms_cmd =
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            (* --visibility is only meaningful for 'join', where it applies if
               the join creates the room. 'leave' ignores it. *)
+           (* B114: always sign — the relay rejects unsigned room ops. *)
+           let id = load_or_create_client_identity ~alias_hint:alias in
            let result =
-             match Relay_identity.load () with
-             | Ok id ->
-                 if subcmd = "join" then
-                   let p =
-                     match visibility with
-                     | None ->
-                         Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias
-                     | Some visibility_val ->
-                         Relay_signed_ops.sign_room_op_with_visibility id
-                           ~ctx:sign_ctx ~room_id ~alias
-                           ~visibility:(canonical_visibility_for_sig visibility_val)
-                   in
-                   Lwt_main.run (Relay.Relay_client.join_room_signed client
-                     ?visibility ~alias ~room_id
-                     ~identity_pk:p.Relay_signed_ops.identity_pk_b64
-                     ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
-                     ~sig_:p.Relay_signed_ops.sig_b64)
-                 else
-                   let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias in
-                   Lwt_main.run (Relay.Relay_client.leave_room_signed client
-                     ~alias ~room_id
-                     ~identity_pk:p.Relay_signed_ops.identity_pk_b64
-                     ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
-                     ~sig_:p.Relay_signed_ops.sig_b64)
-             | Error _ ->
-                 if subcmd = "join" then
-                   Lwt_main.run (Relay.Relay_client.join_room client ?visibility ~alias ~room_id)
-                 else
-                   Lwt_main.run (Relay.Relay_client.leave_room client ~alias ~room_id)
+             if subcmd = "join" then
+               let p =
+                 match visibility with
+                 | None ->
+                     Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias
+                 | Some visibility_val ->
+                     Relay_signed_ops.sign_room_op_with_visibility id
+                       ~ctx:sign_ctx ~room_id ~alias
+                       ~visibility:(canonical_visibility_for_sig visibility_val)
+               in
+               Lwt_main.run (Relay.Relay_client.join_room_signed client
+                 ?visibility ~alias ~room_id
+                 ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                 ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                 ~sig_:p.Relay_signed_ops.sig_b64)
+             else
+               let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias in
+               Lwt_main.run (Relay.Relay_client.leave_room_signed client
+                 ~alias ~room_id
+                 ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+                 ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+                 ~sig_:p.Relay_signed_ops.sig_b64)
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
   | "send" ->
@@ -794,23 +819,17 @@ let relay_rooms_cmd =
        | Some url, Some room_id, Some from_alias, ws ->
            let content = String.concat " " ws in
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           (* L4/4: sign the send with the local identity when available.
-              Falls back to legacy unsigned path if no identity is on disk
-              (spec soft-rollout). *)
+           (* B114: always send a signed envelope — the relay rejects
+              envelope-less sends. *)
+           let id = load_or_create_client_identity ~alias_hint:from_alias in
            let result =
-             match Relay_identity.load () with
-             | Ok id ->
-                 let envelope =
-                   Relay_signed_ops.sign_send_room id
-                     ~room_id ~from_alias ~content
-                 in
-                 Lwt_main.run
-                   (Relay.Relay_client.send_room_signed client
-                      ~from_alias ~room_id ~content ~envelope ())
-             | Error _ ->
-                 Lwt_main.run
-                   (Relay.Relay_client.send_room client
-                      ~from_alias ~room_id ~content ())
+             let envelope =
+               Relay_signed_ops.sign_send_room id
+                 ~room_id ~from_alias ~content
+             in
+             Lwt_main.run
+               (Relay.Relay_client.send_room_signed client
+                  ~from_alias ~room_id ~content ~envelope ())
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit from_alias) result)
   | "history" ->
@@ -905,22 +924,22 @@ let relay_rooms_cmd =
            let sign_ctx = if subcmd = "invite" then Relay.room_invite_sign_ctx
                           else Relay.room_uninvite_sign_ctx in
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           (* B114: always sign — the relay rejects unsigned room ops. The
+              invitee_pk (target) is authorization-relevant and must be bound
+              into the signature (review finding 2), so use the target-key
+              signer rather than the plain room-op signer. *)
+           let id = load_or_create_client_identity ~alias_hint:from_alias in
            let result =
-             match Relay_identity.load () with
-             | Ok id ->
-                 let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias:from_alias in
-                 let fn = if subcmd = "invite"
-                          then Relay.Relay_client.invite_room_signed
-                          else Relay.Relay_client.uninvite_room_signed in
-                 Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val
-                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
-                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
-                   ~sig_:p.Relay_signed_ops.sig_b64)
-             | Error _ ->
-                 let fn = if subcmd = "invite"
-                          then Relay.Relay_client.invite_room
-                          else Relay.Relay_client.uninvite_room in
-                 Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val)
+             let p = Relay_signed_ops.sign_room_op_with_target_pk id
+                       ~ctx:sign_ctx ~room_id ~alias:from_alias
+                       ~target_pk:invitee_pk_val in
+             let fn = if subcmd = "invite"
+                      then Relay.Relay_client.invite_room_signed
+                      else Relay.Relay_client.uninvite_room_signed in
+             Lwt_main.run (fn client ~alias:from_alias ~room_id ~invitee_pk:invitee_pk_val
+               ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+               ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+               ~sig_:p.Relay_signed_ops.sig_b64)
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit from_alias) result)
   | "set-visibility" ->
@@ -939,23 +958,59 @@ let relay_rooms_cmd =
            exit 1
        | Some url, Some room_id, Some alias, Some visibility_val ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           (* The relay requires the caller be a room member and (under
-              C2C_REQUIRE_SIGNED_ROOM_OPS) a signed proof — sign with the local
-              identity when available, falling back to the unsigned+alias form. *)
+           (* B114: the relay requires the caller be a room member AND a
+              signed proof — always sign. *)
+           let id = load_or_create_client_identity ~alias_hint:alias in
            let result =
-             match Relay_identity.load () with
-             | Ok id ->
-                 let p = Relay_signed_ops.sign_room_op_with_visibility id
-                           ~ctx:Relay.room_set_visibility_sign_ctx ~room_id ~alias
-                           ~visibility:(canonical_visibility_for_sig visibility_val) in
-                 Lwt_main.run (Relay.Relay_client.set_room_visibility_signed client
-                   ~alias ~room_id ~visibility:visibility_val
-                   ~identity_pk:p.Relay_signed_ops.identity_pk_b64
-                   ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
-                   ~sig_:p.Relay_signed_ops.sig_b64)
-             | Error _ ->
-                 Lwt_main.run (Relay.Relay_client.set_room_visibility client
-                   ~alias ~room_id ~visibility:visibility_val)
+             let p = Relay_signed_ops.sign_room_op_with_visibility id
+                       ~ctx:Relay.room_set_visibility_sign_ctx ~room_id ~alias
+                       ~visibility:(canonical_visibility_for_sig visibility_val) in
+             Lwt_main.run (Relay.Relay_client.set_room_visibility_signed client
+               ~alias ~room_id ~visibility:visibility_val
+               ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+               ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+               ~sig_:p.Relay_signed_ops.sig_b64)
+           in
+           print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
+  | "set-history-public" ->
+      let parsed_hp = match history_public with
+        | Some v ->
+            (match String.lowercase_ascii (String.trim v) with
+             | "true" | "1" | "yes" | "on" -> Some true
+             | "false" | "0" | "no" | "off" -> Some false
+             | _ -> None)
+        | None -> None
+      in
+      (match resolve_relay_url relay_url, room, alias, history_public, parsed_hp with
+       | None, _, _, _, _ ->
+           Printf.eprintf "%s%!" relay_url_required_error;
+           exit 1
+       | _, None, _, _, _ ->
+           Printf.eprintf "error: --room required for 'rooms set-history-public'.\n%!";
+           exit 1
+       | _, _, None, _, _ ->
+           Printf.eprintf "error: --alias required for 'rooms set-history-public'.\n%!";
+           exit 1
+       | _, _, _, None, _ ->
+           Printf.eprintf "error: --history-public true|false required for 'rooms set-history-public'.\n%!";
+           exit 1
+       | _, _, _, Some _, None ->
+           Printf.eprintf "error: --history-public must be 'true' or 'false'.\n%!";
+           exit 1
+       | Some url, Some room_id, Some alias, Some _, Some hp ->
+           let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
+           (* The relay requires the caller be a room member AND a signed proof
+              whose signature covers the boolean — always sign. *)
+           let id = load_or_create_client_identity ~alias_hint:alias in
+           let result =
+             let p = Relay_signed_ops.sign_room_op_with_history_public id
+                       ~ctx:Relay.room_set_history_public_sign_ctx ~room_id ~alias
+                       ~history_public:hp in
+             Lwt_main.run (Relay.Relay_client.set_room_history_public_signed client
+               ~alias ~room_id ~history_public:hp
+               ~identity_pk:p.Relay_signed_ops.identity_pk_b64
+               ~ts:p.Relay_signed_ops.ts ~nonce:p.Relay_signed_ops.nonce
+               ~sig_:p.Relay_signed_ops.sig_b64)
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
   | _ ->
@@ -982,18 +1037,20 @@ let relay_register_cmd =
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       let node_id = Printf.sprintf "cli-%s" alias in
       let session_id = node_id in
-      let result = (match Relay_identity.load () with
-        | Ok id ->
-            let p = Relay_signed_ops.sign_register id ~alias ~relay_url:url in
-            Lwt_main.run (Relay.Relay_client.register_signed client
-              ~node_id ~session_id ~alias ~client_type:"cli"
-              ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
-              ~sig_b64:p.Relay_signed_ops.sig_b64
-              ~nonce:p.Relay_signed_ops.nonce
-              ~ts:p.Relay_signed_ops.ts ())
-        | Error _ ->
-            Lwt_main.run (Relay.Relay_client.register client
-              ~node_id ~session_id ~alias ~client_type:"cli" ~identity_pk:"" ()))
+      (* B114: register with the same identity the signed room ops use
+         (C2C_RELAY_IDENTITY_PATH override, else the default path), creating
+         it if absent — otherwise the register-time binding and subsequent
+         room-op proofs can come from different keys, and every later signed
+         room op fails with alias_identity_mismatch. *)
+      let id = load_or_create_client_identity ~alias_hint:alias in
+      let result =
+        let p = Relay_signed_ops.sign_register id ~alias ~relay_url:url in
+        Lwt_main.run (Relay.Relay_client.register_signed client
+          ~node_id ~session_id ~alias ~client_type:"cli"
+          ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
+          ~sig_b64:p.Relay_signed_ops.sig_b64
+          ~nonce:p.Relay_signed_ops.nonce
+          ~ts:p.Relay_signed_ops.ts ())
       in
       (* No ~alias_source: register IS the binding-establishment command, so
          hinting "run c2c relay register" at a failing register is circular. *)
@@ -1055,6 +1112,14 @@ let relay_dm_cmd =
                   | Error _ ->
                       Lwt_main.run (Relay.Relay_client.send client
                         ~from_alias ~to_alias ~content ())) in
+                (* J2: a relay ACK means the relay accepted the message —
+                   emit the canonical schema-v1 shape (delivery.state
+                   "accepted", source "relay") with the legacy ack keys
+                   (ok/ts/duplicate) preserved; errors pass through raw. *)
+                let result =
+                  C2c_utils.adapt_relay_dm_send_result ~from_alias ~to_alias
+                    ~content result
+                in
                 print_result_and_exit
                   ~alias_source:(Relay_client_hints.Explicit from_alias) result)
        | "poll" ->
@@ -1078,6 +1143,14 @@ let relay_dm_cmd =
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.poll_inbox client
                    ~node_id ~session_id:node_id)) in
+           (* J2: drained relay rows were delivered to this caller —
+              schema-v1 rows (delivery.state "delivered", source "relay")
+              with legacy row keys preserved; empty batches keep the
+              exact legacy shape. *)
+           let result =
+             C2c_utils.adapt_relay_dm_inbox_result
+               ~delivery_state:C2c_schema_v1.Delivered result
+           in
            print_result_and_exit
              ~alias_source:(Relay_client_hints.Explicit from_alias) result
        | "peek" ->
@@ -1085,10 +1158,12 @@ let relay_dm_cmd =
               WITHOUT draining the inbox, so a relay-aware monitor (B089)
               can tail without stealing messages from the poll consumer.
               Signs against /peek_inbox; the server route already exists.
-              NOTE follow-up: the relay's /peek_inbox handler does not yet
-              enforce session-ownership (unlike /poll_inbox); a signed peek
-              still carries a valid alias proof so adding that check later
-              won't break this path. *)
+              B115: the relay now requires the signed request's alias to
+              own the node/session for both /poll_inbox and /peek_inbox —
+              by default even on tokenless relays; this signed path
+              satisfies that. The unsigned fallback below only works
+              against a tokenless dev relay that also sets the explicit
+              C2C_RELAY_ALLOW_UNSIGNED_INBOX=1 gate. *)
            let from_alias = match alias with
              | Some a -> a
              | None ->
@@ -1109,6 +1184,13 @@ let relay_dm_cmd =
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.peek_inbox client
                    ~node_id ~session_id:node_id)) in
+           (* J2: peeked relay rows are NOT drained — schema-v1 rows with
+              delivery.state "queued", source "relay"; legacy row keys
+              preserved. *)
+           let result =
+             C2c_utils.adapt_relay_dm_inbox_result
+               ~delivery_state:C2c_schema_v1.Queued result
+           in
            print_result_and_exit
              ~alias_source:(Relay_client_hints.Explicit from_alias) result
        | "send-all" ->
@@ -1277,10 +1359,24 @@ let relay_mobile_pair_cmd =
           let bid = binding_id in
           if bid = None then (Printf.eprintf "error: --binding-id required for revoke.\n%!"; exit 1);
           let bid = Option.get bid in
-          let result = Lwt_main.run
-            (Relay.Relay_client.mobile_pair_revoke client ~binding_id:bid)
-          in
-          print_result_and_exit result
+          (* B116: revocation requires a proof signed by the machine
+             identity that created the binding (the phone key can also
+             revoke, from the phone side). *)
+          (match Relay_identity.load () with
+           | Error _ ->
+               Printf.eprintf
+                 "error: no identity.json found. Binding revocation requires the machine identity that created the binding — run 'c2c relay identity init' first.\n%!";
+               exit 1
+           | Ok id ->
+               let proof = Relay_signed_ops.sign_binding_revoke id ~binding_id:bid in
+               let result = Lwt_main.run
+                 (Relay.Relay_client.mobile_pair_revoke client ~binding_id:bid
+                    ~revoke_pk:proof.Relay_signed_ops.identity_pk_b64
+                    ~ts:proof.Relay_signed_ops.ts
+                    ~nonce:proof.Relay_signed_ops.nonce
+                    ~sig_b64:proof.Relay_signed_ops.sig_b64)
+               in
+               print_result_and_exit result)
       | "init" ->
           (match Relay_identity.load () with
            | Error _ ->
@@ -1353,16 +1449,16 @@ let relay_subscribe_cmd =
       exit 1
   | Some url ->
       let uri = Uri.of_string url in
-      let scheme = Uri.scheme uri in
-      if scheme = Some "https" || scheme = Some "wss" then begin
-        (* B090: the previous hint routed users at `relay connect` for HTTPS
-           fallback, but that connector is broken against the public HTTPS
-           relay (B087). Point users at the polling path that actually works
-           today. *)
+      (* Scheme support is decided by Relay_doctor.subscribe_url_supported — the
+         SAME predicate `c2c doctor --relay`'s capability matrix consults — so
+         the advertised `subscribe` capability always matches this actual
+         attempt (B090/B093 actual-attempt parity). TLS WebSocket (wss/https)
+         is not yet implemented. *)
+      if not (Relay_doctor.subscribe_url_supported url) then begin
         Printf.eprintf
           "error: c2c relay subscribe does not support TLS WebSocket URLs yet.\n\
            hint: use an http:// relay URL, or poll DMs via `c2c relay dm --alias <you> poll`.\n\
-           note: the `relay connect` bridge is broken against HTTPS relays (B087); polling is the reliable receive path today.\n%!";
+           note: polling is the reliable receive path for TLS relays today; run `c2c doctor --relay` for the live capability matrix.\n%!";
         exit 1
       end;
       (* Load identity for signing *)

@@ -1,17 +1,19 @@
 # c2c — Instant Messaging for AI Agents
 
-> c2c is a local message broker that lets agents running under Claude Code, Codex, Pi Agent, OpenCode, and Kimi Code send and receive messages as first-class peers. Communication happens via MCP tools for MCP-managed clients or the single `c2c` CLI binary used by Pi Agent and other CLI-capable peers. No server to run, no port to open — the broker lives in the per-repo broker root resolved from `C2C_MCP_BROKER_ROOT`, `$XDG_STATE_HOME/c2c/repos/<fp>/broker`, or `$HOME/.c2c/repos/<fp>/broker`.
+> c2c is a local message broker that lets agents running under Claude Code, Codex, Pi Agent, OpenCode, and Kimi Code send and receive messages as first-class peers. Communication happens via MCP tools for MCP-managed clients or the single `c2c` CLI binary used by Pi Agent and other CLI-capable peers. No server to run, no port to open — the broker lives in the per-repo broker root resolved from `C2C_MCP_BROKER_ROOT`, `$C2C_STATE_HOME/c2c/repos/<fp>/broker`, or `$HOME/.c2c/repos/<fp>/broker`. Generic `XDG_STATE_HOME` is deliberately not used for broker selection.
 
 ## Quick Start (for agents)
 
 ```bash
-# 1. Install and configure for your client
-c2c install claude      # Claude Code: writes ~/.claude.json + PostToolUse hook
-c2c install codex       # Codex: writes ~/.codex/config.toml, all tools auto-approved
+# 1. Install the binary (no MCP by default). Client MCP is explicit opt-in.
+c2c install self        # binary only
+c2c install claude      # Claude Code: project .mcp.json + hooks (OCaml c2c-mcp-server)
+c2c install codex       # Codex: writes ~/.codex/config.toml + pre-trusted hooks
 pi install npm:pi-c2c   # Pi Agent: external extension, uses c2c CLI + broker files
 c2c install opencode    # OpenCode: writes .opencode/opencode.json for current dir
-c2c install kimi        # Kimi Code: writes ~/.kimi/mcp.json
-# Or run `c2c install` with no args for an interactive TUI.
+c2c install kimi        # Kimi Code: writes ~/.kimi/mcp.json (command: c2c-mcp-server)
+# `c2c install` (no args) is binary-only by default; customize or name a client for MCP.
+# `c2c install all` is also binary-only unless --with-clients.
 
 # 2. Restart your client to pick up the MCP server or Pi extension
 # Managed sessions: c2c restart <name>
@@ -134,8 +136,9 @@ c2c relay list         # list remote peers
 c2c relay gc --once    # release 12-month-unseen aliases and prune orphan inboxes
 c2c relay rooms list   # list remote rooms
 c2c relay rooms invite --room ROOM --alias MEMBER --invitee-pk KEY
-c2c relay rooms knock --room ROOM --alias A   # request to join gated room
-c2c relay rooms approve-knock --room ROOM --alias MEMBER --requester-pk KEY
+# no relay-CLI knock subcommands — gated-room knocks are signed relay routes
+# (/knock_room etc.) + MCP tools (knock_room, approve_room_knock); from the
+# CLI a member invites the requester's key via invite --invitee-pk
 c2c relay subscribe-daemon start --relay-url URL  # start WebSocket push daemon
 c2c relay subscribe-daemon register --alias A  # register alias for push
 c2c relay mobile-pair   # mobile device pairing via QR token
@@ -144,10 +147,10 @@ c2c relay mobile-pair   # mobile device pairing via QR token
 ## What's Proven
 
 - Claude Code ↔ Claude Code: ✓ (PostToolUse hook, near-real-time)
-- Claude Code ↔ Codex: ✓ (hook → notify daemon)
+- Claude Code ↔ Codex: ✓ (Claude hook → Codex hooks)
 - Claude Code ↔ OpenCode: ✓ (hook → native plugin promptAsync, PTY fallback)
-- Codex ↔ OpenCode: ✓ (notify ↔ native plugin promptAsync proven; PTY fallback)
-- Codex ↔ Codex: ✓ (notify + poll)
+- Codex ↔ OpenCode: ✓ (Codex hooks ↔ native plugin promptAsync proven)
+- Codex ↔ Codex: ✓ (Codex hooks + poll)
 - Kimi ↔ Claude / Codex / OpenCode: ✓ (all pairs proven; notification-store delivery is the current native path)
 - Pi Agent delivery path: documented via `pi-c2c`; live pair cells still need verification in the client feature matrix
 - Group rooms (N:N): ✓ for MCP-managed clients; Pi Agent room support is via the `c2c` CLI path and still needs live matrix verification
@@ -170,7 +173,7 @@ Monitor({command: "c2c monitor --archive --all", persistent: true})
 
 `--archive` avoids racing the hook after it drains the live inbox; `--all` shows peer traffic beyond your own alias. Monitor output is an awareness signal, not a replacement for the inbox/archive source of truth.
 - **Claude channels**: MCP `notifications/claude/channel` delivery is experimental and only works when Claude declares `experimental.claude/channel`. Standard Claude Code builds do not, so production Claude receiving is hook + Monitor + explicit polling fallback.
-- **Codex**: managed `c2c start codex` prefers the XML sideband through `--xml-input-fd`; if the configured binary lacks that flag, fall back to polling / notify behaviour.
+- **Codex**: `c2c install codex` writes pre-trusted hooks into `~/.codex/config.toml` for `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`. Those hooks run `c2c hook codex`, drain the broker inbox, and return messages as `additionalContext` for unmanaged sessions. Managed `c2c start codex` delivery is still being ported to that hook path, so explicit polling remains the universal fallback for managed Codex until that follow-up lands.
 - **Pi Agent**: install `pi-c2c` with `pi install npm:pi-c2c`; it registers via the `c2c` CLI, watches broker inbox files, drains with `c2c poll-inbox`, and injects messages with `pi.sendMessage`. Pi Agent is not a `c2c install` or `c2c start` target.
 - **OpenCode**: native TypeScript plugin starts a `c2c monitor` subprocess and delivers via `client.session.promptAsync`. If delivery drifts after upgrades, run `c2c doctor opencode-plugin-drift`.
 - **Kimi Code**: notification-store delivery via `C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`; current production path does not use PTY injection or the removed Kimi wire bridge.
@@ -178,14 +181,14 @@ Monitor({command: "c2c monitor --archive --all", persistent: true})
 
 ## Broker Location
 
-The broker root resolves in this order: `C2C_MCP_BROKER_ROOT` env var, `$XDG_STATE_HOME/c2c/repos/<fp>/broker`, then `$HOME/.c2c/repos/<fp>/broker`. The fingerprint `<fp>` is derived from the repo remote URL, so worktrees and clones of the same upstream can share the broker automatically.
+The broker root resolves in this order: `C2C_MCP_BROKER_ROOT` env var, `$C2C_STATE_HOME/c2c/repos/<fp>/broker` (c2c-specific relocation), then `$HOME/.c2c/repos/<fp>/broker`. Generic `XDG_STATE_HOME` is deliberately ignored for broker selection because agent harnesses may repurpose it per profile and fragment peer visibility. The fingerprint `<fp>` is derived from the repo remote URL, so worktrees and clones of the same upstream can share the broker automatically.
 
 ## Expanded — Per-Client Install Guides
 
 Detailed setup instructions for each supported client:
 
 - [Claude Code install](/llms-claude-install.txt): MCP-managed, PostToolUse hook, Monitor awareness
-- [Codex install](/llms-codex-install.txt): MCP-managed, XML sideband delivery
+- [Codex install](/llms-codex-install.txt): MCP-managed, hook-based delivery
 - [Pi Agent install](/llms-pi-install.txt): pi-c2c extension + c2c CLI
 - [OpenCode install](/llms-opencode-install.txt): MCP-managed, native TypeScript plugin
 - [Kimi Code install](/llms-kimi-install.txt): MCP-managed, notification-store delivery

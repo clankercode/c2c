@@ -514,57 +514,6 @@ let test_approval_reply_backward_compat_no_pending () =
         (C2c_approval_paths.has_verdict ~override_root:root
            ~token:"ka_test_oldstyle" ()))
 
-let test_remote_message_cannot_reach_approval_path () =
-  (* The core B098 proof: a broker/relay-delivered message cannot satisfy an
-     approval unless its sender is a locally-configured supervisor.
-     Same content, different sender -> different outcome. *)
-  let supervisors = ["coordinator1"; "jungle-coder"] in
-  let token = "ka_secret_token_42" in
-  let body = token ^ " allow — looks fine" in
-  (* 1. supervisor may satisfy *)
-  Alcotest.(check (option string))
-    "supervisor allow -> Some allow" (Some "allow")
-    (C2c_approval_paths.inbox_verdict_if_trusted
-       ~supervisors ~from_alias:"coordinator1" ~content:body ~token);
-  (* 2. non-supervisor (simulated remote peer) CANNOT satisfy, even with
-        the exact same token+verdict content. This is the privilege-escalation
-        the invariant forbids. *)
-  Alcotest.(check (option string))
-    "remote peer with same content -> None" None
-    (C2c_approval_paths.inbox_verdict_if_trusted
-       ~supervisors ~from_alias:"attacker-peer" ~content:body ~token);
-  (* 3. case-variant sender is still the same identity (case-folded compare). *)
-  Alcotest.(check (option string))
-    "supervisor alias case-insensitive -> Some allow" (Some "allow")
-    (C2c_approval_paths.inbox_verdict_if_trusted
-       ~supervisors ~from_alias:"JUNGLE-CODER" ~content:body ~token);
-  (* 4. deny verdict from a supervisor is honoured. *)
-  Alcotest.(check (option string))
-    "supervisor deny -> Some deny" (Some "deny")
-    (C2c_approval_paths.inbox_verdict_if_trusted
-       ~supervisors ~from_alias:"coordinator1"
-       ~content:(token ^ " deny because dangerous") ~token);
-  (* 5. token isolation: a supervisor message for a DIFFERENT token does
-        not satisfy THIS approval. *)
-  Alcotest.(check (option string))
-    "supervisor wrong token -> None" None
-    (C2c_approval_paths.inbox_verdict_if_trusted
-       ~supervisors ~from_alias:"coordinator1"
-       ~content:("ka_other_token allow") ~token);
-  (* 6. no pending-reply binding (empty supervisors) -> the legacy inbox-DM
-        path is refused entirely; only the local verdict file can satisfy.
-        A stray peer message must never punch through here. *)
-  Alcotest.(check (option string))
-    "no supervisor binding -> None even with token+allow" None
-    (C2c_approval_paths.inbox_verdict_if_trusted
-       ~supervisors:[] ~from_alias:"coordinator1" ~content:body ~token);
-  (* 7. a peer message that merely contains 'allow' (no token) cannot
-        satisfy, even from a supervisor. *)
-  Alcotest.(check (option string))
-    "supervisor allow without token -> None" None
-    (C2c_approval_paths.inbox_verdict_if_trusted
-       ~supervisors ~from_alias:"coordinator1" ~content:"allow" ~token)
-
 let () =
   Alcotest.run "c2c_approval_paths"
     [
@@ -612,10 +561,5 @@ let () =
             test_approval_reply_allows_supervisor;
           Alcotest.test_case "backward compat no pending" `Quick
             test_approval_reply_backward_compat_no_pending;
-        ] );
-      ( "B098 safety invariant",
-        [
-          Alcotest.test_case "remote message cannot reach approval path" `Quick
-            test_remote_message_cannot_reach_approval_path;
         ] );
     ]

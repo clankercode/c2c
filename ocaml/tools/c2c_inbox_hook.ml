@@ -1,10 +1,17 @@
 (* c2c_inbox_hook — PostToolUse hook for c2c auto-delivery in Claude Code
  *
+ * Default behaviour (claude-full-delivery slice): FULL message delivery —
+ * push-only drain (deferrable messages wait for the next turn boundary),
+ * channel-capable skip, cold-boot fallback context, no debounce.
+ *
  * Env vars:
  *   C2C_MCP_SESSION_ID   — broker session id
  *   C2C_MCP_BROKER_ROOT  — absolute path to broker root dir
  *   C2C_SESSIONS_BROKER_ROOT — optional test/global sessions broker override
  *   C2C_INSTANCE_NAME    — instance name (set by c2c start); selects statefile path
+ *   C2C_POST_TOOL_NUDGE_ONLY — 1: restore the legacy debounced nudge line
+ *   C2C_POST_TOOL_FULL_INJECT — legacy full-delivery opt-in; still honored
+ *                               (outranks NUDGE_ONLY), now the default anyway
  *
  * Statefile:
  *   Written on each hook invocation to the per-instance statefile so that
@@ -187,43 +194,6 @@ and rotate_debug_log_if_needed path =
     end
   with _ -> ()
 
-let print_additional_context ~extra_contexts messages_text =
-  match messages_text, extra_contexts with
-  | "", [] -> ()
-  | _ ->
-      let buf = Buffer.create 256 in
-      if messages_text <> "" then Buffer.add_string buf messages_text;
-      List.iter
-        (fun context ->
-          Buffer.add_string buf context;
-          if context = "" || context.[String.length context - 1] <> '\n' then
-            Buffer.add_char buf '\n')
-        extra_contexts;
-      let json : Yojson.Safe.t =
-        `Assoc
-          [ ( "hookSpecificOutput"
-            , `Assoc
-                [ ("hookEventName", `String "PostToolUse")
-                ; ("additionalContext", `String (Buffer.contents buf))
-                ] )
-          ]
-      in
-      Printf.printf "%s\n" (Yojson.Safe.to_string json)
-
-(* Print a nudge line as a short awareness message. *)
-let print_nudge ~count =
-  let nudge_text = C2c_hook_lib.format_nudge_line ~count in
-  let json : Yojson.Safe.t =
-    `Assoc
-      [ ( "hookSpecificOutput"
-        , `Assoc
-            [ ("hookEventName", `String "PostToolUse")
-            ; ("additionalContext", `String nudge_text)
-            ] )
-      ]
-  in
-  Printf.printf "%s\n" (Yojson.Safe.to_string json)
-
 let () =
   (* B042: skip hook entirely for subagent/silent sessions. *)
   if C2c_hook_lib.is_subagent_quiet () then exit 0;
@@ -233,90 +203,24 @@ let () =
     | Ok sid -> sid
     | Error msg -> prerr_endline msg; exit 1
   in
-  let broker_root =
-    Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
-  in
+  let broker_root = C2c_hook_lib.resolve_hook_broker_root () in
 
   let now = iso8601_now () in
   (* PPID is the Claude Code process that spawned this hook *)
   let client_pid = Unix.getppid () in
 
-  (* Check if full inject mode is enabled (opt-in for old behavior) *)
-  let full_inject_mode =
-    match C2c_hook_lib.env_nonempty "C2C_POST_TOOL_FULL_INJECT" with
-    | Some v ->
-        let v = String.trim (String.lowercase_ascii v) in
-        v = "1" || v = "true" || v = "yes" || v = "on"
-    | None -> false
-  in
-
   try
-    if full_inject_mode then begin
-      (* Old behavior: drain and emit full messages *)
-      let repo_broker, messages, alias =
-        C2c_hook_lib.drain_all_messages ~session_id ~broker_root
-      in
+    (* Delivery semantics live in C2c_hook_lib.run_post_tool, shared with the
+       `c2c hook post-tool` CLI fallback so both paths behave identically:
+       full delivery by default (push-only drain, channel-capable skip,
+       cold-boot fallback, no debounce), C2C_POST_TOOL_NUDGE_ONLY=1 restores
+       the legacy debounced nudge. *)
+    let output, alias = C2c_hook_lib.run_post_tool ~session_id ~broker_root in
 
-      (* Write statefile with current state (non-fatal) *)
-      if broker_root <> "" then write_statefile ~session_id ~alias ~client_pid ~now;
+    (* Write statefile with current state (non-fatal) *)
+    if broker_root <> "" then write_statefile ~session_id ~alias ~client_pid ~now;
 
-      (* Format messages as c2c envelope text *)
-      let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
-
-      (* Cold-boot context (once per session) *)
-      let extra_contexts =
-        match broker_root with
-        | "" -> []
-        | root ->
-            (match C2c_cold_boot_context.context_for_session
-                     ~broker_root:root ~session_id
-             with
-             | Some context -> [ context ]
-             | None -> [])
-      in
-      print_additional_context ~extra_contexts messages_text
-    end else begin
-      (* New behavior: debounced nudge logic *)
-      let now_ts = Unix.gettimeofday () in
-      let nudge_state = C2c_hook_lib.read_nudge_state ~broker_root ~session_id in
-      let waiting_count = C2c_hook_lib.count_waiting_messages ~broker_root ~session_id in
-
-      if waiting_count = 0 then begin
-        (* No messages waiting: reset nudge state *)
-        C2c_hook_lib.write_nudge_state ~broker_root ~session_id
-          C2c_hook_lib.default_nudge_state;
-        (* Write statefile with current state (non-fatal) *)
-        let alias = "" in
-        if broker_root <> "" then write_statefile ~session_id ~alias ~client_pid ~now
-      end else begin
-        (* Messages are waiting: check debounce rules *)
-        let time_since_last_nudge = now_ts -. nudge_state.last_nudge_ts in
-        let time_since_first_waiting = now_ts -. nudge_state.first_waiting_ts in
-        let should_nudge =
-          waiting_count >= 1
-          && time_since_last_nudge >= 60.0
-          && time_since_first_waiting >= 60.0
-        in
-
-        if should_nudge then begin
-          (* Emit nudge and update state *)
-          print_nudge ~count:waiting_count;
-          C2c_hook_lib.write_nudge_state ~broker_root ~session_id
-            { last_nudge_ts = now_ts
-            ; first_waiting_ts = now_ts
-            }
-        end else begin
-          (* Update first_waiting_ts if this is the first time we see waiting messages *)
-          let new_state =
-            if nudge_state.first_waiting_ts = 0.0 then
-              { nudge_state with first_waiting_ts = now_ts }
-            else
-              nudge_state
-          in
-          C2c_hook_lib.write_nudge_state ~broker_root ~session_id new_state
-        end
-      end
-    end;
+    C2c_hook_lib.print_post_tool_output output;
 
     (* Deliberately no min-runtime sleep: P0 removes the ECHILD-race floor.
        Restore a small runtime floor here if Claude hook reaping regresses. *)

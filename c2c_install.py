@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
+"""DEPRECATED (B123): install Python root wrappers into a user-local bin dir.
+
+The canonical install path is the OCaml binary:
+
+  just install-all
+  # or:
+  c2c install self
+  c2c install <client>
+
+This script still exists so tests can exercise the legacy layout under the
+``C2C_ALLOW_PYTHON_LEGACY=1`` escape hatch. Without that env var it refuses.
+"""
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -75,9 +90,37 @@ def write_wrapper(target_dir: Path, command: str, repo_root: Path) -> None:
     wrapper_path.chmod(0o755)
 
 
+def refuse_unless_allowed() -> int | None:
+    if os.environ.get("C2C_ALLOW_PYTHON_LEGACY", "").strip() == "1":
+        return None
+    print(
+        "error: c2c_install.py is a retired Python installer (B123).\n"
+        "\n"
+        "Do NOT install Python root wrappers into PATH.\n"
+        "Use the OCaml binary instead:\n"
+        "  just install-all\n"
+        "  # or:\n"
+        "  c2c install self\n"
+        "  c2c install <client>\n"
+        "\n"
+        "Escape hatch (tests/emergency only):\n"
+        "  C2C_ALLOW_PYTHON_LEGACY=1 python3 c2c_install.py\n"
+        "  # or: just install-python-legacy  (also refuses unless that env is set)\n",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
+    refused = refuse_unless_allowed()
+    if refused is not None:
+        return refused
+
     parser = argparse.ArgumentParser(
-        description="Install c2c commands into a user-local bin directory."
+        description=(
+            "DEPRECATED: Install c2c Python wrapper commands into a user-local "
+            "bin directory. Prefer `just install-all` / `c2c install`."
+        )
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -103,6 +146,11 @@ def main(argv: list[str] | None = None) -> int:
     target_dir = install_bin_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    print(
+        "warning: installing retired Python wrappers (C2C_ALLOW_PYTHON_LEGACY=1).",
+        file=sys.stderr,
+    )
+
     for command in COMMANDS:
         write_wrapper(target_dir, command, repo_root)
 
@@ -111,13 +159,15 @@ def main(argv: list[str] | None = None) -> int:
         "bin_dir": str(target_dir),
         "installed_commands": COMMANDS,
         "bin_on_path": bin_on_path,
+        "deprecated": True,
+        "b123": True,
     }
 
     if args.json:
         print(json.dumps(payload, indent=2))
         return 0
 
-    print(f"Installed c2c commands into {target_dir}")
+    print(f"Installed DEPRECATED c2c Python wrappers into {target_dir}")
     if not bin_on_path:
         print(f"{target_dir} is not currently on PATH")
     return 0

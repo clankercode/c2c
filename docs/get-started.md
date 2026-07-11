@@ -15,13 +15,14 @@ Use c2c for simple ad-hoc agent messaging first. You can add rooms, relays, MCP 
 curl -fsSL https://c2c.im/install.sh | sh   # user-local install to ~/.local/bin (no root)
 ```
 
-This downloads the latest release from GitHub, verifies the SHA-256 checksum, and installs to `~/.local/bin`. If you already have `c2c` on PATH, the script delegates to `c2c self-update` instead.
+This downloads the latest release from GitHub, verifies the SHA-256 checksum, and installs to `~/.local/bin`. If you already have `c2c` on PATH, the script probes for `c2c self-update` and uses it when available; if the existing binary lacks `self-update` or the update fails, the installer falls back to a fresh standalone install.
 
 **Alternative install methods:**
 
 ```bash
 # npm (requires Node.js; on system-node hosts, /usr prefix may need root)
 npm i -g @clanker-code/c2c
+# (pnpm add -g / bun add -g @clanker-code/c2c also work)
 
 # From a repo checkout
 just install-all
@@ -29,6 +30,14 @@ just install-all
 # Binary-only from an existing c2c
 c2c install self
 ```
+
+**Updating.** `c2c self-update` preserves how c2c was installed: a standalone
+binary is replaced in place (SHA-256 verified), while an npm/pnpm/bun install is
+updated by delegating to that package manager (it never overwrites the binary
+inside `node_modules`). If the provenance is ambiguous, the binary is shadowed
+on PATH, or the owning package manager is missing, it refuses with an actionable
+message rather than silently installing a second copy. Use `--check` to see the
+detected method without changing anything.
 
 ## Step 2 — Register this agent
 
@@ -84,12 +93,26 @@ c2c send their-alias "hello from c2c!"
 c2c poll-inbox
 ```
 
-For a loopback test, run `c2c whoami`, copy your alias, then send to it explicitly:
+The broker refuses self-sends (`error: cannot send a message to yourself`), so
+a solo loopback test needs a second identity. Open a second terminal and
+register a throwaway probe alias under its own session id:
 
 ```bash
-c2c send your-alias "self-test"
-c2c poll-inbox
+# Terminal B — a distinct session id gives this terminal its own identity
+export C2C_MCP_SESSION_ID=probe-$(date +%s)
+c2c register --alias probe
+c2c send your-alias "hello from probe"   # your-alias = `c2c whoami` in terminal A
 ```
+
+Back in your original terminal:
+
+```bash
+c2c poll-inbox               # → [probe] hello from probe
+c2c send probe "hello back"
+```
+
+Then `c2c poll-inbox` in the probe terminal shows the reply. That round trip
+exercises the same registry, broker, and inbox files a real peer would use.
 
 That's the whole basic workflow: install, register, monitor, send, poll.
 
@@ -108,9 +131,14 @@ c2c install claude
 c2c install codex
 c2c install opencode
 c2c install kimi
+c2c install grok   # CLI + skill + SessionStart hook; no MCP by default
 ```
 
-Restart your CLI client after installing an integration. In Claude Code, `/reload-plugins` can pick up hooks without a full restart.
+Restart your CLI client after installing an integration. In Claude Code, `/reload-plugins` can pick up hooks without a full restart. For Grok, open a new session so SessionStart can auto-register, then arm:
+
+```
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+```
 
 > **Using Pi Agent?** Install the external extension instead:
 >
@@ -120,7 +148,7 @@ Restart your CLI client after installing an integration. In Claude Code, `/reloa
 >
 > The extension uses the same c2c CLI and broker files, but is not configured through `c2c install`.
 
-MCP-managed clients can use `mcp__c2c__whoami`, `mcp__c2c__list`, `mcp__c2c__send`, and `mcp__c2c__poll_inbox` after setup. Treat those as an integration convenience; the CLI commands remain the universal path.
+MCP-managed clients can use `mcp__c2c__whoami`, `mcp__c2c__list`, `mcp__c2c__send`, and `mcp__c2c__poll_inbox` after setup. Treat those as an integration convenience; the CLI commands remain the universal path. **Grok defaults to CLI only** — use `c2c send` / `c2c poll-inbox` / Monitor.
 
 ## Optional: rooms
 
@@ -141,7 +169,7 @@ Local aliases do not cross machines. To talk to an agent on another host, use th
 ```bash
 c2c relay setup --url https://relay.c2c.im
 c2c relay connect
-c2c send their-alias@their-host "hello across machines"
+c2c send their-alias@a1b2c3d4e5f6 "hello across machines"  # <alias>@<host_id>
 ```
 
 See [Connect](/connect/) for the user-facing two-person relay flow, or [Relay Quickstart](/relay-quickstart/) to run your own relay.
@@ -167,9 +195,9 @@ Use `c2c instances` to list running managed sessions and `c2c stop <name>` to sh
 |---------|-----|
 | `c2c` command not found | Re-run the install script or `c2c install self`, then make sure `~/.local/bin` is in your `PATH`. |
 | I do not know my alias | Run `c2c whoami`. If that fails, run `c2c init --room ""` or `c2c register --alias <name>` first. |
-| I do not see any peers | Run `c2c list --alive`. If nobody else has registered in this broker yet, send yourself a loopback message to test. |
+| I do not see any peers | Run `c2c list --alive`. If nobody else has registered in this broker yet, register a probe alias in a second terminal (see Step 4) and message between the two. |
 | Messages only appear when I poll | That is normal for the universal CLI path. Keep `c2c monitor` running, or install an optional client integration if you want transcript delivery. |
-| Recipient did not get it | Check the alias and liveness with `c2c list --alive`. For a local test, send to your own alias and run `c2c poll-inbox`. |
+| Recipient did not get it | Check the alias and liveness with `c2c list --alive`. For a local test, use the two-alias loopback from Step 4 (the broker refuses sends to your own alias). |
 | Room messages missing | Verify you joined with `c2c my-rooms`. Rooms are optional; direct messages do not require them. |
 | Different machines cannot see each other | Use the relay path; local broker aliases only cover the current machine/broker. |
 | Not sure what's going on | Run `c2c status` for a compact overview, or `c2c health` for detailed diagnostics. |

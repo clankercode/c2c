@@ -194,6 +194,24 @@ let register ~broker ~session_id_override ~arguments =
                 | Some _ -> tmux_location_arg
                 | None -> Sys.getenv_opt "C2C_TMUX_LOCATION"
               in
+              (* Wake-inject targets (codex idle wake): explicit args win,
+                 else fall back to the herdr pane env the MCP server child
+                 inherits when the session runs inside a herdr pane. *)
+              let nonempty_env name =
+                match Sys.getenv_opt name with
+                | Some v when String.trim v <> "" -> Some (String.trim v)
+                | _ -> None
+              in
+              let herdr_pane =
+                match optional_string_member "herdr_pane" arguments with
+                | Some _ as v -> v
+                | None -> nonempty_env "HERDR_PANE_ID"
+              in
+              let herdr_socket =
+                match optional_string_member "herdr_socket" arguments with
+                | Some _ as v -> v
+                | None -> nonempty_env "HERDR_SOCKET_PATH"
+              in
               let broker_root = Broker.root broker in
               let keys_dir = Filename.concat broker_root "keys" in
               let enc_pubkey =
@@ -302,6 +320,7 @@ let register ~broker ~session_id_override ~arguments =
                   Broker.register broker ~session_id ~alias ~pid ~pid_start_time
                     ~client_type ~plugin_version ~enc_pubkey ~ed25519_pubkey
                     ~pubkey_signed_at ~pubkey_sig ~role ~tmux_location
+                    ~herdr_pane ~herdr_socket
                     ~cwd:(try Some (Sys.getcwd ()) with Sys_error _ -> None)
                     ~metadata_opt_out ~from_auto_gen:alias_from_auto_gen ();
                   Broker.touch_session broker ~session_id;

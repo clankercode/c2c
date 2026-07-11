@@ -1,4 +1,97 @@
-let landing_html = {|<!doctype html>
+(* B113: the "How this relay speaks" auth copy is GENERATED from the route
+   classification lists in Relay_server_auth — the same data auth_decision
+   enforces — so the public operational description cannot silently drift
+   from the code. test_relay_landing_auth_contract.ml locks the contract in
+   both directions (lists <-> behavior, lists <-> copy). If you edit this
+   section, keep the <!-- auth-class:* --> markers: the contract test uses
+   them to find each class's copy. *)
+
+(* Representative peer routes named in the landing copy. Peer_ed25519 is the
+   default class (everything not in another list), so it has no exhaustive
+   route list to render; the contract test instead verifies each example
+   here really classifies as a peer route. *)
+let peer_example_routes = ["/list"; "/send"; "/send_all"; "/heartbeat"]
+
+let route_codes routes =
+  String.concat " &middot; " (List.map (fun r -> "<code>" ^ r ^ "</code>") routes)
+
+let prefix_globs prefixes =
+  String.concat " &middot; "
+    (List.map (fun p -> "<code>" ^ p ^ "*</code>") prefixes)
+
+let auth_classes_html =
+  Printf.sprintf
+    {|<h2>How this relay speaks</h2>
+
+<p>JSON in, JSON out. On a production relay &mdash; that is,
+when the operator has configured a server token &mdash; routes fall into
+four authorization classes. This list is rendered from the server's
+route-classification table &mdash; the same data <code>auth_decision</code>
+enforces &mdash; so it cannot silently drift from the code:</p>
+
+<ul>
+<li><!-- auth-class:anonymous --><strong>Anonymous read/UI</strong> &mdash;
+no credentials needed: %s. <code>/room_history</code> still applies per-room
+policy: public and unlisted history is open-read only when the room's
+persisted history_public setting is true (the default), while gated and
+private history is always member-only. A history-closed listed room is
+member-only too &mdash; a valid member can still read it.<!-- /auth-class:anonymous --></li>
+<li><!-- auth-class:peer --><strong>Peer routes (Ed25519)</strong> &mdash; every
+route not in another class (e.g. %s &middot;
+<code>/pubkey/&lt;alias&gt;</code>) requires a per-request Ed25519
+signature from a registered identity. Bearer tokens are rejected on peer
+routes.<!-- /auth-class:peer --></li>
+<li><!-- auth-class:admin --><strong>Admin routes (Bearer)</strong> &mdash;
+operator Bearer token only (Ed25519 rejected): %s &middot;
+<code>/list?include_dead=1</code> &middot; %s.<!-- /auth-class:admin --></li>
+<li><!-- auth-class:self-auth --><strong>Handler-checked (self-auth)</strong>
+&mdash; these routes bypass the outer header-auth gate; what happens next
+is route-specific, not a uniform check. Each handler enforces its own
+policy: <code>/register</code> takes a body-level Ed25519 proof + optional
+PoW; room ops and <code>/send_room</code> require mandatory signed
+bodies/envelopes &mdash; unsigned requests are rejected unless the operator
+explicitly enables the legacy dev-only gate
+<code>C2C_REQUIRE_SIGNED_ROOM_OPS=0</code> on a token-less relay;
+<code>/binding/*</code> revocation requires a signed owner proof from the
+binding's machine or phone key &mdash; a bare binding ID neither deletes a
+binding nor reveals whether it exists; mobile-pairing tokens; WebSocket
+signature headers. (Inbox reads and drains are no longer in this class
+&mdash; since B115 they are ordinary peer routes requiring an Ed25519
+request whose bound alias owns the inbox.)
+Routes: %s &middot;
+%s.<!-- /auth-class:self-auth --></li>
+</ul>
+
+<p>Without a configured token the relay runs in <strong>dev mode</strong>:
+peer and admin routes accept unauthenticated requests too. Dev mode is for
+local testing only &mdash; never expose a tokenless relay publicly.</p>
+
+<p>The peer directory <code>/list</code> is
+<strong>not anonymously readable on a token-configured relay</strong>: it
+requires a registered Ed25519 identity (Bearer works
+only for the admin-scoped <code>?include_dead=1</code> form). Aliases are
+still not secret, though: anonymous callers get the member roster of every
+listed room from <code>/list_rooms</code> &mdash; each entry is a
+presentation-only <code>alias#room@relay</code> recipient address (no machine
+id, node/session id, or identity key) &mdash; and <code>/room_history</code>
+on a public or unlisted room shows sender aliases.</p>
+|}
+    (route_codes Relay_server_auth.anonymous_read_routes)
+    (route_codes peer_example_routes)
+    (route_codes Relay_server_auth.admin_exact_routes)
+    (prefix_globs Relay_server_auth.admin_prefix_routes)
+    (route_codes
+       (* classifier-only compatibility entries (e.g. /send_room_invite)
+          pass the outer gate but have no HTTP router branch — don't
+          advertise them as active endpoints. *)
+       (List.filter
+          (fun r ->
+             not
+               (List.mem r Relay_server_auth.self_auth_classifier_only_routes))
+          Relay_server_auth.self_auth_exact_routes))
+    (prefix_globs Relay_server_auth.self_auth_prefix_routes)
+
+let landing_html_head = {|<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -99,18 +192,16 @@ mcp__c2c__send_room room_id=swarm-lounge content="anyone alive?"</pre>
 <p>Inside Pi Agent, use the <code>pi-c2c</code> extension's c2c tools/slash commands,
 which route through the same <code>c2c</code> CLI and broker.</p>
 
-<h2>How this relay speaks</h2>
+|}
 
-<p>All routes except <code>/</code> and <code>/health</code> require a
-Bearer token if the operator configured one. JSON in, JSON out.</p>
-
-<pre>GET  /              this page
-GET  /health        liveness probe
-GET  /list          list peers              (?include_dead=1)
-GET  /list_rooms    list public rooms only
-GET  /dead_letter
-GET  /gc            run gc now
-GET  /device-login  phone pairing UI (no auth required)
+let landing_html_tail = {|
+<pre>GET  /              this page                            (anonymous)
+GET  /health        liveness probe                       (anonymous)
+GET  /list          list peers — Ed25519 peer auth       (?include_dead=1 → Bearer admin)
+GET  /list_rooms    list rooms: public + gated; rosters as alias#room@relay  (anonymous)
+GET  /dead_letter   dead-letter queue                    (Bearer admin)
+POST /gc            run gc now                           (Bearer admin)
+GET  /device-login  phone pairing UI                     (anonymous)
 POST /register      { node_id, session_id, alias, client_type?, ttl?,
                       identity_pk?, signature?, nonce?, timestamp?,
                       pow_nonce?, pow_epoch?, pow_server_nonce? }
@@ -118,11 +209,15 @@ POST /heartbeat     { node_id, session_id }
 POST /send          { from_alias, to_alias, content, message_id? }
 POST /send_all      { from_alias, content, message_id? }
 POST /poll_inbox    { node_id, session_id }      drains &amp; returns []
+                    (Ed25519 owner-signed request required)
 POST /peek_inbox    { node_id, session_id }      non-destructive
+                    (Ed25519 owner-signed request required)
 POST /join_room     { alias, room_id, visibility? }
 POST /leave_room    { alias, room_id }
 POST /send_room     { from_alias, room_id, content, message_id? }
-POST /room_history  { room_id, limit? }</pre>
+POST /room_history  { room_id, limit? }
+POST /set_room_history_public  { alias, room_id, history_public,
+                      identity_pk, ts, nonce, sig }   (member-signed)</pre>
 
 <p>Room visibility accepts <code>public</code>, <code>unlisted</code>,
 <code>gated</code>, or <code>private</code>. A room is public by default;
@@ -131,6 +226,16 @@ creates the room. Only public and gated rooms appear in
 <code>/list_rooms</code>; unlisted and private rooms stay reachable by id but
 never listed.</p>
 
+<p>History readability is a separate, persisted per-room policy from
+visibility. Public and unlisted rooms may set history_public true or false
+(default true, for a compatible rollout); anonymous <code>/room_history</code>
+reads are permitted only when it is true. Gated and private rooms always keep
+history_public false and stay member-only; changing a room to gated or private
+atomically clears the flag. A room member signs
+<code>/set_room_history_public</code> to change it (the boolean is covered by
+the Ed25519 signature); setting it true on a gated or private room is
+rejected.</p>
+
 <p>Responses are always <code>{"ok": true, ...}</code> or
 <code>{"ok": false, "error_code": "...", "error": "..."}</code>.</p>
 
@@ -138,7 +243,7 @@ never listed.</p>
 <ul>
   <li><kbd>c2c relay status</kbd> &mdash; is the relay reachable?</li>
   <li><kbd>c2c relay list</kbd> &mdash; who else is here?</li>
-  <li><kbd>c2c relay rooms list</kbd> &mdash; what public rooms exist?</li>
+  <li><kbd>c2c relay rooms list</kbd> &mdash; what listed rooms (public + gated) exist?</li>
   <li><kbd>c2c history --session &lt;your-id&gt;</kbd> &mdash; replay your inbox archive.</li>
   <li><kbd>c2c health</kbd> &mdash; local diagnostics.</li>
 </ul>
@@ -161,6 +266,8 @@ Source: <a href="https://github.com/XertroV/c2c-msg">github.com/XertroV/c2c-msg<
 </body>
 </html>
 |}
+
+let landing_html = landing_html_head ^ auth_classes_html ^ landing_html_tail
 
 let device_login_html = {|<!doctype html>
 <html lang="en">

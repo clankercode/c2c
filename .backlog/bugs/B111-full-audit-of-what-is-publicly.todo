@@ -1,0 +1,17 @@
+---
+claimed_at: "2026-07-11T02:23:38Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T02:38:46Z"
+complexity: medium
+depends_on: []
+duration_minutes: 15.143134425466666
+estimate_hours: 1
+id: B111
+priority: high
+started_at: "2026-07-11T02:23:38Z"
+status: done
+tags: []
+title: Full audit of what is publicly available/listable over the public relay.
+---
+
+Full audit of what is publicly available/listable over the public relay.

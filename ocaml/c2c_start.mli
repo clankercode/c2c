@@ -483,7 +483,6 @@ val prepare_launch_args :
   ?resume_session_id:string ->
   ?binary_override:string ->
   ?model_override:string ->
-  ?codex_xml_input_fd:string ->
   ?codex_resume_target:string ->
   ?thread_id_fd:string ->
   ?server_request_events_fd:string ->
@@ -495,8 +494,8 @@ val prepare_launch_args :
   string list
 (** [prepare_launch_args] returns client args, adding managed per-instance
     config where needed. Handles --session-id, --resume for claude, --session
-    for opencode, resume --last or resume <target> for codex, optional
-    --xml-input-fd for Codex,
+    for opencode, resume --last or resume <target> for codex (plus the
+    kickoff prompt as a positional argv element on fresh codex starts),
     optional --thread-id/--thread-id-fd for codex-headless,
     optional --agent for Claude/agent launches, and
     --mcp-config-file for kimi. *)
@@ -558,11 +557,28 @@ val should_enable_opencode_fallback :
     delivery yet. The fallback is suppressed during the initial startup grace
     window, then enabled only when the plugin heartbeat is missing or stale. *)
 
+val codex_hooks_config_begin_marker : string
+(** BEGIN marker of the c2c-managed hooks block in ~/.codex/config.toml.
+    MUST stay in sync with [C2c_codex_hooks.config_begin_marker] (cli layer);
+    duplicated here because the core library cannot depend on the cli
+    library. Guarded by an equality test in test_c2c_setup_codex.ml. *)
+
+val codex_hooks_installed : ?config_path:string -> unit -> bool
+(** True when the c2c-managed hooks block (`c2c hook codex` delivery) is
+    present in ~/.codex/config.toml (or [config_path] when given). *)
+
+val codex_wake_target_registered : name:string -> unit -> bool
+(** True when the instance's broker registration carries a wake target
+    (tmux_location or herdr_pane) the codex wake injector can nudge.
+    Total: broker/registration failures read as false. *)
+
 val delivery_mode :
   ?now:float ->
   ?startup_grace_s:float ->
   ?opencode_plugin_freshness_window_s:float ->
   ?available_capabilities:string list ->
+  ?codex_hooks_installed:bool ->
+  ?codex_wake_target:bool ->
   client:string ->
   name:string ->
   binary_path:string ->
@@ -571,7 +587,10 @@ val delivery_mode :
   string
 (** Return the currently selected delivery mode label for a managed instance,
     combining static launcher capabilities with runtime state such as the
-    OpenCode plugin heartbeat. *)
+    OpenCode plugin heartbeat. For codex: "hooks+wake" when hooks are
+    installed AND a tmux/herdr wake target is registered (idle wake via
+    C2c_wake_inject), "hooks" when hooks only, "unavailable" otherwise.
+    [codex_wake_target] overrides the broker lookup (tests). *)
 
 val missing_role_capabilities :
   client:string -> binary_path:string -> C2c_role.t -> string list
@@ -661,18 +680,11 @@ val codex_heartbeat_interval_s : float
 val codex_heartbeat_content : unit -> string
 (** Message body delivered to managed Codex agents as a heartbeat. *)
 
-val codex_heartbeat_enabled : client:string -> bool
-(** Return whether [client] should receive managed Codex heartbeat messages. *)
-
-val should_start_codex_heartbeat : client:string -> deliver_started:bool -> bool
-(** Return whether [run_outer_loop] should start the heartbeat thread for this
-    launch. Requires the regular Codex deliver daemon to be running. *)
-
 val deliver_start_failure_warning : name:string -> client:string -> string
 (** B013: human-facing warning text surfaced (eprintf'd) when the deliver
     daemon fails to start for a needs_deliver client. Such a session gets no
-    inbound delivery and has its heartbeat suppressed, so the failure must not
-    be silent. Pure so it is unit-testable. *)
+    inbound delivery via the daemon path, so the failure must not be silent.
+    Pure so it is unit-testable. *)
 
 val enqueue_codex_heartbeat : broker_root:string -> alias:string -> unit
 (** Enqueue one heartbeat message to [alias] through the broker inbox, using the

@@ -66,18 +66,19 @@ let toml_block_legacy_marker = "# c2c-managed PreToolUse hook (#142)"
    actually deploys to operator machines. *)
 let approval_hook_script_content = {bash|#!/usr/bin/env bash
 # c2c-kimi-approval-hook.sh — invoked by kimi-cli on a matched PreToolUse
-# event.  Forwards the approval request to a configured reviewer via c2c
-# DM, blocks on `c2c await-reply`, and translates the verdict back to
-# kimi-cli via the standard exit-code protocol:
+# event. Sends an advisory request to a configured reviewer via c2c DM,
+# blocks on `c2c await-reply`, and translates a host-local verdict file back
+# to kimi-cli via the standard exit-code protocol. DM replies are never
+# verdicts:
 #
 #   exit 0  -> allow (kimi proceeds)
 #   exit 2  -> block (stderr is shown to the agent as the rejection reason)
 #
 # #511 Slice 2: fallback authorizer chain walk.
 # The hook reads `authorizers` from ~/.c2c/repo.json (an ordered JSON array).
-# It sequentially tries each reviewer, splitting the total TIMEOUT budget
-# equally among remaining authorizers. The first to respond wins; if all
-# time out the hook falls closed (exit 2).
+# It sequentially notifies each reviewer, splitting the total TIMEOUT budget
+# equally among remaining authorizers. The first host-local CLI verdict wins;
+# if none appears the hook falls closed (exit 2).
 #
 # Configuration (env vars):
 #   C2C_KIMI_APPROVAL_TIMEOUT  total budget in seconds (default: 120)
@@ -260,7 +261,8 @@ build_body() {
   authorizers: ${AUTHORIZERS[*]}
   timeout: ${TIMEOUT}s total budget
 
-Approve via:
+Advisory only — peer replies cannot approve this request.
+The host operator can decide locally with:
   c2c approval-reply $TOKEN allow
   c2c approval-reply $TOKEN deny because <reason>
 EOF
@@ -280,8 +282,8 @@ authorizers_csv="$(IFS=,; echo "${AUTHORIZERS[*]}")"
   --timeout "$TIMEOUT" >/dev/null 2>&1 || true
 
 # #484: Register token with MCP pending-reply system for auth-binding.
-# Gives the broker session-derived identity, supervisor-list validation,
-# and TTL enforcement.  Non-fatal: text-based flow still works without it.
+# Gives the broker session-derived identity, supervisor-list metadata,
+# and TTL enforcement. Non-fatal: the advisory DM still works without it.
 "$C2C_BIN" open-pending-reply "$TOKEN" \
   --kind permission \
   --supervisors "$authorizers_csv" 2>/dev/null || true
@@ -324,7 +326,7 @@ case "$SUPERVISOR_STRATEGY" in
         continue
       fi
 
-      # Wait for verdict with this authorizer's budget
+      # Wait for a host-local CLI/file verdict within this notification budget.
       verdict="$("$C2C_BIN" await-reply --token "$TOKEN" --timeout "$budget" 2>/dev/null || true)"
 
       case "$verdict" in
@@ -414,10 +416,10 @@ esac
 let toml_block_template = {toml|
 # c2c-managed PreToolUse hook (#142). Slice 2 — install side.
 #
-# Forwards a PreToolUse approval request from kimi to a remote reviewer
-# (default: coordinator1) via c2c, blocks on `c2c await-reply`, and
-# translates the verdict to kimi's exit-code protocol (0 = allow,
-# 2 = block).
+# Sends a PreToolUse advisory request from kimi to a reviewer (default:
+# coordinator1) via c2c, blocks on a host-local verdict file via
+# `c2c await-reply`, and translates that local verdict to kimi's exit-code
+# protocol (0 = allow, 2 = block). Reviewer DMs are never verdicts.
 #
 # To enable: pick ONE of the [[hooks]] blocks below and uncomment it.
 # IMPORTANT: kimi-cli's TOML schema requires either a top-level

@@ -53,6 +53,7 @@ they don't regress silently.
 | `alias_casefold_invariant_violated` | CRIT | alias / TOFU | #432 §3 |
 | `alias_resolve_multi_match` | LOW | alias-resolution diagnostic | #432 follow-up |
 | `dead_letter_write` | MED | delivery diagnostic | #433 |
+| `inbox_row_skipped` | MED | poisoned-inbox row skipped on read | H9 (friction-h9-connector-row-validation) |
 | `json_cap_exceeded` | MED | JSON read-cap triggered | Slice F follow-up |
 | `relay_e2e_pin_first_seen` | MED | relay-crypto TOFU | CRIT-1 Slice B follow-up |
 | `send_memory_handoff` | MED | feature audit | #286 |
@@ -176,6 +177,45 @@ Pairs with the `remote-outbox-dlq.jsonl` file (#379 outbox DLQ)
 when the dead letter is on the relay side.
 
 **Cross-link**: #433.
+
+---
+
+### `inbox_row_skipped`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "event": "inbox_row_skipped",
+  "ts": <float>,
+  "session_id": "<inbox-owner-session>",
+  "row": "<truncated-JSON-string-of-the-rejected-row>"
+}
+```
+
+**Fires when**: `Broker.load_inbox` encounters an inbox row that
+`message_of_json` rejects (missing/wrong-typed `from_alias`, `to_alias`,
+or `content`). The row is skipped so the rest of the inbox still loads;
+pre-H9 one such row raised Yojson `Type_error` through every broker-side
+read of that session's inbox. The `row` field is a *string* (truncated to
+256 chars), not embedded JSON, so a hostile row cannot shape the log
+entry.
+
+**File**: `ocaml/c2c_broker.ml` `log_inbox_row_skipped` (used by
+`load_inbox`).
+
+**Operational meaning**: someone wrote a schema-invalid row into
+`<session>.inbox.json` — most likely a pre-H9 relay connector delivering
+garbage relay `/poll_inbox` rows verbatim (the connector now validates
+per-row and records `inbound_rejected` in connector-state instead), or a
+buggy/foreign writer. Fires on every read of the poisoned file until a
+drain/save rewrites it from parsed rows; repeated bursts for one session
+mean the file is not being drained. Inspect the file and the writer.
+
+**Cross-link**:
+`.collab/findings/2026-07-10T08-29-20Z-f5c-worker-connector-garbage-inbox-rows.md`.
 
 ---
 
@@ -1084,6 +1124,78 @@ rate. Aggregate by `tool` for per-tool latency profiling; filter by
 
 **Cross-link**: pre-existing (present since the RPC audit subsystem was
 added; catalog entry added retroactively as part of #388).
+
+---
+
+### `wake_inject`
+
+**Severity**: LOW
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "wake_inject",
+  "session_id": "<target-session-id>",
+  "backend": "tmux" | "herdr",
+  "message_count": <int>
+}
+```
+
+**Fires when**: the codex idle-wake injector (`C2c_wake_inject.maybe_inject`)
+successfully types a nudge line into an idle session's tmux/herdr pane
+because its inbox has pending messages. One line per injection (backoff +
+newest-message dedupe bound the rate). The nudge is a fixed template
+containing only the message count — never message content (B098).
+
+**File**: `ocaml/c2c_wake_inject.ml` `maybe_inject` (~line 415).
+
+**Operational meaning**: audit trail of automatic pane wake-ups. Aggregate
+by `session_id` to see which sessions are being woken and how often;
+correlate with the subsequent hook-drain to confirm the wake→deliver chain.
+
+**Cross-link**: codex-wake-inject slice (2026-07-10); runbook
+`.collab/runbooks/agent-wake-setup.md` § Codex idle wake.
+
+---
+
+### `wake_inject_error`
+
+**Severity**: LOW
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "wake_inject_error",
+  "session_id": "<target-session-id>",
+  "backend": "tmux" | "herdr",   // absent on unexpected-exception lines
+  "reason": "<failure-reason>"
+}
+```
+
+**Fires when**: an injection attempt fails — backend command non-zero exit,
+fixture/exec error, or an unexpected exception in `maybe_inject` (the
+catch-all line omits `backend`). Skips (backoff, not-idle, no-new-messages)
+are NOT logged as errors; only real failures are.
+
+**File**: `ocaml/c2c_wake_inject.ml` `maybe_inject` (~lines 424, 432).
+
+**Operational meaning**: a session with pending messages whose pane could
+not be woken — check the target pane still exists (`tmux has-session`,
+`herdr agent list`) and that the registration's wake target is current.
+
+**Cross-link**: codex-wake-inject slice (2026-07-10); runbook
+`.collab/runbooks/agent-wake-setup.md` § Codex idle wake.
+
+**Catalog-gate note**: the wake-inject `log_event` helper deliberately
+takes the `("event", `String "<name>")` pair from each call site (rather
+than an `~event` variable) so the #442 static scan can see the literal.
+If you add a logging helper that passes the event name as a variable,
+the scan cannot detect its events — keep the literal-at-call-site
+convention or the gate will silently under-count.
 
 ---
 

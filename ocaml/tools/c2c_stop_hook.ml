@@ -26,15 +26,16 @@ let () =
     | Ok sid -> sid
     | Error _ -> exit 0
   in
-  let broker_root =
-    Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
-  in
+  let broker_root = C2c_hook_lib.resolve_hook_broker_root () in
   (* Fast path: if no session can be resolved, exit silently. *)
   if session_id = "" then exit 0;
 
   try
     let repo_broker, messages, _alias =
-      C2c_hook_lib.drain_all_messages ~session_id ~broker_root
+      (* Stop is a turn boundary: full drain, deferrable included (mid-turn
+         PostToolUse is the push-only path). *)
+      C2c_hook_lib.drain_all_messages ~push_only:false ~session_id
+        ~broker_root ()
     in
 
     (* If no messages, exit silently — don't block the stop. *)

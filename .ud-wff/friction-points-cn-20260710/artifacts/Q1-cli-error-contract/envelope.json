@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-Q1-cli-error-contract",
+  "node_id": "impl-Q1",
+  "kind": "output",
+  "summary_path": "artifacts/Q1-cli-error-contract/summary.md",
+  "raw_path": "artifacts/Q1-cli-error-contract/receipt.md",
+  "hash": "sha256:e39d741a1db0d048387f7679fa18f9408cba5efba342d8189ac8efeebb649929",
+  "bytes": 3042,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

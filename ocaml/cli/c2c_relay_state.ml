@@ -163,6 +163,46 @@ let fetch_alias_lease ?(timeout = 4.0) ~alias ~relay_url ~our_host_id ()
 
 let relay_configured (s : snapshot) = s.relay_url <> None
 
+(* --- composite state (H5) ---------------------------------------------------
+
+   The pure classification lives in Relay_state (ocaml/relay_state.ml) so all
+   five acceptance states are hermetically testable; this section only maps
+   this module's I/O-shaped types ([snapshot], [lease_result]) onto the
+   classifier's inputs and reads the broker-owned connector-state file (the
+   same signal `c2c doctor --relay` consumes via Relay_doctor). *)
+
+let registration_evidence (lease : lease_result option) :
+    Relay_state.registration_evidence =
+  match lease with
+  | Some (Lease l) -> Relay_state.registration_of_lease_json l
+  | Some Alias_not_found -> Relay_state.Reg_absent
+  | Some (Relay_unreachable detail) -> Relay_state.Reg_query_failed detail
+  (* No_relay / No_identity / No_alias carry no relay-side evidence; the
+     classifier derives those cases from relay_configured/has_identity/
+     has_alias directly. *)
+  | Some No_relay | Some No_identity | Some No_alias | None ->
+      Relay_state.Reg_not_checked
+
+(* Composite state + connector info for a snapshot. Reads the broker-owned
+   connector-state file (never raises; missing file = no evidence). *)
+let composite (s : snapshot) (lease : lease_result option) ~now :
+    Relay_state.classification * Relay_state.connector_info =
+  let conn_state =
+    try C2c_relay_connector.read_connector_state (resolve_broker_root ())
+    with _ -> None
+  in
+  let conn = Relay_state.connector_info ~state:conn_state ~now in
+  let classification =
+    Relay_state.classify
+      ~relay_configured:(relay_configured s)
+      ~has_identity:(s.identity_pk_b64 <> None)
+      ~has_alias:(s.alias <> None)
+      ~registration:(registration_evidence lease)
+      ~connector_live:conn.Relay_state.conn_live
+      ~local_reg_evidence:conn.Relay_state.conn_state_present
+  in
+  (classification, conn)
+
 (* JSON for the lease_result (the "lease" sub-object of the relay block). *)
 let lease_result_json = function
   | Lease l -> l
@@ -174,8 +214,17 @@ let lease_result_json = function
   | No_identity -> `Assoc [ ("state", `String "no_identity") ]
   | No_alias -> `Assoc [ ("state", `String "no_alias") ]
 
-(* JSON "relay" object combining snapshot + optional lease_result. *)
-let relay_json (s : snapshot) (lease : lease_result option) : Yojson.Safe.t =
+(* JSON "relay" object combining snapshot + optional lease_result.
+
+   H5 additions (additive — no existing key changed meaning): "registration"
+   ({state, reason} — the composite classified state, distinct from the local
+   "alias") and "connector" ({live, state_file, last_sync_age_s} — the
+   broker-owned connector signal). Same facts as the human "state:" /
+   "connector:" lines in [print_relay_section] (parity pinned by
+   test_c2c_relay_state.ml). *)
+let relay_json ?now (s : snapshot) (lease : lease_result option) : Yojson.Safe.t =
+  let now = match now with Some n -> n | None -> Unix.gettimeofday () in
+  let classification, conn = composite s lease ~now in
   let opt_str = function None -> `Null | Some v -> `String v in
   let lease_j =
     match lease with
@@ -190,6 +239,8 @@ let relay_json (s : snapshot) (lease : lease_result option) : Yojson.Safe.t =
     ; ("identity_pk", opt_str s.identity_pk_b64)
     ; ("fingerprint", opt_str s.fingerprint)
     ; ("lease", lease_j)
+    ; ("registration", Relay_state.classification_json classification)
+    ; ("connector", Relay_state.connector_json conn)
     ]
 
 (* Human-readable one-line lease summary for the [Lease _] case, given the
@@ -226,14 +277,21 @@ let lease_summary ~now (lease : Yojson.Safe.t) =
    line (when [lease] is Some), and a one-line @hostid addressing hint.
    Never errors. *)
 let print_relay_section (s : snapshot) (lease : lease_result option) ~now () =
+  let classification, conn = composite s lease ~now in
   Printf.printf "Relay:\n";
   (match s.relay_url with
    | Some url -> Printf.printf "  url:        %s  (configured)\n" url
    | None ->
        Printf.printf "  url:        (not configured — run 'c2c relay setup --url <URL>')\n");
+  (* H5: the local broker alias is session identity, NOT relay registration —
+     the old label here was "registered:", which conflated the two (A020/A027).
+     Registration and connector state get their own lines below. *)
   (match s.alias with
-   | Some a -> Printf.printf "  registered: %s  (current session alias)\n" a
-   | None -> Printf.printf "  registered: (no current session alias)\n");
+   | Some a -> Printf.printf "  alias:      %s  (local session alias — not a relay registration)\n" a
+   | None -> Printf.printf "  alias:      (no current session alias)\n");
+  Printf.printf "  state:      %s\n"
+    (Relay_state.classification_human classification);
+  Printf.printf "  connector:  %s\n" (Relay_state.connector_human conn);
   (match s.host_id with
    | Some h -> Printf.printf "  host_id:    %s  (opaque; address peers as <alias>@<host_id>)\n" h
    | None -> ());

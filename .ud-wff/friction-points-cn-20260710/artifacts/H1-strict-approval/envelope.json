@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H1-strict-approval",
+  "node_id": "impl-H1",
+  "kind": "output",
+  "summary_path": "artifacts/H1-strict-approval/summary.md",
+  "raw_path": "artifacts/H1-strict-approval/receipt.md",
+  "hash": "sha256:f780646a39c572dbe5a5b3b7c8783f4249a82c42f749eb07b6dd4ea455bb944f",
+  "bytes": 1841,
+  "created_by": "H1-worker+refresh:fable-warden",
+  "created_at": "2026-07-10T12:55:34Z",
+  "redaction_status": "none"
+}

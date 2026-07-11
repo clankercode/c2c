@@ -103,7 +103,8 @@ let short_pk (pk : string) : string =
 
 let list_cmd =
   let all =
-    Cmdliner.Arg.(value & flag & info [ "all"; "a" ] ~doc:"Show extended info (session ID, registered time).")
+    Cmdliner.Arg.(value & flag & info [ "all"; "a" ]
+      ~doc:"Show extended info (session ID, registered time) and include confirmed-dead sessions. By default, stale sessions whose process has exited are hidden so peer discovery stays focused on reachable agents.")
   in
   let enriched =
     Cmdliner.Arg.(value & flag & info [ "enriched"; "e" ]
@@ -111,11 +112,11 @@ let list_cmd =
   in
   let global =
     Cmdliner.Arg.(value & flag & info [ "global"; "g" ]
-      ~doc:"Scan all known broker roots (across all repos) and list every registered session system-wide. Each session is annotated with its repo fingerprint and path. Use this to find sessions started in other repos or on other brokers.")
+      ~doc:"Scan all known broker roots (across all repos) and group visible sessions by repository. Each row is annotated with its repo fingerprint and path; confirmed-dead rows stay hidden unless --all is passed. Use this to find sessions started in other repos or on other brokers.")
   in
   let alive_only =
     Cmdliner.Arg.(value & flag & info [ "alive"; "A" ]
-      ~doc:"Show only alive sessions. By default, dead sessions (those whose PID has exited) are listed with a 'dead' state annotation. Use this flag to suppress them from the output.")
+      ~doc:"Show only alive sessions. By default, confirmed-dead sessions are hidden while sessions with unknown liveness remain visible; use --all to include dead sessions too.")
   in
   let match_substr =
     Cmdliner.Arg.(value & opt (some string) None & info [ "match"; "m" ]
@@ -145,6 +146,18 @@ let list_cmd =
     Cmdliner.Arg.(value & opt float 3.0 & info [ "relay-timeout" ] ~docv:"SECONDS"
       ~doc:"Timeout for the --relay peer fetch (default 3.0). Keeps `c2c list --relay` responsive when the relay is slow or unreachable.")
   in
+  (* H6: filter by identity kind/scope. Scope-both rows (one identity present
+     on both the local broker and the relay) pass BOTH filters — filtering is
+     by where the identity is registered, not by which source produced the
+     row. *)
+  let kind =
+    let kind_conv =
+      Cmdliner.Arg.enum
+        [ ("local", List_identity.Kf_local); ("relay", List_identity.Kf_relay) ]
+    in
+    Cmdliner.Arg.(value & opt (some kind_conv) None & info [ "kind" ] ~docv:"local|relay"
+      ~doc:"Filter by identity kind/scope: 'local' keeps rows registered on this machine's broker (identity_scope local or both); 'relay' keeps relay-registered rows (relay-only rows plus local rows with identity_scope both). Most useful with --relay; without --relay, 'relay' matches nothing (a hint is printed).")
+  in
   let+ json = json_flag
   and+ all = all
   and+ enriched = enriched
@@ -155,6 +168,7 @@ let list_cmd =
   and+ relay_url = relay_url
   and+ relay_alias = relay_alias
   and+ relay_timeout = relay_timeout
+  and+ kind_filter = kind
   and+ cross_repo = cross_repo_flag in
     mcp_nudge_if_needed ~cmd:"list";
 
@@ -169,22 +183,17 @@ let list_cmd =
     | None -> true
     | Some s -> string_contains_ci r.alias s
   in
+  (* A missing or unverifiable PID is deliberately [Unknown], not [Dead]: a
+     vanilla hook client may still receive on its next hook. Hide only
+     confirmed process-exited rows by default. [--all] is the explicit
+     operator escape hatch for stale-session forensics. *)
   let regs_filter regs =
     regs
+    |> (if all then Fun.id else
+          List.filter (fun r ->
+            C2c_mcp.Broker.registration_liveness_state r <> C2c_mcp.Broker.Dead))
     |> (if alive_only then List.filter is_alive else Fun.id)
     |> List.filter matches_alias
-  in
-  (* Noise hint (dogfood friction): a mostly-dead listing buries the live
-     peers and can overflow agent-harness output truncation. Non-JSON output
-     only, and on stderr so scripts scraping stdout are unaffected. *)
-  let maybe_noise_hint (regs : C2c_mcp.registration list) =
-    let is_dead r = C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Dead in
-    let n_dead = List.length (List.filter is_dead regs) in
-    let n_alive = List.length (List.filter is_alive regs) in
-    if List.length regs > 20 && n_dead > n_alive then
-      Printf.eprintf
-        "hint: %d dead vs %d alive sessions listed — try `c2c list --alive`, `c2c list --match SUBSTR`, or `c2c find <alias>`.\n%!"
-        n_dead n_alive
   in
 
   (* --- helpers shared between single-broker and global modes --- *)
@@ -202,13 +211,23 @@ let list_cmd =
       | Some n -> with_repo @ [ ("pid", `Int n) ]
       | None -> with_repo
     in
+    let liveness = C2c_mcp.Broker.registration_liveness_state r in
     let alive_val : Yojson.Safe.t =
-      match C2c_mcp.Broker.registration_liveness_state r with
+      match liveness with
       | C2c_mcp.Broker.Alive -> `Bool true
       | C2c_mcp.Broker.Dead -> `Bool false
       | C2c_mcp.Broker.Unknown -> `Null
     in
-    let with_alive = with_pid @ [ ("alive", alive_val) ] in
+    let state =
+      match liveness with
+      | C2c_mcp.Broker.Alive -> "alive"
+      | C2c_mcp.Broker.Dead -> "dead"
+      | C2c_mcp.Broker.Unknown -> "unknown"
+    in
+    (* Keep the machine-readable liveness shape aligned with [c2c find]:
+       [alive] is tri-state for existing consumers and [state] is the
+       explicit, script-friendly label. *)
+    let with_alive = with_pid @ [ ("alive", alive_val); ("state", `String state) ] in
     (* B097: surface the local Ed25519 identity key as identity_pk so callers
        can verify senders / cross-reference relay peers. Mirrors the relay
        lease field name for a uniform per-peer shape. *)
@@ -284,8 +303,10 @@ let list_cmd =
       let peers =
         raw
         |> List.filter peer_matches
+        |> (if all then Fun.id else
+              List.filter (fun p -> relay_peer_is_alive p <> Some false))
         |> (if alive_only then
-              List.filter (fun p -> relay_peer_is_alive p <> Some false)
+              List.filter (fun p -> relay_peer_is_alive p = Some true)
             else Fun.id)
       in
       (peers, note)
@@ -328,56 +349,228 @@ let list_cmd =
     `Assoc fields
   in
 
-  let relay_json = List.map relay_peer_to_json relay_peers in
+  (* --- H6: identity kind/scope labeling over the merged view ---------------
+
+     Two kinds of identifier appear side by side under --relay and are
+     labeled rather than flattened: a LOCAL row is a session alias on this
+     machine's broker; a RELAY row is an alias@host_id relay registration
+     anchored to a machine identity key. `identity_kind` says what a row IS;
+     `identity_scope` says where that identity is registered (local / relay /
+     both). Self-identity match rule (List_identity.same_identity): alias
+     equal case-insensitively AND lease opaque_host_id = this row's effective
+     host id. A matched pair is ONE identity: the relay lease is folded into
+     the local row (identity_scope "both" + nested "relay_lease"), never
+     emitted as a confusing duplicate row. The same alias on a DIFFERENT
+     host stays a distinct row, disambiguated by its alias@host_id address.
+
+     These are descriptive labels only — deliberately NO attestation surface
+     (no trust tiers, no verified badges, no signature checking; I008 is a
+     separate unbuilt layer). The default `c2c list` view stays local-only:
+     flipping the default to merged is an OPEN operator-owned product gate —
+     see .collab/design/friction-cn-decision-ledger.md (on the
+     friction-adr0-decision-ledger branch). *)
+  let this_host = lazy (Host_id.compute_host_hash ()) in
+  let effective_local_host (r : C2c_mcp.registration) =
+    match r.opaque_host_id with
+    | Some h when h <> "" -> h
+    | _ -> Lazy.force this_host
+  in
+  let relay_pairs =
+    List.map
+      (fun p ->
+        ( Option.value (relay_str_field p "alias") ~default:"",
+          match relay_str_field p "opaque_host_id" with
+          | Some h when h <> "" -> Some h
+          | _ -> None ))
+      relay_peers
+  in
+  (* Gather the local rows the current mode will render, once, so labeling
+     and every output path see the same peers. *)
+  let all_roots = if global then C2c_repo_fp.list_all_broker_roots () else [] in
+  let global_rows =
+    if not global then []
+    else
+      List.fold_left (fun acc (fp, root) ->
+        try
+          let broker = C2c_mcp.Broker.create ~root in
+          let regs = C2c_mcp.Broker.list_registrations broker |> regs_filter in
+          List.map (fun r -> (fp, root, r)) regs @ acc
+        with _ -> acc
+      ) [] all_roots
+  in
+  let single_regs =
+    if global then []
+    else
+      let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
+      C2c_mcp.Broker.list_registrations broker |> regs_filter
+  in
+  let mode_regs =
+    if global then List.map (fun (_, _, r) -> r) global_rows else single_regs
+  in
+  (* Per-local matching relay-lease index (Some i => scope both, fold lease i)
+     and per-relay merged flag (folded leases are not emitted as rows). No
+     --relay => no relay data => every local row is honestly scope-unlabeled
+     (the identity fields are only added in relay mode). *)
+  let (local_matches, relay_merged_flags) =
+    if not relay then
+      (List.map (fun _ -> None) mode_regs, List.map (fun _ -> false) relay_peers)
+    else
+      let locals =
+        List.map
+          (fun (r : C2c_mcp.registration) -> (r.alias, effective_local_host r))
+          mode_regs
+      in
+      List_identity.match_merged ~locals ~relays:relay_pairs
+  in
+  let scope_of_match m = List_identity.scope_of_local ~matched:(m <> None) in
+  (if kind_filter = Some List_identity.Kf_relay && not relay then
+     Printf.eprintf
+       "hint: --kind relay only matches relay-registered rows; pass --relay to fetch relay peers.\n%!");
+  (* Local rows zipped with their match, filtered by --kind. *)
+  let kept_local_zip =
+    List.combine mode_regs local_matches
+    |> List.filter (fun (_, m) ->
+           List_identity.local_passes kind_filter (scope_of_match m))
+  in
+  (* relay-lease index -> matching local alias (for scope-both rendering). *)
+  let merged_alias_of_idx =
+    List.concat
+      (List.map2
+         (fun (r : C2c_mcp.registration) m ->
+           match m with Some i -> [ (i, r.alias) ] | None -> [])
+         mode_regs local_matches)
+  in
+  (* Local row JSON: the unified B097 shape, plus (relay mode only) the H6
+     identity labels and the folded relay lease for scope-both rows. The
+     default (no --relay) JSON row shape is byte-for-byte unchanged. *)
+  let local_row_json ?(repo_fp = "") ?(repo_path = "") ~enriched ~matched
+      (r : C2c_mcp.registration) : Yojson.Safe.t =
+    let base = list_registration_to_json ~repo_fp ~repo_path ~enriched r in
+    if not relay then base
+    else
+      match base with
+      | `Assoc fields ->
+          let scope = scope_of_match matched in
+          let fields =
+            fields
+            @ [ ("identity_kind", `String (List_identity.kind_to_string List_identity.Kind_local));
+                ("identity_scope", `String (List_identity.scope_to_string scope)) ]
+          in
+          let fields =
+            match matched with
+            | Some i ->
+                (match relay_peer_to_json (List.nth relay_peers i) with
+                 | `Assoc pf ->
+                     fields @ [ ("relay_lease", `Assoc (List.remove_assoc "source" pf)) ]
+                 | _ -> fields)
+            | None -> fields
+          in
+          `Assoc fields
+      | j -> j
+  in
+  (* Relay-only row JSON: normalized lease + identity labels. *)
+  let relay_peer_row_json (peer : Yojson.Safe.t) : Yojson.Safe.t =
+    match relay_peer_to_json peer with
+    | `Assoc fields ->
+        `Assoc
+          (fields
+          @ [ ("identity_kind", `String (List_identity.kind_to_string List_identity.Kind_relay));
+              ("identity_scope", `String (List_identity.scope_to_string List_identity.Scope_relay)) ])
+    | j -> j
+  in
+  (* Relay rows that remain after folding scope-both leases into their local
+     rows, filtered by --kind. *)
+  let kept_relay_rows () : Yojson.Safe.t list =
+    if not (List_identity.relay_passes kind_filter) then []
+    else
+      List.combine relay_peers relay_merged_flags
+      |> List.filter (fun (_, merged) -> not merged)
+      |> List.map (fun (p, _) -> relay_peer_row_json p)
+  in
+  (* JSON top level: the default path stays a bare array (additive contract);
+     --relay wraps the merged rows in an envelope carrying relay_error so a
+     failed fetch is machine-visible without aborting the local listing
+     (relay_error is null on success; exit code stays 0 either way — the
+     listing is a partial success, not a failure). *)
+  let print_list_json (rows : Yojson.Safe.t list) =
+    if relay then
+      print_json
+        (`Assoc
+          [ ("peers", `List rows);
+            ("relay_error",
+             match relay_note with Some n -> `String n | None -> `Null) ])
+    else print_json (`List rows)
+  in
 
   (* Human-mode relay section + non-fatal note. Local rows are left untouched
-     so the default listing format is unchanged; the relay block is appended. *)
+     so the default listing format is unchanged; the relay block is appended.
+     Scope-both leases stay visible here (the block is the relay's view) but
+     are explicitly cross-referenced to their local row instead of appearing
+     as an anonymous duplicate. *)
   let emit_relay_human () =
     (match relay_note with
      | Some msg -> Printf.eprintf "note: %s\n%!" msg
      | None -> ());
-    if relay_peers <> [] then begin
+    let rows =
+      List.mapi (fun i p -> (p, List.assoc_opt i merged_alias_of_idx)) relay_peers
+      |> List.filter (fun (_, merged) ->
+             match merged with
+             | Some _ -> true (* scope both: passes both --kind filters *)
+             | None -> List_identity.relay_passes kind_filter)
+    in
+    if rows <> [] then begin
       let n_total = List.length relay_peers in
       let n_alive = List.length (List.filter (fun p -> relay_peer_is_alive p = Some true) relay_peers) in
-      Printf.printf "\nrelay peers (%d alive / %d total):\n" n_alive n_total;
-      Printf.printf "  %-34s %-8s %s\n" "ADDRESS" "STATE" "IDENTITY_PK";
-      List.iter (fun p ->
+      let n_both = List.length merged_alias_of_idx in
+      let both_note =
+        if n_both > 0 then Printf.sprintf "; %d also local (scope both)" n_both
+        else ""
+      in
+      Printf.printf "\nrelay peers (%d alive / %d total%s):\n" n_alive n_total both_note;
+      Printf.printf "  %-34s %-8s %-6s %s\n" "ADDRESS" "STATE" "SCOPE" "IDENTITY_PK";
+      List.iter (fun (p, merged) ->
         let state = match relay_peer_is_alive p with
           | Some true -> "alive"
           | Some false -> "dead"
           | None -> "unknown"
         in
+        let scope = match merged with Some _ -> "both" | None -> "relay" in
         let pk = match relay_str_field p "identity_pk" with
           | Some k -> "pk:" ^ short_pk k
           | None -> "—"
         in
-        Printf.printf "  %-34s %-8s %s\n" (truncate_str (relay_address p) 34) state pk
-      ) relay_peers
+        let marker = match merged with
+          | Some local_alias -> Printf.sprintf "  (= local '%s')" local_alias
+          | None -> ""
+        in
+        Printf.printf "  %-34s %-8s %-6s %s%s\n" (truncate_str (relay_address p) 34) state scope pk marker
+      ) rows
     end
   in
 
   let () = (if global then
-    (* --global: scan all known broker roots *)
-    let all_roots = C2c_repo_fp.list_all_broker_roots () in
+    (* --global: scan all known broker roots (gathered above as global_rows) *)
     if all_roots = [] then (
       match output_mode with
-      | Json -> print_json (`List relay_json)
+      | Json -> print_list_json (kept_relay_rows ())
       | Human -> Printf.printf "No broker roots found.\n")
     else
       let all_regs =
-        List.fold_left (fun acc (fp, root) ->
-          try
-            let broker = C2c_mcp.Broker.create ~root in
-            let regs = C2c_mcp.Broker.list_registrations broker |> regs_filter in
-            List.map (fun r -> (fp, root, r)) regs @ acc
-          with _ -> acc
-        ) [] all_roots
+        List.combine global_rows local_matches
+        |> List.filter (fun (_, m) ->
+               List_identity.local_passes kind_filter (scope_of_match m))
       in
       match output_mode with
       | Json ->
-          let json_regs = List.map (fun (fp, root, r) -> list_registration_to_json ~repo_fp:fp ~repo_path:root ~enriched r) all_regs in
-          print_json (`List (json_regs @ relay_json))
+          let json_regs =
+            List.map
+              (fun ((fp, root, r), m) ->
+                local_row_json ~repo_fp:fp ~repo_path:root ~enriched ~matched:m r)
+              all_regs
+          in
+          print_list_json (json_regs @ kept_relay_rows ())
       | Human ->
+          let all_regs = List.map fst all_regs in
           if all_regs = [] then Printf.printf "No registered peers across %d broker root(s).\n" (List.length all_roots)
           else begin
             (* Group registrations by (fp, root) for human output *)
@@ -387,8 +580,12 @@ let list_cmd =
               let existing = try Hashtbl.find by_broker key with Not_found -> [] in
               Hashtbl.replace by_broker key (r :: existing)
             ) all_regs;
-            (* Print one broker section at a time *)
-            List.iter (fun (fp, root) ->
+            (* Print only repositories with a visible row.  After the default
+               dead-session filter, retaining an empty broker header would
+               still expose the stale repository as list noise. *)
+            all_roots
+            |> List.filter (fun key -> Hashtbl.mem by_broker key)
+            |> List.iter (fun (fp, root) ->
               let regs = try Hashtbl.find by_broker (fp, root) with Not_found -> [] in
               Printf.printf "\n[%s]\n  repo: %s\n  root: %s\n"
                 (if enriched then "enriched" else "sessions")
@@ -424,16 +621,14 @@ let list_cmd =
                   Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str
                 end
               ) regs
-            ) all_roots;
-            maybe_noise_hint (List.map (fun (_, _, r) -> r) all_regs)
+            )
           end
   else
-    (* single-broker (default or --cross-repo): use effective broker root *)
-    let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
-    let regs = C2c_mcp.Broker.list_registrations broker |> regs_filter in
+    (* single-broker (default or --cross-repo): gathered above as single_regs *)
+    let regs = single_regs in
     if regs = [] then (
       match output_mode with
-      | Json -> print_json (`List relay_json)
+      | Json -> print_list_json (kept_relay_rows ())
       | Human ->
           if relay && relay_peers <> [] then
             Printf.printf "No local peers in this repo.\n"
@@ -453,10 +648,15 @@ let list_cmd =
               Printf.printf "No registered peers.\n"
           end)
     else
+      let regs = List.map fst kept_local_zip in
       match output_mode with
       | Json ->
-          let json_regs = List.map (fun r -> list_registration_to_json ~enriched r) regs in
-          print_json (`List (json_regs @ relay_json))
+          let json_regs =
+            List.map
+              (fun (r, m) -> local_row_json ~enriched ~matched:m r)
+              kept_local_zip
+          in
+          print_list_json (json_regs @ kept_relay_rows ())
       | Human ->
           if enriched then begin
             Printf.printf "  %-20s %-13s %-40s %-12s %s\n"
@@ -515,8 +715,7 @@ let list_cmd =
                 else
                   let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
                   Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
-               regs;
-          maybe_noise_hint regs) in
+               regs) in
   if relay && output_mode = Human then emit_relay_human ()
 
 let sessions_cmd =

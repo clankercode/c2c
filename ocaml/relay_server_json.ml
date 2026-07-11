@@ -106,6 +106,11 @@ let get_opt_string json field =
   | `String s -> Some s
   | _ -> None
 
+let get_opt_bool json field =
+  match Yojson.Safe.Util.member field json with
+  | `Bool b -> Some b
+  | _ -> None
+
 let get_int json field default =
   (match Yojson.Safe.Util.member field json with
    | `Int n -> Some n

@@ -191,12 +191,18 @@ let test_hook_reads_stdin_session_and_drains_global_inbox () =
           Printf.sprintf {|{"session_id":%S,"hook_event_name":"PostToolUse"}|}
             sid
         in
+        (* Hermetic: C2C_STATE_HOME + HOME point at the empty temp dir so the
+           new repo-fingerprint fallback (C2C_MCP_BROKER_ROOT unset) resolves
+           to a path with no registry.json and never touches the real
+           ~/.c2c broker. *)
         let cmd =
           Printf.sprintf
             "printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
-             C2C_MCP_BROKER_ROOT C2C_POST_TOOL_FULL_INJECT=1 \
+             C2C_MCP_BROKER_ROOT C2C_STATE_HOME=%s HOME=%s \
+             C2C_POST_TOOL_FULL_INJECT=1 \
              C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
             (Filename.quote stdin_payload) (Filename.quote dir)
+            (Filename.quote dir) (Filename.quote dir)
             (Filename.quote built_inbox_hook) (Filename.quote out)
             (Filename.quote err)
         in
@@ -236,7 +242,7 @@ let test_cli_hook_reads_stdin_session_and_drains_global_inbox () =
         let cmd =
           Printf.sprintf
             "env C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
-             C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s hook > %s 2> %s"
+             C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s hook < /dev/null > %s 2> %s"
             (Filename.quote sid) (Filename.quote dir) (Filename.quote dir)
             (Filename.quote built_c2c) (Filename.quote out)
             (Filename.quote err)
@@ -258,6 +264,44 @@ let test_cli_hook_reads_stdin_session_and_drains_global_inbox () =
           (string_contains context "hello from cli hook");
         check int "cli hook drains inbox" 0
           (json_list_length inbox_path)))
+
+(* claude-full-delivery: the CLI fallback (`c2c hook post-tool`, also the
+   bare `c2c hook` default) shares C2c_hook_lib.run_post_tool with the
+   standalone binary, so its mid-turn drain must be push-only — a
+   deferrable message stays queued for the next turn boundary. *)
+let test_cli_hook_holds_deferrable_mid_turn () =
+  with_temp_dir (fun dir ->
+    let sid = "test-sid-cli-defer-p0" in
+    let inbox_path = Filename.concat dir (sid ^ ".inbox.json") in
+    write_file inbox_path
+      (Printf.sprintf
+         {|[{"from_alias":"sender-a","to_alias":%S,"content":"push body cli","ts":1.0},{"from_alias":"sender-b","to_alias":%S,"content":"deferrable body cli","ts":2.0,"deferrable":true}]|}
+         sid sid);
+    let out = Filename.temp_file "c2c-cli-hook-defer" ".out" in
+    let err = Filename.temp_file "c2c-cli-hook-defer" ".err" in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Sys.remove out with _ -> ());
+        (try Sys.remove err with _ -> ()))
+      (fun () ->
+        let cmd =
+          Printf.sprintf
+            "env C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
+             C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s hook < /dev/null > %s 2> %s"
+            (Filename.quote sid) (Filename.quote dir) (Filename.quote dir)
+            (Filename.quote built_c2c) (Filename.quote out)
+            (Filename.quote err)
+        in
+        let rc = Sys.command cmd in
+        check int "cli hook exits 0" 0 rc;
+        let stdout = read_file out in
+        check bool "cli hook delivers push message" true
+          (string_contains stdout "push body cli");
+        check bool "cli hook holds deferrable message" false
+          (string_contains stdout "deferrable body cli");
+        check int "deferrable stays queued" 1 (json_list_length inbox_path);
+        check bool "queued message is the deferrable one" true
+          (string_contains (read_file inbox_path) "deferrable body cli")))
 
 let test_hook_extracts_session_from_truncated_large_payload () =
   with_temp_dir (fun dir ->
@@ -282,11 +326,14 @@ let test_hook_extracts_session_from_truncated_large_payload () =
           String.sub stdin_payload 0 (String.length stdin_payload - 8)
         in
         write_file input truncated;
+        (* Hermetic: C2C_STATE_HOME + HOME redirect the repo-fingerprint
+           fallback into the empty temp dir (see the sibling hook test). *)
         let cmd =
           Printf.sprintf
             "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
-             C2C_POST_TOOL_FULL_INJECT=1 \
+             C2C_STATE_HOME=%s HOME=%s C2C_POST_TOOL_FULL_INJECT=1 \
              C2C_SESSIONS_BROKER_ROOT=%s %s < %s > %s 2> %s"
+            (Filename.quote dir) (Filename.quote dir)
             (Filename.quote dir) (Filename.quote built_inbox_hook)
             (Filename.quote input) (Filename.quote out) (Filename.quote err)
         in
@@ -377,11 +424,16 @@ let test_hook_rejects_invalid_stdin_session_id () =
           Printf.sprintf {|{"session_id":%S,"hook_event_name":"PostToolUse"}|}
             ("../" ^ escaped_name)
         in
+        (* Hermetic: C2C_STATE_HOME + HOME redirect the repo-fingerprint
+           fallback into the empty temp dir (invalid session_id exits before
+           the drain, but keep the sandbox uniform + defensive). *)
         let cmd =
           Printf.sprintf
             "printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
-             C2C_MCP_BROKER_ROOT C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
+             C2C_MCP_BROKER_ROOT C2C_STATE_HOME=%s HOME=%s \
+             C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
             (Filename.quote stdin_payload) (Filename.quote dir)
+            (Filename.quote dir) (Filename.quote dir)
             (Filename.quote built_inbox_hook) (Filename.quote out)
             (Filename.quote err)
         in
@@ -410,6 +462,8 @@ let () =
             test_hook_reads_stdin_session_and_drains_global_inbox )
         ; ( "legacy cli hook reads stdin session_id and drains global inbox", `Quick,
             test_cli_hook_reads_stdin_session_and_drains_global_inbox )
+        ; ( "cli hook holds deferrable mid-turn (push-only drain)", `Quick,
+            test_cli_hook_holds_deferrable_mid_turn )
         ; ( "extracts session_id from truncated large payload", `Quick,
             test_hook_extracts_session_from_truncated_large_payload )
         ; ( "merges message and cold boot context", `Quick,

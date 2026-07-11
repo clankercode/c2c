@@ -12,85 +12,43 @@ let sleep_to_min_runtime start_time =
   if sleep_s > 0.0 then Unix.sleepf sleep_s
 
 let hook_post_tool_cmd =
-  (* No arguments - reads env vars C2C_MCP_SESSION_ID and C2C_MCP_BROKER_ROOT *)
+  (* Claude PostToolUse hook — CLI fallback for the standalone
+     c2c-inbox-hook-ocaml binary (`~/.claude/hooks/c2c-inbox-check.sh` runs
+     whichever is found first). Delivery semantics are shared through
+     C2c_hook_lib.run_post_tool so both paths behave identically
+     (claude-full-delivery slice): full message delivery by default with a
+     push-only drain (deferrable messages wait for the next turn boundary,
+     mirroring codex PostToolUse), the #387 A2 channel-capable skip (the MCP
+     watcher owns delivery for managed claude — no dual-drain), the B042
+     subagent guard, cold-boot fallback context, and the
+     C2C_POST_TOOL_NUDGE_ONLY=1 legacy debounced-nudge opt-out. Session id
+     resolves from the hook's stdin JSON first, then C2C_MCP_SESSION_ID. *)
   let open Cmdliner.Term in
   const (fun () ->
     let start_time = Unix.gettimeofday () in
+    let exit_floored code =
+      sleep_to_min_runtime start_time;
+      exit code
+    in
+    if C2c_hook_lib.is_subagent_quiet () then exit_floored 0;
     let session_id =
-      try Sys.getenv "C2C_MCP_SESSION_ID" with Not_found -> ""
+      match C2c_hook_lib.resolve_session_id () with
+      | Ok "" -> exit_floored 0
+      | Ok sid -> sid
+      | Error msg -> prerr_endline msg; exit_floored 1
     in
-    let broker_root =
-      try Sys.getenv "C2C_MCP_BROKER_ROOT" with Not_found -> ""
-    in
-    if session_id = "" || broker_root = "" then begin
-      sleep_to_min_runtime start_time;
-      exit 0
-    end;
+    let broker_root = C2c_hook_lib.resolve_hook_broker_root () in
     try
-      let broker = C2c_mcp.Broker.create ~root:broker_root in
-      (* #387 A2: skip drain for channel-capable sessions so the MCP
-         server's watcher can own delivery (avoids the dual-drainer race
-         where hook stdout displaces the `<channel>` notification). *)
-      let messages =
-        if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
-          prerr_endline
-            (Printf.sprintf
-               "[hook] skipping drain — session %s is channel-capable; \
-                watcher owns delivery"
-               session_id);
-          []
-        end else
-          C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id
-      in
-      (match messages with
-       | [] -> ()
-       | _ ->
-         let buf = Buffer.create 256 in
-         let lookup_role from_alias =
-           match C2c_mcp.Broker.list_registrations broker
-                 |> List.find_opt (fun r -> r.C2c_mcp.alias = from_alias) with
-           | Some reg -> reg.C2c_mcp.role
-           | None     -> None
-         in
-         List.iter
-           (fun (m : C2c_mcp.message) ->
-              let tag = C2c_mcp.extract_tag_from_content m.content in
-              let role = lookup_role m.from_alias in
-               let envelope =
-                 C2c_mcp.format_c2c_envelope
-                   ~from_alias:m.from_alias
-                   ~to_alias:m.to_alias
-                   ?tag
-                   ?role
-                   ?reply_via:m.reply_via
-                   ~ts:m.ts
-                   ~with_reply_hint:true
-                   ~content:m.content
-                   ()
-               in
-              Buffer.add_string buf envelope;
-              Buffer.add_char buf '\n')
-           messages;
-         let json : Yojson.Safe.t =
-           `Assoc [
-             ("hookSpecificOutput", `Assoc [
-               ("hookEventName", `String "PostToolUse");
-               ("additionalContext", `String (Buffer.contents buf));
-             ])
-           ]
-         in
-         print_string (Yojson.Safe.to_string json);
-         print_newline ());
-      sleep_to_min_runtime start_time;
-      exit 0
+      let output, _alias = C2c_hook_lib.run_post_tool ~session_id ~broker_root in
+      C2c_hook_lib.print_post_tool_output output;
+      exit_floored 0
     with e ->
       prerr_endline (Printexc.to_string e);
-      sleep_to_min_runtime start_time;
-      exit 1) $ const ()
+      exit_floored 1) $ const ()
 
 let hook_post_tool : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "post-tool" ~doc:"PostToolUse hook: drain inbox and emit messages.")
+    (Cmdliner.Cmd.info "post-tool" ~doc:"PostToolUse hook: full-delivery drain (push-only; deferrable waits for the turn boundary) and emit messages. C2C_POST_TOOL_NUDGE_ONLY=1 restores the legacy debounced nudge line.")
     hook_post_tool_cmd
 
 let hook_stop_cmd =
@@ -103,13 +61,13 @@ let hook_stop_cmd =
       | Ok sid -> sid
       | Error _ -> exit 0
     in
-    let broker_root =
-      Option.value (C2c_hook_lib.env_nonempty "C2C_MCP_BROKER_ROOT") ~default:""
-    in
+    let broker_root = C2c_hook_lib.resolve_hook_broker_root () in
     if session_id = "" then exit 0;
     try
       let repo_broker, messages, _alias =
-        C2c_hook_lib.drain_all_messages ~session_id ~broker_root
+        (* Stop is a turn boundary: full drain, deferrable included. *)
+        C2c_hook_lib.drain_all_messages ~push_only:false ~session_id
+          ~broker_root ()
       in
       if messages = [] then exit 0;
       let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
@@ -152,6 +110,99 @@ let hook_stop : unit Cmdliner.Cmd.t =
    draining on Stop would eat messages we cannot deliver. *)
 let codex_context_events =
   [ "SessionStart"; "SessionEnd"; "UserPromptSubmit"; "PostToolUse"; "PreToolUse" ]
+
+(* Codex emits one PostToolUse event per tool call, often as a burst.  A short
+   fingerprint-aware debounce avoids redoing empty-inbox work for that burst.
+   The fingerprint covers both the repo and cross-repo inboxes: a newly queued
+   message always changes it and bypasses the debounce, so this is coalescing
+   only, never a reason to defer delivery. *)
+let codex_post_tool_debounce_s = 0.5
+
+let codex_inbox_fingerprint ~roots ~session_id =
+  List.map
+    (fun root ->
+      let path = Filename.concat root (session_id ^ ".inbox.json") in
+      try
+        let st = Unix.stat path in
+        Printf.sprintf "%s:%d:%.9f" path st.Unix.st_size st.Unix.st_mtime
+      with Unix.Unix_error _ -> path ^ ":missing")
+    roots
+  |> String.concat "|"
+
+let codex_debounce_state_path ~broker_root ~session_id =
+  let digest = Digestif.SHA256.digest_string session_id |> Digestif.SHA256.to_hex in
+  Filename.concat (Filename.concat broker_root ".codex-hook-debounce") digest
+
+let read_codex_debounce_state path =
+  try
+    match String.split_on_char '\t' (String.trim (C2c_io.read_file_opt path)) with
+    | [ ts; fingerprint ] -> Some (float_of_string ts, fingerprint)
+    | _ -> None
+  with _ -> None
+
+let codex_brokers_for_debounce ~broker_root ~global_root =
+  [ broker_root; global_root ]
+  |> List.filter (fun root -> String.trim root <> "")
+  |> List.sort_uniq String.compare
+  |> List.map (fun root -> C2c_mcp.Broker.create ~root)
+
+let with_codex_debounce_locks ~broker_root ~global_root ~session_id f =
+  let rec lock locked = function
+    | [] -> f (List.rev locked)
+    | broker :: rest ->
+        C2c_mcp.Broker.with_inbox_lock broker ~session_id (fun () ->
+          lock (broker :: locked) rest)
+  in
+  lock [] (codex_brokers_for_debounce ~broker_root ~global_root)
+
+let codex_push_inboxes_empty ~broker_root ~global_root ~session_id =
+  with_codex_debounce_locks ~broker_root ~global_root ~session_id
+    (fun brokers ->
+       let empty = not (List.exists
+              (fun broker ->
+                 C2c_mcp.Broker.inbox_has_push_messages_locked broker ~session_id)
+              brokers) in
+       empty)
+
+let codex_post_tool_is_debounced ~broker_root ~global_root ~session_id =
+  let fingerprint =
+    codex_inbox_fingerprint ~roots:[ broker_root; global_root ] ~session_id
+  in
+  let path = codex_debounce_state_path ~broker_root ~session_id in
+  let now = Unix.gettimeofday () in
+  match read_codex_debounce_state path with
+  | Some (last_ts, last_fingerprint) ->
+      now -. last_ts < codex_post_tool_debounce_s
+      && fingerprint = last_fingerprint
+      && codex_push_inboxes_empty ~broker_root ~global_root ~session_id
+  | None -> false
+
+let record_codex_post_tool ~broker_root ~global_root ~session_id =
+  try
+    (* Enqueue and drain both use the same per-inbox lock.  Holding the locks
+       while taking the post-drain snapshot means a message cannot be inserted
+       between the empty check and state write.  Without this, a just-arrived
+       message could be recorded as an unchanged fingerprint and the next hook
+       would incorrectly suppress it. *)
+    with_codex_debounce_locks ~broker_root ~global_root ~session_id
+      (fun brokers ->
+         let no_push_messages =
+           not (List.exists
+                  (fun broker ->
+                     C2c_mcp.Broker.inbox_has_push_messages_locked broker ~session_id)
+                  brokers)
+         in
+         if no_push_messages then begin
+           let dir = Filename.dirname (codex_debounce_state_path ~broker_root ~session_id) in
+           C2c_mcp.mkdir_p dir;
+           let fingerprint =
+             codex_inbox_fingerprint ~roots:[ broker_root; global_root ] ~session_id
+           in
+           ignore (C2c_io.write_file_atomic
+             (codex_debounce_state_path ~broker_root ~session_id)
+             (Printf.sprintf "%.9f\t%s\n" (Unix.gettimeofday ()) fingerprint))
+         end)
+  with _ -> ()
 
 let read_stdin_all ~max_bytes =
   let chunk_size = 8192 in
@@ -214,6 +265,10 @@ let hook_codex_cmd =
          | None -> exit 0
        in
        if not (List.mem event codex_context_events) then exit 0;
+       (* Auto-update the /c2c codex skill from the embedded blob on session
+          start, so vanilla codex sessions pick up skill changes from a new
+          binary without re-running `c2c install codex`. Best-effort. *)
+       if event = "SessionStart" then C2c_setup.refresh_codex_skill_if_stale ();
        let broker_root = C2c_utils.resolve_broker_root () in
        let broker = C2c_mcp.Broker.create ~root:broker_root in
        let regs () = C2c_mcp.Broker.list_registrations broker in
@@ -369,6 +424,28 @@ let hook_codex_cmd =
                          ~session_id:sid ~alias ~client:(Some "codex"));
                   (sid, Some alias))
        in
+       (* Wake-target capture (codex-wake-inject): the hook runs with the
+          codex process's env, so $TMUX/$TMUX_PANE and $HERDR_PANE_ID /
+          $HERDR_SOCKET_PATH identify this session's pane for BOTH vanilla
+          and managed sessions. Refresh on session boundaries (SessionStart —
+          sessions move panes) and on fresh auto-register so the wake
+          injector can nudge an idle session. update_wake_targets is
+          Some-overwrites / None-preserves and total. Must run before the
+          B107 debounce early-exit: a fresh auto-register can arrive on a
+          PostToolUse fire. *)
+       (if event = "SessionStart" || Option.is_some onboarded_alias then begin
+          let tmux_location, herdr_pane, herdr_socket =
+            C2c_wake_inject.wake_targets_from_env ()
+          in
+          C2c_mcp.Broker.update_wake_targets broker ~session_id
+            ~tmux_location ~herdr_pane ~herdr_socket ()
+        end);
+       let global_root =
+         try C2c_repo_fp.resolve_sessions_broker_root () with _ -> ""
+       in
+       if event = "PostToolUse"
+          && codex_post_tool_is_debounced ~broker_root ~global_root ~session_id
+       then exit 0;
        (* Drain. Turn boundaries (SessionStart / UserPromptSubmit) deliver
           everything including deferrable messages; mid-turn events
           (PostToolUse / PreToolUse) deliver only push (non-deferrable)
@@ -394,7 +471,7 @@ let hook_codex_cmd =
          end
          else
            let rb, msgs, _alias =
-             C2c_hook_lib.drain_all_messages ~session_id ~broker_root
+             C2c_hook_lib.drain_all_messages ~session_id ~broker_root ()
            in
            (rb, msgs)
        in
@@ -435,6 +512,8 @@ let hook_codex_cmd =
          print_string (Yojson.Safe.to_string json);
          print_newline ()
        end;
+       if event = "PostToolUse" then
+         record_codex_post_tool ~broker_root ~global_root ~session_id;
        exit 0
      with
      | e ->
@@ -448,10 +527,451 @@ let hook_codex : unit Cmdliner.Cmd.t =
        ~doc:"Codex CLI hook: reads the codex hook payload (JSON) on stdin, resolves this session's c2c identity (auto-registering vanilla sessions on first fire), drains the inbox, and emits messages as hookSpecificOutput.additionalContext. Installed into ~/.codex/config.toml by `c2c install codex`. Never fails the codex turn: errors exit 0 with empty output.")
     hook_codex_cmd
 
+(* --- Claude session hook (claude-session-hooks slice) -------------------------
+
+   Mirrors `c2c hook codex`'s structure and safety contract for Claude Code
+   session-lifecycle events. Installed by `c2c install claude` for
+   SessionStart + SessionEnd (script: ~/.claude/hooks/c2c-session-hook.sh).
+
+   Contract with Claude Code:
+   - stdin: JSON payload {hook_event_name, session_id, cwd, ...}; SessionStart
+     additionally carries source: startup|resume|clear|compact.
+   - stdout: either empty (no-op) or
+       {"hookSpecificOutput":{"hookEventName":"<event>","additionalContext":"..."}}
+   - NEVER break the claude turn: any error -> exit 0 with empty stdout.
+     Runtime is hard-capped via alarm() well under the hook timeout.
+
+   Identity resolution is env-FIRST (this differs from codex!): the hook
+   process inherits the claude session's env, so a managed session
+   (`c2c start claude`) carries C2C_MCP_SESSION_ID=<instance-name> — that
+   registration IS the session identity; we must never fork a second
+   registration from the payload UUID. *)
+
+(* Events this hook handles. Add future events (e.g. UserPromptSubmit) here;
+   the per-event behaviour dispatches on [event] below. *)
+let claude_session_events = [ "SessionStart"; "SessionEnd" ]
+
+let claude_onboarding_text ~alias ~session_id =
+  Printf.sprintf
+    "c2c: this Claude Code session is now registered on the local \
+     agent-messaging system as `%s` (session ID: `%s`). Peer messages are delivered \
+     automatically into your context as `<c2c ...>` blocks. Key commands: \
+     `c2c whoami` (identity), `c2c list --alive` (peers online), `c2c find \
+     <substr>` (peer lookup), `c2c send <alias> \"msg\"` (DM), `c2c \
+     wait-inbox --timeout 5m` (blocking receive when idle), `c2c rooms join \
+     swarm-lounge` (social room). Run the `/c2c` skill for the full reference."
+    alias session_id
+
+let claude_wake_text ~alias ~session_id =
+  Printf.sprintf
+    "c2c: connected as `%s` (session ID: `%s`). Inbound agent messages arrive automatically via \
+     hooks; send with `c2c send <alias> \"msg\"`, block-receive when idle \
+     with `c2c wait-inbox`. Run the `/c2c` skill for the full reference."
+    alias session_id
+
+let hook_claude_cmd =
+  let open Cmdliner.Term in
+  const (fun () ->
+    let start_time = Unix.gettimeofday () in
+    (* Fast exits must still hold the min-runtime floor: Claude Code's
+       waitpid() hits ECHILD when a hook is reaped too quickly (same race
+       sleep_to_min_runtime guards in hook_post_tool_cmd / hook_stop_cmd). *)
+    let exit_floored code =
+      (try sleep_to_min_runtime start_time with _ -> ());
+      exit code
+    in
+    (* Hard runtime cap: exit cleanly well before the hook timeout so a
+       wedged broker dir can never stall a claude session start. *)
+    (try
+       Sys.set_signal Sys.sigalrm (Sys.Signal_handle (fun _ -> exit 0));
+       ignore (Unix.alarm 8)
+     with _ -> ());
+    (try
+       (* Subagent guard (B042): spawned Claude subagents inherit the parent
+          env and must never be registered or drained. *)
+       if C2c_hook_lib.is_subagent_quiet () then exit_floored 0;
+       let raw = read_stdin_all ~max_bytes:(1024 * 1024) in
+       let payload =
+         try Yojson.Safe.from_string (String.trim raw) with _ -> `Null
+       in
+       let event =
+         match payload_string_field payload "hook_event_name" with
+         | Some e -> e
+         | None -> exit_floored 0
+       in
+       if not (List.mem event claude_session_events) then exit_floored 0;
+       (* Auto-update the /c2c claude skill from the embedded blob on session
+          start, so sessions pick up skill changes from a new binary without
+          re-running `c2c install claude`. Best-effort, never prints. *)
+       if event = "SessionStart" then C2c_setup.refresh_claude_skill_if_stale ();
+       let broker_root = C2c_utils.resolve_broker_root () in
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+       let regs () = C2c_mcp.Broker.list_registrations broker in
+       let registered sid =
+         List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) (regs ())
+       in
+       let validated s =
+         match C2c_mcp.validate_session_id s with
+         | Ok sid -> Some sid
+         | Error _ -> None
+       in
+       let payload_sid =
+         Option.bind (payload_string_field payload "session_id") validated
+       in
+       let env_sid =
+         match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+         | Some s when String.trim s <> "" -> validated (String.trim s)
+         | _ -> None
+       in
+       if event = "SessionEnd" then begin
+         (* Deregister ONLY hook auto-registrations for this session. Managed
+            (`c2c start claude`) and MCP-registered sessions have a different
+            registered_by and are never touched. *)
+         let candidates = List.filter_map (fun x -> x) [ payload_sid; env_sid ] in
+         (match
+            List.find_opt
+              (fun (r : C2c_mcp.registration) ->
+                 r.registered_by = Some "claude-hook"
+                 && List.exists (fun sid -> r.session_id = sid) candidates)
+              (regs ())
+          with
+          | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
+          | None -> ());
+         exit_floored 0
+       end;
+       (* SessionStart identity resolution, env first:
+          1. C2C_MCP_SESSION_ID env has a registration (managed session, or
+             any session whose env carries an explicit identity) — use it.
+          2. payload session_id (claude-native UUID) has a registration
+             (previous auto-register) — use it.
+          3. payload-free fallback only: the `c2c init` statefile resolves to
+             a live registration — use it. Restricted to payload-free fires
+             (mirrors codex step 3 / B080): a fresh claude UUID must get a
+             fresh identity, not inherit another session's statefile.
+          4. nothing -> auto-register the payload session_id, UNLESS
+             C2C_MCP_SESSION_ID is set: then the MCP server owns registration
+             and auto-registering the payload UUID would fork a duplicate
+             identity — stay silent instead. *)
+       let resolved =
+         match env_sid with
+         | Some sid when registered sid -> Some sid
+         | _ ->
+             (match payload_sid with
+              | Some sid when registered sid -> Some sid
+              | Some _ -> None
+              | None ->
+                  (match C2c_cli_helpers.read_session_statefile ~broker_root with
+                   | Some sid when registered sid -> Some sid
+                   | _ -> None))
+       in
+       let session_id, onboarded_alias =
+         match resolved with
+         | Some sid -> (sid, None)
+         | None ->
+             if Option.is_some env_sid then exit_floored 0;
+             (match payload_sid with
+              | None -> exit_floored 0
+              | Some sid ->
+                  (* Auto-register: zero-setup onboarding for vanilla claude.
+                     The payload UUID is stable for the conversation, so the
+                     registration persists and every later fire resolves via
+                     step 2 (no re-register loop). *)
+                  let alias = C2c_setup.default_alias_for_client "claude" in
+                  (try
+                     C2c_mcp.Broker.register broker ~session_id:sid ~alias
+                       ~pid:None
+                       ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time None)
+                       ~client_type:(Some "claude")
+                       ~cwd:(payload_string_field payload "cwd")
+                       ~registered_by:(Some "claude-hook")
+                       ~from_auto_gen:true ()
+                   with e ->
+                     (try
+                        prerr_endline
+                          ("c2c hook claude: auto-register failed: "
+                           ^ Printexc.to_string e)
+                      with _ -> ());
+                     exit_floored 0);
+                  (* Persist the identity for plain `c2c` CLI calls from this
+                     claude session, but never steal a statefile that still
+                     points at a live identity. *)
+                  (match C2c_cli_helpers.read_session_statefile ~broker_root with
+                   | Some existing
+                     when C2c_cli_helpers.statefile_session_registered ~broker_root existing -> ()
+                   | _ ->
+                       C2c_cli_helpers.write_session_statefile ~broker_root
+                         ~session_id:sid ~alias ~client:(Some "claude"));
+                  (sid, Some alias))
+       in
+       let alias_of sid =
+         List.find_map
+           (fun (r : C2c_mcp.registration) ->
+              if r.session_id = sid then Some r.alias else None)
+           (regs ())
+       in
+       (* Part 1: onboarding (fresh auto-register) or wake note (known session). *)
+       let intro =
+         match onboarded_alias with
+        | Some alias -> claude_onboarding_text ~alias ~session_id
+        | None ->
+             (match alias_of session_id with
+              | Some a -> claude_wake_text ~alias:a ~session_id
+              | None -> "")
+       in
+       (* Part 2: post-compact context (#317). SessionStart source=compact
+          means the transcript was just compacted — re-inject operational
+          context via the C2c_post_compact_hook library renderer (shared with
+          the standalone c2c-post-compact-hook binary; the block is
+          self-bounding at ~4KiB). *)
+       let post_compact_context =
+         if payload_string_field payload "source" = Some "compact" then
+           try
+             match C2c_post_compact_hook.repo_root (), alias_of session_id with
+             | Some repo, Some alias ->
+                 C2c_post_compact_hook.format_context_block
+                   (C2c_post_compact_hook.Args.make ~alias ~repo
+                      ~ts:(C2c_post_compact_hook.iso8601_now ()))
+             | _ -> ""
+           with _ -> ""
+         else ""
+       in
+       (* Part 3: cold-boot context (#317). Fires once per session — the
+          library keeps a marker at <broker_root>/.cold_boot_done/<sid>, so
+          later SessionStarts (resume/compact) and the PostToolUse hook
+          naturally no-op. Self-bounding. *)
+       let cold_boot_context =
+         try
+           Option.value
+             (C2c_cold_boot_context.context_for_session ~broker_root ~session_id)
+             ~default:""
+         with _ -> ""
+       in
+       (* Part 4: message drain (repo + global sessions broker) — full drain
+          at the session boundary, EXCEPT the repo drain when the session is
+          channel-capable (managed claude uses channel push; dual-drain would
+          race the watcher). *)
+       let repo_messages =
+         if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then []
+         else C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id
+       in
+       let global_messages =
+         try
+           let root = C2c_repo_fp.resolve_sessions_broker_root () in
+           if C2c_hook_lib.global_inbox_exists ~root ~session_id then
+             let gb = C2c_mcp.Broker.create ~root in
+             C2c_mcp.Broker.drain_inbox ~drained_by:"hook" gb ~session_id
+           else []
+         with _ -> []
+       in
+       let messages_text =
+         C2c_hook_lib.format_messages_as_text ~repo_broker:(Some broker)
+           (repo_messages @ global_messages)
+       in
+       let context =
+         [ intro; post_compact_context; cold_boot_context; messages_text ]
+         |> List.filter (fun s -> String.trim s <> "")
+         |> String.concat "\n\n"
+       in
+       if context <> "" then begin
+         let json : Yojson.Safe.t =
+           `Assoc
+             [ ( "hookSpecificOutput"
+               , `Assoc
+                   [ ("hookEventName", `String event)
+                   ; ("additionalContext", `String context)
+                   ] )
+             ]
+         in
+         print_string (Yojson.Safe.to_string json);
+         print_newline ()
+       end;
+       exit_floored 0
+     with
+     | e ->
+         (* Never break the claude turn: swallow everything, exit 0. *)
+         (try prerr_endline ("c2c hook claude: " ^ Printexc.to_string e) with _ -> ());
+         exit_floored 0)) $ const ()
+
+let hook_claude : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "claude"
+       ~doc:"Claude Code session-lifecycle hook: reads the hook payload (JSON) on stdin, resolves this session's c2c identity env-first (auto-registering vanilla sessions on SessionStart), refreshes the /c2c skill, emits onboarding/wake text + cold-boot / post-compact context + queued messages as hookSpecificOutput.additionalContext, and deregisters hook auto-registrations on SessionEnd. Installed into ~/.claude/settings.json by `c2c install claude`. Never fails the claude turn: errors exit 0 with empty output.")
+    hook_claude_cmd
+
+
+let grok_session_events = [ "SessionStart"; "SessionEnd" ]
+
+let hook_grok_cmd =
+  let open Cmdliner.Term in
+  const (fun () ->
+    (try
+       Sys.set_signal Sys.sigalrm (Sys.Signal_handle (fun _ -> exit 0));
+       ignore (Unix.alarm 8)
+     with _ -> ());
+    (try
+       if C2c_hook_lib.is_subagent_quiet () then exit 0;
+       let raw = read_stdin_all ~max_bytes:(1024 * 1024) in
+       let payload =
+         try Yojson.Safe.from_string (String.trim raw) with _ -> `Null
+       in
+       (* Grok hook runner may use camelCase or snake_case; accept both. *)
+       let event =
+         match payload_string_field payload "hook_event_name" with
+         | Some e -> e
+         | None ->
+             (match payload_string_field payload "hookEventName" with
+              | Some e -> e
+              | None ->
+                  (match Sys.getenv_opt "GROK_HOOK_EVENT" with
+                   | Some e when String.trim e <> "" -> String.trim e
+                   | _ -> exit 0))
+       in
+       let event =
+         match String.lowercase_ascii event with
+         | "session_start" | "sessionstart" -> "SessionStart"
+         | "session_end" | "sessionend" -> "SessionEnd"
+         | other -> event
+       in
+       if not (List.mem event grok_session_events) then exit 0;
+       if event = "SessionStart" then C2c_setup.refresh_grok_skill_if_stale ();
+       let broker_root = C2c_utils.resolve_broker_root () in
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+       let regs () = C2c_mcp.Broker.list_registrations broker in
+       let registered sid =
+         List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) (regs ())
+       in
+       let validated s =
+         match C2c_mcp.validate_session_id s with
+         | Ok sid -> Some sid
+         | Error _ -> None
+       in
+       let payload_sid =
+         match payload_string_field payload "session_id" with
+         | Some s -> validated s
+         | None ->
+             (match payload_string_field payload "sessionId" with
+              | Some s -> validated s
+              | None -> None)
+       in
+       let env_sid =
+         match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+         | Some s when String.trim s <> "" -> validated (String.trim s)
+         | _ ->
+             (match Sys.getenv_opt "GROK_SESSION_ID" with
+              | Some s when String.trim s <> "" -> validated (String.trim s)
+              | _ -> None)
+       in
+       if event = "SessionEnd" then begin
+         let candidates = List.filter_map (fun x -> x) [ payload_sid; env_sid ] in
+         (match
+            List.find_opt
+              (fun (r : C2c_mcp.registration) ->
+                 r.registered_by = Some "grok-hook"
+                 && List.exists (fun sid -> r.session_id = sid) candidates)
+              (regs ())
+          with
+          | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
+          | None -> ());
+         C2c_setup.remove_grok_session_identity_skill ();
+         exit 0
+       end;
+       (* SessionStart identity resolution (CLI-first; no MCP required):
+          1. env session already registered
+          2. payload session already registered
+          3. auto-register payload or env session id *)
+       let resolved =
+         match env_sid with
+         | Some sid when registered sid -> Some sid
+         | _ ->
+             (match payload_sid with
+              | Some sid when registered sid -> Some sid
+              | _ -> None)
+       in
+       let session_id, onboarded_alias =
+         match resolved with
+         | Some sid -> (sid, None)
+         | None ->
+             let sid_opt =
+               match payload_sid with
+               | Some sid -> Some sid
+               | None -> env_sid
+             in
+             (match sid_opt with
+              | None -> exit 0
+              | Some sid ->
+                  let alias =
+                    let path =
+                      (try Sys.getenv "HOME" with Not_found -> "/tmp")
+                      ^ "/.config/c2c/default-alias"
+                    in
+                    match
+                      try
+                        if Sys.file_exists path then
+                          let ic = open_in path in
+                          Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+                            Some (String.trim (input_line ic)))
+                        else None
+                      with _ -> None
+                    with
+                    | Some a when a <> "" -> a
+                    | _ -> C2c_setup.default_alias_for_client "grok"
+                  in
+                  (try
+                     C2c_mcp.Broker.register broker ~session_id:sid ~alias
+                       ~pid:None
+                       ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time None)
+                       ~client_type:(Some "grok")
+                       ~cwd:
+                         (match payload_string_field payload "cwd" with
+                          | Some c -> Some c
+                          | None -> payload_string_field payload "workspaceRoot")
+                       ~registered_by:(Some "grok-hook")
+                       ~from_auto_gen:true ()
+                   with e ->
+                     (try
+                        prerr_endline
+                          ("c2c hook grok: auto-register failed: "
+                           ^ Printexc.to_string e)
+                      with _ -> ());
+                     exit 0);
+                  (match C2c_cli_helpers.read_session_statefile ~broker_root with
+                   | Some existing
+                     when C2c_cli_helpers.statefile_session_registered ~broker_root existing -> ()
+                   | _ ->
+                       C2c_cli_helpers.write_session_statefile ~broker_root
+                         ~session_id:sid ~alias ~client:(Some "grok"));
+                  (sid, Some alias))
+       in
+       let alias =
+         match onboarded_alias with
+         | Some a -> a
+         | None ->
+             (match
+                List.find_map
+                  (fun (r : C2c_mcp.registration) ->
+                     if r.session_id = session_id then Some r.alias else None)
+                  (regs ())
+              with
+              | Some a -> a
+              | None -> "unknown")
+       in
+       C2c_setup.write_grok_session_identity_skill ~alias ~session_id;
+       (* Grok ignores passive-hook stdout for transcript inject; exit 0. *)
+       exit 0
+     with e ->
+       (try prerr_endline ("c2c hook grok: " ^ Printexc.to_string e) with _ -> ());
+       exit 0)) $ const ()
+
+let hook_grok : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "grok"
+       ~doc:"Grok Build TUI SessionStart/SessionEnd hook: auto-registers the session (registered_by=grok-hook), refreshes the /c2c skill, and writes a c2c-session identity skill (Grok cannot inject additionalContext). Installed by `c2c install grok`. Never fails the host turn.")
+    hook_grok_cmd
+
 let hook : unit Cmdliner.Cmd.t =
   let info = Cmdliner.Cmd.info "hook"
-    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), and 'codex' for all Codex CLI hook events."
+    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), 'claude' for Claude SessionStart/SessionEnd, and 'codex' for all Codex CLI hook events, and 'grok' for Grok SessionStart/SessionEnd."
   in
   (* Default to post-tool for backward compat: `c2c hook` (no subcommand) behaves
      as the PostToolUse hook, same as before the hook group refactor. *)
-  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex ]
+  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex; hook_claude; hook_grok ]

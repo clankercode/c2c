@@ -1,15 +1,16 @@
 ---
+claimed_at: "2026-07-10T10:42:27Z"
+claimed_by: cli-user
+completed_at: "2026-07-10T10:57:16Z"
 complexity: medium
 depends_on: []
+duration_minutes: 14.82543354805
 estimate_hours: 1
 id: B101
 priority: high
-status: pending
-tags:
-    - install
-    - self-update
-    - npm
-    - friction-report-cn
+started_at: "2026-07-10T10:42:27Z"
+status: done
+tags: []
 title: c2c self-update must support npm/pnpm/bun installs (upgrade via the package manager), not only the standalone binary
 ---
 Max note (2026-07-07): c2c self-update should work across all install methods — standalone binary, npm, pnpm, bun, etc. In particular it MUST work for npm installs and actually upgrade via npm (e.g. npm install -g @clanker-code/c2c@latest or the correct PM equivalent). If a user installed via npm, self-update silently upgrading the standalone binary — or failing — is wrong. Relates to: B028 (self-update command, standalone-only today) and B092 (install.sh now falls through to a fresh standalone install when self-update is absent or fails). B092 is complementary: it handles genuinely-absent self-update (old builds); THIS bug ensures that for modern installs the self-update delegation actually succeeds per install method. Implementation: detect how c2c was installed (resolved binary path under node_modules/.bin vs ~/.local/bin, or a recorded install-method marker) and dispatch the correct upgrade command for that PM; add tests per PM (npm, pnpm, bun at minimum). Priority high — Max: if it does not work for npm that is a problem.

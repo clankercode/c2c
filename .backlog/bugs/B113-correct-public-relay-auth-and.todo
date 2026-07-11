@@ -1,0 +1,24 @@
+---
+claimed_at: "2026-07-11T03:28:33Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T04:43:19Z"
+complexity: low
+depends_on: []
+duration_minutes: 74.7683202208
+estimate_hours: 1
+id: B113
+priority: high
+started_at: "2026-07-11T03:28:33Z"
+status: done
+tags: []
+title: Correct public relay auth and room-visibility documentation
+---
+B111 found that the relay landing page says every route except / and /health requires a Bearer token and describes /list_rooms as public rooms only. Both claims drift from the canonical OCaml implementation.
+
+Acceptance criteria:
+- Derive the landing-page auth description from the actual route classes: anonymous read/UI, peer Ed25519, Bearer admin, and handler/self-auth routes.
+- State that /list_rooms includes public and gated rooms.
+- Explain that /list is not anonymously public, while aliases may still appear through listed-room rosters and public/unlisted history.
+- Add a lightweight regression/contract check so the operational copy cannot silently diverge from auth_decision.
+
+Evidence: B111 audit at .collab/research/2026-07-11T02-25-00Z-B111-public-relay-exposure-audit.md.

@@ -9,7 +9,7 @@ open C2c_types
 open Cmdliner.Term.Syntax
 
 let known_components =
-  [ "claude"; "codex"; "kimi"; "opencode"; "self"; "git-hook"; "git-shim"; "all" ]
+  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "self"; "git-hook"; "git-shim"; "all" ]
 
 let home_dir () = try Sys.getenv "HOME" with Not_found -> ""
 
@@ -161,7 +161,7 @@ let remove_shared_block ~dry_run ~begin_marker ~end_marker ?legacy_marker path =
 (* Claude settings.json hook cleanup *)
 (* -------------------------------------------------------------------------- *)
 
-let remove_claude_settings_hooks ~dry_run path hook_script stop_hook_script =
+let remove_claude_settings_hooks ~dry_run path c2c_scripts =
   if not (Sys.file_exists path) then None
   else
     match read_json_opt path with
@@ -181,7 +181,7 @@ let remove_claude_settings_hooks ~dry_run path hook_script stop_hook_script =
                                | `Assoc hf ->
                                    (match List.assoc_opt "command" hf with
                                     | Some (`String cmd) ->
-                                        cmd <> hook_script && cmd <> stop_hook_script
+                                        not (List.mem cmd c2c_scripts)
                                     | _ -> true)
                                | _ -> true)
                             hs
@@ -214,7 +214,7 @@ let remove_claude_settings_hooks ~dry_run path hook_script stop_hook_script =
                      List.map
                        (fun (k, v) ->
                           match k, v with
-                          | ("PostToolUse" | "Stop"), `List entries ->
+                          | ("PostToolUse" | "Stop" | "SessionStart" | "SessionEnd"), `List entries ->
                               let filtered = filter_hook_commands entries in
                               if List.length filtered <> List.length entries then changed := true;
                               (k, `List filtered)
@@ -368,6 +368,7 @@ let recompute_claude_artifacts ~target_dir =
   let settings = claude_dir // "settings.json" in
   let hook_script = claude_dir // "hooks" // "c2c-inbox-check.sh" in
   let stop_hook_script = claude_dir // "hooks" // "c2c-stop-deliver.sh" in
+  let session_hook_script = claude_dir // "hooks" // "c2c-session-hook.sh" in
   let skill_path = claude_dir // "skills" // "c2c" // "SKILL.md" in
   let shared =
     (if Sys.file_exists project_mcp then
@@ -380,6 +381,7 @@ let recompute_claude_artifacts ~target_dir =
   let owned =
     [ C2c_install_manifest.owned_file hook_script
     ; C2c_install_manifest.owned_file stop_hook_script
+    ; C2c_install_manifest.owned_file session_hook_script
     ; C2c_install_manifest.owned_file skill_path
     ]
   in
@@ -387,8 +389,23 @@ let recompute_claude_artifacts ~target_dir =
 
 let recompute_codex_artifacts () =
   let config = home_dir () // ".codex" // "config.toml" in
-  ([ C2c_install_manifest.shared_toml_section ~path:config ~section_prefix:"mcp_servers.c2c" ],
-   deliver_watch_artifacts "codex",
+  let agents_md = home_dir () // ".codex" // "AGENTS.md" in
+  let skill_path = home_dir () // ".codex" // "skills" // "c2c" // "SKILL.md" in
+  (* Shared blocks mirror what setup_codex declares: the config.toml hooks
+     block and the AGENTS.md orientation block, so a manifest-less
+     `c2c uninstall codex` strips them too. The deliver-watch owned files are
+     no longer written by install (hooks are the delivery path) but stay here
+     so uninstall can remove scripts from older installs; removal is a no-op
+     when the files are absent. *)
+  ([ C2c_install_manifest.shared_toml_section ~path:config ~section_prefix:"mcp_servers.c2c"
+   ; C2c_install_manifest.shared_block ~path:config
+       ~begin_marker:C2c_codex_hooks.config_begin_marker
+       ~end_marker:C2c_codex_hooks.config_end_marker ()
+   ; C2c_install_manifest.shared_block ~path:agents_md
+       ~begin_marker:C2c_codex_hooks.agents_md_begin_marker
+       ~end_marker:C2c_codex_hooks.agents_md_end_marker ()
+   ],
+   C2c_install_manifest.owned_file skill_path :: deliver_watch_artifacts "codex",
    None)
 
 let recompute_kimi_artifacts () =
@@ -428,6 +445,18 @@ let recompute_gemini_artifacts () =
   ([ C2c_install_manifest.shared_key ~path:config ~key:"mcpServers.c2c" ~format:"json" ],
    deliver_watch_artifacts "gemini",
    None)
+
+let recompute_grok_artifacts () =
+  let home = home_dir () in
+  let skill = home // ".grok" // "skills" // "c2c" // "SKILL.md" in
+  let session_skill = home // ".grok" // "skills" // "c2c-session" // "SKILL.md" in
+  let hooks = home // ".grok" // "hooks" // "c2c-session.json" in
+  ( []
+  , [ C2c_install_manifest.owned_file skill
+    ; C2c_install_manifest.owned_file session_skill
+    ; C2c_install_manifest.owned_file hooks
+    ]
+  , None )
 
 let recompute_self_artifacts () =
   let home = home_dir () in
@@ -481,6 +510,7 @@ let recompute_artifacts_for_component ~component ~target_dir =
   | "opencode" -> recompute_opencode_artifacts ~target_dir
   | "crush" -> recompute_crush_artifacts ()
   | "gemini" -> recompute_gemini_artifacts ()
+  | "grok" -> recompute_grok_artifacts ()
   | "git-hook" -> ([], recompute_git_hook_artifacts ~target_dir, None)
   | "git-shim" -> ([], recompute_git_shim_artifacts (), None)
   | _ -> ([], [], None)
@@ -552,7 +582,9 @@ let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
           let claude_dir = C2c_setup.resolve_claude_dir () in
           let hook_script = claude_dir // "hooks" // "c2c-inbox-check.sh" in
           let stop_hook_script = claude_dir // "hooks" // "c2c-stop-deliver.sh" in
-          remove_claude_settings_hooks ~dry_run settings hook_script stop_hook_script
+          let session_hook_script = claude_dir // "hooks" // "c2c-session-hook.sh" in
+          remove_claude_settings_hooks ~dry_run settings
+            [ hook_script; stop_hook_script; session_hook_script ]
       | None -> None
     else None
   in
@@ -632,7 +664,7 @@ let run_uninstall ~output_mode ~dry_run ~component ~target_dir_opt ~alias_opt =
     exit 124
   end;
   if component = "all" then begin
-    let components = [ "claude"; "codex"; "kimi"; "opencode"; "crush"; "gemini"; "git-shim"; "git-hook" ] in
+    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "crush"; "gemini"; "git-shim"; "git-hook" ] in
     let target_dir = resolve_target_dir target_dir_opt in
     let all_removed = ref [] in
     List.iter

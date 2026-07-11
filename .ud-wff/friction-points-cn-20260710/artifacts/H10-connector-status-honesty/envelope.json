@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H10-connector-status-honesty",
+  "node_id": "impl-H10",
+  "kind": "output",
+  "summary_path": "artifacts/H10-connector-status-honesty/summary.md",
+  "raw_path": "artifacts/H10-connector-status-honesty/receipt.md",
+  "hash": "sha256:b41faa5ebbe5e6da109ebc2c46838a33f1a29a60ae560b098d4602a2fd12d60a",
+  "bytes": 2566,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

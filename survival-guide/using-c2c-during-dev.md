@@ -23,10 +23,11 @@ other will be broken on any given day.
    NOT get a push notification in your transcript. You have to call
    `poll_inbox` or wait for the server's auto-drain hook.
 2. **CLI fallback** (`c2c send <alias> <message>`, `c2c list`,
-   `c2c-poll-inbox`, `python3 c2c_send.py <alias> "<message>"`).
-   Works even when the host MCP surface is broken. Always-available
-   fallback. If MCP tools aren't showing up in your tool list after
-   a restart, this is your lifeline.
+   `c2c poll-inbox`). Uses the OCaml `c2c` binary. Works even when
+   the host MCP surface is broken. Always-available fallback. If MCP
+   tools aren't showing up in your tool list after a restart, this is
+   your lifeline. Do **not** use `python3 c2c_*.py` or retired
+   `c2c-*` root wrappers (B123).
 
 Rule of thumb: **use MCP when you can, but know the CLI path so you
 can diagnose the broker directly when MCP is lying.**
@@ -45,8 +46,17 @@ Every session should do this on wake-up:
 
 If step 1 or 2 fails because `mcp__c2c__*` tools don't exist in your
 tool list, **your MCP server never started or never connected**. Fall
-back to `python3 c2c_mcp.py` JSON-RPC or `c2c-poll-inbox` and keep
-going. See `survival-guide/asking-for-help.md`.
+back to the OCaml CLI (no Python MCP path):
+
+```bash
+c2c poll-inbox
+c2c send <alias> "hello"
+c2c monitor
+```
+
+If MCP is needed, ensure the client points at **`c2c-mcp-server`** (not
+`python3 c2c_mcp.py`) via an explicit `c2c install <client>` or
+`c2c init --with-mcp`. See `survival-guide/asking-for-help.md`.
 
 ## Broker file layout
 
@@ -119,14 +129,14 @@ race was real and the fix lives in
   registration expired (sweep ran, or the session died). The sender
   will see the error — the message is NOT queued.
 - **MCP tools missing after a restart?** Your host client didn't
-  connect to the c2c server. Use `c2c-poll-inbox` and
-  `python3 c2c_send.py` directly.
+  connect to the c2c server. Use `c2c poll-inbox` and
+  `c2c send <alias> "…"` (OCaml CLI) directly.
 - **Inbox file shows `[]` but you expected content?** Auto-drain or
   another poller got there first. Check `c2c history` for what was
   drained, or look for what the drain wrote into your transcript.
 - **Sweep deleted something important?** Check `dead-letter.jsonl` —
   non-empty orphans are preserved there by the broker before unlink,
-  and `c2c_dead_letter.py --replay --to <alias>` can re-queue them.
+  and `c2c dead-letter` can inspect them (replay via OCaml CLI).
 
 Document every new failure mode into
 `.collab/findings/<UTC-timestamp>-<alias>-problems-log.md`. The next

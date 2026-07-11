@@ -1,0 +1,16 @@
+---
+claimed_at: "2026-07-11T07:05:48Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T07:21:33Z"
+complexity: medium
+depends_on: []
+duration_minutes: 15.755233199083333
+estimate_hours: 1
+id: B122
+priority: high
+started_at: "2026-07-11T07:05:48Z"
+status: done
+tags: []
+title: Require explicit MCP opt-in and retire user-facing Python MCP paths
+---
+Problem: c2c init is MCP-opt-in, but bare `c2c install` (Enter/default) and `c2c install all` still auto-configure detected client MCP integrations. A dry run on 2026-07-11 would configure Kimi MCP, hooks, delivery scripts, and a wake schedule without the user selecting Kimi or MCP. This violates the operator rule that MCP must only be installed/enabled through deliberate user action.\n\nLive incident: the prior global Claude `~/.claude.json` entry has been removed; it referenced the deprecated Python `c2c_mcp.py` from the disposable `bl-b108` worktree and a nonexistent broker path. Stale references remain only in Claude backup files. Current OCaml setup uses `c2c-mcp-server`, but user-facing Python MCP routes remain (legacy install target/wrappers/configurators, c2c_start.py, c2c_poll_inbox.py, c2c_send_all.py, Dockerfile.agent, and the survival guide fallback).\n\nAcceptance criteria:\n- No c2c command installs or enables client MCP by default; client MCP requires an explicit user choice.\n- `c2c install all` cannot silently configure MCP clients.\n- Plain CLI messaging remains usable without MCP.\n- User-facing config and documentation use the OCaml `c2c-mcp-server`, never Python `c2c_mcp.py`.\n- Remove or clearly retire all listed user-facing Python MCP routes, preserving Python only for tests/isolated legacy migration work.\n- Keep `~/.claude.json` writes behind an explicit advanced choice; never recreate global Claude MCP configuration automatically.\n\nEvidence: .collab/findings/2026-07-11T06-34-40Z-codex-rain-karu-mcp-install-opt-in-policy-gap.md (slice/finding-mcp-opt-in-install-default, f133ceb8).\n\nVerified with: `c2c install --help`; `c2c install all --dry-run --json`; `jq -e '.mcpServers.c2c // empty' ~/.claude.json`; source inspection of OCaml install/init paths; independent review PASS.

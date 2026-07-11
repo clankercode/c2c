@@ -46,7 +46,13 @@ CREATE TABLE IF NOT EXISTS dead_letter (
 
 CREATE TABLE IF NOT EXISTS rooms (
     room_id TEXT PRIMARY KEY,
-    visibility TEXT NOT NULL DEFAULT 'public'
+    visibility TEXT NOT NULL DEFAULT 'public',
+    -- B117: history readability policy, persisted separately from visibility.
+    -- Default 1 (open) for compatible rollout; forced to 0 for gated/private
+    -- on creation and on any visibility downgrade. Migration for older DBs
+    -- (SqliteRelay.create) adds the column with DEFAULT 1 then clears it for
+    -- pre-existing gated/private rooms.
+    history_public INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS room_members (
@@ -81,6 +87,16 @@ CREATE TABLE IF NOT EXISTS register_nonces (
 );
 
 CREATE TABLE IF NOT EXISTS request_nonces (
+    nonce TEXT PRIMARY KEY,
+    ts REAL NOT NULL
+);
+
+-- B116: DELETE /binding/<id> revocation-proof nonces. A DEDICATED table
+-- (not request_nonces) so revoke replay state is never touched by the
+-- outer Ed25519 request verifier, which consumes header nonces into
+-- request_nonces before signature verification. Persisted so replay
+-- protection survives a restart within the freshness window.
+CREATE TABLE IF NOT EXISTS revoke_nonces (
     nonce TEXT PRIMARY KEY,
     ts REAL NOT NULL
 );

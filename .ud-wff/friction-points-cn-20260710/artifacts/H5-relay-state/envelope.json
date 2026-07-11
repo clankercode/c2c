@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H5-relay-state",
+  "node_id": "impl-H5",
+  "kind": "output",
+  "summary_path": "artifacts/H5-relay-state/summary.md",
+  "raw_path": "artifacts/H5-relay-state/receipt.md",
+  "hash": "sha256:1322ac267bda908d47958ffd2d5c165ac76cb6c6520803aac28223cc87ae016c",
+  "bytes": 2958,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

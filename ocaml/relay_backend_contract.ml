@@ -49,6 +49,12 @@ module type RELAY = sig
   val unbind_alias : t -> alias:string -> bool
   val check_register_nonce : t -> nonce:string -> ts:float -> (unit, string) result
   val check_request_nonce : t -> nonce:string -> ts:float -> (unit, string) result
+  (** B116: consume a DELETE /binding/<id> revocation-proof nonce. Separate
+      from [check_request_nonce] so the outer Ed25519 request verifier
+      (which writes header nonces to the request-nonce store before
+      signature verification) can never touch revoke replay state.
+      Persisted by SqliteRelay; in-memory for InMemoryRelay. *)
+  val check_revoke_nonce : t -> nonce:string -> ts:float -> (unit, string) result
   val heartbeat : t -> node_id:string -> session_id:string -> (string * RegistrationLease.t)
   val list_peers : t -> ?include_dead:bool -> RegistrationLease.t list
   val send : t -> from_alias:string -> to_alias:string -> content:string -> ?message_id:string option -> [> `Ok of float | `Duplicate of float | `Error of string * string]
@@ -68,6 +74,13 @@ module type RELAY = sig
   val room_invites_of : t -> room_id:string -> string list
   val is_invited : t -> room_id:string -> identity_pk_b64:string -> bool
   val set_room_visibility : t -> room_id:string -> visibility:string -> unit
+  (* B117: persisted per-room history readability policy. [history_public_of]
+     returns the stored value, defaulting per visibility for legacy/absent
+     rooms (public/unlisted → true, gated/private → false).
+     [set_room_history_public] persists the flag; callers enforce the
+     gated/private-must-be-false invariant before invoking it. *)
+  val history_public_of : t -> room_id:string -> bool
+  val set_room_history_public : t -> room_id:string -> history_public:bool -> unit
   val invite_to_room : t -> room_id:string -> identity_pk_b64:string -> unit
   val uninvite_from_room : t -> room_id:string -> identity_pk_b64:string -> unit
   val knock_room : t -> room_id:string -> requester_alias:string ->

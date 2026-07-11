@@ -48,6 +48,11 @@ git tag -a vX.Y.Z -m "c2c X.Y.Z"
 git push origin vX.Y.Z
 ```
 
+A tag push is the normal artifact-release path. It runs the mandatory
+`ci-gate`, validates the changelog/version, builds release assets, creates or
+updates the GitHub Release, dry-run packs every npm package, and publishes npm
+packages through Trusted Publishing.
+
 Signed tags are not required for normal c2c releases. If coordinator1
 explicitly requests a signed tag for a particular release, use
 `git tag -s vX.Y.Z`; otherwise use the unsigned annotated tag form above.
@@ -58,7 +63,15 @@ Manual draft path:
 GitHub Actions -> Release -> Run workflow -> version=X.Y.Z, draft=true
 ```
 
+Manual `workflow_dispatch` runs do not publish npm packages unless
+`publish_npm=true` is set. Use that flag only when intentionally publishing
+npm from a manual release run; the workflow still runs the same dry-run pack
+checks first.
+
 ## What CI Builds
+
+The release workflow starts with the shared `ci-gate`; no validate, build,
+package, release-upload, or npm publish step runs until that gate passes.
 
 The release workflow builds native c2c binary bundles for:
 
@@ -89,9 +102,10 @@ Windows on the hosted `ocaml/setup-ocaml` compiler.
 on operator-local Claude tooling and is not portable c2c runtime surface.
 
 The workflow also stages npm platform packages and the `@clanker-code/c2c`
-meta package. npm publishing is opt-in via manual dispatch with
-`publish_npm=true`; every package is dry-run packed first, and platform
-packages publish before the meta package.
+meta package. Every package is dry-run packed first, and platform packages
+publish before the meta package. A tag push publishes npm packages
+automatically through Trusted Publishing after the dry-run checks. A manual
+`workflow_dispatch` run publishes npm only when `publish_npm=true` is set.
 
 npm publishing uses Trusted Publishing with GitHub Actions OIDC. Configure
 each npm package on npmjs.com with:

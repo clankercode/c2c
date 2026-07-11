@@ -1,0 +1,16 @@
+---
+claimed_at: "2026-07-10T10:42:34Z"
+claimed_by: cli-user
+completed_at: "2026-07-10T10:58:03Z"
+complexity: medium
+depends_on: []
+duration_minutes: 15.486453559616667
+estimate_hours: 1
+id: B103
+priority: high
+started_at: "2026-07-10T10:42:34Z"
+status: done
+tags: []
+title: 'OpenCode question flow: inbound question:<qId>:answer message still resolves dialog via HTTP (strict B098 residual)'
+---
+H1 (fb9a7210) closed the permission message->approval path per the strict B098 decision, but opencode-c2c/c2c.ts ~L1988-1996 still resolves OpenCode QUESTION dialogs from inbound 'question:<qId>:answer:...' messages via question.reply/question.reject. Under strict 'bus, never RPC' this is the nearest residual message->host-action surface: question dialogs can gate consequential choices. Needs explicit adjudication: either extend the strict contract to questions (advisory-only) or record an authority-backed carve-out with rationale + sender-validation requirements. Cross-links: docs/security/pending-permissions.md; .collab/research/friction-cn-b098-decision.md (friction-cn-reconcile worktree); finding .collab/findings/2026-07-10T05-35-00Z-fable-warden-opencode-question-flow-message-action.md (coord worktree). Found during H1 live peer re-review by fable-warden.

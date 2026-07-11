@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-J5-aggregate-gate",
+  "node_id": "impl-J5",
+  "kind": "output",
+  "summary_path": "artifacts/J5-aggregate-gate/summary.md",
+  "raw_path": "artifacts/J5-aggregate-gate/receipt.md",
+  "hash": "sha256:e83c6afe16443d58f130417f1caf800ae639ef185d3da10e7b0e1f4655999b5e",
+  "bytes": 3354,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

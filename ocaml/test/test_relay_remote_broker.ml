@@ -9,6 +9,492 @@
 
 open Alcotest
 
+open Lwt.Infix
+
+type http_result = {
+  status : Cohttp.Code.status_code;
+  json : Yojson.Safe.t;
+}
+
+let failf fmt = Printf.ksprintf (fun msg -> Alcotest.fail msg) fmt
+
+let loopback_socket () =
+  let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Lwt_unix.setsockopt fd Unix.SO_REUSEADDR true;
+  Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) >>= fun () ->
+  Lwt_unix.listen fd 16;
+  match Lwt_unix.getsockname fd with
+  | Unix.ADDR_INET (_, port) -> Lwt.return (fd, port)
+  | _ -> Lwt.fail_with "loopback_socket: expected INET socket"
+
+let call_json ~base_url ~path ?authorization body =
+  let body_str = Yojson.Safe.to_string body in
+  let headers = Cohttp.Header.init_with "Content-Type" "application/json" in
+  let headers =
+    match authorization with
+    | Some value -> Cohttp.Header.add headers "Authorization" value
+    | None -> headers
+  in
+  let body = Cohttp_lwt.Body.of_string body_str in
+  Cohttp_lwt_unix.Client.call ~headers ~body `POST
+    (Uri.of_string (base_url ^ path))
+  >>= fun (response, response_body) ->
+  Cohttp_lwt.Body.to_string response_body >|= fun text ->
+  let json =
+    try Yojson.Safe.from_string text
+    with Yojson.Json_error msg -> failf "response was not JSON: %s; body=%s" msg text
+  in
+  { status = Cohttp.Response.status response; json }
+
+let json_string_field name = function
+  | `Assoc fields ->
+    (match List.assoc_opt name fields with
+     | Some (`String value) -> value
+     | value -> failf "expected string field %s, got %s" name
+         (Yojson.Safe.to_string (Option.value value ~default:`Null)))
+  | json -> failf "expected JSON object, got %s" (Yojson.Safe.to_string json)
+
+let json_messages = function
+  | `Assoc fields ->
+    (match List.assoc_opt "messages" fields with
+     | Some (`List messages) -> messages
+     | value -> failf "expected messages array, got %s"
+         (Yojson.Safe.to_string (Option.value value ~default:`Null)))
+  | json -> failf "expected JSON object, got %s" (Yojson.Safe.to_string json)
+
+module Backend_http_tests (R : Relay.RELAY) = struct
+  module RS = Relay.Relay_server (R)
+
+  let with_server ?token relay f =
+    Lwt_main.run
+      (loopback_socket () >>= fun (fd, port) ->
+       let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+       let stop, wake_stop = Lwt.wait () in
+       let callback (conn, _) request body =
+         RS.make_callback relay token conn request body ?broker_root:None
+           ~rate_limiter
+       in
+       let spec = Cohttp_lwt_unix.Server.make ~callback () in
+       let server =
+         Cohttp_lwt_unix.Server.create ~stop ~mode:(`TCP (`Socket fd)) spec
+       in
+       Lwt.pause () >>= fun () ->
+       let base_url = Printf.sprintf "http://127.0.0.1:%d" port in
+       Lwt.finalize
+         (fun () -> f ~base_url)
+         (fun () ->
+            Lwt.wakeup_later wake_stop ();
+            server))
+
+  let register_identity relay ~node_id ~session_id ~alias identity =
+    let status, _lease =
+      R.register relay ~node_id ~session_id ~alias
+        ~identity_pk:identity.Relay_identity.public_key ()
+    in
+    Alcotest.(check string) ("register " ^ alias) "ok" status
+
+  let prime_victim_inbox relay =
+    let victim = Relay_identity.generate ~alias_hint:"victim" () in
+    let attacker = Relay_identity.generate ~alias_hint:"attacker" () in
+    register_identity relay ~node_id:"victim-node" ~session_id:"victim-session"
+      ~alias:"victim" victim;
+    register_identity relay ~node_id:"attacker-node" ~session_id:"attacker-session"
+      ~alias:"attacker" attacker;
+    (match R.send relay ~from_alias:"attacker" ~to_alias:"victim"
+             ~content:"victim secret" ~message_id:None with
+     | `Ok _ -> ()
+     | `Duplicate _ -> Alcotest.fail "unexpected duplicate message"
+     | `Error (code, msg) -> failf "send failed: %s: %s" code msg);
+    (victim, attacker)
+
+  let victim_body =
+    `Assoc [
+      "node_id", `String "victim-node";
+      "session_id", `String "victim-session";
+    ]
+
+  let test_verified_attacker_cannot_peek_victim relay =
+    let _victim, attacker = prime_victim_inbox relay in
+    with_server relay (fun ~base_url ->
+      let body_str = Yojson.Safe.to_string victim_body in
+      let authorization =
+        Relay_signed_ops.sign_request attacker ~alias:"attacker" ~meth:"POST"
+          ~path:"/peek_inbox" ~body_str ()
+      in
+      call_json ~base_url ~path:"/peek_inbox" ~authorization victim_body
+      >|= fun result ->
+      Alcotest.(check int) "attacker receives HTTP 403" 403
+        (Cohttp.Code.code_of_status result.status);
+      Alcotest.(check string) "ownership mismatch uses signature error"
+        Relay.relay_err_signature_invalid
+        (json_string_field "error_code" result.json))
+
+  (* B115: the unsigned legacy inbox path now requires BOTH a tokenless
+     relay AND the explicit development-only env gate
+     C2C_RELAY_ALLOW_UNSIGNED_INBOX=1. [with_unsigned_inbox_gate] arms the
+     gate for one test body and restores the caller's prior value after
+     (empty value = fail closed; OCaml's Unix has no unsetenv). *)
+  let with_unsigned_inbox_gate f =
+    let var = "C2C_RELAY_ALLOW_UNSIGNED_INBOX" in
+    let previous = Sys.getenv_opt var in
+    let restore () =
+      match previous with
+      | Some v -> Unix.putenv var v
+      | None -> Unix.putenv var ""
+    in
+    Unix.putenv var "1";
+    Fun.protect ~finally:restore f
+
+  let test_unsigned_dev_request_keeps_existing_policy relay =
+    let _victim, _attacker = prime_victim_inbox relay in
+    with_unsigned_inbox_gate (fun () ->
+      with_server relay (fun ~base_url ->
+        call_json ~base_url ~path:"/peek_inbox" victim_body >|= fun result ->
+        Alcotest.(check int) "unsigned gated dev-mode peek remains allowed" 200
+          (Cohttp.Code.code_of_status result.status);
+        let messages = json_messages result.json in
+        Alcotest.(check int) "victim inbox remains readable in gated dev mode" 1
+          (List.length messages)))
+
+  let test_verified_owner_can_peek_own_inbox relay =
+    let victim, _attacker = prime_victim_inbox relay in
+    with_server relay (fun ~base_url ->
+      let body_str = Yojson.Safe.to_string victim_body in
+      let authorization =
+        Relay_signed_ops.sign_request victim ~alias:"victim" ~meth:"POST"
+          ~path:"/peek_inbox" ~body_str ()
+      in
+      call_json ~base_url ~path:"/peek_inbox" ~authorization victim_body
+      >|= fun result ->
+      Alcotest.(check int) "owner receives HTTP 200" 200
+        (Cohttp.Code.code_of_status result.status);
+      let messages = json_messages result.json in
+      Alcotest.(check int) "owner can still read own inbox" 1
+        (List.length messages))
+
+  (* === B115: token-configured (prod) relay — poll/peek bound to a
+     verified Ed25519 owner. Before B115 both routes were outer-auth
+     bypasses: anyone who learned a node_id/session_id could read (peek)
+     or drain (poll) that inbox with a bare unsigned POST. *)
+
+  let prod_token = "b115-prod-token"
+
+  let sign_as identity ~alias ~path =
+    let body_str = Yojson.Safe.to_string victim_body in
+    Relay_signed_ops.sign_request identity ~alias ~meth:"POST" ~path ~body_str ()
+
+  let owner_poll_message_count relay ~base_url victim =
+    ignore relay;
+    let authorization = sign_as victim ~alias:"victim" ~path:"/poll_inbox" in
+    call_json ~base_url ~path:"/poll_inbox" ~authorization victim_body
+    >|= fun result ->
+    Alcotest.(check int) "owner-signed poll is accepted" 200
+      (Cohttp.Code.code_of_status result.status);
+    List.length (json_messages result.json)
+
+  let test_prod_unsigned_poll_rejected_and_not_drained relay =
+    let victim, _attacker = prime_victim_inbox relay in
+    with_server ~token:prod_token relay (fun ~base_url ->
+      call_json ~base_url ~path:"/poll_inbox" victim_body >>= fun unsigned ->
+      Alcotest.(check int) "unsigned prod poll rejected with 401" 401
+        (Cohttp.Code.code_of_status unsigned.status);
+      owner_poll_message_count relay ~base_url victim >|= fun n ->
+      Alcotest.(check int) "rejected unsigned poll did NOT drain the inbox" 1 n)
+
+  let test_prod_unsigned_peek_rejected relay =
+    let _victim, _attacker = prime_victim_inbox relay in
+    with_server ~token:prod_token relay (fun ~base_url ->
+      call_json ~base_url ~path:"/peek_inbox" victim_body >|= fun result ->
+      Alcotest.(check int) "unsigned prod peek rejected with 401" 401
+        (Cohttp.Code.code_of_status result.status))
+
+  let test_prod_bearer_poll_rejected relay =
+    (* Route-alias/downgrade check: the relay's own Bearer admin token must
+       NOT open a peer inbox route. *)
+    let victim, _attacker = prime_victim_inbox relay in
+    with_server ~token:prod_token relay (fun ~base_url ->
+      call_json ~base_url ~path:"/poll_inbox"
+        ~authorization:("Bearer " ^ prod_token) victim_body >>= fun result ->
+      Alcotest.(check int) "Bearer-authed prod poll rejected with 401" 401
+        (Cohttp.Code.code_of_status result.status);
+      owner_poll_message_count relay ~base_url victim >|= fun n ->
+      Alcotest.(check int) "rejected Bearer poll did NOT drain the inbox" 1 n)
+
+  let test_prod_attacker_signed_poll_rejected relay =
+    let victim, attacker = prime_victim_inbox relay in
+    with_server ~token:prod_token relay (fun ~base_url ->
+      let authorization = sign_as attacker ~alias:"attacker" ~path:"/poll_inbox" in
+      call_json ~base_url ~path:"/poll_inbox" ~authorization victim_body
+      >>= fun result ->
+      Alcotest.(check int) "attacker-signed prod poll rejected with 403" 403
+        (Cohttp.Code.code_of_status result.status);
+      Alcotest.(check string) "ownership mismatch uses signature error"
+        Relay.relay_err_signature_invalid
+        (json_string_field "error_code" result.json);
+      owner_poll_message_count relay ~base_url victim >|= fun n ->
+      Alcotest.(check int) "attacker poll did NOT drain the inbox" 1 n)
+
+  let test_prod_attacker_signed_peek_rejected relay =
+    let _victim, attacker = prime_victim_inbox relay in
+    with_server ~token:prod_token relay (fun ~base_url ->
+      let authorization = sign_as attacker ~alias:"attacker" ~path:"/peek_inbox" in
+      call_json ~base_url ~path:"/peek_inbox" ~authorization victim_body
+      >|= fun result ->
+      Alcotest.(check int) "attacker-signed prod peek rejected with 403" 403
+        (Cohttp.Code.code_of_status result.status))
+
+  let test_prod_owner_signed_poll_drains relay =
+    let victim, _attacker = prime_victim_inbox relay in
+    with_server ~token:prod_token relay (fun ~base_url ->
+      owner_poll_message_count relay ~base_url victim >>= fun n ->
+      Alcotest.(check int) "owner-signed prod poll returns the message" 1 n;
+      owner_poll_message_count relay ~base_url victim >|= fun n2 ->
+      Alcotest.(check int) "poll drained the inbox" 0 n2)
+
+  let test_prod_owner_signed_peek_ok relay =
+    let victim, _attacker = prime_victim_inbox relay in
+    with_server ~token:prod_token relay (fun ~base_url ->
+      let authorization = sign_as victim ~alias:"victim" ~path:"/peek_inbox" in
+      call_json ~base_url ~path:"/peek_inbox" ~authorization victim_body
+      >|= fun result ->
+      Alcotest.(check int) "owner-signed prod peek accepted" 200
+        (Cohttp.Code.code_of_status result.status);
+      Alcotest.(check int) "peek returns the message without draining" 1
+        (List.length (json_messages result.json)))
+
+  (* === B115 direct-handler negatives: the owner gate must hold inside
+     the handlers themselves, independently of the outer route classifier
+     (defense in depth). [require_owner:true] mirrors a token-configured
+     (prod) relay. *)
+
+  let run_handler h =
+    Lwt_main.run
+      (h >>= fun (resp, body) ->
+       Cohttp_lwt.Body.to_string body >|= fun text ->
+       let json =
+         try Yojson.Safe.from_string text
+         with Yojson.Json_error msg ->
+           failf "handler response was not JSON: %s; body=%s" msg text
+       in
+       (Cohttp.Code.code_of_status (Cohttp.Response.status resp), json))
+
+  let owner_handler_message_count relay =
+    let status, json =
+      run_handler
+        (RS.handle_peek_inbox relay ~verified_alias:(Some "victim")
+           ~require_owner:true victim_body)
+    in
+    Alcotest.(check int) "owner-verified handler peek is accepted" 200 status;
+    List.length (json_messages json)
+
+  let test_handler_unverified_poll_rejected_when_owner_required relay =
+    let _ = prime_victim_inbox relay in
+    let status, json =
+      run_handler
+        (RS.handle_poll_inbox relay ~verified_alias:None ~require_owner:true
+           victim_body)
+    in
+    Alcotest.(check int) "handler refuses unverified poll (owner required)"
+      401 status;
+    Alcotest.(check string) "unauthorized error code" "unauthorized"
+      (json_string_field "error_code" json);
+    Alcotest.(check int) "refused poll did NOT drain the inbox" 1
+      (owner_handler_message_count relay)
+
+  let test_handler_unverified_peek_rejected_when_owner_required relay =
+    let _ = prime_victim_inbox relay in
+    let status, _ =
+      run_handler
+        (RS.handle_peek_inbox relay ~verified_alias:None ~require_owner:true
+           victim_body)
+    in
+    Alcotest.(check int) "handler refuses unverified peek (owner required)"
+      401 status
+
+  let test_handler_cross_alias_poll_rejected_even_without_owner_required relay =
+    (* Ownership mismatch rejects regardless of [require_owner]: a verified
+       signer may never touch someone else's session, dev mode included. *)
+    let _ = prime_victim_inbox relay in
+    let status, json =
+      run_handler
+        (RS.handle_poll_inbox relay ~verified_alias:(Some "attacker")
+           ~require_owner:false victim_body)
+    in
+    Alcotest.(check int) "handler refuses cross-alias poll" 403 status;
+    Alcotest.(check string) "ownership mismatch uses signature error"
+      Relay.relay_err_signature_invalid
+      (json_string_field "error_code" json);
+    Alcotest.(check int) "refused poll did NOT drain the inbox" 1
+      (owner_handler_message_count relay)
+
+  let test_dev_unsigned_poll_still_allowed relay =
+    (* Development-only escape: unsigned poll works ONLY when the relay is
+       tokenless AND C2C_RELAY_ALLOW_UNSIGNED_INBOX=1 is set — the explicit
+       dev-only setting from B115. *)
+    let _victim, _attacker = prime_victim_inbox relay in
+    with_unsigned_inbox_gate (fun () ->
+      with_server relay (fun ~base_url ->
+        call_json ~base_url ~path:"/poll_inbox" victim_body >|= fun result ->
+        Alcotest.(check int) "unsigned gated dev-mode poll remains allowed" 200
+          (Cohttp.Code.code_of_status result.status);
+        Alcotest.(check int) "gated dev-mode poll drains the victim inbox" 1
+          (List.length (json_messages result.json))))
+
+  let test_tokenless_unsigned_poll_fails_closed_by_default relay =
+    (* Fail-closed default (B115 review finding): a tokenless relay — e.g. a
+       production deploy whose token secret went missing — must still refuse
+       unsigned inbox reads unless the dev gate is explicitly armed. *)
+    let victim, _attacker = prime_victim_inbox relay in
+    with_server relay (fun ~base_url ->
+      call_json ~base_url ~path:"/poll_inbox" victim_body >>= fun result ->
+      Alcotest.(check int) "unsigned tokenless poll rejected by default" 401
+        (Cohttp.Code.code_of_status result.status);
+      owner_poll_message_count relay ~base_url victim >|= fun n ->
+      Alcotest.(check int) "rejected tokenless poll did NOT drain the inbox" 1 n)
+
+  let test_tokenless_unsigned_peek_fails_closed_by_default relay =
+    let _victim, _attacker = prime_victim_inbox relay in
+    with_server relay (fun ~base_url ->
+      call_json ~base_url ~path:"/peek_inbox" victim_body >|= fun result ->
+      Alcotest.(check int) "unsigned tokenless peek rejected by default" 401
+        (Cohttp.Code.code_of_status result.status))
+
+  let test_prod_env_gate_cannot_downgrade_token_relay relay =
+    (* The dev gate must be ignored whenever a token is configured: env
+       alone can never reopen the unsigned path on a prod relay. *)
+    let victim, _attacker = prime_victim_inbox relay in
+    with_unsigned_inbox_gate (fun () ->
+      with_server ~token:prod_token relay (fun ~base_url ->
+        call_json ~base_url ~path:"/poll_inbox" victim_body >>= fun result ->
+        Alcotest.(check int) "env gate does not downgrade token-configured relay"
+          401 (Cohttp.Code.code_of_status result.status);
+        owner_poll_message_count relay ~base_url victim >|= fun n ->
+        Alcotest.(check int) "rejected downgrade poll did NOT drain the inbox" 1 n))
+end
+
+module In_memory_http = Backend_http_tests (Relay.InMemoryRelay)
+module Sqlite_http = Backend_http_tests (Relay.SqliteRelay)
+
+let with_temp_dir prefix f =
+  let path = Filename.temp_file prefix "" in
+  Sys.remove path;
+  Unix.mkdir path 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      Array.iter
+        (fun entry ->
+          let child = Filename.concat path entry in
+          if Sys.is_directory child then Unix.rmdir child else Sys.remove child)
+        (Sys.readdir path);
+      Unix.rmdir path)
+    (fun () -> f path)
+
+let test_in_memory_verified_attacker_cannot_peek_victim () =
+  let relay = Relay.InMemoryRelay.create () in
+  In_memory_http.test_verified_attacker_cannot_peek_victim relay
+
+let test_in_memory_unsigned_dev_request_keeps_existing_policy () =
+  let relay = Relay.InMemoryRelay.create () in
+  In_memory_http.test_unsigned_dev_request_keeps_existing_policy relay
+
+let test_sqlite_verified_attacker_cannot_peek_victim () =
+  with_temp_dir "c2c-peek-auth" (fun persist_dir ->
+    let relay = Relay.SqliteRelay.create ~persist_dir () in
+    Sqlite_http.test_verified_attacker_cannot_peek_victim relay)
+
+let test_sqlite_unsigned_dev_request_keeps_existing_policy () =
+  with_temp_dir "c2c-peek-unsigned" (fun persist_dir ->
+    let relay = Relay.SqliteRelay.create ~persist_dir () in
+    Sqlite_http.test_unsigned_dev_request_keeps_existing_policy relay)
+
+let test_in_memory_verified_owner_can_peek_own_inbox () =
+  let relay = Relay.InMemoryRelay.create () in
+  In_memory_http.test_verified_owner_can_peek_own_inbox relay
+
+let test_sqlite_verified_owner_can_peek_own_inbox () =
+  with_temp_dir "c2c-peek-owner" (fun persist_dir ->
+    let relay = Relay.SqliteRelay.create ~persist_dir () in
+    Sqlite_http.test_verified_owner_can_peek_own_inbox relay)
+
+(* === B115 prod-mode (token-configured) wrappers === *)
+
+let in_memory_prod run () = run (Relay.InMemoryRelay.create ())
+
+let sqlite_prod run () =
+  with_temp_dir "c2c-b115-prod" (fun persist_dir ->
+    run (Relay.SqliteRelay.create ~persist_dir ()))
+
+let b115_prod_tests = [
+  "InMemory prod: unsigned poll rejected + not drained", `Quick,
+    in_memory_prod In_memory_http.test_prod_unsigned_poll_rejected_and_not_drained;
+  "InMemory prod: unsigned peek rejected", `Quick,
+    in_memory_prod In_memory_http.test_prod_unsigned_peek_rejected;
+  "InMemory prod: Bearer poll rejected + not drained", `Quick,
+    in_memory_prod In_memory_http.test_prod_bearer_poll_rejected;
+  "InMemory prod: attacker-signed poll rejected + not drained", `Quick,
+    in_memory_prod In_memory_http.test_prod_attacker_signed_poll_rejected;
+  "InMemory prod: attacker-signed peek rejected", `Quick,
+    in_memory_prod In_memory_http.test_prod_attacker_signed_peek_rejected;
+  "InMemory prod: owner-signed poll returns + drains", `Quick,
+    in_memory_prod In_memory_http.test_prod_owner_signed_poll_drains;
+  "InMemory prod: owner-signed peek ok", `Quick,
+    in_memory_prod In_memory_http.test_prod_owner_signed_peek_ok;
+  "InMemory dev: unsigned poll allowed with explicit gate", `Quick,
+    in_memory_prod In_memory_http.test_dev_unsigned_poll_still_allowed;
+  "InMemory tokenless: unsigned poll fails closed by default", `Quick,
+    in_memory_prod
+      In_memory_http.test_tokenless_unsigned_poll_fails_closed_by_default;
+  "InMemory tokenless: unsigned peek fails closed by default", `Quick,
+    in_memory_prod
+      In_memory_http.test_tokenless_unsigned_peek_fails_closed_by_default;
+  "InMemory prod: env gate cannot downgrade token relay", `Quick,
+    in_memory_prod
+      In_memory_http.test_prod_env_gate_cannot_downgrade_token_relay;
+  "SQLite prod: unsigned poll rejected + not drained", `Quick,
+    sqlite_prod Sqlite_http.test_prod_unsigned_poll_rejected_and_not_drained;
+  "SQLite prod: unsigned peek rejected", `Quick,
+    sqlite_prod Sqlite_http.test_prod_unsigned_peek_rejected;
+  "SQLite prod: Bearer poll rejected + not drained", `Quick,
+    sqlite_prod Sqlite_http.test_prod_bearer_poll_rejected;
+  "SQLite prod: attacker-signed poll rejected + not drained", `Quick,
+    sqlite_prod Sqlite_http.test_prod_attacker_signed_poll_rejected;
+  "SQLite prod: attacker-signed peek rejected", `Quick,
+    sqlite_prod Sqlite_http.test_prod_attacker_signed_peek_rejected;
+  "SQLite prod: owner-signed poll returns + drains", `Quick,
+    sqlite_prod Sqlite_http.test_prod_owner_signed_poll_drains;
+  "SQLite prod: owner-signed peek ok", `Quick,
+    sqlite_prod Sqlite_http.test_prod_owner_signed_peek_ok;
+  "SQLite dev: unsigned poll allowed with explicit gate", `Quick,
+    sqlite_prod Sqlite_http.test_dev_unsigned_poll_still_allowed;
+  "SQLite tokenless: unsigned poll fails closed by default", `Quick,
+    sqlite_prod
+      Sqlite_http.test_tokenless_unsigned_poll_fails_closed_by_default;
+  "SQLite tokenless: unsigned peek fails closed by default", `Quick,
+    sqlite_prod
+      Sqlite_http.test_tokenless_unsigned_peek_fails_closed_by_default;
+  "SQLite prod: env gate cannot downgrade token relay", `Quick,
+    sqlite_prod
+      Sqlite_http.test_prod_env_gate_cannot_downgrade_token_relay;
+  "InMemory handler: unverified poll rejected (owner required)", `Quick,
+    in_memory_prod
+      In_memory_http.test_handler_unverified_poll_rejected_when_owner_required;
+  "InMemory handler: unverified peek rejected (owner required)", `Quick,
+    in_memory_prod
+      In_memory_http.test_handler_unverified_peek_rejected_when_owner_required;
+  "InMemory handler: cross-alias poll rejected (owner not required)", `Quick,
+    in_memory_prod
+      In_memory_http.test_handler_cross_alias_poll_rejected_even_without_owner_required;
+  "SQLite handler: unverified poll rejected (owner required)", `Quick,
+    sqlite_prod
+      Sqlite_http.test_handler_unverified_poll_rejected_when_owner_required;
+  "SQLite handler: unverified peek rejected (owner required)", `Quick,
+    sqlite_prod
+      Sqlite_http.test_handler_unverified_peek_rejected_when_owner_required;
+  "SQLite handler: cross-alias poll rejected (owner not required)", `Quick,
+    sqlite_prod
+      Sqlite_http.test_handler_cross_alias_poll_rejected_even_without_owner_required;
+]
+
 let prefix_len = 14
 let prefix = "/remote_inbox/"
 
@@ -64,7 +550,20 @@ let tests = [
   "/remote_inbox/ path is exactly 14 chars", `Quick, test_path_length_is_14;
   "session_id extraction from path", `Quick, test_session_id_extraction;
   "ansi ls line parsing (with --color=never)", `Quick, test_ansi_ls_line_parsing;
+  "InMemory: verified attacker cannot peek victim", `Quick,
+    test_in_memory_verified_attacker_cannot_peek_victim;
+  "InMemory: unsigned dev request keeps policy", `Quick,
+    test_in_memory_unsigned_dev_request_keeps_existing_policy;
+  "SQLite: verified attacker cannot peek victim", `Quick,
+    test_sqlite_verified_attacker_cannot_peek_victim;
+  "SQLite: unsigned dev request keeps policy", `Quick,
+    test_sqlite_unsigned_dev_request_keeps_existing_policy;
+  "InMemory: verified owner can still peek own inbox", `Quick,
+    test_in_memory_verified_owner_can_peek_own_inbox;
+  "SQLite: verified owner can still peek own inbox", `Quick,
+    test_sqlite_verified_owner_can_peek_own_inbox;
 ]
 
 let () =
-  Alcotest.run "relay_remote_broker" [ "regression", tests ]
+  Alcotest.run "relay_remote_broker"
+    [ "regression", tests; "b115_inbox_owner_auth", b115_prod_tests ]

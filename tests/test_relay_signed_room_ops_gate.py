@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""E2e tests for C2C_REQUIRE_SIGNED_ROOM_OPS gate (Phase 3 prerequisite).
+"""E2e tests for signed room-op / room-send enforcement (B114).
 
-Starts a local OCaml relay server with C2C_REQUIRE_SIGNED_ROOM_OPS=1 and
-verifies:
-  - unsigned join_room → rejected with relay_err_unsigned_room_op
-  - unsigned leave_room → rejected with relay_err_unsigned_room_op
-  - unsigned set_room_visibility → rejected with relay_err_unsigned_room_op
-  - unsigned knock_room → rejected with relay_err_unsigned_room_op
-  - signed join_room (with Ed25519 proof) → accepted
-  - signed gated knock/list/approve/deny request-to-join flows work
+Since B114, signed room-operation proofs and signed /send_room envelopes are
+MANDATORY by default. The legacy unsigned compatibility path exists only as an
+explicit development gate: C2C_REQUIRE_SIGNED_ROOM_OPS=0, and that gate is
+honored ONLY when the relay has no Bearer token configured (dev mode). A
+token-configured (production) relay always requires signed proofs/envelopes.
 
-These tests require the OCaml relay binary (c2c relay serve) and an Ed25519
-identity fixture (C2C_RELAY_IDENTITY_PATH). They are NOT run against the
-prod relay.
+Coverage (all against a locally spawned OCaml relay, token-configured unless
+stated otherwise):
+  - default (no env var): unsigned join/leave/set_visibility/knock/invite/
+    uninvite/list_knocks/approve/deny → rejected with unsigned_room_op
+  - default: envelope-less /send_room → rejected with unsigned_room_op
+  - signed room ops and signed /send_room envelopes → accepted
+  - dev gate (no token + C2C_REQUIRE_SIGNED_ROOM_OPS=0): unsigned ops and
+    envelope-less sends accepted (legacy path)
+  - prod ignores the dev gate (token + C2C_REQUIRE_SIGNED_ROOM_OPS=0):
+    unsigned ops / envelope-less sends still rejected
+
+These tests require the OCaml relay binary (c2c relay serve). They are NOT
+run against the prod relay.
 
 Requires: cryptography (pip install cryptography)
 """
@@ -58,20 +65,32 @@ class RelayClient:
     ) -> dict:
         url = f"{self.base_url}{path}"
         data = json.dumps(body or {}).encode() if body is not None else b""
-        req = urllib.request.Request(url, data=data or None, method=method)
-        req.add_header("Content-Type", "application/json")
-        if auth_header:
-            req.add_header("Authorization", auth_header)
-        elif self.token:
-            req.add_header("Authorization", f"Bearer {self.token}")
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
+        # The relay applies a per-IP token-bucket rate limit (e.g. /room_history
+        # burst 20, refill 1/s). A tight test loop from 127.0.0.1 can exhaust it
+        # and get {"error":"rate_limit_exceeded","retry_after":N} — a harness
+        # artifact, not the behaviour under test. Retry a bounded number of
+        # times, honouring retry_after, so the assertions see the real response.
+        for _attempt in range(8):
+            req = urllib.request.Request(url, data=data or None, method=method)
+            req.add_header("Content-Type", "application/json")
+            if auth_header:
+                req.add_header("Authorization", auth_header)
+            elif self.token:
+                req.add_header("Authorization", f"Bearer {self.token}")
             try:
-                return json.loads(exc.read())
-            finally:
-                exc.close()
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read())
+            except urllib.error.HTTPError as exc:
+                try:
+                    result = json.loads(exc.read())
+                finally:
+                    exc.close()
+            if isinstance(result, dict) and result.get("error") == "rate_limit_exceeded":
+                retry_after = result.get("retry_after", 0.5)
+                time.sleep(min(float(retry_after) + 0.05, 3.0))
+                continue
+            return result
+        return result
 
     def get(self, path: str) -> dict:
         return self._request("GET", path)
@@ -87,21 +106,32 @@ class RelayClient:
 class OCamlRelayServer:
     """Context manager: starts OCaml relay server as a subprocess, tears it down on exit."""
 
-    def __init__(self, token: str, require_signed: bool = True,
-                 identity_path: str | None = None, port: int = TEST_PORT) -> None:
+    def __init__(self, token: str | None, signed_env: str | None = None,
+                 identity_path: str | None = None, port: int = TEST_PORT,
+                 storage: str = "memory", persist_dir: str | None = None) -> None:
+        """token=None starts a dev-mode relay (no --token flag).
+
+        signed_env is the C2C_REQUIRE_SIGNED_ROOM_OPS value: None leaves the
+        variable unset (the secure source default), "0" requests the legacy
+        unsigned dev gate, "1" is the explicit strict setting.
+
+        storage="sqlite" + persist_dir spins up a durable relay so a
+        stop/restart cycle exercises on-disk persistence (B117)."""
         self.token = token
-        self.require_signed = require_signed
+        self.signed_env = signed_env
         self.identity_path = identity_path
         self.port = port
+        self.storage = storage
+        self.persist_dir = persist_dir
         self._proc: subprocess.Popen | None = None
 
     def _build_env(self) -> dict:
         env = dict(os.environ)
         env.pop("C2C_MCP_SESSION_ID", None)
-        if self.require_signed:
-            env["C2C_REQUIRE_SIGNED_ROOM_OPS"] = "1"
-        else:
+        if self.signed_env is None:
             env.pop("C2C_REQUIRE_SIGNED_ROOM_OPS", None)
+        else:
+            env["C2C_REQUIRE_SIGNED_ROOM_OPS"] = self.signed_env
         if self.identity_path:
             env["C2C_RELAY_IDENTITY_PATH"] = self.identity_path
         return env
@@ -110,9 +140,12 @@ class OCamlRelayServer:
         cmd = [
             C2C, "relay", "serve",
             "--listen", f"127.0.0.1:{self.port}",
-            "--token", self.token,
-            "--storage", "memory",
+            "--storage", self.storage,
         ]
+        if self.persist_dir is not None:
+            cmd += ["--persist-dir", self.persist_dir]
+        if self.token is not None:
+            cmd += ["--token", self.token]
         self._proc = subprocess.Popen(
             cmd,
             env=self._build_env(),
@@ -305,12 +338,45 @@ class SignedRoomOpHelper:
             "nonce": nonce,
         }
 
+    def sign_send_room(self, room_id: str, content: str) -> dict:
+        """Signed /send_room envelope (spec §2, ctx c2c/v1/room-send).
+
+        Mirrors OCaml Relay_signed_ops.sign_send_room: the canonical blob is
+        [room_id, from_alias, sender_pk_b64, enc, ct_hash, ts, nonce] and
+        ct is base64url-nopad of the UTF-8 content (enc="none" in v1)."""
+        ct = content.encode()
+        ct_b64 = self._b64url_nopad_encode(ct)
+        ct_hash = self._b64url_nopad_encode(hashlib.sha256(ct).digest())
+        enc = "none"
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        nonce = self._b64url_nopad_encode(os.urandom(16))
+        blob = "\x1f".join([
+            "c2c/v1/room-send",
+            room_id,
+            self.alias,
+            self.identity_pk_b64,
+            enc,
+            ct_hash,
+            ts,
+            nonce,
+        ])
+        sig = self._sign(blob)
+        return {
+            "ct": ct_b64,
+            "enc": enc,
+            "sender_pk": self.identity_pk_b64,
+            "sig": self._b64url_nopad_encode(sig),
+            "ts": ts,
+            "nonce": nonce,
+        }
+
 
 class RequireSignedRoomOpsTests(unittest.TestCase):
-    """Tests for C2C_REQUIRE_SIGNED_ROOM_OPS=1 gate.
+    """Tests for the secure source default (B114).
 
-    When the gate is ON, unsigned room ops must be rejected with
-    relay_err_unsigned_room_op = "unsigned_room_op".
+    C2C_REQUIRE_SIGNED_ROOM_OPS is left UNSET and the relay is
+    token-configured: unsigned room ops must be rejected with
+    relay_err_unsigned_room_op = "unsigned_room_op" out of the box.
     """
 
     server: OCamlRelayServer
@@ -318,7 +384,7 @@ class RequireSignedRoomOpsTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.server = OCamlRelayServer(token=TOKEN, require_signed=True)
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None)
         cls.server.start()
         cls.client = RelayClient(cls.server.base_url, token=TOKEN)
         cls.client.register("n", ALICE_SESSION, ALICE_ALIAS)
@@ -377,6 +443,282 @@ class RequireSignedRoomOpsKnockTests(RequireSignedRoomOpsTests):
                          f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
 
 
+class RequireSignedRoomOpsInviteTests(RequireSignedRoomOpsTests):
+    FAKE_PK = _b64url_nopad(b"\x01" * 32)
+
+    def _assert_unsigned_rejected(self, path: str, body: dict):
+        r = self.client.post(path, body)
+        self.assertFalse(r["ok"], f"unsigned {path} should be rejected: {r}")
+        self.assertEqual(r["error_code"], "unsigned_room_op",
+                         f"expected unsigned_room_op for {path}, "
+                         f"got {r.get('error_code')}: {r.get('error')}")
+
+    def test_unsigned_invite_room_rejected(self):
+        self._assert_unsigned_rejected("/invite_room", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID, "invitee_pk": self.FAKE_PK,
+        })
+
+    def test_unsigned_uninvite_room_rejected(self):
+        self._assert_unsigned_rejected("/uninvite_room", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID, "invitee_pk": self.FAKE_PK,
+        })
+
+    def test_unsigned_list_room_knocks_rejected(self):
+        self._assert_unsigned_rejected("/list_room_knocks", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID,
+        })
+
+    def test_unsigned_approve_room_knock_rejected(self):
+        self._assert_unsigned_rejected("/approve_room_knock", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID, "requester_pk": self.FAKE_PK,
+        })
+
+    def test_unsigned_deny_room_knock_rejected(self):
+        self._assert_unsigned_rejected("/deny_room_knock", {
+            "alias": ALICE_ALIAS, "room_id": ROOM_ID, "requester_pk": self.FAKE_PK,
+        })
+
+
+class SendRoomEnvelopeEnforcementTests(unittest.TestCase):
+    """B114: /send_room must reject an absent envelope by default and accept a
+    valid signed envelope. Uses its own relay + a signed member identity."""
+
+    ALIAS = "send-e2e-alice"
+    ROOM = "send-e2e-room"
+
+    server: OCamlRelayServer
+    client: RelayClient
+    helper: SignedRoomOpHelper
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
+                                      port=TEST_PORT + 3)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        cls.helper = SignedRoomOpHelper(generate_identity(cls.ALIAS))
+        cls.client.register(
+            "n-send", "s-send", cls.ALIAS,
+            **cls.helper.sign_register(cls.server.base_url),
+        )
+        proof = cls.helper.sign_room_op("c2c/v1/room-join", cls.ROOM)
+        r = cls.client.post("/join_room", {
+            "alias": cls.ALIAS, "room_id": cls.ROOM, **proof,
+        })
+        assert r.get("ok"), f"signed join_room failed in setup: {r}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def test_envelope_less_send_room_rejected(self):
+        """An absent envelope must be rejected (unsigned_room_op), even from a
+        current member alias — anonymous impersonation closure (B111/B114)."""
+        r = self.client.post("/send_room", {
+            "from_alias": self.ALIAS,
+            "room_id": self.ROOM,
+            "content": "no envelope here",
+        })
+        self.assertFalse(r["ok"], f"envelope-less send_room should be rejected: {r}")
+        self.assertEqual(r["error_code"], "unsigned_room_op",
+                         f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
+
+    def test_signed_envelope_send_room_accepted(self):
+        content = "hello signed room"
+        envelope = self.helper.sign_send_room(self.ROOM, content)
+        r = self.client.post("/send_room", {
+            "from_alias": self.ALIAS,
+            "room_id": self.ROOM,
+            "content": content,
+            "envelope": envelope,
+        })
+        self.assertTrue(r["ok"], f"signed send_room should be accepted: {r}")
+
+    def test_forged_envelope_send_room_rejected(self):
+        """An envelope signed by a key that is not bound to from_alias must be
+        rejected — the envelope requirement must not be satisfiable by any
+        random self-signed envelope."""
+        imposter = SignedRoomOpHelper(generate_identity(self.ALIAS))
+        content = "imposter message"
+        envelope = imposter.sign_send_room(self.ROOM, content)
+        r = self.client.post("/send_room", {
+            "from_alias": self.ALIAS,
+            "room_id": self.ROOM,
+            "content": content,
+            "envelope": envelope,
+        })
+        self.assertFalse(r["ok"], f"forged-envelope send_room should be rejected: {r}")
+        self.assertEqual(r.get("error_code"), "alias_identity_mismatch",
+                         f"expected alias_identity_mismatch: {r}")
+
+
+class UnboundAliasProofRejectionTests(unittest.TestCase):
+    """B114 review finding 1 (blocker): a valid *self-signed* proof/envelope
+    for an alias that has NO registered identity binding must be REJECTED. A
+    signed proof only authenticates the alias if the signing key is the one
+    bound to that alias — otherwise any attacker key impersonates any
+    unsigned-registered (unbound) alias. No first-proof TOFU pinning: room
+    ops require a pre-existing matching binding."""
+
+    VICTIM = "unbound-victim"
+    ROOM = "unbound-room"
+
+    server: OCamlRelayServer
+    client: RelayClient
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
+                                      port=TEST_PORT + 5)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        # Register the victim WITHOUT an identity proof (legacy unsigned
+        # register) — the alias exists but has no bound identity_pk.
+        cls.client.register("n-unbound", "s-unbound", cls.VICTIM)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def test_arbitrary_key_join_as_unbound_alias_rejected(self):
+        attacker = SignedRoomOpHelper(generate_identity(self.VICTIM))
+        proof = attacker.sign_room_op("c2c/v1/room-join", self.ROOM)
+        r = self.client.post("/join_room", {
+            "alias": self.VICTIM, "room_id": self.ROOM, **proof,
+        })
+        self.assertFalse(r["ok"],
+                         f"self-signed join for an unbound alias must be rejected: {r}")
+        self.assertEqual(r.get("error_code"), "alias_identity_mismatch",
+                         f"expected alias_identity_mismatch: {r}")
+
+    def test_arbitrary_key_send_as_unbound_alias_rejected(self):
+        attacker = SignedRoomOpHelper(generate_identity(self.VICTIM))
+        content = "impersonated content"
+        envelope = attacker.sign_send_room(self.ROOM, content)
+        r = self.client.post("/send_room", {
+            "from_alias": self.VICTIM, "room_id": self.ROOM,
+            "content": content, "envelope": envelope,
+        })
+        self.assertFalse(r["ok"],
+                         f"self-signed send for an unbound alias must be rejected: {r}")
+        self.assertEqual(r.get("error_code"), "alias_identity_mismatch",
+                         f"expected alias_identity_mismatch: {r}")
+
+
+class InviteTargetBindingTests(unittest.TestCase):
+    """B114 review finding 2 (major): the invite/uninvite signature must bind
+    invitee_pk so the authorized target cannot be substituted by an
+    intermediary. Also covers positive signed invite/uninvite/leave (missing
+    from the original suite)."""
+
+    ALIAS = "invite-e2e-owner"
+    ROOM = "invite-e2e-room"
+
+    server: OCamlRelayServer
+    client: RelayClient
+    helper: SignedRoomOpHelper
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
+                                      port=TEST_PORT + 6)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        cls.helper = SignedRoomOpHelper(generate_identity(cls.ALIAS))
+        cls.client.register(
+            "n-inv", "s-inv", cls.ALIAS,
+            **cls.helper.sign_register(cls.server.base_url),
+        )
+        # Owner creates a gated room (so invites are meaningful).
+        proof = cls.helper.sign_room_op_with_visibility(
+            "c2c/v1/room-join", cls.ROOM, "gated")
+        r = cls.client.post("/join_room", {
+            "alias": cls.ALIAS, "room_id": cls.ROOM,
+            "visibility": "gated", **proof,
+        })
+        assert r.get("ok"), f"gated join failed in setup: {r}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def _target_pk(self) -> str:
+        return SignedRoomOpHelper(generate_identity("some-invitee")).identity_pk_b64
+
+    def test_signed_invite_accepted(self):
+        target = self._target_pk()
+        proof = self.helper.sign_room_op_with_extra(
+            "c2c/v1/room-invite", self.ROOM, target)
+        r = self.client.post("/invite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target, **proof,
+        })
+        self.assertTrue(r["ok"], f"signed invite should be accepted: {r}")
+        self.assertIn(target, r.get("invited_members", []),
+                      f"invited target must be in ACL: {r}")
+
+    def test_invitee_pk_substitution_rejected(self):
+        """A proof produced for target A must NOT authorize inviting a
+        substituted target B — invitee_pk is authorization-relevant and must
+        be covered by the signature."""
+        target_a = self._target_pk()
+        target_b = self._target_pk()
+        proof = self.helper.sign_room_op_with_extra(
+            "c2c/v1/room-invite", self.ROOM, target_a)
+        r = self.client.post("/invite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target_b, **proof,
+        })
+        self.assertFalse(r["ok"],
+                         f"substituted invitee_pk must be rejected: {r}")
+        self.assertEqual(r.get("error_code"), "signature_invalid",
+                         f"expected signature_invalid: {r}")
+
+    def test_unbound_extra_field_invite_rejected(self):
+        """The old unbound-target signature form (no invitee_pk in the blob)
+        must no longer verify — proves the fix actually binds the target."""
+        target = self._target_pk()
+        proof = self.helper.sign_room_op("c2c/v1/room-invite", self.ROOM)
+        r = self.client.post("/invite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target, **proof,
+        })
+        self.assertFalse(r["ok"],
+                         f"target-less invite signature must be rejected: {r}")
+
+    def test_signed_uninvite_accepted(self):
+        target = self._target_pk()
+        # First invite (target-bound), then uninvite (target-bound).
+        p_inv = self.helper.sign_room_op_with_extra(
+            "c2c/v1/room-invite", self.ROOM, target)
+        self.client.post("/invite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target, **p_inv,
+        })
+        p_uninv = self.helper.sign_room_op_with_extra(
+            "c2c/v1/room-uninvite", self.ROOM, target)
+        r = self.client.post("/uninvite_room", {
+            "alias": self.ALIAS, "room_id": self.ROOM,
+            "invitee_pk": target, **p_uninv,
+        })
+        self.assertTrue(r["ok"], f"signed uninvite should be accepted: {r}")
+        self.assertNotIn(target, r.get("invited_members", []),
+                         f"uninvited target must be gone from ACL: {r}")
+
+    def test_signed_leave_accepted(self):
+        room = self.ROOM + "-leave"
+        p_join = self.helper.sign_room_op("c2c/v1/room-join", room)
+        j = self.client.post("/join_room", {
+            "alias": self.ALIAS, "room_id": room, **p_join,
+        })
+        self.assertTrue(j["ok"], f"join for leave test failed: {j}")
+        p_leave = self.helper.sign_room_op("c2c/v1/room-leave", room)
+        r = self.client.post("/leave_room", {
+            "alias": self.ALIAS, "room_id": room, **p_leave,
+        })
+        self.assertTrue(r["ok"], f"signed leave should be accepted: {r}")
+
+
 class RequireSignedRoomOpsSignedJoinTests(RequireSignedRoomOpsTests):
     def test_signed_join_room_accepted(self):
         """Signed /join_room with Ed25519 proof must be accepted when identity is registered."""
@@ -395,36 +737,91 @@ class RequireSignedRoomOpsSignedJoinTests(RequireSignedRoomOpsTests):
         self.assertTrue(r["ok"], f"signed join_room should be accepted: {r}")
 
 
-class GateOffAcceptsUnsignedTests(unittest.TestCase):
-    """Verify that when C2C_REQUIRE_SIGNED_ROOM_OPS is OFF, unsigned ops are accepted.
-
-    This is the legacy behavior — a sanity check that the gate itself is functional.
-    """
+class DevGateAllowsUnsignedTests(unittest.TestCase):
+    """The legacy unsigned path survives ONLY as an explicit development gate:
+    C2C_REQUIRE_SIGNED_ROOM_OPS=0 on a token-less (dev-mode) relay."""
 
     server: OCamlRelayServer
     client: RelayClient
 
     @classmethod
     def setUpClass(cls):
-        cls.server = OCamlRelayServer(token=TOKEN, require_signed=False,
+        cls.server = OCamlRelayServer(token=None, signed_env="0",
                                       port=TEST_PORT + 1)
         cls.server.start()
-        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
-        cls.client.register("n", ALICE_SESSION + "-gateoff",
-                            ALICE_ALIAS + "-gateoff")
+        cls.client = RelayClient(cls.server.base_url, token=None)
+        cls.client.register("n", ALICE_SESSION + "-devgate",
+                            ALICE_ALIAS + "-devgate")
 
     @classmethod
     def tearDownClass(cls):
         cls.server.close()
 
-    def test_unsigned_join_room_accepted_when_gate_off(self):
-        """When gate is off, unsigned /join_room must be accepted (with warn log)."""
+    def test_unsigned_join_room_accepted_under_dev_gate(self):
         r = self.client.post("/join_room", {
-            "alias": ALICE_ALIAS + "-gateoff",
-            "room_id": ROOM_ID + "-gateoff",
+            "alias": ALICE_ALIAS + "-devgate",
+            "room_id": ROOM_ID + "-devgate",
         })
         self.assertTrue(r["ok"],
-                        f"unsigned join_room should be accepted when gate is off: {r}")
+                        f"unsigned join_room should be accepted under the dev gate: {r}")
+
+    def test_envelope_less_send_room_accepted_under_dev_gate(self):
+        # Membership first (unsigned join, allowed under the dev gate).
+        room = ROOM_ID + "-devgate-send"
+        j = self.client.post("/join_room", {
+            "alias": ALICE_ALIAS + "-devgate",
+            "room_id": room,
+        })
+        self.assertTrue(j["ok"], f"dev-gate join for send test failed: {j}")
+        r = self.client.post("/send_room", {
+            "from_alias": ALICE_ALIAS + "-devgate",
+            "room_id": room,
+            "content": "legacy dev-gate message",
+        })
+        self.assertTrue(r["ok"],
+                        f"envelope-less send_room should be accepted under the dev gate: {r}")
+
+
+class ProdIgnoresDevGateTests(unittest.TestCase):
+    """A token-configured (production) relay must ignore
+    C2C_REQUIRE_SIGNED_ROOM_OPS=0 — there is no unsigned downgrade in prod."""
+
+    server: OCamlRelayServer
+    client: RelayClient
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env="0",
+                                      port=TEST_PORT + 4)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        cls.client.register("n", ALICE_SESSION + "-prodgate",
+                            ALICE_ALIAS + "-prodgate")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def test_unsigned_join_room_still_rejected(self):
+        r = self.client.post("/join_room", {
+            "alias": ALICE_ALIAS + "-prodgate",
+            "room_id": ROOM_ID + "-prodgate",
+        })
+        self.assertFalse(r["ok"],
+                         f"token-configured relay must ignore the dev gate: {r}")
+        self.assertEqual(r["error_code"], "unsigned_room_op",
+                         f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
+
+    def test_envelope_less_send_room_still_rejected(self):
+        r = self.client.post("/send_room", {
+            "from_alias": ALICE_ALIAS + "-prodgate",
+            "room_id": ROOM_ID + "-prodgate",
+            "content": "should not land",
+        })
+        self.assertFalse(r["ok"],
+                         f"token-configured relay must ignore the dev gate for sends: {r}")
+        self.assertEqual(r["error_code"], "unsigned_room_op",
+                         f"expected unsigned_room_op, got {r.get('error_code')}: {r.get('error')}")
 
 
 class SignedRoomVisibilityE2ETests(unittest.TestCase):
@@ -457,7 +854,7 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.server = OCamlRelayServer(token=TOKEN, require_signed=True,
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
                                       port=TEST_PORT + 2)
         cls.server.start()
         cls.client = RelayClient(cls.server.base_url, token=TOKEN)
@@ -729,6 +1126,222 @@ class SignedRoomVisibilityE2ETests(unittest.TestCase):
                         f"signed set_room_visibility should be accepted: {r2}")
         self.assertNotIn("vis-e2e-flip", self._list_room_ids(),
                          "room must be hidden from /list_rooms after going private")
+
+
+class HistoryPublicE2ETests(unittest.TestCase):
+    """B117: history readability is a persisted per-room policy.
+
+    Matrix:
+      - anonymous /room_history on a public/unlisted room is allowed ONLY when
+        history_public is true (default true; closing it makes it member-only);
+      - a valid member can still read a history-closed listed room;
+      - a visibility downgrade to gated/private atomically clears history_public
+        (and stays anonymous-unreadable);
+      - setting history_public=true on a gated/private room is rejected.
+
+    Self-contained: generates its own signed identities; the first signed room
+    op pins each key to its alias (TOFU). No on-disk identity fixture needed."""
+
+    JOIN_CTX = "c2c/v1/room-join"
+    SETVIS_CTX = "c2c/v1/room-set-visibility"
+    SETHP_CTX = "c2c/v1/room-set-history-public"
+    ALIAS = "hp-e2e-alice"
+    ALIAS2 = "hp-e2e-bob"
+
+    server: OCamlRelayServer
+    client: RelayClient
+    helper: SignedRoomOpHelper
+    helper2: SignedRoomOpHelper
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = OCamlRelayServer(token=TOKEN, signed_env=None,
+                                      port=TEST_PORT + 7)
+        cls.server.start()
+        cls.client = RelayClient(cls.server.base_url, token=TOKEN)
+        cls.helper = SignedRoomOpHelper(generate_identity(cls.ALIAS))
+        cls.client.register(
+            "n-hp", "s-hp", cls.ALIAS,
+            **cls.helper.sign_register(cls.server.base_url),
+        )
+        cls.helper2 = SignedRoomOpHelper(generate_identity(cls.ALIAS2))
+        cls.client.register(
+            "n-hp2", "s-hp2", cls.ALIAS2,
+            **cls.helper2.sign_register(cls.server.base_url),
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+
+    def _signed_join(self, room_id: str, visibility: str) -> dict:
+        proof = self.helper.sign_room_op_with_visibility(
+            self.JOIN_CTX, room_id, visibility)
+        return self.client.post("/join_room", {
+            "alias": self.ALIAS, "room_id": room_id,
+            "visibility": visibility, **proof,
+        })
+
+    def _set_history_public(self, helper: SignedRoomOpHelper, alias: str,
+                            room_id: str, value: bool) -> dict:
+        proof = helper.sign_room_op_with_extra(
+            self.SETHP_CTX, room_id, "true" if value else "false")
+        return self.client.post("/set_room_history_public", {
+            "alias": alias, "room_id": room_id, "history_public": value,
+            **proof,
+        })
+
+    def _anon_history(self, room_id: str) -> dict:
+        return self.client.post("/room_history", {"room_id": room_id, "limit": 20})
+
+    def _member_history(self, helper: SignedRoomOpHelper, room_id: str) -> dict:
+        body = {"room_id": room_id, "limit": 20}
+        return self.client.post(
+            "/room_history", body,
+            auth_header=helper.sign_request("POST", "/room_history", body),
+        )
+
+    def test_public_default_open_then_close_gates_anon(self):
+        room = "hp-public-close"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        # default true → anonymous read allowed
+        self.assertTrue(self._anon_history(room)["ok"],
+                        "public room defaults to open history")
+        # close it → anonymous read now rejected
+        r = self._set_history_public(self.helper, self.ALIAS, room, False)
+        self.assertTrue(r["ok"], f"member should close history: {r}")
+        self.assertIs(r.get("history_public"), False)
+        anon = self._anon_history(room)
+        self.assertFalse(anon["ok"],
+                         f"closed public history must be member-only: {anon}")
+        self.assertEqual(anon.get("error_code"), "not_a_member")
+
+    def test_member_reads_closed_listed_room(self):
+        room = "hp-public-member-read"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        self.assertTrue(
+            self._set_history_public(self.helper, self.ALIAS, room, False)["ok"])
+        # anon blocked, member (creator) still allowed
+        self.assertFalse(self._anon_history(room)["ok"])
+        member = self._member_history(self.helper, room)
+        self.assertTrue(member["ok"],
+                        f"member must read a history-closed listed room: {member}")
+
+    def test_unlisted_close_gates_anon(self):
+        room = "hp-unlisted-close"
+        self.assertTrue(self._signed_join(room, "unlisted")["ok"])
+        self.assertTrue(self._anon_history(room)["ok"],
+                        "unlisted room defaults to open history")
+        self.assertTrue(
+            self._set_history_public(self.helper, self.ALIAS, room, False)["ok"])
+        self.assertFalse(self._anon_history(room)["ok"],
+                         "closed unlisted history must be member-only")
+
+    def test_reopen_restores_anon_read(self):
+        room = "hp-reopen"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        self.assertTrue(
+            self._set_history_public(self.helper, self.ALIAS, room, False)["ok"])
+        self.assertFalse(self._anon_history(room)["ok"])
+        self.assertTrue(
+            self._set_history_public(self.helper, self.ALIAS, room, True)["ok"])
+        self.assertTrue(self._anon_history(room)["ok"],
+                        "reopened public history must be anon-readable again")
+
+    def test_set_true_on_gated_rejected(self):
+        room = "hp-gated-reject"
+        self.assertTrue(self._signed_join(room, "gated")["ok"])
+        r = self._set_history_public(self.helper, self.ALIAS, room, True)
+        self.assertFalse(r["ok"],
+                         f"history_public=true must be rejected for gated: {r}")
+        self.assertEqual(r.get("error_code"), "history_public_gated")
+
+    def test_set_true_on_private_rejected(self):
+        room = "hp-private-reject"
+        self.assertTrue(self._signed_join(room, "private")["ok"])
+        r = self._set_history_public(self.helper, self.ALIAS, room, True)
+        self.assertFalse(r["ok"],
+                         f"history_public=true must be rejected for private: {r}")
+        self.assertEqual(r.get("error_code"), "history_public_gated")
+
+    def test_visibility_downgrade_clears_and_gates_anon(self):
+        room = "hp-downgrade"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        self.assertTrue(self._anon_history(room)["ok"])
+        # public → gated must atomically clear history_public
+        proof = self.helper.sign_room_op_with_visibility(
+            self.SETVIS_CTX, room, "gated")
+        r = self.client.post("/set_room_visibility", {
+            "alias": self.ALIAS, "room_id": room, "visibility": "gated", **proof,
+        })
+        self.assertTrue(r["ok"], f"set_room_visibility should succeed: {r}")
+        self.assertIs(r.get("history_public"), False,
+                      "downgrade must report history_public cleared")
+        anon = self._anon_history(room)
+        self.assertFalse(anon["ok"],
+                         "gated room history must be member-only after downgrade")
+        self.assertEqual(anon.get("error_code"), "not_a_member")
+
+    def test_non_member_cannot_set_history_public(self):
+        room = "hp-nonmember"
+        self.assertTrue(self._signed_join(room, "public")["ok"])
+        # helper2 is registered but NOT a member of this room
+        r = self._set_history_public(self.helper2, self.ALIAS2, room, False)
+        self.assertFalse(r["ok"],
+                         f"non-member must not change history_public: {r}")
+        self.assertEqual(r.get("error_code"), "not_a_member")
+
+
+class HistoryPublicPersistenceTests(unittest.TestCase):
+    """B117: the history_public setting survives a relay restart on the SQLite
+    (durable) storage path. Start sqlite-backed relay, close history, stop,
+    restart on the same persist-dir, and confirm the setting is retained."""
+
+    ALIAS = "hp-persist-alice"
+    ROOM = "hp-persist-room"
+
+    def test_history_public_survives_restart(self):
+        data_dir = tempfile.mkdtemp(prefix="c2c-hp-persist-")
+        port = TEST_PORT + 8
+        helper = SignedRoomOpHelper(generate_identity(self.ALIAS))
+        try:
+            # --- first boot: register, join public, close history ---
+            with OCamlRelayServer(token=TOKEN, signed_env=None, port=port,
+                                  storage="sqlite", persist_dir=data_dir):
+                client = RelayClient(f"http://127.0.0.1:{port}", token=TOKEN)
+                client.register("n-hpp", "s-hpp", self.ALIAS,
+                                **helper.sign_register(f"http://127.0.0.1:{port}"))
+                join = helper.sign_room_op_with_visibility(
+                    "c2c/v1/room-join", self.ROOM, "public")
+                r = client.post("/join_room", {
+                    "alias": self.ALIAS, "room_id": self.ROOM,
+                    "visibility": "public", **join,
+                })
+                self.assertTrue(r["ok"], f"join failed: {r}")
+                proof = helper.sign_room_op_with_extra(
+                    "c2c/v1/room-set-history-public", self.ROOM, "false")
+                r = client.post("/set_room_history_public", {
+                    "alias": self.ALIAS, "room_id": self.ROOM,
+                    "history_public": False, **proof,
+                })
+                self.assertTrue(r["ok"], f"close history failed: {r}")
+                self.assertFalse(
+                    client.post("/room_history",
+                                {"room_id": self.ROOM, "limit": 5})["ok"],
+                    "closed history should be anon-unreadable before restart")
+
+            # --- second boot on the same DB: setting must persist ---
+            with OCamlRelayServer(token=TOKEN, signed_env=None, port=port,
+                                  storage="sqlite", persist_dir=data_dir):
+                client = RelayClient(f"http://127.0.0.1:{port}", token=TOKEN)
+                anon = client.post("/room_history",
+                                   {"room_id": self.ROOM, "limit": 5})
+                self.assertFalse(
+                    anon["ok"],
+                    f"history_public=false must persist across restart: {anon}")
+                self.assertEqual(anon.get("error_code"), "not_a_member")
+        finally:
+            subprocess.run(["rm", "-rf", data_dir], check=False)
 
 
 if __name__ == "__main__":

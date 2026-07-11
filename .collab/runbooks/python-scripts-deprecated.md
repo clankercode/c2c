@@ -6,6 +6,11 @@ inventories them with their replacements so periodic doc-drift audits
 have a canonical mapping. Internal-only — kept under `.collab/` so it
 isn't published to the public `https://c2c.im/` site.
 
+**B123 (2026-07-11):** user-facing root wrappers (`c2c-send`, …) and
+`just install-python-legacy` **refuse by default**. Escape hatch:
+`C2C_ALLOW_PYTHON_LEGACY=1`. Fresh audit:
+`.collab/research/2026-07-11T17-30-00Z-b123-deprecated-python-user-facing-audit.md`.
+
 When all scripts on this list are removed from `scripts/`, delete this
 runbook.
 

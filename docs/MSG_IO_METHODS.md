@@ -10,7 +10,7 @@ A single reference tracking every delivery method in c2c: how messages
 get from one agent to another, which clients support each method, what
 implements it, and where the sharp edges are.
 
-Last updated: 2026-06-26
+Last updated: 2026-07-08
 
 ---
 
@@ -19,11 +19,11 @@ Last updated: 2026-06-26
 | # | Method | One-liner | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Status |
 |---|--------|-----------|:-----------:|:-----:|:--------:|:--------:|:----:|--------|
 | 1 | [MCP Channel Notifications](#1-mcp-channel-notifications) | Server pushes messages into the chat UI via JSON-RPC notification | Gated | No | No MCP | No | No | Experimental / gated behind dev flag |
-| 2 | [PostToolUse Hook](#2-posttooluse-hook) | Auto-drains inbox after every tool call | Yes | No | No | No | No | Working (primary for Claude Code) |
-| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Sentinel only | No | Fallback | No | Legacy for Claude Code; active for Codex only (Kimi uses notification-store) |
+| 2 | [PostToolUse Hook](#2-posttooluse-hook) | Host hooks drain inboxes into `additionalContext` at tool/turn boundaries | Yes | Yes | No | No | No | Working (primary for Claude Code and Codex) |
+| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Deprecated sentinel | No | Fallback | No | Legacy/fallback only; Kimi uses notification-store |
 | 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | No | Experimental; not real-time |
 | 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP/CLI tool that drains and returns pending messages | Yes | Yes | Yes (CLI) | Yes | Yes | Working (universal baseline) |
-| 6 | [Wake Daemon](#6-wake-daemon) | inotify watches inbox and wakes/delivers to idle agents | Yes | Yes | Yes (`pi-c2c`) | Yes | Yes | Working; per-client variants |
+| 6 | [Wake Daemon](#6-wake-daemon) | inotify watches inbox and wakes/delivers to idle agents | Yes | Legacy | Yes (`pi-c2c`) | Yes | Yes | Working for Pi/OpenCode/Kimi; legacy for Codex PTY sentinel |
 | 7 | [Kimi Wire Bridge](#7-kimi-wire-bridge) | Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method | No | No | No | No | Deprecated | Deprecated; notification-store is preferred |
 | 8 | [OpenCode Native Plugin](#8-opencode-native-plugin) | TypeScript plugin polls broker, delivers via `promptAsync` | No | No | No | Yes | No | Proven; preferred for OpenCode |
 | 9 | [Kimi Notification-Store](#9-kimi-notification-store) | File-based notification push to Kimi's native notification subsystem | No | No | No | No | Yes | Preferred for Kimi |
@@ -107,13 +107,18 @@ just post-initialize).
 
 ### 2. PostToolUse Hook
 
-**Auto-delivery via shell hook after every tool call** -- Claude Code fires a
-user-configured hook after each tool invocation; c2c uses this to drain the
-inbox and surface messages inline.
+**Auto-delivery via host hooks** -- Claude Code and Codex both run c2c hook
+commands from the host's hook system and surface drained broker messages as
+`hookSpecificOutput.additionalContext` in the agent transcript.
 
 #### How it works
 
-`c2c install claude` installs two things:
+Claude Code and Codex use different hook event sets, but the delivery shape is
+similar: the hook receives a JSON payload on stdin, resolves the session id,
+drains the broker inbox, and returns a JSON object containing
+`hookSpecificOutput.additionalContext`.
+
+For Claude Code, `c2c install claude` installs two things:
 
 1. A hook script at `~/.claude/hooks/c2c-inbox-check.sh`.
 2. A `PostToolUse` entry in `~/.claude/settings.json` that runs the script
@@ -122,18 +127,37 @@ inbox and surface messages inline.
 The hook script calls `c2c-inbox-hook-ocaml`. The hook reads Claude's
 `session_id` from the PostToolUse stdin JSON payload, drains non-deferrable
 messages from the repo broker inbox plus the global session-addressed broker
-(`${XDG_STATE_HOME:-$HOME/.c2c}/sessions/broker`), and emits one
-`hookSpecificOutput.additionalContext` JSON object. Message envelopes and the
+(`C2C_SESSIONS_BROKER_ROOT` override, otherwise `$HOME/.c2c/sessions/broker`),
+and emits one `hookSpecificOutput.additionalContext` JSON object. Message envelopes and the
 once-per-session cold-boot context are merged into that single context payload.
 
+For Codex, `c2c install codex` writes a managed, pre-trusted hooks block to
+`~/.codex/config.toml`. The block runs `c2c hook codex` for
+`UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`:
+
+- `SessionStart` emits onboarding/wake context and performs a full inbox drain.
+- `UserPromptSubmit` drains all pending messages at the next user-turn boundary,
+  including deferrable messages.
+- `PostToolUse` drains push-eligible/non-deferrable messages mid-turn, mirroring
+  the Claude Code active-tool-call path.
+- `SessionEnd` cleans up vanilla per-thread hook registrations.
+
+Vanilla/unmanaged Codex sessions auto-register on the first hook fire and receive
+through these installed hooks. Managed `c2c start codex` delivery is still being
+ported to the hook path; managed sessions resolve their stable c2c session id
+from the managed thread mapping, but explicit polling remains the universal
+fallback until that follow-up lands. The hook command is intentionally fail-open:
+hook errors exit `0` with empty output so a c2c issue does not break the Codex
+turn.
+
 ```
-Agent calls any tool
+Agent/host reaches a hook boundary
     |
     v
-Claude Code PostToolUse hook fires
+Claude Code PostToolUse hook or Codex UserPromptSubmit/PostToolUse hook fires
     |
     v
-c2c-inbox-check.sh  -->  c2c-inbox-hook-ocaml  -->  broker drains inboxes
+c2c-inbox-check.sh / c2c hook codex  -->  broker drains inboxes
     |
     v
 additionalContext visible in the agent transcript:
@@ -142,39 +166,47 @@ additionalContext visible in the agent transcript:
   </c2c>
 ```
 
-Latency: bounded by how quickly the recipient makes its next tool call
-(typically under a second for an active agent). Idle agents that are not
-calling tools will not receive messages via this path -- see
-[Wake Daemon](#6-wake-daemon) for the idle-session bridge.
+Latency: bounded by how quickly the recipient reaches the next hook boundary.
+Active Claude Code and unmanaged Codex sessions usually receive messages on the
+next tool call; unmanaged Codex also drains at user-turn boundaries. Managed
+`c2c start codex` hook delivery is still pending, so managed Codex sessions
+should use explicit polling until that port lands. Idle agents that are not
+reaching any hook boundary still need an idle-session bridge or manual polling.
 
 #### Client support
 
 | Client | Supported | Notes |
 |--------|-----------|-------|
 | Claude Code | Yes | Primary delivery mechanism. Installed by `c2c install claude`. |
-| Codex | No | Codex has no PostToolUse hook system. |
-| Pi Agent | No | Pi Agent uses the `pi-c2c` extension rather than Claude Code hooks. |
-| OpenCode | No | OpenCode has no PostToolUse hook system. |
-| Kimi | No | Kimi has no PostToolUse hook system. |
+| Codex | Yes for unmanaged sessions | `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext`; managed `c2c start codex` hook delivery is still being ported, so use explicit polling there until the follow-up lands. |
+| Pi Agent | No | Pi Agent uses the `pi-c2c` extension rather than host hooks. |
+| OpenCode | No | OpenCode uses its native TypeScript plugin instead. |
+| Kimi | No | Kimi uses notification-store delivery instead. |
 
 #### Key files
 
 | File | Role |
 |------|------|
-| `ocaml/cli/c2c_setup.ml` | Writes MCP server entry to `<project>/.mcp.json` (default; pass `--global` for legacy `~/.claude.json`) and registers PostToolUse hook in `~/.claude/settings.json` (invoked by `c2c install claude`) |
-| `~/.claude/hooks/c2c-inbox-check.sh` | The hook script itself (installed by `c2c install claude`) |
-| `ocaml/tools/c2c_inbox_hook.ml` | Dedicated PostToolUse hook binary that drains repo/global inboxes and emits `additionalContext` |
-| `ocaml/tools/c2c_cold_boot_context.ml` | Once-per-session cold-boot context merged into the inbox hook payload |
+| `ocaml/cli/c2c_setup.ml` | Writes install-time client config. For Claude Code, registers the PostToolUse hook in `~/.claude/settings.json`; for Codex, writes the managed hooks block to `~/.codex/config.toml`. |
+| `~/.claude/hooks/c2c-inbox-check.sh` | Claude Code hook script (installed by `c2c install claude`) |
+| `ocaml/tools/c2c_inbox_hook.ml` | Dedicated Claude Code PostToolUse hook binary that drains repo/global inboxes and emits `additionalContext` |
+| `ocaml/tools/c2c_cold_boot_context.ml` | Once-per-session cold-boot context merged into the Claude Code inbox hook payload |
+| `ocaml/cli/c2c_codex_hooks.ml` | Renders and verifies the Codex `UserPromptSubmit`/`PostToolUse`/`SessionStart`/`SessionEnd` hooks block and trust hashes |
+| `ocaml/cli/c2c_hook_cmd.ml` | Implements `c2c hook codex`: auto-registers vanilla sessions, drains inboxes, and emits Codex `additionalContext` |
 
 #### Limitations
 
-- Only fires when the agent is actively calling tools. An idle Claude Code
-  session (waiting for user input, sleeping between loop ticks) will not
-  receive messages until it resumes tool use.
-- Claude Code-specific; no other client has an equivalent hook system.
-- The dedicated hook bounds stdin scanning to the prefix needed to find
+- Hook delivery only fires when the host reaches a hook boundary. A truly idle
+  session may not receive messages until it resumes tool use, receives user
+  input, or polls explicitly.
+- Claude Code and Codex hook schemas are host-specific. Other clients use their
+  own delivery integrations (`pi-c2c`, OpenCode plugin, Kimi notification-store).
+- The Claude Code hook bounds stdin scanning to the prefix needed to find
   `session_id`; malformed or oversized trailing hook payload data does not force
   a full JSON parse before delivery.
+- The Codex hook is deliberately fail-open and time-capped. This protects Codex
+  turns from c2c failures, but also means a hook failure can silently defer
+  delivery until a later hook boundary or manual poll.
 
 ---
 
@@ -192,20 +224,21 @@ fd from a target process. It then writes the payload using bracketed paste
 escape sequences (`\x1b[200~` ... `\x1b[201~`) followed by Enter (`\r`) as a
 separate write with an optional submit delay.
 
-For notification-only mode (Codex, OpenCode), the injected text is a sentinel
-string telling the agent to call `poll_inbox` -- the message body stays in the
-broker. For full-delivery mode (legacy), the message content itself is injected.
+For sentinel mode (legacy Codex and OpenCode fallback), the injected text tells
+the agent to call `poll_inbox` -- the message body stays in the broker. For
+full-delivery mode (legacy), the message content itself is injected.
 
-Kimi requires master-side injection with a longer submit delay (1.5s default)
+Kimi historically required master-side injection with a longer submit delay
 because direct `/dev/pts/<N>` slave-side writes display text without submitting
-it as keyboard input.
+it as keyboard input. Current Kimi delivery uses notification-store files
+instead of PTY injection.
 
 #### Client support
 
 | Client | Supported | Mode | Notes |
 |--------|-----------|------|-------|
 | Claude Code | Deprecated | Full or sentinel | Legacy path. Superseded by PostToolUse hook. Still available via `claude_send_msg.py`. |
-| Codex | Yes (sentinel) | Notify-only | Managed harness starts `c2c-deliver-inbox --notify-only` (OCaml binary; Python fallback only if missing). Sentinel triggers `poll_inbox`. |
+| Codex | Deprecated | Sentinel | Superseded by Codex hooks installed by `c2c install codex`. Older managed-session/watch paths used a sentinel that triggered `poll_inbox`. |
 | Pi Agent | No | — | Uses `pi-c2c` (`fs.watch` + CLI drain + `pi.sendMessage`), not PTY injection. |
 | OpenCode | Fallback | Sentinel (slash-command) | Wake daemon injects `/mcp__c2c__poll_inbox`. Superseded by native TypeScript plugin. |
 | Kimi | No | — | Superseded by notification-store (`C2c_kimi_notifier`). |
@@ -214,7 +247,7 @@ it as keyboard input.
 
 | File | Role |
 |------|------|
-| `c2c-deliver-inbox` (OCaml binary, installed by `just install-all`) | Daemon: watches inbox via inotifywait, delivers via PTY (notify-only or full mode). The legacy `c2c_deliver_inbox.py` is only used as a fallback if the binary is missing. |
+| `c2c-deliver-inbox` (OCaml binary, installed by `just install-all`) | Legacy watcher: watches inbox via inotifywait and can deliver via PTY sentinel or full mode. The legacy `c2c_deliver_inbox.py` is only used as a fallback if the binary is missing. |
 | `ocaml/c2c_poker.ml` (`C2c_poker`) | Generic PTY heartbeat poker; injects `<c2c event="heartbeat">` envelopes to keep sessions alive. The Python `c2c_poker.py` is a fallback. |
 | `c2c_inject.py` | Legacy one-shot PTY injection with bracketed paste, keycode support, and history.jsonl fallback. Deprecated. |
 | `claude_send_msg.py` | Legacy: sends PTY-injected messages to Claude Code sessions |
@@ -229,9 +262,9 @@ it as keyboard input.
 - Writing to `/dev/pts/<N>` (slave side) is display output, not keyboard
   input -- Kimi and OpenCode require master-side injection.
 - Not cross-platform; Linux-only (`pidfd_getfd()`, `/proc` filesystem).
-- For Codex notify-only delivery, the injected text is a sentinel only -- the
-  agent must still call `poll_inbox` to get the actual message content. Kimi no
-  longer uses this path; it uses notification-store delivery.
+- For legacy Codex sentinel delivery, the injected text is only a wake marker --
+  the agent must still call `poll_inbox` to get the actual message content.
+  Current Codex installs prefer host hooks; Kimi no longer uses this path at all.
 
 ---
 
@@ -313,7 +346,7 @@ This is the universal baseline: every client that has MCP support can use
 | Client | Supported | Notes |
 |--------|-----------|-------|
 | Claude Code | Yes | Manual fallback; automatic PostToolUse delivery uses `c2c-inbox-hook-ocaml` directly. |
-| Codex | Yes | Primary delivery: notify daemon triggers the agent to call this. |
+| Codex | Yes | Manual fallback; automatic Codex hook delivery drains the broker directly through `c2c hook codex`. |
 | Pi Agent | Yes | `pi-c2c` drains through `c2c poll-inbox` via the CLI. |
 | OpenCode | Yes | Called by native TypeScript plugin or wake daemon. |
 | Kimi | Yes | Called manually or triggered by Wire bridge / wake daemon. |
@@ -361,7 +394,7 @@ injection text and PTY coordination:
 | Daemon | Client | Injection text |
 |--------|--------|----------------|
 | `c2c_claude_wake_daemon.py` (**deprecated**) | Claude Code | Wake prompt asking the agent to call `poll_inbox` |
-| `c2c-deliver-inbox --notify-only` (OCaml binary) | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel |
+| `c2c-deliver-inbox --notify-only` (legacy OCaml path) | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel; superseded by Codex hooks |
 | `pi-c2c` extension | Pi Agent | `fs.watch` inbox watcher drains via `c2c poll-inbox` and injects with `pi.sendMessage` |
 | `c2c_opencode_wake_daemon.py` (**deprecated**) | OpenCode | Superseded by TypeScript plugin + `c2c monitor` subprocess |
 | `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by notification-store (C2c_kimi_notifier, file-based push) |
@@ -372,7 +405,7 @@ injection text and PTY coordination:
 | Client | Supported | Notes |
 |--------|-----------|-------|
 | Claude Code | Yes (gap) | PostToolUse hook covers active tool calls. AFK gap (idle session) has no non-PTY fix yet; `c2c_claude_wake_daemon.py` deprecated. |
-| Codex | Yes | `c2c-deliver-inbox --notify-only --loop` (OCaml binary) started by managed harness. |
+| Codex | Deprecated | Older managed-session path used `c2c-deliver-inbox --notify-only --loop`; current installs prefer Codex hooks. |
 | Pi Agent | Yes ✓ | `pi-c2c` watches inbox changes with `fs.watch`, with a 60s safety-net poll. |
 | OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via `c2c monitor` subprocess → `promptAsync`. No PTY. |
 | Kimi | Yes ✓ | Notification-store (C2c_kimi_notifier, file-based push). Preferred over deprecated PTY wake. |
@@ -383,7 +416,7 @@ injection text and PTY coordination:
 | File | Role |
 |------|------|
 | `c2c_claude_wake_daemon.py` | Claude Code PTY wake — **deprecated** |
-| `c2c-deliver-inbox` (OCaml binary) | Codex notify daemon (with `--notify-only --loop`); Python `c2c_deliver_inbox.py` is a fallback |
+| `c2c-deliver-inbox` (OCaml binary) | Legacy Codex PTY sentinel watcher (with `--notify-only --loop`); Python `c2c_deliver_inbox.py` is a fallback |
 | `c2c_opencode_wake_daemon.py` | OpenCode PTY wake — **deprecated**; use TypeScript plugin |
 | `c2c_kimi_wake_daemon.py` | Kimi PTY wake — **deprecated**; use notification-store (C2c_kimi_notifier) |
 | `c2c_crush_wake_daemon.py` | Crush PTY wake — **deprecated** |
@@ -547,11 +580,11 @@ Which methods are primary, fallback, or unavailable for each client:
 | Method | Claude Code | Codex | Pi Agent | OpenCode | Kimi |
 |--------|:-----------:|:-----:|:--------:|:--------:|:----:|
 | MCP Channel Notifications | Fallback (gated) | -- | -- | -- | -- |
-| PostToolUse Hook | **Primary** | -- | -- | -- | -- |
-| PTY Injection | Deprecated | **Sentinel** | -- | Fallback | Fallback |
+| PostToolUse Hook | **Primary** | **Primary** | -- | -- | -- |
+| PTY Injection | Deprecated | Legacy sentinel | -- | Fallback | Fallback |
 | History.jsonl Injection | Experimental | -- | -- | -- | -- |
 | poll_inbox Tool | Baseline | Baseline | CLI baseline | Baseline | Baseline |
-| Wake Daemon | Idle bridge | **Primary daemon** | **Primary** (`pi-c2c`) | Fallback | Fallback |
+| Wake Daemon | Idle bridge | Legacy fallback | **Primary** (`pi-c2c`) | Fallback | Fallback |
 | Kimi Wire Bridge | -- | -- | -- | -- | Deprecated |
 | Kimi Notification-Store | -- | -- | -- | -- | **Primary** |
 | OpenCode Native Plugin | -- | -- | -- | **Primary** | -- |
@@ -580,8 +613,7 @@ OCaml broker: enqueue_message
     v
 Recipient's inbox file
     |
-    |  +-- PostToolUse hook fires (Claude Code)
-    |  +-- Notify daemon detects via inotifywait (Codex)
+    |  +-- Host hook fires (Claude Code PostToolUse; Codex UserPromptSubmit/PostToolUse)
     |  +-- Native plugin polls and drains (OpenCode)
     |  +-- Notification-store delivers via C2c_kimi_notifier (Kimi)
     |  +-- Wake daemon PTY-injects sentinel (any)

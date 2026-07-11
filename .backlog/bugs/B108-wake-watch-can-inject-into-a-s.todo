@@ -1,0 +1,21 @@
+---
+claimed_at: "2026-07-10T14:25:38Z"
+claimed_by: codex-kaari-marli-dpfo
+completed_at: null
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B108
+priority: high
+started_at: "2026-07-10T14:25:38Z"
+status: in_progress
+tags: []
+title: Wake-watch can inject into a stale tmux pane and drain the wrong Codex session inbox
+---
+A Codex API session not hosted in tmux had stale/inherited wake metadata (tmux_location=%5, herdr_pane=w2:p1) on its c2c registration. `c2c deliver wake-watch --alias codex-tyyni-river-gf88 --once` selected tmux backend and injected into pane %5, which belonged to an unrelated railmap Codex pane. That pane fired a UserPromptSubmit hook using the target session id and destructively drained/archived messages intended for the API session; no <c2c> event arrived in the actual API transcript.
+
+Expected: a non-tmux/API session keeps messages in its broker inbox; wake injection is permitted only after binding and validating the target belongs to the registered Codex session. Stale/inherited TMUX_PANE/HERDR metadata must not be retained or used to drain another session.
+
+Evidence: broker archive for session 019f4b9d-fd42-7fb0-9926-c6d656a6fadf records messages from claude-tavi-lumi-lz83 as drained_by=hook; registry stored tmux_location=%5; tmux capture showed %5 was railmap:2.1, not the API session; it later no longer existed.
+
+Likely touchpoints: C2c_wake_inject.wake_targets_from_env, codex hook wake-target refresh/preservation, and wake-watch target validation. Add an integration regression proving an inherited/stale pane cannot trigger injection or drain.

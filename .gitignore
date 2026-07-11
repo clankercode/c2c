@@ -44,3 +44,5 @@ docs/vendor/
 reviews/
 .docs-audit/
 .mcp.json
+*.x25519
+*.tmp.*

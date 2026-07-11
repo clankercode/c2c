@@ -11,6 +11,40 @@ open C2c_mcp_helpers
 open C2c_mcp_helpers_post_broker
 module Broker = C2c_broker
 
+(* J4: canonical schema-v1 message objects on the MCP inbox surfaces.
+   Room fan-out rows are recognised by the established broker convention
+   of tagging [to_alias] as "<alias>#<room_id>" (Broker.fan_out_room_message,
+   relay.ml). Classification delegates to [is_room_recipient] — the same
+   canonical helper [format_reply_hint] uses — so a "<alias>#<12hexhash>"
+   relay host-hash form is a DM, never a room. *)
+let msg_type_of_to_alias to_alias : C2c_schema_v1.msg_type =
+  if is_room_recipient ~to_alias then C2c_schema_v1.Room else C2c_schema_v1.Dm
+
+(* Build one inbox row: canonical v1 document + legacy compatibility keys.
+   [content] is passed explicitly because poll decrypts while peek returns
+   the raw wire content. [source] is deliberately omitted — the broker
+   inbox record carries no reliable transport-origin marker today (local
+   enqueue also assigns message_id), so we do not claim one. *)
+let inbox_row_json ~(m : message) ~(content : string) ~(delivery_state : C2c_schema_v1.delivery_state)
+    ~(enc_status : string option) : Yojson.Safe.t =
+  let v1 : C2c_schema_v1.t =
+    { schema_version = C2c_schema_v1.schema_version
+    ; msg_type = msg_type_of_to_alias m.to_alias
+    ; message_id = m.message_id
+    ; ts = Some m.ts
+    ; from = { alias = m.from_alias; host_id = None; address = None }
+    ; to_ = m.to_alias
+    ; source = None
+    ; content
+    ; in_reply_to = None
+    ; delivery_state = Some delivery_state
+    }
+  in
+  let legacy = [ ("from_alias", `String m.from_alias); ("to_alias", `String m.to_alias) ] in
+  let legacy = if m.deferrable then legacy @ [ ("deferrable", `Bool true) ] else legacy in
+  let legacy = match enc_status with None -> legacy | Some es -> legacy @ [ ("enc_status", `String es) ] in
+  C2c_schema_v1.serialize_with_legacy v1 ~legacy
+
 let poll_inbox ~broker ~session_id_override ~arguments =
   let req_sid = optional_string_member "session_id" arguments in
   let caller_sid =
@@ -33,18 +67,19 @@ let poll_inbox ~broker ~session_id_override ~arguments =
          | Error _ -> None)
   in
   let our_ed25519 = Some (Broker.load_or_create_ed25519_identity ()) in
-  let process_msg ({ from_alias; to_alias; content; deferrable } : message) =
+  let process_msg (m : message) =
     (* [#432 §7] Inline decrypt block extracted to [decrypt_envelope]
        helper above; this site is the status-tracking call site (the
        push site discards _enc_status). Both formerly-duplicated
-       blocks now share one definition. *)
+       blocks now share one definition.
+       J4: rows are canonical schema-v1 documents (delivery.state =
+       delivered — poll drains, i.e. hands the message to the recipient)
+       with the legacy {from_alias,to_alias,content,deferrable?,enc_status?}
+       keys preserved alongside. *)
     let (decrypted, enc_status) =
-      decrypt_envelope ~our_x25519 ~our_ed25519 ~to_alias ~content
+      decrypt_envelope ~our_x25519 ~our_ed25519 ~to_alias:m.to_alias ~content:m.content
     in
-    let base = [ ("from_alias", `String from_alias); ("to_alias", `String to_alias); ("content", `String decrypted) ] in
-    let base = if deferrable then base @ [("deferrable", `Bool true)] else base in
-    let base = match enc_status with None -> base | Some es -> base @ [("enc_status", `String es)] in
-    `Assoc base
+    inbox_row_json ~m ~content:decrypted ~delivery_state:C2c_schema_v1.Delivered ~enc_status
   in
   let content = `List (List.map process_msg messages) |> Yojson.Safe.to_string in
   Lwt.return (tool_ok content))
@@ -66,17 +101,15 @@ let peek_inbox ~broker ~session_id_override ~arguments:_ =
          Broker.with_inbox_lock broker ~session_id (fun () ->
              Broker.read_inbox broker ~session_id)
        in
+       (* J4: same canonical schema-v1 row shape as poll_inbox, except
+          content is the raw wire content (peek does not decrypt) and
+          delivery.state = queued (the message is still in the inbox). *)
        let content =
          `List
            (List.map
-              (fun ({ from_alias; to_alias; content; deferrable } : message) ->
-                let base =
-                  [ ("from_alias", `String from_alias)
-                  ; ("to_alias", `String to_alias)
-                  ; ("content", `String content)
-                  ]
-                in
-                `Assoc (if deferrable then base @ [("deferrable", `Bool true)] else base))
+              (fun (m : message) ->
+                inbox_row_json ~m ~content:m.content
+                  ~delivery_state:C2c_schema_v1.Queued ~enc_status:None)
               messages)
          |> Yojson.Safe.to_string
        in

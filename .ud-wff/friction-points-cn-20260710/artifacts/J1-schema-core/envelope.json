@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-J1-schema-core",
+  "node_id": "impl-J1",
+  "kind": "output",
+  "summary_path": "artifacts/J1-schema-core/summary.md",
+  "raw_path": "artifacts/J1-schema-core/receipt.md",
+  "hash": "sha256:d5b483a13196fb2292b618dcb59aa0ef957a9d286bc9dc90837eb0f6c7b4f943",
+  "bytes": 2279,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

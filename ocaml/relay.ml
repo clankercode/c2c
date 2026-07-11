@@ -31,11 +31,17 @@ module InMemoryRelay : RELAY = struct
     bindings : (string, string) Hashtbl.t;
     register_nonces : (string, float) Hashtbl.t;
     request_nonces : (string, float) Hashtbl.t;
+    (* B116: dedicated revoke-proof nonce store, isolated from
+       request_nonces (which the outer verifier writes pre-auth). *)
+    revoke_nonces : (string, float) Hashtbl.t;
     inboxes : ((string * string), Yojson.Safe.t list) Hashtbl.t;
     dead_letter : Yojson.Safe.t Queue.t;
     rooms : (string, string list) Hashtbl.t;
     (* Layer 4 slice 5: per-room visibility and invited identity_pk list. *)
     room_visibility : (string, string) Hashtbl.t;  (* "public" | "unlisted" | "gated" | "private" *)
+    (* B117: per-room history readability policy, persisted separately from
+       visibility. Absent → default per visibility (history_public_of). *)
+    room_history_public : (string, bool) Hashtbl.t;
     room_invites : (string, string list) Hashtbl.t; (* b64url-nopad pks *)
     room_knocks : (string, room_knock list) Hashtbl.t;
     (* L3/5: operator allowlist (alias → identity_pk b64url-nopad). If an
@@ -48,8 +54,11 @@ module InMemoryRelay : RELAY = struct
     persist_dir : string option;  (* if set, room history is also written to disk *)
     (* S5a: In-memory pairing token store *)
     pairing_tokens : (string, (string * string * float)) Hashtbl.t;
-    (* S5a: In-memory observer bindings *)
-    observer_bindings_mem : (string, (string * string)) Hashtbl.t;
+    (* S5a: In-memory observer bindings —
+       (phone_ed25519, phone_x25519, machine_ed25519, provenance_sig).
+       B116: the machine key MUST be stored (not dropped) — binding
+       revocation authorizes against it. *)
+    observer_bindings_mem : (string, (string * string * string * string)) Hashtbl.t;
     (* S5b: Device-pair pending table (RFC 8628 OAuth, ephemeral) *)
     device_pair_pending_mem : (string, device_pair_pending) Hashtbl.t;
     (* #379: this relay's own host identity for alias@host validation *)
@@ -96,10 +105,78 @@ module InMemoryRelay : RELAY = struct
        close_out oc
      with _ -> ())
 
+  (* B117: per-room metadata (visibility + history_public) persisted alongside
+     the history jsonl so a persist_dir-backed InMemoryRelay retains the
+     policy across a restart. Without this, a restart reloads room history but
+     defaults visibility/history_public, re-opening a deliberately-closed
+     room's history to anonymous readers. *)
+  let room_meta_json_path persist_dir room_id =
+    Filename.concat (Filename.concat persist_dir ("rooms/" ^ room_id)) "meta.json"
+
+  let write_room_meta persist_dir room_id ~visibility ~history_public =
+    let path = room_meta_json_path persist_dir room_id in
+    let dir = Filename.dirname path in
+    (try
+       C2c_io.mkdir_p dir;
+       let j = `Assoc [
+         ("visibility", `String visibility);
+         ("history_public", `Bool history_public);
+       ] in
+       let tmp = path ^ ".tmp" in
+       let oc = open_out tmp in
+       output_string oc (Yojson.Safe.to_string j);
+       close_out oc;
+       Sys.rename tmp path
+     with _ -> ())
+
+  let load_room_meta_from_disk persist_dir room_visibility room_history_public =
+    let rooms_dir = Filename.concat persist_dir "rooms" in
+    if not (Sys.file_exists rooms_dir) then ()
+    else begin
+      let entries = try Array.to_list (Sys.readdir rooms_dir) with Sys_error _ -> [] in
+      List.iter (fun room_id ->
+        let path = room_meta_json_path persist_dir room_id in
+        if Sys.file_exists path then begin
+          (* B117 (review P1): meta.json EXISTS but is unreadable / malformed /
+             missing a field ⇒ a deliberate policy was written but we can't
+             trust it, so fail CLOSED (member-only) rather than re-open a
+             possibly-closed history. A truly ABSENT meta.json is a legacy
+             pre-B117 room (no branch here) and keeps the AC-mandated
+             compatible-rollout default (public/unlisted → open). *)
+          let fail_closed () =
+            Hashtbl.replace room_history_public room_id false in
+          match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+          | None -> fail_closed ()
+          | Some j ->
+            (* Accept the persisted OPEN value only when BOTH fields are
+               present and well-formed. Any incompleteness (missing visibility,
+               missing/invalid history_public, unparseable file) fails closed —
+               symmetric, defence-in-depth against a partial/tampered write. *)
+            (* canonical_visibility returns None for any unrecognized string,
+               so a garbage/tampered visibility fails the both-fields-valid
+               check below and falls through to fail_closed. *)
+            let vis = match Yojson.Safe.Util.member "visibility" j with
+              | `String v -> canonical_visibility v | _ -> None in
+            let hp = match Yojson.Safe.Util.member "history_public" j with
+              | `Bool b -> Some b | _ -> None in
+            (match vis, hp with
+             | Some v, Some b ->
+               Hashtbl.replace room_visibility room_id v;
+               Hashtbl.replace room_history_public room_id b
+             | _ -> fail_closed ())
+        end
+      ) entries
+    end
+
   let create ?(dedup_window = 10000) ?persist_dir ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
     let room_history = Hashtbl.create 16 in
     (* Load persisted room history on startup *)
     Option.iter (fun d -> load_room_history_from_disk d room_history) persist_dir;
+    (* B117: reload persisted per-room metadata (visibility + history_public)
+       so the policy survives a restart on the persist_dir-backed path. *)
+    let room_visibility = Hashtbl.create 16 in
+    let room_history_public = Hashtbl.create 16 in
+    Option.iter (fun d -> load_room_meta_from_disk d room_visibility room_history_public) persist_dir;
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = Option.map (fun d -> Filename.concat d "relay-server-identity.json") persist_dir in
     let identity =
@@ -112,10 +189,12 @@ module InMemoryRelay : RELAY = struct
       bindings = Hashtbl.create 16;
       register_nonces = Hashtbl.create 64;
       request_nonces = Hashtbl.create 256;
+      revoke_nonces = Hashtbl.create 64;
       inboxes = Hashtbl.create 16;
       dead_letter = Queue.create ();
       rooms = Hashtbl.create 16;
-      room_visibility = Hashtbl.create 16;
+      room_visibility;
+      room_history_public;
       room_invites = Hashtbl.create 16;
       room_knocks = Hashtbl.create 16;
       allowed_identities = Hashtbl.create 16;
@@ -329,12 +408,17 @@ module InMemoryRelay : RELAY = struct
       if now > expires_at then (Hashtbl.remove t.pairing_tokens binding_id; false)
       else true
 
-  (* S5a: In-memory observer bindings *)
-  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey ~machine_ed25519_pubkey:_ ~provenance_sig:_ =
-    Hashtbl.replace t.observer_bindings_mem binding_id (phone_ed25519_pubkey, phone_x25519_pubkey)
+  (* S5a: In-memory observer bindings. B116: keep the machine key and
+     provenance sig — revocation authorization compares against the stored
+     machine/phone Ed25519 keys, so dropping them would make owner revoke
+     impossible on this backend. *)
+  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey ~machine_ed25519_pubkey ~provenance_sig =
+    Hashtbl.replace t.observer_bindings_mem binding_id
+      (phone_ed25519_pubkey, phone_x25519_pubkey, machine_ed25519_pubkey,
+       provenance_sig)
 
   let get_observer_binding t ~binding_id =
-    Option.map (fun (ed, x) -> (ed, x, "", "")) (Hashtbl.find_opt t.observer_bindings_mem binding_id)
+    Hashtbl.find_opt t.observer_bindings_mem binding_id
 
   let remove_observer_binding t ~binding_id =
     Hashtbl.remove t.observer_bindings_mem binding_id
@@ -452,6 +536,10 @@ module InMemoryRelay : RELAY = struct
   let check_request_nonce t ~nonce ~ts =
     with_lock t (fun () ->
       check_nonce_in t.request_nonces ~ttl:request_nonce_ttl ~nonce ~ts)
+
+  let check_revoke_nonce t ~nonce ~ts =
+    with_lock t (fun () ->
+      check_nonce_in t.revoke_nonces ~ttl:request_nonce_ttl ~nonce ~ts)
 
   let heartbeat t ~node_id ~session_id =
     with_lock t (fun () ->
@@ -573,6 +661,18 @@ module InMemoryRelay : RELAY = struct
   let add_dead_letter t msg =
     with_lock t (fun () -> Queue.add msg t.dead_letter)
 
+  (* B117: flush a room's visibility + history_public to disk (no-op without a
+     persist_dir). Call after any mutation of either field, under the lock. *)
+  let persist_room_meta t room_id =
+    match t.persist_dir with
+    | None -> ()
+    | Some d ->
+      let visibility = match Hashtbl.find_opt t.room_visibility room_id with
+        | Some v -> canonical_visibility_or_raw v | None -> "public" in
+      let history_public = match Hashtbl.find_opt t.room_history_public room_id with
+        | Some b -> b | None -> history_public_default_for_visibility visibility in
+      write_room_meta d room_id ~visibility ~history_public
+
   let join_room t ?(visibility = "public") ~alias ~room_id () =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
@@ -590,8 +690,14 @@ module InMemoryRelay : RELAY = struct
         (* Visibility is set only when the room is first created (this join is
            creating it). Later joiners passing a visibility have no effect —
            changes after creation go through the signed set_room_visibility op. *)
-        if not (Hashtbl.mem t.room_visibility room_id) then
+        if not (Hashtbl.mem t.room_visibility room_id) then begin
           Hashtbl.replace t.room_visibility room_id visibility;
+          (* B117: seed the history_public default from the creation
+             visibility (public/unlisted → true, gated/private → false). *)
+          Hashtbl.replace t.room_history_public room_id
+            (history_public_default_for_visibility visibility);
+          persist_room_meta t room_id
+        end;
         let already_member = List.mem alias members in
         let members' = if already_member then members else alias :: members in
         Hashtbl.replace t.rooms room_id members';
@@ -707,7 +813,28 @@ module InMemoryRelay : RELAY = struct
   let set_room_visibility t ~room_id ~visibility =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
-      Hashtbl.replace t.room_visibility room_id visibility)
+      Hashtbl.replace t.room_visibility room_id visibility;
+      (* B117: gated/private must always be member-only — atomically clear
+         history_public on a downgrade. public/unlisted preserve the current
+         stored value (never silently re-open a deliberately-closed room). *)
+      if visibility = "gated" || visibility = "private" then
+        Hashtbl.replace t.room_history_public room_id false;
+      persist_room_meta t room_id)
+
+  (* B117: default per visibility when no explicit value has been stored. *)
+  let history_public_of t ~room_id =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.room_history_public room_id with
+      | Some b -> b
+      | None ->
+        let visibility = match Hashtbl.find_opt t.room_visibility room_id with
+          | Some v -> canonical_visibility_or_raw v | None -> "public" in
+        history_public_default_for_visibility visibility)
+
+  let set_room_history_public t ~room_id ~history_public =
+    with_lock t (fun () ->
+      Hashtbl.replace t.room_history_public room_id history_public;
+      persist_room_meta t room_id)
 
   let invite_to_room t ~room_id ~identity_pk_b64 =
     with_lock t (fun () ->
@@ -910,12 +1037,24 @@ module InMemoryRelay : RELAY = struct
            visibility (legacy in-memory rooms) defaults to public. *)
         let visibility = match Hashtbl.find_opt t.room_visibility room_id with
           | Some v -> v | None -> "public" in
+        (* B118: defensive directory-boundary guard. handle_join_room rejects
+           out-of-grammar room ids, but a backend-direct caller or a legacy
+           persisted row could still carry a room id containing `#`/`@`, which
+           would make its alias#room@relay directory address ambiguous. Omit
+           such rooms from the anonymous directory entirely — better unlisted
+           than emitting an address the recipient parser cannot round-trip. *)
         if not (visibility = "public" || visibility = "gated") then acc
+        else if not (valid_relay_room_id room_id) then acc
         else
           `Assoc [
             ("room_id", `String room_id);
             ("member_count", `Int (List.length members));
-            ("members", `List (List.map (fun a -> `String a) members));
+            (* B118: directory boundary — expose members as presentation-only
+               alias#room@relay recipient addresses, never bare aliases or
+               lease/host metadata. Stored membership ([members]) stays raw
+               for membership checks and delivery. *)
+            ("members", `List (List.map (fun a ->
+               `String (format_room_roster_address ~alias:a ~room_id)) members));
           ] :: acc
       ) t.rooms []
     )
@@ -1014,6 +1153,15 @@ module SqliteRelay : RELAY = struct
       Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN opaque_host_id TEXT NOT NULL DEFAULT ''" |> ignore;
     if not (sqlite_table_has_column conn ~table:"rooms" ~column:"visibility") then
       Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'" |> ignore;
+    (* B117: migrate older databases to the history_public column. Add it with
+       DEFAULT 1 so pre-existing public/unlisted rooms keep their prior
+       open-read behaviour, then force 0 for pre-existing gated/private rooms
+       (which were already member-only) so the invariant holds after upgrade.
+       Idempotent on fresh installs (the column is already in sqlite_ddl). *)
+    if not (sqlite_table_has_column conn ~table:"rooms" ~column:"history_public") then begin
+      Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN history_public INTEGER NOT NULL DEFAULT 1" |> ignore;
+      Sqlite3.exec conn "UPDATE rooms SET history_public = 0 WHERE visibility IN ('gated','private')" |> ignore
+    end;
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = if persist_dir = "" then None else Some (Filename.concat persist_dir "relay-server-identity.json") in
     let identity =
@@ -1478,6 +1626,28 @@ module SqliteRelay : RELAY = struct
       )
     )
 
+  (* B116: dedicated revoke-proof nonce store (persisted). Same TTL as
+     request nonces (120s > the 30s signed-request window, no eviction
+     gap) but a distinct table so the pre-auth outer verifier never writes
+     here. *)
+  let check_revoke_nonce t ~nonce ~ts =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let cutoff = ts -. 120.0 in
+      let del_stmt = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
+      Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
+      Sqlite3.step del_stmt |> ignore;
+      let has_row = exec_prepared conn "SELECT nonce FROM revoke_nonces WHERE nonce = ?" [`Text nonce] in
+      if has_row then Res.Error relay_err_nonce_replay
+      else (
+        let ins_stmt = Sqlite3.prepare conn "INSERT INTO revoke_nonces (nonce, ts) VALUES (?, ?)" in
+        Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
+        Sqlite3.bind_double ins_stmt 2 ts |> ignore;
+        Sqlite3.step ins_stmt |> ignore;
+        Res.Ok ()
+      )
+    )
+
   let heartbeat t ~node_id ~session_id =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
@@ -1672,6 +1842,15 @@ module SqliteRelay : RELAY = struct
         Sqlite3.bind_text del 2 session_id |> ignore;
         Sqlite3.step del |> ignore
       ) !stale_keys;
+      (* B116: sweep expired revoke-proof nonces on a SERVER-time basis.
+         check_revoke_nonce only self-cleans when another owner revoke
+         runs it (rare), so without this the persisted revoke_nonces table
+         would accumulate durable rows. request_nonces/register_nonces
+         self-clean on their frequent per-request hits, so this gc sweep is
+         specific to the low-traffic revoke store. *)
+      let del_revoke = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
+      Sqlite3.bind_double del_revoke 1 (now -. request_nonce_ttl) |> ignore;
+      Sqlite3.step del_revoke |> ignore;
       `Ok (List.rev !expired_aliases, pruned)
     )
 
@@ -1855,9 +2034,14 @@ module SqliteRelay : RELAY = struct
       (* INSERT OR IGNORE: visibility is applied only on room creation; if the
          room already exists, its stored visibility is preserved. Post-creation
          changes go through the signed set_room_visibility op. *)
-      let room_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO rooms (room_id, visibility) VALUES (?, ?)" in
+      (* B117: seed history_public from the creation visibility. Only applied
+         on room creation (INSERT OR IGNORE); an existing room keeps its
+         stored policy. *)
+      let room_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO rooms (room_id, visibility, history_public) VALUES (?, ?, ?)" in
       Sqlite3.bind_text room_stmt 1 room_id |> ignore;
       Sqlite3.bind_text room_stmt 2 visibility |> ignore;
+      Sqlite3.bind_int room_stmt 3
+        (if history_public_default_for_visibility visibility then 1 else 0) |> ignore;
       Sqlite3.step room_stmt |> ignore;
       let mem_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO room_members (room_id, alias) VALUES (?, ?)" in
       Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
@@ -2052,6 +2236,13 @@ module SqliteRelay : RELAY = struct
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
           let room_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+          (* B118: defensive directory-boundary guard — omit any room whose id
+             is out-of-grammar (contains `#`/`@` etc.) so its alias#room@relay
+             directory address can never be ambiguous. Covers legacy persisted
+             rows and backend-direct callers that bypass handle_join_room's
+             grammar check. Better unlisted than an unparseable address. *)
+          if not (valid_relay_room_id room_id) then loop ()
+          else
           let mem_stmt = Sqlite3.prepare conn "SELECT COUNT(*) FROM room_members WHERE room_id = ?" in
           Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
           let rc2 = Sqlite3.step mem_stmt in
@@ -2078,7 +2269,11 @@ module SqliteRelay : RELAY = struct
               failwith ("list_rooms aliases step failed: " ^ Rc.to_string rc3)
           in
           collect_aliases ();
-          rooms := `Assoc [("room_id", `String room_id); ("member_count", `Int member_count); ("members", `List (List.map (fun a -> `String a) !aliases))] :: !rooms;
+          (* B118: directory boundary — expose members as presentation-only
+             alias#room@relay recipient addresses, never bare aliases or
+             lease/host metadata. The room_members rows stay raw for
+             membership checks and delivery. *)
+          rooms := `Assoc [("room_id", `String room_id); ("member_count", `Int member_count); ("members", `List (List.map (fun a -> `String (format_room_roster_address ~alias:a ~room_id)) !aliases))] :: !rooms;
           loop ()
         else if rc <> Rc.DONE then
           failwith ("list_rooms step failed: " ^ Rc.to_string rc)
@@ -2185,9 +2380,51 @@ module SqliteRelay : RELAY = struct
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      let stmt = Sqlite3.prepare conn "INSERT INTO rooms (room_id, visibility) VALUES (?, ?) ON CONFLICT(room_id) DO UPDATE SET visibility=excluded.visibility" in
+      (* B117: on a downgrade to gated/private, atomically clear history_public
+         (CASE forces 0). public/unlisted preserve the existing stored value
+         (rooms.history_public), never silently re-opening a closed room. On
+         insert (room absent) history_public seeds from the new visibility. *)
+      let stmt = Sqlite3.prepare conn
+        "INSERT INTO rooms (room_id, visibility, history_public) VALUES (?, ?, ?) \
+         ON CONFLICT(room_id) DO UPDATE SET visibility=excluded.visibility, \
+         history_public = CASE WHEN excluded.visibility IN ('gated','private') \
+         THEN 0 ELSE rooms.history_public END" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 visibility |> ignore;
+      Sqlite3.bind_int stmt 3
+        (if history_public_default_for_visibility visibility then 1 else 0) |> ignore;
+      Sqlite3.step stmt |> ignore
+    )
+
+  (* B117: read the persisted history_public policy; default per visibility
+     when the row/column is absent. *)
+  let history_public_of t ~room_id =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let stmt = Sqlite3.prepare conn "SELECT history_public, visibility FROM rooms WHERE room_id = ?" in
+      Sqlite3.bind_text stmt 1 room_id |> ignore;
+      let rc = Sqlite3.step stmt in
+      let result =
+        if rc = Rc.ROW then
+          match Sqlite3.Data.to_int (Sqlite3.column stmt 0) with
+          | Some n -> n <> 0
+          | None ->
+            (* Column NULL (shouldn't happen: NOT NULL) — fall back to the
+               per-visibility default. *)
+            let vis = try canonical_visibility_or_raw (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1)) with _ -> "public" in
+            history_public_default_for_visibility vis
+        else true (* unknown room: default open (matches empty-history read) *)
+      in
+      (try Sqlite3.finalize stmt |> ignore with _ -> ());
+      result
+    )
+
+  let set_room_history_public t ~room_id ~history_public =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let stmt = Sqlite3.prepare conn "UPDATE rooms SET history_public = ? WHERE room_id = ?" in
+      Sqlite3.bind_int stmt 1 (if history_public then 1 else 0) |> ignore;
+      Sqlite3.bind_text stmt 2 room_id |> ignore;
       Sqlite3.step stmt |> ignore
     )
 
@@ -2436,6 +2673,25 @@ module Relay_server(R : RELAY) : sig
     ed25519_verified:bool ->
     bool * string option
 
+  (* B115: inbox read handlers — exposed for unit testing the owner gate
+     independently of the outer route classifier (defense in depth).
+     [require_owner] mirrors [token <> None] at the dispatch site: on a
+     token-configured (prod) relay an unverified request must be refused
+     here even if the route classifier ever regresses. *)
+  val handle_poll_inbox :
+    R.t ->
+    verified_alias:string option ->
+    require_owner:bool ->
+    Yojson.Safe.t ->
+    Cohttp_lwt_unix.Server.response Lwt.t
+
+  val handle_peek_inbox :
+    R.t ->
+    verified_alias:string option ->
+    require_owner:bool ->
+    Yojson.Safe.t ->
+    Cohttp_lwt_unix.Server.response Lwt.t
+
   val start_server :
     host:string ->
     port:int ->
@@ -2529,6 +2785,12 @@ end = struct
     respond_ok ~headers:[pow_header] (json_ok [
       ("version", `String Version.version);
       ("git_hash", `String git_hash);
+      (* B121: wire protocol negotiation. Clients compare these against
+         Version.relay_protocol_version and surface an upgrade message
+         when the numbers diverge instead of opaque auth/HTTP errors. *)
+      ("protocol_version", `Int Version.relay_protocol_version);
+      ("min_client_protocol_version",
+       `Int Version.relay_min_client_protocol_version);
       ("auth_mode", `String auth_mode);
       ("pow", `Assoc [
         ("enabled", `Bool pow_enabled);
@@ -3165,7 +3427,28 @@ end = struct
             end
       end
 
-  let handle_poll_inbox relay ~verified_alias body =
+  (* B115: /poll_inbox and /peek_inbox expose inbox contents, so they are
+     bound to a verified owner. [require_owner] is computed at the dispatch
+     site via [inbox_owner_required]: always true on a token-configured
+     (prod) relay, and true BY DEFAULT on a tokenless relay too — a
+     production deploy whose token secret goes missing therefore fails
+     closed for inbox reads instead of silently reopening the B111 drain.
+     The legacy unauthenticated path exists only behind the explicit
+     development-only setting [C2C_RELAY_ALLOW_UNSIGNED_INBOX=1], and even
+     that is ignored when a token is configured (a prod relay can never be
+     downgraded by env). When [require_owner] is true an unverified request
+     is rejected here even if the outer route classifier ever regresses
+     (defense in depth — auth_decision already refuses these routes without
+     a verified Ed25519 header whenever a token is configured). *)
+  let allow_unsigned_inbox_env = "C2C_RELAY_ALLOW_UNSIGNED_INBOX"
+
+  let inbox_owner_required ~token_configured =
+    token_configured
+    || (match Sys.getenv_opt allow_unsigned_inbox_env with
+        | Some ("1" | "true" | "TRUE" | "yes") -> false
+        | Some _ | None -> true)
+
+  let handle_inbox_read relay ~verified_alias ~require_owner ~route ~read body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     if node_id = "" || session_id = "" then
@@ -3175,31 +3458,38 @@ end = struct
       | Some v ->
         (match R.alias_of_session relay ~node_id ~session_id with
          | Some owner when owner = v ->
-           let msgs = R.poll_inbox relay ~node_id ~session_id in
+           let msgs = read relay ~node_id ~session_id in
            respond_ok (json_ok [ ("messages", `List msgs) ])
          | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
       | None ->
-        let msgs = R.poll_inbox relay ~node_id ~session_id in
-        respond_ok (json_ok [ ("messages", `List msgs) ])
+        if require_owner then
+          respond_unauthorized (json_error_str err_unauthorized
+            (route ^ " requires an Ed25519-signed request from the session owner"))
+        else
+          let msgs = read relay ~node_id ~session_id in
+          respond_ok (json_ok [ ("messages", `List msgs) ])
 
-  let handle_peek_inbox relay body =
-    let node_id = get_string body "node_id" in
-    let session_id = get_string body "session_id" in
-    if node_id = "" || session_id = "" then
-      respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
-    else
-      let msgs = R.peek_inbox relay ~node_id ~session_id in
-      respond_ok (json_ok [ ("messages", `List msgs) ])
+  let handle_poll_inbox relay ~verified_alias ~require_owner body =
+    handle_inbox_read relay ~verified_alias ~require_owner
+      ~route:"poll_inbox" ~read:R.poll_inbox body
+
+  let handle_peek_inbox relay ~verified_alias ~require_owner body =
+    handle_inbox_read relay ~verified_alias ~require_owner
+      ~route:"peek_inbox" ~read:R.peek_inbox body
 
   let handle_remote_inbox session_id =
     let msgs = Relay_remote_broker.get_messages ~session_id in
     respond_ok (json_ok [ ("messages", `List msgs) ])
 
-  (* Layer 4 slice 1: verify optional signed proof on room join/leave.
-     Returns [Ok ()] when either (a) no proof fields are present (legacy
-     path) or (b) all fields present and verify correctly. Returns
-     [Error (code, msg)] for any partial/invalid/forged proof. *)
-  let verify_room_op_proof relay ?(extra_signed_fields = []) ~sign_ctx ~room_id ~alias body =
+  (* Layer 4 slice 1 / B114: verify the signed proof on room mutations.
+     [require_signed] comes from [require_signed_room_ops] (true whenever the
+     relay is token-configured, and by default in dev mode too). Returns
+     [Ok ()] when all proof fields are present and verify correctly, or when
+     no proof fields are present AND [require_signed] is false (dev-gated
+     legacy path). Returns [Error (code, msg)] for any partial/invalid/forged
+     proof, and for absent proofs when [require_signed] is true. *)
+  let verify_room_op_proof relay ?(extra_signed_fields = []) ~require_signed
+      ~sign_ctx ~room_id ~alias body =
     let identity_pk_b64 = get_opt_string body "identity_pk" |> Option.value ~default:"" in
     let signature_b64 = get_opt_string body "sig" |> Option.value ~default:"" in
     let nonce_b64 = get_opt_string body "nonce" |> Option.value ~default:"" in
@@ -3217,13 +3507,14 @@ end = struct
       Res.Error (relay_err_missing_proof_field,
         "identity_pk, sig, nonce, and ts must all be present together")
     else if not has_proof then
-      if require_signed_room_ops () then
+      if require_signed then
         Res.Error (relay_err_unsigned_room_op,
-          "unsigned room op rejected; client must upgrade to sign room ops "
-          ^ "and/or set C2C_REQUIRE_SIGNED_ROOM_OPS=0 on the server")
+          "unsigned room op rejected; client must sign room ops "
+          ^ "(legacy unsigned is dev-only: C2C_REQUIRE_SIGNED_ROOM_OPS=0 "
+          ^ "on a relay with no Bearer token)")
       else
-        (Logs.warn (fun m -> m "unsigned room op %s for %S (no identity loaded — this is safe in dev but indicates a client gap in prod)" sign_ctx alias);
-         Res.Ok ())  (* legacy unsigned path — accept *)
+        (Logs.warn (fun m -> m "unsigned room op %s for %S accepted via dev gate (C2C_REQUIRE_SIGNED_ROOM_OPS=0, no token)" sign_ctx alias);
+         Res.Ok ())  (* dev-gated legacy unsigned path — accept *)
     else
       match decode_b64url identity_pk_b64 with
       | Res.Error _ -> Res.Error (err_bad_request, "identity_pk not base64url-nopad")
@@ -3247,12 +3538,22 @@ end = struct
               match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
               | Error code -> Error (code, "nonce already seen within TTL")
               | Ok () ->
-                (* Bind identity_pk to alias: must match any existing binding. *)
+                (* B114 (review finding 1): the proof only AUTHENTICATES the
+                   alias if [identity_pk] is the key already bound to it. A
+                   self-signed proof for an alias with no registered binding
+                   is meaningless (any attacker key would "verify"), so an
+                   absent binding is rejected — there is no first-proof TOFU
+                   pinning. The alias must have registered a signed identity
+                   first (register_signed binds the key). *)
                 (match R.identity_pk_of relay ~alias with
                  | Some bound when bound <> identity_pk ->
                    Error (relay_err_alias_identity_mismatch,
                      "identity_pk does not match registered binding")
-                 | _ ->
+                 | None ->
+                   Error (relay_err_alias_identity_mismatch,
+                     "alias has no registered identity binding; register a \
+                      signed identity before signing room ops")
+                 | Some _ ->
                            let blob =
                              Relay_identity.canonical_msg ~ctx:sign_ctx
                                ([ room_id; alias ] @ extra_signed_fields
@@ -3264,7 +3565,7 @@ end = struct
                      Error (relay_err_signature_invalid,
                        "Ed25519 signature does not verify"))
 
-  let handle_join_room relay body =
+  let handle_join_room relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     (* Optional visibility — only applied if this join creates the room. *)
@@ -3276,6 +3577,15 @@ end = struct
     in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
+    else if not (valid_relay_room_id room_id) then
+      (* B118: enforce the canonical room-id grammar ([A-Za-z0-9_-], no `#`/`@`)
+         at the room-op boundary — matches the local broker's valid_room_id.
+         This keeps the anonymous /list_rooms directory address
+         (alias#room@relay) unambiguous: an out-of-grammar room id could
+         otherwise inject an extra `#`/`@` delimiter that defeats the
+         recipient parser. *)
+      respond_bad_request (json_error_str err_bad_request
+        "room_id must match [A-Za-z0-9_-] and be non-empty")
     else match requested_visibility with
     | None ->
       respond_bad_request (json_error_str err_bad_request
@@ -3286,7 +3596,7 @@ end = struct
         | Some v when String.trim v <> "" -> [ requested_visibility ]
         | _ -> []
       in
-      match verify_room_op_proof relay ~sign_ctx:room_join_sign_ctx
+      match verify_room_op_proof relay ~require_signed ~sign_ctx:room_join_sign_ctx
               ~extra_signed_fields ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3316,7 +3626,7 @@ end = struct
           | `Error (code, msg) -> json_error code msg [])
 
   (* L4/5 — set_room_visibility. Signed by any existing room member. *)
-  let handle_set_room_visibility relay body =
+  let handle_set_room_visibility relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     let visibility_raw = get_string body "visibility" in
@@ -3328,7 +3638,7 @@ end = struct
       respond_bad_request (json_error_str err_bad_request
         "visibility must be \"public\", \"unlisted\", \"gated\", or \"private\"")
     | Some visibility ->
-      match verify_room_op_proof relay
+      match verify_room_op_proof relay ~require_signed
               ~sign_ctx:room_set_visibility_sign_ctx
               ~extra_signed_fields:[ visibility ]
               ~room_id ~alias body with
@@ -3347,11 +3657,61 @@ end = struct
             ("ok", `Bool true);
             ("room_id", `String room_id);
             ("visibility", `String visibility);
+            (* B117: report the effective history_public after the change
+               (a downgrade to gated/private atomically clears it). *)
+            ("history_public", `Bool (R.history_public_of relay ~room_id));
           ])
         end
 
+  (* B117 — set_room_history_public. Signed by any existing room member. The
+     boolean is bound into the canonical signed bytes (extra_signed_fields), so
+     an intermediary cannot flip it. gated/private rooms must always be
+     member-only: a request to set true on such a room is rejected. *)
+  let handle_set_room_history_public relay ~require_signed body =
+    let alias = get_string body "alias" in
+    let room_id = get_string body "room_id" in
+    match get_opt_bool body "history_public" with
+    | None ->
+      respond_bad_request (json_error_str err_bad_request
+        "history_public (boolean) is required")
+    | Some history_public ->
+    if alias = "" || room_id = "" then
+      respond_bad_request (json_error_str err_bad_request
+        "alias and room_id are required")
+    else
+      let hp_str = if history_public then "true" else "false" in
+      match verify_room_op_proof relay ~require_signed
+              ~sign_ctx:room_set_history_public_sign_ctx
+              ~extra_signed_fields:[ hp_str ]
+              ~room_id ~alias body with
+      | Error (code, msg) ->
+        if code = err_bad_request || code = relay_err_missing_proof_field then
+          respond_bad_request (json_error_str code msg)
+        else
+          respond_unauthorized (json_error_str code msg)
+      | Ok () ->
+        if not (R.is_room_member_alias relay ~room_id ~alias) then
+          respond_unauthorized (json_error_str relay_err_not_a_member
+            (Printf.sprintf "alias %S is not a member of room %S" alias room_id))
+        else
+          let visibility = R.room_visibility_of relay ~room_id in
+          let is_listed_open = visibility = "public" || visibility = "unlisted" in
+          if history_public && not is_listed_open then
+            respond_bad_request (json_error_str relay_err_history_public_gated
+              (Printf.sprintf
+                 "room %S is %s; history_public can only be true for public or unlisted rooms"
+                 room_id visibility))
+          else begin
+            R.set_room_history_public relay ~room_id ~history_public;
+            respond_ok (`Assoc [
+              ("ok", `Bool true);
+              ("room_id", `String room_id);
+              ("history_public", `Bool history_public);
+            ])
+          end
+
   (* L4/5 — invite / uninvite. Signed by any existing room member. *)
-  let handle_room_invite_op relay ~sign_ctx ~op body =
+  let handle_room_invite_op relay ~require_signed ~sign_ctx ~op body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     let target_pk = get_string body "invitee_pk" in
@@ -3359,7 +3719,12 @@ end = struct
       respond_bad_request (json_error_str err_bad_request
         "alias, room_id, and invitee_pk are required")
     else
-      match verify_room_op_proof relay ~sign_ctx ~room_id ~alias body with
+      (* B114 (review finding 2): invitee_pk is authorization-relevant and
+         MUST be covered by the signature, or an intermediary could substitute
+         the target key under an otherwise-valid member proof. Bind it as an
+         extra signed field (matches Relay_signed_ops.sign_room_op_with_target_pk). *)
+      match verify_room_op_proof relay ~require_signed ~sign_ctx
+              ~extra_signed_fields:[ target_pk ] ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
           respond_bad_request (json_error_str code msg)
@@ -3383,19 +3748,19 @@ end = struct
           ])
         end
 
-  let handle_invite_room relay body =
-    handle_room_invite_op relay ~sign_ctx:room_invite_sign_ctx ~op:`Invite body
+  let handle_invite_room relay ~require_signed body =
+    handle_room_invite_op relay ~require_signed ~sign_ctx:room_invite_sign_ctx ~op:`Invite body
 
-  let handle_uninvite_room relay body =
-    handle_room_invite_op relay ~sign_ctx:room_uninvite_sign_ctx ~op:`Uninvite body
+  let handle_uninvite_room relay ~require_signed body =
+    handle_room_invite_op relay ~require_signed ~sign_ctx:room_uninvite_sign_ctx ~op:`Uninvite body
 
-  let handle_knock_room relay body =
+  let handle_knock_room relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
     else
-      match verify_room_op_proof relay ~sign_ctx:room_knock_sign_ctx
+      match verify_room_op_proof relay ~require_signed ~sign_ctx:room_knock_sign_ctx
               ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3428,13 +3793,13 @@ end = struct
           | `Error (code, msg) ->
             respond_bad_request (json_error_str code msg)
 
-  let handle_list_room_knocks relay body =
+  let handle_list_room_knocks relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
     else
-      match verify_room_op_proof relay ~sign_ctx:room_list_knocks_sign_ctx
+      match verify_room_op_proof relay ~require_signed ~sign_ctx:room_list_knocks_sign_ctx
               ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3453,7 +3818,7 @@ end = struct
             ("knocks", `List (List.map json_of_room_knock knocks));
           ])
 
-  let handle_room_knock_decision relay ~sign_ctx ~decision body =
+  let handle_room_knock_decision relay ~require_signed ~sign_ctx ~decision body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     let requester_pk = get_string body "requester_pk" in
@@ -3461,7 +3826,7 @@ end = struct
       respond_bad_request (json_error_str err_bad_request
         "alias, room_id, and requester_pk are required")
     else
-      match verify_room_op_proof relay ~sign_ctx ~room_id ~alias
+      match verify_room_op_proof relay ~require_signed ~sign_ctx ~room_id ~alias
               ~extra_signed_fields:[ requester_pk ] body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3501,21 +3866,21 @@ end = struct
             in
             respond_ok (`Assoc fields)
 
-  let handle_approve_room_knock relay body =
-    handle_room_knock_decision relay
+  let handle_approve_room_knock relay ~require_signed body =
+    handle_room_knock_decision relay ~require_signed
       ~sign_ctx:room_approve_knock_sign_ctx ~decision:`Approve body
 
-  let handle_deny_room_knock relay body =
-    handle_room_knock_decision relay
+  let handle_deny_room_knock relay ~require_signed body =
+    handle_room_knock_decision relay ~require_signed
       ~sign_ctx:room_deny_knock_sign_ctx ~decision:`Deny body
 
-  let handle_leave_room relay body =
+  let handle_leave_room relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
     if alias = "" || room_id = "" then
       respond_bad_request (json_error_str err_bad_request "alias and room_id are required")
     else
-      match verify_room_op_proof relay ~sign_ctx:room_leave_sign_ctx
+      match verify_room_op_proof relay ~require_signed ~sign_ctx:room_leave_sign_ctx
               ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
@@ -3526,14 +3891,25 @@ end = struct
         let result = R.leave_room relay ~alias ~room_id in
         respond_ok (json_of_room_join_result result)
 
-  (* Layer 4 slice 2: verify optional signed envelope on /send_room.
+  (* Layer 4 slice 2 / B114: verify the signed envelope on /send_room.
      Envelope shape per spec §2: {ct, enc, sender_pk, sig, ts, nonce}.
      In v1, `ct` is base64url-nopad of the UTF-8 message text; relay
-     still fans out `content` verbatim. Soft rollout: no envelope → legacy
-     path. Envelope present → verify end-to-end before send_room. *)
-  let verify_room_send_envelope relay ~from_alias ~room_id ~content body =
+     still fans out `content` verbatim. B114: an absent envelope is
+     rejected when [require_signed] is true (mandatory in production and
+     the source default); the envelope-less legacy path survives only
+     behind the dev gate. Envelope present → verify end-to-end before
+     send_room. *)
+  let verify_room_send_envelope relay ~require_signed ~from_alias ~room_id ~content body =
     match List.assoc_opt "envelope" (match body with `Assoc l -> l | _ -> []) with
-    | None -> Ok ()  (* legacy unsigned path *)
+    | None ->
+      if require_signed then
+        Res.Error (relay_err_unsigned_room_op,
+          "room send requires a signed envelope; client must send a signed "
+          ^ "envelope (legacy envelope-less send is dev-only: "
+          ^ "C2C_REQUIRE_SIGNED_ROOM_OPS=0 on a relay with no Bearer token)")
+      else
+        (Logs.warn (fun m -> m "envelope-less send_room from %S to room %S accepted via dev gate (C2C_REQUIRE_SIGNED_ROOM_OPS=0, no token)" from_alias room_id);
+         Res.Ok ())  (* dev-gated legacy envelope-less path — accept *)
     | Some env ->
       let es k = match env with
         | `Assoc l ->
@@ -3585,11 +3961,21 @@ end = struct
                     match R.check_register_nonce relay ~nonce ~ts:ts_client with
                     | Error code -> Error (code, "nonce already seen within TTL")
                     | Ok () ->
+                      (* B114 (review finding 1): as with room ops, the
+                         envelope only authenticates [from_alias] when
+                         [sender_pk] is the key bound to it. An absent binding
+                         is rejected (no first-proof TOFU) — the sender must
+                         have registered a signed identity. *)
                       (match R.identity_pk_of relay ~alias:from_alias with
                        | Some bound when bound <> sender_pk ->
                          Error (relay_err_alias_identity_mismatch,
                            "sender_pk does not match registered binding")
-                       | _ ->
+                       | None ->
+                         Error (relay_err_alias_identity_mismatch,
+                           "alias has no registered identity binding; register \
+                            a signed identity before sending signed room \
+                            messages")
+                       | Some _ ->
                          let ct_hash = body_sha256_b64 ct_bytes in
                          let blob =
                            Relay_identity.canonical_msg ~ctx:Relay_signed_ops.room_send_sign_ctx
@@ -3602,14 +3988,14 @@ end = struct
                            Error (relay_err_signature_invalid,
                              "Ed25519 envelope signature does not verify"))
 
-  let handle_send_room relay body =
+  let handle_send_room relay ~require_signed body =
     let from_alias = get_string body "from_alias" in
     let room_id = get_string body "room_id" in
     let content = get_string body "content" in
     if from_alias = "" || room_id = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias, room_id, and content are required")
     else
-      match verify_room_send_envelope relay ~from_alias ~room_id ~content body with
+      match verify_room_send_envelope relay ~require_signed ~from_alias ~room_id ~content body with
       | Error (code, msg) ->
         if code = err_bad_request
            || code = relay_err_missing_proof_field
@@ -3660,7 +4046,13 @@ end = struct
     else
       let limit = get_int body "limit" 50 in
       let visibility = R.room_visibility_of relay ~room_id in
-      let open_read = visibility = "public" || visibility = "unlisted" in
+      (* B117: anonymous open-read is now gated by BOTH visibility (listed +
+         open: public/unlisted) AND the persisted history_public policy. A
+         history-closed listed room is member-only, same as gated/private. *)
+      let open_read =
+        (visibility = "public" || visibility = "unlisted")
+        && R.history_public_of relay ~room_id
+      in
       let member_read =
         match verified_alias with
         | Some alias -> R.is_room_member_alias relay ~room_id ~alias
@@ -3809,22 +4201,149 @@ end = struct
                           "confirmation", `String confirm_b64
                         ])
 
-  (* S5a: DELETE /binding/<binding_id> — revoke a mobile binding *)
-  let handle_mobile_pair_revoke relay ~client_ip binding_id =
+  (* S5a/B116: DELETE /binding/<binding_id> — revoke a mobile binding.
+
+     B111 found the original handler treated a bare binding ID as both
+     authority and an existence oracle. Revocation now requires a signed
+     owner proof in the JSON body:
+
+       { "revoke_pk": <b64url Ed25519 pk>,   -- machine OR phone key
+         "ts":        <unix epoch seconds, string>,
+         "nonce":     <b64url random>,
+         "sig":       <b64url Ed25519 sig> }
+
+     sig covers canonical_msg(binding_revoke_sign_ctx,
+     [binding_id; revoke_pk; ts; nonce]).
+
+     Replay + freshness follow the SAME signed-request pattern as every
+     other peer route (spec §5.1): the ts must be within
+     [-request_ts_past_window, +request_ts_future_window] of now, and the
+     nonce is consumed through a DEDICATED revoke-nonce store
+     (R.check_revoke_nonce) — separate from request_nonces because the
+     outer Ed25519 request verifier writes header nonces to request_nonces
+     BEFORE signature verification, so sharing that store would let an
+     attacker pre-seed/grief a revoke nonce with a bogus Authorization
+     header. SqliteRelay persists the revoke-nonce table to disk, so
+     replay protection survives a relay restart within the freshness
+     window (InMemoryRelay is in-memory, matching all other signed ops in
+     dev/test).
+
+     Ordering is deliberate for two invariants:
+
+     1. No existence oracle. Every denial that could reveal binding
+        state — non-owner key, unknown binding, AND a replayed proof —
+        funnels through the identical 401 `revoke_denied` body. Shape
+        failures (missing fields, bad encoding, non-finite/stale ts, bad
+        sig) reject BEFORE any store or nonce access, so their distinct
+        codes are existence-independent.
+     2. No anonymous nonce-store growth (DoS). The owner check runs
+        BEFORE the nonce is recorded, so only a request whose signature
+        verifies AND whose key owns the binding ever writes to the nonce
+        store. A stranger's valid-but-non-owner signature is denied
+        without touching the store; nonce length is bounded up front too.
+
+     Unconditional: dev mode (no server token) does not bypass any of it. *)
+  let handle_mobile_pair_revoke relay ~client_ip binding_id body =
+    let deny_uniform () =
+      Relay_ratelimit.structured_log ~event:"pair_revoke"
+        ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+        ~result:"denied" ();
+      respond_unauthorized
+        (json_error_str relay_err_revoke_denied
+           "binding revocation denied: unknown binding or proof key does not own it")
+    in
+    let reject code msg =
+      Relay_ratelimit.structured_log ~event:"pair_revoke"
+        ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+        ~result:"bad_proof" ();
+      respond_unauthorized (json_error_str code msg)
+    in
     if not (is_valid_binding_id binding_id) then
       respond_bad_request (json_error_str err_bad_request "binding_id must be 8-64 chars of [A-Za-z0-9_-]")
     else
-      let existed = match R.get_observer_binding relay ~binding_id with
-        | None -> false
-        | Some _ -> true
+      let get_field name =
+        match body with
+        | `Assoc l ->
+          (match List.assoc_opt name l with
+           | Some (`String s) when s <> "" -> Some s
+           | _ -> None)
+        | _ -> None
       in
-      R.remove_observer_binding relay ~binding_id;
-      (if existed then push_pseudo_unregistration_to_observers ~binding_id else ());
-      Relay_ratelimit.structured_log ~event:"pair_revoke"
-        ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
-        ~result:(if existed then "ok" else "not_found") ();
-      if existed then respond_ok (`Assoc ["ok", `Bool true; "binding_id", `String binding_id])
-      else respond_not_found (json_error_str err_not_found "binding_id not found")
+      match get_field "revoke_pk", get_field "ts",
+            get_field "nonce", get_field "sig" with
+      | None, _, _, _ | _, None, _, _ | _, _, None, _ | _, _, _, None ->
+        reject relay_err_missing_proof_field
+          "binding revocation requires a signed owner proof: revoke_pk, ts, nonce, sig"
+      (* Bound the nonce length before it can reach any store — a legit
+         proof nonce is ~22 chars (16 random bytes, b64url); refuse
+         anything oversized as malformed so it cannot bloat the store. *)
+      | _, _, Some nonce, _ when String.length nonce > 128 ->
+        reject relay_err_missing_proof_field "nonce too long"
+      | Some revoke_pk_b64, Some ts, Some nonce, Some sig_b64 ->
+        match decode_b64url revoke_pk_b64 with
+        | Error _ ->
+          reject relay_err_signature_invalid "revoke_pk not base64url-nopad"
+        | Ok pk_raw when String.length pk_raw <> 32 ->
+          reject relay_err_signature_invalid "revoke_pk must be 32 bytes"
+        | Ok pk_raw ->
+          match decode_b64url sig_b64 with
+          | Error _ ->
+            reject relay_err_signature_invalid "sig not base64url-nopad"
+          | Ok sig_raw when String.length sig_raw <> 64 ->
+            reject relay_err_signature_invalid "sig must be 64 bytes"
+          | Ok sig_raw ->
+            let now = Unix.gettimeofday () in
+            (match float_of_string_opt ts with
+             | None ->
+               reject relay_err_timestamp_out_of_window
+                 "ts must be unix epoch seconds"
+             | Some ts_f
+               (* is_finite also rejects nan/inf, whose window comparison
+                  would otherwise be vacuously false — a non-expiring
+                  proof. Same window as all signed peer requests. *)
+               when (not (Float.is_finite ts_f))
+                    || ts_f -. now > request_ts_future_window
+                    || now -. ts_f > request_ts_past_window ->
+               reject relay_err_timestamp_out_of_window
+                 (Printf.sprintf "ts skew %.1fs outside signed-request window"
+                    (ts_f -. now))
+             | Some ts_f ->
+               let blob = Relay_identity.canonical_msg
+                   ~ctx:binding_revoke_sign_ctx
+                   [ binding_id; revoke_pk_b64; ts; nonce ] in
+               if not (Relay_identity.verify ~pk:pk_raw ~msg:blob
+                         ~sig_:sig_raw) then
+                 reject relay_err_signature_invalid
+                   "revocation proof signature does not verify"
+               else begin
+                 (* Owner check BEFORE nonce consumption: only a verified
+                    owner writes to the nonce store (no anonymous growth),
+                    and unknown-binding / non-owner both deny uniformly. *)
+                 let owner =
+                   match R.get_observer_binding relay ~binding_id with
+                   | None -> false
+                   | Some (phone_ed, _phone_x, machine_ed, _sig) ->
+                     revoke_pk_b64 = machine_ed || revoke_pk_b64 = phone_ed
+                 in
+                 if not owner then deny_uniform ()
+                 else
+                   (* Replay check consumes the nonce via the DEDICATED
+                      persisted revoke-nonce store (never touched by the
+                      pre-auth outer Ed25519 verifier, which writes header
+                      nonces to request_nonces). A replay denies through
+                      the SAME revoke_denied body as a non-owner — no
+                      oracle. *)
+                   match R.check_revoke_nonce relay ~nonce ~ts:ts_f with
+                   | Error _ -> deny_uniform ()
+                   | Ok () ->
+                     R.remove_observer_binding relay ~binding_id;
+                     push_pseudo_unregistration_to_observers ~binding_id;
+                     Relay_ratelimit.structured_log ~event:"pair_revoke"
+                       ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                       ~result:"ok" ();
+                     respond_ok (`Assoc [ "ok", `Bool true;
+                                          "binding_id", `String binding_id ])
+               end)
 
   (* S5b: Device-login OAuth-style fallback (§S5b).
      User flow: machine init → phone registers via web → machine polls to claim. *)
@@ -4166,6 +4685,13 @@ end = struct
         try Res.Ok (Yojson.Safe.from_string body_str)
         with Yojson.Json_error msg -> Res.Error msg
       in
+      (* B114: room mutations require signed body proofs / envelopes.
+         Mandatory whenever a Bearer token is configured (production);
+         in dev mode (no token) it is still the default, with an explicit
+         C2C_REQUIRE_SIGNED_ROOM_OPS=0 legacy escape hatch. *)
+      let require_signed =
+        require_signed_room_ops ~token_configured:(token <> None)
+      in
       match meth, path with
       (* === S4: Observer WebSocket endpoint === *)
       | `GET, path when String.length path > 10 && String.sub path 0 10 = "/observer/" ->
@@ -4446,73 +4972,83 @@ end = struct
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_poll_inbox relay ~verified_alias j)
+         | Ok j ->
+           handle_poll_inbox relay ~verified_alias
+             ~require_owner:(inbox_owner_required ~token_configured:(token <> None)) j)
 
       | `POST, "/peek_inbox" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_peek_inbox relay j)
+         | Ok j ->
+           handle_peek_inbox relay ~verified_alias
+             ~require_owner:(inbox_owner_required ~token_configured:(token <> None)) j)
 
       | `POST, "/join_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_join_room relay j)
+         | Ok j -> handle_join_room relay ~require_signed j)
 
       | `POST, "/leave_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_leave_room relay j)
+         | Ok j -> handle_leave_room relay ~require_signed j)
 
       | `POST, "/set_room_visibility" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_set_room_visibility relay j)
+         | Ok j -> handle_set_room_visibility relay ~require_signed j)
+
+      | `POST, "/set_room_history_public" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_set_room_history_public relay ~require_signed j)
 
       | `POST, "/invite_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_invite_room relay j)
+         | Ok j -> handle_invite_room relay ~require_signed j)
 
       | `POST, "/uninvite_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_uninvite_room relay j)
+         | Ok j -> handle_uninvite_room relay ~require_signed j)
 
       | `POST, "/knock_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_knock_room relay j)
+         | Ok j -> handle_knock_room relay ~require_signed j)
 
       | `POST, "/list_room_knocks" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_list_room_knocks relay j)
+         | Ok j -> handle_list_room_knocks relay ~require_signed j)
 
       | `POST, "/approve_room_knock" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_approve_room_knock relay j)
+         | Ok j -> handle_approve_room_knock relay ~require_signed j)
 
       | `POST, "/deny_room_knock" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_deny_room_knock relay j)
+         | Ok j -> handle_deny_room_knock relay ~require_signed j)
 
       | `POST, "/send_room" ->
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_send_room relay j)
+         | Ok j -> handle_send_room relay ~require_signed j)
 
       | `POST, "/room_history" ->
         let json = parse_body () in
@@ -4562,7 +5098,14 @@ end = struct
 
       | `DELETE, path when String.starts_with ~prefix:"/binding/" path ->
         let binding_id = String.sub path 9 (String.length path - 9) in
-        handle_mobile_pair_revoke relay ~client_ip binding_id
+        (* B116: an unparseable body gets the same missing-proof rejection
+           as an absent one — never a distinct parse error that could be
+           probed. *)
+        let json = match parse_body () with
+          | Ok j -> j
+          | Error _ -> `Null
+        in
+        handle_mobile_pair_revoke relay ~client_ip binding_id json
 
       (* === S5b: Device-pair endpoints === *)
       | `POST, "/device-pair/init" ->
@@ -4624,6 +5167,20 @@ end = struct
     (match token with
      | Some _ -> Printf.printf "auth: Bearer token required\n%!"
      | None -> Printf.printf "auth: DISABLED (no token set — do not expose publicly)\n%!");
+    (* B114: report the effective signed-room-op mode at startup so the
+       deployed configuration is operator-visible. *)
+    (match Sys.getenv_opt "C2C_REQUIRE_SIGNED_ROOM_OPS", token with
+     | Some "0", Some _ ->
+       Printf.printf
+         "room ops: signed proofs REQUIRED (C2C_REQUIRE_SIGNED_ROOM_OPS=0 \
+          IGNORED — a token-configured relay never accepts unsigned room ops)\n%!"
+     | Some "0", None ->
+       Printf.printf
+         "room ops: DEV GATE ACTIVE — unsigned room ops and envelope-less \
+          sends accepted (C2C_REQUIRE_SIGNED_ROOM_OPS=0, no token; do not \
+          expose publicly)\n%!"
+     | _ ->
+       Printf.printf "room ops: signed proofs + send envelopes required\n%!");
     if gc_interval > 0.0 then
       Printf.printf "gc: running every %.0fs\n%!" gc_interval
     else

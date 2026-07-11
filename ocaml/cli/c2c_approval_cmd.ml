@@ -9,22 +9,16 @@ let ( // ) = Filename.concat
 
 (* --- subcommand: await-reply ---------------------------------------------- *)
 
-(* [#142 slice 1] Block-and-poll the inbox for a verdict message tagged with
-   a token (e.g. "ka_abc123") containing one of the verdict words
-   "allow" / "deny" (case-insensitive).  Used by the kimi PreToolUse approval
-   hook to translate a reviewer's c2c DM reply into a hook exit code.
+(* [#142/#490] Block-and-poll the host-local verdict-file store for a verdict
+   tagged with a token (e.g. "ka_abc123"). Used by the kimi PreToolUse
+   approval hook to translate a local CLI decision into a hook exit code.
 
    Behaviour:
-   - resolves session id via the same inbox helpers other CLI commands use
-   - polls inbox via [read_inbox] (non-draining) every 1s until a match
+   - polls the local verdict file every 1s until a match
    - on match: prints the verdict ("allow" or "deny") on stdout, exits 0
    - on timeout: prints nothing on stdout, exits 1
-   - on missing token / inbox unreachable: prints diagnostic to stderr, exit 2
-
-   Why peek (non-draining): leaves the verdict message in the inbox so the
-   recipient agent's normal poll/push delivery still surfaces it — the human
-   on the other end sees what the reviewer wrote.  Repeated matches are
-   harmless: the hook script consumes the first one. *)
+   - broker-inbox and relay-delivered messages are never inspected; messages
+     are advisory data and cannot resolve approval. *)
 let await_reply_cmd =
   let token =
     Cmdliner.Arg.(required & opt (some string) None
@@ -36,16 +30,6 @@ let await_reply_cmd =
                   & info [ "timeout" ] ~docv:"SECONDS"
                       ~doc:"Maximum seconds to wait for a verdict.")
   in
-  let session_id_flag =
-    Cmdliner.Arg.(value & opt (some string) None
-                  & info [ "session-id"; "s" ] ~docv:"ID"
-                      ~doc:"Session ID whose inbox to watch.  Overrides C2C_MCP_SESSION_ID.")
-  in
-  let from_filter =
-    Cmdliner.Arg.(value & opt (some string) None
-                  & info [ "from" ] ~docv:"ALIAS"
-                      ~doc:"Only accept verdicts from this sender alias.")
-  in
   let poll_interval =
     Cmdliner.Arg.(value & opt float 1.0
                   & info [ "poll-interval" ] ~docv:"SECONDS"
@@ -53,94 +37,10 @@ let await_reply_cmd =
   in
   let+ token = token
   and+ timeout = timeout
-  and+ session_id_opt = session_id_flag
-  and+ from_filter = from_filter
   and+ poll_interval = poll_interval in
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let session_id = match session_id_opt with
-    | Some sid -> sid
-    | None -> resolve_session_id_for_inbox broker
-  in
-  let lower_contains haystack needle =
-    let h = String.lowercase_ascii haystack in
-    let n = String.lowercase_ascii needle in
-    let hl = String.length h and nl = String.length n in
-    if nl = 0 then true
-    else if nl > hl then false
-    else
-      let rec scan i =
-        if i + nl > hl then false
-        else if String.sub h i nl = n then true
-        else scan (i + 1)
-      in
-      scan 0
-  in
-  (* Emit a one-shot deprecation warning when legacy "[approve <token>]" or
-     "[reject <token>]" text format is detected.  The warning fires once per
-     call-site to avoid spamming stderr on every poll loop iteration. *)
-  let legacy_warned = ref false in
-  let warn_legacy () =
-    if !legacy_warned then () else begin
-      legacy_warned := true;
-      Printf.eprintf
-        "warning: legacy permission-DM format detected; \
-         switch to `c2c authorize <token> allow|deny` — \
-         this format will be removed next cycle.\n%!"
-    end
-  in
-  (* [#B098 SAFETY] Resolve the locally-configured supervisors for this
-     token once, before the poll loop. A broker/relay-delivered message can
-     satisfy the approval ONLY if its sender is on this list; a peer message
-     is DATA and never a verdict. No pending-reply binding -> supervisors is
-     empty -> the legacy inbox-DM path is refused outright and only the local
-     verdict file can satisfy. See C2c_approval_paths.inbox_verdict_if_trusted
-     + the "bus, never RPC" invariant documented there. *)
-  let supervisors =
-    match C2c_mcp.Broker.find_pending_permission broker token with
-    | Some p -> p.supervisors
-    | None -> []
-  in
-  let cf = String.lowercase_ascii in
-  let is_supervisor alias =
-    let a = cf alias in
-    List.exists (fun s -> cf s = a) supervisors
-  in
-  (* The verdict-of-a-message decision is delegated entirely to the trust
-     gate. Everything else (token containment, verdict word) is decided
-     there, gated first on supervisor membership. *)
-  let verdict_of (m : C2c_mcp.message) =
-    C2c_approval_paths.inbox_verdict_if_trusted
-      ~supervisors ~from_alias:m.from_alias ~content:m.content ~token
-  in
-  let from_match (m : C2c_mcp.message) =
-    match from_filter with None -> true | Some a ->
-      cf m.from_alias = cf a
-  in
-  (* Preserve the legacy "[approve]/[reject]" deprecation hint, scoped to
-     supervisor senders only — we must not surface hints (or behave
-     differently) based on arbitrary peer message content. *)
-  let maybe_warn_legacy messages =
-    if !legacy_warned then ()
-    else begin
-      let has_legacy =
-        List.exists
-          (fun (m : C2c_mcp.message) ->
-            is_supervisor m.from_alias
-            && lower_contains m.content token
-            && (lower_contains m.content "approve"
-                || lower_contains m.content "reject"))
-          messages
-      in
-      if has_legacy then warn_legacy ()
-    end
-  in
   let deadline = Unix.gettimeofday () +. timeout in
-  (* [#490 slice 5a] Verdict-file path takes priority over inbox-DM path:
-     reviewers running `c2c approval-reply` write a JSON file that we
-     watch here. The legacy inbox-DM verdict (slice 1) is still honoured
-     as a fallback for back-compat, but it races the notifier-daemon
-     drain (see finding 2026-04-30T05-43-00Z) and should be considered
-     deprecated. *)
+  (* [#B098 SAFETY] This host-local file is the only verdict input. Peer
+     messages are data regardless of sender identity or transport. *)
   let check_verdict_file () =
     match C2c_approval_paths.read_verdict ~token () with
     | None -> None
@@ -152,38 +52,23 @@ let await_reply_cmd =
          | None -> None)
   in
   let rec loop () =
-    (* 1. verdict file (preferred) *)
     (match check_verdict_file () with
      | Some v ->
          print_endline v;
          (try C2c_approval_paths.cleanup ~token () with _ -> ());
          exit 0
      | None -> ());
-    (* 2. inbox-DM (legacy) *)
-    let messages =
-      try C2c_mcp.Broker.read_inbox broker ~session_id
-      with _ -> []
-    in
-    let candidates = List.filter from_match messages in
-    maybe_warn_legacy candidates;
-    let hit = List.find_map verdict_of candidates in
-    match hit with
-    | Some v ->
-        print_endline v;
-        (try C2c_approval_paths.cleanup ~token () with _ -> ());
-        exit 0
-    | None ->
-        let now = Unix.gettimeofday () in
-        if now >= deadline then begin
-          (try C2c_approval_paths.cleanup ~token () with _ -> ());
-          exit 1
-        end
-        else begin
-          let remaining = deadline -. now in
-          let nap = if poll_interval < remaining then poll_interval else remaining in
-          (try Unix.sleepf nap with _ -> ());
-          loop ()
-        end
+    let now = Unix.gettimeofday () in
+    if now >= deadline then begin
+      (try C2c_approval_paths.cleanup ~token () with _ -> ());
+      exit 1
+    end
+    else begin
+      let remaining = deadline -. now in
+      let nap = if poll_interval < remaining then poll_interval else remaining in
+      (try Unix.sleepf nap with _ -> ());
+      loop ()
+    end
   in
   loop ()
 
@@ -431,8 +316,9 @@ let resolve_authorizer_cmd =
 (* [#490 slice 5b] Bash-callable companion to approval-reply: lets the
    embedded kimi PreToolUse hook record what's pending before the
    awareness DM goes out. Reviewers can then run `c2c approval-list`
-   independently of receiving the DM. Failure here is non-fatal in the
-   hook — the legacy DM path still delivers the awareness body. *)
+   independently of receiving the DM. Failure here is non-fatal because the
+   advisory DM can still deliver the awareness body; it cannot carry a
+   verdict. *)
 let approval_pending_write_cmd =
   let token =
     Cmdliner.Arg.(required & opt (some string) None
@@ -727,7 +613,7 @@ let approval_gc_cmd =
     exit 0
   end
 
-let await_reply : unit Cmdliner.Cmd.t = Cmdliner.Cmd.v (Cmdliner.Cmd.info "await-reply" ~doc:"Block until a token-tagged verdict (allow/deny) arrives in the inbox; print verdict on stdout and exit 0, exit 1 on timeout.") await_reply_cmd
+let await_reply : unit Cmdliner.Cmd.t = Cmdliner.Cmd.v (Cmdliner.Cmd.info "await-reply" ~doc:"Block until a host-local token-tagged verdict file contains allow/deny; print verdict on stdout and exit 0, exit 1 on timeout. Peer messages are never verdicts.") await_reply_cmd
 let approval_reply : unit Cmdliner.Cmd.t = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-reply" ~doc:"Reply to a pending PreToolUse approval request (#142/#490). Writes a verdict file the kimi hook is watching, avoiding the broker-DM drain race.") approval_reply_cmd
 let authorize : unit Cmdliner.Cmd.t = Cmdliner.Cmd.v (Cmdliner.Cmd.info "authorize" ~doc:"Ergonomic shortcut for approval-reply: `c2c authorize <token> allow|deny`. Same semantics as approval-reply, discoverable name (#511 S5).") authorize_cmd
 let approval_pending_write : unit Cmdliner.Cmd.t = Cmdliner.Cmd.v (Cmdliner.Cmd.info "approval-pending-write" ~doc:"Bash-callable helper used by the kimi PreToolUse hook to record pending-approval state.") approval_pending_write_cmd

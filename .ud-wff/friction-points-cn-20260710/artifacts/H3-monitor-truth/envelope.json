@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H3-monitor-truth",
+  "node_id": "impl-H3",
+  "kind": "output",
+  "summary_path": "artifacts/H3-monitor-truth/summary.md",
+  "raw_path": "artifacts/H3-monitor-truth/receipt.md",
+  "hash": "sha256:5c6dc7ee49921518c3a608f4ebdc137a9b328aeb87dcfb4715b9a7ddc5425b4f",
+  "bytes": 802,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

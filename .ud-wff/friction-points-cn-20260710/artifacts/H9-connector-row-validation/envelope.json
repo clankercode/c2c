@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-H9-connector-row-validation",
+  "node_id": "impl-H9",
+  "kind": "output",
+  "summary_path": "artifacts/H9-connector-row-validation/summary.md",
+  "raw_path": "artifacts/H9-connector-row-validation/receipt.md",
+  "hash": "sha256:eede11b564bdf11199d1b8caa490c05237c91b5711acd7460b6a934cc36c3b9f",
+  "bytes": 2917,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

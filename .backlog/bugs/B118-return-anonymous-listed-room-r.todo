@@ -1,0 +1,26 @@
+---
+claimed_at: "2026-07-11T06:25:58Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T07:49:42Z"
+complexity: medium
+depends_on: []
+duration_minutes: 83.74160327585
+estimate_hours: 2
+id: B118
+priority: high
+started_at: "2026-07-11T06:25:58Z"
+status: done
+tags: []
+title: Return anonymous listed-room rosters as alias#room@relay without machine metadata
+---
+B111 found that anonymous GET /list_rooms exposes raw member aliases for public and gated rooms. Preserve the roster feature, but expose presentation-only room recipient addresses in canonical alias#room@relay form. Do not expose machine ID, opaque_host_id, node_id, session_id, identity key, or any lease-routing metadata.
+
+Acceptance criteria:
+- Every members entry in an anonymous /list_rooms response is alias#room@relay, with the actual listed room ID. Bare aliases are absent.
+- Public and gated rooms retain listability; unlisted/private remain omitted.
+- Format only at the relay directory boundary in both InMemoryRelay and SqliteRelay; keep raw stored aliases for membership checks and room delivery.
+- Do not look up leases to decorate roster addresses.
+- A registered member with opaque_host_id/node_id/session_id causes none of those values to appear in directory JSON.
+- Both backend implementations and HTTP tests assert identical response shapes; existing room-recipient parsing continues to accept the addresses.
+
+Source seams: relay_backend_contract list_rooms, relay.ml InMemoryRelay/SqliteRelay/handle_list_rooms, relay_host_routing, c2c_monitor_ndjson. Evidence: B111 audit.

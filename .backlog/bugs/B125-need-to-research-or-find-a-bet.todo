@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B125
+priority: high
+status: pending
+tags: []
+title: need to research or find a better way to do multiple dune builds in parallel or diff worktrees with shared build cache or something; the current solution still gets hung all the time
+---
+
+need to research or find a better way to do multiple dune builds in parallel or diff worktrees with shared build cache or something; the current solution still gets hung all the time

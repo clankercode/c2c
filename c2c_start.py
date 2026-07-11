@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Unified instance launcher for c2c-managed agent sessions.
+"""DEPRECATED: unified instance launcher (B122).
 
-Usage:
+Canonical surface is the OCaml CLI:
+
     c2c start <client> [-n NAME] [--detach] [-- EXTRA_ARGS...]
     c2c stop <NAME>
     c2c restart <NAME>
     c2c instances [--json]
 
-Launches a client with c2c env vars, deliver daemon, and poker.
-When the client exits, prints a resume command and exits.
-Does NOT loop — use the printed command to relaunch.
+This Python script remains for tests/legacy only. Do not document or
+install it as a user-facing entrypoint.
 """
 
 from __future__ import annotations
@@ -1145,8 +1145,13 @@ def cmd_instances(json_out: bool = False) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    print(
+        "c2c_start.py is DEPRECATED (B122). Use the OCaml CLI: `c2c start|stop|restart|instances`.",
+        file=sys.stderr,
+        flush=True,
+    )
     parser = argparse.ArgumentParser(
-        description="Unified c2c instance launcher",
+        description="Unified c2c instance launcher (DEPRECATED — use OCaml c2c)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 subcommands:

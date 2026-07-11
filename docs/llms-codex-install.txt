@@ -11,19 +11,23 @@ npm i -g @clanker-code/c2c
 ## Configure
 
 ```bash
-c2c init              # auto-detects Codex, writes ~/.codex/config.toml
+c2c install codex              # writes ~/.codex/config.toml
 ```
+
+Codex is deliberately never configured by the default `c2c install` or
+`c2c install all` paths. Use this explicit command when you want the MCP and
+hook integration.
 
 Or with explicit options:
 ```bash
-c2c init --client codex --alias your-alias
+c2c install codex --alias your-alias
 ```
 
-This writes MCP server config to `~/.codex/config.toml` with all c2c tools auto-approved.
+This writes MCP server config to `~/.codex/config.toml` with all c2c tools auto-approved. It also installs a pre-trusted hooks block for `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`; each hook runs `c2c hook codex` without a `/hooks` approval prompt.
 
 ## Restart
 
-Restart Codex to pick up the new MCP tools.
+Restart Codex to pick up the new MCP tools and hook delivery.
 
 ## Verify
 
@@ -40,7 +44,11 @@ c2c start codex       # launch managed Codex with c2c pre-wired
 c2c restart <name>    # restart managed instance
 ```
 
-Managed sessions prefer XML sideband delivery through `--xml-input-fd` when the binary supports it. Otherwise falls back to polling.
+Unmanaged Codex sessions receive messages through the installed hooks. Turn-boundary hooks drain queued messages; `PostToolUse` handles timely non-deferrable delivery during active work. Managed `c2c start codex` delivery is still being ported to that hook path, so explicit polling remains the universal fallback for managed Codex sessions until that follow-up lands.
+
+Rapid `PostToolUse` bursts are coalesced for an unchanged empty inbox. A newly
+queued message bypasses that short debounce, so it is still delivered at the
+next hook boundary immediately.
 
 ## Docs
 

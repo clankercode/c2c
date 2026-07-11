@@ -57,6 +57,23 @@ let test_sign_room_visibility_covers_visibility () =
   Alcotest.(check bool) "visibility proof rejects tampered visibility" false
     (Relay_identity.verify ~pk:id.public_key ~msg:public_blob ~sig_)
 
+let test_sign_history_public_covers_boolean () =
+  (* B117: the set_room_history_public proof must cover the boolean so it
+     cannot be flipped in transit. *)
+  let id = Relay_identity.generate () in
+  let proof = Relay_signed_ops.sign_room_op_with_history_public id
+    ~ctx:room_set_history_public_sign_ctx ~room_id:"lounge" ~alias:"alice"
+    ~history_public:false in
+  let sig_ = decode_exn proof.sig_b64 in
+  let false_blob = Relay_identity.canonical_msg ~ctx:room_set_history_public_sign_ctx
+    [ "lounge"; "alice"; "false"; proof.identity_pk_b64; proof.ts; proof.nonce ] in
+  let true_blob = Relay_identity.canonical_msg ~ctx:room_set_history_public_sign_ctx
+    [ "lounge"; "alice"; "true"; proof.identity_pk_b64; proof.ts; proof.nonce ] in
+  Alcotest.(check bool) "history_public proof verifies with signed boolean" true
+    (Relay_identity.verify ~pk:id.public_key ~msg:false_blob ~sig_);
+  Alcotest.(check bool) "history_public proof rejects flipped boolean" false
+    (Relay_identity.verify ~pk:id.public_key ~msg:true_blob ~sig_)
+
 let test_sign_send_envelope_accepted () =
   let id = Relay_identity.generate () in
   let env = Relay_signed_ops.sign_send_room id
@@ -111,6 +128,7 @@ let tests = [
   "sign_join_accepted",           `Quick, test_sign_join_accepted_by_server_verify;
   "sign_leave_ctx_distinct",      `Quick, test_sign_leave_distinct_from_join;
   "sign_room_visibility_covers_visibility", `Quick, test_sign_room_visibility_covers_visibility;
+  "sign_history_public_covers_boolean", `Quick, test_sign_history_public_covers_boolean;
   "sign_send_envelope_accepted",  `Quick, test_sign_send_envelope_accepted;
   "verify_history_ok",            `Quick, test_verify_history_envelope_ok;
   "verify_history_content_mismatch", `Quick, test_verify_history_envelope_wrong_content;

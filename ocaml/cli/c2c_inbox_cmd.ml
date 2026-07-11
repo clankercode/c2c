@@ -172,18 +172,17 @@ let check_pending_reply_cmd =
         else
           Printf.eprintf "error: reply from non-supervisor: %s\n%!" reply_from
 
-let message_to_json (m : C2c_mcp.message) =
-  `Assoc
-    [ ("from_alias", `String m.from_alias)
-    ; ("to_alias", `String m.to_alias)
-    ; ("content", `String m.content)
-    ; ("ts", `Float m.ts)
-    ]
-
-let print_messages ~json messages =
+(* J2: --json rows are the canonical schema-v1 shape with the legacy row
+   keys (from_alias / to_alias / content / ts) preserved additively at
+   unchanged values. Drained rows carry delivery.state "delivered";
+   peeked (non-drained) rows carry "queued". Human output unchanged. *)
+let print_messages ~json ~delivery_state messages =
   let output_mode = if json then Json else Human in
   match output_mode with
-  | Json -> print_json (`List (List.map message_to_json messages))
+  | Json ->
+      print_json
+        (`List
+          (List.map (C2c_utils.inbox_message_row_json ~delivery_state) messages))
   | Human ->
       if messages = [] then
         Printf.printf "(no messages)\n"
@@ -275,6 +274,11 @@ let run_poll_inbox ~cmd_name ~wait ~json ~peek ~session_id_opt ~alias_opt
       | Some sid -> sid
       | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
     in
+    (* J2: peeked rows are still queued in the inbox; drained rows were
+       actually delivered to this caller. *)
+    let delivery_state =
+      if peek then C2c_schema_v1.Queued else C2c_schema_v1.Delivered
+    in
     if not wait then
       let messages =
         if peek then
@@ -282,7 +286,7 @@ let run_poll_inbox ~cmd_name ~wait ~json ~peek ~session_id_opt ~alias_opt
         else
           C2c_mcp.Broker.drain_inbox ~drained_by:"cli_poll" broker ~session_id
       in
-      print_messages ~json messages
+      print_messages ~json ~delivery_state messages
     else begin
       (* One fetch attempt: returns the messages this call may deliver.
          Draining directly inside the loop (rather than read-then-drain)
@@ -302,7 +306,7 @@ let run_poll_inbox ~cmd_name ~wait ~json ~peek ~session_id_opt ~alias_opt
       let rec loop () =
         match fetch () with
         | (_ :: _) as messages ->
-            print_messages ~json messages;
+            print_messages ~json ~delivery_state messages;
             exit 0
         | [] ->
             let now = Unix.gettimeofday () in
@@ -389,7 +393,8 @@ let peek_inbox_cmd =
     | None -> resolve_session_id_for_inbox ?alias:alias_opt broker
   in
   let messages = C2c_mcp.Broker.read_inbox broker ~session_id in
-  print_messages ~json messages
+  (* J2: peek never drains — rows remain queued. *)
+  print_messages ~json ~delivery_state:C2c_schema_v1.Queued messages
 
 let set_compact : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v

@@ -22,11 +22,102 @@ open C2c_mcp_helpers
 open C2c_mcp_helpers_post_broker
 module Broker = C2c_broker
 
+(* B104: MCP send must resolve replies across the same broker roots as the
+   CLI.  A cross-broker CLI send records the sender alias in the delivered
+   message, but it does not copy that registration into the recipient's
+   broker.  Looking up the target's real registration and enqueueing there
+   keeps the registration authoritative and makes a successful A -> B send
+   replyable as B -> A. *)
+type delivery_broker =
+  | Resolved of Broker.t
+  | Ambiguous of string
+
+let known_broker_roots ~primary_root =
+  let sibling_roots () =
+    let parent = Filename.dirname primary_root in
+    if not (Sys.file_exists parent && Sys.is_directory parent) then []
+    else
+      Sys.readdir parent
+      |> Array.to_list
+      |> List.map (Filename.concat parent)
+      |> List.filter (fun root ->
+             root <> primary_root
+             && Sys.is_directory root
+             && Sys.file_exists (Filename.concat root "registry.json"))
+  in
+  let configured_roots =
+    match Sys.getenv_opt "C2C_BROKER_SCAN_DIRS" with
+    | Some dirs when String.trim dirs <> "" ->
+        String.split_on_char ':' (String.trim dirs)
+        |> List.map String.trim
+        |> List.filter (fun root -> root <> "")
+    | _ -> []
+  in
+  let discovered = C2c_repo_fp.list_all_broker_roots () in
+  let split_brain_roots =
+    discovered
+    |> List.concat_map (fun (fp, _) ->
+           let canonical =
+             match Sys.getenv_opt "HOME" with
+             | Some home when String.trim home <> "" ->
+                 [Filename.concat (Filename.concat (Filename.concat home ".c2c/repos") fp) "broker"]
+             | _ -> []
+           in
+           let xdg =
+             let root = C2c_repo_fp.xdg_state_home () in
+             if root = "" then []
+             else [Filename.concat (Filename.concat (Filename.concat root "c2c/repos") fp) "broker"]
+           in
+           canonical @ xdg)
+  in
+  primary_root
+  :: C2c_repo_fp.resolve_sessions_broker_root ()
+  :: (List.map snd discovered) @ split_brain_roots @ configured_roots @ sibling_roots ()
+
+let resolve_delivery_broker ~primary_broker ~to_alias =
+  if String.contains to_alias '@' then Resolved primary_broker
+  else
+    let primary_root = Broker.root primary_broker in
+    let target = Broker.alias_casefold to_alias in
+    let is_live_target broker =
+      Broker.list_registrations broker
+      |> List.exists (fun reg ->
+             Broker.alias_casefold reg.alias = target
+             && Broker.registration_is_alive reg)
+    in
+    (* A live target in the caller's own broker is unambiguous by scope.  The
+       cross-broker fallback below is only for aliases absent locally; this
+       also keeps unrelated concurrently-running broker tests from changing a
+       same-broker send's routing. *)
+    if is_live_target primary_broker then Resolved primary_broker
+    else
+    let seen = Hashtbl.create 8 in
+    let matches = ref [] in
+    List.iter
+      (fun root ->
+         if not (Hashtbl.mem seen root) then begin
+           Hashtbl.add seen root ();
+           try
+           let broker = if root = primary_root then primary_broker else Broker.create ~root in
+             if is_live_target broker
+             then matches := (root, broker) :: !matches
+           with _ -> ()
+         end)
+      (known_broker_roots ~primary_root);
+    match List.rev !matches with
+    | [] -> Resolved primary_broker
+    | [(_, broker)] -> Resolved broker
+    | roots ->
+        Ambiguous
+          (Printf.sprintf "send failed: alias '%s' has multiple live registrations across brokers (%s); message not queued"
+             to_alias (String.concat ", " (List.map fst roots)))
+
 (* #450 S7: encryption helper — mechanically hoisted from [send] lines 60-131.
    Free vars lifted to named parameters: broker, from_alias, to_alias, content, ts.
    No behavior change. *)
 let encrypt_content_for_recipient
     ~(broker : Broker.t)
+    ~(local_delivery : bool)
     ~(from_alias : string)
     ~(to_alias : string)
     ~(content : string)
@@ -41,8 +132,8 @@ let encrypt_content_for_recipient
     |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf)
   in
   match recipient_reg with
-  | Some _ -> `Plain content
-  | None ->
+  | Some _ when local_delivery -> `Plain content
+  | _ ->
     let recipient_reg =
       Broker.list_registrations broker
       |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf && r.enc_pubkey <> None)
@@ -208,19 +299,28 @@ let verify_peer_pass_dm ~broker ~from_alias ~to_alias ~content
 
 (** Build a send receipt JSON string from accumulated send state.
     Extracted from [send] for readability (#450 S8); no behavior change.
-    Updated to accept [pp_receipt_extras] from S9's [verify_peer_pass_dm]. *)
+    Updated to accept [pp_receipt_extras] from S9's [verify_peer_pass_dm].
+
+    J4: the receipt is now a canonical schema-v1 message document
+    (docs/reference/message-schema-v1) — {schema_version:1, type:"dm", ts,
+    from:{alias}, to, content, delivery:{state:"queued"}} — with every
+    legacy key ({queued:true, from_alias, to_alias} plus the conditional
+    extras) preserved alongside. [content] is the plaintext (tag-prefixed)
+    body the recipient will read, NOT the encrypted wire form. [source] is
+    omitted: the receipt does not claim a transport. [ts] is emitted once,
+    as the v1 field (same key/value the legacy receipt used). *)
 let build_send_receipt
       ~(pp_extras : pp_receipt_extras)
       ~ts
       ~from_alias
       ~to_alias
+      ~content
       ~recipient_dnd
       ~recipient_compacting
       ~deferrable
   : string =
   let receipt_fields = ref
     [ ("queued", `Bool true)
-    ; ("ts", `Float ts)
     ; ("from_alias", `String from_alias)
     ; ("to_alias", `String to_alias)
     ]
@@ -245,7 +345,21 @@ let build_send_receipt
        receipt_fields := !receipt_fields @ [("compacting_warning", `String warning)]
    | None -> ());
   if deferrable then receipt_fields := !receipt_fields @ [("deferrable", `Bool true)];
-  `Assoc !receipt_fields |> Yojson.Safe.to_string
+  let v1 : C2c_schema_v1.t =
+    { schema_version = C2c_schema_v1.schema_version
+    ; msg_type = C2c_schema_v1.Dm
+    ; message_id = None
+    ; ts = Some ts
+    ; from = { alias = from_alias; host_id = None; address = None }
+    ; to_ = to_alias
+    ; source = None
+    ; content
+    ; in_reply_to = None
+    ; delivery_state = Some C2c_schema_v1.Queued
+    }
+  in
+  C2c_schema_v1.serialize_with_legacy v1 ~legacy:!receipt_fields
+  |> Yojson.Safe.to_string
 
 let send ~broker ~session_id_override ~arguments =
       let to_alias = string_member_any [ "to_alias"; "alias" ] arguments in
@@ -292,10 +406,15 @@ let send ~broker ~session_id_override ~arguments =
                      Lwt.return (tool_err (Printf.sprintf "send rejected: %s" msg))
                   | Ok tag_opt ->
                  let content = (tag_to_body_prefix tag_opt) ^ content in
-let ts = Unix.gettimeofday () in
+                 match resolve_delivery_broker ~primary_broker:broker ~to_alias with
+                 | Ambiguous message -> Lwt.return (tool_err message)
+                 | Resolved delivery_broker ->
+                 let ts = Unix.gettimeofday () in
                   let effective_content =
                     encrypt_content_for_recipient
-                      ~broker ~from_alias ~to_alias ~content ~ts
+                      ~broker:delivery_broker
+                      ~local_delivery:(Broker.root delivery_broker = Broker.root broker)
+                      ~from_alias ~to_alias ~content ~ts
                   in
                  match effective_content with
                  | `Key_changed alias ->
@@ -313,7 +432,9 @@ let ts = Unix.gettimeofday () in
                         Lwt.return (tool_err msg)
                     | `Warn _ | `Allow ->
                         match
-                           try Some (Broker.enqueue_message broker ~from_alias ~to_alias ~content:s ~deferrable ~ephemeral ())
+                           try Some (Broker.enqueue_message delivery_broker
+                                       ~from_alias ~to_alias ~content:s
+                                       ~deferrable ~ephemeral ())
                            with Invalid_argument _ -> None
                          with
                          | None ->
@@ -332,16 +453,16 @@ let ts = Unix.gettimeofday () in
                                 [enqueue_message] writes to. *)
                              let to_alias_cf = Broker.alias_casefold to_alias in
                              let recipient_dnd =
-                               match Broker.list_registrations broker
+                               match Broker.list_registrations delivery_broker
                                      |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf) with
-                               | Some r -> Broker.is_dnd broker ~session_id:r.session_id
+                               | Some r -> Broker.is_dnd delivery_broker ~session_id:r.session_id
                                | None -> false
                              in
                              let recipient_compacting =
-                               match Broker.list_registrations broker
+                               match Broker.list_registrations delivery_broker
                                      |> List.find_opt (fun r -> Broker.alias_casefold r.alias = to_alias_cf) with
                                | Some r ->
-                                   (match Broker.is_compacting broker ~session_id:r.session_id with
+                                   (match Broker.is_compacting delivery_broker ~session_id:r.session_id with
                                     | Some c ->
                                         let dur = Unix.gettimeofday () -. c.started_at in
                                         Some (dur, c.reason)
@@ -354,6 +475,7 @@ let ts = Unix.gettimeofday () in
                                  ~ts
                                  ~from_alias
                                  ~to_alias
+                                 ~content
                                  ~recipient_dnd
                                  ~recipient_compacting
                                  ~deferrable
@@ -389,7 +511,8 @@ let broadcast_to_all ~broker ~from_alias ~content ~exclude_aliases ~tag_arg
         else if List.exists (fun ex -> Broker.alias_casefold ex = alias_cf) exclude_aliases then ()
         else
           let ts = Unix.gettimeofday () in
-          match encrypt_content_for_recipient ~broker ~from_alias ~to_alias:reg.alias ~content ~ts with
+          match encrypt_content_for_recipient ~broker ~local_delivery:true
+                  ~from_alias ~to_alias:reg.alias ~content ~ts with
           | `Key_changed alias ->
             key_changed := alias :: !key_changed
           | `Encrypted enc_content ->

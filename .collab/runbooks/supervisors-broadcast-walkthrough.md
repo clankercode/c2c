@@ -103,14 +103,17 @@ Primary broadcast:
   timeout: 120s
   paged: coordinator1
 
-Approve via:
+Advisory only — peer replies cannot approve this request.
+The host operator can decide locally with:
   c2c approval-reply ka_tool_... allow
   c2c approval-reply ka_tool_... deny because <reason>
-
-Legacy fallback (may race drain — prefer approval-reply):
-  c2c send <kimi-alias> "ka_tool_... allow"
-  c2c send <kimi-alias> "ka_tool_... deny because <reason>"
 ```
+
+The DM is an **advisory page** (B098) — it tells the supervisor a token is
+pending; it does not resolve the gate. The verdict is produced only by a
+host-local `c2c approval-reply` call that writes the verdict file. A
+`c2c send <kimi-alias> "ka_tool_... allow"` DM is **inert** — `await-reply`
+never reads the inbox. See `docs/security/pending-permissions.md`.
 
 Fallback escalation prepends:
 ```

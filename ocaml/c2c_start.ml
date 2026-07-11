@@ -197,17 +197,9 @@ let builtin_managed_heartbeat =
   ; idle_threshold_s = codex_heartbeat_interval_s
   }
 
-let codex_heartbeat_enabled ~(client : string) : bool =
-  client = "codex"
-
-let should_start_codex_heartbeat ~(client : string) ~(deliver_started : bool) :
-    bool =
-  codex_heartbeat_enabled ~client && deliver_started
-
 (* B013: human-facing warning emitted when the deliver daemon fails to start
    for a needs_deliver client (codex / codex-headless). Such a session
-   receives NO inbound c2c messages AND its 240s heartbeat is suppressed
-   (should_start_codex_heartbeat is gated on deliver_started), so it would
+   receives NO inbound c2c messages via the daemon path, so it would
    otherwise go dark *silently*. We surface this to the pane stderr/log so the
    operator and agent notice the degraded state instead of wondering why
    messages never arrive. Kept pure (returns the string) so it is unit-
@@ -215,7 +207,7 @@ let should_start_codex_heartbeat ~(client : string) ~(deliver_started : bool) :
 let deliver_start_failure_warning ~(name : string) ~(client : string) : string =
   Printf.sprintf
     "[c2c-start/%s] WARNING: deliver daemon failed to start for client=%s — \
-     inbound c2c delivery is DISABLED and the heartbeat is suppressed; this \
+     inbound c2c delivery is DISABLED; this \
      session will NOT auto-receive messages. Check that c2c-deliver-inbox is \
      on PATH and that inotifywait + pipe permissions are available, then run \
      `c2c restart %s`.\n"
@@ -477,16 +469,6 @@ let start_managed_heartbeat_stoppable ~(broker_root : string) ~(alias : string)
     in
     loop true) ());
   stop
-
-let start_codex_heartbeat ~(broker_root : string) ~(alias : string)
-    ~(interval_s : float) : unit =
-  start_managed_heartbeat ~broker_root ~alias
-    { builtin_managed_heartbeat with
-      heartbeat_name = "codex";
-      schedule = Interval interval_s;
-      interval_s;
-      clients = [ "codex" ];
-    }
 
 (* setpgid(2) binding — OCaml 5.x's Unix module omits this call.
    Implementation in ocaml/cli/c2c_posix_stubs.c. *)
@@ -2523,8 +2505,8 @@ let record_death ~broker_root ~name ~client ~exit_code ~duration_s ~inst_dir =
   with _ -> ())
 
 (* alias word pool lives in [C2c_alias_words] (#388 — converged from
-   the duplicated 128-entry literal previously inlined here and in
-   cli/c2c_setup.ml). *)
+   the duplicated literal previously inlined here and in cli/c2c_setup.ml;
+   B112 — generated from data/c2c_alias_words.txt, ~1,450 words). *)
 
 let generate_alias ?(no_nonce = false) () =
   let () = Random.self_init () in
@@ -3254,7 +3236,6 @@ let prepare_launch_args ~(name : string) ~(client : string)
     ~(extra_args : string list) ~(broker_root : string)
     ?(alias_override : string option) ?(resume_session_id : string option)
     ?(binary_override : string option) ?(model_override : string option)
-    ?(codex_xml_input_fd : string option)
     ?(codex_resume_target : string option)
     ?(thread_id_fd : string option)
     ?(server_request_events_fd : string option)
@@ -3297,8 +3278,25 @@ let prepare_launch_args ~(name : string) ~(client : string)
           | Some sid when String.trim sid <> "" -> Some sid
           | _ -> (match resume_session_id with Some _ -> Some "" | None -> None)
         in
+        (* Codex v0.142.x starts the interactive TUI with a positional
+           [PROMPT] submitted as the first user turn (`codex [OPTIONS]
+           [PROMPT]`). The managed kickoff (restart intro / role kickoff)
+           rides that positional arg — the old --xml-input-fd pipe write is
+           gone (flag removed upstream). Fresh spawns only: `codex resume`
+           also accepts a positional prompt, but resumed sessions already
+           carry their instructions, so we suppress the kickoff on resume
+           for parity with claude/kimi/gemini. *)
+        let prompt_args =
+          match eff_resume with
+          | Some _ -> []  (* resuming — don't re-kickoff *)
+          | None ->
+            (match kickoff_prompt with
+             | Some p when p <> "" -> [ p ]
+             | _ -> [])
+        in
         A.build_start_args ~name ?alias_override ?model_override
           ?resume_session_id:eff_resume ~alias_from_auto_gen ()
+        @ prompt_args
     | "kimi" ->
         (* KimiAdapter writes the per-instance MCP config and prepends the flag.
            Pass extra_args so the adapter can detect an already-present --mcp-config-file;
@@ -3389,11 +3387,6 @@ let prepare_launch_args ~(name : string) ~(client : string)
       | Some model when String.trim model <> "" -> args @ [ "--model"; model ]
       | _ -> args
   in
-  let args =
-    match client, codex_xml_input_fd with
-    | "codex", Some fd -> [ "--xml-input-fd"; fd ] @ args
-    | _ -> args
-  in
   args @ extra_args
 
 (* ---------------------------------------------------------------------------
@@ -3468,9 +3461,6 @@ let command_help_contains (binary_path : string) (needle : string) : bool =
          with End_of_file -> ());
         !found)
   with _ -> false
-
-let codex_supports_xml_input_fd (binary_path : string) : bool =
-  command_help_contains binary_path "--xml-input-fd"
 
 let codex_supports_server_request_fds (binary_path : string) : bool =
   command_help_contains binary_path "--server-request-events-fd"
@@ -3553,7 +3543,6 @@ let probed_capabilities ~(client : string) ~(binary_path : string) : string list
   |> add_if Pty_inject
        (pty_inject_ok
         && List.mem client [ "claude"; "codex"; "opencode"; "crush" ])
-  |> add_if Codex_xml_fd (client = "codex" && codex_supports_xml_input_fd binary_path)
   |> add_if Codex_headless_thread_id_fd
        (client = "codex-headless" && bridge_supports_thread_id_fd binary_path)
   |> List.rev
@@ -3641,9 +3630,7 @@ module CodexAdapter : CLIENT_ADAPTER = struct
 
   let build_start_args ~name:_ ?alias_override:_ ?model_override ?resume_session_id
       ?(extra_args = []) ?alias_from_auto_gen:_ () =
-    (* Note: codex_xml_input_fd is not in the adapter interface; prepare_launch_args
-       prepends [ "--xml-input-fd"; fd ] after the adapter call when needed.
-       resume_session_id="" signals "resume --last" (generic resume);
+    (* Note: resume_session_id="" signals "resume --last" (generic resume);
        resume_session_id=<non-empty> is a specific codex session id. *)
     ignore extra_args;
     let base =
@@ -3662,15 +3649,17 @@ module CodexAdapter : CLIENT_ADAPTER = struct
        written by c2c install codex; no per-launch refresh is needed. *)
     ()
 
-  let probe_capabilities ~binary_path =
-    (* codex_xml_fd: only if the installed binary supports --xml-input-fd.
-       pty_inject: checked dynamically via check_pty_inject_capability in probed_capabilities. *)
-    [ "codex_xml_fd", codex_supports_xml_input_fd binary_path ]
+  let probe_capabilities ~binary_path:_ =
+    (* No static codex-specific capabilities: --xml-input-fd was removed
+       upstream (2026-07-06); delivery is via config.toml hooks now.
+       pty_inject: checked dynamically via check_pty_inject_capability in
+       probed_capabilities. *)
+    []
 
-  (* #143c: Codex kickoff is delivered via the XML pipe in the launch loop
-     (parent-side, after fork, before the deliver daemon starts).  The
-     adapter's deliver_kickoff is a no-op — the real write happens in the
-     launch loop where codex_xml_pipe is in scope. *)
+  (* Codex kickoff is a positional [PROMPT] argv element appended in
+     prepare_launch_args (see the "codex" branch there), same pattern as
+     claude/gemini.  This contract method exists to satisfy the
+     CLIENT_ADAPTER signature uniformly. *)
   let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text:_ ?broker_root:_ () =
     Ok []
 end
@@ -3968,8 +3957,60 @@ let should_enable_opencode_fallback ?(startup_grace_s = 60.0)
        (opencode_plugin_active ~name ~now
           ~freshness_window_s:opencode_plugin_freshness_window_s)
 
+(* Interactive codex delivery is via config.toml hooks (`c2c hook codex`),
+   written by `c2c install codex`.  This marker string MUST stay in sync with
+   C2c_codex_hooks.config_begin_marker (cli layer) — duplicated here because
+   the core library cannot depend on the cli library.  Guarded by a marker-
+   equality test in test_c2c_setup_codex.ml. *)
+let codex_hooks_config_begin_marker = "# c2c-managed:BEGIN codex-inbox-hooks"
+
+(* True when the c2c-managed hooks block is present in ~/.codex/config.toml.
+   [config_path] override is for tests. *)
+let codex_hooks_installed ?config_path () : bool =
+  let path =
+    match config_path with
+    | Some p -> p
+    | None ->
+        (try Sys.getenv "HOME" with Not_found -> "/tmp")
+        // ".codex" // "config.toml"
+  in
+  if not (Sys.file_exists path) then false
+  else
+    try
+      let ic = open_in path in
+      Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+        let found = ref false in
+        (try
+           while not !found do
+             let line = input_line ic in
+             if String.trim line = codex_hooks_config_begin_marker then
+               found := true
+           done
+         with End_of_file -> ());
+        !found)
+    with _ -> false
+
+(* codex-wake-inject: true when the instance's broker registration carries a
+   wake target (tmux_location or herdr_pane) that the wake injector can nudge.
+   Managed instances register with session_id = name. Total: any failure
+   (no broker, no registration) reads as "no wake target". *)
+let codex_wake_target_registered ~(name : string) () : bool =
+  try
+    let root = C2c_repo_fp.resolve_broker_root () in
+    let broker = C2c_mcp.Broker.create ~root in
+    match
+      List.find_opt
+        (fun (r : C2c_mcp.registration) -> r.session_id = name)
+        (C2c_mcp.Broker.list_registrations broker)
+    with
+    | Some r -> r.tmux_location <> None || r.herdr_pane <> None
+    | None -> false
+  with _ -> false
+
 let delivery_mode ?(now = Unix.gettimeofday ()) ?(startup_grace_s = 60.0)
     ?(opencode_plugin_freshness_window_s = 60.0) ?available_capabilities
+    ?codex_hooks_installed:codex_hooks_installed_override
+    ?codex_wake_target:codex_wake_target_override
     ~(client : string) ~(name : string) ~(binary_path : string)
     ~(start_time : float option) () : string =
   let caps =
@@ -3996,9 +4037,25 @@ let delivery_mode ?(now = Unix.gettimeofday ()) ?(startup_grace_s = 60.0)
          | _ -> "plugin_stale_no_fallback")
   | "kimi" -> "notifier"
   | "codex" ->
-      if has C2c_capability.Codex_xml_fd then "xml_fd"
-      else if has C2c_capability.Pty_inject then "pty_notify"
-      else "unavailable"
+      (* Hooks (config.toml, `c2c hook codex`) are the codex delivery path;
+         the old xml_fd sideband is gone (upstream removed --xml-input-fd)
+         and PTY notify was never actually wired for codex.
+         "hooks+wake" (codex-wake-inject): hooks installed AND the broker
+         registration carries a tmux/herdr wake target — idle sessions get a
+         wake nudge from the sidecar watcher, then the hook drains. *)
+      let hooks_present =
+        match codex_hooks_installed_override with
+        | Some b -> b
+        | None -> codex_hooks_installed ()
+      in
+      if not hooks_present then "unavailable"
+      else
+        let wake_target =
+          match codex_wake_target_override with
+          | Some b -> b
+          | None -> codex_wake_target_registered ~name ()
+        in
+        if wake_target then "hooks+wake" else "hooks"
   | "codex-headless" ->
       if has C2c_capability.Codex_headless_thread_id_fd then "xml_fifo"
       else "unavailable"
@@ -4567,10 +4624,6 @@ let run_outer_loop ~(name : string) ~(client : string)
         client = "codex-headless" || codex_permission_sideband_enabled
       in
       let launch_args =
-        let codex_xml_input_fd =
-          if client = "codex" && codex_supports_xml_input_fd binary_path then Some "3"
-          else None
-        in
         let thread_id_fd =
           if client = "codex-headless" then Some "5" else None
         in
@@ -4591,7 +4644,6 @@ let run_outer_loop ~(name : string) ~(client : string)
           prepare_launch_args ~name ~client ~extra_args ~broker_root
             ?alias_override ?resume_session_id ?binary_override ?model_override
             ?codex_resume_target
-            ?codex_xml_input_fd
             ?thread_id_fd
             ?server_request_events_fd
             ?server_request_responses_fd
@@ -4803,17 +4855,15 @@ let run_outer_loop ~(name : string) ~(client : string)
          reset the disposition in the child between fork and exec. *)
       let child_pid_opt =
         try
-          let codex_xml_pipe =
-            if client = "codex" && List.mem "--xml-input-fd" launch_args then
-              Some (Unix.pipe ~cloexec:false ())
-            else None
-          in
-          (* S10 (#482): compute pre-deliver hook path for codex clients.
-             The hook is sourced before exec so deliver-watch runs as a sibling
-             of the client (same outer wrapper), not a child of the client.
-             Only for clients that need deliver (codex, codex-headless). *)
+          (* S10 (#482): compute pre-deliver hook path for needs_deliver
+             clients. The hook is sourced before exec so deliver-watch runs as
+             a sibling of the client (same outer wrapper), not a child of the
+             client. Interactive codex is excluded: its deliver-watch
+             supervisor scripts fed the removed --xml-input-fd sideband and
+             are dead weight now that delivery is via config.toml hooks
+             (`c2c hook codex`). *)
           let pre_deliver_hook_opt =
-            if cfg.needs_deliver then
+            if cfg.needs_deliver && client <> "codex" then
               let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
               let hook_path =
                 Filename.concat home (Printf.sprintf ".c2c/clients/%s/start-hooks/pre-deliver.sh" client)
@@ -4847,13 +4897,6 @@ let run_outer_loop ~(name : string) ~(client : string)
                      (try Unix.dup2 fd Unix.stderr with _ -> ());
                      (try Unix.close fd with _ -> ())
                  | None -> ());
-                (match codex_xml_pipe with
-                 | Some (read_fd, write_fd) ->
-                     let fd3 : Unix.file_descr = Obj.magic 3 in
-                     (try Unix.dup2 read_fd fd3 with _ -> ());
-                     if read_fd <> fd3 then (try Unix.close read_fd with _ -> ());
-                     (try Unix.close write_fd with _ -> ())
-                 | None -> ());
                 (let dup_fifo_to_fd path flags target_fd =
                    let fd = Unix.openfile path flags 0o600 in
                    try
@@ -4878,12 +4921,11 @@ let run_outer_loop ~(name : string) ~(client : string)
                  (match pre_deliver_hook_opt with
                   | Some hook_path ->
                       (* S10 (#482): source the pre-deliver hook before exec.
-                         The hook forks deliver-watch.sh as a sibling of the client.
-                         C2C_DELIVER_XML_FD=4 is hardcoded: fd 4 is duped to the codex
-                         xml pipe write end in the child before this point. *)
+                         The hook forks deliver-watch.sh as a sibling of the
+                         client. *)
                       let args_str = String.concat " " (List.map Filename.quote cmd) in
                       let hook_cmd =
-                        Printf.sprintf "C2C_DELIVER_XML_FD=4 source %s && exec %s"
+                        Printf.sprintf "source %s && exec %s"
                           (Filename.quote hook_path) args_str
                       in
                       let bash_argv = [|"bash"; "-c"; hook_cmd|] in
@@ -4919,87 +4961,33 @@ let run_outer_loop ~(name : string) ~(client : string)
                   persist it lazily when the bridge emits it after the first real input. *)
                ignore (start_headless_thread_id_watcher ~name ~path)
            | None -> ());
-          (* #143c: deliver kickoff to codex via XML pipe (before deliver daemon
-             starts).  The pipe write_fd is in scope from the fork block above.
-             We write the kickoff as a <message> XML frame that Codex reads from
-             its --xml-input-fd.
-
-             Note: the frame format here is deliberately simpler than the
-             deliver-daemon's format (which wraps content in a <c2c event=
-             "message" from="..." to="..."> inner envelope — see
-             [c2c_pty_inject.ml:xml_deliver_loop_daemon]).  The kickoff is
-             a raw user turn, not a c2c peer message, so the inner c2c
-             envelope is omitted. *)
-          (match client, kickoff_prompt, codex_xml_pipe with
-           | "codex", Some p, Some (_read_fd, write_fd) when p <> "" ->
-               (try
-                  let escaped = C2c_mcp.xml_escape p in
-                  let frame =
-                    Printf.sprintf
-                      "<message type=\"user\" queue=\"AfterAnyItem\">%s</message>\n"
-                      escaped
-                  in
-                  let bytes = Bytes.of_string frame in
-                  let len = Bytes.length bytes in
-                  let _written = Unix.write write_fd bytes 0 len in
-                  Printf.eprintf
-                    "[c2c-start] kickoff delivered to codex via XML pipe (%d bytes)\n%!"
-                    len
-                with e ->
-                  Printf.eprintf
-                    "[c2c-start] kickoff XML pipe write failed: %s — continuing without kickoff\n%!"
-                    (Printexc.to_string e))
-           | _ -> ());
-          (* Start deliver daemon (PTY notify path, used for Codex). *)
+          (* Start deliver daemon (needs_deliver clients; for codex-headless it
+             feeds the broker-owned XML fifo on the bridge's stdin). Interactive
+             codex kickoff is a positional argv element now — see
+             prepare_launch_args — so there is no parent-side kickoff write. *)
           (if !deliver_pid = None && cfg.needs_deliver then
-             let xml_output_fd, xml_output_path =
-               match client, codex_xml_pipe, headless_xml_fifo with
-               | "codex-headless", _, Some path -> (None, Some path)
-               | _, Some (_read_fd, write_fd), _ ->
-                   let fd4 : Unix.file_descr = Obj.magic 4 in
-                   (try Unix.dup2 write_fd fd4 with _ -> ());
-                   (Some ("4", fd4), None)
-               | _ -> (None, None)
-              in
-               let preserve_fds =
-                 match xml_output_fd with
-                 | Some (_, fd) -> [fd]
-                 | None -> []
-                in
-                try
-                  begin
-                    match
-                      start_deliver_daemon
-                        ~name
-                        ~client
-                        ~broker_root
-                        ?child_pid_opt:(Some pid)
-                        ?xml_output_fd:(Option.map fst xml_output_fd)
-                        ?xml_output_path
-                        ~preserve_fds
-                        ()
-                    with
-                   | Some p ->
-                       deliver_pid := Some p;
-                       write_pid (deliver_pid_path name) p
-                   | None ->
-                       (* B013: surface the failure loudly instead of going
-                          dark silently (no delivery + suppressed heartbeat). *)
-                       Printf.eprintf "%s"
-                         (deliver_start_failure_warning ~name ~client);
-                    match xml_output_fd with
-                    | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
-                    | None -> ()
-                  end
-                 with exn ->
-                   (* On exception, clean up fd4 if set up.
-                      This ensures we do not leak resources if start_deliver_daemon raises
-                      (e.g. failure to create the daemon process). *)
-                   (match xml_output_fd with
-                    | Some (_, fd4) -> (try Unix.close fd4 with _ -> ())
-                    | None -> ());
-                   raise exn
-              );
+             let xml_output_path =
+               match client, headless_xml_fifo with
+               | "codex-headless", Some path -> Some path
+               | _ -> None
+             in
+             match
+               start_deliver_daemon
+                 ~name
+                 ~client
+                 ~broker_root
+                 ?child_pid_opt:(Some pid)
+                 ?xml_output_path
+                 ()
+             with
+             | Some p ->
+                 deliver_pid := Some p;
+                 write_pid (deliver_pid_path name) p
+             | None ->
+                 (* B013: surface the failure loudly instead of going
+                    dark silently. *)
+                 Printf.eprintf "%s"
+                   (deliver_start_failure_warning ~name ~client));
           (if client = "opencode" then
              let startup_grace_s =
                match Sys.getenv_opt "C2C_OPENCODE_PLUGIN_GRACE_S" with
@@ -5051,11 +5039,6 @@ let run_outer_loop ~(name : string) ~(client : string)
                  loop ())
                ())
            );
-          (match codex_xml_pipe with
-           | Some (read_fd, write_fd) ->
-               (try Unix.close read_fd with _ -> ());
-               (try Unix.close write_fd with _ -> ())
-           | None -> ());
           (* Start kimi-notifier (file-based notification-store push).
              File-based notification push to ~/.kimi/sessions/<wh>/<sid>/notifications/.
              Optionally tmux send-keys-wakes the kimi pane when idle. See

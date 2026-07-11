@@ -1,0 +1,16 @@
+---
+claimed_at: "2026-07-10T10:42:29Z"
+claimed_by: cli-user
+completed_at: "2026-07-10T11:00:30Z"
+complexity: medium
+depends_on: []
+duration_minutes: 18.020131360216666
+estimate_hours: 1
+id: B102
+priority: high
+started_at: "2026-07-10T10:42:29Z"
+status: done
+tags: []
+title: 'Auto-assigned alias misdetects client: Claude Code session got ''opencode-'' prefix'
+---
+c2c init in a Claude Code session (session 823eaf42-cc2c-4a47-a510-cca22ef2bef4, host 3d08761ae3f3, 2026-07-10) auto-picked alias 'opencode-tuuli-lumi-gr4n'. The client-detection logic behind auto alias assignment identified the harness as OpenCode when it was actually Claude Code; expected a 'claude-'/'cc-' prefix. Detection should be verified against actual parent process/env rather than whatever heuristic matched OpenCode here.

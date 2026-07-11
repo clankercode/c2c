@@ -16,12 +16,16 @@ type output_mode =
   | XmlFd of Unix.file_descr
   | Null
 
+(* Canonical resolution (env override → repo-fingerprint path), same chain
+   every other c2c command uses. The old fallback here hardcoded
+   repos/default/broker, so `c2c deliver wake-watch --alias <a>` run from a
+   repo checkout could not see the repo broker's registry (live-caught
+   2026-07-10: "alias ... is not registered in this broker"). *)
 let default_broker_root () : string =
-  match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-  | Some b -> b
-  | None ->
-      let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
-      home // ".c2c" // "repos" // "default" // "broker"
+  try C2c_repo_fp.resolve_broker_root ()
+  with _ ->
+    let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+    home // ".c2c" // "repos" // "default" // "broker"
 
 (* P4: Check if a global session inbox exists for the given session_id. *)
 let global_inbox_exists ~root ~session_id =
@@ -139,7 +143,9 @@ let deliver_watch_cmd =
     `P "c2c deliver --watch polls the broker inbox continuously.";
     `S "OUTPUT MODES";
     `P "Default: one line per message: [from_alias] body";
-    `P "--xml-fd N: XML frames matching Codex --xml-input-fd contract.";
+    `P "--xml-fd N: XML frames in the legacy Codex sideband format (the \
+        upstream --xml-input-fd consumer was removed; the codex-headless \
+        bridge still reads this frame format).";
   ] in
   let info = Cmdliner.Cmd.info "watch" ~doc:"Watch mode" ~man in
   let term =
@@ -166,7 +172,138 @@ let deliver_watch_cmd =
   in
   Cmdliner.Cmd.v info term
 
+(* --- wake-watch (codex-wake-inject) ------------------------------------------
+
+   Standalone idle-wake watcher for vanilla codex sessions running inside
+   tmux or herdr. Watches the session's broker inbox and, on growth, injects
+   a one-line wake nudge into the registered pane (C2c_wake_inject). It
+   NEVER drains the inbox — submitting the nudge fires the codex
+   UserPromptSubmit hook, which performs the actual delivery. Managed
+   sessions (`c2c start codex`) get the same watcher automatically via the
+   deliver-inbox sidecar; this command is the vanilla-session equivalent. *)
+
+let resolve_wake_session_id ~(broker_root : string) ~(alias : string) :
+    (string, string) result =
+  try
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    let alias_norm = String.lowercase_ascii alias in
+    match
+      C2c_mcp.Broker.list_registrations broker
+      |> List.filter (fun (r : C2c_mcp.registration) ->
+             String.lowercase_ascii r.alias = alias_norm)
+    with
+    | [] ->
+        Error (Printf.sprintf "alias %s is not registered in this broker" alias)
+    | regs ->
+        let live =
+          List.filter
+            (fun r ->
+              C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Alive)
+            regs
+        in
+        let chosen = match live with r :: _ -> r | [] -> List.hd regs in
+        Ok chosen.session_id
+  with e -> Error (Printexc.to_string e)
+
+let wake_watch_cmd =
+  let alias_flag =
+    Arg.(value & opt (some string) None
+         & info ["alias"; "a"] ~docv:"ALIAS"
+         ~doc:"Alias whose session to wake-watch (resolved via the broker registry).")
+  in
+  let session_id_flag =
+    Arg.(value & opt (some string) None
+         & info ["session-id"] ~docv:"ID"
+         ~doc:"Broker session ID to wake-watch.")
+  in
+  let broker_root_flag =
+    Arg.(value & opt (some string) None
+         & info ["broker-root"] ~docv:"DIR"
+         ~doc:"Broker root directory.")
+  in
+  let once_flag =
+    Arg.(value & flag
+         & info ["once"]
+         ~doc:"Attempt a single wake-inject and exit (prints the outcome).")
+  in
+  let max_iterations_flag =
+    Arg.(value & opt (some int) None
+         & info ["max-iterations"] ~docv:"N"
+         ~doc:"Stop the watch loop after N inject attempts (testing).")
+  in
+  let man = [
+    `S "DESCRIPTION";
+    `P "Idle-wake watcher for codex sessions running inside tmux or herdr. \
+        Watches the session's broker inbox; when it grows and the session \
+        looks idle, types a one-line wake nudge into the session's \
+        registered pane (herdr: 'herdr pane run'; tmux: send-keys literal \
+        text then Enter) and submits it. The injected turn fires codex's \
+        UserPromptSubmit hook, which drains and delivers the messages.";
+    `P "The watcher itself NEVER drains the broker inbox — double delivery \
+        is impossible by construction.";
+    `P "tmux/herdr only: sessions without a registered wake target \
+        (tmux_location / herdr_pane on the broker registration, captured \
+        automatically by `c2c hook codex` on SessionStart) are skipped. \
+        Idle gates: herdr agent_status must be idle; tmux requires broker \
+        last_activity_ts older than C2C_WAKE_IDLE_THRESHOLD_S (default 90s). \
+        Re-inject backoff: C2C_WAKE_BACKOFF_S (default 120s), and only when \
+        a NEWER message arrived since the last inject.";
+  ] in
+  let info =
+    Cmdliner.Cmd.info "wake-watch"
+      ~doc:"Wake an idle codex session in tmux/herdr when its inbox grows (never drains)."
+      ~man
+  in
+  let term =
+    let+ () = Cmdliner.Term.const ()
+    and+ alias_opt = alias_flag
+    and+ session_id_opt = session_id_flag
+    and+ broker_root_opt = broker_root_flag
+    and+ once = once_flag
+    and+ max_iterations = max_iterations_flag
+    in
+    let broker_root =
+      match broker_root_opt with
+      | Some b when String.trim b <> "" -> String.trim b
+      | _ -> default_broker_root ()
+    in
+    let session_id =
+      match session_id_opt, alias_opt with
+      | Some _, Some _ ->
+          Printf.eprintf "error: --session-id and --alias are mutually exclusive\n%!";
+          exit 2
+      | Some sid, None -> sid
+      | None, Some alias -> (
+          match resolve_wake_session_id ~broker_root ~alias with
+          | Ok sid -> sid
+          | Error e ->
+              Printf.eprintf "error: %s\n%!" e;
+              exit 1)
+      | None, None ->
+          Printf.eprintf "error: --session-id or --alias required\n%!";
+          exit 2
+    in
+    if once then begin
+      let outcome =
+        C2c_wake_inject.maybe_inject ~broker_root ~session_id ()
+      in
+      Printf.printf "[c2c-wake-watch] %s\n%!"
+        (C2c_wake_inject.outcome_to_string outcome);
+      match outcome with
+      | C2c_wake_inject.Failed _ -> exit 1
+      | _ -> exit 0
+    end
+    else begin
+      Printf.printf
+        "[c2c-wake-watch] watching %s for %s (tmux/herdr nudge only; codex \
+         hooks deliver bodies)\n%!"
+        broker_root session_id;
+      C2c_wake_inject.watch_loop ~broker_root ~session_id ?max_iterations ()
+    end
+  in
+  Cmdliner.Cmd.v info term
+
 let deliver_group =
   Cmdliner.Cmd.group
     (Cmdliner.Cmd.info "deliver" ~doc:"Message delivery commands.")
-    [ deliver_watch_cmd ]
+    [ deliver_watch_cmd; wake_watch_cmd ]

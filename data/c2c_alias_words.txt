@@ -60,11 +60,9 @@ brine
 brio
 brisk
 bristle
-broad
 brunt
 brush
 bubble
-buck
 burst
 bush
 butter
@@ -164,6 +162,7 @@ fawn
 feather
 fenna
 fennel
+fern
 ferni
 ferry
 fiber
@@ -201,7 +200,6 @@ frame
 fringe
 frond
 frontier
-fruit
 fuel
 fuse
 gable
@@ -317,7 +315,6 @@ kiln
 kindle
 kinetic
 king
-kink
 kiru
 kite
 kiva
@@ -469,7 +466,6 @@ nallo
 naper
 naphtha
 narrow
-native
 nature
 nautical
 naval
@@ -565,7 +561,6 @@ ozone
 pace
 pack
 pact
-paddy
 padlock
 page
 paju
@@ -575,7 +570,6 @@ palm
 palo
 pane
 panel
-pansy
 pantry
 paper
 parade
@@ -712,7 +706,6 @@ quake
 quarry
 quart
 quarter
-queen
 quench
 query
 quest
@@ -753,7 +746,6 @@ rear
 rebound
 recess
 recoil
-red
 reed
 reflex
 reflux
@@ -925,7 +917,6 @@ skive
 sky
 slab
 slack
-slant
 slat
 slay
 sledge
@@ -943,7 +934,6 @@ slip
 slit
 sliver
 sloop
-slope
 slot
 slug
 sluice
@@ -978,7 +968,6 @@ sound
 source
 south
 space
-spade
 span
 spanner
 spare
@@ -1130,7 +1119,6 @@ taper
 target
 tarmac
 tarot
-tart
 tassel
 tavi
 teak
@@ -1179,7 +1167,6 @@ tin
 tinder
 tine
 tinge
-tinker
 tint
 tip
 tissue
@@ -1214,7 +1201,6 @@ trade
 trail
 train
 trait
-tramp
 trance
 trap
 trawl
@@ -1382,7 +1368,6 @@ wedge
 weft
 weight
 weir
-welch
 west
 whale
 wharf
@@ -1434,7 +1419,6 @@ yarrow
 yawn
 year
 yeast
-yellow
 yew
 yield
 yoke

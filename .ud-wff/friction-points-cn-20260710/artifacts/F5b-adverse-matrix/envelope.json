@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-F5b-adverse-matrix",
+  "node_id": "impl-F5b",
+  "kind": "output",
+  "summary_path": "artifacts/F5b-adverse-matrix/summary.md",
+  "raw_path": "artifacts/F5b-adverse-matrix/receipt.md",
+  "hash": "sha256:a9b9d2b543c84660199ee70f825af72639cb5234a11a3f32dc9ab3d827f1423b",
+  "bytes": 3042,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:54:54Z",
+  "redaction_status": "none"
+}

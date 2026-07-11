@@ -28,22 +28,50 @@ let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
 
 (* --- subcommand: init ---------------------------------------------------- *)
 
+let native_client_type_from_env () =
+  match env_client_type () with
+  | Some _ as client -> client
+  | None ->
+      let has_nonempty_env key =
+        match Sys.getenv_opt key with
+        | Some value -> String.trim value <> ""
+        | None -> false
+      in
+      if has_nonempty_env "CODEX_THREAD_ID" then Some "codex"
+      else if has_nonempty_env "CLAUDE_SESSION_ID"
+              || has_nonempty_env "CLAUDE_CODE_SESSION_ID"
+      then Some "claude"
+      else if has_nonempty_env "C2C_OPENCODE_SESSION_ID" then Some "opencode"
+      else None
+
 let detect_client () =
-   (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-    | Some sid ->
-        List.find_opt (fun c ->
-          let cl = String.length c in
-          String.length sid >= cl && String.sub sid 0 cl = c) C2c_setup.detect_client_prefixes
-    | None -> None)
-  |> (function
-      | Some _ as v -> v
-      | None ->
-          let has_bin name =
-            let path = try Sys.getenv "PATH" with Not_found -> "" in
-            List.exists (fun d -> Sys.file_exists (d // name))
-              (String.split_on_char ':' path)
-          in
-          List.find_opt has_bin [ "opencode"; "claude"; "codex"; "kimi" ])
+  (* A shell commonly has several agent CLIs on PATH.  Picking the first one
+     makes the result depend on an arbitrary list order (B102: a Claude Code
+     session was labelled opencode merely because both binaries were present).
+     Prefer the client process's explicit/native environment; only use a
+     managed c2c session-id prefix next, and regard PATH as evidence when it
+     identifies exactly one possible client. *)
+  match native_client_type_from_env () with
+  | Some _ as client -> client
+  | None ->
+      (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+       | Some sid ->
+           List.find_opt (fun c ->
+             let cl = String.length c in
+             String.length sid >= cl && String.sub sid 0 cl = c)
+             C2c_setup.detect_client_prefixes
+       | None -> None)
+      |> (function
+          | Some _ as client -> client
+          | None ->
+              let has_bin name =
+                let path = try Sys.getenv "PATH" with Not_found -> "" in
+                List.exists (fun d -> Sys.file_exists (d // name))
+                  (String.split_on_char ':' path)
+              in
+              match List.filter has_bin [ "opencode"; "claude"; "codex"; "kimi" ] with
+              | [ client ] -> Some client
+              | _ -> None)
 
 let init_cmd =
   let open Cmdliner in
@@ -81,7 +109,7 @@ let init_cmd =
   in
   let easy_pool_flag =
     Arg.(value & flag & info ["easy-pool"]
-           ~doc:"Generate alias from the easy-pool word subset (52 nature-themed English-readable words) instead of the full 128-word pool.")
+           ~doc:"Generate alias from the easy-pool word subset (52 nature-themed English-readable words) instead of the full alias pool (~1,450 words).")
   in
   let require_easy_flag =
     Arg.(value & flag & info ["require-easy"]
@@ -545,7 +573,7 @@ let init =
        ~man:[ `S "DESCRIPTION"
             ; `P "$(b,c2c init) configures the current AI client for c2c messaging, registers \
                   the session, and joins swarm-lounge. Run once per project."
-            ; `P "Auto-detects the client from $(b,C2C_MCP_SESSION_ID) or installed binaries. \
+            ; `P "Auto-detects the client from explicit/native client environment, then $(b,C2C_MCP_SESSION_ID), or a single installed client binary. \
                   Override with $(b,--client)."
             ; `S "SESSION IDENTITY"
             ; `P "The session id is resolved from the environment first \
@@ -606,17 +634,32 @@ let self_update_cmd =
 
 let self_update =
   let info = Cmdliner.Cmd.info "self-update"
-    ~doc:"Update the running c2c binary to the latest (or pinned) release."
+    ~doc:"Update c2c to the latest (or pinned) release."
     ~man:
       [ `S "DESCRIPTION"
-      ; `P "$(b,c2c self-update) downloads the latest release from GitHub, verifies the \
-            SHA-256 checksum, and atomically replaces the running binary."
-      ; `P "Asset naming convention (shared with install.sh): \
+      ; `P "$(b,c2c self-update) updates the running c2c in a way that preserves how it \
+            was installed. It first detects the install method, then behaves honestly:"
+      ; `P "$(b,standalone) — downloads the latest (or pinned) release from GitHub, \
+            verifies the SHA-256 checksum, and atomically replaces the running binary in place."
+      ; `P "$(b,npm / pnpm / bun) — delegates to the owning package manager (e.g. \
+            $(b,npm install -g @clanker-code/c2c@latest)) instead of overwriting the binary \
+            inside $(b,node_modules) or a content-addressed store. Pass $(b,--target <ver>) \
+            to select a specific package version."
+      ; `P "Asset naming convention for standalone installs (shared with install.sh): \
             $(b,c2c-<version>-<os>-<arch>.tar.gz) where os ∈ {linux, darwin}, arch ∈ {x64, arm64}."
-      ; `P "Refuses to touch system paths (/usr, /usr/local, /bin). Advises using a \
-            package manager or the curl bootstrap at https://c2c.im/install.sh."
+      ; `S "PROVENANCE & REFUSALS"
+      ; `P "The updater refuses rather than acting dishonestly when: the running binary is \
+            $(b,shadowed) on PATH (a different c2c runs when you type $(b,c2c), so updating \
+            the running one would not help); the install provenance is $(b,unknown/ambiguous) \
+            (a package store this updater does not recognise); or the owning package manager \
+            is $(b,not installed). Each case exits non-zero with an actionable message and \
+            never silently drops a standalone copy elsewhere."
+      ; `P "Still refuses to touch system paths (/usr, /usr/local, /bin) for standalone \
+            installs. Advises the curl bootstrap at https://c2c.im/install.sh."
       ; `P "Exit codes: 0 = updated or check-only OK; 1 = error; the JSON output \
-            distinguishes $(b,already_latest) vs $(b,updated) vs $(b,error)."
+            distinguishes $(b,already_latest) vs $(b,updated) vs $(b,error), and for \
+            package-managed installs reports $(b,install_method) plus the \
+            $(b,delegate_command) that runs."
       ; `S "SECURITY"
       ; `P "SHA-256 checksum verification is always performed against the published \
             SHA256SUMS file. Signature verification (cosign/sigstore) is a TODO — \
@@ -646,20 +689,22 @@ let upgrade_alias =
 
 let install =
   let info = Cmdliner.Cmd.info "install"
-    ~doc:"Install c2c — binary and/or client integrations."
+    ~doc:"Install c2c — binary by default; client MCP is explicit opt-in."
     ~man:
       [ `S "DESCRIPTION"
-      ; `P "With no subcommand, $(b,c2c install) runs an interactive TUI that \
-            detects which clients are on PATH and offers to configure each. \
-            Press $(b,Enter) to accept the defaults (install c2c binary + \
-            configure every detected client that isn't already set up), \
-            $(b,c) to customize, or $(b,n) to abort."
+      ; `P "With no subcommand, $(b,c2c install) runs an interactive TUI. \
+            Defaults are $(b,binary-only): install the c2c CLI if missing. \
+            Client MCP/hooks are never selected by default (B122). Press \
+            $(b,Enter) for binary-only, $(b,c) to customize (client prompts \
+            default to no), or $(b,n) to abort."
       ; `P
-          ("Use the subcommands for scriptable (non-interactive) installs: \
-            $(b,c2c install self) installs only the binary; \
-            $(b,c2c install " ^ C2c_setup.install_client_pipe_list ^ ") configures one \
-            client; $(b,c2c install all) does the same as the TUI's default \
-            path without prompting.")
+          ("Scriptable installs: $(b,c2c install self) installs only the binary \
+            (add $(b,--mcp-server) to also install $(b,c2c-mcp-server)); \
+            $(b,c2c install " ^ C2c_setup.install_client_pipe_list ^ ") configures \
+            one client deliberately; $(b,c2c install all) installs the binary only \
+            unless $(b,--with-clients) is passed. Prefer naming a single client. \
+            Claude $(b,--global) (writes $(b,~/.claude.json)) is advanced and never \
+            implied.")
       ]
   in
   Cmdliner.Cmd.group ~default:C2c_setup.install_default_term info

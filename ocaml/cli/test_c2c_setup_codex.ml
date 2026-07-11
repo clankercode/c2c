@@ -56,7 +56,7 @@ let run_setup () =
   C2c_setup.setup_codex ~output_mode:C2c_types.Human ~dry_run:false
     ~root:"/fake/broker/root" ~alias_val:"codex-fixture-zz"
     ~server_path:"/fake/bin/c2c_mcp_server.exe" ~mcp_command:"c2c-mcp-server"
-    ~client:"codex" ~deliver_watch:false ~alias_from_auto_gen:false
+    ~client:"codex" ~alias_from_auto_gen:false
 
 let test_fresh_install_writes_hooks_and_agents_md () =
   with_temp_home (fun home ->
@@ -155,6 +155,83 @@ let test_preserves_user_hooks_and_offsets_indices () =
       (count_occurrences ~haystack:again
          ~needle:C2c_codex_hooks.config_begin_marker))
 
+(* c2c install codex writes the embedded /c2c skill to
+   ~/.codex/skills/c2c/SKILL.md and reports it as an owned manifest artifact
+   so `c2c uninstall codex` removes it. *)
+let test_install_writes_codex_skill () =
+  with_temp_home (fun home ->
+    let result = run_setup () in
+    let skill_path = home // ".codex" // "skills" // "c2c" // "SKILL.md" in
+    check bool "skill file exists" true (Sys.file_exists skill_path);
+    check bool "skill content is the embedded blob" true
+      (read_file skill_path = C2c_claude_skill_embedded.content);
+    check bool "skill owned-file artifact present" true
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "owned-file" && a.path = skill_path)
+         result.C2c_setup.artifacts))
+
+(* refresh_codex_skill_if_stale: creates when missing, rewrites when drifted,
+   leaves an up-to-date file alone (mtime unchanged). *)
+let test_refresh_codex_skill_if_stale () =
+  with_temp_home (fun home ->
+    let skill_path = home // ".codex" // "skills" // "c2c" // "SKILL.md" in
+    (* missing -> created *)
+    C2c_setup.refresh_codex_skill_if_stale ();
+    check bool "created when missing" true (Sys.file_exists skill_path);
+    check bool "created with embedded content" true
+      (read_file skill_path = C2c_claude_skill_embedded.content);
+    (* drifted -> rewritten *)
+    write_file skill_path "stale old skill\n";
+    C2c_setup.refresh_codex_skill_if_stale ();
+    check bool "drifted content refreshed" true
+      (read_file skill_path = C2c_claude_skill_embedded.content);
+    (* fresh -> untouched (no rewrite when content already matches) *)
+    let mtime_before = (Unix.stat skill_path).Unix.st_mtime in
+    Unix.sleepf 0.05;
+    C2c_setup.refresh_codex_skill_if_stale ();
+    let mtime_after = (Unix.stat skill_path).Unix.st_mtime in
+    check bool "up-to-date skill not rewritten" true
+      (mtime_before = mtime_after))
+
+(* The core library duplicates the hooks-block BEGIN marker (for
+   C2c_start.codex_hooks_installed / delivery_mode) because it cannot depend
+   on the cli library. Guard the two constants against drift. *)
+let test_hooks_marker_in_sync_with_core_lib () =
+  check string "config begin marker in sync"
+    C2c_codex_hooks.config_begin_marker
+    C2c_start.codex_hooks_config_begin_marker
+
+(* Codex delivery is via config.toml hooks — install must NOT write the
+   deliver-watch supervisor scripts anymore, and must remove stale ones left
+   by an older install (the uninstall recompute fallback still covers them
+   for manifest-less uninstalls). *)
+let test_install_removes_stale_deliver_watch_scripts () =
+  with_temp_home (fun home ->
+    let client_dir = home // ".c2c" // "clients" // "codex" in
+    let hook_dir = client_dir // "start-hooks" in
+    let rec mkdir_p d =
+      if not (Sys.file_exists d) then begin
+        mkdir_p (Filename.dirname d);
+        Unix.mkdir d 0o700
+      end
+    in
+    mkdir_p hook_dir;
+    let supervisor = client_dir // "deliver-watch.sh" in
+    let pre_deliver = hook_dir // "pre-deliver.sh" in
+    write_file supervisor "#!/bin/bash\n# stale supervisor\n";
+    write_file pre_deliver "#!/bin/bash\n# stale hook\n";
+    let result = run_setup () in
+    check bool "stale deliver-watch.sh removed" false (Sys.file_exists supervisor);
+    check bool "stale pre-deliver.sh removed" false (Sys.file_exists pre_deliver);
+    check bool "no deliver-watch owned-file artifacts" false
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "owned-file"
+            && (Filename.basename a.path = "deliver-watch.sh"
+                || Filename.basename a.path = "pre-deliver.sh"))
+         result.C2c_setup.artifacts))
+
 let test_preserves_user_agents_md () =
   with_temp_home (fun home ->
     let codex_dir = home // ".codex" in
@@ -177,5 +254,11 @@ let () =
         ; test_case "user hooks preserved + indices offset" `Quick
             test_preserves_user_hooks_and_offsets_indices
         ; test_case "user AGENTS.md preserved" `Quick test_preserves_user_agents_md
+        ; test_case "hooks marker in sync with core lib" `Quick
+            test_hooks_marker_in_sync_with_core_lib
+        ; test_case "install removes stale deliver-watch scripts" `Quick
+            test_install_removes_stale_deliver_watch_scripts
+        ; test_case "install writes codex skill" `Quick test_install_writes_codex_skill
+        ; test_case "refresh codex skill if stale" `Quick test_refresh_codex_skill_if_stale
         ] )
     ]

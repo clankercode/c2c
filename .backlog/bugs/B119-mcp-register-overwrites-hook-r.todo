@@ -1,0 +1,26 @@
+---
+claimed_at: "2026-07-11T03:28:33Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T04:15:06Z"
+complexity: medium
+depends_on: []
+duration_minutes: 46.56440318231667
+estimate_hours: 1
+id: B119
+priority: high
+started_at: "2026-07-11T03:28:33Z"
+status: done
+tags: []
+title: MCP register overwrites hook-registration alias for same session_id (identity split)
+---
+B102-family identity-split bug, caught live during S4 hook validation (2026-07-11).
+
+SYMPTOM: In one vanilla claude session (sid 18e4322c), the SessionStart hook auto-registered alias claude-koru-yarrow-c7j4 and baked it into the injected cold-boot context. Moments later the c2c MCP server connected and re-registered the SAME session_id with a FRESH alias claude-palo-saima-8fh1 — last-writer-wins, koru-yarrow ceased to exist. Result: the model believes it is koru-yarrow (transcript context) but is addressable only as palo-saima. DMs to the alias the agent announces bounce ('not registered'); the agent never learns its real alias.
+
+ROOT CAUSE: registration for a given session_id is last-writer-wins across the hook path and the MCP path. No adoption/preservation of an existing alive alias.
+
+FIX DIRECTION: MCP register should PRESERVE an existing alive alias for the same session_id (adopt, not replace) — or make the hook the identity authority and the MCP server a joiner.
+
+SEVERITY: medium-high — breaks reply-to-announced-alias for any vanilla session that has both hooks and MCP wired (the default after 'c2c install claude').
+
+Finding: .collab/findings/2026-07-10T14-20-00Z-fable-max-claude-hook-live-validation.md (BUG 1). Same family as B102 and the codex managed-resume split.

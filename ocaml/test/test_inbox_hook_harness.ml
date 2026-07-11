@@ -117,12 +117,23 @@ let json_list_length path =
 (* Env var directive: either set to a value, or unset. *)
 type env_op = Set of string * string | Unset of string
 
+(* GNU env requires all -u options BEFORE any NAME=VALUE assignment, so emit
+   unsets first regardless of input order. Later assignments override earlier
+   ones (and an earlier -u for the same key), so base env can be prepended and
+   still overridden by a caller that Sets the same key. *)
 let env_op_to_args ops =
-  List.map (function
-      | Set (k, v) ->
-          Printf.sprintf "%s=%s" k (Filename.quote v)
-      | Unset k -> Printf.sprintf "-u %s" k)
-    ops
+  let unsets =
+    List.filter_map
+      (function Unset k -> Some (Printf.sprintf "-u %s" k) | _ -> None) ops
+  in
+  let sets =
+    List.filter_map
+      (function
+        | Set (k, v) -> Some (Printf.sprintf "%s=%s" k (Filename.quote v))
+        | _ -> None)
+      ops
+  in
+  unsets @ sets
 
 (* Result of one hook invocation. *)
 type hook_result = {
@@ -132,11 +143,40 @@ type hook_result = {
   elapsed_ms : float;
 }
 
+(* Hermetic sandbox for the hook subprocess. Since C2c_hook_lib.resolve_hook_
+   broker_root now falls back to the canonical repo-fingerprint broker
+   ($HOME/.c2c/repos/<fp>/broker, or $C2C_STATE_HOME/... when set) whenever
+   C2C_MCP_BROKER_ROOT is unset, a hook run from inside this git repo with
+   the real $HOME would resolve — and DRAIN — the developer's live broker.
+   Pointing both HOME and C2C_STATE_HOME at a fresh EMPTY temp tree forces
+   that fallback to a path with no registry.json, so the helper returns ""
+   and the repo drain is skipped exactly as before. C2C_STATE_HOME wins in
+   resolve_broker_root_fallback; HOME is belt-and-suspenders + keeps any
+   statefile writes off real ~. *)
+let with_hermetic_home f =
+  let dir =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-hook-hermetic-%08x" (Random.bits ()))
+  in
+  (try Unix.mkdir dir 0o700
+   with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () -> f dir)
+
 let run_hook ?(env=[]) ~stdin_payload () : hook_result =
   let hook = hook_bin () in
   let stdin_path = Filename.temp_file "c2c-hook-harness-in" ".json" in
   let out = Filename.temp_file "c2c-hook-harness-out" ".json" in
   let err = Filename.temp_file "c2c-hook-harness-err" ".txt" in
+  with_hermetic_home @@ fun hermetic ->
+  let base_env =
+    [ Unset "C2C_MCP_BROKER_ROOT"
+    ; Set ("HOME", hermetic)
+    ; Set ("C2C_STATE_HOME", hermetic)
+    ]
+  in
   Fun.protect
     ~finally:(fun () ->
       (try Sys.remove stdin_path with _ -> ());
@@ -144,7 +184,7 @@ let run_hook ?(env=[]) ~stdin_payload () : hook_result =
       (try Sys.remove err with _ -> ()))
     (fun () ->
       write_file stdin_path stdin_payload;
-      let env_args = env_op_to_args env in
+      let env_args = env_op_to_args (base_env @ env) in
       let env_str = String.concat " " env_args in
       let cmd =
         Printf.sprintf
@@ -205,8 +245,7 @@ let test_drains_single_message_and_destructive_drain () =
     let inbox = seed_inbox ~dir ~sid 1 in
     let payload = Printf.sprintf {|{"session_id":%S,"hook_event_name":"PostToolUse"}|} sid in
     let r = run_hook ~env:[Unset "C2C_MCP_SESSION_ID"; Unset "C2C_MCP_BROKER_ROOT";
-                           Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                           Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -226,8 +265,7 @@ let test_drains_multiple_messages_in_one_call () =
     let sid = "harness-multi" in
     let inbox = seed_inbox ~dir ~sid 3 in
     let payload = Printf.sprintf {|{"session_id":%S}|} sid in
-    let r = run_hook ~env:[Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+    let r = run_hook ~env:[Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -261,8 +299,7 @@ let test_env_fallback_when_stdin_malformed () =
     let payload = {|this is not valid json at all {[|} in
     let r = run_hook ~env:[Unset "C2C_MCP_BROKER_ROOT";
                            Set ("C2C_MCP_SESSION_ID", sid);
-                           Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                           Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0 via env fallback" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -278,8 +315,7 @@ let test_env_fallback_when_stdin_empty () =
     let sid = "harness-stdin-empty" in
     let inbox = seed_inbox ~dir ~sid 1 in
     let r = run_hook ~env:[Set ("C2C_MCP_SESSION_ID", sid);
-                           Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                           Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:"" () in
     check int "hook exits 0 via env fallback" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -314,8 +350,7 @@ let test_session_id_at_start_of_large_payload_extracts () =
       Printf.sprintf {|{"session_id":%S,"tool_response":%S}|}
         sid (String.make pad_len 'x')
     in
-    let r = run_hook ~env:[Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+    let r = run_hook ~env:[Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -342,8 +377,7 @@ let test_session_id_beyond_scan_bound_uses_env () =
     check bool "payload exceeds bound" true
       (String.length payload > pad_len);
     let r = run_hook ~env:[Set ("C2C_MCP_SESSION_ID", sid);
-                           Set ("C2C_SESSIONS_BROKER_ROOT", dir);
-                           Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                           Set ("C2C_SESSIONS_BROKER_ROOT", dir)]
                 ~stdin_payload:payload () in
     check int "hook exits 0 via env fallback" 0 r.rc;
     let ctx = match parse_additional_context r with
@@ -390,8 +424,7 @@ let test_cold_boot_marker_persists_across_invocations () =
       (* First call: drains message + emits cold-boot context + writes marker. *)
       let r1 = run_hook ~env:[Set ("C2C_MCP_SESSION_ID", sid);
                               Set ("C2C_MCP_BROKER_ROOT", repo_dir);
-                              Set ("C2C_SESSIONS_BROKER_ROOT", global_dir);
-                              Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                              Set ("C2C_SESSIONS_BROKER_ROOT", global_dir)]
                    ~stdin_payload:payload () in
       check int "first call exits 0" 0 r1.rc;
       let ctx1 = match parse_additional_context r1 with
@@ -410,8 +443,7 @@ let test_cold_boot_marker_persists_across_invocations () =
       let _ = seed_inbox ~dir:global_dir ~sid 1 in
       let r2 = run_hook ~env:[Set ("C2C_MCP_SESSION_ID", sid);
                               Set ("C2C_MCP_BROKER_ROOT", repo_dir);
-                              Set ("C2C_SESSIONS_BROKER_ROOT", global_dir);
-                              Set ("C2C_POST_TOOL_FULL_INJECT", "1")]
+                              Set ("C2C_SESSIONS_BROKER_ROOT", global_dir)]
                    ~stdin_payload:payload () in
       check int "second call exits 0" 0 r2.rc;
       let ctx2 = match parse_additional_context r2 with
@@ -474,7 +506,6 @@ let time_hook_invocations ~n_messages () : float list =
     let env = [ Unset "C2C_MCP_BROKER_ROOT"
               ; Unset "C2C_MCP_SESSION_ID"
               ; Set ("C2C_SESSIONS_BROKER_ROOT", dir)
-              ; Set ("C2C_POST_TOOL_FULL_INJECT", "1")
               ] in
     let results = ref [] in
     for _i = 1 to speed_iterations do

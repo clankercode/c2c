@@ -122,7 +122,7 @@ open C2c_mcp_helpers
       cleanup_tmp ();
       raise e
 
-  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; ed25519_pubkey; pubkey_signed_at; pubkey_sig; compacting; last_activity_ts; role; compaction_count; automated_delivery; tmux_location = _; cwd; metadata_opt_out; registered_by; opaque_host_id = _ } =
+  let registration_to_json { session_id; alias; pid; pid_start_time; registered_at; canonical_alias; dnd; dnd_since; dnd_until; client_type; plugin_version; confirmed_at; enc_pubkey; ed25519_pubkey; pubkey_signed_at; pubkey_sig; compacting; last_activity_ts; role; compaction_count; automated_delivery; tmux_location; herdr_pane; herdr_socket; cwd; metadata_opt_out; registered_by; opaque_host_id = _ } =
     let base =
       [ ("session_id", `String session_id); ("alias", `String alias) ]
     in
@@ -222,10 +222,29 @@ open C2c_mcp_helpers
       | Some b -> with_compaction_count @ [ ("automated_delivery", `Bool b) ]
       | None -> with_compaction_count
     in
+    (* Wake-target metadata (codex-wake-inject slice). tmux_location was
+       declared persisted by #517 but the destructure silently dropped it
+       (warning-9 masked) — fixed here so `c2c list` and the wake injector
+       can read targets back from the registry across processes. *)
+    let with_tmux_location =
+      match tmux_location with
+      | Some loc -> with_automated_delivery @ [ ("tmux_location", `String loc) ]
+      | None -> with_automated_delivery
+    in
+    let with_herdr_pane =
+      match herdr_pane with
+      | Some p -> with_tmux_location @ [ ("herdr_pane", `String p) ]
+      | None -> with_tmux_location
+    in
+    let with_herdr_socket =
+      match herdr_socket with
+      | Some s -> with_herdr_pane @ [ ("herdr_socket", `String s) ]
+      | None -> with_herdr_pane
+    in
     let with_cwd =
       match cwd with
-      | Some c -> with_automated_delivery @ [ ("cwd", `String c) ]
-      | None -> with_automated_delivery
+      | Some c -> with_herdr_socket @ [ ("cwd", `String c) ]
+      | None -> with_herdr_socket
     in
     (* Only persist metadata_opt_out when true — keeps registry compact for normal case. *)
     let with_metadata_opt_out =
@@ -302,6 +321,8 @@ open C2c_mcp_helpers
              | _ -> None
          with _ -> None)
     ; tmux_location = str_opt "tmux_location" json
+    ; herdr_pane = str_opt "herdr_pane" json
+    ; herdr_socket = str_opt "herdr_socket" json
     ; cwd = str_opt "cwd" json
     ; metadata_opt_out = bool_member_default "metadata_opt_out" json false
     ; registered_by = str_opt "registered_by" json
@@ -368,10 +389,17 @@ open C2c_mcp_helpers
   let alias_casefold s = String.lowercase_ascii s
 
   let codex_hook_registered_by = "codex-hook"
+  let claude_hook_registered_by = "claude-hook"
   let codex_hook_auto_registration_ttl_s = 24.0 *. 60.0 *. 60.0
 
   let is_codex_hook_auto_registration reg =
     reg.registered_by = Some codex_hook_registered_by
+
+  (* B119: hook auto-registrations (SessionStart hooks of any client) are the
+     identity authority for their session_id — the MCP server adopts them. *)
+  let is_hook_auto_registration reg =
+    reg.registered_by = Some codex_hook_registered_by
+    || reg.registered_by = Some claude_hook_registered_by
 
   let codex_hook_activity_anchor reg =
     match reg.last_activity_ts with
@@ -1605,6 +1633,19 @@ open C2c_mcp_helpers
   type liveness_state = Alive | Dead | Unknown
 
   let registration_liveness_state reg =
+    (* Vanilla Codex sessions are registered by short-lived hooks, so they
+       deliberately have no stable process PID to inspect.  Their bounded
+       hook-activity lease is nevertheless the delivery signal: while it is
+       fresh the next Codex hook can drain a queued message.  Do not leave
+       these peers as [Unknown] in discovery output when we have that signal. *)
+    if is_codex_hook_auto_registration reg && reg.pid = None then
+      match codex_hook_activity_anchor reg with
+      | Some ts
+        when Unix.gettimeofday () -. ts <= codex_hook_auto_registration_ttl_s ->
+          Alive
+      | Some _ -> Dead
+      | None -> Unknown
+    else
     if in_docker_mode () then
       match reg.pid with
       | None -> Unknown
@@ -1846,12 +1887,48 @@ open C2c_mcp_helpers
                else
                  age < pidless_keep_window_s)
 
+  (* H9: emit a structured `inbox_row_skipped` line in broker.log whenever
+     [load_inbox] drops a row that [message_of_json] rejects. Best-effort:
+     any failure is swallowed — logging must never block an inbox read.
+     The row is embedded as a (truncated) string, not verbatim JSON, so a
+     hostile row can't shape the log entry itself. *)
+  let log_inbox_row_skipped t ~session_id ~row =
+    (try
+       let row_str = Yojson.Safe.to_string row in
+       let row_sample =
+         if String.length row_str > 256 then String.sub row_str 0 256 ^ "..."
+         else row_str
+       in
+       log_broker_event ~broker_root:t.root "inbox_row_skipped"
+         [ ("ts", `Float (Unix.gettimeofday ()))
+         ; ("session_id", `String session_id)
+         ; ("row", `String row_sample)
+         ]
+     with _ -> ())
+
   let load_inbox t ~session_id =
     ensure_root t;
     let path = inbox_path t ~session_id in
     let result =
       match read_json_file ~broker_root:t.root path ~default:(`List []) with
-      | `List items -> List.map message_of_json items
+      | `List items ->
+          (* H9 defense-in-depth: total PER-ROW. A row that fails
+             [message_of_json] (e.g. written by a pre-H9 relay connector
+             from a schema-garbage /poll_inbox response, or any buggy/
+             foreign writer) is skipped + logged instead of raising
+             Yojson Type_error through the whole read — one poisoned row
+             used to wedge every broker-side inbox read for the session.
+             Read-only healing: the file itself is left as-is; the next
+             drain/save rewrites it from parsed rows, dropping the bad
+             ones permanently. *)
+          List.filter_map
+            (fun item ->
+              match message_of_json item with
+              | msg -> Some msg
+              | exception _ ->
+                  log_inbox_row_skipped t ~session_id ~row:item;
+                  None)
+            items
       | _ -> []
     in
     if debug_enabled then Printf.eprintf "[DEBUG load_inbox] session_id=%s path=%s msgs=%d\n%!"
@@ -1884,6 +1961,13 @@ open C2c_mcp_helpers
       (fun () ->
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
+
+  (** Inspect whether an inbox still has a message eligible for push delivery.
+      Callers that need to compose this check with other inbox operations must
+      hold [with_inbox_lock] for the same [t]/[session_id]. *)
+  let inbox_has_push_messages_locked t ~session_id =
+    load_inbox t ~session_id
+    |> List.exists (fun (m : message) -> not m.deferrable)
 
   (* register, enqueue_message, and send_all all take the registry lock
      before touching inbox state. Lock order is consistently
@@ -2093,7 +2177,7 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(herdr_pane = None) ?(herdr_socket = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) () =
     if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -2129,8 +2213,9 @@ open C2c_mcp_helpers
            refresh): update in-place by replacing the old entry in [rest]. *)
         (* Look up old entry to preserve DND state + confirmed_at + client_type + plugin_version + compacting + role
            across re-registration. *)
+        let old_reg_opt = List.find_opt (fun reg -> reg.session_id = session_id) rest in
         let old_state =
-          match List.find_opt (fun reg -> reg.session_id = session_id) rest with
+          match old_reg_opt with
           | Some r -> (r.dnd, r.dnd_since, r.dnd_until, r.confirmed_at, r.client_type, r.plugin_version, r.compacting, r.enc_pubkey, r.ed25519_pubkey, r.pubkey_signed_at, r.pubkey_sig, r.last_activity_ts, r.role, r.compaction_count, r.automated_delivery, r.tmux_location, r.cwd, r.metadata_opt_out, r.opaque_host_id)
           | None -> (false, None, None, None, client_type, None, None, enc_pubkey, None, None, None, None, role, 0, None, tmux_location, cwd, metadata_opt_out, opaque_host_id)
         in
@@ -2187,6 +2272,17 @@ open C2c_mcp_helpers
             | Some _ -> tmux_location
             | None -> old_tmux_location
           in
+          (* herdr wake targets: same preserve-on-None semantics as
+             tmux_location, sourced from old_reg_opt (the pre-existing
+             old_state tuple is wide enough already). *)
+          let effective_herdr_pane = match herdr_pane with
+            | Some _ -> herdr_pane
+            | None -> Option.bind old_reg_opt (fun r -> r.herdr_pane)
+          in
+          let effective_herdr_socket = match herdr_socket with
+            | Some _ -> herdr_socket
+            | None -> Option.bind old_reg_opt (fun r -> r.herdr_socket)
+          in
           { session_id; alias; pid; pid_start_time
           ; registered_at = Some (Unix.gettimeofday ())
           ; canonical_alias = Some (compute_canonical_alias ~deprecate_canonical_alias:t.deprecate_canonical_alias ~alias ~broker_root:(root t) ())
@@ -2204,6 +2300,8 @@ open C2c_mcp_helpers
           ; compaction_count = old_compaction_count
           ; automated_delivery = old_automated_delivery
           ; tmux_location = effective_tmux_location
+          ; herdr_pane = effective_herdr_pane
+          ; herdr_socket = effective_herdr_socket
           ; cwd
           ; metadata_opt_out
           ; registered_by
@@ -2304,6 +2402,40 @@ open C2c_mcp_helpers
               Unix.close fd;
               Unix.utimes path 0.0 (Unix.gettimeofday ()))
         with Unix.Unix_error _ -> ())
+
+  (** Update only the wake-target metadata of an existing registration.
+      [Some v] overwrites the stored value; [None] leaves it unchanged
+      (targets are never cleared here — a hook fire from outside tmux/herdr
+      must not erase a previously captured pane). No-op when [session_id]
+      has no registration. Total: never raises. *)
+  let update_wake_targets t ~session_id ?(tmux_location = None)
+      ?(herdr_pane = None) ?(herdr_socket = None) () =
+    try
+      if tmux_location = None && herdr_pane = None && herdr_socket = None then ()
+      else
+        with_registry_lock t (fun () ->
+            let regs = load_registrations t in
+            let changed = ref false in
+            let apply nu old = match nu with None -> old | Some _ -> nu in
+            let regs' =
+              List.map
+                (fun r ->
+                  if r.session_id <> session_id then r
+                  else begin
+                    let r' =
+                      { r with
+                        tmux_location = apply tmux_location r.tmux_location
+                      ; herdr_pane = apply herdr_pane r.herdr_pane
+                      ; herdr_socket = apply herdr_socket r.herdr_socket
+                      }
+                    in
+                    if r' <> r then changed := true;
+                    r'
+                  end)
+                regs
+            in
+            if !changed then save_registrations t regs')
+    with _ -> ()
 
   (** True if [alias] contains '@' — indicating a remote alias that cannot be
       resolved via the local registry and must be sent via the relay outbox. *)
@@ -3860,6 +3992,28 @@ open C2c_mcp_helpers
           files;
         try Unix.rmdir dir with Unix.Unix_error _ -> ()))
 
+  (* Room-event auto-DM envelopes route peer-controlled alias/room values
+     through [xml_escape] (the canonical H2a untrusted-data renderer) so a
+     hostile alias or room id cannot inject a closing [</c2c>], a forged
+     [<system-reminder>], or an attribute breakout into the delivered
+     envelope. Aliases and room ids are charset-validated at their entry
+     points, so this is defence-in-depth — but it keeps every string-into-
+     markup site on the same escaping contract as [format_c2c_envelope]. *)
+  let render_room_invite_envelope ~from_alias ~room_id =
+    let f = xml_escape from_alias and r = xml_escape room_id in
+    Printf.sprintf
+      "<c2c event=\"room-invite\" from=\"%s\" room=\"%s\">You've been \
+       invited to room %s by %s. Run `c2c rooms join %s` to accept.</c2c>"
+      f r r f r
+
+  let render_room_knock_envelope ~requester_alias ~room_id =
+    let q = xml_escape requester_alias and r = xml_escape room_id in
+    Printf.sprintf
+      "<c2c event=\"room-knock\" from=\"%s\" room=\"%s\">%s wants \
+       to join room %s. Run `c2c rooms approve-knock %s %s` to \
+       approve, or `c2c rooms deny-knock %s %s` to deny.</c2c>"
+      q r q r r q r q
+
   let send_room_invite t ~room_id ~from_alias ~invitee_alias =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
@@ -3878,12 +4032,7 @@ open C2c_mcp_helpers
        it distinctly from ordinary message DMs. We re-DM even on duplicate
        invites: a duplicate invite is a deliberate nudge and should reach
        the invitee (cheap; ACL itself stays idempotent). *)
-    let envelope =
-      Printf.sprintf
-        "<c2c event=\"room-invite\" from=\"%s\" room=\"%s\">You've been \
-         invited to room %s by %s. Run `c2c rooms join %s` to accept.</c2c>"
-        from_alias room_id room_id from_alias room_id
-    in
+    let envelope = render_room_invite_envelope ~from_alias ~room_id in
     (* Sender is the inviter (real alias) rather than the reserved
        [room_system_alias], because [enqueue_message] rejects
        reserved system aliases as a spoof guard (see
@@ -3965,14 +4114,7 @@ open C2c_mcp_helpers
            save_room_meta t ~room_id
              { meta with pending_knocks = meta.pending_knocks @ [ knock ] };
            let notified = ref [] in
-           let envelope =
-             Printf.sprintf
-               "<c2c event=\"room-knock\" from=\"%s\" room=\"%s\">%s wants \
-                to join room %s. Run `c2c rooms approve-knock %s %s` to \
-                approve, or `c2c rooms deny-knock %s %s` to deny.</c2c>"
-               requester_alias room_id requester_alias room_id room_id
-               requester_alias room_id requester_alias
-           in
+           let envelope = render_room_knock_envelope ~requester_alias ~room_id in
            List.iter
              (fun (m : room_member) ->
                 if alias_casefold m.rm_alias = alias_casefold requester_alias

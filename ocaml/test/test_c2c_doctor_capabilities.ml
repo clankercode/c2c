@@ -1,0 +1,402 @@
+(* test_c2c_doctor_capabilities — hermetic tests for Relay_doctor, the shared
+   scheme/attempt-aware relay capability + broker-owned connector attribution
+   logic behind `c2c doctor --relay` and the `c2c relay subscribe` guard (H4).
+
+   This is the head of the serialized ocaml/test/dune doctor/capability lane;
+   later slices (J1/H5/H6/F5a) add sibling test modules with their own stanzas.
+
+   Covers the B093 acceptance list:
+   - HTTPS subscribe=no and poll=yes (scheme-aware capabilities)
+   - actual-attempt parity: doctor's subscribe capability uses the very
+     predicate the subscribe command guard uses
+   - unrelated-connector negative (broker-root scoping)
+   - stale connector state
+   - check IDs / statuses / every FAIL carries a fix
+   - docs link target (published permalink, not the old 404)
+   - env-gated public read-only smoke against https://relay.c2c.im *)
+
+open Relay_doctor
+
+(* ---- connector_state fixture -------------------------------------------- *)
+
+let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) ?err_op ?err_detail ?err_ts
+    ?(fwd = 0) ?(failed = 0) ?(dlq = 0) ?(inbound = 0) () :
+    C2c_relay_connector.connector_state =
+  {
+    C2c_relay_connector.cs_last_sync_ts = last_sync;
+    cs_last_ok_ts = last_ok;
+    cs_last_error_op = err_op;
+    cs_last_error_detail = err_detail;
+    cs_last_error_ts = err_ts;
+    cs_registered = [];
+    (* H3 added cs_node_id to connector_state; this H4 fixture predates it.
+       None = connector state without a node-id (pre-H3 shape). *)
+    cs_node_id = None;
+    cs_outbox_forwarded = fwd;
+    cs_outbox_failed = failed;
+    cs_outbox_dlqed = dlq;
+    cs_inbound_delivered = inbound;
+    cs_inbound_rejected = 0;
+  }
+
+let has_needle ~needle haystack = string_contains ~needle haystack
+
+(* ---- capabilities: scheme awareness ------------------------------------- *)
+
+let test_https_subscribe_no_poll_yes () =
+  let c = capabilities ~url:"https://relay.c2c.im" ~reachable:true ~connector_running:false in
+  Alcotest.(check bool) "https send=yes" true c.send;
+  Alcotest.(check bool) "https subscribe=NO" false c.subscribe;
+  Alcotest.(check bool) "https poll=yes" true c.poll;
+  Alcotest.(check bool) "https tls=yes" true c.tls;
+  Alcotest.(check bool) "https connect follows connector_running (false)" false c.connect
+
+let test_wss_subscribe_no () =
+  let c = capabilities ~url:"wss://relay.c2c.im/ws" ~reachable:true ~connector_running:true in
+  Alcotest.(check bool) "wss subscribe=NO" false c.subscribe;
+  Alcotest.(check bool) "wss tls=yes" true c.tls;
+  Alcotest.(check bool) "wss connect=yes" true c.connect
+
+let test_http_subscribe_yes () =
+  let c = capabilities ~url:"http://localhost:7331" ~reachable:true ~connector_running:false in
+  Alcotest.(check bool) "http subscribe=YES" true c.subscribe;
+  Alcotest.(check bool) "http tls=no" false c.tls
+
+let test_ws_subscribe_yes () =
+  let c = capabilities ~url:"ws://localhost:7331/ws" ~reachable:true ~connector_running:false in
+  Alcotest.(check bool) "ws subscribe=YES" true c.subscribe;
+  Alcotest.(check bool) "ws tls=no" false c.tls
+
+let test_unreachable_all_no () =
+  let c = capabilities ~url:"http://localhost:7331" ~reachable:false ~connector_running:false in
+  Alcotest.(check bool) "unreachable send=no" false c.send;
+  Alcotest.(check bool) "unreachable subscribe=no" false c.subscribe;
+  Alcotest.(check bool) "unreachable poll=no" false c.poll
+
+let test_capabilities_message_shape () =
+  let m_https = capabilities_message (capabilities ~url:"https://relay.c2c.im" ~reachable:true ~connector_running:false) in
+  Alcotest.(check bool) "message has subscribe=no over https" true
+    (has_needle ~needle:"subscribe=no" m_https);
+  Alcotest.(check bool) "message has poll=yes over https" true
+    (has_needle ~needle:"poll=yes" m_https);
+  Alcotest.(check bool) "message tagged TLS" true (has_needle ~needle:"(TLS)" m_https);
+  let m_http = capabilities_message (capabilities ~url:"http://localhost:7331" ~reachable:true ~connector_running:false) in
+  Alcotest.(check bool) "message has subscribe=yes over http" true
+    (has_needle ~needle:"subscribe=yes" m_http);
+  Alcotest.(check bool) "message tagged plaintext" true (has_needle ~needle:"(plaintext)" m_http)
+
+(* ---- actual-attempt parity: doctor uses the subscribe command's predicate - *)
+
+let test_actual_attempt_parity () =
+  (* The subscribe command guard (c2c_relay_cmd.ml) rejects a URL iff
+     [not (subscribe_url_supported url)]. The doctor capability is
+     [reachable && subscribe_url_supported url]. Same predicate → parity. *)
+  List.iter
+    (fun url ->
+      let supported = subscribe_url_supported url in
+      let cap = (capabilities ~url ~reachable:true ~connector_running:false).subscribe in
+      Alcotest.(check bool)
+        (Printf.sprintf "parity: cap.subscribe == subscribe_url_supported for %s" url)
+        supported cap)
+    [ "https://relay.c2c.im"; "wss://relay.c2c.im/ws"; "http://localhost:7331";
+      "ws://localhost:7331/ws"; "relay.c2c.im" (* no scheme → supported *) ];
+  Alcotest.(check bool) "https NOT supported" false (subscribe_url_supported "https://relay.c2c.im");
+  Alcotest.(check bool) "wss NOT supported" false (subscribe_url_supported "wss://x/ws");
+  Alcotest.(check bool) "http supported" true (subscribe_url_supported "http://localhost:7331");
+  Alcotest.(check bool) "ws supported" true (subscribe_url_supported "ws://x/ws")
+
+(* ---- capabilities_check: id / status / fix ------------------------------ *)
+
+let test_capabilities_check_pass_and_fix () =
+  let r_ready = capabilities_check ~url:"http://localhost:7331" ~reachable:true ~connector_running:true in
+  Alcotest.(check string) "check_id" "relay.capabilities" r_ready.check_id;
+  Alcotest.(check bool) "reachable+connector → PASS" true (r_ready.status = Pass);
+  Alcotest.(check bool) "PASS has no fix" true (r_ready.fix_command = None);
+  Alcotest.(check bool) "docs_url present" true (r_ready.docs_url = Some docs_url);
+  let r_noconn = capabilities_check ~url:"https://relay.c2c.im" ~reachable:true ~connector_running:false in
+  Alcotest.(check bool) "reachable, no connector → Inconclusive" true (r_noconn.status = Inconclusive);
+  Alcotest.(check bool) "no-connector offers a fix" true (r_noconn.fix_command <> None);
+  let r_unreach = capabilities_check ~url:"https://relay.c2c.im" ~reachable:false ~connector_running:false in
+  Alcotest.(check bool) "unreachable → Inconclusive (never false PASS)" true (r_unreach.status = Inconclusive)
+
+(* ---- connector scoping: unrelated connector negative -------------------- *)
+
+let broker_a = "/home/agent/.c2c/repos/aaaa1111/broker"
+let broker_b = "/home/agent/.c2c/repos/bbbb2222/broker"
+
+let test_scope_keeps_own_broker () =
+  let lines =
+    [ Printf.sprintf "12345 c2c relay connect --broker-root %s --relay-url https://relay.c2c.im" broker_a ]
+  in
+  let scoped = scope_connector_lines ~broker_root:broker_a lines in
+  Alcotest.(check int) "own-broker line kept" 1 (List.length scoped)
+
+let test_scope_drops_unrelated_connector () =
+  (* An unrelated connector (different broker) using the SAME public relay must
+     NOT be attributed to broker A — this is the exact B093 false positive. *)
+  let lines =
+    [ Printf.sprintf "12345 c2c relay connect --broker-root %s --relay-url https://relay.c2c.im" broker_b
+    ; "67890 c2c relay connect --relay-url https://relay.c2c.im" (* no broker root at all *)
+    ; "11111 grep c2c relay connect" (* unrelated shell mentioning the string *)
+    ]
+  in
+  let scoped = scope_connector_lines ~broker_root:broker_a lines in
+  Alcotest.(check int) "no unrelated connector attributed to broker A" 0 (List.length scoped)
+
+let test_scope_empty_or_unresolved_broker () =
+  let lines = [ "12345 c2c relay connect" ] in
+  Alcotest.(check int) "empty broker_root → nothing scoped" 0
+    (List.length (scope_connector_lines ~broker_root:"" lines));
+  Alcotest.(check int) "<unresolved> broker_root → nothing scoped" 0
+    (List.length (scope_connector_lines ~broker_root:"<unresolved>" lines))
+
+(* ---- connector_running signal ------------------------------------------- *)
+
+let test_connector_running_signal () =
+  let now = 1000.0 in
+  let fresh = conn_state ~last_sync:(now -. 10.0) () in
+  let stale = conn_state ~last_sync:(now -. 10000.0) () in
+  Alcotest.(check bool) "scoped proc → running" true
+    (connector_running ~scoped_procs:[ "x" ] ~state:None ~now);
+  Alcotest.(check bool) "fresh state → running" true
+    (connector_running ~scoped_procs:[] ~state:(Some fresh) ~now);
+  Alcotest.(check bool) "stale state only → NOT running" false
+    (connector_running ~scoped_procs:[] ~state:(Some stale) ~now);
+  Alcotest.(check bool) "nothing → NOT running" false
+    (connector_running ~scoped_procs:[] ~state:None ~now)
+
+(* ---- connector_check: branches, ids, fixes ------------------------------ *)
+
+let relay_url = "https://relay.c2c.im"
+let now = 1_000_000.0
+
+let cc ?(procs = []) ?state () =
+  connector_check ~relay_url ~scoped_procs:procs ~state ~now
+
+let test_connector_check_no_proc_no_state () =
+  let r = cc () in
+  Alcotest.(check string) "check_id" "relay.connector" r.check_id;
+  Alcotest.(check bool) "no proc + no state → FAIL" true (r.status = Fail);
+  Alcotest.(check bool) "FAIL has fix" true (r.fix_command <> None)
+
+let test_connector_check_stale_state () =
+  let r = cc ~state:(conn_state ~last_sync:(now -. 5000.0) ()) () in
+  Alcotest.(check bool) "stale, no proc → FAIL" true (r.status = Fail);
+  Alcotest.(check bool) "stale FAIL has fix" true (r.fix_command <> None);
+  Alcotest.(check bool) "message mentions last sync" true
+    (has_needle ~needle:"last sync" r.message)
+
+let test_connector_check_fresh_state_no_proc () =
+  (* B1 (peer-review): a fresh, healthy, broker-OWNED state file with NO scoped
+     process is the canonical production path — `c2c relay connect --relay-url
+     <url>` carries no --broker-root on argv, so scope_connector_lines yields
+     []. The broker-owned state file is authoritative → PASS with a truthful
+     "connector running" message (was the false "connector not running"
+     Inconclusive before). *)
+  let st =
+    conn_state ~last_sync:(now -. 10.0) ~last_ok:(now -. 10.0) ~fwd:4 ~inbound:2 ()
+  in
+  let r = cc ~state:st () in
+  Alcotest.(check bool) "fresh healthy state alone → PASS" true (r.status = Pass);
+  Alcotest.(check bool) "message says running" true
+    (has_needle ~needle:"connector running" r.message);
+  Alcotest.(check bool) "message is NOT the 'not running' falsehood" false
+    (has_needle ~needle:"not running" r.message)
+
+(* Full production path: a real pgrep line for the canonical launch (NO
+   --broker-root on argv) must NOT be attributed by string match, leaving
+   scoped_procs=[]; the fresh broker-owned state file then drives PASS. This is
+   the exact input combo that produced the B1 false negative in the wild — the
+   synthetic argv fixture in [test_connector_check_proc_healthy] carried a proc
+   line that would not survive scoping in production. *)
+let test_connector_check_production_argv_no_broker_root () =
+  let argv_lines =
+    [ Printf.sprintf "4242 c2c relay connect --relay-url %s" relay_url ]
+  in
+  let scoped =
+    scope_connector_lines
+      ~broker_root:"/home/agent/.c2c/repos/deadbeef1234/broker" argv_lines
+  in
+  Alcotest.(check int) "canonical argv not string-matched to this broker" 0
+    (List.length scoped);
+  let st =
+    conn_state ~last_sync:(now -. 8.0) ~last_ok:(now -. 8.0) ~fwd:5 ~inbound:3 ()
+  in
+  let r = connector_check ~relay_url ~scoped_procs:scoped ~state:(Some st) ~now in
+  Alcotest.(check bool) "production fresh-state → PASS" true (r.status = Pass);
+  Alcotest.(check bool) "truthful running message" true
+    (has_needle ~needle:"connector running" r.message
+    && not (has_needle ~needle:"not running" r.message))
+
+(* Coherence: capabilities and the connector check consume the same
+   broker-owned signal ([connector_running]) and can never contradict. Whenever
+   capabilities reports connect=yes, the connector check must agree the
+   connector is running — never the "connector not running" / unattributable
+   falsehood — and on the healthy path both land on PASS. *)
+let test_capabilities_connector_coherence () =
+  let combos =
+    [ ("fresh state, no proc (production)", [],
+       Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()))
+    ; ("proc + fresh healthy state", [ "p" ],
+       Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()))
+    ; ("proc + stale state", [ "p" ],
+       Some (conn_state ~last_sync:(now -. 9000.0) ()))
+    ; ("proc, no state (first sync)", [ "p" ], None)
+    ; ("fresh erroring state, no proc", [],
+       Some (conn_state ~last_sync:(now -. 5.0) ~err_op:"sync"
+               ~err_detail:"429" ~err_ts:(now -. 5.0) ()))
+    ; ("stale state, no proc (down)", [],
+       Some (conn_state ~last_sync:(now -. 9000.0) ()))
+    ; ("nothing", [], None)
+    ]
+  in
+  (* Non-contradiction across every representable combo. *)
+  List.iter
+    (fun (label, procs, state) ->
+      let running = connector_running ~scoped_procs:procs ~state ~now in
+      let cr = connector_check ~relay_url ~scoped_procs:procs ~state ~now in
+      let cap =
+        (capabilities ~url:relay_url ~reachable:true ~connector_running:running)
+          .connect
+      in
+      Alcotest.(check bool) (label ^ ": capabilities.connect == connector_running")
+        running cap;
+      if running then begin
+        Alcotest.(check bool)
+          (label ^ ": connect=yes never yields 'not running'") false
+          (has_needle ~needle:"not running" cr.message);
+        Alcotest.(check bool)
+          (label ^ ": connect=yes never yields the unattributable FAIL") false
+          (has_needle ~needle:"no relay connector attributable" cr.message)
+      end)
+    combos;
+  (* Strong form on the healthy path: connect=yes ⇒ connector_check PASS. *)
+  List.iter
+    (fun (label, procs, state) ->
+      let running = connector_running ~scoped_procs:procs ~state ~now in
+      let cr = connector_check ~relay_url ~scoped_procs:procs ~state ~now in
+      Alcotest.(check bool) (label ^ ": connect=yes ⇒ PASS") true
+        ((not running) || cr.status = Pass))
+    [ ("fresh state, no proc", [],
+       Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()))
+    ; ("proc + fresh healthy state", [ "p" ],
+       Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ())) ]
+
+let test_connector_check_proc_no_state () =
+  let r = cc ~procs:[ "12345 c2c relay connect" ] () in
+  Alcotest.(check bool) "proc, no state → Inconclusive (first sync)" true
+    (r.status = Inconclusive)
+
+let test_connector_check_proc_recent_error () =
+  (* B093 item 5 regression: a running-but-erroring connector must FAIL AND
+     still carry a fix_command (was None before). *)
+  let st =
+    conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 400.0)
+      ~err_op:"sync" ~err_detail:"register: 429" ~err_ts:(now -. 5.0) ()
+  in
+  let r = cc ~procs:[ "12345 c2c relay connect" ] ~state:st () in
+  Alcotest.(check bool) "proc + recent error → FAIL" true (r.status = Fail);
+  Alcotest.(check bool) "erroring connector STILL has a fix" true (r.fix_command <> None)
+
+let test_connector_check_proc_healthy () =
+  let st =
+    conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ~fwd:3 ~inbound:2 ()
+  in
+  let r = cc ~procs:[ "12345 c2c relay connect" ] ~state:st () in
+  Alcotest.(check bool) "proc + healthy → PASS" true (r.status = Pass)
+
+(* Invariant across every representable connector outcome: FAIL ⇒ fix present. *)
+let test_every_fail_has_fix () =
+  let cases =
+    [ cc ()
+    ; cc ~state:(conn_state ~last_sync:(now -. 5000.0) ()) ()
+    ; cc ~state:(conn_state ~last_sync:(now -. 10.0) ()) ()
+    ; cc ~procs:[ "p" ] ()
+    ; cc ~procs:[ "p" ]
+        ~state:(conn_state ~last_sync:(now -. 5.0) ~err_op:"sync"
+                  ~err_detail:"boom" ~err_ts:(now -. 5.0) ()) ()
+    ; cc ~procs:[ "p" ] ~state:(conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()) ()
+    ]
+  in
+  List.iter
+    (fun r ->
+      if r.status = Fail then
+        Alcotest.(check bool)
+          (Printf.sprintf "FAIL %S carries a fix" r.message)
+          true (r.fix_command <> None))
+    cases
+
+(* ---- docs link target --------------------------------------------------- *)
+
+let test_docs_link_target () =
+  Alcotest.(check string) "docs_url is the published relay-quickstart permalink"
+    "https://c2c.im/relay-quickstart/" docs_url;
+  Alcotest.(check bool) "docs_url is NOT the old 404 /docs/relay" false
+    (has_needle ~needle:"/docs/relay" docs_url)
+
+(* ---- env-gated public read-only smoke ----------------------------------- *)
+
+(* Set C2C_DOCTOR_LIVE_SMOKE=1 to run a real GET https://relay.c2c.im/health
+   (read-only) and assert scheme-aware capabilities against the live public
+   relay. Skipped by default so normal `dune runtest` stays hermetic/offline. *)
+let test_public_smoke () =
+  match Sys.getenv_opt "C2C_DOCTOR_LIVE_SMOKE" with
+  | Some "1" ->
+      let url = "https://relay.c2c.im" in
+      let client = Relay.Relay_client.make ~timeout:8.0 url in
+      let health =
+        try Some (Lwt_main.run (Relay.Relay_client.health client))
+        with e ->
+          Alcotest.failf "live /health probe raised: %s" (Printexc.to_string e)
+      in
+      let ok =
+        match health with
+        | Some (`Assoc fs) -> List.assoc_opt "ok" fs = Some (`Bool true)
+        | _ -> false
+      in
+      Alcotest.(check bool) "public relay /health ok=true" true ok;
+      let c = capabilities ~url ~reachable:(health <> None) ~connector_running:false in
+      Alcotest.(check bool) "live: subscribe=NO over TLS" false c.subscribe;
+      Alcotest.(check bool) "live: poll=yes" true c.poll;
+      Alcotest.(check bool) "live: tls=yes" true c.tls
+  | _ ->
+      (* Not enabled: assert the deterministic scheme logic instead so the case
+         is never vacuously empty. *)
+      let c = capabilities ~url:"https://relay.c2c.im" ~reachable:true ~connector_running:false in
+      Alcotest.(check bool) "offline stand-in: subscribe=NO over TLS" false c.subscribe;
+      Alcotest.(check bool) "offline stand-in: poll=yes" true c.poll
+
+let () =
+  Alcotest.run "c2c_doctor_capabilities"
+    [ ( "capabilities-scheme",
+        [ Alcotest.test_case "https subscribe=no poll=yes" `Quick test_https_subscribe_no_poll_yes;
+          Alcotest.test_case "wss subscribe=no" `Quick test_wss_subscribe_no;
+          Alcotest.test_case "http subscribe=yes" `Quick test_http_subscribe_yes;
+          Alcotest.test_case "ws subscribe=yes" `Quick test_ws_subscribe_yes;
+          Alcotest.test_case "unreachable all=no" `Quick test_unreachable_all_no;
+          Alcotest.test_case "message shape" `Quick test_capabilities_message_shape ] );
+      ( "actual-attempt-parity",
+        [ Alcotest.test_case "doctor cap == subscribe guard predicate" `Quick test_actual_attempt_parity ] );
+      ( "capabilities-check",
+        [ Alcotest.test_case "id/status/fix" `Quick test_capabilities_check_pass_and_fix ] );
+      ( "connector-scoping",
+        [ Alcotest.test_case "keeps own broker" `Quick test_scope_keeps_own_broker;
+          Alcotest.test_case "drops unrelated connector" `Quick test_scope_drops_unrelated_connector;
+          Alcotest.test_case "empty/unresolved broker" `Quick test_scope_empty_or_unresolved_broker;
+          Alcotest.test_case "connector_running signal" `Quick test_connector_running_signal ] );
+      ( "connector-check",
+        [ Alcotest.test_case "no proc no state → FAIL" `Quick test_connector_check_no_proc_no_state;
+          Alcotest.test_case "stale state → FAIL" `Quick test_connector_check_stale_state;
+          Alcotest.test_case "fresh state no proc → PASS (B1)" `Quick test_connector_check_fresh_state_no_proc;
+          Alcotest.test_case "production argv no broker-root → PASS (B1)" `Quick test_connector_check_production_argv_no_broker_root;
+          Alcotest.test_case "proc no state → Inconclusive" `Quick test_connector_check_proc_no_state;
+          Alcotest.test_case "proc recent error → FAIL+fix" `Quick test_connector_check_proc_recent_error;
+          Alcotest.test_case "proc healthy → PASS" `Quick test_connector_check_proc_healthy;
+          Alcotest.test_case "every FAIL has a fix" `Quick test_every_fail_has_fix ] );
+      ( "capabilities-connector-coherence",
+        [ Alcotest.test_case "connect=yes ⇒ connector_check agrees (B1)" `Quick test_capabilities_connector_coherence ] );
+      ( "docs-link",
+        [ Alcotest.test_case "docs link target" `Quick test_docs_link_target ] );
+      ( "public-smoke",
+        [ Alcotest.test_case "public read-only smoke (env-gated)" `Quick test_public_smoke ] );
+    ]

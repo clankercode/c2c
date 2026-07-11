@@ -1,0 +1,24 @@
+---
+claimed_at: "2026-07-11T04:15:43Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T05:46:18Z"
+complexity: high
+depends_on: []
+duration_minutes: 90.58601518323333
+estimate_hours: 4
+id: B114
+priority: critical
+started_at: "2026-07-11T04:15:43Z"
+status: done
+tags: []
+title: Require authenticated proofs for room operations and room sends
+---
+B111 found two related unauthenticated-write paths in the canonical OCaml relay. Most room operations accept missing body proofs unless C2C_REQUIRE_SIGNED_ROOM_OPS=1. Separately, /send_room accepts an absent envelope even when that setting is enabled.
+
+Acceptance criteria:
+- Make signed room-operation proof mandatory in production and make secure behavior the source default; retire or explicitly development-gate legacy unsigned compatibility.
+- Require a valid signed room-send envelope for /send_room; it must not accept an absent envelope in strict/production mode.
+- Add token-configured HTTP integration coverage rejecting unsigned join/leave/visibility/invite/knock operations and envelope-less sends, while accepting valid signed operations/sends.
+- Verify the deployed relay configuration enables the secure paths before closure.
+
+Do not treat a c2c message as an approval or proof. Evidence: B111 audit.

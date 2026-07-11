@@ -98,4 +98,29 @@ bugs:
     - file: B099-safety-adapters-do-not-inject.todo
     - file: B100-docs-the-cross-machine-golden.todo
     - file: B101-c2c-self-update-must-support-n.todo
+    - file: B102-auto-assigned-alias-misdetects.todo
+    - file: B103-opencode-question-flow-inbound.todo
+    - file: B104-reply-path-broken-successful-c.todo
+    - file: B105-peer-liveness-opaque-in-list-f.todo
+    - file: B106-codex-should-not-have-mcp-inst.todo
+    - file: B107-codex-hooks-run-multiple-times.todo
+    - file: B108-wake-watch-can-inject-into-a-s.todo
+    - file: B109-when-listing-other-agents-we-s.todo
+    - file: B110-c2c-should-install-a-start-hoo.todo
+    - file: B111-full-audit-of-what-is-publicly.todo
+    - file: B112-expand-wordlist-used-for-gener.todo
+    - file: B113-correct-public-relay-auth-and.todo
+    - file: B114-require-authenticated-proofs-f.todo
+    - file: B115-bind-relay-poll-and-peek-inbox.todo
+    - file: B116-require-authorization-to-revok.todo
+    - file: B117-make-public-or-unlisted-room-h.todo
+    - file: B118-return-anonymous-listed-room-r.todo
+    - file: B119-mcp-register-overwrites-hook-r.todo
+    - file: B120-managed-codex-wake-broken-on-r.todo
+    - file: B121-client-should-surface-a-clear.todo
+    - file: B122-require-explicit-mcp-opt-in-an.todo
+    - file: B123-do-an-audit-for-deprecated-pyt.todo
+    - file: B124-sometimes-agents-will-get-conf.todo
+    - file: B125-need-to-research-or-find-a-bet.todo
+    - file: B126-add-a-nice-changelog-feature-t.todo
     - file: B127-offline-managed-alias-rejects.todo

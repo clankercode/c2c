@@ -9,7 +9,14 @@ let relay_err_signature_invalid = "signature_invalid"
 let relay_err_timestamp_out_of_window = "timestamp_out_of_window"
 let relay_err_nonce_replay = "nonce_replay"
 let relay_err_missing_proof_field = "missing_proof_field"
+(* B116: uniform denial for binding revocation — deliberately covers BOTH
+   "binding does not exist" and "proof key does not own this binding" so a
+   valid-signature probe cannot be used as a binding-existence oracle. *)
+let relay_err_revoke_denied = "revoke_denied"
 let relay_err_not_found = "not_found"
+(* B121: client/relay wire protocol skew — structured so the CLI can special-
+   case into an upgrade message instead of leaking opaque auth/HTTP errors. *)
+let relay_err_incompatible_client = "incompatible_client"
 
 (* Signature windows (spec §4.3): 120s past / 30s future, 10 min nonce TTL *)
 let register_ts_past_window = 120.0
@@ -71,25 +78,37 @@ let bare_alias (s : string) : string =
   | None -> s
   | Some i -> String.sub s 0 i
 
-(* Gate for Phase 2 migration: when C2C_REQUIRE_SIGNED_ROOM_OPS=1,
-   room ops (join/leave/send/invite/uninvite/set_visibility) require
-   body-level Ed25519 proof and reject unsigned requests.
-   Default (unset or "0"): legacy behavior — accept unsigned.
-   Migration path:
-     Phase 1: server ships with gate off; OCaml CLI updated to sign.
-     Phase 2: Python relay client updated to sign.
-     Phase 3: gate defaults to "1" (require signed).
-   Operators can set C2C_REQUIRE_SIGNED_ROOM_OPS=0 on the server to
-   temporarily revert if needed during the transition. *)
-let require_signed_room_ops () =
-  match Sys.getenv_opt "C2C_REQUIRE_SIGNED_ROOM_OPS" with
-  | Some "1" -> true
-  | _ -> false
+(* B114 (Phase 3 landed): signed room-op proofs and signed /send_room
+   envelopes are MANDATORY by default. Room ops
+   (join/leave/send/invite/uninvite/set_visibility/knock/knock-decision)
+   require a body-level Ed25519 proof and reject unsigned requests with
+   relay_err_unsigned_room_op.
+
+   The legacy unsigned compatibility path survives only as an explicit
+   DEVELOPMENT gate: C2C_REQUIRE_SIGNED_ROOM_OPS=0, honored ONLY when the
+   relay has no Bearer token configured (dev mode, auth_mode="dev"). A
+   token-configured (production) relay ignores the gate — there is no
+   unsigned downgrade in production. C2C_REQUIRE_SIGNED_ROOM_OPS=1 is
+   accepted and identical to the default.
+
+   NOTE (B098 "bus, never RPC"): this gates request authentication only.
+   Message content never authorizes anything regardless of this setting. *)
+let require_signed_room_ops ~token_configured =
+  token_configured
+  || (match Sys.getenv_opt "C2C_REQUIRE_SIGNED_ROOM_OPS" with
+      | Some "0" -> false
+      | _ -> true)
 
 (* Layer 4 slice 5: signed invite / uninvite / set_visibility. *)
 let room_invite_sign_ctx = "c2c/v1/room-invite"
 let room_uninvite_sign_ctx = "c2c/v1/room-uninvite"
 let room_set_visibility_sign_ctx = "c2c/v1/room-set-visibility"
+(* B117: member-authorized mutation of the persisted history_public policy.
+   The signed blob covers the boolean (as "true"/"false") so it cannot be
+   forged/flipped in transit — see verify_room_op_proof extra_signed_fields. *)
+let room_set_history_public_sign_ctx = "c2c/v1/room-set-history-public"
+(* B117: setting history_public=true is rejected for gated/private rooms. *)
+let relay_err_history_public_gated = "history_public_gated"
 let room_knock_sign_ctx = "c2c/v1/room-knock"
 let room_list_knocks_sign_ctx = "c2c/v1/room-list-knocks"
 let room_approve_knock_sign_ctx = "c2c/v1/room-approve-knock"
@@ -133,8 +152,76 @@ let canonical_visibility_or_raw v =
   | Some v -> v
   | None -> v
 
+(* B117: history readability is a separate, persisted per-room policy from
+   visibility. [history_public_default_for_visibility v] is the default value
+   a room gets at creation (and for legacy/migrated rooms): public and
+   unlisted rooms default to open-read (true) for a compatible rollout; gated
+   and private rooms are always member-only (false). The invariant "gated and
+   private rooms must have history_public=false" is enforced on every write
+   (set_room_visibility atomically clears it on a downgrade; the
+   set_room_history_public mutation rejects a true value for gated/private). *)
+let history_public_default_for_visibility v =
+  match canonical_visibility_or_raw v with
+  | "public" | "unlisted" -> true
+  | _ -> false
+
+(* B118: presentation-only room roster address for the anonymous /list_rooms
+   directory. The directory must expose room members as canonical recipient
+   addresses, NEVER bare aliases or lease/host machine metadata
+   (opaque_host_id, node_id, session_id, identity key). The format is
+   `<alias>#<room_id>@relay`, which round-trips through the existing
+   room-recipient parser:
+     - [Relay_host_routing.split_alias_host] strips the trailing `@relay`
+       host, and [host_acceptable] always accepts the literal "relay" as a
+       back-compat host token — so the emitted address is valid on ANY relay
+       without a host/lease lookup;
+     - the remaining `<alias>#<room_id>` is classified as a room recipient by
+       [C2c_mcp_helpers.is_room_recipient] (a non-12-hex `#` suffix), and
+       [String.split_on_char '#'] recovers (alias, room_id).
+   This is a DIRECTORY-BOUNDARY formatter only: stored membership stays raw
+   (see the room_members table / in-memory rooms table), which membership
+   checks and room delivery keep using. It deliberately never consults leases
+   to decorate the address — the room id is already in scope at the directory
+   boundary, and "relay" is the parser-universal host. If the relay address
+   format ever changes, this helper and [C2c_mcp_helpers.is_room_recipient]
+   must move together. *)
+let format_room_roster_address ~alias ~room_id =
+  Printf.sprintf "%s#%s@relay" alias room_id
+
+(* B118: canonical relay room-id grammar — the SAME grammar the local broker
+   enforces (C2c_broker.valid_room_id): a non-empty string of
+   [A-Za-z0-9_-]. This deliberately excludes both address delimiters `#`
+   and `@`, which guarantees that a [format_room_roster_address] output is
+   unambiguous: the sole `#` separates alias from room id and the sole `@`
+   introduces the host, so the room id can never inject an extra delimiter
+   that would defeat the recipient parser. The relay room-op boundary
+   (handle_join_room) validates against this so an out-of-grammar room id
+   can never enter the anonymous directory. (An all-lowercase-12-hex room id
+   is *within* this grammar and still round-trips: the canonical reply
+   classifier [C2c_mcp_helpers.is_room_recipient] runs on the FULL
+   host-attached address `alias#<12hex>@relay`, whose `#` suffix
+   `<12hex>@relay` is not a bare 12-hex host hash, so it classifies as a
+   room, not a cross-host DM.) *)
+let valid_relay_room_id room_id =
+  room_id <> ""
+  && String.for_all
+       (fun c ->
+          (c >= 'a' && c <= 'z')
+          || (c >= 'A' && c <= 'Z')
+          || (c >= '0' && c <= '9')
+          || c = '-' || c = '_')
+       room_id
+
 (* S5a: Mobile pair token signing context *)
 let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"
+
+(* B116: Binding revocation proof signing context.
+   Blob shape: binding_id || revoke_pk_b64 || ts || nonce, where revoke_pk
+   must be the machine or phone Ed25519 key stored on the binding. ts is
+   Unix epoch seconds (string, as signed). Freshness + replay reuse the
+   signed-request pattern (request_ts_past/future_window +
+   check_request_nonce), so no B116-specific window constant is needed. *)
+let binding_revoke_sign_ctx = "c2c/v1/binding-revoke"
 
 (* E2E S2: pubkey binding sign context.
    Blob shape: alias || ed_pubkey_b64 || x25519_b64 || signed_at_rfc3339.

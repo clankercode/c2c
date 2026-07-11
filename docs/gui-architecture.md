@@ -164,10 +164,18 @@ export type MonitorEvent =
 export interface MessageEvent {
   event_type: "message";
   monitor_ts: string;        // Unix float string
-  from_alias: string;
-  to_alias: string;
+  // Canonical message-schema-v1 face (see /reference/message-schema-v1/):
+  schema_version: 1;
+  type: "dm" | "room" | "system";
+  from: { alias: string };
+  to: string;                // alias, or room name for type "room"
+  source?: "local" | "relay";
+  message_id?: string;
+  ts?: number;               // epoch seconds
   content: string;
-  ts: string;                // ISO 8601
+  // Legacy keys, preserved additively for pre-v1 readers:
+  from_alias: string;
+  to_alias: string;          // raw "<alias>#<room>" for room fanouts
   room_id?: string;
   event?: string;            // "room_message" for room msgs
 }

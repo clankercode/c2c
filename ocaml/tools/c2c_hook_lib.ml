@@ -188,7 +188,40 @@ let is_subagent_quiet () =
 let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 
-let drain_repo_messages ~broker_root ~session_id =
+(* Repo broker for hook delivery: explicit env wins; otherwise resolve the
+   canonical repo-fingerprint broker from cwd. Returns "" when resolution
+   fails (not in a git repo, etc.) — callers treat "" as no-repo-broker.
+
+   Why this exists: vanilla (non-managed) Claude/Codex hook processes have
+   no C2C_MCP_BROKER_ROOT in their env, so the old `env-or-""` derivation
+   never drained the per-repo broker — peer DMs sent via `c2c send <alias>`
+   sat undrained while the hook reported "no messages". Resolving the
+   canonical `$HOME/.c2c/repos/<fp>/broker` (fp from remote.origin.url of
+   the cwd's git repo, same order as `C2c_repo_fp.resolve_broker_root`)
+   closes that gap so hooks deliver repo-broker DMs with zero env config.
+
+   IMPORTANT: only return the resolved root when its broker already exists
+   on disk (registry.json present). Hooks must NOT create broker directories
+   as a side effect for repos that never initialized c2c; returning ""
+   preserves the old no-op behavior for non-c2c repos. The env-override
+   branch is intentionally NOT existence-gated — the broker dir is created
+   lazily on first use for that path (managed sessions), matching the
+   pre-existing `env-or-""` contract. *)
+let resolve_hook_broker_root () =
+  match env_nonempty "C2C_MCP_BROKER_ROOT" with
+  | Some root -> root
+  | None ->
+      (match (try Some (C2c_repo_fp.resolve_broker_root ()) with _ -> None) with
+       | Some root
+         when root <> ""
+              && Sys.file_exists (Filename.concat root "registry.json") ->
+           root
+       | _ -> "")
+
+(* [push_only:true] (mid-turn: PostToolUse) drains only non-deferrable
+   messages — deferrable ones stay queued for a turn boundary. Turn-boundary
+   hooks (Stop, SessionStart) pass [push_only:false] for the full drain. *)
+let drain_repo_messages ?(push_only = true) ~broker_root ~session_id () =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then begin
     prerr_endline
@@ -199,14 +232,18 @@ let drain_repo_messages ~broker_root ~session_id =
     (broker, [])
   end else
     ( broker
-    , C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+    , (if push_only then C2c_mcp.Broker.drain_inbox_push
+       else C2c_mcp.Broker.drain_inbox)
+        ~drained_by:"hook" broker ~session_id
     )
 
-let drain_global_messages ~session_id =
+let drain_global_messages ?(push_only = true) ~session_id () =
   let root = C2c_repo_fp.resolve_sessions_broker_root () in
   if global_inbox_exists ~root ~session_id then
     let broker = C2c_mcp.Broker.create ~root in
-    C2c_mcp.Broker.drain_inbox_push ~drained_by:"hook" broker ~session_id
+    (if push_only then C2c_mcp.Broker.drain_inbox_push
+     else C2c_mcp.Broker.drain_inbox)
+      ~drained_by:"hook" broker ~session_id
   else []
 
 (* Check if there are messages waiting in the inbox without draining.
@@ -252,16 +289,20 @@ let resolve_session_id () =
     | Error msg -> Error msg
 
 (* Drain all messages (repo + global) for the given session_id.
+   [push_only] defaults to true (mid-turn semantics); turn-boundary callers
+   (Stop hook) pass [push_only:false] to also deliver deferrable messages.
    Returns (repo_broker_opt, messages, alias). *)
-let drain_all_messages ~session_id ~broker_root =
+let drain_all_messages ?(push_only = true) ~session_id ~broker_root () =
   let repo_broker, repo_messages =
     match broker_root with
     | "" -> (None, [])
     | root ->
-        let broker, messages = drain_repo_messages ~broker_root:root ~session_id in
+        let broker, messages =
+          drain_repo_messages ~push_only ~broker_root:root ~session_id ()
+        in
         (Some broker, messages)
   in
-  let global_messages = drain_global_messages ~session_id in
+  let global_messages = drain_global_messages ~push_only ~session_id () in
   let messages = repo_messages @ global_messages in
   let alias =
     match repo_broker with
@@ -283,6 +324,24 @@ let lookup_role repo_broker from_alias =
              |> List.find_opt (fun r -> r.C2c_mcp.alias = from_alias) with
        | Some reg -> reg.C2c_mcp.role
        | None     -> None)
+
+(* Truthy env parse shared by the delivery-mode flags below. *)
+let truthy_env name =
+  match env_nonempty name with
+  | Some v ->
+      let v = String.trim (String.lowercase_ascii v) in
+      v = "1" || v = "true" || v = "yes" || v = "on"
+  | None -> false
+
+(* PostToolUse delivery-mode resolution (claude-full-delivery slice).
+   FULL message injection is the DEFAULT: mid-turn delivery for claude must
+   deliver the full message, matching the codex PostToolUse hook.
+   `C2C_POST_TOOL_NUDGE_ONLY=1` opts back into the legacy debounced nudge
+   line. `C2C_POST_TOOL_FULL_INJECT=1` (the old opt-in) is still honored for
+   backward compat and outranks NUDGE_ONLY — it is now redundant-but-harmless. *)
+let post_tool_nudge_only () =
+  (not (truthy_env "C2C_POST_TOOL_FULL_INJECT"))
+  && truthy_env "C2C_POST_TOOL_NUDGE_ONLY"
 
 (* Format messages as c2c envelope text. Returns empty string if no messages. *)
 let format_messages_as_text ~repo_broker messages =
@@ -310,3 +369,125 @@ let format_messages_as_text ~repo_broker messages =
           Buffer.add_char buf '\n')
         messages;
       Buffer.contents buf
+
+(* ---------- PostToolUse shared runner (claude-full-delivery slice) ----------
+
+   The standalone c2c-inbox-hook-ocaml binary and the `c2c hook post-tool`
+   CLI fallback previously diverged (nudge-vs-full default, full-vs-push
+   drain, repo-only vs repo+global, no subagent guard on the CLI path).
+   Both now run through [run_post_tool] so their semantics are identical:
+
+   - FULL delivery is the default: push-only drain (repo + global brokers —
+     deferrable messages stay queued for the next turn boundary, mirroring
+     the codex PostToolUse hook), channel-capable repo skip (the MCP
+     watcher owns delivery for managed claude — no dual-drain), plus
+     fallback cold-boot context (marker-deduped against the SessionStart
+     hook via <broker_root>/.cold_boot_done/<sid>, so no double injection).
+     NO debounce: the drain empties the inbox, so repeated fires are cheap
+     no-ops — debouncing would only add delivery latency.
+   - `C2C_POST_TOOL_NUDGE_ONLY=1` restores the legacy debounced nudge line
+     (non-draining awareness ping, 60s debounce kept: without a drain the
+     same waiting messages would otherwise nudge on every tool call). *)
+
+type post_tool_output =
+  | Post_tool_silent
+  | Post_tool_context of string  (* full-delivery additionalContext payload *)
+  | Post_tool_nudge of string    (* legacy debounced nudge line *)
+
+(* Full-delivery core. Returns the output plus the resolved alias (used by
+   the standalone binary's statefile writer). *)
+let run_post_tool_full ~session_id ~broker_root =
+  let repo_broker, messages, alias =
+    drain_all_messages ~session_id ~broker_root ()
+  in
+  let messages_text = format_messages_as_text ~repo_broker messages in
+  (* Cold-boot context (once per session). SessionStart normally handles
+     cold-boot now; this fallback covers sessions without the SessionStart
+     hook and is a no-op once the shared marker exists. *)
+  let extra_contexts =
+    match broker_root with
+    | "" -> []
+    | root ->
+        (match C2c_cold_boot_context.context_for_session
+                 ~broker_root:root ~session_id
+         with
+         | Some context -> [ context ]
+         | None -> [])
+  in
+  let output =
+    match messages_text, extra_contexts with
+    | "", [] -> Post_tool_silent
+    | _ ->
+        let buf = Buffer.create 256 in
+        if messages_text <> "" then Buffer.add_string buf messages_text;
+        List.iter
+          (fun context ->
+            Buffer.add_string buf context;
+            if context = "" || context.[String.length context - 1] <> '\n' then
+              Buffer.add_char buf '\n')
+          extra_contexts;
+        Post_tool_context (Buffer.contents buf)
+  in
+  (output, alias)
+
+(* Legacy nudge core (opt-out path). Non-draining; debounce rule:
+   emit only when messages_waiting >= 1 AND (now - last_nudge_ts) >= 60s
+   AND (now - first_waiting_ts) >= 60s; reset both on empty inbox. *)
+let run_post_tool_nudge ~session_id ~broker_root =
+  let now_ts = Unix.gettimeofday () in
+  let nudge_state = read_nudge_state ~broker_root ~session_id in
+  let waiting_count = count_waiting_messages ~broker_root ~session_id in
+  if waiting_count = 0 then begin
+    write_nudge_state ~broker_root ~session_id default_nudge_state;
+    Post_tool_silent
+  end else begin
+    let time_since_last_nudge = now_ts -. nudge_state.last_nudge_ts in
+    let time_since_first_waiting = now_ts -. nudge_state.first_waiting_ts in
+    let should_nudge =
+      waiting_count >= 1
+      && time_since_last_nudge >= 60.0
+      && time_since_first_waiting >= 60.0
+    in
+    if should_nudge then begin
+      write_nudge_state ~broker_root ~session_id
+        { last_nudge_ts = now_ts; first_waiting_ts = now_ts };
+      Post_tool_nudge (format_nudge_line ~count:waiting_count)
+    end else begin
+      let new_state =
+        if nudge_state.first_waiting_ts = 0.0 then
+          { nudge_state with first_waiting_ts = now_ts }
+        else nudge_state
+      in
+      write_nudge_state ~broker_root ~session_id new_state;
+      Post_tool_silent
+    end
+  end
+
+(* Mode dispatch. Returns (output, alias); alias is "" on the nudge path
+   (it never touches the registry). *)
+let run_post_tool ~session_id ~broker_root =
+  if post_tool_nudge_only () then
+    (run_post_tool_nudge ~session_id ~broker_root, "")
+  else run_post_tool_full ~session_id ~broker_root
+
+(* Emit the hookSpecificOutput JSON for a PostToolUse result. Silent -> no
+   output. Shared so the standalone binary and the CLI fallback are
+   byte-identical on stdout. *)
+let print_post_tool_output output =
+  let emit text =
+    let json : Yojson.Safe.t =
+      `Assoc
+        [ ( "hookSpecificOutput"
+          , `Assoc
+              [ ("hookEventName", `String "PostToolUse")
+              ; ("additionalContext", `String text)
+              ] )
+        ]
+    in
+    print_string (Yojson.Safe.to_string json);
+    print_newline ()
+  in
+  match output with
+  | Post_tool_silent -> ()
+  | Post_tool_context text -> emit text
+  | Post_tool_nudge line -> emit line

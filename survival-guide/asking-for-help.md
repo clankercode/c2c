@@ -88,9 +88,10 @@ If you can't resolve it in this session:
 Sometimes the thing you need help WITH is the messaging system
 itself:
 
-- **No MCP tools exposed**: use `c2c send <alias> "<msg>"` or
-  `python3 c2c_send.py`. The CLI path always works when the broker
-  files exist.
+- **No MCP tools exposed**: use `c2c send <alias> "<msg>"` (OCaml
+  CLI). Do not use `python3 c2c_send.py` or retired `c2c-send`
+  wrappers (B123). The CLI path always works when the broker files
+  exist.
 - **`unknown alias` for everyone**: the registry is empty or your
   broker root is wrong. Check
   `git rev-parse --git-common-dir`/`c2c/mcp/registry.json` directly.

@@ -482,6 +482,102 @@ let test_register_default_omits_metadata_opt_out_json () =
   check bool "metadata_opt_out key absent from JSON when false" true (metadata_opt_out = None)
 
 (* ---------------------------------------------------------------- *)
+(* J2: `--json` results for send / peek-inbox / poll-inbox are the
+   canonical schema-v1 shape (validated via C2c_schema_v1.validate)
+   with every legacy key preserved at unchanged values, end-to-end
+   through the real binary against a temp broker. *)
+
+let check_valid_v1 label json =
+  match C2c_schema_v1.validate json with
+  | Ok v1 -> v1
+  | Error e -> failf "%s: schema-v1 validate failed: %s" label e
+
+let json_delivery_state json =
+  match json_member "delivery" json with
+  | Some d -> json_str_member "state" d
+  | None -> None
+
+let test_send_poll_peek_json_schema_v1 () =
+  with_temp_env @@ fun tmp ->
+  let sender_env = [ "C2C_MCP_SESSION_ID", "j2-e2e-sender-sid" ] in
+  let recv_env = [ "C2C_MCP_SESSION_ID", "j2-e2e-recv-sid" ] in
+  let rc, _, err =
+    run_c2c_status_split ~env:sender_env ~home:tmp ~broker:tmp
+      [ "register"; "--alias"; "zz-j2e2e-alpha" ]
+  in
+  check int ("register sender exits 0: " ^ err) 0 rc;
+  let rc, _, err =
+    run_c2c_status_split ~env:recv_env ~home:tmp ~broker:tmp
+      [ "register"; "--alias"; "zz-j2e2e-beta" ]
+  in
+  check int ("register recipient exits 0: " ^ err) 0 rc;
+  (* send --json: v1 receipt, local synchronous delivery = "delivered"
+     (B088), legacy queued/from_alias/to_alias preserved. *)
+  let rc, out, err =
+    run_c2c_status_split ~env:sender_env ~home:tmp ~broker:tmp
+      [ "send"; "zz-j2e2e-beta"; "hello schema v1"; "--json" ]
+  in
+  check int ("send --json exits 0: " ^ err) 0 rc;
+  let receipt = Yojson.Safe.from_string out in
+  let _ = check_valid_v1 "send receipt" receipt in
+  check (option bool) "legacy queued:true" (Some true)
+    (json_bool_member "queued" receipt);
+  check (option string) "receipt delivery.state delivered"
+    (Some "delivered") (json_delivery_state receipt);
+  check (option string) "legacy from_alias" (Some "zz-j2e2e-alpha")
+    (json_str_member "from_alias" receipt);
+  check (option string) "legacy to_alias" (Some "zz-j2e2e-beta")
+    (json_str_member "to_alias" receipt);
+  check (option string) "v1 content additive" (Some "hello schema v1")
+    (json_str_member "content" receipt);
+  (* peek-inbox --json: non-drained rows = "queued". *)
+  let rc, out, err =
+    run_c2c_status_split ~env:recv_env ~home:tmp ~broker:tmp
+      [ "peek-inbox"; "--json" ]
+  in
+  check int ("peek-inbox --json exits 0: " ^ err) 0 rc;
+  let rows = match Yojson.Safe.from_string out with
+    | `List rows -> rows
+    | _ -> failf "peek-inbox --json: expected a JSON list"
+  in
+  check int "peek sees one row" 1 (List.length rows);
+  let row = List.hd rows in
+  let _ = check_valid_v1 "peek row" row in
+  check (option string) "peek row queued" (Some "queued")
+    (json_delivery_state row);
+  (* poll-inbox --json: drained rows = "delivered"; legacy row keys. *)
+  let rc, out, err =
+    run_c2c_status_split ~env:recv_env ~home:tmp ~broker:tmp
+      [ "poll-inbox"; "--json" ]
+  in
+  check int ("poll-inbox --json exits 0: " ^ err) 0 rc;
+  let rows = match Yojson.Safe.from_string out with
+    | `List rows -> rows
+    | _ -> failf "poll-inbox --json: expected a JSON list"
+  in
+  check int "poll drains one row" 1 (List.length rows);
+  let row = List.hd rows in
+  let _ = check_valid_v1 "poll row" row in
+  check (option string) "poll row delivered" (Some "delivered")
+    (json_delivery_state row);
+  check (option string) "row legacy from_alias" (Some "zz-j2e2e-alpha")
+    (json_str_member "from_alias" row);
+  check (option string) "row legacy to_alias" (Some "zz-j2e2e-beta")
+    (json_str_member "to_alias" row);
+  check (option string) "row legacy content" (Some "hello schema v1")
+    (json_str_member "content" row);
+  check bool "row legacy ts present" true
+    (match json_member "ts" row with Some (`Float _) -> true | _ -> false);
+  (* empty batch: a second poll stays the legacy-compatible `[]`. *)
+  let rc, out, err =
+    run_c2c_status_split ~env:recv_env ~home:tmp ~broker:tmp
+      [ "poll-inbox"; "--json" ]
+  in
+  check int ("empty poll-inbox --json exits 0: " ^ err) 0 rc;
+  check bool "empty batch stays []" true
+    (match Yojson.Safe.from_string out with `List [] -> true | _ -> false)
+
+(* ---------------------------------------------------------------- *)
 (* Alcotest registration *)
 
 let () =
@@ -511,6 +607,9 @@ let () =
         [ test_case "init→whoami round-trip with zero session env (#10)" `Quick test_init_whoami_roundtrip_no_env
         ; test_case "env-derived session id shadows the statefile" `Quick test_env_session_id_wins_over_statefile
         ; test_case "stale statefile (unregistered session) is ignored" `Quick test_stale_session_statefile_ignored
+        ] )
+    ; ( "json_schema_v1",
+        [ test_case "send/peek/poll --json emit schema-v1 + legacy keys" `Quick test_send_poll_peek_json_schema_v1
         ] )
     ; ( "register_metadata",
         [ test_case "CLI register captures cwd" `Quick test_register_captures_cwd

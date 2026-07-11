@@ -41,11 +41,6 @@ let message_record_to_json (m : message) : Yojson.Safe.t =
 let jstr fields key def =
   match List.assoc_opt key fields with Some (`String s) -> s | _ -> def
 
-(* Truncate a string to max_len, appending "…" if clipped. *)
-let truncate s max_len =
-  let s = String.trim s in
-  if String.length s > max_len then String.sub s 0 max_len ^ "…" else s
-
 (* Current time as [HH:MM:SS] *)
 let now_hms () =
   let t = Unix.localtime (Unix.gettimeofday ()) in
@@ -77,9 +72,13 @@ let dedup_check ~from ~to_raw ~content =
   | Some ts when now -. ts < dedup_window_s -> false
   | _ -> Hashtbl.replace dedup_seen key now; true
 
-(* Emit one notification line per unique sender, collapsing bursts.
-   [source] tags the message origin ("local" or "relay") so a relay-surfaced
-   cross-host DM is distinguishable from a local-broker one (B089). *)
+(* Emit notification lines per unique sender. In full-body mode (the
+   default) every message in a burst is emitted whole — one line per
+   message, untruncated (claude-full-delivery: the Monitor is a first-class
+   full-delivery surface, so bodies must arrive complete). In --snippet
+   mode bursts collapse to a count + preview (legacy). [source] tags the
+   message origin ("local" or "relay") so a relay-surfaced cross-host DM is
+   distinguishable from a local-broker one (B089). *)
 let emit_messages ~my_alias ~all ~full_body ~source msgs =
   (* Group messages by from_alias *)
   let by_sender = Hashtbl.create 4 in
@@ -92,43 +91,48 @@ let emit_messages ~my_alias ~all ~full_body ~source msgs =
     | _ -> ()
   ) msgs;
   Hashtbl.iter (fun from sender_msgs ->
-    let n = List.length sender_msgs in
-    let first = List.hd sender_msgs in
-    let to_raw = jstr first "to_alias" "" in
-    let is_mine = match my_alias with
-      | None -> true
-      | Some me -> to_raw = me || String.length to_raw > String.length me + 1
-                   && String.sub to_raw 0 (String.length me) = me
+    (* Room-fanout dedup, per message (was per-burst on the first message
+       only). Normalize room fanouts: each peer's archive tags to_alias
+       with their own alias prefix (coder1#swarm-lounge vs
+       planner1#swarm-lounge) so dedup sees them as distinct. Strip alias,
+       keep just #<room>. *)
+    let kept =
+      List.filter (fun fields ->
+        let to_raw = jstr fields "to_alias" "" in
+        let body = jstr fields "content" "" in
+        let dedup_to = match parse_to_alias to_raw with
+          | `Room room -> "#" ^ room
+          | `Direct d -> d
+        in
+        dedup_check ~from ~to_raw:dedup_to ~content:body)
+        sender_msgs
     in
-    let body = jstr first "content" "" in
-    (* Normalize room fanouts: each peer's archive tags to_alias with their
-       own alias prefix (coder1#swarm-lounge vs planner1#swarm-lounge) so
-       dedup sees them as distinct. Strip alias, keep just #<room>. *)
-    let dedup_to = match parse_to_alias to_raw with
-      | `Room room -> "#" ^ room
-      | `Direct d -> d
-    in
-    let keep = dedup_check ~from ~to_raw:dedup_to ~content:body in
-    if keep && (all || is_mine) then begin
-      let icon = if is_mine then "📬" else "💬" in
-      let dest = match parse_to_alias to_raw with
-        | `Room room -> "@" ^ room
-        | `Direct d -> if is_mine then "you" else d
-      in
-      let subject =
-        if n = 1 then
-          if full_body then Printf.sprintf "\"%s\"" body
-          else Printf.sprintf "\"%s\"" (truncate body 80)
-        else
-          Printf.sprintf "(%d msgs) \"%s\"" n (truncate body 60)
-      in
-      (* B089: relay-sourced messages get a 🌐 origin marker so the operator
-         can tell a cross-host DM (peeked from the relay inbox) from a local
-         broker delivery. *)
-      let origin = if source = "relay" then "🌐" else "" in
-      Printf.printf "%s %s%s  %s→%s  %s\n%!"
-        (now_hms ()) origin icon from dest subject
-    end
+    match kept with
+    | [] -> ()
+    | first :: _ ->
+        let to_raw = jstr first "to_alias" "" in
+        let is_mine = match my_alias with
+          | None -> true
+          | Some me -> to_raw = me || String.length to_raw > String.length me + 1
+                       && String.sub to_raw 0 (String.length me) = me
+        in
+        if all || is_mine then begin
+          let icon = if is_mine then "📬" else "💬" in
+          let dest = match parse_to_alias to_raw with
+            | `Room room -> "@" ^ room
+            | `Direct d -> if is_mine then "you" else d
+          in
+          (* B089: relay-sourced messages get a 🌐 origin marker so the
+             operator can tell a cross-host DM (peeked from the relay inbox)
+             from a local broker delivery. *)
+          let origin = if source = "relay" then "🌐" else "" in
+          let bodies = List.map (fun fields -> jstr fields "content" "") kept in
+          List.iter
+            (fun subject ->
+              Printf.printf "%s %s%s  %s→%s  %s\n%!"
+                (now_hms ()) origin icon from dest subject)
+            (C2c_monitor_logic.burst_subjects ~full_body bodies)
+        end
   ) by_sender
 
 (* --- Cmdliner args -------------------------------------------------------- *)
@@ -228,10 +232,12 @@ let monitor_cmd =
   in
   let relay_node_id =
     Arg.(value & opt (some string) None & info ["relay-node-id"] ~docv:"ID"
-           ~doc:"Relay node-id whose inbox to peek. Default: cli-<alias>, matching \
-                 `c2c relay register --alias <alias>`. Override for aliases \
-                 registered by the relay connector under the machine's node-id, \
-                 or set C2C_RELAY_NODE_ID.")
+           ~doc:"Relay node-id whose inbox to peek. Default is resolved \
+                 automatically: the connector-managed node-id when a relay \
+                 connector manages this alias (read from connector-state.json), \
+                 else cli-<alias> matching `c2c relay register --alias <alias>`. \
+                 Override here (or set C2C_RELAY_NODE_ID) only to force a \
+                 different key.")
   in
   let relay_session_id =
     Arg.(value & opt (some string) None & info ["relay-session-id"] ~docv:"ID"
@@ -598,7 +604,9 @@ let monitor_cmd =
     in
     (* Emit an already-filtered message list (json objects or human lines).
        [source] tags origin ("local"/"relay") for both JSON and human output
-       (B089). *)
+       (B089). JSON message events are shaped to the canonical v1 schema via
+       C2c_monitor_ndjson (J3) — legacy keys preserved additively — and
+       written one compact object per line, flushed per event. *)
     let emit ~is_mine ~source msgs =
       match msgs with
       | [] -> ()
@@ -606,17 +614,10 @@ let monitor_cmd =
           if json then begin
             if all || is_mine then
               List.iter (fun m ->
-                let m_with_ts = match m with
-                  | `Assoc fields ->
-                      let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
-                      `Assoc (("event_type", `String "message")
-                              :: ("monitor_ts", `String ts)
-                              :: ("source", `String source)
-                              :: fields)
-                  | _ -> m
-                in
-                print_string (Yojson.Safe.to_string m_with_ts);
-                print_newline ()) msgs
+                let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                C2c_monitor_ndjson.emit_line stdout
+                  (C2c_monitor_ndjson.message_event ~monitor_ts:ts ~source m))
+                msgs
           end else
             emit_messages ~my_alias ~all ~full_body ~source msgs
     in
@@ -666,6 +667,34 @@ let monitor_cmd =
     let relay_url_resolved = C2c_relay_cmd.resolve_relay_url None in
     let relay_token_resolved = C2c_relay_cmd.resolve_relay_token None in
     let identity = match Relay_identity.load () with Ok id -> Some id | Error _ -> None in
+    (* H3: resolve the connector-managed relay peek key. When the relay CONNECTOR
+       (`c2c relay connect`) manages this broker it registers each local session
+       under the machine node-id with the session's OWN session-id — NOT the
+       cli-<alias> convention. If connector-state.json lists our resolved alias,
+       peek THAT inbox (machine node-id + our local session-id) by default so a
+       bare `c2c monitor` on a connector-managed broker surfaces cross-host DMs
+       without the operator hand-supplying --relay-node-id / --relay-session-id.
+       Node-id preference: the connector's persisted node_id (honours a
+       `relay connect --node-id` override), else the same host hash the connector
+       derives by default (Host_id.compute_host_hash). *)
+    let connector_key : C2c_monitor_logic.relay_key option =
+      match my_alias, inbox_sid with
+      | Some alias, Some sid ->
+          (match C2c_relay_connector.read_connector_state broker_root with
+           | Some cs when
+               List.exists
+                 (fun a -> Broker.alias_casefold a = Broker.alias_casefold alias)
+                 cs.C2c_relay_connector.cs_registered ->
+               let node_id =
+                 match cs.C2c_relay_connector.cs_node_id with
+                 | Some n when n <> "" -> n
+                 | _ -> (try Host_id.compute_host_hash () with _ -> "")
+               in
+               if node_id = "" then None
+               else Some C2c_monitor_logic.{ node_id; session_id = sid }
+           | _ -> None)
+      | _ -> None
+    in
     let relay_status_label, _relay_thread =
       if no_relay || relay_interval <= 0.0 then
         ("off (--no-relay / --relay-interval 0)", None)
@@ -681,7 +710,7 @@ let monitor_cmd =
         let decision =
           C2c_monitor_logic.decide_relay_watch
             ~my_alias ~relay_url:relay_url_resolved ~identity
-            ~node_id_override ~session_id_override ()
+            ~node_id_override ~session_id_override ~connector_key ()
         in
         match decision with
         | C2c_monitor_logic.Relay_watch_off reason ->
@@ -703,33 +732,69 @@ let monitor_cmd =
               | None -> None
             in
             let peek_once () =
-              (* Non-draining: peek_inbox* return pending messages WITHOUT
-                 clearing the relay inbox. Network/auth errors propagate to the
-                 caller, which logs+continues (the monitor never dies from a
-                 transient relay blip). *)
-              let resp =
-                match auth_header_opt with
-                | Some auth ->
-                    Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
-                                    ~node_id ~session_id ~auth_header:auth)
-                | None ->
-                    Lwt_main.run (Relay.Relay_client.peek_inbox client
-                                    ~node_id ~session_id)
-              in
-              C2c_monitor_logic.extract_relay_messages resp
+              (* Non-draining: peek_inbox* return the FULL relay response
+                 (`{ ok, messages }` or `{ ok:false, error_code, error }`)
+                 WITHOUT clearing the relay inbox. The response is classified by
+                 the caller — errors are surfaced (not swallowed), and a terminal
+                 auth/identity failure exits non-zero (H3). *)
+              match auth_header_opt with
+              | Some auth ->
+                  Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
+                                  ~node_id ~session_id ~auth_header:auth)
+              | None ->
+                  Lwt_main.run (Relay.Relay_client.peek_inbox client
+                                  ~node_id ~session_id)
+            in
+            (* H3 error honesty: distinguish transient (retry, may recover) from
+               terminal (auth/identity — will not self-heal) relay failures.
+               [err_streak] drives exponential backoff and reconnect reporting so
+               a flapping relay does not hammer the endpoint and a recovery is
+               announced. A terminal failure exits non-zero with a clear stderr
+               message so a supervisor notices, instead of the monitor spinning
+               forever reporting a healthy-looking but dead relay stream. *)
+            let err_streak = ref 0 in
+            let handle_terminal detail =
+              Printf.eprintf
+                "%s relay watch: TERMINAL failure peeking %s/%s: %s\n\
+                 %s relay watch: this will not self-heal (auth / identity / \
+                 config). Re-register (c2c relay register) or fix the key/clock, \
+                 then restart the monitor.\n%!"
+                (now_hms ()) node_id session_id detail (now_hms ());
+              exit C2c_monitor_logic.exit_relay_terminal
             in
             let rec relay_loop last_tick =
               if Atomic.get relay_stop || Unix.getppid () = 1 then ()
               else begin
                 let now = Unix.gettimeofday () in
-                if now -. last_tick >= relay_interval then begin
-                  (try
-                     let msgs = peek_once () in
-                     ignore (emit_filtered ~is_mine:true ~source:"relay" msgs)
-                   with e ->
-                     Printf.eprintf
-                       "%s relay watch: peek failed (%s); will retry next cycle\n%!"
-                       (now_hms ()) (Printexc.to_string e));
+                (* Backoff: after consecutive transient errors wait longer before
+                   the next peek, capped at 60s. Zero streak == normal interval. *)
+                let effective_interval =
+                  if !err_streak = 0 then relay_interval
+                  else Float.min 60.0 (relay_interval *. float_of_int (!err_streak + 1))
+                in
+                if now -. last_tick >= effective_interval then begin
+                  let outcome =
+                    try C2c_monitor_logic.classify_relay_response (peek_once ())
+                    with e -> C2c_monitor_logic.Peek_transient (Printexc.to_string e)
+                  in
+                  (match outcome with
+                   | C2c_monitor_logic.Peek_ok msgs ->
+                       if !err_streak > 0 then begin
+                         Printf.eprintf
+                           "%s relay watch: reconnected (recovered after %d \
+                            transient error%s)\n%!"
+                           (now_hms ()) !err_streak
+                           (if !err_streak = 1 then "" else "s");
+                         err_streak := 0
+                       end;
+                       ignore (emit_filtered ~is_mine:true ~source:"relay" msgs)
+                   | C2c_monitor_logic.Peek_transient detail ->
+                       incr err_streak;
+                       Printf.eprintf
+                         "%s relay watch: transient error peeking %s/%s: %s \
+                          (attempt %d; backing off, will retry)\n%!"
+                         (now_hms ()) node_id session_id detail !err_streak
+                   | C2c_monitor_logic.Peek_terminal detail -> handle_terminal detail);
                   relay_loop now
                 end else begin
                   (* Short sleep so the stop flag / parent-death is noticed
@@ -739,7 +804,13 @@ let monitor_cmd =
                 end
               end
             in
-            let th = Thread.create (fun () -> relay_loop (Unix.gettimeofday ())) () in
+            (* Start with last_tick in the past so the FIRST peek fires
+               immediately — a terminal auth/identity failure surfaces at
+               startup, not one interval late. *)
+            let th =
+              Thread.create
+                (fun () -> relay_loop (Unix.gettimeofday () -. relay_interval -. 1.0)) ()
+            in
             let id_tag = if identity = None then " (unsigned)" else "" in
             (Printf.sprintf "peek %s/%s every %.1fs%s"
                node_id session_id relay_interval id_tag,
@@ -985,16 +1056,15 @@ let monitor_cmd =
                         let is_mine = match my_alias with
                           | None -> true | Some me -> alias = me in
                         if all || is_mine then
+                          (* J3: canonical v1 shape (legacy keys additive).
+                             The live path is always local-sourced; pre-J3 it
+                             omitted `source` — the v1 face now carries
+                             source:"local" (additive). *)
                           List.iter (fun m ->
-                            let m_with_ts = match m with
-                              | `Assoc fields ->
-                                  let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
-                                  `Assoc (("event_type", `String "message")
-                                          :: ("monitor_ts", `String ts) :: fields)
-                              | _ -> m
-                            in
-                            print_string (Yojson.Safe.to_string m_with_ts);
-                            print_newline ()
+                            let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+                            C2c_monitor_ndjson.emit_line stdout
+                              (C2c_monitor_ndjson.message_event
+                                 ~monitor_ts:ts ~source:"local" m)
                           ) msgs
                       end else
                         emit_messages ~my_alias ~all ~full_body ~source:"local" msgs)
@@ -1143,18 +1213,40 @@ let monitor =
                   session with no hook/poll consumer still sees incoming messages \
                   (peeked, not drained). Pass $(b,--drain) to make the monitor the \
                   inbox consumer (archive-append preserved)."
-            ; `P "Burst deduplication: multiple messages from the same sender in one \
-                  inbox write are collapsed to a single line with a count. \
-                  Inbox-peek and archive-echo of the same message are deduped by \
-                  message identity so it is not printed twice."
+            ; `P "Full delivery by default: every message is emitted with its \
+                  complete body, one line per message — a burst from one sender \
+                  is NOT collapsed or truncated (each body arrives whole). Only \
+                  legacy $(b,--snippet) mode collapses bursts to a count + \
+                  truncated preview. Inbox-peek and archive-echo of the same \
+                  message are deduped by message identity so it is not printed \
+                  twice."
             ; `P "Relay-inbox watcher (B089): when a relay URL is configured \
                   ($(b,C2C_RELAY_URL) / $(b,c2c relay setup)) and an alias is resolved, \
                   the monitor ALSO peeks (non-draining) the relay inbox on an interval \
                   so cross-host DMs surface like local ones. The relay is peeked, never \
                   polled, so a separate consumer (relay connector / $(b,c2c relay dm poll)) \
                   still receives every message. Relay-sourced lines are tagged 🌐 (and \
-                  carry \"source\":\"relay\" in --json). $(b,--no-relay) disables; \
-                  $(b,--relay-node-id) overrides the peek key for connector-managed aliases."
+                  carry \"source\":\"relay\" in --json). $(b,--no-relay) disables."
+            ; `P "Peek-key resolution (H3): the default relay inbox to peek is resolved \
+                  automatically. When the relay CONNECTOR ($(b,c2c relay connect)) manages \
+                  this broker it registers your alias under the machine node-id with your \
+                  LOCAL session-id (not the $(b,cli-<alias>) convention), so the monitor \
+                  reads $(b,connector-state.json) and peeks that connector-managed inbox by \
+                  default — no manual $(b,--relay-node-id)/$(b,--relay-session-id) needed. \
+                  With no connector it falls back to $(b,cli-<alias>) (matching \
+                  $(b,c2c relay register --alias)). Explicit $(b,--relay-node-id) / \
+                  $(b,--relay-session-id) always override the resolved default."
+            ; `P "Error honesty (H3): a relay error is never silently swallowed. An \
+                  $(b,ok:false) response is surfaced on stderr. A TRANSIENT error \
+                  (network blip, timeout, rate-limit) is retried with backoff and a \
+                  $(b,reconnected) line is emitted on recovery. A TERMINAL error \
+                  (auth / identity / signature / bad-request — will not self-heal) prints \
+                  a clear message and EXITS the monitor with a non-zero code so a \
+                  supervisor notices instead of watching a dead-but-silent relay stream."
+            ; `S "EXIT STATUS"
+            ; `P "0  clean exit (parent gone / stop). \
+                  1  usage or startup error (broker root unresolved, lockfile conflict). \
+                  3  terminal relay failure (auth / identity / signature / bad request)."
             ; `S "OUTPUT FORMAT"
             ; `P "[HH:MM:SS] ICON  TYPE  from→to  \"subject…\""
             ; `P "ICON: 📬 = addressed to you, 💬 = peer traffic (--all), \
@@ -1170,7 +1262,10 @@ let monitor =
             ; `P "$(b,c2c monitor --relay-node-id machine-42)  — peek a relay inbox keyed machine-42/machine-42"
             ; `P "$(b,c2c monitor --relay-node-id host-1 --relay-session-id <sid>)  — connector-managed inbox (needs both)"
             ; `P "$(b,c2c monitor --live)  — watch live inboxes instead of archive (legacy)"
-            ; `P "$(b,c2c monitor --json)  — JSON output for programmatic parsing"
+            ; `P "$(b,c2c monitor --json)  — NDJSON output for programmatic parsing \
+                  (one object per line, flushed per event; message events carry the \
+                  canonical message schema v1 fields plus the legacy \
+                  from_alias/to_alias keys — see docs/monitor-json-schema.md)"
             ; `P "In Claude Code: Monitor({command: \"c2c monitor\", persistent: true})"
             ; `P "Per-alias lockfile prevents duplicate monitors; use $(b,--force) to displace a live holder."
             ])

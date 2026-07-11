@@ -55,6 +55,9 @@ class C2CCLIDispatchTests(unittest.TestCase):
             "C2C_SESSIONS_FIXTURE": str(REPO / "tests/fixtures/sessions-live.json"),
             "C2C_MCP_AUTO_REGISTER_ALIAS": "",
             "C2C_MCP_AUTO_JOIN_ROOMS": "",
+            # B123: repo-root ./c2c prefers OCaml; force Python for legacy
+            # parity checks against c2c-* wrappers / c2c_cli.py.
+            "C2C_ALLOW_PYTHON_LEGACY": "1",
         }
 
     def tearDown(self):
@@ -67,14 +70,44 @@ class C2CCLIDispatchTests(unittest.TestCase):
             self.fail(f"missing command: {command}\n{error}")
 
     def test_c2c_list_subcommand_matches_wrapper_json_output(self):
+        # B123: ./c2c prefers OCaml when present. Parity is Python wrapper vs
+        # c2c_cli.py under C2C_ALLOW_PYTHON_LEGACY=1.
         wrapper = self.invoke_cli("c2c-list", "--all", "--json", env=self.env)
-        canonical = self.invoke_cli("c2c", "list", "--all", "--json", env=self.env)
+        merged = os.environ.copy()
+        merged.update(self.env)
+        py_cli = subprocess.run(
+            [sys.executable, str(REPO / "c2c_cli.py"), "list", "--all", "--json"],
+            cwd=REPO,
+            env=merged,
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT_SECONDS,
+        )
 
         self.assertEqual(result_code(wrapper), 0)
-        self.assertEqual(result_code(canonical), 0)
-        self.assertEqual(json.loads(canonical.stdout), json.loads(wrapper.stdout))
+        self.assertEqual(result_code(py_cli), 0)
+        self.assertEqual(json.loads(py_cli.stdout), json.loads(wrapper.stdout))
+
+    def test_retired_wrapper_refuses_without_legacy_escape_hatch(self):
+        """B123: root wrappers refuse for operators (no PYTEST / legacy env)."""
+        env = dict(self.env)
+        env.pop("C2C_ALLOW_PYTHON_LEGACY", None)
+        env.pop("PYTEST_CURRENT_TEST", None)
+        # Invoke via bash -c so PYTEST_CURRENT_TEST is not inherited from pytest.
+        result = subprocess.run(
+            ["env", "-u", "PYTEST_CURRENT_TEST", "-u", "C2C_ALLOW_PYTHON_LEGACY",
+             str(REPO / "c2c-list"), "--json"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("retired Python wrapper", result.stderr)
+        self.assertIn("c2c list", result.stderr)
 
     def test_c2c_send_subcommand_matches_wrapper_dry_run_output(self):
+        # B123: Python-path parity only (./c2c is OCaml-native when installed).
         registered = self.invoke_cli(
             "c2c-register", "agent-two", "--json", env=self.env
         )
@@ -84,13 +117,29 @@ class C2CCLIDispatchTests(unittest.TestCase):
         wrapper = self.invoke_cli(
             "c2c-send", alias, "hello", "peer", "--dry-run", "--json", env=self.env
         )
-        canonical = self.invoke_cli(
-            "c2c", "send", alias, "hello", "peer", "--dry-run", "--json", env=self.env
+        merged = os.environ.copy()
+        merged.update(self.env)
+        py_cli = subprocess.run(
+            [
+                sys.executable,
+                str(REPO / "c2c_cli.py"),
+                "send",
+                alias,
+                "hello",
+                "peer",
+                "--dry-run",
+                "--json",
+            ],
+            cwd=REPO,
+            env=merged,
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT_SECONDS,
         )
 
         self.assertEqual(result_code(wrapper), 0)
-        self.assertEqual(result_code(canonical), 0)
-        self.assertEqual(json.loads(canonical.stdout), json.loads(wrapper.stdout))
+        self.assertEqual(result_code(py_cli), 0)
+        self.assertEqual(json.loads(py_cli.stdout), json.loads(wrapper.stdout))
 
     def test_c2c_mcp_subcommand_dispatches_to_mcp_wrapper(self):
         with mock.patch("c2c_cli.c2c_mcp.main", return_value=0) as mcp_main:

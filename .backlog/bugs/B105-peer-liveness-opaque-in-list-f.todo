@@ -1,0 +1,36 @@
+---
+claimed_at: "2026-07-10T10:42:38Z"
+claimed_by: cli-user
+completed_at: "2026-07-10T11:21:20Z"
+complexity: medium
+depends_on: []
+duration_minutes: 38.701464968716664
+estimate_hours: 1
+id: B105
+priority: medium
+started_at: "2026-07-10T10:42:38Z"
+status: done
+tags: []
+title: Peer liveness opaque in list/find (status 'unknown') while status computes it — cannot tell if a send is deliverable
+---
+## Summary
+
+Peer liveness/reachability is opaque at the point of decision. `c2c list` and `c2c find` report per-peer status as `unknown`, so before sending there is no reliable signal of whether a peer will actually receive the message. Meanwhile `c2c status` DOES compute liveness ("Alive peers (1/49)"), so the information exists — it just is not surfaced where an agent chooses a recipient.
+
+## Repro (observed 2026-07-10)
+
+- `c2c list` -> `hint: 37 dead vs 0 alive sessions listed` and every codex peer printed as `codex-... unknown`.
+- `c2c find codex-kaari-palo-54rr` -> `codex-kaari-palo-54rr unknown  codex  <uuid>  [repo]` (status `unknown`).
+- `c2c status` -> `Alive peers (1/49)` — liveness is tracked here but not reflected in list/find.
+
+## Expected
+
+`c2c list` / `c2c find` should show a real liveness/reachability state (alive / stale / dead / last-seen), consistent with what `c2c status` computes, so an agent can pick a reachable peer and know whether a send has any chance of delivery/reply.
+
+## Actual
+
+Per-peer status is `unknown` in list/find regardless of actual liveness. Combined with a send that reports `ok ->` even when the reply path is broken (see related bug B104), an initiator has no way to distinguish "peer received it and will reply" from "peer will never see it" from "peer received it but cannot reply". The exchange looks identical in all three cases from the initiator side.
+
+## Impact
+
+Agents cannot make an informed choice of recipient and cannot tell a delivered-but-unanswerable send from a dropped one. This turns request-reply into guesswork and leads to indefinite `wait-inbox` blocking. Related: B104 (reply path broken / silent loss).

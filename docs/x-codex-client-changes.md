@@ -1,5 +1,12 @@
 # X Client Branch Changes
 
+> **Historical (2026-07-10):** this documents a codex fork branch that is no
+> longer maintained. Upstream codex removed `--xml-input-fd`, and c2c's
+> interactive-codex xml_fd plumbing was removed with it — codex delivery is
+> now via config.toml hooks (`c2c hook codex`). The `codex-turn-start-bridge`
+> `--stdin-format xml` frame format described below is still what the
+> codex-headless path consumes.
+
 This branch extends the turn-start bridge so callers can provide thread-scoped
 base instructions and can opt into explicitly framed XML stdin input. Raw stdin
 remains the default behavior.

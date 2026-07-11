@@ -1,0 +1,29 @@
+---
+claimed_at: "2026-07-11T06:27:19Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T07:24:29Z"
+complexity: medium
+depends_on: []
+duration_minutes: 57.16949108865
+estimate_hours: 1
+id: B120
+priority: high
+started_at: "2026-07-11T06:27:19Z"
+status: done
+tags: []
+title: 'Managed codex wake broken on resume: sidecar watches instance-name inbox, hooks register conversation-UUID alias (identity split)'
+---
+B102-family identity-split bug, caught live during codex wake-inject validation (2026-07-10).
+
+SYMPTOM: 'c2c start codex -n wake-test-codex' resumed an old codex conversation (codex resume --last). This produced TWO identities for one running session:
+  - managed startup registration + deliver sidecar watch: session-id 'wake-test-codex' (the instance NAME)
+  - hook auto-register (the identity DMs actually route to): codex-tyyni-river-gf88 (the resumed conversation's session UUID)
+The managed wake sidecar (c2c-deliver-inbox --session-id wake-test-codex) therefore watches an inbox nobody DMs, while the real inbox (codex-tyyni-river-gf88) has no watcher. => MANAGED CODEX IDLE WAKE IS BROKEN ON RESUME. Fresh starts may be fine if hook and startup agree on identity; resume definitively splits. Standalone 'c2c deliver wake-watch --alias <hook-alias>' works (that is how validation ran).
+
+ROOT CAUSE: on resume, the managed startup path keys the sidecar by instance name while the codex hooks key registration by the resumed conversation's session UUID; the two never reconcile.
+
+FIX DIRECTION: the deliver sidecar should follow the registration the hooks actually maintain (resolve by pid/tmux target, or hooks adopt the managed instance identity on resume).
+
+SEVERITY: medium — only managed codex on resume; fresh starts + standalone wake-watch unaffected. But resume is the common path for long-lived agents.
+
+Finding: .collab/findings/2026-07-10T14-05-00Z-fable-max-wake-inject-live-validation.md (OPEN BUG section). Related: B119 (MCP-vs-hook alias overwrite), B102.

@@ -126,6 +126,14 @@ def configure(broker_root: Path, alias: str, *, force: bool) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from c2c_python_legacy import require_python_legacy
+
+    refused = require_python_legacy(
+        "c2c_configure_codex.py",
+        ocaml_hint="c2c install codex",
+    )
+    if refused is not None:
+        return refused
     parser = argparse.ArgumentParser(
         description="Configure ~/.codex/config.toml to include the c2c MCP server."
     )

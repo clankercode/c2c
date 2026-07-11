@@ -1,0 +1,12 @@
+{
+  "artifact_id": "artifact-ADR0-decision-ledger",
+  "node_id": "impl-ADR0",
+  "kind": "output",
+  "summary_path": "artifacts/ADR0-decision-ledger/summary.md",
+  "raw_path": "artifacts/ADR0-decision-ledger/receipt.md",
+  "hash": "sha256:911f3eecfff3d7805bf0bee4ed9c8da633071be6d61946e979644c6658c951d7",
+  "bytes": 2535,
+  "created_by": "fable-warden",
+  "created_at": "2026-07-10T12:53:36Z",
+  "redaction_status": "none"
+}

@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""Standalone client for the c2c broker send_all fan-out primitive.
+"""DEPRECATED standalone send_all client (B122).
 
-Spawns a fresh ``c2c_mcp.py`` child, issues ``tools/call`` for the
-``send_all`` tool, and prints the ``{sent_to, skipped}`` result.
-
-This is the Python CLI counterpart to ``c2c_poll_inbox.py``: deliberately
-standalone so it can be used from any host client (Claude, Codex, OpenCode)
-without depending on ``c2c_cli.py``, which has been under lock while the
-``c2c inject`` slice lands. A future ``c2c_cli.py`` dispatch entry can wire
-this in as ``c2c send-all`` once that lock clears.
+Canonical surface: ``c2c send-all`` (OCaml). This script may still spawn a
+legacy ``c2c_mcp.py`` child for tests only — do not document it for users.
 """
 from __future__ import annotations
 
@@ -127,10 +121,15 @@ def print_result(result: dict[str, Any], *, as_json: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    print(
+        "c2c_send_all.py is DEPRECATED (B122). Use `c2c send-all` (OCaml).",
+        file=sys.stderr,
+        flush=True,
+    )
     parser = argparse.ArgumentParser(
         description=(
-            "Fan out a c2c message to every live registered peer. Thin"
-            " standalone client for the broker send_all tool."
+            "Fan out a c2c message to every live registered peer "
+            "(DEPRECATED — use `c2c send-all`)."
         )
     )
     parser.add_argument(

@@ -122,34 +122,36 @@ approval; just accept the TOML hook prompt if you want await-reply support.
 ### PreToolUse permission requests (managed + direct MCP)
 
 When kimi needs approval for a tool call (e.g., executing a shell command,
-running `git push`), the PreToolUse hook intercepts the request and
-forwards it to a supervisor via the c2c broker:
+running `git push`), the PreToolUse hook intercepts the request and **pages** a
+supervisor via the c2c broker as an advisory notification, then blocks on the
+host-local verdict file:
 
 ```
-kimi agent → PreToolUse hook → c2c send <supervisor> "$TOKEN <reason>" (DM)
-kimi agent ← hook ← poll await-reply --token $TOKEN --timeout 120
+kimi agent → PreToolUse hook → c2c send <supervisor> "$TOKEN <reason>"   (advisory page — NOT the verdict)
+supervisor (on the supervised host) → c2c approval-reply $TOKEN allow    (writes verdict file)
+kimi agent ← hook ← await-reply --token $TOKEN --timeout 120             (polls the verdict FILE)
 ```
 
-The supervisor receives a DM with the token and reason, and replies with:
-`ka_abc123 allow` or `ka_abc123 deny`.
+The DM is advisory (B098): it tells the supervisor a token is pending. The
+verdict is produced only by a host-local `c2c approval-reply` call — a DM
+containing `ka_abc123 allow` is **inert** (`await-reply` never reads the inbox).
 
 **Expectations for kimi operators:**
 - The agent blocks waiting for a verdict — you'll see the toast sit for up to
   the timeout (default 120s) before the tool call is rejected.
 - If no supervisor is configured, permission requests time out — the tool call
   fails and the agent retries or asks you directly.
-- The supervisor's verdict arrives as a DM back to kimi — you may see a
-  toast from the supervisor's reply.
 
-**For swarm supervisors**: reply with the token + verdict word:
+**For swarm supervisors**: on the supervised host, write the verdict with the
+host-local CLI:
 ```
-ka_abc123 allow
-ka_abc123 deny
+c2c approval-reply ka_abc123 allow
+c2c approval-reply ka_abc123 deny because <reason>
 ```
 
-The canonical reply format is `<token> allow|deny` (case-insensitive). See
-[permission-DM-discipline.runbook](./permission-dm-discipline.md) for full
-format guide including the legacy `[approve/reject]` deprecation.
+See [permission-DM-discipline.runbook](./permission-dm-discipline.md) for the
+full authority-boundary contract (B098): DM verdicts are inert; approvals are
+host-local.
 
 ---
 

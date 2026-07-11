@@ -1834,8 +1834,121 @@ let test_install_all_dry_run_shows_dry_run_markers () =
         (fun () -> really_input_string ch (in_channel_length ch))
       in
       debug_install_failure "all-markers" cmd rc content;
-      check bool "output contains [DRY-RUN] marker" true
-        (string_contains content "[DRY-RUN]")))
+      check int "install all --dry-run exits 0" 0 rc;
+      (* Binary-only default: self dry-run says "Would install", not client MCP. *)
+      check bool "output previews binary install" true
+        (string_contains content "Would install" || string_contains content "c2c binary");
+      check bool "does not configure opencode by default" false
+        (string_contains content "Configuring opencode");
+      check bool "does not configure kimi by default" false
+        (string_contains content "Configuring kimi")))
+
+let test_install_all_dry_run_skips_all_clients_by_default () =
+  (* B122: install all is binary-only; every client MCP path is opt-in. *)
+  with_temp_dir (fun home ->
+    let fake_clients = fake_client_path_env home [ "codex"; "opencode"; "kimi" ] in
+    let tmpfile = Filename.temp_file "c2c-install-all-mcp-opt-in" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+      let cmd = c2c_cmd (Printf.sprintf
+        "%s %s c2c install all --dry-run > %s 2>&1 < /dev/null"
+        fake_clients (isolated_home_env home) tmpfile) in
+      let rc = Sys.command cmd in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      debug_install_failure "all-mcp-opt-in" cmd rc content;
+      check int "install all exits 0" 0 rc;
+      (* Clients on PATH must not be newly configured. They may show
+         "skipped; MCP opt-in" or "configured — up-to-date" (project cwd may
+         already have an install); either way, never "→ Configuring …". *)
+      check bool "codex is not newly configured" true
+        (string_contains content "codex: [skipped; MCP opt-in"
+         || string_contains content "codex: [configured");
+      check bool "opencode is not newly configured" true
+        (string_contains content "opencode: [skipped; MCP opt-in"
+         || string_contains content "opencode: [configured");
+      check bool "kimi is not newly configured" true
+        (string_contains content "kimi: [skipped; MCP opt-in"
+         || string_contains content "kimi: [configured");
+      check bool "no client setup previewed" false
+        (string_contains content "Configuring ");
+      check bool "opt-in policy banner present" true
+        (string_contains content "opt-in policy" || string_contains content "--with-clients")))
+
+let test_install_all_json_dry_run_binary_only () =
+  with_temp_dir (fun home ->
+    let fake_clients = fake_client_path_env home [ "codex"; "opencode"; "kimi" ] in
+    let tmpfile = Filename.temp_file "c2c-install-all-json" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+      let cmd = c2c_cmd (Printf.sprintf
+        "%s %s c2c install all --dry-run --json > %s 2>&1 < /dev/null"
+        fake_clients (isolated_home_env home) tmpfile) in
+      let rc = Sys.command cmd in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      debug_install_failure "all-json-binary-only" cmd rc content;
+      check int "install all --json exits 0" 0 rc;
+      check bool "binary_only true" true (string_contains content "\"binary_only\": true");
+      check bool "with_clients false" true (string_contains content "\"with_clients\": false");
+      check bool "no mcpServers plan in json" false
+        (string_contains content "mcpServers")))
+
+let test_install_all_with_clients_dry_run_configures () =
+  (* Explicit bulk opt-in must plan client configuration. *)
+  with_temp_dir (fun home ->
+    let fake_clients = fake_client_path_env home [ "codex"; "kimi" ] in
+    let tmpfile = Filename.temp_file "c2c-install-all-with-clients" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+      let cmd = c2c_cmd (Printf.sprintf
+        "%s %s c2c install all --with-clients --dry-run > %s 2>&1 < /dev/null"
+        fake_clients (isolated_home_env home) tmpfile) in
+      let rc = Sys.command cmd in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      debug_install_failure "all-with-clients" cmd rc content;
+      check int "install all --with-clients exits 0" 0 rc;
+      check bool "configures codex when opted in" true
+        (string_contains content "Configuring codex"
+         || string_contains content "[DRY-RUN]");
+      check bool "does not claim mcp opt-in skip for codex" false
+        (string_contains content "codex: [skipped; MCP opt-in")))
+
+let test_interactive_install_default_skips_all_clients () =
+  with_temp_dir (fun home ->
+    let fake_clients = fake_client_path_env home [ "codex"; "opencode"; "kimi" ] in
+    let tmpfile = Filename.temp_file "c2c-install-tui-mcp-opt-in" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+      (* [c2c_cmd] prefixes its command with PATH changes. That prefix would
+         apply only to the left side of this pipe, so invoke the freshly-built
+         binary directly on the right side instead. *)
+      let cmd = Printf.sprintf
+        "printf '\\n' | %s %s %s install --dry-run > %s 2>&1"
+        fake_clients (isolated_home_env home) (Filename.quote c2c_binary)
+        (Filename.quote tmpfile) in
+      let rc = Sys.command cmd in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      debug_install_failure "tui-mcp-opt-in" cmd rc content;
+      check int "interactive install exits 0" 0 rc;
+      check bool "Codex is unchecked in the default plan" true
+        (string_contains content "[ ] configure codex");
+      check bool "OpenCode is unchecked in the default plan" true
+        (string_contains content "[ ] configure opencode");
+      check bool "Kimi is unchecked in the default plan" true
+        (string_contains content "[ ] configure kimi");
+      check bool "no client Configuring preview" false
+        (string_contains content "Configuring ")))
 
 let test_install_all_dry_run_epilog () =
   with_temp_dir (fun home ->
@@ -1849,10 +1962,12 @@ let test_install_all_dry_run_epilog () =
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
-      check bool "install all output contains canonical verify line" true
-        (string_contains content "Run 'c2c ping --verify'");
-      check bool "install all output contains restart footer" true
-        (string_contains content "restart your CLI client")))
+      (* Binary-only default: opt-in guidance, not the MCP restart footer. *)
+      check bool "install all output mentions opt-in / with-clients" true
+        (string_contains content "--with-clients"
+         || string_contains content "opt-in policy");
+      check bool "install all output mentions CLI without MCP" true
+        (string_contains content "without MCP" || string_contains content "c2c send")))
 
 let test_install_gemini_dry_run_refuses () =
   let tmpfile = Filename.temp_file "c2c-install-gemini-dry" ".out" in
@@ -2804,6 +2919,40 @@ let test_init_rejects_banned_alias () =
       check bool "error mentions blocked" true
         (string_contains content "blocked"))
 
+let test_init_prefers_claude_environment_over_ambiguous_path () =
+  with_temp_dir (fun dir ->
+      let home = Filename.concat dir "home" in
+      let fake_bin = Filename.concat dir "fake-bin" in
+      Unix.mkdir home 0o755;
+      Unix.mkdir fake_bin 0o755;
+      List.iter
+        (fun client ->
+          let path = Filename.concat fake_bin client in
+          write_file path "#!/bin/sh\nexit 0\n";
+          Unix.chmod path 0o755)
+        [ "claude"; "opencode" ];
+      let tmpfile = Filename.temp_file "c2c-init-client-detect" ".out" in
+      Fun.protect
+        ~finally:(fun () -> Sys.remove tmpfile)
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "env -i HOME=%s PATH=%s CLAUDE_CODE_SESSION_ID=claude-b102-session C2C_MCP_BROKER_ROOT=%s %s init --no-setup > %s 2>&1"
+              (Filename.quote home)
+              (Filename.quote fake_bin)
+              (Filename.quote dir)
+              (Filename.quote c2c_binary)
+              (Filename.quote tmpfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file tmpfile in
+          check int "init exits 0" 0 rc;
+          match extract_alias_line content with
+          | Some alias ->
+              check bool "native Claude environment wins over PATH ambiguity" true
+                (String.starts_with ~prefix:"claude-" alias)
+          | None -> fail "no alias line in init output"))
+
 (* B046: init should reuse existing alias for the same session_id *)
 let test_init_reuses_alias_for_same_session_id () =
   with_temp_dir (fun dir ->
@@ -3654,8 +3803,12 @@ let () =
         ] )
     ; ( "install_dry_run",
         [ ( "install all --dry-run exits 0", `Quick, test_install_all_dry_run_exits_zero )
-        ; ( "install all --dry-run shows [DRY-RUN] markers", `Quick, test_install_all_dry_run_shows_dry_run_markers )
-        ; ( "install all --dry-run shows canonical epilog", `Quick, test_install_all_dry_run_epilog )
+        ; ( "install all --dry-run is binary-only (no client MCP)", `Quick, test_install_all_dry_run_shows_dry_run_markers )
+        ; ( "install all --dry-run skips all clients by default", `Quick, test_install_all_dry_run_skips_all_clients_by_default )
+        ; ( "install all --json --dry-run binary_only", `Quick, test_install_all_json_dry_run_binary_only )
+        ; ( "install all --with-clients --dry-run configures", `Quick, test_install_all_with_clients_dry_run_configures )
+        ; ( "interactive install defaults skip all clients", `Quick, test_interactive_install_default_skips_all_clients )
+        ; ( "install all --dry-run shows opt-in guidance", `Quick, test_install_all_dry_run_epilog )
         ; ( "install gemini --dry-run refuses (deprecated)", `Quick, test_install_gemini_dry_run_refuses )
         ; ( "install gemini --dry-run shows deprecation", `Quick, test_install_gemini_dry_run_shows_deprecation )
         ; ( "install kimi --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_kimi )
@@ -3724,6 +3877,8 @@ let () =
         ; ( "init --no-nonce keeps default entropy", `Quick, test_init_no_nonce_keeps_default_entropy )
         ; ( "init --alias foo is not nonce'd", `Quick, test_init_explicit_alias_not_nonced )
         ; ( "init --alias codex is rejected", `Quick, test_init_rejects_banned_alias )
+        ; ( "init prefers Claude environment over ambiguous PATH", `Quick
+          , test_init_prefers_claude_environment_over_ambiguous_path )
         ; ( "init reuses alias for same session_id", `Quick, test_init_reuses_alias_for_same_session_id )
         ] )
     ]

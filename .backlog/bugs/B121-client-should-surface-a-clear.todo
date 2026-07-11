@@ -1,0 +1,38 @@
+---
+claimed_at: "2026-07-11T07:05:48Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T07:19:43Z"
+complexity: medium
+depends_on: []
+duration_minutes: 13.919965360333332
+estimate_hours: 1
+id: B121
+priority: medium
+started_at: "2026-07-11T07:05:48Z"
+status: done
+tags: []
+title: Client should surface a clear 'incompatible relay version' error when the relay has updated to a wire-incompatible version
+---
+SYMPTOM: When the relay (e.g. relay.c2c.im) is redeployed with a newer, wire-incompatible version, an older c2c client that can no longer use it fails with OPAQUE, misleading errors instead of a clear "your client is too old for this relay" message. Depending on what changed, the user sees generic `signature_invalid`, `bad_request`, `pow_required`/unknown PoW scheme, `http_error_4xx/5xx`, or a bare transport/connection error — none of which point at the real cause (client/relay version skew) or the fix (upgrade the client).
+
+IMPACT: Diagnosability. An agent or operator hits a wall on `c2c relay status/register/dm/rooms` after a relay deploy and cannot tell "relay is down" from "relay is up but I need to upgrade." In a swarm this can silently strand peers on an old binary. This is exactly the dogfooding gap the client should close.
+
+EXPECTED: The client should detect protocol/version incompatibility and surface an actionable error, e.g.:
+  "relay <url> speaks protocol vN (server 0.11.0); this client speaks vM — upgrade c2c (git pull && just install-all) to reconnect."
+Surface it on the first failing relay interaction and in `c2c relay status`, `c2c doctor --relay`, and `c2c health`.
+
+CURRENT STATE / ROOT CAUSE:
+- `/health` already returns `version` + `git_hash` (ocaml/relay.ml handle_health), and the landing page documents endpoints, but there is NO client-side compatibility check and NO explicit protocol/compat version negotiated between client and relay.
+- `Relay_client.request` (ocaml/relay_client.ml) reconciles HTTP status honestly (H7) but has no notion of "incompatible relay" — every failure collapses into transport/error_code with no upgrade hint.
+- There is no `min_client_version` / `protocol_version` / capability field the client can compare against.
+
+FIX DIRECTION (options, pick per design):
+1. Add an explicit `protocol_version` (and optionally `min_client_version`) to `/health` (and/or a lightweight capability handshake). Have the client compare on `relay status`/`doctor`/first request and emit the actionable upgrade error above. `Version.version` + a new protocol-version constant give both sides a comparison basis.
+2. Relay-side: for requests it cannot serve from an old client, return a STRUCTURED `error_code` such as `incompatible_client` (with server + required versions in the body) that the client special-cases into the upgrade message — instead of leaking `signature_invalid`/`bad_request`.
+3. Client-side: whenever a relay op fails, opportunistically fetch `/health`, compare versions, and if skewed, prepend the incompatibility/upgrade hint to the surfaced error.
+
+Keep it honest: distinguish "relay unreachable" (transport) from "relay up but incompatible" (version skew) from "relay up, genuine error" — the H7/`is_transport_error` machinery in relay_client.ml is the right seam to extend.
+
+TESTS: token-configured relay test (or Relay_test_support scripted `/health` with a bumped protocol_version + a failing op) asserting the client surfaces the incompatibility/upgrade message rather than the raw error.
+
+SEVERITY: medium — no data loss or security impact, but a real diagnosability/UX defect that bites exactly when the relay is redeployed (a routine event on this project, ~every push). Cross-ref: B116/B111 relay-hardening work bumps relay behavior and makes client/relay skew more likely.

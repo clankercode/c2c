@@ -43,7 +43,7 @@ after a full run.
 c2c doctor
 
 # Check no stale sessions
-c2c list
+c2c list --all
 ```
 
 ---
@@ -61,7 +61,7 @@ c2c list
   - Pi Agent registers through `pi-c2c` / the `c2c` CLI, not through MCP
 - **Failure modes**:
   - MCP-managed clients: MCP binary not on PATH -> "command not found"
-  - Wrong `[default_binary]` entry → wrong deliver mode (see codex xml_fd footgun)
+  - Codex hooks missing/untrusted → no automatic hook delivery; use explicit polling until hook setup is fixed
   - Pi Agent: `pi-c2c` extension not installed or `C2C_BIN` points to a bad binary
 - **Repro time**: ~15s
 
@@ -78,13 +78,13 @@ c2c list
 - **Expected**:
   - `<c2c event="message" from="..." to="<client-alias>">ping</c2c>` appears in the client's transcript / output
   - For Claude/OpenCode: PostToolUse hook fires on next tool use and inbox is drained
-  - For Codex: xml_fd deliver injects the message
+  - For unmanaged Codex: installed hooks (`c2c hook codex`) drain and inject via `hookSpecificOutput.additionalContext`; managed `c2c start codex` hook delivery is still being ported, so explicit polling remains the fallback there.
   - For Pi Agent: `pi-c2c` drains the inbox and injects via `pi.sendMessage`
   - For Kimi: message appears in notification store / TUI prefill
 - **Failure modes**:
   - ECHILD race on Claude (known, fixed via bash wrapper)
   - Channel-push selective miss (#387, known fixed)
-  - Codex xml_fd fallback to `unavailable` if wrong binary is first in PATH
+  - Codex hooks not installed or not trusted; managed `c2c start codex` hook delivery still pending, requiring explicit polling fallback
 - **Repro time**: ~30s
 
 ---

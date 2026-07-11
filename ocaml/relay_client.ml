@@ -19,8 +19,70 @@ module Relay_client : sig
     t -> meth:Cohttp.Code.meth -> path:string -> ?body:Yojson.Safe.t ->
     ?auth_override:string -> unit -> Yojson.Safe.t Lwt.t
   (** Low-level primitive: issue [meth path] with optional JSON body.
-      Returns the parsed JSON response dict. On network / parse error returns
-      ["ok": false, "error_code": "connection_error", "error": <msg>]. *)
+      Returns the parsed JSON response dict, reconciled with the HTTP
+      status line (H7 status-honesty contract):
+
+      - 2xx: the parsed body is returned untouched — ["ok": true] is
+        possible ONLY here.
+      - non-2xx with an honest ["ok": false] object body: the body passes
+        through (its own [error_code]/[error] win) annotated with
+        ["http_status": <code>].
+      - non-2xx whose body does NOT report ["ok": false] (claims success,
+        lacks [ok], or is not an object): overridden with ["ok": false,
+        "error_code": "http_error_<code>", "http_status": <code>] and the
+        offending body preserved under ["relay_response"] — the status
+        line always wins over a dishonest body.
+      - transport failure (connection refused, timeout, TLS error,
+        unparseable response body): a locally-synthesized ["ok": false,
+        "error_code": "connection_error", "error": <msg>,
+        "transport": true]. The ["transport": true] marker distinguishes
+        "could not get a coherent response" from "the relay responded
+        with an error" — see [is_transport_error]. Never raises. *)
+
+  val is_transport_error : Yojson.Safe.t -> bool
+  (** True iff [json] is a client-synthesized transport failure (carries
+      ["transport": true]) — i.e. the relay never produced a coherent
+      HTTP/JSON response. False for every genuine relay response,
+      including non-2xx / ok:false ones. Consumers that must distinguish
+      "relay unreachable" from "relay responded with an error" (e.g.
+      `c2c doctor --relay` relay.reachable) key off this. *)
+
+  val is_protocol_incompatible : Yojson.Safe.t -> bool
+  (** True iff [json] is (or was rewritten into) a protocol-skew error —
+      [error_code = "incompatible_client"]. Distinct from transport
+      failure (relay up, wire version mismatched). *)
+
+  type protocol_compat =
+    | Compatible
+    | Unknown
+        (** Health body has no [protocol_version] (pre-B121 relay). Not a
+            hard fail — older relays stay usable until they advertise. *)
+    | Client_too_old of {
+        server_protocol : int;
+        client_protocol : int;
+        min_client : int;
+        server_version : string option;
+      }
+    | Client_too_new of {
+        server_protocol : int;
+        client_protocol : int;
+        server_version : string option;
+      }
+
+  val protocol_compat_of_health :
+    ?client_protocol:int -> Yojson.Safe.t -> protocol_compat
+  (** Parse a /health body and compare against this client's protocol
+      version (default [Version.relay_protocol_version]). *)
+
+  val upgrade_message : url:string -> protocol_compat -> string option
+  (** Actionable one-line upgrade / deploy message, or [None] when the
+      relay is compatible or did not advertise a protocol version. *)
+
+  val check_health_protocol :
+    t -> Yojson.Safe.t -> Yojson.Safe.t
+  (** If [health_json] reports wire-incompatible protocol versions,
+      rewrite into an [ok:false / incompatible_client] object with the
+      upgrade text in [error]. Compatible / unknown bodies pass through. *)
 
   val health : t -> Yojson.Safe.t Lwt.t
   val register :
@@ -81,9 +143,16 @@ module Relay_client : sig
   val set_room_visibility : t -> alias:string -> room_id:string -> visibility:string -> Yojson.Safe.t Lwt.t
   val set_room_visibility_signed : t -> alias:string -> room_id:string -> visibility:string
     -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
+  val set_room_history_public_signed : t -> alias:string -> room_id:string -> history_public:bool
+    -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_prepare : t -> machine_ed25519_pubkey:string -> token:string -> Yojson.Safe.t Lwt.t
   val mobile_pair_confirm : t -> token:string -> phone_ed25519_pubkey:string -> phone_x25519_pubkey:string -> Yojson.Safe.t Lwt.t
-  val mobile_pair_revoke : t -> binding_id:string -> Yojson.Safe.t Lwt.t
+  (** B116: revocation carries a signed owner proof (machine or phone
+      Ed25519 key) — build it with [Relay_signed_ops.sign_binding_revoke].
+      A bare binding ID no longer authorizes deletion. *)
+  val mobile_pair_revoke :
+    t -> binding_id:string -> revoke_pk:string -> ts:string ->
+    nonce:string -> sig_b64:string -> Yojson.Safe.t Lwt.t
   val device_pair_init : t -> machine_ed25519_pubkey:string -> Yojson.Safe.t Lwt.t
   val device_pair_poll : t -> user_code:string -> Yojson.Safe.t Lwt.t
   val gc : t -> Yojson.Safe.t Lwt.t
@@ -131,17 +200,205 @@ end = struct
     Conduit_lwt_unix.init ~tls_authenticator:auth () >>= fun conduit_ctx ->
     Lwt.return (Cohttp_lwt_unix.Client.custom_ctx ~ctx:conduit_ctx ())
 
+  (* Client-synthesized transport failure: the relay never produced a
+     coherent HTTP/JSON response. [transport: true] is the marker that
+     lets consumers (doctor reachable check) tell this apart from a
+     genuine relay error response — see the [request] contract above. *)
   let connection_error msg =
     `Assoc [
       ("ok", `Bool false);
       ("error_code", `String "connection_error");
       ("error", `String msg);
+      ("transport", `Bool true);
     ]
 
-  let request t ~meth ~path ?body ?auth_override () =
+  let is_transport_error = function
+    | `Assoc fields -> List.assoc_opt "transport" fields = Some (`Bool true)
+    | _ -> false
+
+  let is_protocol_incompatible = function
+    | `Assoc fields ->
+        List.assoc_opt "error_code" fields
+        = Some (`String relay_err_incompatible_client)
+    | _ -> false
+
+  type protocol_compat =
+    | Compatible
+    | Unknown
+    | Client_too_old of {
+        server_protocol : int;
+        client_protocol : int;
+        min_client : int;
+        server_version : string option;
+      }
+    | Client_too_new of {
+        server_protocol : int;
+        client_protocol : int;
+        server_version : string option;
+      }
+
+  let json_int_field fields name =
+    match List.assoc_opt name fields with
+    | Some (`Int i) -> Some i
+    | Some (`Float f) when classify_float f = FP_normal
+                          || classify_float f = FP_zero ->
+        let i = int_of_float f in
+        if float_of_int i = f then Some i else None
+    | Some (`String s) -> int_of_string_opt s
+    | _ -> None
+
+  let json_string_field fields name =
+    match List.assoc_opt name fields with
+    | Some (`String s) -> Some s
+    | _ -> None
+
+  let protocol_compat_of_health
+      ?(client_protocol = Version.relay_protocol_version) = function
+    | `Assoc fields ->
+        (match json_int_field fields "protocol_version" with
+         | None -> Unknown
+         | Some server_protocol ->
+             let min_client =
+               match json_int_field fields "min_client_protocol_version" with
+               | Some m -> m
+               | None -> server_protocol
+             in
+             let server_version = json_string_field fields "version" in
+             if client_protocol < min_client then
+               Client_too_old {
+                 server_protocol; client_protocol; min_client; server_version;
+               }
+             else if client_protocol > server_protocol then
+               Client_too_new {
+                 server_protocol; client_protocol; server_version;
+               }
+             else Compatible)
+    | _ -> Unknown
+
+  let upgrade_message ~url = function
+    | Client_too_old {
+        server_protocol; client_protocol; server_version; _
+      } ->
+        let sv = Option.value server_version ~default:"?" in
+        Some (Printf.sprintf
+          "relay %s speaks protocol v%d (server %s); this client speaks v%d \
+           — upgrade c2c (git pull && just install-all) to reconnect."
+          url server_protocol sv client_protocol)
+    | Client_too_new {
+        server_protocol; client_protocol; server_version;
+      } ->
+        let sv = Option.value server_version ~default:"?" in
+        Some (Printf.sprintf
+          "relay %s speaks protocol v%d (server %s); this client speaks v%d \
+           — the relay is older than this client; wait for a relay deploy or \
+           point C2C_RELAY_URL at a matching relay."
+          url server_protocol sv client_protocol)
+    | Compatible | Unknown -> None
+
+  let incompatible_error ~url ~compat ?(underlying = None) () =
+    match upgrade_message ~url compat with
+    | None ->
+        `Assoc [
+          ("ok", `Bool false);
+          ("error_code", `String relay_err_incompatible_client);
+          ("error", `String "incompatible relay protocol");
+        ]
+    | Some msg ->
+        let base = [
+          ("ok", `Bool false);
+          ("error_code", `String relay_err_incompatible_client);
+          ("error", `String msg);
+          ("client_protocol_version",
+           `Int Version.relay_protocol_version);
+        ] in
+        let base =
+          match compat with
+          | Client_too_old {
+              server_protocol; min_client; server_version; _
+            } ->
+              base
+              @ [ ("server_protocol_version", `Int server_protocol);
+                  ("min_client_protocol_version", `Int min_client) ]
+              @ (match server_version with
+                 | Some v -> [ ("server_version", `String v) ]
+                 | None -> [])
+          | Client_too_new { server_protocol; server_version; _ } ->
+              base
+              @ [ ("server_protocol_version", `Int server_protocol) ]
+              @ (match server_version with
+                 | Some v -> [ ("server_version", `String v) ]
+                 | None -> [])
+          | Compatible | Unknown -> base
+        in
+        let base =
+          match underlying with
+          | Some (`Assoc ufields as u) ->
+              let und_code =
+                match List.assoc_opt "error_code" ufields with
+                | Some c -> [ ("underlying_error_code", c) ]
+                | None -> []
+              in
+              let und_err =
+                match List.assoc_opt "error" ufields with
+                | Some e -> [ ("underlying_error", e) ]
+                | None -> []
+              in
+              base @ und_code @ und_err
+              @ [ ("underlying_response", u) ]
+          | Some u -> base @ [ ("underlying_response", u) ]
+          | None -> base
+        in
+        `Assoc base
+
+  let check_health_protocol t health_json =
+    match protocol_compat_of_health health_json with
+    | (Client_too_old _ | Client_too_new _) as compat ->
+        incompatible_error ~url:t.base_url ~compat ()
+    | Compatible | Unknown -> health_json
+
+  (* Reconcile the parsed body with the HTTP status line (H7): a non-2xx
+     status can NEVER yield ok:true. An honest ok:false object body passes
+     through (its own error_code wins — the fault matrix pins 401/429/500
+     cells on the body's code) annotated with http_status; anything else on
+     a non-2xx is overridden, preserving the body under relay_response. *)
+  let reconcile_status ~status body =
+    if status >= 200 && status < 300 then body
+    else
+      match body with
+      | `Assoc fields when List.assoc_opt "ok" fields = Some (`Bool false) ->
+          let fields = List.filter (fun (k, _) -> k <> "http_status") fields in
+          `Assoc (fields @ [ ("http_status", `Int status) ])
+      | dishonest ->
+          `Assoc [
+            ("ok", `Bool false);
+            ("error_code", `String (Printf.sprintf "http_error_%d" status));
+            ("error", `String (Printf.sprintf
+              "relay answered HTTP %d but the body did not report ok:false"
+              status));
+            ("http_status", `Int status);
+            ("relay_response", dishonest);
+          ]
+
+  let response_ok = function
+    | `Assoc fields -> List.assoc_opt "ok" fields = Some (`Bool true)
+    | _ -> false
+
+  (* Strip query string for path comparisons (e.g. /list?include_dead=1). *)
+  let path_without_query path =
+    match String.index_opt path '?' with
+    | None -> path
+    | Some i -> String.sub path 0 i
+
+  let request_raw t ~meth ~path ?body ?auth_override () =
     let uri = Uri.of_string (t.base_url ^ path) in
     let headers =
       let base = Cohttp.Header.init_with "Content-Type" "application/json" in
+      (* B121: advertise client wire version so a future relay can reject
+         ancient clients with a structured incompatible_client error. *)
+      let base =
+        Cohttp.Header.add base "X-C2C-Protocol-Version"
+          (string_of_int Version.relay_protocol_version)
+      in
       match auth_override with
       | Some h -> Cohttp.Header.add base "Authorization" h
       | None ->
@@ -165,12 +422,38 @@ end = struct
           (Lwt_unix.sleep t.timeout >>= fun () ->
            Lwt.fail (Failure "request_timeout"));
         ]
-        >>= fun (_resp, resp_body) ->
+        >>= fun (resp, resp_body) ->
+        let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
         Cohttp_lwt.Body.to_string resp_body >>= fun text ->
-        try Lwt.return (Yojson.Safe.from_string text)
+        try Lwt.return (reconcile_status ~status (Yojson.Safe.from_string text))
         with _ -> Lwt.return (connection_error "invalid_json_response"))
       (fun exn ->
         Lwt.return (connection_error (Printexc.to_string exn)))
+
+  (* On a genuine (non-transport) relay error, opportunistically GET /health
+     and rewrite the error into incompatible_client when versions skew. Skips
+     the /health path itself to avoid recursion. Transport errors stay
+     transport — unreachable is not "incompatible". *)
+  let maybe_annotate_protocol_skew t ~path body =
+    if is_transport_error body
+       || response_ok body
+       || is_protocol_incompatible body
+       || path_without_query path = "/health"
+    then Lwt.return body
+    else
+      request_raw t ~meth:`GET ~path:"/health" () >>= fun health_json ->
+      if is_transport_error health_json then Lwt.return body
+      else
+        match protocol_compat_of_health health_json with
+        | (Client_too_old _ | Client_too_new _) as compat ->
+            Lwt.return
+              (incompatible_error ~url:t.base_url ~compat
+                 ~underlying:(Some body) ())
+        | Compatible | Unknown -> Lwt.return body
+
+  let request t ~meth ~path ?body ?auth_override () =
+    request_raw t ~meth ~path ?body ?auth_override () >>= fun body ->
+    maybe_annotate_protocol_skew t ~path body
 
   let post t path body = request t ~meth:`POST ~path ~body ()
   let post_auth t path body auth = request t ~meth:`POST ~path ~body ~auth_override:auth ()
@@ -180,7 +463,9 @@ end = struct
     let post_body body = post t path body in
     Pow_client.post_with_retry ~post:post_body ~route ~actor_id body
 
-  let health t = get t "/health"
+  let health t =
+    request_raw t ~meth:`GET ~path:"/health" () >|= fun j ->
+    if is_transport_error j then j else check_health_protocol t j
 
   let register t ~node_id ~session_id ~alias
       ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "")
@@ -506,9 +791,10 @@ end = struct
     ])
 
   (* The relay's set_room_visibility handler requires [alias] (the caller must
-     be a room member) and, when C2C_REQUIRE_SIGNED_ROOM_OPS=1, a body-level
-     Ed25519 proof. Prefer [set_room_visibility_signed]; this unsigned form
-     still sends [alias] so it works on relays that don't require signing. *)
+     be a room member) and, since B114, a body-level Ed25519 proof by default.
+     Use [set_room_visibility_signed]; this unsigned form is only accepted by
+     a dev-gated relay (C2C_REQUIRE_SIGNED_ROOM_OPS=0, no token) and is kept
+     for tests/dev tooling. *)
   let set_room_visibility t ~alias ~room_id ~visibility =
     post t "/set_room_visibility" (`Assoc [
       ("alias", `String alias);
@@ -521,6 +807,20 @@ end = struct
       ("alias", `String alias);
       ("room_id", `String room_id);
       ("visibility", `String visibility);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
+  (* B117: signed set_room_history_public. The relay requires the caller be a
+     room member AND a body-level Ed25519 proof whose signature covers the
+     boolean. *)
+  let set_room_history_public_signed t ~alias ~room_id ~history_public ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/set_room_history_public" (`Assoc [
+      ("alias", `String alias);
+      ("room_id", `String room_id);
+      ("history_public", `Bool history_public);
       ("identity_pk", `String identity_pk);
       ("ts", `String ts);
       ("nonce", `String nonce);
@@ -540,8 +840,14 @@ end = struct
       ("phone_x25519_pubkey", `String phone_x25519_pubkey);
     ])
 
-  let mobile_pair_revoke t ~binding_id =
-    request t ~meth:`DELETE ~path:("/binding/" ^ binding_id) ()
+  let mobile_pair_revoke t ~binding_id ~revoke_pk ~ts ~nonce ~sig_b64 =
+    request t ~meth:`DELETE ~path:("/binding/" ^ binding_id)
+      ~body:(`Assoc [
+        ("revoke_pk", `String revoke_pk);
+        ("ts", `String ts);
+        ("nonce", `String nonce);
+        ("sig", `String sig_b64);
+      ]) ()
 
   let device_pair_init t ~machine_ed25519_pubkey =
     post t "/device-pair/init" (`Assoc [

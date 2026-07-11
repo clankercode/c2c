@@ -55,9 +55,14 @@ val format_c2c_envelope : from_alias:string -> to_alias:string -> ?tag:string ->
     2026-06-18 follow-up section in
     [docs/superpowers/specs/2026-04-22-reply-via-envelope-design.md].
 
-    [{!escape_content_for_xml}] (default [false]) XML-escapes the
-    message body and the reply-hint placeholder examples for nested
-    XML transports such as Codex [--xml-input-fd]. *)
+    The message body is ALWAYS XML-escaped as untrusted peer data
+    (the [<c2c>] envelope is the authority boundary; escaping keeps
+    closing tags, reminder-like text, and entity-shaped strings
+    visible as data), regardless of [{!escape_content_for_xml}].
+    [{!escape_content_for_xml}] (default [false]) governs ONLY the
+    reply-hint placeholder examples (e.g. [<your reply>] rendered as
+    [&lt;your reply&gt;]) for nested XML transports such as the
+    codex-headless XML fifo. *)
 
 val format_reply_hint : ?escape_text_for_xml:bool -> from:string -> to_alias:string -> unit -> string
 (** Build the [<system-reminder>] reply hint block. Sibling of the
@@ -129,9 +134,19 @@ type registration =
       support. [None] = unknown / pre-Phase compat. Conservative
       consumers treat [None] as "not push-capable". *)
   ; tmux_location : string option
-  (** Tmux session:window.pane target for the pane running this session.
-      Captured at registration time for managed sessions (c2c start);
-      None for unmanaged / foreign MCP clients. Format: "session:window.pane". *)
+  (** Tmux target for the pane running this session. Managed sessions
+      (c2c start) capture "session:window.pane"; hook-captured sessions
+      store the raw pane id from $TMUX_PANE (e.g. "%5") — both are valid
+      `tmux send-keys -t` targets. None for sessions outside tmux.
+      Wake-inject (codex idle wake) reads this as its tmux backend target. *)
+  ; herdr_pane : string option
+  (** herdr pane id for the pane running this session (e.g. "w1:p9"),
+      captured from $HERDR_PANE_ID. Wake-inject (codex idle wake) reads
+      this as its herdr backend target. None outside herdr. *)
+  ; herdr_socket : string option
+  (** herdr API socket path captured from $HERDR_SOCKET_PATH. Exported as
+      HERDR_SOCKET_PATH when the wake injector invokes the herdr CLI for
+      this session's pane. None outside herdr. *)
   ; cwd : string option
   (** Working directory of the session at registration time.
       Captured via Sys.getcwd () at register time. Used by Hardening B
@@ -351,7 +366,18 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> ?cwd:string option -> ?metadata_opt_out:bool -> ?registered_by:string option -> ?opaque_host_id:string option -> ?from_auto_gen:bool -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> ?herdr_pane:string option -> ?herdr_socket:string option -> ?cwd:string option -> ?metadata_opt_out:bool -> ?registered_by:string option -> ?opaque_host_id:string option -> ?from_auto_gen:bool -> unit -> unit
+
+  val update_wake_targets : t -> session_id:string -> ?tmux_location:string option -> ?herdr_pane:string option -> ?herdr_socket:string option -> unit -> unit
+  (** [update_wake_targets t ~session_id ...] updates only the wake-target
+      metadata (tmux_location / herdr_pane / herdr_socket) of an existing
+      registration, in place under the registry lock. [Some v] overwrites;
+      [None] (the default) leaves the stored value unchanged — targets are
+      never cleared here, so a fire from outside tmux/herdr cannot erase a
+      previously captured pane. No-op when the session is not registered.
+      Total: never raises. Used by `c2c hook codex` on SessionStart /
+      auto-register to keep wake targets fresh as sessions move panes. *)
+
   val list_registrations : t -> registration list
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
@@ -487,6 +513,7 @@ module Broker : sig
       paths to skip drain when the MCP server's channel watcher will own
       delivery (#387 A2). *)
   val with_inbox_lock : t -> session_id:string -> (unit -> 'a) -> 'a
+  val inbox_has_push_messages_locked : t -> session_id:string -> bool
   type sweep_result = { dropped_regs : registration list; deleted_inboxes : string list; preserved_messages : int }
   val sweep : t -> sweep_result
   val registry_prune : t -> managed_session_ids:string list -> patterns:string list -> registration list

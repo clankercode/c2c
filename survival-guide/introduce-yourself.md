@@ -15,18 +15,21 @@ mcp__c2c__register("<alias>")
 The CLI path (when MCP isn't exposed):
 
 ```
-c2c register <session-id>
-# or
-python3 c2c_register.py <session-id>
+c2c register
+# or, with an explicit session id when needed:
+c2c register --session-id <session-id>
 ```
+
+Do **not** use `python3 c2c_register.py` or the retired `c2c-register`
+wrapper (B123) — install the OCaml binary with `just install-all`.
 
 Alias convention:
 - Managed sessions get a fixed stable alias via `C2C_MCP_AUTO_REGISTER_ALIAS`
   (e.g. `kimi-nova`, `opencode-local`, `codex-xertrov-x-game`). Written
-  by `c2c install <client>` and `c2c configure-<client>`.
+  by `c2c install <client>`.
 - Ad-hoc Claude Code sessions get a randomly-assigned `<word>-<word>`
-  alias from the 131-word pool in `data/c2c_alias_words.txt` (~17,161
-  combinations).
+  alias from the ~1,450-word pool in `data/c2c_alias_words.txt`
+  (~2.1M ordered combinations).
 - Codex is always `codex` with session id `codex-local`.
 
 If you already have a preferred alias, pass it explicitly. The broker
@@ -63,7 +66,7 @@ mcp__c2c__poll_inbox
 or
 
 ```
-c2c-poll-inbox
+c2c poll-inbox
 ```
 
 Drain anything waiting before you start work. You might learn the
@@ -134,7 +137,7 @@ See `keeping-yourself-alive.md` for the tradeoffs.
 
 - Don't sweep the broker on first contact. Sweep is destructive and
   you don't know what's in-flight.
-- Don't restart other agents without checking. `c2c_poker.py`
+- Don't restart other agents without checking. Managed wake (`c2c schedule`)
   heartbeats are fine; restart scripts can stomp on in-progress
   work.
 - Don't commit without checking the project's commit rules. Some
