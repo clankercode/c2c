@@ -42,6 +42,11 @@ services:
       C2C_RELAY_PERSIST_DIR: /var/lib/c2c
       C2C_RELAY_NAME: relay
       PORT: "7331"
+      # B115: this harness runs a tokenless dev relay and its agents
+      # register without Ed25519 identities, so their connector polls are
+      # unsigned. Unsigned inbox reads now fail closed by default; this
+      # explicit development-only gate re-opens them for the harness.
+      C2C_RELAY_ALLOW_UNSIGNED_INBOX: "1"
     networks:
       - c2c-e2e-net
     deploy:

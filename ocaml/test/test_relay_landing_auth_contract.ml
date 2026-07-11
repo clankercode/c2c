@@ -338,11 +338,12 @@ let t_section_semantics_pinned () =
   check_phrase "admin" "operator Bearer token only";
   check_phrase "admin" "Ed25519 rejected";
   (* self-auth must NOT claim a uniform handler check (iteration-2 review:
-     headerless poll/peek and bare-ID /binding/* apply no authorization at
-     all); it must describe an outer-gate bypass with route-specific policy
-     AND disclose the legacy/unauthenticated acceptance paths (B111:
-     unsigned room ops, envelope-less /send_room, headerless poll/peek,
-     bare-ID /binding/* revoke). *)
+     bare-ID /binding/* applies no authorization at all); it must describe an
+     outer-gate bypass with route-specific policy AND disclose the remaining
+     unauthenticated acceptance path (bare-ID /binding/* revoke) plus the
+     dev-only unsigned-room-op gate. (B114 made room ops/sends signed-by-
+     default; B115 moved poll/peek to peer routes — neither is an
+     unauthenticated self-auth path any more.) *)
   check_phrase "self-auth" "bypass the outer header-auth gate";
   check_phrase "self-auth" "route-specific";
   check_phrase "self-auth" "no check at all";

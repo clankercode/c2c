@@ -49,10 +49,11 @@ is route-specific, not a uniform check. Most handlers verify real proofs
 <code>/send_room</code>: mandatory signed bodies/envelopes &mdash; unsigned
 requests are rejected unless the operator explicitly enables the legacy
 dev-only gate <code>C2C_REQUIRE_SIGNED_ROOM_OPS=0</code> on a token-less
-relay; mobile-pairing tokens; WebSocket signature headers), but a few
-still accept requests with no check at all beyond the identifiers in the
-request: <code>/poll_inbox</code>/<code>/peek_inbox</code> without an
-Ed25519 header, and <code>/binding/*</code> revocation by bare binding ID.
+relay; mobile-pairing tokens; WebSocket signature headers), but
+<code>/binding/*</code> revocation still accepts requests with
+no check at all beyond the bare binding ID in the request. (Inbox reads and drains are
+no longer in this class &mdash; since B115 they are ordinary peer routes
+requiring an Ed25519 request whose bound alias owns the inbox.)
 Routes: %s &middot;
 %s.<!-- /auth-class:self-auth --></li>
 </ul>
@@ -202,7 +203,9 @@ POST /heartbeat     { node_id, session_id }
 POST /send          { from_alias, to_alias, content, message_id? }
 POST /send_all      { from_alias, content, message_id? }
 POST /poll_inbox    { node_id, session_id }      drains &amp; returns []
+                    (Ed25519 owner-signed request required)
 POST /peek_inbox    { node_id, session_id }      non-destructive
+                    (Ed25519 owner-signed request required)
 POST /join_room     { alias, room_id, visibility? }
 POST /leave_room    { alias, room_id }
 POST /send_room     { from_alias, room_id, content, message_id? }

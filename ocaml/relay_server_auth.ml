@@ -38,9 +38,9 @@ type route_class =
                        and /register verify a body-level Ed25519 proof
                        (unsigned bodies rejected since B114 unless the
                        dev-only C2C_REQUIRE_SIGNED_ROOM_OPS=0 gate is active
-                       on a token-less relay), while others apply no check
-                       beyond the identifiers in the request (headerless
-                       poll/peek, bare-ID /binding/* revoke) *)
+                       on a token-less relay), while bare-ID /binding/*
+                       revoke applies no check beyond the request
+                       identifiers *)
   | Bearer_admin    (* operator Bearer token; Ed25519 rejected *)
   | Peer_ed25519    (* per-request Ed25519 signature from a bound identity *)
 
@@ -60,16 +60,22 @@ let anonymous_read_routes =
    via verify_room_op_proof (send_room via verify_room_send_envelope) and since
    B114 REJECT unsigned bodies unless the dev-only unsigned gate is active
    (C2C_REQUIRE_SIGNED_ROOM_OPS=0 on a token-less relay). Handler policy is
-   still route-specific rather than uniform: some routes (headerless poll/peek,
-   bare-ID /binding/* revoke) apply no check beyond the request identifiers.
-   Bypassing header auth here hands the body to the handler's own policy. *)
+   still route-specific rather than uniform: the bare-ID /binding/* revoke
+   route applies no check beyond the request identifiers.
+   Bypassing header auth here hands the body to the handler's own policy.
+   B115: /poll_inbox and /peek_inbox are deliberately NOT in this set — they
+   are ordinary peer routes (Peer_ed25519). Reading or draining an inbox
+   requires a verified Ed25519 request whose bound alias owns the
+   node/session (checked in the handlers); the handlers additionally fail
+   closed even on a tokenless relay unless the development-only env gate
+   C2C_RELAY_ALLOW_UNSIGNED_INBOX=1 is set (see inbox_owner_required in
+   relay.ml). Same route class as /send and /heartbeat. *)
 let self_auth_exact_routes =
   [ "/register"; "/join_room"; "/leave_room"; "/send_room";
     "/set_room_visibility"; "/send_room_invite"; "/invite_room";
     "/uninvite_room"; "/knock_room"; "/list_room_knocks";
     "/approve_room_knock"; "/deny_room_knock"; "/mobile-pair/prepare";
-    "/mobile-pair"; "/forward"; "/poll_inbox"; "/peek_inbox";
-    "/ws/subscribe" ]
+    "/mobile-pair"; "/forward"; "/ws/subscribe" ]
 
 let self_auth_prefix_routes = ["/binding/"]
 

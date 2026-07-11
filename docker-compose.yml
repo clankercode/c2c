@@ -28,6 +28,10 @@ services:
       # RELAY_TOKEN: "local-dev-token"
       C2C_RELAY_PERSIST_DIR: /var/lib/c2c
       PORT: "7331"
+      # B115: unsigned /poll_inbox and /peek_inbox fail closed by default
+      # even on a tokenless relay. This explicit development-only gate
+      # re-opens them for local identity-less testing (loopback bind only).
+      C2C_RELAY_ALLOW_UNSIGNED_INBOX: "1"
     ports:
       - "127.0.0.1:7331:7331"
     volumes:
