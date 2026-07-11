@@ -4240,23 +4240,29 @@ let start_headless_thread_id_watcher ~(name : string) ~(path : string) : Thread.
    When all callers migrate to c2c_pty_inject.ml this alias can be removed. *)
 let pty_inject = C2c_pty_inject.pty_inject
 
-(* Parse -- separator from extra_args. Returns (cmd, argv) if found, or exits with error. *)
+(* Strip the leading client name (pos 0) and `--` (pos 1) from the raw
+   `pos_all` positional capture of `c2c start`, yielding the child's extra
+   argv. Cmdliner places `--` at position 1 when present. Shared by the
+   `c2c start` Cmdliner term (c2c_managed_cmd.ml) and the B129 regression
+   tests so both exercise the same production logic. *)
+let strip_start_extra_argv_prefix : string list -> string list = function
+  | _ :: _ :: rest -> rest
+  | _ -> []
+
+(* Parse the command + argv for `c2c start pty` from [extra_args].
+
+   B129: [extra_args] is ALREADY the raw command tokens — the shared positional
+   parser in c2c_managed_cmd.ml strips the leading client name + `--` before
+   run_pty_loop is reached. So for `c2c start pty -- bash -i` we receive
+   ["bash"; "-i"]; the first token is the command and the rest is its argv.
+   Do NOT hunt for another `--` here (that required the double-`--` form
+   `c2c start pty -- -- bash -i`). Errors only when [extra_args] is empty. *)
 let parse_pty_cmd_argv (extra_args : string list) : (string * string list) =
-  let rec split_on_dashdash (before : string list) (after : string list) : (string * string list) =
-    match after with
-    | [] ->
-        Printf.eprintf "error: c2c start pty requires '--' followed by the command to run.\n%!";
-        Printf.eprintf "  Example: c2c start pty -- bash\n%!";
-        exit 1
-    | "--" :: rest ->
-        if rest = [] then begin
-          Printf.eprintf "error: -- must be followed by a command.\n%!";
-          exit 1
-        end else
-          (List.hd rest, List.tl rest)
-    | x :: xs -> split_on_dashdash (x :: before) xs
-  in
-  split_on_dashdash [] extra_args
+  match extra_args with
+  | [] ->
+      Printf.eprintf "error: c2c start pty requires a command, e.g. `c2c start pty -- bash`.\n%!";
+      exit 1
+  | cmd :: argv -> (cmd, argv)
 
 (* PTY deliver loop: polls broker inbox and writes messages to PTY master fd.
    Exits when child_pid is no longer alive (child exited).
