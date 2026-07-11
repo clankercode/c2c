@@ -283,31 +283,61 @@ let entry_json (e : entry) : Yojson.Safe.t =
     ; ("audience", `String e.audience)
     ]
 
-(* ---- AGENT-FACING SURFACING SEAM (v0 placeholder copy) ------------------
+(* ---- AGENT-FACING SURFACING SEAM --------------------------------------
 
    [render_changelog_for_agent] is the SINGLE seam for the text/markup injected
    into an agent's transcript at session start when the binary version changes.
-   The exact phrasing — how entries are worded so the agent knows to OFFER
-   setting up new features, the once-only-show wording — is owned by the
-   surfacing layer and is intentionally minimal/placeholder here (v0). Rework
-   this function's body freely without touching the fetch/cache/state plumbing;
-   [auto_show] only depends on its type (entry list -> string). *)
-let render_changelog_for_agent ~current_version (entries : entry list) : string =
+   The copy contract (owned by the surfacing layer, not the plumbing):
+   - states it is a once-only informational notice, NOT a work trigger —
+     keepalive discipline stays intact;
+   - tells interactive sessions to OFFER setup to the operator, and autonomous
+     swarm agents to adopt relevant setup when next idle (most c2c sessions
+     have no human present);
+   - `setup:` commands appear verbatim (rule #414), backtick-delimited;
+   - hard cap ~8 entries / ~1500 chars of bullets, overflow collapses to a
+     count + the `c2c changelog --since <prev>` escape hatch, which always
+     closes the block.
+   Rework this function's body freely without touching the fetch/cache/state
+   plumbing; [auto_show] only depends on its signature. *)
+let render_changelog_for_agent ~prev_version ~current_version
+    (entries : entry list) : string =
+  let flatten s =
+    String.map (fun c -> if c = '\n' then ' ' else c) (String.trim s)
+  in
   let render_one e =
     let setup =
       match e.setup with
-      | Some cmd when String.trim cmd <> "" -> Printf.sprintf "\n  offer to run: %s" cmd
+      | Some cmd when String.trim cmd <> "" -> Printf.sprintf " [setup: `%s`]" cmd
       | _ -> ""
     in
-    Printf.sprintf "- %s: %s%s" e.title (String.trim e.summary) setup
+    Printf.sprintf "- %s: %s%s" e.title (flatten e.summary) setup
+  in
+  let max_entries = 8 and max_chars = 1500 in
+  let rec take acc n chars = function
+    | [] -> (List.rev acc, 0)
+    | rest when n >= max_entries || chars >= max_chars ->
+        (List.rev acc, List.length rest)
+    | e :: rest ->
+        let b = render_one e in
+        take (b :: acc) (n + 1) (chars + String.length b + 1) rest
+  in
+  let bullets, overflow = take [] 0 0 entries in
+  let overflow_line =
+    if overflow = 0 then ""
+    else Printf.sprintf "\n- …plus %d more not shown here." overflow
   in
   Printf.sprintf
-    "<c2c-changelog current-version=\"%s\">\n\
-     c2c updated — new since you last saw it. You can offer to set up any of these:\n\n\
-     %s\n\n\
-     Run `c2c changelog` any time to see this again.\n\
+    "<c2c-changelog from=\"%s\" to=\"%s\">\n\
+     c2c updated %s -> %s since this client last saw a changelog. New:\n\n\
+     %s%s\n\n\
+     This is a one-time informational notice, not a work trigger — do not \
+     interrupt in-flight work for it. If a feature above is relevant to this \
+     session's host client, offer to set it up when an operator is present; \
+     autonomous agents should adopt relevant setup next time they are idle. \
+     Full details any time: `c2c changelog --since %s`.\n\
      </c2c-changelog>"
-    current_version (String.concat "\n" (List.map render_one entries))
+    prev_version current_version prev_version current_version
+    (String.concat "\n" bullets) overflow_line prev_version
 
 (* ---- background fetch (fixture-gated) ---------------------------------- *)
 
@@ -472,6 +502,8 @@ let auto_show ?current ?(audience = "all") ~broker_root ~client ~now () : string
           None
         else begin
           write_marker ~broker_root ~client ~version:current;
-          Some (render_changelog_for_agent ~current_version:current new_entries)
+          Some
+            (render_changelog_for_agent ~prev_version:prev
+               ~current_version:current new_entries)
         end
       end

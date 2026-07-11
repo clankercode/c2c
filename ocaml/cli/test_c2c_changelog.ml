@@ -138,8 +138,14 @@ let test_upgrade_shows_once () =
    | Some block ->
        check bool "block mentions a v0.10.0 title" true
          (contains block "Agent-facing changelog");
-       check bool "block offers a setup command" true
-         (contains block "offer to run: c2c changelog"));
+       check bool "block carries the setup command verbatim" true
+         (contains block "[setup: `c2c changelog`]");
+       check bool "block names the from->to versions" true
+         (contains block "from=\"0.9.0\" to=\"0.10.0\"");
+       check bool "block is marked informational, not a work trigger" true
+         (contains block "not a work trigger");
+       check bool "block ends with the --since escape hatch" true
+         (contains block "`c2c changelog --since 0.9.0`"));
   check (option string) "marker advanced to 0.10.0" (Some "0.10.0")
     (read_marker root "claude");
   let out2 =
@@ -279,6 +285,25 @@ let test_marker_lock_serialised_autoshow () =
   in
   check bool "auto_show under lock still shows" true (Option.is_some out)
 
+let test_render_caps_overflow () =
+  (* >8 entries collapse to 8 bullets + an overflow count; the --since escape
+     hatch still closes the block. *)
+  let entry i =
+    { C2c_changelog.version = "0.10.0"; date = None
+    ; title = Printf.sprintf "Feature %02d" i
+    ; summary = "short."; setup = None; clients = []; audience = "all" }
+  in
+  let entries = List.init 11 entry in
+  let block =
+    C2c_changelog.render_changelog_for_agent ~prev_version:"0.9.0"
+      ~current_version:"0.10.0" entries
+  in
+  check bool "8th bullet shown" true (contains block "Feature 07");
+  check bool "9th bullet dropped" false (contains block "Feature 08");
+  check bool "overflow counted" true (contains block "plus 3 more");
+  check bool "escape hatch present" true
+    (contains block "`c2c changelog --since 0.9.0`")
+
 let test_embedded_nonempty () =
   let es = Lazy.force C2c_changelog.embedded_entries in
   check bool "embedded changelog has entries" true (List.length es > 0);
@@ -308,6 +333,9 @@ let () =
         ; test_case "client filter gates emit + marker" `Quick
             test_client_filter_in_autoshow
         ; test_case "per-client independent" `Quick test_per_client_independent ] )
+    ; ( "render",
+        [ test_case "cap + overflow + escape hatch" `Quick
+            test_render_caps_overflow ] )
     ; ( "fetch",
         [ test_case "fixture populates cache" `Quick
             test_fetch_fixture_populates_cache
