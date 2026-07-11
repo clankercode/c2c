@@ -217,10 +217,9 @@ let start_cmd =
     in
     let open Cmdliner.Term.Syntax in
     let+ extra_argv = extra_argv_term in
-    (* Strip client name (pos 0) and `--` (pos 1); rest is the child's extra argv. *)
-    match extra_argv with
-    | _ :: _ :: rest -> rest
-    | _ -> []
+    (* Strip client name (pos 0) and `--` (pos 1); rest is the child's extra
+       argv. Shared helper so the B129 tests exercise this exact logic. *)
+    C2c_start.strip_start_extra_argv_prefix extra_argv
   in
   let name =
     Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")

@@ -4240,6 +4240,15 @@ let start_headless_thread_id_watcher ~(name : string) ~(path : string) : Thread.
    When all callers migrate to c2c_pty_inject.ml this alias can be removed. *)
 let pty_inject = C2c_pty_inject.pty_inject
 
+(* Strip the leading client name (pos 0) and `--` (pos 1) from the raw
+   `pos_all` positional capture of `c2c start`, yielding the child's extra
+   argv. Cmdliner places `--` at position 1 when present. Shared by the
+   `c2c start` Cmdliner term (c2c_managed_cmd.ml) and the B129 regression
+   tests so both exercise the same production logic. *)
+let strip_start_extra_argv_prefix : string list -> string list = function
+  | _ :: _ :: rest -> rest
+  | _ -> []
+
 (* Parse the command + argv for `c2c start pty` from [extra_args].
 
    B129: [extra_args] is ALREADY the raw command tokens — the shared positional

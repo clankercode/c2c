@@ -378,12 +378,14 @@ let test_extra_argv_boundary_c2c_flag_not_consumed_b128 () =
     !captured_extra
 
 (* B129 regression guard: `c2c start pty -- bash -i` must parse with a SINGLE
-   `--`. The shared positional parser strips the leading client name + `--`
-   (see the `_ :: _ :: rest` strip mirrored below), so `parse_pty_cmd_argv`
-   receives the raw command tokens `["bash"; "-i"]` and must NOT hunt for
-   another `--`. Prior to the fix it required a second `--`, forcing users to
-   type the double-`--` form `c2c start pty -- -- bash -i`. This test drives
-   the full flow: strip via the same cmdliner grammar, then parse. *)
+   `--`. The `c2c start` Cmdliner term strips the leading client name + `--`
+   (via the real `C2c_start.strip_start_extra_argv_prefix`), so
+   `parse_pty_cmd_argv` receives the raw command tokens `["bash"; "-i"]` and
+   must NOT hunt for another `--`. Prior to the fix it required a second `--`,
+   forcing users to type the double-`--` form `c2c start pty -- -- bash -i`.
+   This test drives the full production flow: the real cmdliner grammar
+   captures the positionals, then the real strip + parse helpers run — so a
+   wiring regression in either the strip or the parse is caught here. *)
 let test_parse_pty_cmd_argv_single_dashdash_b129 () =
   let extra_argv =
     Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"ARG" ~doc:"")
@@ -396,8 +398,8 @@ let test_parse_pty_cmd_argv_single_dashdash_b129 () =
     let open Cmdliner.Term.Syntax in
     let+ _client = client
     and+ all = extra_argv in
-    (* Strip client name (pos 0) and `--` (pos 1) — same as the real term. *)
-    captured := (match all with _ :: _ :: rest -> rest | _ -> [])
+    (* Same strip helper the production `c2c start` term uses. *)
+    captured := C2c_start.strip_start_extra_argv_prefix all
   in
   let cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start") term in
   let argv = [| "c2c"; "start"; "pty"; "--"; "bash"; "-i" |] in
@@ -407,6 +409,19 @@ let test_parse_pty_cmd_argv_single_dashdash_b129 () =
   let parsed_cmd, parsed_argv = C2c_start.parse_pty_cmd_argv !captured in
   check string "parsed command is `bash` (no double `--` needed)" "bash" parsed_cmd;
   check (list string) "parsed argv is `[-i]`" [ "-i" ] parsed_argv
+
+(* B129: the empty-arg error path must stay REACHABLE — the strip helper
+   yields [] for both the no-command form (`c2c start pty`) and the
+   dashes-only form (`c2c start pty --`), which feeds parse_pty_cmd_argv's
+   empty-error branch. Proven via the real strip helper. *)
+let test_strip_start_extra_argv_prefix_empty_cases_b129 () =
+  check (list string) "`c2c start pty` (no cmd) strips to []"
+    [] (C2c_start.strip_start_extra_argv_prefix [ "pty" ]);
+  check (list string) "`c2c start pty --` (dashes only) strips to []"
+    [] (C2c_start.strip_start_extra_argv_prefix [ "pty"; "--" ]);
+  check (list string) "`c2c start pty -- bash -i` strips to command tokens"
+    [ "bash"; "-i" ]
+    (C2c_start.strip_start_extra_argv_prefix [ "pty"; "--"; "bash"; "-i" ])
 
 (* B129: a bare command with no argv parses to (cmd, []). *)
 let test_parse_pty_cmd_argv_bare_command_b129 () =
@@ -4067,6 +4082,8 @@ let () =
             `Quick, test_parse_pty_cmd_argv_single_dashdash_b129 )
         ; ( "parse_pty_cmd_argv_bare_command_b129",
             `Quick, test_parse_pty_cmd_argv_bare_command_b129 )
+        ; ( "strip_start_extra_argv_prefix_empty_cases_b129",
+            `Quick, test_strip_start_extra_argv_prefix_empty_cases_b129 )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "prepare_launch_args_codex_headless_model_flag",
