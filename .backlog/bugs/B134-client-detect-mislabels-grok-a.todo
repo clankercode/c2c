@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-11T15:33:00Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-11T15:45:00Z"
 complexity: medium
 created_at: "2026-07-11T15:25:53Z"
 depends_on: []
+duration_minutes: 12.0070005718
 estimate_hours: 1
 id: B134
 priority: medium
 started_at: "2026-07-11T15:33:00Z"
-status: in_progress
+status: done
 tags: []
 title: Client detect mislabels Grok (and Cursor) as codex- alias prefix
-updated_at: "2026-07-11T15:33:00Z"
+updated_at: "2026-07-11T15:45:00Z"
 ---
 ## Symptom
 Grok sessions are not correctly detected as `grok` and instead get a `codex-` alias prefix (and often `client: "codex"` in registration / default-session state). The same happens for Cursor Agent sessions even though Cursor is not an officially supported client — they still should not be labeled as Codex.
