@@ -136,3 +136,4 @@ bugs:
     - file: B137-codex-frontend-hook-self-regis.todo
     - file: B138-c2c-doctor-overclaims-live-app.todo
     - file: B139-codex-c2c-skill-md-should-ment.todo
+    - file: B140-implement-proper-alias-rename.todo

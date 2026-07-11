@@ -1,0 +1,13 @@
+---
+complexity: high
+created_at: "2026-07-11T16:43:08Z"
+depends_on: []
+estimate_hours: 1
+id: B140
+priority: medium
+status: pending
+tags: []
+title: Implement proper alias rename that sticks (atomic rename-everywhere) — not just forbid
+updated_at: "2026-07-11T16:43:08Z"
+---
+B135 shipped option-1 (FORBID rename with a clear sticky-alias error) to kill the silent half-rename. This is the follow-up to implement it PROPERLY and FULLY: option-2/3 — a deliberate, atomic rename-everywhere so a chosen alias (e.g. a coordinator wanting 'amaroo-coord') actually STICKS without a session restart, and peers see the new name. Scope: an explicit 'c2c rename <new-alias>' command (+ MCP tool) that atomically updates ALL identity stores — registry registration, room memberships, relay identity/registration, message archives / history attribution — under proper locking, with rollback on partial failure (no half-rename ever). KEEP the B135 forbid guard for the UNSAFE/implicit paths (env-only C2C_MCP_AUTO_REGISTER_ALIAS, register/init --alias on a live session): those stay refused; only the explicit deliberate 'c2c rename' path performs the safe atomic rename. AC: rename sticks across registry+rooms+relay+archives; peers see new alias without restart; partial-failure rolls back; unsafe/implicit renames still refused; case-insensitive identity respected; CLI+MCP parity; E2E proving a live coordinator rename propagates to a peer's 'c2c list'. Ref: B135 review verdict (fix is correct as option-1; this is the sanctioned option-2 the bug's 'Expected (pick one)' listed).
