@@ -109,3 +109,4 @@ bugs:
     - file: B110-c2c-should-install-a-start-hoo.todo
     - file: B111-full-audit-of-what-is-publicly.todo
     - file: B112-expand-wordlist-used-for-gener.todo
+    - file: B113-correct-public-relay-auth-and.todo
