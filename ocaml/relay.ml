@@ -926,7 +926,14 @@ module InMemoryRelay : RELAY = struct
            visibility (legacy in-memory rooms) defaults to public. *)
         let visibility = match Hashtbl.find_opt t.room_visibility room_id with
           | Some v -> v | None -> "public" in
+        (* B118: defensive directory-boundary guard. handle_join_room rejects
+           out-of-grammar room ids, but a backend-direct caller or a legacy
+           persisted row could still carry a room id containing `#`/`@`, which
+           would make its alias#room@relay directory address ambiguous. Omit
+           such rooms from the anonymous directory entirely — better unlisted
+           than emitting an address the recipient parser cannot round-trip. *)
         if not (visibility = "public" || visibility = "gated") then acc
+        else if not (valid_relay_room_id room_id) then acc
         else
           `Assoc [
             ("room_id", `String room_id);
@@ -2104,6 +2111,13 @@ module SqliteRelay : RELAY = struct
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
           let room_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+          (* B118: defensive directory-boundary guard — omit any room whose id
+             is out-of-grammar (contains `#`/`@` etc.) so its alias#room@relay
+             directory address can never be ambiguous. Covers legacy persisted
+             rows and backend-direct callers that bypass handle_join_room's
+             grammar check. Better unlisted than an unparseable address. *)
+          if not (valid_relay_room_id room_id) then loop ()
+          else
           let mem_stmt = Sqlite3.prepare conn "SELECT COUNT(*) FROM room_members WHERE room_id = ?" in
           Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
           let rc2 = Sqlite3.step mem_stmt in

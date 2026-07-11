@@ -288,6 +288,42 @@ let test_http_anonymous_list_rooms () =
     check bool "session_id sentinel absent" false (contains sentinel_sess);
     check bool "identity_pk sentinel absent" false (contains sentinel_pk))
 
+(* --- 6b. Defensive directory-boundary filter: even when an out-of-grammar
+   room id is created DIRECTLY via the backend join_room (bypassing the HTTP
+   handle_join_room grammar guard — the legacy-persisted / backend-direct
+   path), list_rooms omits it so no ambiguous alias#room@relay address is ever
+   emitted. Both backends. --- *)
+
+let test_inmemory_omits_out_of_grammar_room () =
+  let t = Relay.InMemoryRelay.create () in
+  let _ = Relay.InMemoryRelay.register t
+      ~node_id:"n-x" ~session_id:"s-x" ~alias:"xavier" () in
+  (* backend join_room does not validate grammar — create a `#`-bearing room *)
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"xavier" ~room_id:"bad#room" () in
+  let _ = Relay.InMemoryRelay.join_room t ~alias:"xavier" ~room_id:"ok-room" () in
+  let rooms = Relay.InMemoryRelay.list_rooms t in
+  check bool "out-of-grammar 'bad#room' omitted from directory" false
+    (find_room rooms "bad#room" <> None);
+  check bool "grammar-valid 'ok-room' still listed" true
+    (find_room rooms "ok-room" <> None);
+  check bool "no ambiguous address emitted" false
+    (json_contains_substr rooms "bad#room")
+
+let test_sqlite_omits_out_of_grammar_room () =
+  with_temp_dir (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    let _ = Relay.SqliteRelay.register t
+        ~node_id:"n-x" ~session_id:"s-x" ~alias:"xavier" () in
+    let _ = Relay.SqliteRelay.join_room t ~alias:"xavier" ~room_id:"bad@room" () in
+    let _ = Relay.SqliteRelay.join_room t ~alias:"xavier" ~room_id:"ok-room" () in
+    let rooms = Relay.SqliteRelay.list_rooms t in
+    check bool "out-of-grammar 'bad@room' omitted from directory" false
+      (find_room rooms "bad@room" <> None);
+    check bool "grammar-valid 'ok-room' still listed" true
+      (find_room rooms "ok-room" <> None);
+    check bool "no ambiguous address emitted" false
+      (json_contains_substr rooms "bad@room"))
+
 (* --- 7. Room-op boundary rejects out-of-grammar room ids (B118) so the
    directory address can never carry an extra `#`/`@` delimiter. --- *)
 
@@ -345,6 +381,10 @@ let () =
           test_http_anonymous_list_rooms;
         test_case "room-op boundary rejects out-of-grammar room ids" `Quick
           test_http_join_rejects_bad_room_id;
+        test_case "InMemory list_rooms omits backend-direct out-of-grammar room"
+          `Quick test_inmemory_omits_out_of_grammar_room;
+        test_case "Sqlite list_rooms omits backend-direct out-of-grammar room"
+          `Quick test_sqlite_omits_out_of_grammar_room;
       ];
       "visibility filter", [
         test_case "InMemory public/gated listed, unlisted/private omitted"
