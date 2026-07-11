@@ -103,7 +103,8 @@ let short_pk (pk : string) : string =
 
 let list_cmd =
   let all =
-    Cmdliner.Arg.(value & flag & info [ "all"; "a" ] ~doc:"Show extended info (session ID, registered time).")
+    Cmdliner.Arg.(value & flag & info [ "all"; "a" ]
+      ~doc:"Show extended info (session ID, registered time) and include confirmed-dead sessions. By default, stale sessions whose process has exited are hidden so peer discovery stays focused on reachable agents.")
   in
   let enriched =
     Cmdliner.Arg.(value & flag & info [ "enriched"; "e" ]
@@ -115,7 +116,7 @@ let list_cmd =
   in
   let alive_only =
     Cmdliner.Arg.(value & flag & info [ "alive"; "A" ]
-      ~doc:"Show only alive sessions. By default, dead sessions (those whose PID has exited) are listed with a 'dead' state annotation. Use this flag to suppress them from the output.")
+      ~doc:"Show only alive sessions. By default, confirmed-dead sessions are hidden while sessions with unknown liveness remain visible; use --all to include dead sessions too.")
   in
   let match_substr =
     Cmdliner.Arg.(value & opt (some string) None & info [ "match"; "m" ]
@@ -182,22 +183,17 @@ let list_cmd =
     | None -> true
     | Some s -> string_contains_ci r.alias s
   in
+  (* A missing or unverifiable PID is deliberately [Unknown], not [Dead]: a
+     vanilla hook client may still receive on its next hook. Hide only
+     confirmed process-exited rows by default. [--all] is the explicit
+     operator escape hatch for stale-session forensics. *)
   let regs_filter regs =
     regs
+    |> (if all then Fun.id else
+          List.filter (fun r ->
+            C2c_mcp.Broker.registration_liveness_state r <> C2c_mcp.Broker.Dead))
     |> (if alive_only then List.filter is_alive else Fun.id)
     |> List.filter matches_alias
-  in
-  (* Noise hint (dogfood friction): a mostly-dead listing buries the live
-     peers and can overflow agent-harness output truncation. Non-JSON output
-     only, and on stderr so scripts scraping stdout are unaffected. *)
-  let maybe_noise_hint (regs : C2c_mcp.registration list) =
-    let is_dead r = C2c_mcp.Broker.registration_liveness_state r = C2c_mcp.Broker.Dead in
-    let n_dead = List.length (List.filter is_dead regs) in
-    let n_alive = List.length (List.filter is_alive regs) in
-    if List.length regs > 20 && n_dead > n_alive then
-      Printf.eprintf
-        "hint: %d dead vs %d alive sessions listed — try `c2c list --alive`, `c2c list --match SUBSTR`, or `c2c find <alias>`.\n%!"
-        n_dead n_alive
   in
 
   (* --- helpers shared between single-broker and global modes --- *)
@@ -307,8 +303,10 @@ let list_cmd =
       let peers =
         raw
         |> List.filter peer_matches
+        |> (if all then Fun.id else
+              List.filter (fun p -> relay_peer_is_alive p <> Some false))
         |> (if alive_only then
-              List.filter (fun p -> relay_peer_is_alive p <> Some false)
+              List.filter (fun p -> relay_peer_is_alive p = Some true)
             else Fun.id)
       in
       (peers, note)
@@ -582,8 +580,12 @@ let list_cmd =
               let existing = try Hashtbl.find by_broker key with Not_found -> [] in
               Hashtbl.replace by_broker key (r :: existing)
             ) all_regs;
-            (* Print one broker section at a time *)
-            List.iter (fun (fp, root) ->
+            (* Print only repositories with a visible row.  After the default
+               dead-session filter, retaining an empty broker header would
+               still expose the stale repository as list noise. *)
+            all_roots
+            |> List.filter (fun key -> Hashtbl.mem by_broker key)
+            |> List.iter (fun (fp, root) ->
               let regs = try Hashtbl.find by_broker (fp, root) with Not_found -> [] in
               Printf.printf "\n[%s]\n  repo: %s\n  root: %s\n"
                 (if enriched then "enriched" else "sessions")
@@ -619,8 +621,7 @@ let list_cmd =
                   Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str
                 end
               ) regs
-            ) all_roots;
-            maybe_noise_hint (List.map (fun (_, _, r) -> r) all_regs)
+            )
           end
   else
     (* single-broker (default or --cross-repo): gathered above as single_regs *)
@@ -714,8 +715,7 @@ let list_cmd =
                 else
                   let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
                   Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
-               regs;
-          maybe_noise_hint regs) in
+               regs) in
   if relay && output_mode = Human then emit_relay_human ()
 
 let sessions_cmd =
