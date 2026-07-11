@@ -9,7 +9,7 @@ open C2c_types
 open Cmdliner.Term.Syntax
 
 let known_components =
-  [ "claude"; "codex"; "kimi"; "opencode"; "self"; "git-hook"; "git-shim"; "all" ]
+  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "self"; "git-hook"; "git-shim"; "all" ]
 
 let home_dir () = try Sys.getenv "HOME" with Not_found -> ""
 

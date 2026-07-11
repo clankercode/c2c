@@ -67,11 +67,44 @@ let test_recompute_codex_covers_shared_blocks () =
     check bool "legacy pre-deliver.sh still in fallback" true
       (owned_path (client_dir // "start-hooks" // "pre-deliver.sh")))
 
+let write_file path content =
+  let parent = Filename.dirname path in
+  if not (Sys.file_exists parent) then Unix.mkdir parent 0o700;
+  let oc = open_out_bin path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc content)
+
+let test_grok_is_a_supported_uninstall_component () =
+  with_temp_home (fun home ->
+    check bool "grok accepted by uninstall command" true
+      (List.mem "grok" C2c_uninstall.known_components);
+    let skill = home // ".grok" // "skills" // "c2c" // "SKILL.md" in
+    let session_skill =
+      home // ".grok" // "skills" // "c2c-session" // "SKILL.md"
+    in
+    let hooks = home // ".grok" // "hooks" // "c2c-session.json" in
+    C2c_mcp.mkdir_p (Filename.dirname skill);
+    C2c_mcp.mkdir_p (Filename.dirname session_skill);
+    C2c_mcp.mkdir_p (Filename.dirname hooks);
+    write_file skill "c2c Grok skill\n";
+    write_file session_skill "c2c Grok identity skill\n";
+    write_file hooks "{\"hooks\":{}}\n";
+    let removed, paths =
+      C2c_uninstall.uninstall_component ~output_mode:C2c_types.Json
+        ~dry_run:false ~component:"grok" ~target_dir:home ~alias:None
+    in
+    check bool "grok artifacts removed" true removed;
+    check int "all Grok artifacts reported" 3 (List.length paths);
+    check bool "skill removed" false (Sys.file_exists skill);
+    check bool "identity skill removed" false (Sys.file_exists session_skill);
+    check bool "hooks removed" false (Sys.file_exists hooks))
+
 let () =
   Random.self_init ();
   run "c2c_uninstall_codex"
     [ ( "recompute-codex"
       , [ test_case "recompute covers shared blocks + owned files" `Quick
             test_recompute_codex_covers_shared_blocks
+        ; test_case "grok is supported and owns its artifacts" `Quick
+            test_grok_is_a_supported_uninstall_component
         ] )
     ]
