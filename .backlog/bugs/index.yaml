@@ -111,3 +111,4 @@ bugs:
     - file: B112-expand-wordlist-used-for-gener.todo
     - file: B113-correct-public-relay-auth-and.todo
     - file: B114-require-authenticated-proofs-f.todo
+    - file: B115-bind-relay-poll-and-peek-inbox.todo
