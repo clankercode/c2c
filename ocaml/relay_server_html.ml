@@ -193,7 +193,7 @@ GET  /health        liveness probe                       (anonymous)
 GET  /list          list peers — Ed25519 peer auth       (?include_dead=1 → Bearer admin)
 GET  /list_rooms    list rooms: public + gated, with member rosters   (anonymous)
 GET  /dead_letter   dead-letter queue                    (Bearer admin)
-GET  /gc            run gc now                           (Bearer admin)
+POST /gc            run gc now                           (Bearer admin)
 GET  /device-login  phone pairing UI                     (anonymous)
 POST /register      { node_id, session_id, alias, client_type?, ttl?,
                       identity_pk?, signature?, nonce?, timestamp?,

@@ -100,7 +100,8 @@ let t_self_auth_routes_pass_outer_gate () =
     (fun path ->
        check_class ~path Relay_server_auth.Self_auth;
        Alcotest.(check bool)
-         (path ^ " passes the outer gate (handler-verified)") true
+         (path ^ " passes the outer gate (handler policy is route-specific)")
+         true
          (allowed (decide ~path ())))
     routes
 
@@ -218,6 +219,98 @@ let t_landing_peer_section () =
          (Printf.sprintf "peer section lists example %s" r)
          true (contains sec (code r)))
     Relay_server_html.peer_example_routes
+
+(* === 2a. bidirectional route-token check ===
+
+   Listing-direction checks (above) prove every classified route is
+   advertised in its section. This is the reverse direction (iteration-3
+   review): every <code> token advertised inside a marked section must
+   belong to that section's class, so hand-adding e.g. <code>/send</code>
+   to the anonymous section fails the contract. *)
+
+let code_open = "<code>"
+let code_close = "</code>"
+
+let code_tokens frag =
+  let rec go acc start =
+    match index_from_opt frag start code_open with
+    | None -> List.rev acc
+    | Some i ->
+      let b = i + String.length code_open in
+      (match index_from_opt frag b code_close with
+       | None -> List.rev acc
+       | Some e ->
+         go (String.sub frag b (e - b) :: acc) (e + String.length code_close))
+  in
+  go [] 0
+
+let check_only_allowed sec_name allowed_tokens =
+  let sec = section sec_name in
+  List.iter
+    (fun tok ->
+       Alcotest.(check bool)
+         (Printf.sprintf "%s section token %S belongs to that class" sec_name
+            tok)
+         true
+         (List.mem tok allowed_tokens))
+    (code_tokens sec)
+
+let t_sections_advertise_only_own_class () =
+  check_only_allowed "anonymous" Relay_server_auth.anonymous_read_routes;
+  check_only_allowed "admin"
+    (Relay_server_auth.admin_exact_routes
+     @ ["/list?include_dead=1"]
+     @ List.map (fun p -> p ^ "*") Relay_server_auth.admin_prefix_routes);
+  check_only_allowed "self-auth"
+    ((List.filter
+        (fun r ->
+           not (List.mem r Relay_server_auth.self_auth_classifier_only_routes))
+        Relay_server_auth.self_auth_exact_routes)
+     @ List.map (fun p -> p ^ "*") Relay_server_auth.self_auth_prefix_routes
+     (* the prose names the operator switch for the legacy unsigned room-op
+        path; it is not a route *)
+     @ ["C2C_REQUIRE_SIGNED_ROOM_OPS=1"]);
+  (* peer tokens have no exhaustive list (default class): every advertised
+     token must CLASSIFY as a peer route, after normalizing the
+     <alias> placeholder *)
+  List.iter
+    (fun tok ->
+       (* html-unescape just the <alias> placeholder pattern *)
+       let path =
+         match index_from_opt tok 0 "&lt;alias&gt;" with
+         | None -> tok
+         | Some i ->
+           String.sub tok 0 i ^ "x"
+           ^ String.sub tok
+               (i + String.length "&lt;alias&gt;")
+               (String.length tok - i - String.length "&lt;alias&gt;")
+       in
+       check_class ~path Relay_server_auth.Peer_ed25519)
+    (code_tokens (section "peer"))
+
+(* === 2c. endpoint-table method pins ===
+
+   Iteration-3 review: the <pre> endpoint table advertised GET /gc while the
+   router only matches POST /gc — a caller following the page gets a 404.
+   Pin every documented method+path pair (verified against the `(`GET|`POST),
+   "<path>"` branches of Relay_server.make_callback in ocaml/relay.ml). *)
+
+let documented_endpoints =
+  [ "GET  /health"; "GET  /list"; "GET  /list_rooms"; "GET  /dead_letter";
+    "POST /gc"; "GET  /device-login"; "POST /register"; "POST /heartbeat";
+    "POST /send"; "POST /send_all"; "POST /poll_inbox"; "POST /peek_inbox";
+    "POST /join_room"; "POST /leave_room"; "POST /send_room";
+    "POST /room_history" ]
+
+let t_endpoint_table_methods () =
+  List.iter
+    (fun line ->
+       Alcotest.(check bool)
+         (Printf.sprintf "endpoint table advertises %S" line)
+         true (contains landing line))
+    documented_endpoints;
+  Alcotest.(check bool) "no 'GET  /gc' (router only matches POST /gc)" false
+    (contains landing "GET  /gc")
 
 (* === 2b. semantic phrase pinning ===
 
@@ -343,6 +436,10 @@ let () =
           Alcotest.test_case "peer section" `Quick t_landing_peer_section;
           Alcotest.test_case "classifier-only routes" `Quick
             t_classifier_only_routes_still_self_auth;
+          Alcotest.test_case "sections advertise only own class" `Quick
+            t_sections_advertise_only_own_class;
+          Alcotest.test_case "endpoint table methods" `Quick
+            t_endpoint_table_methods;
           Alcotest.test_case "section semantics pinned" `Quick
             t_section_semantics_pinned;
           Alcotest.test_case "no blanket proof claim" `Quick
