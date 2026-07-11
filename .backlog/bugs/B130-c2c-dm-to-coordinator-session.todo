@@ -1,19 +1,18 @@
 ---
+claimed_at: "2026-07-11T12:56:29Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-11T12:54:40Z"
 depends_on: []
 estimate_hours: 1
 id: B130
 priority: high
-status: pending
-tags:
-    - c2c
-    - inbox-isolation
-    - subagent
-    - prompt-injection
-    - security
+started_at: "2026-07-11T12:56:29Z"
+status: in_progress
+tags: []
 title: c2c DM to coordinator session alias leaks into dispatched subagent transcripts (inbox not isolated per-session)
-updated_at: "2026-07-11T12:54:40Z"
+updated_at: "2026-07-11T12:56:29Z"
 ---
 A c2c direct message addressed to one session alias was also delivered into a dispatched Claude Code subagent (Agent/Task) running in the same repo, when it should have reached ONLY the registered coordinator session.
 
