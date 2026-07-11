@@ -41,13 +41,13 @@ explicitly idle and DND is off; `active`/unknown status → queued
   `classify_codex_delivery ~app_server_status ~hooks_installed ~wake_target`
   + `codex_delivery_report` (default machine view + per-managed-instance
   rows; live gather is read-only and injectable for tests). Distinguishes:
-  | mode | meaning | remediation |
+  | mode | meaning | remediation (verbatim from the classifier) |
   |---|---|---|
-  | `app-server` | healthy app-server remote TUI, `online-attached` ONLY. Summary states the transport contract (arrival-time data injection, draft-safe, gated auto-turn) as **library-proven** and explicitly says the live inbound path is still the hook fallback until the supervision wiring slice lands (round-2 F2 fix) | inherits the live hook-fallback remediation |
-  | `app-server-unavailable` | app-server startup failed / codex incompatible; live delivery (if any) is the hook boundary | upgrade codex (`npm i -g @openai/codex`), relaunch with `c2c start codex --app-server`; `c2c dev diag <name>` for the structured diagnostic |
-  | `hooks+wake` | legacy **input-injecting** idle wake (watcher TYPES a nudge into the tmux/herdr pane); hook-boundary delivery | prefer `c2c start codex --app-server` for injection-free, draft-safe delivery |
-  | `hooks` | hook-boundary only; idle session sees mail on its next turn | run inside tmux/herdr for idle wake, or use `--app-server` |
-  | `unavailable` | no delivery path configured | `run \`c2c install codex\`` |
+  | `app-server` | healthy app-server remote TUI, `online-attached` ONLY. Summary states the transport contract (arrival-time data injection, draft-safe, gated auto-turn) as **library-proven** and explicitly says the live inbound path is still the hook fallback until the supervision wiring slice lands (round-2 F2 fix) | inherits the live hook-fallback remediation + truthful `input_injecting` flag |
+  | `app-server-unavailable` | app-server startup failed / codex incompatible; summary appends the live fallback ("Live delivery falls back to: …") and inherits its `input_injecting` flag, so a surviving hooks+wake pane-typing path is never hidden (round-3 F4 fix) | "upgrade codex (\`npm i -g @openai/codex\`), then relaunch with \`c2c start codex --app-server\`; \`c2c dev diag <name>\` shows the structured startup diagnostic" |
+  | `hooks+wake` | legacy **input-injecting** idle wake (watcher TYPES a nudge into the tmux/herdr pane); hook-boundary delivery | "this input-injecting wake stays the supported idle path until the app-server delivery wiring lands; \`c2c start codex --app-server\` becomes the injection-free, draft-safe replacement then" |
+  | `hooks` | hook-boundary only; idle session sees mail on its next turn | "run the session inside tmux/herdr to enable idle wake (\`c2c start codex --app-server\` becomes the injection-free path once its delivery wiring lands)" |
+  | `unavailable` | no delivery path configured | "run \`c2c install codex\`" |
 
   A `starting` unit (remote TUI not attached yet) is NOT labeled `app-server`
   — it reports the hook fallback the session actually has right now, with a
@@ -244,7 +244,21 @@ gets once wiring lands), never as live managed behavior.
 - **F3 (MEDIUM)** — this receipt's health-mapping paragraph still described
   the superseded starting→app-server mapping. Fixed above.
 
-**Round 3: re-review → PASS.**
+**Round 3: FAIL (F1/F2/F3 verified fixed; two narrower findings) → fixed:**
+
+- **F4 (MAJOR)** — the `failed-startup` branch reported
+  `input_injecting=false` even when the surviving delivery path was the
+  pane-typing `hooks+wake` fallback. Fixed: the branch derives its fallback
+  summary ("Live delivery falls back to: …") and `input_injecting` from the
+  shared `classify_codex_hook_fallback`; regression case added
+  (`failed-startup + hooks + wake_target` ⇒ input-injecting + "TYPES").
+- **F5 (MEDIUM)** — this receipt's mode table still carried the superseded
+  "prefer `--app-server` now" remediations and a premature round-3 PASS.
+  Fixed: table remediations are now verbatim from the classifier; the round
+  log records actual outcomes.
+
+**Round 4: re-review → see `reviews/`-independent note below.** (Final
+verdict recorded in the "Verification" table's review row.)
 
 ## Boundaries honored
 

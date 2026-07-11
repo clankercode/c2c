@@ -326,7 +326,20 @@ let test_delivery_app_server_unavailable () =
        check bool "remediation says upgrade codex" true
          (C2c_doctor_hooks.contains fix "upgrade codex"));
   check bool "summary is truthful about the hook-boundary fallback" true
-    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "hook boundary");
+    (C2c_doctor_hooks.contains d.C2c_doctor_hooks.cd_summary "hook-boundary");
+  check bool "no wake target → not input-injecting" false
+    d.C2c_doctor_hooks.cd_input_injecting;
+  (* failed-startup with a surviving hooks+wake path must NOT hide that the
+     live delivery types into the pane (review round 3, F4). *)
+  let dw =
+    classify ~app_server_status:(Some "failed-startup") ~hooks_installed:true
+      ~wake_target:true
+  in
+  check string "mode (wake fallback)" "app-server-unavailable" (label dw);
+  check bool "surviving hooks+wake path flags input injection" true
+    dw.C2c_doctor_hooks.cd_input_injecting;
+  check bool "summary is truthful about typing into the pane" true
+    (C2c_doctor_hooks.contains dw.C2c_doctor_hooks.cd_summary "TYPES");
   (* Same failure without hooks: no delivery path at all, still actionable. *)
   let d2 =
     classify ~app_server_status:(Some "failed-startup") ~hooks_installed:false
@@ -334,7 +347,8 @@ let test_delivery_app_server_unavailable () =
   in
   check string "mode (no hooks)" "app-server-unavailable" (label d2);
   check bool "no-hooks fallback is called out" true
-    (C2c_doctor_hooks.contains d2.C2c_doctor_hooks.cd_summary "no delivery path")
+    (C2c_doctor_hooks.contains d2.C2c_doctor_hooks.cd_summary
+       "no codex delivery path")
 
 let test_delivery_hooks_wake_is_input_injecting () =
   let d = classify ~app_server_status:None ~hooks_installed:true ~wake_target:true in

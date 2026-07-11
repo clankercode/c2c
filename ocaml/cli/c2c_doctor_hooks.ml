@@ -208,24 +208,22 @@ let classify_codex_delivery ~(app_server_status : string option)
           Some "if the instance stays in 'starting', inspect it with \
                 `c2c dev diag <name>`" }
   | Some "failed-startup" ->
-      let fallback =
-        if hooks_installed then
-          " Live delivery (if any) is the hook boundary: messages surface on \
-           the session's next hook fire, not on arrival."
-        else
-          " No hook fallback is installed either, so this session has no \
-           delivery path."
-      in
+      (* The surviving delivery path is whatever the hook fallback provides —
+         derive its summary and the input-injection flag from the shared
+         fallback classifier so a live hooks+wake pane-typing path is never
+         hidden under this label. *)
+      let fb = classify_codex_hook_fallback ~hooks_installed ~wake_target in
       { cd_mode = Cd_app_server_unavailable;
         cd_summary =
           "app-server startup failed or the installed codex is incompatible \
            (app-server mode needs codex >= 0.144 with `app-server --listen \
-           --ws-auth` and `--remote` support)." ^ fallback;
+           --ws-auth` and `--remote` support). Live delivery falls back to: "
+          ^ fb.cd_summary;
         cd_remediation =
           Some "upgrade codex (`npm i -g @openai/codex`), then relaunch with \
                 `c2c start codex --app-server`; `c2c dev diag <name>` shows \
                 the structured startup diagnostic";
-        cd_input_injecting = false }
+        cd_input_injecting = fb.cd_input_injecting }
   | Some _ (* "offline" or unknown *) | None ->
       classify_codex_hook_fallback ~hooks_installed ~wake_target
 
