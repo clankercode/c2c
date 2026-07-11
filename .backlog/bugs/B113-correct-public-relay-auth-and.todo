@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-07-11T03:28:33Z"
+claimed_by: cli-user
+completed_at: null
 complexity: low
 depends_on: []
 estimate_hours: 1
 id: B113
 priority: high
-status: pending
+started_at: "2026-07-11T03:28:33Z"
+status: in_progress
 tags: []
 title: Correct public relay auth and room-visibility documentation
 ---
