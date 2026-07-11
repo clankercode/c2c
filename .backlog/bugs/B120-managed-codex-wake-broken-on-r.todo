@@ -1,10 +1,14 @@
 ---
+claimed_at: "2026-07-11T06:27:19Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 depends_on: []
 estimate_hours: 1
 id: B120
 priority: high
-status: pending
+started_at: "2026-07-11T06:27:19Z"
+status: in_progress
 tags: []
 title: 'Managed codex wake broken on resume: sidecar watches instance-name inbox, hooks register conversation-UUID alias (identity split)'
 ---
