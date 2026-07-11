@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B110
+priority: high
+status: pending
+tags: []
+title: c2c should install a start hook for claude code like it does for codex so that when it starts a similar msg is printed (user visible) that shows the session id + where to get more instructions (the `/c2c` skill)
+---
+
+c2c should install a start hook for claude code like it does for codex so that when it starts a similar msg is printed (user visible) that shows the session id + where to get more instructions (the `/c2c` skill)

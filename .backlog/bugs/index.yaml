@@ -106,3 +106,4 @@ bugs:
     - file: B107-codex-hooks-run-multiple-times.todo
     - file: B108-wake-watch-can-inject-into-a-s.todo
     - file: B109-when-listing-other-agents-we-s.todo
+    - file: B110-c2c-should-install-a-start-hoo.todo
