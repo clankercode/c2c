@@ -1,0 +1,12 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 1
+id: B123
+priority: high
+status: pending
+tags: []
+title: Do an audit for deprecated python that is still in use. Pyhton is okay in tests but not in any user facing stuff.
+---
+
+Do an audit for deprecated python that is still in use. Pyhton is okay in tests but not in any user facing stuff.
