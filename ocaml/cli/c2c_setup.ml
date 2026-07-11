@@ -1973,39 +1973,39 @@ let ensure_default_wake_schedule ~quiet ~dry_run ~output_mode ~alias =
    grok /c2c skill and a SessionStart/SessionEnd hook that auto-registers the
    session and refreshes the skill. Preferred inbound path is Monitor +
    `c2c monitor` (see the grok skill). *)
-let grok_hooks_json ~c2c_cmd =
-  Printf.sprintf
-    {|{
+(* Use bare `c2c` on PATH — not the absolute path of the installing binary.
+   Absolute paths break when the build worktree moves; `c2c install self`
+   puts a stable binary on PATH under ~/.local/bin. *)
+let grok_hooks_json () =
+  {|{
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "%s hook grok", "timeout": 10 }
+          { "type": "command", "command": "c2c hook grok", "timeout": 10 }
         ]
       }
     ],
     "SessionEnd": [
       {
         "hooks": [
-          { "type": "command", "command": "%s hook grok", "timeout": 10 }
+          { "type": "command", "command": "c2c hook grok", "timeout": 10 }
         ]
       }
     ]
   }
 }
 |}
-    c2c_cmd c2c_cmd
 
 let setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
   let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
   let hooks_dir = home // ".grok" // "hooks" in
   let hooks_path = hooks_dir // "c2c-session.json" in
-  let c2c_cmd = current_c2c_command () in
   let skill_artifact, skill_path = write_grok_skill ~output_mode ~dry_run () in
   let artifacts = match skill_artifact with Some a -> [ a ] | None -> [] in
   (* Hook JSON (owned file). *)
   C2c_io.mkdir_p_dryrun dry_run hooks_dir;
-  let hooks_body = grok_hooks_json ~c2c_cmd in
+  let hooks_body = grok_hooks_json () in
   if dry_run then
     Printf.printf "[DRY-RUN] would write grok hooks to %s\n%!" hooks_path
   else begin
