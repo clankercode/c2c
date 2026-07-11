@@ -268,20 +268,28 @@ let codex_wake_text ~alias =
    frontend + hooks. It is NOT: [C2c_codex_session.run_app_server] exports it in
    the launcher process only AFTER the frontend + app-server children are
    already spawned (both snapshot [Unix.environment ()] at spawn time), so the
-   hooks a managed app-server session fires never see it. INGRESS_LIVE alone
-   would therefore FAIL the "never nudge an app-server session" requirement.
-   The markers the hook CAN reliably see are OR'd in [codex_session_is_managed]:
-     1. [C2C_CODEX_INGRESS_LIVE] set — belt-and-suspenders (covers any future
-        case where it does reach the hook, e.g. a hook fired from the launcher).
-     2. [C2C_MCP_SESSION_ID] set — present + inherited for hook-fallback managed
-        codex (written by `c2c start` into the codex child env).
-     3. [managed_sid_for_payload] <> None — the payload thread maps to a managed
-        c2c instance (app-server AND hook-fallback). This is the primary signal.
-     4. the resolved session's registration has client_type "codex-app-server".
-   Any one suppresses the tip (fail toward NOT nudging). Residual gap: a fresh
-   app-server thread before its instance mapping is written AND before the
-   delivery loop registers, with no env marker — a narrow startup race; the tip
-   is throttled + harmless there. See the B136 receipt for detail. *)
+   hooks a managed app-server session fires never see it. A managed app-server
+   session also resolves in the hook as VANILLA — it persists
+   `codex-session.json`, not the legacy instance `config.json` that
+   [managed_session_id_from_codex_thread] reads, so [managed_sid_for_payload]
+   is None; its broker registration is under the managed instance name, not the
+   hook's payload thread id; and it sets no [C2C_MCP_SESSION_ID]. INGRESS_LIVE
+   or those signals alone would therefore FAIL the "never nudge an app-server
+   session" requirement.
+
+   Fix: [C2c_codex_session.run] exports [C2C_CODEX_MANAGED=1] BEFORE any codex
+   child (frontend/server/hook) is spawned, so every hook fired by a managed
+   codex session inherits it. That is the load-bearing signal. The others are
+   defence-in-depth. [codex_session_is_managed] ORs them all (any one
+   suppresses the tip — fail toward NOT nudging):
+     1. [C2C_CODEX_MANAGED] set — inherited marker for ANY managed codex launch
+        (app-server AND hook-fallback). Primary, race-free.
+     2. [C2C_CODEX_INGRESS_LIVE] set — belt-and-suspenders (a hook fired from
+        the launcher process would see it).
+     3. [C2C_MCP_SESSION_ID] set — hook-fallback managed codex child env.
+     4. [managed_sid_for_payload] <> None — legacy config.json thread mapping.
+     5. the resolved session's registration has client_type "codex-app-server".
+   See the B136 receipt for the full investigation. *)
 let codex_appserver_nudge_every () =
   match Sys.getenv_opt "C2C_CODEX_APPSERVER_NUDGE_EVERY" with
   | None -> 5
@@ -301,13 +309,40 @@ let read_codex_appserver_nudge_count ~broker_root =
     | _ -> 0
   with _ -> 0
 
+(* Returns true iff the counter was durably written. Callers gate the tip on a
+   successful write so an I/O failure yields an empty tip (never a shown tip on
+   a stale/failed counter). *)
 let write_codex_appserver_nudge_count ~broker_root n =
-  try
-    ignore
-      (C2c_io.write_file_atomic
+  match
+    (try
+       C2c_io.write_file_atomic
          (codex_appserver_nudge_count_path ~broker_root)
-         (string_of_int n ^ "\n"))
-  with _ -> ()
+         (string_of_int n ^ "\n")
+     with _ -> Error "exn")
+  with
+  | Ok () -> true
+  | Error _ -> false
+
+(* Serialize the read-modify-write of the counter across concurrent SessionStart
+   hooks (each is a separate process) with an flock on a sibling lockfile, so two
+   simultaneous starts cannot both read N-1, both write N, and both emit. [f]
+   returns the tip string ("" = no tip). Fails CLOSED — returns "" without
+   running [f] — if the lockfile cannot be opened or the lock cannot be taken,
+   so a lock failure can never let two hooks emit unserialized. *)
+let with_codex_nudge_lock ~broker_root f =
+  let lock_path = codex_appserver_nudge_count_path ~broker_root ^ ".lock" in
+  match
+    (try Some (Unix.openfile lock_path [ Unix.O_CREAT; Unix.O_RDWR ] 0o600)
+     with _ -> None)
+  with
+  | None -> ""
+  | Some fd ->
+      Fun.protect
+        ~finally:(fun () -> (try Unix.close fd with _ -> ()))
+        (fun () ->
+          match (try Unix.lockf fd Unix.F_LOCK 0; true with _ -> false) with
+          | true -> f ()
+          | false -> "")
 
 let codex_appserver_nudge_text =
   "Tip: you're receiving c2c messages at turn boundaries (they surface when \
@@ -317,7 +352,8 @@ let codex_appserver_nudge_text =
 
 (* Any positive managed/app-server signal suppresses the vanilla nudge. *)
 let codex_session_is_managed ~regs ~session_id ~managed_sid_for_payload =
-  Sys.getenv_opt "C2C_CODEX_INGRESS_LIVE" <> None
+  Sys.getenv_opt "C2C_CODEX_MANAGED" <> None
+  || Sys.getenv_opt "C2C_CODEX_INGRESS_LIVE" <> None
   || (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
       | Some s when String.trim s <> "" -> true
       | _ -> false)
@@ -329,7 +365,8 @@ let codex_session_is_managed ~regs ~session_id ~managed_sid_for_payload =
 
 (* Throttled nudge string ("" = not shown). Fully best-effort: any failure
    yields "" and never raises. Advances the persisted counter ONLY for eligible
-   (truly-vanilla) fires, so managed sessions never move it. N<=0 disables. *)
+   (truly-vanilla) fires, so managed sessions never move it, and only emits when
+   the incremented counter was durably written. N<=0 disables. *)
 let codex_appserver_nudge ~broker_root ~regs ~session_id ~managed_sid_for_payload
     =
   try
@@ -337,11 +374,12 @@ let codex_appserver_nudge ~broker_root ~regs ~session_id ~managed_sid_for_payloa
     if n <= 0 then ""
     else if codex_session_is_managed ~regs ~session_id ~managed_sid_for_payload
     then ""
-    else begin
-      let next = read_codex_appserver_nudge_count ~broker_root + 1 in
-      write_codex_appserver_nudge_count ~broker_root next;
-      if next mod n = 0 then codex_appserver_nudge_text else ""
-    end
+    else
+      with_codex_nudge_lock ~broker_root (fun () ->
+          let next = read_codex_appserver_nudge_count ~broker_root + 1 in
+          if write_codex_appserver_nudge_count ~broker_root next && next mod n = 0
+          then codex_appserver_nudge_text
+          else "")
   with _ -> ""
 
 let hook_codex_cmd =

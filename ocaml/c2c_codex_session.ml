@@ -506,6 +506,16 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
     ~(extra_args : string list) ?(model_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
+  (* B136: publish an inherited, non-secret marker so hooks fired BY a managed
+     codex session (the app-server frontend/core OR the hook-fallback child) can
+     detect they are managed and suppress the vanilla "use `c2c new codex`"
+     app-server nudge. Set here — before any codex child is spawned (both the
+     app-server path's frontend/server env and the hook-fallback child's env are
+     snapshots of [Unix.environment ()] taken later) — because
+     [C2C_CODEX_INGRESS_LIVE] is exported only AFTER the frontend spawns (in
+     [run_delivery_loop]) and so never reaches those hooks. The nudge's
+     [codex_session_is_managed] gate reads this. *)
+  (try Unix.putenv "C2C_CODEX_MANAGED" "1" with _ -> ());
   (* B131 / coordinator directive: the app-server transport is the DEFAULT and
      ONLY managed codex path for a supported codex. Unsupported codex (<0.144) or
      a genuine app-server startup failure returns a structured diagnostic from
