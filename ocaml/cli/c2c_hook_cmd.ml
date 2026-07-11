@@ -254,6 +254,96 @@ let codex_wake_text ~alias =
      with `c2c wait-inbox`."
     alias
 
+(* --- B136: occasional app-server nudge for vanilla / hook-fallback codex -----
+
+   Vanilla and hook-fallback codex sessions receive c2c mail at hook (turn)
+   boundaries. The managed app-server transport (`c2c new codex`) delivers at
+   arrival time. On SessionStart this appends a short, THROTTLED tip steering
+   the operator toward the managed path — but NEVER in a session that already
+   has app-server (or any managed) delivery, and only for TRULY vanilla codex
+   (never launched via `c2c start/new codex`).
+
+   Managed-marker investigation (B136): the spec proposed gating on
+   [C2C_CODEX_INGRESS_LIVE] alone, on the premise it is inherited by the codex
+   frontend + hooks. It is NOT: [C2c_codex_session.run_app_server] exports it in
+   the launcher process only AFTER the frontend + app-server children are
+   already spawned (both snapshot [Unix.environment ()] at spawn time), so the
+   hooks a managed app-server session fires never see it. INGRESS_LIVE alone
+   would therefore FAIL the "never nudge an app-server session" requirement.
+   The markers the hook CAN reliably see are OR'd in [codex_session_is_managed]:
+     1. [C2C_CODEX_INGRESS_LIVE] set — belt-and-suspenders (covers any future
+        case where it does reach the hook, e.g. a hook fired from the launcher).
+     2. [C2C_MCP_SESSION_ID] set — present + inherited for hook-fallback managed
+        codex (written by `c2c start` into the codex child env).
+     3. [managed_sid_for_payload] <> None — the payload thread maps to a managed
+        c2c instance (app-server AND hook-fallback). This is the primary signal.
+     4. the resolved session's registration has client_type "codex-app-server".
+   Any one suppresses the tip (fail toward NOT nudging). Residual gap: a fresh
+   app-server thread before its instance mapping is written AND before the
+   delivery loop registers, with no env marker — a narrow startup race; the tip
+   is throttled + harmless there. See the B136 receipt for detail. *)
+let codex_appserver_nudge_every () =
+  match Sys.getenv_opt "C2C_CODEX_APPSERVER_NUDGE_EVERY" with
+  | None -> 5
+  | Some s -> (match int_of_string_opt (String.trim s) with Some n -> n | None -> 5)
+
+let codex_appserver_nudge_count_path ~broker_root =
+  Filename.concat broker_root "codex-appserver-nudge.count"
+
+let read_codex_appserver_nudge_count ~broker_root =
+  try
+    match
+      int_of_string_opt
+        (String.trim
+           (C2c_io.read_file_opt (codex_appserver_nudge_count_path ~broker_root)))
+    with
+    | Some n when n >= 0 -> n
+    | _ -> 0
+  with _ -> 0
+
+let write_codex_appserver_nudge_count ~broker_root n =
+  try
+    ignore
+      (C2c_io.write_file_atomic
+         (codex_appserver_nudge_count_path ~broker_root)
+         (string_of_int n ^ "\n"))
+  with _ -> ()
+
+let codex_appserver_nudge_text =
+  "Tip: you're receiving c2c messages at turn boundaries (they surface when \
+   your turn ends). For arrival-time delivery — messages appear the moment a \
+   peer sends them — launch Codex via `c2c new codex`. Add `alias cx='c2c new \
+   codex --'` to your shell rc, then `cx --model <model>`."
+
+(* Any positive managed/app-server signal suppresses the vanilla nudge. *)
+let codex_session_is_managed ~regs ~session_id ~managed_sid_for_payload =
+  Sys.getenv_opt "C2C_CODEX_INGRESS_LIVE" <> None
+  || (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+      | Some s when String.trim s <> "" -> true
+      | _ -> false)
+  || managed_sid_for_payload <> None
+  || List.exists
+       (fun (r : C2c_mcp.registration) ->
+          r.session_id = session_id && r.client_type = Some "codex-app-server")
+       regs
+
+(* Throttled nudge string ("" = not shown). Fully best-effort: any failure
+   yields "" and never raises. Advances the persisted counter ONLY for eligible
+   (truly-vanilla) fires, so managed sessions never move it. N<=0 disables. *)
+let codex_appserver_nudge ~broker_root ~regs ~session_id ~managed_sid_for_payload
+    =
+  try
+    let n = codex_appserver_nudge_every () in
+    if n <= 0 then ""
+    else if codex_session_is_managed ~regs ~session_id ~managed_sid_for_payload
+    then ""
+    else begin
+      let next = read_codex_appserver_nudge_count ~broker_root + 1 in
+      write_codex_appserver_nudge_count ~broker_root next;
+      if next mod n = 0 then codex_appserver_nudge_text else ""
+    end
+  with _ -> ""
+
 let hook_codex_cmd =
   let open Cmdliner.Term in
   const (fun () ->
@@ -528,8 +618,16 @@ let hook_codex_cmd =
            with _ -> ""
          else ""
        in
+       (* B136: occasional app-server nudge — SessionStart only, vanilla only,
+          throttled. Additive to the note; never replaces intro/messages. *)
+       let appserver_nudge =
+         if event = "SessionStart" then
+           codex_appserver_nudge ~broker_root ~regs:(regs ()) ~session_id
+             ~managed_sid_for_payload
+         else ""
+       in
        let context =
-         [ intro; changelog_context; messages_text ]
+         [ intro; changelog_context; appserver_nudge; messages_text ]
          |> List.filter (fun s -> String.trim s <> "")
          |> String.concat "\n\n"
        in

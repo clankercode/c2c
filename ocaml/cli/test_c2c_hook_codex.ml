@@ -723,6 +723,141 @@ let test_malformed_payloads_are_silent () =
       ; "{\"hook_event_name\": \"PostToolUse\"}"
       ])
 
+(* --- B136: occasional app-server nudge for vanilla / hook-fallback codex -----
+
+   The nudge is SessionStart-only, vanilla-only, and throttled by
+   C2C_CODEX_APPSERVER_NUDGE_EVERY (default 5; <=0 disables). The distinctive
+   needle "arrival-time" appears only in the nudge text (never in onboarding /
+   wake / message output). The counter lives under the per-ctx broker root, so
+   nothing leaks between tests. *)
+
+let nudge_needle = "arrival-time"
+
+let nudge_count_path ctx = ctx.broker_root // "codex-appserver-nudge.count"
+
+let test_appserver_nudge_shows_on_vanilla_session_start () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-nudge-vanilla" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-nudge-vanilla");
+    let rc, stdout, stderr =
+      run_hook ~extra_env:[ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "1") ] ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    match parse_context stdout with
+    | Some (_, context) ->
+        check bool "nudge present (N=1)" true
+          (contains ~haystack:context ~needle:nudge_needle);
+        check bool "nudge names c2c new codex" true
+          (contains ~haystack:context ~needle:"c2c new codex")
+    | None -> failf "expected SessionStart output, got: %S (stderr %S)" stdout stderr)
+
+let test_appserver_nudge_suppressed_when_ingress_live () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-nudge-ingress" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-nudge-ingress");
+    let rc, stdout, _ =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "1")
+          ; ("C2C_CODEX_INGRESS_LIVE", "1") ]
+        ctx ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    let context = match parse_context stdout with Some (_, c) -> c | None -> "" in
+    check bool "app-server session not nudged" false
+      (contains ~haystack:context ~needle:nudge_needle);
+    check bool "app-server session does not advance counter" false
+      (Sys.file_exists (nudge_count_path ctx)))
+
+let test_appserver_nudge_suppressed_for_managed_thread () =
+  with_ctx (fun ctx ->
+    (* A managed instance owns this thread (thread->instance mapping present),
+       so the session already has managed delivery — never nudge, even with
+       INGRESS_LIVE / C2C_MCP_SESSION_ID unset. *)
+    let managed_sid = "managed-codex-nudge" in
+    let thread_id = "codex-thread-managed-nudge" in
+    write_codex_config_alias ctx "zz-codex-managed-nudge";
+    write_managed_codex_instance ctx ~name:"managed-nudge"
+      ~session_id:managed_sid ~thread_id;
+    let rc, stdout, _ =
+      run_hook ~extra_env:[ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "1") ] ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    let context = match parse_context stdout with Some (_, c) -> c | None -> "" in
+    check bool "managed thread not nudged" false
+      (contains ~haystack:context ~needle:nudge_needle);
+    check bool "managed thread does not advance counter" false
+      (Sys.file_exists (nudge_count_path ctx)))
+
+let test_appserver_nudge_absent_on_non_session_start () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-nudge-posttool" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-nudge-posttool");
+    let rc, stdout, _ =
+      run_hook ~extra_env:[ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "1") ] ctx
+        ~payload:(payload ~event:"PostToolUse" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "no nudge on PostToolUse" false
+      (contains ~haystack:stdout ~needle:nudge_needle))
+
+let test_appserver_nudge_throttled () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-nudge-throttle" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-nudge-throttle");
+    let fire () =
+      let _, stdout, _ =
+        run_hook ~extra_env:[ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "2") ] ctx
+          ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+      in
+      match parse_context stdout with Some (_, c) -> c | None -> ""
+    in
+    check bool "absent on 1st eligible SessionStart (N=2)" false
+      (contains ~haystack:(fire ()) ~needle:nudge_needle);
+    check bool "present on 2nd eligible SessionStart (N=2)" true
+      (contains ~haystack:(fire ()) ~needle:nudge_needle))
+
+let test_appserver_nudge_off_switch () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-nudge-off" in
+    ignore (register ctx ~session_id:sid ~alias:"zz-codex-nudge-off");
+    let fire () =
+      let _, stdout, _ =
+        run_hook ~extra_env:[ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "0") ] ctx
+          ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+      in
+      match parse_context stdout with Some (_, c) -> c | None -> ""
+    in
+    check bool "off switch: 1st absent" false
+      (contains ~haystack:(fire ()) ~needle:nudge_needle);
+    check bool "off switch: 2nd absent" false
+      (contains ~haystack:(fire ()) ~needle:nudge_needle);
+    check bool "off switch: counter never written" false
+      (Sys.file_exists (nudge_count_path ctx)))
+
+let test_appserver_nudge_additive_to_messages () =
+  with_ctx (fun ctx ->
+    let sid = "codex-e2e-nudge-additive" in
+    let b = register ctx ~session_id:sid ~alias:"zz-codex-nudge-recv" in
+    ignore
+      (register ctx ~session_id:"codex-e2e-nudge-peer" ~alias:"zz-codex-nudge-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-nudge-peer"
+      ~to_alias:"zz-codex-nudge-recv" ~content:"hello alongside nudge" ();
+    let rc, stdout, stderr =
+      run_hook ~extra_env:[ ("C2C_CODEX_APPSERVER_NUDGE_EVERY", "1") ] ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    match parse_context stdout with
+    | Some (_, context) ->
+        check bool "message still delivered" true
+          (contains ~haystack:context ~needle:"hello alongside nudge");
+        check bool "nudge present alongside message" true
+          (contains ~haystack:context ~needle:nudge_needle)
+    | None -> failf "expected combined output, got: %S (stderr %S)" stdout stderr)
+
 let () =
   Random.self_init ();
   run "c2c_hook_codex"
@@ -767,5 +902,19 @@ let () =
             test_wake_watch_unbound_target_keeps_inbox
         ; test_case "malformed payloads are silent" `Quick
             test_malformed_payloads_are_silent
+        ; test_case "B136 nudge shows on vanilla SessionStart (N=1)" `Quick
+            test_appserver_nudge_shows_on_vanilla_session_start
+        ; test_case "B136 nudge suppressed when INGRESS_LIVE (app-server)" `Quick
+            test_appserver_nudge_suppressed_when_ingress_live
+        ; test_case "B136 nudge suppressed for managed thread" `Quick
+            test_appserver_nudge_suppressed_for_managed_thread
+        ; test_case "B136 nudge absent on non-SessionStart" `Quick
+            test_appserver_nudge_absent_on_non_session_start
+        ; test_case "B136 nudge throttled (N=2)" `Quick
+            test_appserver_nudge_throttled
+        ; test_case "B136 nudge off switch (N=0)" `Quick
+            test_appserver_nudge_off_switch
+        ; test_case "B136 nudge additive to messages" `Quick
+            test_appserver_nudge_additive_to_messages
         ] )
     ]

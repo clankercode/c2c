@@ -136,6 +136,18 @@ Test-only companion to the fixture gate: the `agent_status` value the herdr idle
 
 ---
 
+## Codex app-server delivery + nudge (B131 / B136)
+
+### `C2C_CODEX_INGRESS_LIVE`
+
+Set to `1` by a managed app-server Codex session (`C2c_codex_session.run_delivery_loop`, `ocaml/c2c_codex_session.ml`) to unlock the real ingress/auto-turn WebSocket clients in the launcher process. It is exported **after** the codex frontend + app-server children are already spawned (both snapshot `Unix.environment ()` at spawn time), so it is **NOT** inherited by the codex frontend or the hooks it fires — do not rely on it as a "managed session" marker inside a hook process. The `c2c hook codex` B136 nudge treats a set `C2C_CODEX_INGRESS_LIVE` as one (belt-and-suspenders) app-server signal, but the load-bearing managed markers are the thread→instance mapping and `C2C_MCP_SESSION_ID` (see below).
+
+### `C2C_CODEX_APPSERVER_NUDGE_EVERY`
+
+Integer cadence (default `5`) for the `c2c hook codex` SessionStart tip that steers vanilla / hook-fallback Codex sessions toward the managed app-server path (`c2c new codex`, arrival-time delivery). The tip appears once every N **eligible** (truly-vanilla) SessionStart fires — a per-invocation counter persisted at `<broker_root>/codex-appserver-nudge.count` is incremented only on eligible fires. Non-integer values fall back to `5`; **`0` (or any value ≤ 0) disables the nudge entirely** (a clean off switch). The tip is NEVER shown in a session that already has managed/app-server delivery: suppressed when `C2C_CODEX_INGRESS_LIVE` is set, `C2C_MCP_SESSION_ID` is set (hook-fallback managed), the payload thread maps to a managed c2c instance, or the resolved registration is `client_type=codex-app-server`. The whole path is best-effort: any error simply hides the tip and never fails the codex turn.
+
+---
+
 ## CLI
 
 ### `C2C_CLI_FORCE`
