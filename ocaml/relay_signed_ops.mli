@@ -79,9 +79,9 @@ val verify_history_envelope :
     required by DELETE /binding/<binding_id> (B116). [ts] in the returned
     proof is Unix epoch seconds (6 decimal places), NOT RFC 3339. The
     signing key must be the machine or phone Ed25519 key recorded on the
-    binding; the server enforces a freshness window and a per-key nonce
-    replay cache, then requires the key to match one of the binding's
-    owner keys. *)
+    binding; the server applies the same freshness window and nonce replay
+    store as signed peer requests, and requires the verified key to own
+    the binding before consuming the nonce. *)
 val sign_binding_revoke :
   Relay_identity.t -> binding_id:string -> signed_proof
 

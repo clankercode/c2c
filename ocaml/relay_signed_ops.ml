@@ -106,7 +106,8 @@ let sign_send_room identity ~room_id ~from_alias ~content =
 
 (** B116: sign a binding-revocation proof for DELETE /binding/<binding_id>.
     The signer key must be the machine or phone Ed25519 key stored on the
-    binding; ts is Unix epoch seconds. Blob:
+    binding; ts is Unix epoch seconds (same freshness window + nonce
+    replay store as signed peer requests). Blob:
     binding_revoke_sign_ctx || binding_id || pk_b64 || ts || nonce. *)
 let sign_binding_revoke identity ~binding_id =
   let pk_b64 = b64url_nopad identity.Relay_identity.public_key in

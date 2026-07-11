@@ -143,13 +143,10 @@ let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"
 (* B116: Binding revocation proof signing context.
    Blob shape: binding_id || revoke_pk_b64 || ts || nonce, where revoke_pk
    must be the machine or phone Ed25519 key stored on the binding. ts is
-   Unix epoch seconds (string, as signed); the server enforces a freshness
-   window plus a per-key nonce replay cache. *)
+   Unix epoch seconds (string, as signed). Freshness + replay reuse the
+   signed-request pattern (request_ts_past/future_window +
+   check_request_nonce), so no B116-specific window constant is needed. *)
 let binding_revoke_sign_ctx = "c2c/v1/binding-revoke"
-
-(* B116: server-side freshness window (seconds) for a binding-revoke proof
-   timestamp. Matches the 300s cap on mobile-pair token TTLs. *)
-let binding_revoke_ts_window_s = 300.0
 
 (* E2E S2: pubkey binding sign context.
    Blob shape: alias || ed_pubkey_b64 || x25519_b64 || signed_at_rfc3339.

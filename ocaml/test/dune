@@ -165,7 +165,7 @@
  (name test_relay_binding_revoke_auth)
  (modules test_relay_binding_revoke_auth)
  (libraries c2c_mcp relay_test_support_real alcotest base64 yojson unix
-   lwt.unix))
+   lwt.unix cohttp))
 
 (test
  (name test_relay_device_pair)

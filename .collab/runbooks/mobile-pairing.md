@@ -280,13 +280,16 @@ phone Ed25519 key:
 }
 ```
 
-Constraints: `ts` must be within 300s of server time; each `(revoke_pk,
-nonce)` pair is single-use (replay cache).
+Constraints follow the standard signed-request rules (spec §5.1): `ts`
+must be within the request freshness window (`[-30s, +5s]` of server
+time), and the `nonce` is single-use via the relay's persisted
+request-nonce store (so replay protection survives a relay restart within
+the window on a SQLite-backed relay).
 
 **Server behavior**:
 - Valid owner proof: removes `binding_id` from the observer bindings store, returns `{"ok": true, "binding_id": "my-phone-01"}`
-- Missing/invalid proof (bad shape, stale ts, replayed nonce, bad sig): `401` with a proof-specific `error_code` — checked before any store access
-- Valid signature but unknown binding OR non-owner key: uniform `401 {"error_code": "revoke_denied"}` — the same response either way, so revocation cannot be used as a binding-existence oracle
+- Malformed proof (missing fields, oversized nonce, bad encoding, non-finite/stale ts, bad sig): `401` with a proof-shape `error_code` — checked before any store or nonce access, so it reveals nothing about the binding
+- Valid signature but unknown binding, non-owner key, OR a replayed nonce: uniform `401 {"error_code": "revoke_denied"}` — the same response for all three, so revocation is never a binding-existence oracle. Only a verified owner's request ever writes to the nonce store, so a stranger cannot grow it.
 
 ### 5.2 Rebind after revoke
 
@@ -356,12 +359,15 @@ machine or phone Ed25519 key over
 ```
 
 **Response 401** `missing_proof_field` / `signature_invalid` /
-`timestamp_out_of_window` / `nonce_replay`: proof malformed, stale, or
-replayed (rejected before any store access).
+`timestamp_out_of_window`: proof malformed, oversized nonce, non-finite
+or stale ts, or bad signature — rejected before any store or nonce
+access, so the code is independent of whether the binding exists.
 
-**Response 401** `revoke_denied`: binding unknown OR the proof key does
-not own it — deliberately the same response for both, so existence is
-never disclosed.
+**Response 401** `revoke_denied`: binding unknown, the proof key does not
+own it, OR the nonce was already used (replay) — deliberately the same
+response for all three, so revocation never discloses binding existence.
+The owner check runs before the nonce is consumed, so only a verified
+owner's request can write to the replay store.
 
 ---
 

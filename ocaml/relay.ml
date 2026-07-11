@@ -3837,18 +3837,32 @@ end = struct
          "sig":       <b64url Ed25519 sig> }
 
      sig covers canonical_msg(binding_revoke_sign_ctx,
-     [binding_id; revoke_pk; ts; nonce]). Freshness: |now - ts| must be
-     within binding_revoke_ts_window_s; nonces are replay-cached per key
-     (the same cache bounds a captured revoke being replayed against a
-     re-created binding of the same id/keys within the window).
+     [binding_id; revoke_pk; ts; nonce]).
 
-     Existence posture: every denial that consults the store is the SAME
-     status + body (401 revoke_denied) whether the binding is missing or
-     the key does not own it — a valid-signature probe learns nothing.
-     Proof-shape failures (missing fields, bad encoding, stale ts, replay,
-     bad sig) are rejected BEFORE any store lookup, so their distinct
-     error codes cannot leak existence either. This check is
-     unconditional: dev mode (no server token) does not bypass it. *)
+     Replay + freshness follow the SAME signed-request pattern as every
+     other peer route (spec §5.1): the ts must be within
+     [-request_ts_past_window, +request_ts_future_window] of now, and the
+     nonce is consumed through the backend's request-nonce store
+     (R.check_request_nonce) — which SqliteRelay persists to disk, so
+     replay protection survives a relay restart within the freshness
+     window (InMemoryRelay is in-memory, matching all other signed ops in
+     dev/test).
+
+     Ordering is deliberate for two invariants:
+
+     1. No existence oracle. Every denial that could reveal binding
+        state — non-owner key, unknown binding, AND a replayed proof —
+        funnels through the identical 401 `revoke_denied` body. Shape
+        failures (missing fields, bad encoding, non-finite/stale ts, bad
+        sig) reject BEFORE any store or nonce access, so their distinct
+        codes are existence-independent.
+     2. No anonymous nonce-store growth (DoS). The owner check runs
+        BEFORE the nonce is recorded, so only a request whose signature
+        verifies AND whose key owns the binding ever writes to the nonce
+        store. A stranger's valid-but-non-owner signature is denied
+        without touching the store; nonce length is bounded up front too.
+
+     Unconditional: dev mode (no server token) does not bypass any of it. *)
   let handle_mobile_pair_revoke relay ~client_ip binding_id body =
     let deny_uniform () =
       Relay_ratelimit.structured_log ~event:"pair_revoke"
@@ -3880,6 +3894,11 @@ end = struct
       | None, _, _, _ | _, None, _, _ | _, _, None, _ | _, _, _, None ->
         reject relay_err_missing_proof_field
           "binding revocation requires a signed owner proof: revoke_pk, ts, nonce, sig"
+      (* Bound the nonce length before it can reach any store — a legit
+         proof nonce is ~22 chars (16 random bytes, b64url); refuse
+         anything oversized as malformed so it cannot bloat the store. *)
+      | _, _, Some nonce, _ when String.length nonce > 128 ->
+        reject relay_err_missing_proof_field "nonce too long"
       | Some revoke_pk_b64, Some ts, Some nonce, Some sig_b64 ->
         match decode_b64url revoke_pk_b64 with
         | Error _ ->
@@ -3899,43 +3918,41 @@ end = struct
                reject relay_err_timestamp_out_of_window
                  "ts must be unix epoch seconds"
              | Some ts_f
-               (* is_finite also rejects nan, whose window comparison
+               (* is_finite also rejects nan/inf, whose window comparison
                   would otherwise be vacuously false — a non-expiring
-                  proof. *)
+                  proof. Same window as all signed peer requests. *)
                when (not (Float.is_finite ts_f))
-                    || Float.abs (now -. ts_f) > binding_revoke_ts_window_s ->
+                    || ts_f -. now > request_ts_future_window
+                    || now -. ts_f > request_ts_past_window ->
                reject relay_err_timestamp_out_of_window
-                 (Printf.sprintf "ts outside %.0fs freshness window"
-                    binding_revoke_ts_window_s)
-             | Some _ ->
-               if Relay_mobile_pair_nonce_cache.is_nonce_seen
-                    ~phone_pubkey:revoke_pk_b64 ~nonce then
-                 reject relay_err_nonce_replay "nonce already used"
-               else
-                 let blob = Relay_identity.canonical_msg
-                     ~ctx:binding_revoke_sign_ctx
-                     [ binding_id; revoke_pk_b64; ts; nonce ] in
-                 if not (Relay_identity.verify ~pk:pk_raw ~msg:blob
-                           ~sig_:sig_raw) then
-                   reject relay_err_signature_invalid
-                     "revocation proof signature does not verify"
-                 else begin
-                   (* Consume the nonce for every VALID signature (even a
-                      non-owner one) so a captured proof can never be
-                      retried; bound the cache opportunistically. *)
-                   Relay_mobile_pair_nonce_cache.record_nonce
-                     ~phone_pubkey:revoke_pk_b64 ~nonce;
-                   ignore
-                     (Relay_mobile_pair_nonce_cache.cleanup_nonce_cache
-                        ~older_than:(2.0 *. binding_revoke_ts_window_s));
-                   let owner =
-                     match R.get_observer_binding relay ~binding_id with
-                     | None -> false
-                     | Some (phone_ed, _phone_x, machine_ed, _sig) ->
-                       revoke_pk_b64 = machine_ed || revoke_pk_b64 = phone_ed
-                   in
-                   if not owner then deny_uniform ()
-                   else begin
+                 (Printf.sprintf "ts skew %.1fs outside signed-request window"
+                    (ts_f -. now))
+             | Some ts_f ->
+               let blob = Relay_identity.canonical_msg
+                   ~ctx:binding_revoke_sign_ctx
+                   [ binding_id; revoke_pk_b64; ts; nonce ] in
+               if not (Relay_identity.verify ~pk:pk_raw ~msg:blob
+                         ~sig_:sig_raw) then
+                 reject relay_err_signature_invalid
+                   "revocation proof signature does not verify"
+               else begin
+                 (* Owner check BEFORE nonce consumption: only a verified
+                    owner writes to the nonce store (no anonymous growth),
+                    and unknown-binding / non-owner both deny uniformly. *)
+                 let owner =
+                   match R.get_observer_binding relay ~binding_id with
+                   | None -> false
+                   | Some (phone_ed, _phone_x, machine_ed, _sig) ->
+                     revoke_pk_b64 = machine_ed || revoke_pk_b64 = phone_ed
+                 in
+                 if not owner then deny_uniform ()
+                 else
+                   (* Replay check consumes the nonce via the persisted
+                      backend store. A replay denies through the SAME
+                      revoke_denied body as a non-owner — no oracle. *)
+                   match R.check_request_nonce relay ~nonce ~ts:ts_f with
+                   | Error _ -> deny_uniform ()
+                   | Ok () ->
                      R.remove_observer_binding relay ~binding_id;
                      push_pseudo_unregistration_to_observers ~binding_id;
                      Relay_ratelimit.structured_log ~event:"pair_revoke"
@@ -3943,8 +3960,7 @@ end = struct
                        ~result:"ok" ();
                      respond_ok (`Assoc [ "ok", `Bool true;
                                           "binding_id", `String binding_id ])
-                   end
-                 end)
+               end)
 
   (* S5b: Device-login OAuth-style fallback (§S5b).
      User flow: machine init → phone registers via web → machine polls to claim. *)

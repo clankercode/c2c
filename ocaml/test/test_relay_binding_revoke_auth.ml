@@ -78,6 +78,19 @@ let is_ok_true json =
   | Some (`Assoc fields) -> List.assoc_opt "ok" fields = Some (`Bool true)
   | _ -> false
 
+(* Normalized response headers for oracle comparison: sorted, lowercased
+   keys, with the volatile Date header dropped. A header-level existence
+   oracle (e.g. a rate-limit or cache header only present for a real
+   binding) would surface as a diff here even though the JSON body matches. *)
+let headers_norm r =
+  Cohttp.Header.to_list r.RTSR.headers
+  |> List.map (fun (k, v) -> (String.lowercase_ascii k, v))
+  |> List.filter (fun (k, _) -> k <> "date")
+  |> List.sort compare
+
+let show_headers hs =
+  String.concat "; " (List.map (fun (k, v) -> k ^ "=" ^ v) hs)
+
 (* --- 1 + 2: anonymous bare-ID revoke rejected, no existence oracle --- *)
 
 let test_anonymous_revoke_rejected_and_uniform () =
@@ -96,7 +109,11 @@ let test_anonymous_revoke_rejected_and_uniform () =
       401 (RTSR.status_code r_missing);
     Alcotest.(check string)
       "identical body for existing vs missing binding (no oracle)"
-      r_exists.RTSR.body_text r_missing.RTSR.body_text)
+      r_exists.RTSR.body_text r_missing.RTSR.body_text;
+    Alcotest.(check string)
+      "identical headers for existing vs missing binding (no header oracle)"
+      (show_headers (headers_norm r_exists))
+      (show_headers (headers_norm r_missing)))
 
 (* --- 3: machine-key owner proof revokes --- *)
 
@@ -146,9 +163,15 @@ let test_wrong_key_rejected_uniform () =
       401 (RTSR.status_code r_missing);
     Alcotest.(check string)
       "identical body for existing vs missing binding (no oracle)"
-      r_exists.RTSR.body_text r_missing.RTSR.body_text)
+      r_exists.RTSR.body_text r_missing.RTSR.body_text;
+    Alcotest.(check string)
+      "identical headers for existing vs missing binding (no header oracle)"
+      (show_headers (headers_norm r_exists))
+      (show_headers (headers_norm r_missing)))
 
-(* --- 6: replaying a successful revoke against a re-created binding --- *)
+(* --- 6: replaying a successful revoke against a re-created binding.
+   The replay must deny through the SAME uniform revoke_denied body as a
+   non-owner (no oracle) — not a distinct nonce_replay code. *)
 
 let test_replay_rejected () =
   RTSR.with_server ~token:test_token (fun ~base_url ~relay ->
@@ -162,13 +185,78 @@ let test_replay_rejected () =
     Alcotest.(check int) "first signed revoke is 200" 200
       (RTSR.status_code r1);
     (* Re-pair with the SAME binding id and keys, then replay the captured
-       request verbatim — the nonce cache must reject it. *)
+       request verbatim — the persisted nonce store must reject it. *)
     add_binding relay ~binding_id ~machine ~phone;
     delete ~base_url ~binding_id ~body () >|= fun r2 ->
     Alcotest.(check int) "replayed revoke is 401" 401 (RTSR.status_code r2);
-    Alcotest.(check string) "replay denial code" "nonce_replay"
-      (error_code r2.RTSR.json);
+    Alcotest.(check string) "replay denies uniformly (no nonce_replay oracle)"
+      "revoke_denied" (error_code r2.RTSR.json);
     Alcotest.(check bool) "re-created binding survives the replay" true
+      (binding_exists relay ~binding_id))
+
+(* --- 6b: a valid-signature NON-OWNER proof must NOT consume a nonce
+   (finding 1: anonymous nonce-store growth / DoS). We prove it indirectly
+   but soundly: an attacker sends binding_id B with nonce N (denied,
+   non-owner). If N had been recorded, the owner's later proof reusing N
+   for the SAME binding would be rejected as a replay. Instead the owner
+   revoke with nonce N must SUCCEED — showing the non-owner attempt left
+   the nonce store untouched. *)
+
+let test_non_owner_does_not_consume_nonce () =
+  RTSR.with_server ~token:test_token (fun ~base_url ~relay ->
+    let machine = gen_identity () and phone = gen_identity () in
+    let attacker = gen_identity () in
+    let binding_id = "b116-nonowner-nonce" in
+    add_binding relay ~binding_id ~machine ~phone;
+    (* Attacker signs with a fixed nonce N over the SAME binding_id. *)
+    let ts = Printf.sprintf "%.6f" (Unix.gettimeofday ()) in
+    let nonce = Relay_signed_ops.random_nonce_b64 () in
+    let sign id =
+      let pk = pk_b64 id in
+      let blob = Relay_identity.canonical_msg
+        ~ctx:Relay_common.binding_revoke_sign_ctx
+        [ binding_id; pk; ts; nonce ] in
+      `Assoc [ ("revoke_pk", `String pk); ("ts", `String ts);
+               ("nonce", `String nonce);
+               ("sig", `String (b64url_encode (Relay_identity.sign id blob))) ]
+    in
+    let open Lwt.Infix in
+    delete ~base_url ~binding_id ~body:(sign attacker) () >>= fun r_att ->
+    Alcotest.(check int) "non-owner proof 401" 401 (RTSR.status_code r_att);
+    Alcotest.(check string) "non-owner denied uniformly" "revoke_denied"
+      (error_code r_att.RTSR.json);
+    Alcotest.(check bool) "binding survives non-owner attempt" true
+      (binding_exists relay ~binding_id);
+    (* Owner reuses the same nonce N — must succeed, proving N was never
+       recorded by the non-owner attempt. *)
+    delete ~base_url ~binding_id ~body:(sign machine) () >|= fun r_owner ->
+    Alcotest.(check int) "owner revoke with same nonce succeeds (nonce free)"
+      200 (RTSR.status_code r_owner);
+    Alcotest.(check bool) "binding removed by owner" false
+      (binding_exists relay ~binding_id))
+
+(* --- 6c: oversized nonce rejected before any store access --- *)
+
+let test_oversized_nonce_rejected () =
+  RTSR.with_server ~token:test_token (fun ~base_url ~relay ->
+    let machine = gen_identity () and phone = gen_identity () in
+    let binding_id = "b116-bignonce" in
+    add_binding relay ~binding_id ~machine ~phone;
+    let pk = pk_b64 machine in
+    let ts = Printf.sprintf "%.6f" (Unix.gettimeofday ()) in
+    let nonce = String.make 500 'A' in
+    let blob = Relay_identity.canonical_msg
+      ~ctx:Relay_common.binding_revoke_sign_ctx
+      [ binding_id; pk; ts; nonce ] in
+    let body = `Assoc [
+      ("revoke_pk", `String pk); ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String (b64url_encode (Relay_identity.sign machine blob))) ] in
+    let open Lwt.Infix in
+    delete ~base_url ~binding_id ~body () >|= fun r ->
+    Alcotest.(check int) "oversized-nonce revoke is 401" 401
+      (RTSR.status_code r);
+    Alcotest.(check bool) "binding survives oversized-nonce attempt" true
       (binding_exists relay ~binding_id))
 
 (* --- 7: stale timestamp rejected --- *)
@@ -223,13 +311,21 @@ let test_nan_ts_rejected () =
     Alcotest.(check bool) "binding survives nan-ts attempt" true
       (binding_exists relay ~binding_id))
 
-(* --- 8: malformed binding id still 400, store untouched --- *)
+(* --- 8: malformed binding id still 400, and it leaves a real binding
+   untouched (the 400 fires before any store mutation). We seed a valid
+   binding, hit a separate malformed id, and assert the seeded binding
+   survives and the malformed one is 400. *)
 
 let test_malformed_binding_id_still_400 () =
-  RTSR.with_server ~token:test_token (fun ~base_url ~relay:_ ->
+  RTSR.with_server ~token:test_token (fun ~base_url ~relay ->
+    let machine = gen_identity () and phone = gen_identity () in
+    let seeded = "b116-seeded-ok" in
+    add_binding relay ~binding_id:seeded ~machine ~phone;
     let open Lwt.Infix in
     delete ~base_url ~binding_id:"nope" () >|= fun r ->
-    Alcotest.(check int) "short binding id is 400" 400 (RTSR.status_code r))
+    Alcotest.(check int) "short binding id is 400" 400 (RTSR.status_code r);
+    Alcotest.(check bool) "seeded binding untouched by malformed request" true
+      (binding_exists relay ~binding_id:seeded))
 
 let () =
   Alcotest.run "relay_binding_revoke_auth"
@@ -242,9 +338,14 @@ let () =
             test_phone_key_revoke_succeeds;
           Alcotest.test_case "wrong-key rejected + uniform" `Quick
             test_wrong_key_rejected_uniform;
-          Alcotest.test_case "replay rejected" `Quick test_replay_rejected;
+          Alcotest.test_case "replay rejected (uniform)" `Quick
+            test_replay_rejected;
+          Alcotest.test_case "non-owner does not consume nonce" `Quick
+            test_non_owner_does_not_consume_nonce;
+          Alcotest.test_case "oversized nonce rejected" `Quick
+            test_oversized_nonce_rejected;
           Alcotest.test_case "stale ts rejected" `Quick
             test_stale_ts_rejected;
           Alcotest.test_case "nan ts rejected" `Quick test_nan_ts_rejected;
-          Alcotest.test_case "malformed binding id 400" `Quick
-            test_malformed_binding_id_still_400 ] ) ]
+          Alcotest.test_case "malformed binding id 400 (store untouched)"
+            `Quick test_malformed_binding_id_still_400 ] ) ]
