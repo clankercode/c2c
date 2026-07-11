@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# DEPRECATED (B123): Python root wrapper retired. Prefer the OCaml `c2c` binary.
+# DEPRECATED (B122+B123): Python root wrapper retired. Prefer the OCaml `c2c` binary.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPLACEMENT='c2c install <client>   (or: c2c init)'
 LEGACY_NOTE='Legacy Python path (escape hatch only): python3 c2c_setup.py …'
 
 if [ "${C2C_ALLOW_PYTHON_LEGACY:-}" = "1" ] || [ -n "${PYTEST_CURRENT_TEST:-}" ]; then
-  echo "warning: $(basename "$0") is a retired Python wrapper (B123); C2C_ALLOW_PYTHON_LEGACY=1 allows tests/emergency only." >&2
+  echo "warning: $(basename "$0") is a retired Python wrapper (B122+B123); C2C_ALLOW_PYTHON_LEGACY=1 allows tests/emergency only." >&2
   exec python3 "$SCRIPT_DIR/c2c_setup.py" "$@"
 fi
 
 cat >&2 <<EOF
-error: $(basename "$0") is a retired Python wrapper (B123).
+error: $(basename "$0") is a retired Python wrapper (B122+B123).
 
 Use the OCaml CLI instead:
   $REPLACEMENT

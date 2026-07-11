@@ -23,6 +23,10 @@ from typing import Any, FrozenSet
 
 import pytest
 
+# B122: in-tree pytest still exercises retired Python MCP/configure modules.
+# User-facing entry points refuse without this env; tests re-enable intentionally.
+os.environ.setdefault("C2C_ALLOW_PYTHON_LEGACY", "1")
+
 from tests.e2e.framework.artifacts import ArtifactCollector
 from tests.e2e.framework.client_adapters import CodexAdapter, CodexHeadlessAdapter, ClaudeAdapter, KimiAdapter, OpenCodeAdapter, PiAdapter
 from tests.e2e.framework.fake_pty_driver import FakePtyDriver

@@ -46,9 +46,17 @@ Every session should do this on wake-up:
 
 If step 1 or 2 fails because `mcp__c2c__*` tools don't exist in your
 tool list, **your MCP server never started or never connected**. Fall
-back to `c2c poll-inbox` / `c2c list` / `c2c send` (OCaml CLI) and keep
-going. The MCP server binary is `c2c-mcp-server` / `c2c mcp` — not
-`python3 c2c_mcp.py` (B123). See `survival-guide/asking-for-help.md`.
+back to the OCaml CLI (no Python MCP path):
+
+```bash
+c2c poll-inbox
+c2c send <alias> "hello"
+c2c monitor
+```
+
+If MCP is needed, ensure the client points at **`c2c-mcp-server`** (not
+`python3 c2c_mcp.py`) via an explicit `c2c install <client>` or
+`c2c init --with-mcp`. See `survival-guide/asking-for-help.md`.
 
 ## Broker file layout
 

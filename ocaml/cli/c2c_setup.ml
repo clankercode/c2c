@@ -1907,11 +1907,11 @@ let canonical_install_client client =
 (* pi is NOT here: pi agents use the npm:pi-c2c extension, not `c2c install`.
    pi is shown in the landing page via a synthetic entry (print_enriched_landing). *)
 let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok" ]
-(* Codex integration changes the user's global config.toml and is therefore
-   deliberately opt-in. Keep it in [known_clients] so explicit
-   [c2c install codex] continues to work, but exclude it from convenience
-   defaults. *)
-let install_by_default client = client <> "codex"
+(* B122: client MCP / host integrations are never installed by default.
+   Convenience paths (`c2c install`, `c2c install all`) stay binary-only
+   unless the operator names a client or passes --with-clients. Keep every
+   known client in [known_clients] so explicit [c2c install <client>] still
+   works. *)
 (* crush + gemini remain recognized subcommands so they route to the
    deprecation guard (helpful banner) instead of a generic unknown-command error. *)
 let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "crush"; "gemini" ]
@@ -2257,11 +2257,12 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
   let (self, clients) = detect_installation () in
   Printf.printf "c2c installer\n";
   Printf.printf "─────────────\n\n";
-  Printf.printf "Here's the plan — press [Enter] to proceed with defaults.\n\n";
+  Printf.printf "Defaults are binary-only. Client MCP setup is opt-in (B122).\n";
+  Printf.printf "Press [Enter] for binary-only, [c] to pick clients, [n] to abort.\n\n";
   let self_default = not self in
   let client_defaults = List.map (fun (c, on_path, configured) ->
-    let do_it = install_by_default c && on_path && not configured in
-    (c, on_path, configured, do_it)
+    (* Never pre-select client/MCP configuration — explicit customize only. *)
+    (c, on_path, configured, false)
   ) clients in
   let mark b = if b then "[x]" else "[ ]" in
   let self_suffix =
@@ -2274,9 +2275,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
     let suffix =
       if not on_path then "→ not on PATH, skipping"
       else if configured then "→ already configured"
-      else if not (install_by_default c) then
-        "→ detected; opt in with c2c install codex"
-      else "→ detected"
+      else "→ detected; MCP opt-in (customize or c2c install " ^ c ^ ")"
     in
     Printf.printf "  %s %-22s %s\n" (mark do_it) label suffix
   ) client_defaults;
@@ -2293,7 +2292,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
       exit 0
     end
     else if choice = "c" || choice = "customize" then begin
-      Printf.printf "\nCustomize:\n";
+      Printf.printf "\nCustomize (client MCP defaults to no):\n";
       let s =
         if self then
           prompt_yn ~default_yes:false "  Reinstall c2c binary?"
@@ -2305,10 +2304,10 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
           let q =
             if configured
             then Printf.sprintf "  Reconfigure %s?" c
-            else Printf.sprintf "  Configure %s?" c
+            else Printf.sprintf "  Configure %s (writes MCP/hooks)?" c
           in
-          let default = install_by_default c && not configured in
-          (c, prompt_yn ~default_yes:default q)
+          (* B122: never default client MCP to yes, even in customize. *)
+          (c, prompt_yn ~default_yes:false q)
       ) client_defaults in
       (s, cs)
     end
@@ -2317,14 +2316,15 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
       (self_default, cs)
   in
   let any_action = do_self || List.exists (fun (_, do_it) -> do_it) do_clients in
+  let any_client = List.exists (fun (_, do_it) -> do_it) do_clients in
   if not any_action then
     Printf.printf "\nNothing to do.\n"
   else begin
     Printf.printf "\n";
     if do_self then begin
-      Printf.printf "→ Installing c2c binary...\n";
-      let result = do_install_self ~dry_run:false ~output_mode:Human ~dest_opt:None ~with_mcp_server:false in
-      print_install_summary ~output_mode:Human ~dry_run:false ~component:"self" result
+      Printf.printf "→ %s c2c binary...\n" (if dry_run then "Would install" else "Installing");
+      let result = do_install_self ~dry_run ~output_mode:Human ~dest_opt:None ~with_mcp_server:false in
+      print_install_summary ~output_mode:Human ~dry_run ~component:"self" result
     end;
     List.iter (fun (c, do_it) ->
       if do_it then begin
@@ -2337,10 +2337,17 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
       end
     ) do_clients;
     Printf.printf "\nDone.\n";
-    Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
-    Printf.printf "  Monitor — receive: run \"c2c monitor\" in the Claude Code Monitor tool\n";
-    Printf.printf "            (auto-resolves your alias + broker; zero flags).\n";
-    Printf.printf "\nRun 'c2c ping --verify' to confirm delivery is live.\n";
+    if any_client then begin
+      Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
+      Printf.printf "  Monitor — receive: run \"c2c monitor\" in the Claude Code Monitor tool\n";
+      Printf.printf "            (auto-resolves your alias + broker; zero flags).\n";
+      Printf.printf "\nRun 'c2c ping --verify' to confirm delivery is live.\n"
+    end else begin
+      Printf.printf
+        "\n  Binary-only install (no client MCP). CLI messaging works immediately:\n\
+        \    c2c send / c2c monitor / c2c poll-inbox\n\
+        \  Opt into MCP later with: c2c install claude|codex|opencode|kimi|grok\n"
+    end;
     (* Polish: hint about faster message delivery if inotifywait is available *)
     let inotify_available =
       let path = try Sys.getenv "PATH" with Not_found -> "" in
@@ -2380,7 +2387,10 @@ let install_common_args () =
     Cmdliner.Arg.(value & flag & info [ "dry-run"; "n" ] ~doc:"Show what would be written without writing anything.")
   in
   let global =
-    Cmdliner.Arg.(value & flag & info [ "global" ] ~doc:"(claude only) Write the MCP server entry to user-global ~/.claude.json instead of project-scoped <cwd>/.mcp.json. Defaults to project scope so a fresh clone wires c2c on first install.")
+    Cmdliner.Arg.(value & flag & info [ "global" ]
+      ~doc:"(claude only, advanced) Write the MCP server entry to user-global \
+            ~/.claude.json instead of project-scoped <cwd>/.mcp.json. Never \
+            implied — must be passed explicitly. Prefer project scope.")
   in
   (alias, no_nonce, broker_root, target_dir, force, dry_run, global)
 
@@ -2440,43 +2450,110 @@ let install_client_subcmd client =
 
 let install_all_subcmd =
   let (alias, no_nonce, broker_root, _, _, dry_run, global) = install_common_args () in
+  let with_clients =
+    Cmdliner.Arg.(value & flag & info [ "with-clients" ]
+      ~doc:"Also configure every detected client (MCP/hooks). Off by default \
+            (B122): bare $(b,c2c install all) installs the c2c binary only. \
+            Prefer naming a single client with $(b,c2c install <client>).")
+  in
   let term =
     let+ json = json_flag
     and+ alias_opt = alias
     and+ no_nonce = no_nonce
     and+ broker_root_opt = broker_root
     and+ dry_run = dry_run
-    and+ global = global in
+    and+ global = global
+    and+ with_clients = with_clients in
     let output_mode = if json then Json else Human in
+    (* Human mode prints per-step; JSON mode emits one summary object so we
+       don't interleave print_install_summary blobs from each client. *)
+    let human = output_mode = Human in
     let (self, clients) = detect_installation () in
-    if not self then begin
-      if output_mode = Human then Printf.printf "→ Installing c2c binary...\n";
-      let result = do_install_self ~dry_run ~output_mode ~dest_opt:None ~with_mcp_server:false in
-      print_install_summary ~output_mode ~dry_run ~component:"self" result
-    end;
+    let binary_action =
+      if not self then begin
+        if human then Printf.printf "→ Installing c2c binary...\n";
+        (* Always Human for step output; JSON mode emits one envelope at the end. *)
+        let result =
+          do_install_self ~dry_run
+            ~output_mode:(if human then Human else Json)
+            ~dest_opt:None ~with_mcp_server:false
+        in
+        if human then
+          print_install_summary ~output_mode:Human ~dry_run ~component:"self" result
+        else
+          (* Swallow per-component JSON from do_install_self path — setup only
+             uses output_mode for error prints; summary is our responsibility. *)
+          ignore result;
+        if dry_run then "would_install" else "installed"
+      end else begin
+        if human then Printf.printf "  c2c binary: [already present]\n";
+        "already_present"
+      end
+    in
+    let skipped_clients = ref [] in
+    let configured_clients = ref [] in
+    let any_client_configured = ref false in
     List.iter (fun (c, on_path, configured) ->
       if not on_path then begin
-        if output_mode = Human then Printf.printf "  %s: [not on PATH]\n" c
+        if human then Printf.printf "  %s: [not on PATH]\n" c;
+        skipped_clients := (c, "not_on_path") :: !skipped_clients
       end else if configured then begin
-        if output_mode = Human then Printf.printf "  %s: [configured — up-to-date]\n" c
-      end else if not (install_by_default c) then begin
-        if output_mode = Human then
-          Printf.printf "  %s: [skipped by default; run 'c2c install codex' to opt in]\n" c
+        if human then Printf.printf "  %s: [configured — up-to-date]\n" c;
+        skipped_clients := (c, "already_configured") :: !skipped_clients
+      end else if not with_clients then begin
+        if human then
+          Printf.printf
+            "  %s: [skipped; MCP opt-in — run 'c2c install %s' or pass --with-clients]\n"
+            c c;
+        skipped_clients := (c, "mcp_opt_in") :: !skipped_clients
       end else begin
-        if output_mode = Human then Printf.printf "\n→ Configuring %s...\n" c;
-        do_install_client ~global ~output_mode ~dry_run ~client:c ~alias_opt ~no_nonce ~broker_root_opt
-          ~target_dir_opt:None ~force:false ~deliver_watch:(is_deliver_watch_client c) ()
+        any_client_configured := true;
+        configured_clients := c :: !configured_clients;
+        if human then Printf.printf "\n→ Configuring %s...\n" c;
+        do_install_client ~global
+          ~output_mode:(if human then Human else Json)
+          ~dry_run ~client:c ~alias_opt ~no_nonce
+          ~broker_root_opt ~target_dir_opt:None ~force:false
+          ~deliver_watch:(is_deliver_watch_client c)
+          ~skip_summary:true ()
       end
     ) clients;
-    if output_mode = Human then begin
+    if human then begin
       Printf.printf "\nDone.\n";
-      Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
-      Printf.printf "\nRun 'c2c ping --verify' to confirm delivery is live.\n"
-    end
+      if not with_clients && not !any_client_configured then begin
+        Printf.printf
+          "\n  Client MCP/hooks were not configured (opt-in policy).\n\
+          \  Pick one explicitly:\n\
+          \    c2c install claude|codex|opencode|kimi|grok\n\
+          \  Or bulk opt-in (still deliberate):\n\
+          \    c2c install all --with-clients\n\
+          \  CLI messaging works without MCP: c2c send / c2c monitor / c2c poll-inbox\n"
+      end else begin
+        Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
+        Printf.printf "\nRun 'c2c ping --verify' to confirm delivery is live.\n"
+      end
+    end else
+      print_json (`Assoc
+        [ ("ok", `Bool true)
+        ; ("component", `String "all")
+        ; ("binary_only", `Bool (not with_clients))
+        ; ("with_clients", `Bool with_clients)
+        ; ("binary", `String binary_action)
+        ; ("configured_clients",
+           `List (List.map (fun c -> `String c) (List.rev !configured_clients)))
+        ; ("skipped_clients",
+           `List (List.map (fun (c, reason) ->
+              `Assoc [ ("client", `String c); ("reason", `String reason) ])
+              (List.rev !skipped_clients)))
+        ; ("hint", `String
+            (if with_clients then "restart client after MCP install"
+             else "pass --with-clients or c2c install <client> for MCP"))
+        ])
   in
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "all"
-       ~doc:"Install c2c binary and auto-configure detected clients by default (Codex remains opt-in; scriptable, no prompts).")
+       ~doc:"Install the c2c binary only by default (scriptable, no prompts). \
+             Client MCP requires $(b,--with-clients) or $(b,c2c install <client>).")
     term
 
 let do_install_git_hook ~output_mode ~dry_run =

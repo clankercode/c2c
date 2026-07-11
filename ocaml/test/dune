@@ -424,6 +424,16 @@
  (libraries relay_test_support relay_test_support_real c2c_mcp alcotest
    yojson unix lwt.unix))
 
+; B121: client detects wire protocol_version skew via /health and rewrites
+; opaque relay errors into incompatible_client + upgrade message. Pure
+; protocol_compat helpers + scripted Relay_test_support /health+failing-op
+; cases + production handler advertisement of protocol_version.
+(test
+ (name test_relay_protocol_compat)
+ (modules test_relay_protocol_compat)
+ (libraries c2c_mcp relay_test_support relay_test_support_real alcotest
+   yojson unix lwt.unix))
+
 ; F5b (friction-cn): P0 process/adverse fault matrix. Drives the compiled
 ; c2c binary as a SUBPROCESS against the F5a scripted fault server
 ; (Relay_test_support): relay register / dm send / dm poll / status vs

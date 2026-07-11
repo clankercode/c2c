@@ -14,6 +14,9 @@ let relay_err_missing_proof_field = "missing_proof_field"
    valid-signature probe cannot be used as a binding-existence oracle. *)
 let relay_err_revoke_denied = "revoke_denied"
 let relay_err_not_found = "not_found"
+(* B121: client/relay wire protocol skew — structured so the CLI can special-
+   case into an upgrade message instead of leaking opaque auth/HTTP errors. *)
+let relay_err_incompatible_client = "incompatible_client"
 
 (* Signature windows (spec §4.3): 120s past / 30s future, 10 min nonce TTL *)
 let register_ts_past_window = 120.0

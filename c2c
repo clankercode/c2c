@@ -104,21 +104,24 @@ def main() -> int:
     args = sys.argv[1:]
     subcmd = None if (not args or args[0] in ("-h", "--help")) else args[0]
 
-    # Explicit test/emergency escape hatch: always use Python CLI.
-    if python_legacy_allowed():
-        print(
-            "warning: repo-root ./c2c using retired Python CLI "
-            "(C2C_ALLOW_PYTHON_LEGACY=1).",
-            file=sys.stderr,
-        )
-        return run_python_cli(args)
-
+    # Prefer the native OCaml CLI whenever it is available. C2C_ALLOW_PYTHON_LEGACY
+    # re-enables Python *wrappers* / modules (configure scripts, c2c_install.py),
+    # not a forced Python route for this shim when OCaml is on PATH (B122+B123).
     native_c2c = find_native_c2c()
     if native_c2c is not None:
         result = subprocess.run([native_c2c] + args)
         return result.returncode
 
-    # No native binary. Last-resort fallback for residual Python-owned names.
+    # No native binary. Legacy escape hatch may use Python CLI for any subcommand.
+    if python_legacy_allowed():
+        print(
+            "warning: native c2c not found; using retired Python CLI "
+            "(C2C_ALLOW_PYTHON_LEGACY=1).",
+            file=sys.stderr,
+        )
+        return run_python_cli(args)
+
+    # Last-resort fallback for residual Python-owned names (no escape hatch).
     if subcmd in PYTHON_FALLBACK_SUBCOMMANDS:
         print(
             "warning: native c2c CLI not found; falling back to retired Python "

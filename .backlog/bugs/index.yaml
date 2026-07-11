@@ -120,3 +120,4 @@ bugs:
     - file: B121-client-should-surface-a-clear.todo
     - file: B122-require-explicit-mcp-opt-in-an.todo
     - file: B123-do-an-audit-for-deprecated-pyt.todo
+    - file: B124-sometimes-agents-will-get-conf.todo

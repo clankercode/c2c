@@ -112,6 +112,14 @@ def write_kimi_config(
 
 
 def main(argv: list[str] | None = None) -> int:
+    from c2c_python_legacy import require_python_legacy
+
+    refused = require_python_legacy(
+        "c2c_configure_kimi.py",
+        ocaml_hint="c2c install kimi",
+    )
+    if refused is not None:
+        return refused
     parser = argparse.ArgumentParser(description="Configure c2c MCP for Kimi Code CLI")
     parser.add_argument(
         "--mcp-path",

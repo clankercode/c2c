@@ -1,8 +1,9 @@
 # c2c agent Docker image — managed codex-headless client for e2e mesh testing.
 #
 # Based on Dockerfile.test (python:3.12-slim + c2c binary + pytest).
-# Ships the OCaml `c2c` CLI and the OCaml `c2c-deliver-inbox` binary
-# (B123: Python deliver/MCP paths are no longer the product surface).
+# Ships OCaml product binaries only (B122+B123):
+#   c2c, c2c-mcp-server, c2c-deliver-inbox
+# No Python MCP/deliver on the product PATH.
 #
 # The codex-turn-start-bridge binary is NOT bundled — it is dynamically
 # linked to host libraries and must be mounted from the host at runtime:
@@ -39,7 +40,10 @@ COPY ocaml ./ocaml
 USER root
 RUN rm -rf /home/opam/c2c/_build && chown -R opam:opam /home/opam/c2c
 USER opam
-RUN opam exec -- dune build --release ocaml/cli/c2c.exe ocaml/cli/c2c_deliver_inbox.exe
+RUN opam exec -- dune build --release \
+      ocaml/cli/c2c.exe \
+      ocaml/cli/c2c_deliver_inbox.exe \
+      ocaml/server/c2c_mcp_server.exe
 
 # ----------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
@@ -52,10 +56,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip install --no-cache-dir pytest pytest-timeout \
     && rm -rf /var/cache/pip
 
-# OCaml binaries (canonical product surface — B123).
+# OCaml binaries only (canonical product surface — B122+B123).
 COPY --from=builder /home/opam/c2c/_build/default/ocaml/cli/c2c.exe /usr/local/bin/c2c
 COPY --from=builder /home/opam/c2c/_build/default/ocaml/cli/c2c_deliver_inbox.exe /usr/local/bin/c2c-deliver-inbox
-RUN chmod +x /usr/local/bin/c2c /usr/local/bin/c2c-deliver-inbox
+COPY --from=builder /home/opam/c2c/_build/default/ocaml/server/c2c_mcp_server.exe /usr/local/bin/c2c-mcp-server
+RUN chmod +x /usr/local/bin/c2c /usr/local/bin/c2c-deliver-inbox /usr/local/bin/c2c-mcp-server
 
 COPY docker-tests/ /docker-tests/
 

@@ -74,7 +74,8 @@ let with_ctx f =
 
 let broker ctx = C2c_mcp.Broker.create ~root:ctx.broker_root
 
-let register ?tmux_location ?herdr_pane ?herdr_socket ctx ~session_id ~alias =
+let register ?tmux_location ?herdr_pane ?herdr_socket ?registered_by ctx
+    ~session_id ~alias =
   let b = broker ctx in
   C2c_mcp.Broker.register b ~session_id ~alias ~pid:(Some (Unix.getpid ()))
     ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time (Some (Unix.getpid ())))
@@ -82,6 +83,22 @@ let register ?tmux_location ?herdr_pane ?herdr_socket ctx ~session_id ~alias =
     ?tmux_location:(Option.map Option.some tmux_location)
     ?herdr_pane:(Option.map Option.some herdr_pane)
     ?herdr_socket:(Option.map Option.some herdr_socket)
+    ?registered_by:(Option.map Option.some registered_by)
+    ();
+  b
+
+(* A hook auto-registration carries NO pid (vanilla codex hook auto-register
+   sets pid=None) so it reads as pidless — but it IS the identity authority for
+   its session_id. Mirror that shape here. *)
+let register_hook ?tmux_location ?herdr_pane ctx ~session_id ~alias =
+  let b = broker ctx in
+  C2c_mcp.Broker.register b ~session_id ~alias ~pid:None
+    ~pid_start_time:None
+    ~client_type:(Some "codex")
+    ?tmux_location:(Option.map Option.some tmux_location)
+    ?herdr_pane:(Option.map Option.some herdr_pane)
+    ~registered_by:(Some "codex-hook")
+    ~from_auto_gen:true
     ();
   b
 
@@ -431,6 +448,191 @@ let test_update_wake_targets () =
         check (option string) "herdr pane preserved through tmux update"
           (Some "w5:p5") r.herdr_pane)
 
+(* --- B120: managed-codex resume identity split ------------------------------
+   On resume the managed startup registers the deliver sidecar keyed by the
+   instance NAME, while the codex SessionStart hook auto-registers the resumed
+   conversation's session UUID (a hook auto-registration) sharing the SAME tmux
+   pane. The sidecar must FOLLOW the hook registration, else it watches an
+   inbox nobody DMs. resolve_wake_watch_target performs that adoption. *)
+
+let resolve ctx ~session_id =
+  C2c_wake_inject.resolve_wake_watch_target ~broker_root:ctx.broker_root
+    ~session_id
+
+let test_resolve_follows_hook_on_resume () =
+  with_ctx (fun ctx ->
+    (* Managed instance registration (session_id = instance name). *)
+    ignore (register ctx ~session_id:"zw-b120-mgd" ~alias:"zw-b120-mgd"
+              ~tmux_location:"%42");
+    (* Hook auto-registration for the resumed conversation UUID, same pane. *)
+    ignore (register_hook ctx ~session_id:"zw-b120-codexuuid"
+              ~alias:"zw-b120-codexuuid" ~tmux_location:"%42");
+    check string "sidecar follows the hook-registered session"
+      "zw-b120-codexuuid" (resolve ctx ~session_id:"zw-b120-mgd"))
+
+let test_resolve_no_hook_returns_self () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-solo" ~alias:"zw-b120-solo"
+              ~tmux_location:"%43");
+    check string "no hook row -> watch self unchanged (fresh start)"
+      "zw-b120-solo" (resolve ctx ~session_id:"zw-b120-solo"))
+
+let test_resolve_standalone_hook_authority_unchanged () =
+  with_ctx (fun ctx ->
+    (* The standalone `c2c deliver wake-watch --alias X` path resolves an alias
+       straight to its own hook registration. Resolving that hook session_id
+       must return it unchanged even if a managed row shares the pane. *)
+    ignore (register_hook ctx ~session_id:"zw-b120-hook" ~alias:"zw-b120-hook"
+              ~tmux_location:"%44");
+    ignore (register ctx ~session_id:"zw-b120-mgd2" ~alias:"zw-b120-mgd2"
+              ~tmux_location:"%44");
+    check string "hook authority is not re-pointed"
+      "zw-b120-hook" (resolve ctx ~session_id:"zw-b120-hook"))
+
+let test_resolve_different_target_not_followed () =
+  with_ctx (fun ctx ->
+    (* A hook row on a DIFFERENT pane belongs to another session — never
+       cross-wire. cwd is deliberately not a match key. *)
+    ignore (register ctx ~session_id:"zw-b120-mgd3" ~alias:"zw-b120-mgd3"
+              ~tmux_location:"%45");
+    ignore (register_hook ctx ~session_id:"zw-b120-other"
+              ~alias:"zw-b120-other" ~tmux_location:"%99");
+    check string "unrelated hook row not adopted"
+      "zw-b120-mgd3" (resolve ctx ~session_id:"zw-b120-mgd3"))
+
+let test_resolve_no_wake_target_returns_self () =
+  with_ctx (fun ctx ->
+    (* Managed row without a tmux/herdr target cannot be matched to a hook row
+       by pane — return self (nothing to inject into anyway). *)
+    ignore (register ctx ~session_id:"zw-b120-notgt" ~alias:"zw-b120-notgt");
+    ignore (register_hook ctx ~session_id:"zw-b120-hook2"
+              ~alias:"zw-b120-hook2" ~tmux_location:"%46");
+    check string "no wake target -> self"
+      "zw-b120-notgt" (resolve ctx ~session_id:"zw-b120-notgt"))
+
+let test_resolve_herdr_pane_shared () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-hmgd" ~alias:"zw-b120-hmgd"
+              ~herdr_pane:"w7:p7");
+    ignore (register_hook ctx ~session_id:"zw-b120-huuid"
+              ~alias:"zw-b120-huuid" ~herdr_pane:"w7:p7");
+    check string "herdr_pane also reconciles"
+      "zw-b120-huuid" (resolve ctx ~session_id:"zw-b120-hmgd"))
+
+(* End-to-end reproduction: a DM addressed to the HOOK identity lands in its
+   inbox, not the managed instance's. Injecting on the raw managed session_id
+   sees nothing (the split); resolving first, then injecting, wakes correctly. *)
+let test_resolve_then_inject_reproduces_and_fixes_split () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-e2e-mgd" ~alias:"zw-b120-e2e-mgd"
+              ~tmux_location:"%50");
+    ignore (register_hook ctx ~session_id:"zw-b120-e2e-uuid"
+              ~alias:"zw-b120-e2e-uuid" ~tmux_location:"%50");
+    (* Peer DMs the hook identity — where resumed-session DMs actually go. *)
+    enqueue ctx ~to_alias:"zw-b120-e2e-uuid" ~from_session:"zw-b120-e2e-peer"
+      ~from_alias:"zw-b120-e2e-peer" ~content:"wake up";
+    (* The bug: watching the instance name sees an empty inbox. *)
+    check outcome "instance-name inbox is empty (the split)"
+      (Skipped "inbox_empty") (inject ctx ~session_id:"zw-b120-e2e-mgd");
+    (* The fix: resolve to the hook identity, then inject succeeds. *)
+    let target = resolve ctx ~session_id:"zw-b120-e2e-mgd" in
+    check string "resolved to hook identity" "zw-b120-e2e-uuid" target;
+    match inject ctx ~session_id:target with
+    | Injected { backend; message_count } ->
+        check string "tmux backend" "tmux" backend;
+        check int "the queued message is seen" 1 message_count
+    | o ->
+        failf "expected Injected after resolve, got %s"
+          (C2c_wake_inject.outcome_to_string o))
+
+(* #5 isolation: two different tmux panes that both inherited the SAME outer
+   herdr pane must NOT match — their effective (tmux) targets differ. Guards
+   against cross-wiring sidecars via the leaked outer herdr pane. *)
+let test_resolve_shared_herdr_different_tmux_not_followed () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-tA" ~alias:"zw-b120-tA"
+              ~tmux_location:"%60" ~herdr_pane:"w9:p9");
+    ignore (register_hook ctx ~session_id:"zw-b120-tB" ~alias:"zw-b120-tB"
+              ~tmux_location:"%61" ~herdr_pane:"w9:p9");
+    check string "different tmux panes not cross-wired by shared herdr"
+      "zw-b120-tA" (resolve ctx ~session_id:"zw-b120-tA"))
+
+(* tmux-only managed row vs herdr-only hook row: effective targets are
+   different kinds -> no match (the tmux session's real pane is the tmux one). *)
+let test_resolve_tmux_only_vs_herdr_only_no_match () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-tmuxonly" ~alias:"zw-b120-tmuxonly"
+              ~tmux_location:"%62");
+    ignore (register_hook ctx ~session_id:"zw-b120-herdronly"
+              ~alias:"zw-b120-herdronly" ~herdr_pane:"w9:p1");
+    check string "tmux-only and herdr-only do not match"
+      "zw-b120-tmuxonly" (resolve ctx ~session_id:"zw-b120-tmuxonly"))
+
+(* Same real tmux pane on both rows, even when the managed row also carries the
+   leaked outer herdr pane -> matches on the tmux target. *)
+let test_resolve_same_tmux_with_leaked_herdr_matches () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-leak-mgd" ~alias:"zw-b120-leak-mgd"
+              ~tmux_location:"%63" ~herdr_pane:"w9:p2");
+    ignore (register_hook ctx ~session_id:"zw-b120-leak-uuid"
+              ~alias:"zw-b120-leak-uuid" ~tmux_location:"%63" ~herdr_pane:"w9:p2");
+    check string "same tmux pane reconciles despite leaked herdr"
+      "zw-b120-leak-uuid" (resolve ctx ~session_id:"zw-b120-leak-mgd"))
+
+(* #6 selection: prefer the most-recently-active hook candidate. *)
+let test_resolve_prefers_most_recent_candidate () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-sel-mgd" ~alias:"zw-b120-sel-mgd"
+              ~tmux_location:"%64");
+    let b_old = register_hook ctx ~session_id:"zw-b120-sel-old"
+                  ~alias:"zw-b120-sel-old" ~tmux_location:"%64" in
+    let b_new = register_hook ctx ~session_id:"zw-b120-sel-new"
+                  ~alias:"zw-b120-sel-new" ~tmux_location:"%64" in
+    (* Make -new the most recently active. *)
+    C2c_mcp.Broker.touch_session b_old ~session_id:"zw-b120-sel-old";
+    Unix.sleepf 0.01;
+    C2c_mcp.Broker.touch_session b_new ~session_id:"zw-b120-sel-new";
+    check string "most-recently-active hook candidate wins"
+      "zw-b120-sel-new" (resolve ctx ~session_id:"zw-b120-sel-mgd"))
+
+(* #2 the after-startup race, deterministic: the sidecar re-resolves on every
+   attempt (this is what watch_loop does), so a hook that registers AFTER the
+   first attempt is adopted on the next one. Simulated via the attempt
+   primitive (resolve then inject) rather than the inotify subprocess. *)
+let test_race_hook_registers_after_startup () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-race-mgd" ~alias:"zw-b120-race-mgd"
+              ~tmux_location:"%65");
+    (* Attempt #1: no hook yet, no DM anywhere -> resolve self, empty inbox. *)
+    let t1 = resolve ctx ~session_id:"zw-b120-race-mgd" in
+    check string "attempt 1 resolves to self (no hook yet)"
+      "zw-b120-race-mgd" t1;
+    check outcome "attempt 1 nothing to inject" (Skipped "inbox_empty")
+      (inject ctx ~session_id:t1);
+    (* Hook registers (SessionStart fires) and a peer DMs the hook identity. *)
+    ignore (register_hook ctx ~session_id:"zw-b120-race-uuid"
+              ~alias:"zw-b120-race-uuid" ~tmux_location:"%65");
+    enqueue ctx ~to_alias:"zw-b120-race-uuid" ~from_session:"zw-b120-race-peer"
+      ~from_alias:"zw-b120-race-peer" ~content:"late wake";
+    (* Attempt #2: re-resolution adopts the hook and injects. *)
+    let t2 = resolve ctx ~session_id:"zw-b120-race-mgd" in
+    check string "attempt 2 adopts the freshly-registered hook"
+      "zw-b120-race-uuid" t2;
+    match inject ctx ~session_id:t2 with
+    | Injected { message_count; _ } -> check int "late DM seen" 1 message_count
+    | o -> failf "expected Injected on attempt 2, got %s"
+             (C2c_wake_inject.outcome_to_string o))
+
+(* NOTE on watch_loop coverage: watch_loop is thin glue — its [attempt] is
+   exactly [resolve_wake_watch_target] followed by [maybe_inject], both covered
+   above (incl. the after-startup race), and its inotify event filter only
+   decides WHEN to call attempt. A direct watch_loop test is intentionally
+   omitted: it drives a real `inotifywait -m` subprocess that does not exit on
+   pipe close (only on a later fs write via SIGPIPE), so a bounded
+   max_iterations run hangs on cleanup — inherently non-hermetic. The live
+   loop is exercised by the tmux managed-codex-resume validation documented in
+   the B120 finding. *)
+
 let () =
   Random.self_init ();
   run "c2c_wake_inject"
@@ -458,5 +660,29 @@ let () =
         ; test_case "wake targets round-trip registry" `Quick
             test_wake_targets_roundtrip_registry
         ; test_case "update_wake_targets semantics" `Quick test_update_wake_targets
+        ; test_case "B120: sidecar follows hook registration on resume" `Quick
+            test_resolve_follows_hook_on_resume
+        ; test_case "B120: no hook row -> watch self (fresh start)" `Quick
+            test_resolve_no_hook_returns_self
+        ; test_case "B120: standalone hook authority unchanged" `Quick
+            test_resolve_standalone_hook_authority_unchanged
+        ; test_case "B120: unrelated pane not followed" `Quick
+            test_resolve_different_target_not_followed
+        ; test_case "B120: no wake target -> self" `Quick
+            test_resolve_no_wake_target_returns_self
+        ; test_case "B120: herdr_pane reconciles" `Quick
+            test_resolve_herdr_pane_shared
+        ; test_case "B120: resolve-then-inject reproduces + fixes split" `Quick
+            test_resolve_then_inject_reproduces_and_fixes_split
+        ; test_case "B120: shared herdr / different tmux not cross-wired" `Quick
+            test_resolve_shared_herdr_different_tmux_not_followed
+        ; test_case "B120: tmux-only vs herdr-only no match" `Quick
+            test_resolve_tmux_only_vs_herdr_only_no_match
+        ; test_case "B120: same tmux with leaked herdr matches" `Quick
+            test_resolve_same_tmux_with_leaked_herdr_matches
+        ; test_case "B120: prefers most-recent hook candidate" `Quick
+            test_resolve_prefers_most_recent_candidate
+        ; test_case "B120: race - hook registers after startup" `Quick
+            test_race_hook_registers_after_startup
         ] )
     ]
