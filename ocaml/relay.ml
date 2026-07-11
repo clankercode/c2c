@@ -3260,12 +3260,22 @@ end = struct
               match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
               | Error code -> Error (code, "nonce already seen within TTL")
               | Ok () ->
-                (* Bind identity_pk to alias: must match any existing binding. *)
+                (* B114 (review finding 1): the proof only AUTHENTICATES the
+                   alias if [identity_pk] is the key already bound to it. A
+                   self-signed proof for an alias with no registered binding
+                   is meaningless (any attacker key would "verify"), so an
+                   absent binding is rejected — there is no first-proof TOFU
+                   pinning. The alias must have registered a signed identity
+                   first (register_signed binds the key). *)
                 (match R.identity_pk_of relay ~alias with
                  | Some bound when bound <> identity_pk ->
                    Error (relay_err_alias_identity_mismatch,
                      "identity_pk does not match registered binding")
-                 | _ ->
+                 | None ->
+                   Error (relay_err_alias_identity_mismatch,
+                     "alias has no registered identity binding; register a \
+                      signed identity before signing room ops")
+                 | Some _ ->
                            let blob =
                              Relay_identity.canonical_msg ~ctx:sign_ctx
                                ([ room_id; alias ] @ extra_signed_fields
@@ -3372,7 +3382,12 @@ end = struct
       respond_bad_request (json_error_str err_bad_request
         "alias, room_id, and invitee_pk are required")
     else
-      match verify_room_op_proof relay ~require_signed ~sign_ctx ~room_id ~alias body with
+      (* B114 (review finding 2): invitee_pk is authorization-relevant and
+         MUST be covered by the signature, or an intermediary could substitute
+         the target key under an otherwise-valid member proof. Bind it as an
+         extra signed field (matches Relay_signed_ops.sign_room_op_with_target_pk). *)
+      match verify_room_op_proof relay ~require_signed ~sign_ctx
+              ~extra_signed_fields:[ target_pk ] ~room_id ~alias body with
       | Error (code, msg) ->
         if code = err_bad_request || code = relay_err_missing_proof_field then
           respond_bad_request (json_error_str code msg)
@@ -3609,11 +3624,21 @@ end = struct
                     match R.check_register_nonce relay ~nonce ~ts:ts_client with
                     | Error code -> Error (code, "nonce already seen within TTL")
                     | Ok () ->
+                      (* B114 (review finding 1): as with room ops, the
+                         envelope only authenticates [from_alias] when
+                         [sender_pk] is the key bound to it. An absent binding
+                         is rejected (no first-proof TOFU) — the sender must
+                         have registered a signed identity. *)
                       (match R.identity_pk_of relay ~alias:from_alias with
                        | Some bound when bound <> sender_pk ->
                          Error (relay_err_alias_identity_mismatch,
                            "sender_pk does not match registered binding")
-                       | _ ->
+                       | None ->
+                         Error (relay_err_alias_identity_mismatch,
+                           "alias has no registered identity binding; register \
+                            a signed identity before sending signed room \
+                            messages")
+                       | Some _ ->
                          let ct_hash = body_sha256_b64 ct_bytes in
                          let blob =
                            Relay_identity.canonical_msg ~ctx:Relay_signed_ops.room_send_sign_ctx

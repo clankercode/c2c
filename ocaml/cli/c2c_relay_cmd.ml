@@ -909,10 +909,15 @@ let relay_rooms_cmd =
            let sign_ctx = if subcmd = "invite" then Relay.room_invite_sign_ctx
                           else Relay.room_uninvite_sign_ctx in
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           (* B114: always sign — the relay rejects unsigned room ops. *)
+           (* B114: always sign — the relay rejects unsigned room ops. The
+              invitee_pk (target) is authorization-relevant and must be bound
+              into the signature (review finding 2), so use the target-key
+              signer rather than the plain room-op signer. *)
            let id = load_or_create_client_identity ~alias_hint:from_alias in
            let result =
-             let p = Relay_signed_ops.sign_room_op id ~ctx:sign_ctx ~room_id ~alias:from_alias in
+             let p = Relay_signed_ops.sign_room_op_with_target_pk id
+                       ~ctx:sign_ctx ~room_id ~alias:from_alias
+                       ~target_pk:invitee_pk_val in
              let fn = if subcmd = "invite"
                       then Relay.Relay_client.invite_room_signed
                       else Relay.Relay_client.uninvite_room_signed in
