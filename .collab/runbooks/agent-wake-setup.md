@@ -371,6 +371,16 @@ more — don't just sit polling empty inboxes indefinitely.
 
 ## Codex idle wake (tmux/herdr injection)
 
+> **T005 note (2026-07-11):** this whole section describes the **legacy
+> input-injecting** wake for hook-mode codex sessions (`delivery_mode=
+> hooks+wake`). App-server-backed sessions (`c2c start codex --app-server`)
+> do not need it: inbound mail is injected into the thread history on
+> arrival, and eligible LOCAL mail starts one gated turn when the thread is
+> idle and DND is off (T007 — no pane typing involved). Prefer the
+> app-server transport where codex ≥ 0.144 is available; `c2c doctor hooks`
+> classifies which mode a session actually has. Contract:
+> `docs/client-delivery.md` § Codex.
+
 Codex hooks (`c2c hook codex`) only fire on session activity, so a schedule
 or heartbeat self-DM cannot by itself wake an idle codex session — the
 message sits in the inbox until the next turn. The codex-wake-inject slice

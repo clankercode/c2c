@@ -801,5 +801,8 @@ let c2c_doctor_hooks_cmd =
   in
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "hooks"
-       ~doc:"Check Claude Code settings.json hook entries for dangling c2c scripts.")
+       ~doc:"Check Claude Code settings.json hook entries for dangling c2c \
+             scripts, Codex managed-block drift, and the live Codex delivery \
+             mode (app-server / app-server-unavailable / hooks+wake / hooks / \
+             unavailable) with a remediation per degraded state.")
     cmd

@@ -1024,6 +1024,22 @@ alias cx='c2c new codex --'
 cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-spark
 ```
 
+**Delivery + diagnostics.** On the app-server path, inbound c2c mail is
+injected into the thread's model-visible history on arrival over the
+authenticated loopback app-server (draft-safe; never rendered in the TUI
+transcript), and eligible **local** mail starts one gated turn when the
+thread is explicitly idle and DND is off — relay-origin mail and mail
+arriving during an active/unknown-status turn stays queued (fail-closed;
+mid-turn arrivals batch into one follow-up turn). Message content can never
+resolve approvals or write verdict files (B098). Without `--app-server`,
+delivery is the Codex hook boundary (messages surface on the session's next
+hook fire, not on arrival). `delivery_mode` in `c2c dev instances` /
+`c2c status` uses one vocabulary — `app-server` / `hooks+wake`
+(input-injecting idle wake) / `hooks` / `unavailable` — and
+`c2c doctor hooks` classifies the live mode (adding `app-server-unavailable`
+for a failed/incompatible app-server) with an actionable remediation per
+degraded state. Full contract: [Per-Client Delivery § Codex](/client-delivery/#codex).
+
 ### Operator TUI (`c2c watch`)
 
 | Subcommand | Description |

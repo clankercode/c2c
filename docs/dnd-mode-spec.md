@@ -61,6 +61,10 @@ Every push path must check `dnd` before delivering:
 - **OpenCode plugin** (`run-opencode-inst.d/plugins/c2c.ts`) — skip
   `promptAsync` call when own session is in DND (self-respecting).
 - **Codex PTY sentinel** — skip sentinel write when in DND.
+- **Codex app-server auto-turn** (T007, `C2c_codex_autoturn`) — the
+  dispatcher's DND gate leaves mail durably queued (no inject, no turn,
+  `queued_reason=dnd`) and re-evaluates on the next pass once DND
+  clears/expires. See [Per-Client Delivery § Codex](/client-delivery/#codex).
 - **Channel notification** (`notifications/claude/channel`) — skip
   emit when recipient in DND.
 - **Relay push** — skip when recipient in DND where that push path is active.

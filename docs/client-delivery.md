@@ -82,11 +82,18 @@ minimal swarm intro.
 
 ### Non-Claude receiving
 
-- **Codex**: `c2c install codex` installs `UserPromptSubmit`, `PostToolUse`,
-  `SessionStart`, and `SessionEnd` hooks. The hooks run `c2c hook codex`, which
-  can auto-register the session, drain inbound broker messages, and return them
-  through `hookSpecificOutput.additionalContext`. Explicit polling remains the
-  portable fallback.
+- **Codex**: two transports. Managed sessions launched with
+  `c2c start codex --app-server` receive over an **authenticated loopback
+  app-server**: inbound mail is injected into the thread's model-visible
+  history on arrival (draft-safe — the operator's composer is never touched),
+  and eligible local mail can start one gated turn. The fallback for vanilla
+  and hook-mode sessions is Codex hooks: `c2c install codex` installs
+  `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks
+  running `c2c hook codex`, which auto-registers the session, drains inbound
+  broker messages, and returns them through
+  `hookSpecificOutput.additionalContext` — delivery happens at hook
+  boundaries, not on arrival. Explicit polling remains the portable fallback.
+  See [Codex](#codex) below for the full contract.
 - **Pi Agent**: `pi install npm:pi-c2c` installs the external Pi extension. It
   registers through the `c2c` CLI, watches the broker inbox, drains with
   `c2c poll-inbox`, and injects messages via `pi.sendMessage`.
@@ -124,19 +131,112 @@ Session ID comes from `$CLAUDE_SESSION_ID`. Restart via `c2c restart <name>` or
 
 ## Codex
 
-Hooks installed by `c2c install codex` are the delivery path for both vanilla
-and managed sessions. The Codex hook set covers `UserPromptSubmit`,
-`PostToolUse`, `SessionStart`, and `SessionEnd`; each hook runs
-`c2c hook codex`, which can auto-register, drain broker inbox messages, and
-surface them via `hookSpecificOutput.additionalContext`. `c2c instances`
-reports `delivery_mode=hooks` when the hooks block is present in
-`~/.codex/config.toml`, else `unavailable`. Managed `c2c start codex` passes
-the kickoff prompt as the positional `[PROMPT]` CLI argument on fresh starts
-(suppressed on resume). Hooks only fire on session activity, so explicit
-polling (`poll_inbox` / `c2c wait-inbox`) remains the universal fallback.
+**Managed `c2c start codex` is the canonical way to run a Codex peer.** The
+same session semantics are exposed as `c2c codex` (shortcut), `c2c new codex`
+(always a fresh thread + identity), and `c2c resume codex ALIAS` — see
+[Commands § Codex session grammar](/commands/#codex-session-grammar-app-server-backed)
+for the full grammar. The delivery-relevant contract:
+
+- **Identity**: with no `--alias`, a stable human-readable alias is derived
+  deterministically from the Codex session id (resume/restart keeps it);
+  `--alias` optionally overrides the routing identity.
+- **`--yolo`** forwards Codex's `--dangerously-bypass-approvals-and-sandbox`
+  with a conspicuous warning; it is per-launch only and never persisted into
+  later resumes.
+- **Lifecycle**: exiting the TUI ends the session cleanly — the supervisor
+  reaps the app-server when the frontend exits (no orphan processes), and the
+  instance shows `offline`.
+- **Offline mail**: a send to a known-but-offline managed alias is written to
+  its **durable inbox** and reported as `queued_offline` (exit 0 with a
+  warning; exit 3 under `c2c send --fail-if-queued`). It drains on the next
+  start/resume. Unknown-alias sends remain an error.
+
+Codex has **two delivery transports**. `c2c instances`, `c2c status`, and
+`c2c doctor` report which one a session actually has, using one shared
+vocabulary: `app-server` / `hooks+wake` / `hooks` / `unavailable` (doctor
+additionally distinguishes `app-server-unavailable`). Run
+`c2c doctor hooks` for the classification with per-state remediation. None of
+the hook modes is arrival-time delivery — output never claims "instant"
+delivery when only a hook boundary is available.
+
+### App-server transport (`c2c start codex --app-server`)
+
+`--app-server` (or `C2C_CODEX_APP_SERVER=1`) launches `codex app-server` plus
+the stock remote TUI attached to it, and delivers c2c mail over the
+app-server's control channel:
+
+- **Authenticated local boundary (required).** The app-server always listens
+  on loopback with `--ws-auth capability-token` and a per-unit 256-bit
+  capability token: unauthenticated same-UID clients get HTTP 401 at the
+  WebSocket handshake. A **bare listener is never used and must never be
+  recommended** — an unauthenticated app-server exposes `turn/start` and
+  arbitrary `fs/readFile`/`fs/writeFile` to any same-UID process. The raw
+  token is passed to the frontend by environment variable name only (never
+  argv, never disk, never logs). Any future TCP/WebSocket exposure beyond
+  loopback requires the same bearer authentication **plus** an explicit
+  exposure warning; do not forward the port without it.
+- **Delivery = passive injection.** Inbound mail is injected into the
+  thread's model-visible history (`thread/inject_items`) on arrival, as DATA.
+  It is not rendered in the TUI transcript; the model reads it on its next
+  turn. Injection is persist-first and idempotent (at-least-once across an
+  ack-loss window; never drains the broker inbox).
+- **Draft-safe by construction.** The composer is frontend-only state the
+  app-server never sees, so neither injection nor an app-server `turn/start`
+  can touch an operator's typed draft — proven live byte-for-byte (31/31
+  checks) in the T004 receipt
+  (`.collab/research/2026-07-11-t004-typed-draft-preservation-receipt.md`).
+  There is no composer-empty signal in the protocol and none is needed.
+- **Auto-turn (gated, local-only).** Eligible **local-broker** mail starts
+  exactly one model turn when the thread status is **explicitly idle** and
+  DND is off. `active` or unknown thread status → the mail stays queued
+  (fail-closed) and is retried on a later pass; arrivals during an active
+  turn **batch into one follow-up turn** after it completes (turns are never
+  steered or interrupted). **Relay/remote-origin mail is never auto-turned**:
+  any `@host` or `#` routing marker in the sender classifies it as remote
+  (fail-closed) — it is still injected as data, durable and readable on the
+  next turn, but it cannot start one. DND-on or offline sessions queue
+  durably. Behavior receipt:
+  `.collab/research/2026-07-11-t007-autoturn-receipt.md`.
+- **Approvals stay inert (B098, refined).** Eligible local mail *can* cause a
+  Codex turn — that is the one sanctioned message-triggered action — but
+  message **content** never resolves an approval and never writes a verdict
+  file: an exact-token `allow`/`deny` body is injected as data and
+  `c2c await-reply` stays unresolved, for local and relay senders alike.
+  Verdicts come only from the host-local `c2c approval-reply` path
+  (mode-0600 verdict file). Regression-proven by the B098 cases in
+  `test_c2c_codex_autoturn_b098.ml` and `test_c2c_await_reply.ml`.
+- **Diagnostics.** `c2c instances` shows `delivery_mode=app-server` plus the
+  lifecycle field `app_server_status` (`starting` / `online-attached` /
+  `offline` / `failed-startup`). If the installed Codex is too old or lacks
+  the app-server capability set, startup fails **before** any routable alias
+  is published, prints the minimum-version message, and falls back to the
+  hook launch — `c2c doctor hooks` then reports `app-server-unavailable`
+  with the remediation (upgrade Codex, relaunch with `--app-server`).
+
+Supported Codex: **codex-cli ≥ 0.144** (validated on 0.144.1). The app-server
+protocol and hook events are upstream surfaces that can drift across Codex
+releases — when something stops matching this page, check the official
+references: [Codex app-server](https://learn.chatgpt.com/docs/app-server) and
+[Codex hooks](https://learn.chatgpt.com/docs/hooks).
+
+### Hook fallback (vanilla sessions, hook-mode managed sessions)
+
+Hooks installed by `c2c install codex` are the delivery path for vanilla
+Codex sessions and for managed sessions not using `--app-server`. The Codex
+hook set covers `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and
+`SessionEnd`; each hook runs `c2c hook codex`, which can auto-register, drain
+broker inbox messages, and surface them via
+`hookSpecificOutput.additionalContext`. **Delivery happens only when a hook
+fires** — session activity / turn boundaries — so an idle session does not
+see mail until its next turn. `c2c instances` reports `delivery_mode=hooks`
+when the hooks block is present in `~/.codex/config.toml`, else
+`unavailable`. Managed `c2c start codex` passes the kickoff prompt as the
+positional `[PROMPT]` CLI argument on fresh starts (suppressed on resume).
+Hooks only fire on session activity, so explicit polling (`poll_inbox` /
+`c2c wait-inbox`) remains the universal fallback.
 Restart via `c2c restart <name>`.
 
-**Idle wake (tmux/herdr only).** Hooks cannot wake an idle session, so codex
+**Idle wake (tmux/herdr only) — an input-injecting mode.** Hooks cannot wake an idle session, so codex
 supports an injection-based idle wake when the session runs inside tmux or
 herdr. The wake target is captured automatically on the broker registration
 (`tmux_location` from `$TMUX_PANE`; `herdr_pane`/`herdr_socket` from the
@@ -157,7 +257,11 @@ the codex deliver sidecar); vanilla sessions can run
 When hooks are installed and a wake target is registered, `c2c instances`
 reports `delivery_mode=hooks+wake`. Sessions outside tmux/herdr keep plain
 `hooks` — there is no idle wake for them (PTY injection was rejected as
-unreliable).
+unreliable). Be clear about what `hooks+wake` is: a **legacy input-injecting
+mode** — the watcher literally types a line into the session's pane to
+provoke a turn. It is still hook-boundary delivery, not arrival-time
+delivery. Prefer the app-server transport
+(`c2c start codex --app-server`) for injection-free, draft-safe delivery.
 
 Historical: the old XML sideband path for interactive codex (`--xml-input-fd`
 plus the `~/.c2c/clients/codex/deliver-watch.sh` supervisor scripts) is gone —
