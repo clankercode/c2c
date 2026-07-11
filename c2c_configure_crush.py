@@ -116,6 +116,14 @@ def write_crush_config(
 
 
 def main(argv: list[str] | None = None) -> int:
+    from c2c_python_legacy import require_python_legacy
+
+    refused = require_python_legacy(
+        "c2c_configure_crush.py",
+        ocaml_hint="crush is retired; use c2c install claude|codex|opencode|kimi|grok",
+    )
+    if refused is not None:
+        return refused
     parser = argparse.ArgumentParser(description="Configure c2c MCP for Crush CLI")
     parser.add_argument(
         "--config-path",

@@ -1898,6 +1898,29 @@ let test_install_all_json_dry_run_binary_only () =
       check bool "no mcpServers plan in json" false
         (string_contains content "mcpServers")))
 
+let test_install_all_with_clients_dry_run_configures () =
+  (* Explicit bulk opt-in must plan client configuration. *)
+  with_temp_dir (fun home ->
+    let fake_clients = fake_client_path_env home [ "codex"; "kimi" ] in
+    let tmpfile = Filename.temp_file "c2c-install-all-with-clients" ".out" in
+    Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+      (fun () ->
+      let cmd = c2c_cmd (Printf.sprintf
+        "%s %s c2c install all --with-clients --dry-run > %s 2>&1 < /dev/null"
+        fake_clients (isolated_home_env home) tmpfile) in
+      let rc = Sys.command cmd in
+      let ch = open_in tmpfile in
+      let content = Fun.protect ~finally:(fun () -> close_in ch)
+        (fun () -> really_input_string ch (in_channel_length ch))
+      in
+      debug_install_failure "all-with-clients" cmd rc content;
+      check int "install all --with-clients exits 0" 0 rc;
+      check bool "configures codex when opted in" true
+        (string_contains content "Configuring codex"
+         || string_contains content "[DRY-RUN]");
+      check bool "does not claim mcp opt-in skip for codex" false
+        (string_contains content "codex: [skipped; MCP opt-in")))
+
 let test_interactive_install_default_skips_all_clients () =
   with_temp_dir (fun home ->
     let fake_clients = fake_client_path_env home [ "codex"; "opencode"; "kimi" ] in
@@ -3783,6 +3806,7 @@ let () =
         ; ( "install all --dry-run is binary-only (no client MCP)", `Quick, test_install_all_dry_run_shows_dry_run_markers )
         ; ( "install all --dry-run skips all clients by default", `Quick, test_install_all_dry_run_skips_all_clients_by_default )
         ; ( "install all --json --dry-run binary_only", `Quick, test_install_all_json_dry_run_binary_only )
+        ; ( "install all --with-clients --dry-run configures", `Quick, test_install_all_with_clients_dry_run_configures )
         ; ( "interactive install defaults skip all clients", `Quick, test_interactive_install_default_skips_all_clients )
         ; ( "install all --dry-run shows opt-in guidance", `Quick, test_install_all_dry_run_epilog )
         ; ( "install gemini --dry-run refuses (deprecated)", `Quick, test_install_gemini_dry_run_refuses )

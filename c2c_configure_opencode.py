@@ -193,6 +193,14 @@ def write_config(
 
 
 def main(argv: list[str] | None = None) -> int:
+    from c2c_python_legacy import require_python_legacy
+
+    refused = require_python_legacy(
+        "c2c_configure_opencode.py",
+        ocaml_hint="c2c install opencode",
+    )
+    if refused is not None:
+        return refused
     parser = argparse.ArgumentParser(
         description=("Write a repo-local OpenCode config exposing the c2c MCP server.")
     )

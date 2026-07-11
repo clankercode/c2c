@@ -1083,8 +1083,8 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `completion --shell bash\|zsh\|pwsh` | Generate shell completion scripts. |
 | `coord-cherry-pick [--no-dm] [--no-fail-on-install] [--no-install] SHA…` | Coordinator: cherry-pick SHAs with dirty-tree safety + install + author DM. |
 | `git [ARG…]` | Git wrapper that auto-injects `--author` when `git.attribution=true` in `.c2c/config.toml`. |
-| `install [--client CLIENT] [--dry-run]` | Install c2c binary and/or client integrations. |
-| `install self [--dest DIR] [--mcp-server]` | Install the c2c binary to `~/.local/bin`. |
+| `install` (no subcommand) | Interactive TUI: binary-only by default; client MCP is opt-in via customize. |
+| `install self [--dest DIR] [--mcp-server]` | Install the c2c binary to `~/.local/bin` (optional OCaml `c2c-mcp-server`). |
 | `install all [--dry-run] [--with-clients]` | Install binary only by default; `--with-clients` opts into configuring detected clients. |
 | `install claude\|codex\|codex-headless\|opencode\|kimi [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client. Prints an install summary and `c2c uninstall <component>` hint. |
 | `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |

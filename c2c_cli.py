@@ -102,17 +102,33 @@ def main(argv: list[str] | None = None) -> int:
         return c2c_health.main(remainder)
     if subcommand == "history":
         return c2c_history.main(remainder)
-    if subcommand == "configure-claude-code":
-        return c2c_configure_claude_code.main(remainder)
-    if subcommand == "configure-codex":
-        return c2c_configure_codex.main(remainder)
-    if subcommand == "configure-crush":
-        return c2c_configure_crush.main(remainder)
-    if subcommand == "configure-kimi":
-        return c2c_configure_kimi.main(remainder)
-    if subcommand == "configure-opencode":
-        return c2c_configure_opencode.main(remainder)
-    if subcommand == "setup":
+    if subcommand in (
+        "configure-claude-code",
+        "configure-codex",
+        "configure-crush",
+        "configure-kimi",
+        "configure-opencode",
+        "setup",
+    ):
+        # B122: refuse user-facing Python configure/setup unless legacy env set.
+        from c2c_python_legacy import require_python_legacy
+
+        refused = require_python_legacy(
+            f"c2c {subcommand}",
+            ocaml_hint="c2c install <claude|codex|opencode|kimi|grok>",
+        )
+        if refused is not None:
+            return refused
+        if subcommand == "configure-claude-code":
+            return c2c_configure_claude_code.main(remainder)
+        if subcommand == "configure-codex":
+            return c2c_configure_codex.main(remainder)
+        if subcommand == "configure-crush":
+            return c2c_configure_crush.main(remainder)
+        if subcommand == "configure-kimi":
+            return c2c_configure_kimi.main(remainder)
+        if subcommand == "configure-opencode":
+            return c2c_configure_opencode.main(remainder)
         return c2c_setup.main(remainder)
     if subcommand == "deliver-inbox":
         return c2c_deliver_inbox.main(remainder)
@@ -121,10 +137,26 @@ def main(argv: list[str] | None = None) -> int:
     if subcommand == "inject":
         return c2c_inject.main(remainder)
     if subcommand == "install":
+        from c2c_python_legacy import require_python_legacy
+
+        refused = require_python_legacy(
+            "c2c install (Python)",
+            ocaml_hint="c2c install self  # or: c2c install <client>",
+        )
+        if refused is not None:
+            return refused
         return c2c_install.main(remainder)
     if subcommand == "list":
         return c2c_list.main(remainder)
     if subcommand == "mcp":
+        from c2c_python_legacy import require_python_legacy
+
+        refused = require_python_legacy(
+            "c2c mcp (Python)",
+            ocaml_hint="use OCaml c2c-mcp-server via `c2c install <client>`",
+        )
+        if refused is not None:
+            return refused
         return c2c_mcp.main(remainder)
     if subcommand == "poker-sweep":
         return c2c_poker_sweep.main(remainder)

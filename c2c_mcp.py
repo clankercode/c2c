@@ -314,23 +314,14 @@ def build_server(env: dict[str, str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    print(
-        "c2c_mcp.py is DEPRECATED (B122). Use the OCaml binary `c2c-mcp-server` "
-        "via `c2c install <client>`. Set C2C_ALLOW_PYTHON_LEGACY=1 to silence "
-        "this warning (tests/legacy only).",
-        file=sys.stderr,
-        flush=True,
+    from c2c_python_legacy import require_python_legacy
+
+    refused = require_python_legacy(
+        "c2c_mcp.py",
+        ocaml_hint="c2c-mcp-server  # via: c2c install <client> or c2c install self --mcp-server",
     )
-    if os.environ.get("C2C_ALLOW_PYTHON_LEGACY", "").strip() not in ("1", "true", "yes"):
-        # Soft-allow for in-tree tests that still spawn this process; hard refuse
-        # only when C2C_PYTHON_LEGACY_REFUSE=1 is set (operators/CI can flip).
-        if os.environ.get("C2C_PYTHON_LEGACY_REFUSE", "").strip() in ("1", "true", "yes"):
-            print(
-                "error: refusing python MCP entrypoint; install/use c2c-mcp-server",
-                file=sys.stderr,
-                flush=True,
-            )
-            return 1
+    if refused is not None:
+        return refused
     args = list(sys.argv[1:] if argv is None else argv)
     broker_root = Path(os.environ.get("C2C_MCP_BROKER_ROOT") or default_broker_root())
     sync_broker_registry(broker_root)

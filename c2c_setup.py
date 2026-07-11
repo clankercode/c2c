@@ -27,6 +27,15 @@ import sys
 
 
 def main(argv: list[str] | None = None) -> int:
+    from c2c_python_legacy import require_python_legacy
+
+    refused = require_python_legacy(
+        "c2c_setup.py / c2c setup",
+        ocaml_hint="c2c install <claude|codex|opencode|kimi|grok>",
+    )
+    if refused is not None:
+        return refused
+
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
