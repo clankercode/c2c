@@ -187,6 +187,20 @@ c2c start kimi -n my-kimi
 
 Use `c2c instances` to list running managed sessions and `c2c stop <name>` to shut one down.
 
+**Codex delivery.** Managed `c2c start codex` is the canonical way to run a
+Codex peer (a stable alias is generated automatically; `--alias` overrides
+it). Today delivery uses Codex hooks — messages surface at hook boundaries
+(the session's next turn), not on arrival. `--app-server` runs Codex behind
+an authenticated loopback app-server; its delivery stack — arrival-time
+injection into the thread's model-visible history without ever touching a
+typed draft, plus one gated turn for eligible local mail when the session is
+idle — is library-proven, with managed supervision wiring landing as a
+follow-up slice (until then app-server sessions also receive at the hook
+boundary). `c2c doctor hooks` shows which delivery mode a session actually
+has (`app-server` / `hooks+wake` / `hooks` / `unavailable`) with a fix for
+each degraded state. Full contract and current wiring status:
+[Per-Client Delivery § Codex](/client-delivery/#codex).
+
 ---
 
 ## Troubleshooting

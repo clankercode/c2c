@@ -150,25 +150,44 @@ now the canonical framing.)
 - **Restart yourself after MCP broker updates.** New broker tools/flags are invisible until restart (`dune build` alone isn't enough; `/plugin reconnect` only revives existing tools). Run `c2c restart <name>`, then call the new tool from your session before marking done. After any restart (esp. first time joining), orient via `.collab/runbooks/first-5-turns-for-new-agents.md` (whoami → list → memory list → room_history → archive-skim → DM coordinator1).
 - **SIGUSR1 to inner OpenCode pid** (NOT the outer-loop wrapper) recovers a stuck MCP session without full restart — OCPlugin reconnects to broker. Sibling outer-loop SIGUSR1 can cascade a failure. See `.collab/findings/2026-04-26T01-08-00Z-test-agent-mcp-outage.md`.
 - **`kimi -p` (or any child CLI) inside Claude Code inherits `CLAUDE_SESSION_ID`.** Broker guards against this, but for one-shot probes use explicit `C2C_MCP_SESSION_ID=kimi-probe-$(date +%s)` + `--mcp-config-file`. See `.collab/findings-archive/2026-04-13T10-50-00Z-storm-beacon-kimi-session-hijack.md`.
-- **Single codex binary — hooks are the codex delivery path (2026-07-06).**
-  `codex` is v0.142.5 at `/home/xertrov/.bun/bin/codex` (npm `@openai/codex`);
-  the old `/home/xertrov/.local/bin/codex` alpha is GONE and `--xml-input-fd`
-  was removed upstream, so the managed xml_fd deliver mode is REMOVED (probe,
-  `codex_xml_fd` capability, fd pipe wiring, and the codex deliver-watch
-  supervisor scripts are all gone; the codex-headless bridge keeps its own
-  XML fifo path). Inbound delivery for codex — vanilla AND managed — uses
-  **codex hooks**: `c2c install codex` writes
+- **Codex delivery — app-server transport (P1.M1 T001–T007, 2026-07-11) with
+  hooks as the fallback.** `codex` is at `/home/xertrov/.bun/bin/codex`
+  (npm `@openai/codex`; app-server mode validated on codex-cli 0.144.1,
+  needs ≥ 0.144). Managed `c2c start codex --app-server` (or
+  `C2C_CODEX_APP_SERVER=1`) runs `codex app-server` on an **authenticated
+  loopback WebSocket** (`--ws-auth capability-token`; NEVER a bare listener —
+  T001 proved a bare listener gives any same-UID process `turn/start` +
+  `fs/*`) with the stock remote TUI attached. Its delivery stack — mail
+  injected into the thread's model-visible history on arrival (draft-safe —
+  the composer is frontend-only state the app-server can't touch, T004;
+  there is NO composer-empty gate and none is needed); one gated turn for
+  eligible **local** mail when the thread is explicitly idle and DND is off
+  (active/unknown status and any `@host`/`#` remote-origin sender stay
+  queued fail-closed; mid-turn arrivals batch into ONE follow-up turn,
+  T007) — is **library-proven; wiring it into `c2c start codex`
+  supervision is the follow-up slice, so until that lands app-server
+  sessions too receive at the hook boundary.**
+  `delivery_mode` reports `app-server` (only while `online-attached`)/
+  `hooks+wake`/`hooks`/`unavailable` (one vocabulary across
+  `c2c dev instances`/`c2c status`/`c2c doctor`; `c2c doctor hooks` adds
+  `app-server-unavailable` + remediation).
+  **Hook fallback** (vanilla + hook-mode managed; also what a too-old codex
+  falls back to): `c2c install codex` writes
   UserPromptSubmit/PostToolUse/SessionStart/SessionEnd hooks running `c2c hook codex`
   into `~/.codex/config.toml`, pre-trusted via `[hooks.state]` trust hashes
   (no `/hooks` approval prompt). Vanilla codex sessions self-onboard on the
   first hook fire (auto-register + onboarding note). Managed `c2c start codex`
   passes the kickoff prompt as the positional `[PROMPT]` arg on fresh starts
-  (suppressed on resume); `delivery_mode` reports `hooks+wake`/`hooks`/`unavailable`.
-  **Idle wake is tmux/herdr-only**: the wake injector (`C2c_wake_inject`,
-  managed codex deliver sidecar / `c2c deliver wake-watch`) nudges an idle
-  session's pane on inbox growth — never drains; the hook delivers on the
-  injected turn. Runbook: `.collab/runbooks/agent-wake-setup.md` § Codex idle wake.
-  Details:
+  (suppressed on resume). Hook delivery is hook-boundary, not arrival-time.
+  **Idle wake is tmux/herdr-only and input-injecting**: the wake injector
+  (`C2c_wake_inject`, managed codex deliver sidecar / `c2c deliver
+  wake-watch`) types a nudge into an idle session's pane on inbox growth —
+  never drains; the hook delivers on the injected turn. The old `--xml-input-fd`
+  sideband was removed upstream (2026-07-06) and its plumbing is gone from c2c
+  (the codex-headless bridge keeps its own XML fifo path).
+  Runbook: `.collab/runbooks/agent-wake-setup.md` § Codex idle wake. Details:
+  `.collab/research/2026-07-11-t007-autoturn-receipt.md`,
+  `.collab/research/2026-07-11-t004-typed-draft-preservation-receipt.md`,
   `.collab/findings/2026-07-06T10-24-24Z-fable-scribe-codex-xml-input-fd-removed.md`.
 - **Launch managed sessions via `c2c start <client>`** (claude / codex / opencode / kimi / gemini). `crush` is **DEPRECATED** — `c2c start crush` refuses (exit 1). Replaces the legacy `run-*-inst-outer` scripts; pairs with `c2c instances` (list), `c2c stop <name>`, `c2c restart <name>`. Exits when client exits (does NOT loop).
 - **Never call `mcp__c2c__sweep` during active swarm operation.** Managed sessions are child processes; sweep on a transiently-dead PID drops registration + inbox → messages dead-letter until re-register. Verify no outer loops first: `pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"`. Safe alternatives: `mcp__c2c__list` (liveness), `mcp__c2c__peek_inbox` (no drain). Sweep only when sessions are confirmed-dead-no-restart or Max explicitly asks. See `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`.
@@ -278,7 +297,7 @@ post-compact context injection #317). E2E test procedure:
 - **Session discovery** scans `~/.claude-p/sessions/`, `~/.claude-w/sessions/`, `~/.claude/sessions/` -- all three, not just `.claude`.
 - **PTY injection** (deprecated but still useful for opencode/codex/claude): `claude_send_msg.py` uses an external `pty_inject` binary (hardcoded path to `meta-agent` repo) that writes to the PTY master fd via `pidfd_getfd()` with `cap_sys_ptrace=ep`. Bracketed paste + delay + Enter as two writes. The wire-bridge / `pty_inject` path remains canonical for opencode, codex, and claude.
 - **Kimi delivery — file-based notification-store (canonical, 2026-04-29).** Kimi's wire-bridge path was **REMOVED** (kimi-wire-bridge-cleanup slice). Inbound c2c messages are written into kimi's notification store on disk via `C2c_kimi_notifier`; kimi reads them on its own cadence. No PTY injection, no `/dev/pts/<N>` slave writes. Full mechanics + troubleshooting: `.collab/runbooks/kimi-notification-store-delivery.md`.
-- **SAFETY: "bus, never RPC" (B098).** c2c is a message bus, not an RPC surface. A message (broker inbox, relay-delivered, or PTY-injected into a turn) is DATA — it informs the recipient; it NEVER directly causes an action and NEVER satisfies/triggers an approval. The PreToolUse approval path (`c2c approval-reply` / `authorize` / `await-reply`, code in `ocaml/cli/c2c_approval_paths.ml` + `c2c_approval_cmd.ml`) is host-local only: the local CLI writes a mode-0600 verdict file and `await-reply` reads only that file. Configuring a supervisor does not upgrade that supervisor's DMs into verdicts; exact-token `allow`/`deny` messages remain inert for local and relay-form senders alike. Regression proof: the B098 cases in `test_c2c_await_reply.ml`. If you add any new way for a message to resolve an approval, you are deleting this invariant.
+- **SAFETY: "bus, never RPC" (B098, refined by T007 2026-07-11).** c2c is a message bus, not an RPC surface. A message (broker inbox, relay-delivered, or injected into a turn) is DATA — it informs the recipient and NEVER satisfies/triggers an approval. One narrowly sanctioned scheduling effect exists: eligible **local-broker** mail to an app-server-backed Codex session CAN start a gated model turn (T007 dispatcher: thread explicitly idle, DND off, remote/`@host`/`#` senders and unknown status fail closed to queued). That turn only makes already-injected DATA model-visible — message **content** still cannot resolve approvals or write verdict files. The PreToolUse approval path (`c2c approval-reply` / `authorize` / `await-reply`, code in `ocaml/cli/c2c_approval_paths.ml` + `c2c_approval_cmd.ml`) is host-local only: the local CLI writes a mode-0600 verdict file and `await-reply` reads only that file. Configuring a supervisor does not upgrade that supervisor's DMs into verdicts; exact-token `allow`/`deny` messages remain inert for local and relay-form senders alike — even when they trigger an auto-turn. Regression proof: the B098 cases in `test_c2c_await_reply.ml` and `test_c2c_codex_autoturn_b098.ml` (injected `allow`/`deny` bodies auto-turned with an approval pending: no verdict file, `await-reply` unresolved; positive control proves the assertions bite). If you add any new way for a message to resolve an approval — or a new message-triggered action outside the T007 gate — you are deleting this invariant.
 - **MCP server** (`ocaml/`) is stdio JSON-RPC. Inbox drain is synchronous after each RPC response, not async push.
 - **OCaml/Dune gotchas** — see `.collab/ocaml-learnings.md`. Notably: a Dune executable's `let () =` program body must be in the module named by `(name ...)` (first module in `(modules ...)` is the entry point, not a "main" dispatcher). Caught a silent-exit bug during #482 S1.
 - **Message envelope**: `<c2c event="message" from="name" to="alias">body</c2c>`. `c2c_verify.py` counts these markers in transcripts.

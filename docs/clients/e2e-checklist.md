@@ -9,7 +9,7 @@ layout: page
 Source of truth: [`docs/clients/feature-matrix.md`](./feature-matrix.md).
 Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**.
 
-Last updated: 2026-06-26 (B002 Pi Agent ordering update)
+Last updated: 2026-07-11 (T005 Codex app-server delivery rows)
 
 ---
 
@@ -78,14 +78,52 @@ c2c list --all
 - **Expected**:
   - `<c2c event="message" from="..." to="<client-alias>">ping</c2c>` appears in the client's transcript / output
   - For Claude/OpenCode: PostToolUse hook fires on next tool use and inbox is drained
-  - For unmanaged Codex: installed hooks (`c2c hook codex`) drain and inject via `hookSpecificOutput.additionalContext`; managed `c2c start codex` hook delivery is still being ported, so explicit polling remains the fallback there.
+  - For Codex in hook mode (vanilla or managed without `--app-server`): installed hooks (`c2c hook codex`) drain and inject via `hookSpecificOutput.additionalContext` on the next hook fire (turn boundary) — NOT on arrival. An idle session surfaces the message on its next turn (or via the tmux/herdr wake nudge when `delivery_mode=hooks+wake`).
+  - For managed Codex with `--app-server`, once the supervision-wiring slice has landed (row 2b has the gate): the message is injected into the thread's model-visible history on arrival — it does **not** render in the TUI transcript. Verify with a follow-up turn (ask the model to echo the marker), not by watching the pane. Any typed composer draft must survive byte-exact. Before that slice lands, app-server-launched sessions still deliver at the hook boundary (same expectations as the hook-mode bullet above).
   - For Pi Agent: `pi-c2c` drains the inbox and injects via `pi.sendMessage`
   - For Kimi: message appears in notification store / TUI prefill
 - **Failure modes**:
   - ECHILD race on Claude (known, fixed via bash wrapper)
   - Channel-push selective miss (#387, known fixed)
-  - Codex hooks not installed or not trusted; managed `c2c start codex` hook delivery still pending, requiring explicit polling fallback
+  - Codex hooks not installed or not trusted (`c2c doctor hooks` classifies the live delivery mode and prints the remediation)
 - **Repro time**: ~30s
+
+---
+
+## 2b. Codex app-server delivery (managed `--app-server` only)
+
+**Gate — check this first.** This row only applies once the supervision-wiring
+slice has landed (the ingress/auto-turn dispatcher ships in the c2c library
+but is not yet driven by `c2c start codex` supervision). If your build
+predates it, mark this row SKIP and exercise the library path with
+`scripts/codex-autoturn-e2e.py` (inside tmux) instead — that harness proves
+the same contract against a real codex.
+
+- **Setup**:
+  - Inside tmux: `c2c start codex --app-server -n test-cx-appserver-<rand>`
+    (codex ≥ 0.144 required; on older codex expect the minimum-version
+    message + hook fallback, and mark this row SKIP)
+  - `c2c dev instances --json` shows `"delivery_mode": "app-server"` and
+    `"app_server_status": "online-attached"` for the instance
+- **Action**:
+  - Type a distinctive draft into the composer and leave it unsubmitted
+  - From another terminal: `c2c send <instance-alias> "e2e marker C2C_E2E_<rand>"`
+  - Wait ~5s; snapshot the pane (`./scripts/tui-snapshot.sh` or `c2c_tmux.py peek`)
+  - Submit a turn asking the model to echo any `C2C_E2E_` marker it can see
+- **Expected**:
+  - The draft is byte-identical after the arrival (composer untouched)
+  - The message does NOT appear in the transcript at arrival (model-history-only)
+  - No turn starts on arrival while you are mid-draft with the thread idle only
+    if the mail is remote-origin or DND is on; **local** mail on an idle thread
+    may start one gated turn (that is the T007 contract, not a failure)
+  - The echo turn reproduces the `C2C_E2E_` marker (mail is model-visible)
+  - `c2c doctor hooks` reports the instance as `app-server` with no remediation
+- **Failure modes**:
+  - `app_server_status=failed-startup` → codex too old / capability probe
+    failed; `c2c doctor hooks` shows `app-server-unavailable` + remediation
+  - Draft clobbered or transcript shows the raw injection → file a finding
+    immediately (violates the T004 draft-safety proof)
+- **Repro time**: ~90s
 
 ---
 

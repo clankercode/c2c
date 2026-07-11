@@ -65,6 +65,221 @@ and codex_result = {
   trust_index_drift : bool;
 }
 
+(* --- Codex delivery-mode classification (P1.M1.E1.T005) -------------------- *)
+(*
+
+   One shared vocabulary for `c2c doctor`, `c2c dev instances`, and `c2c
+   status`:
+
+     app-server              healthy app-server-backed remote TUI (T002/T006,
+                             online-attached only). The transport's delivery
+                             stack — arrival-time data injection (draft-safe,
+                             T003/T004) + one gated turn for eligible LOCAL
+                             mail when the thread is idle and DND is off
+                             (T007) — is library-proven; until the
+                             supervision wiring slice lands, the session's
+                             live inbound path is still the hook fallback and
+                             the summary states that explicitly.
+     app-server-unavailable  an app-server launch was attempted but failed
+                             (codex too old / capability probe failed / spawn
+                             failure). Live delivery, if any, is the hook
+                             boundary.
+     hooks+wake              legacy input-injecting idle wake: hook-boundary
+                             delivery plus a watcher that TYPES a nudge line
+                             into an idle tmux/herdr pane so the injected
+                             turn's hook drains.
+     hooks                   hook-boundary delivery only (session activity /
+                             turn boundaries) — an idle session does not see
+                             mail until its next turn.
+     unavailable             no codex delivery path configured at all.
+
+   None of these is "instant"/arrival-time transcript delivery except the
+   app-server injection path, and even there the model reads the injected
+   items on its next turn. The classifier is pure (inputs injected) so it is
+   unit-testable; the live gather is read-only — doctor observes and explains,
+   it never mutates. It never reads or prints endpoints, tokens, or message
+   bodies. *)
+
+type codex_delivery_mode =
+  | Cd_app_server
+  | Cd_app_server_unavailable
+  | Cd_hooks_wake
+  | Cd_hooks_only
+  | Cd_unavailable
+
+type codex_delivery = {
+  cd_mode : codex_delivery_mode;
+  cd_summary : string;
+  cd_remediation : string option;
+  cd_input_injecting : bool;
+}
+
+type codex_instance_delivery = {
+  ci_name : string;
+  ci_app_server_status : string option;
+  ci_delivery : codex_delivery;
+}
+
+type codex_delivery_report = {
+  cdr_default : codex_delivery; (* vanilla codex session on this machine *)
+  cdr_instances : codex_instance_delivery list;
+}
+
+let codex_delivery_mode_label = function
+  | Cd_app_server -> "app-server"
+  | Cd_app_server_unavailable -> "app-server-unavailable"
+  | Cd_hooks_wake -> "hooks+wake"
+  | Cd_hooks_only -> "hooks"
+  | Cd_unavailable -> "unavailable"
+
+(* Pure classifier. [app_server_status] is the T006 lifecycle status string
+   for a managed instance ("starting" / "online-attached" / "offline" /
+   "failed-startup"), or [None] for a vanilla session / no app-server record.
+   An "offline" record classifies like [None]: the app-server unit ended, so
+   the live question is what the hook fallback provides. *)
+let classify_codex_hook_fallback ~(hooks_installed : bool)
+    ~(wake_target : bool) : codex_delivery =
+  if not hooks_installed then
+    { cd_mode = Cd_unavailable;
+      cd_summary =
+        "no codex delivery path is configured (no c2c hooks block in \
+         ~/.codex/config.toml, no app-server session)";
+      cd_remediation = Some "run `c2c install codex`";
+      cd_input_injecting = false }
+  else if wake_target then
+    { cd_mode = Cd_hooks_wake;
+      cd_summary =
+        "legacy input-injecting idle wake: hooks deliver at hook \
+         boundaries, and when the session idles in a tmux/herdr pane the \
+         wake watcher TYPES a one-line nudge into that pane so the \
+         injected turn's hook drains the inbox. Delivery is \
+         hook-boundary, not arrival-time";
+      cd_remediation =
+        Some "this input-injecting wake stays the supported idle path \
+              until the app-server delivery wiring lands; `c2c start \
+              codex --app-server` becomes the injection-free, draft-safe \
+              replacement then";
+      cd_input_injecting = true }
+  else
+    { cd_mode = Cd_hooks_only;
+      cd_summary =
+        "hook-boundary delivery only: messages surface when a codex hook \
+         fires (session activity / turn boundaries); an idle session \
+         does not see mail until its next turn";
+      cd_remediation =
+        Some "run the session inside tmux/herdr to enable idle wake \
+              (`c2c start codex --app-server` becomes the injection-free \
+              path once its delivery wiring lands)";
+      cd_input_injecting = false }
+
+let classify_codex_delivery ~(app_server_status : string option)
+    ~(hooks_installed : bool) ~(wake_target : bool) : codex_delivery =
+  match app_server_status with
+  | Some "online-attached" ->
+      (* Healthy TRANSPORT (remote TUI attached over the authenticated
+         loopback boundary). The delivery stack for this transport
+         (arrival-time injection + gated auto-turn) is library-proven but not
+         yet driven by `c2c start codex` supervision — until that wiring
+         slice lands, the session's live inbound path is still the hook
+         fallback, and this diagnostic must say so. The wiring slice flips
+         this summary when it surfaces the dispatcher under supervision. *)
+      let fb = classify_codex_hook_fallback ~hooks_installed ~wake_target in
+      { cd_mode = Cd_app_server;
+        cd_summary =
+          "healthy app-server remote TUI (transport online-attached over the \
+           authenticated loopback boundary). Its delivery contract — \
+           arrival-time data injection, draft-safe (the operator's composer \
+           is never touched), plus one gated turn for eligible LOCAL mail \
+           when the thread is idle and DND is off — is library-proven; until \
+           the supervision wiring slice lands, inbound mail still surfaces \
+           via the hook fallback: " ^ fb.cd_summary;
+        cd_remediation = fb.cd_remediation;
+        cd_input_injecting = fb.cd_input_injecting }
+  | Some "starting" ->
+      (* Not yet a healthy remote TUI — the frontend has not attached. Report
+         the delivery the session actually has right now (the hook fallback),
+         never the aspirational app-server label. *)
+      let fb = classify_codex_hook_fallback ~hooks_installed ~wake_target in
+      { fb with
+        cd_summary =
+          "app-server unit is starting (remote TUI not attached yet); until \
+           it attaches, " ^ fb.cd_summary;
+        cd_remediation =
+          Some "if the instance stays in 'starting', inspect it with \
+                `c2c dev diag <name>`" }
+  | Some "failed-startup" ->
+      (* The surviving delivery path is whatever the hook fallback provides —
+         derive its summary and the input-injection flag from the shared
+         fallback classifier so a live hooks+wake pane-typing path is never
+         hidden under this label. *)
+      let fb = classify_codex_hook_fallback ~hooks_installed ~wake_target in
+      { cd_mode = Cd_app_server_unavailable;
+        cd_summary =
+          "app-server startup failed or the installed codex is incompatible \
+           (app-server mode needs codex >= 0.144 with `app-server --listen \
+           --ws-auth` and `--remote` support). Live delivery falls back to: "
+          ^ fb.cd_summary;
+        cd_remediation =
+          Some "upgrade codex (`npm i -g @openai/codex`), then relaunch with \
+                `c2c start codex --app-server`; `c2c dev diag <name>` shows \
+                the structured startup diagnostic";
+        cd_input_injecting = fb.cd_input_injecting }
+  | Some _ (* "offline" or unknown *) | None ->
+      classify_codex_hook_fallback ~hooks_installed ~wake_target
+
+(* Read-only live gather of managed codex instances:
+   (name, app_server_status, wake_target). Total — any failure reads as an
+   empty list / absent field. Never loads endpoints or tokens (the T006
+   status mapping only exposes the lifecycle label). *)
+let live_codex_instances () : (string * string option * bool) list =
+  try
+    let base = C2c_start.instances_dir in
+    if not (Sys.file_exists base && Sys.is_directory base) then []
+    else
+      Sys.readdir base |> Array.to_list |> List.sort String.compare
+      |> List.filter_map (fun name ->
+           match C2c_start.load_config_opt name with
+           | Some cfg when cfg.C2c_start.client = "codex" ->
+               let app_status =
+                 match
+                   C2c_codex_session.status_of_instance
+                     ~instance_dir:(C2c_start.instance_dir name)
+                 with
+                 | Some st -> Some (C2c_codex_session.status_to_string st)
+                 | None -> None
+               in
+               let wake =
+                 try C2c_start.codex_wake_target_registered ~name ()
+                 with _ -> false
+               in
+               Some (name, app_status, wake)
+           | _ -> None)
+  with _ -> []
+
+let codex_delivery_report ?hooks_installed
+    ?(instances : (string * string option * bool) list option) () :
+    codex_delivery_report =
+  let hooks_installed =
+    match hooks_installed with
+    | Some b -> b
+    | None -> (try C2c_start.codex_hooks_installed () with _ -> false)
+  in
+  let instances =
+    match instances with Some l -> l | None -> live_codex_instances ()
+  in
+  { cdr_default =
+      classify_codex_delivery ~app_server_status:None ~hooks_installed
+        ~wake_target:false;
+    cdr_instances =
+      List.map
+        (fun (name, app_status, wake) ->
+          { ci_name = name;
+            ci_app_server_status = app_status;
+            ci_delivery =
+              classify_codex_delivery ~app_server_status:app_status
+                ~hooks_installed ~wake_target:wake })
+        instances }
+
 (* --- pure helpers --------------------------------------------------------- *)
 
 let contains s sub =
@@ -483,6 +698,75 @@ let to_json r =
 
 let pp_json r = print_endline (Yojson.Safe.to_string (to_json r))
 
+(* --- Codex delivery-mode output (T005) ------------------------------------ *)
+
+let codex_delivery_to_json (d : codex_delivery) : Yojson.Safe.t =
+  `Assoc [
+    ("mode", `String (codex_delivery_mode_label d.cd_mode));
+    ("summary", `String d.cd_summary);
+    ("remediation",
+     match d.cd_remediation with Some x -> `String x | None -> `Null);
+    ("input_injecting", `Bool d.cd_input_injecting)
+  ]
+
+let codex_delivery_report_to_json (rep : codex_delivery_report) : Yojson.Safe.t =
+  `Assoc [
+    ("default", codex_delivery_to_json rep.cdr_default);
+    ("instances",
+     `List
+       (List.map
+          (fun i ->
+            `Assoc [
+              ("name", `String i.ci_name);
+              ("app_server_status",
+               match i.ci_app_server_status with
+               | Some s -> `String s
+               | None -> `Null);
+              ("delivery", codex_delivery_to_json i.ci_delivery)
+            ])
+          rep.cdr_instances))
+  ]
+
+let pp_codex_delivery_human (rep : codex_delivery_report) =
+  Printf.printf "\n=== Codex delivery mode ===\n\n";
+  let pp_delivery indent (d : codex_delivery) =
+    Printf.printf "%s%s\n" indent d.cd_summary;
+    if d.cd_input_injecting then
+      Printf.printf "%s(this mode injects input into the session's pane)\n" indent;
+    match d.cd_remediation with
+    | Some fix -> Printf.printf "%s→ %s\n" indent fix
+    | None -> ()
+  in
+  Printf.printf "  default (vanilla codex session on this machine): %s\n"
+    (codex_delivery_mode_label rep.cdr_default.cd_mode);
+  pp_delivery "    " rep.cdr_default;
+  if rep.cdr_instances = [] then
+    Printf.printf "  (no managed codex instances)\n"
+  else
+    List.iter
+      (fun i ->
+        Printf.printf "  instance %s: %s%s\n" i.ci_name
+          (codex_delivery_mode_label i.ci_delivery.cd_mode)
+          (match i.ci_app_server_status with
+           | Some s -> Printf.sprintf " (app_server_status=%s)" s
+           | None -> "");
+        pp_delivery "    " i.ci_delivery)
+      rep.cdr_instances
+
+let pp_codex_delivery_compact (rep : codex_delivery_report) =
+  let inst_str =
+    if rep.cdr_instances = [] then "no managed codex instances"
+    else
+      String.concat ", "
+        (List.map
+           (fun i ->
+             Printf.sprintf "%s=%s" i.ci_name
+               (codex_delivery_mode_label i.ci_delivery.cd_mode))
+           rep.cdr_instances)
+  in
+  Printf.printf "Codex delivery: default=%s; %s\n"
+    (codex_delivery_mode_label rep.cdr_default.cd_mode) inst_str
+
 let pp_compact r =
   (if r.total_referenced = 0 then
      Printf.printf "Claude hooks: no c2c hook commands referenced\n"
@@ -514,12 +798,32 @@ let c2c_doctor_hooks_cmd =
     let+ json = json
     and+ compact = compact in
     let r = check () in
-    if json then pp_json r
-    else if compact then pp_compact r
-    else pp_human r;
+    let delivery = codex_delivery_report () in
+    if json then
+      (* Merge the T005 delivery report into the existing JSON envelope. *)
+      (match to_json r with
+       | `Assoc fields ->
+           print_endline
+             (Yojson.Safe.to_string
+                (`Assoc
+                  (fields
+                  @ [ ("codex_delivery",
+                       codex_delivery_report_to_json delivery) ])))
+       | other -> print_endline (Yojson.Safe.to_string other))
+    else if compact then begin
+      pp_compact r;
+      pp_codex_delivery_compact delivery
+    end
+    else begin
+      pp_human r;
+      pp_codex_delivery_human delivery
+    end;
     if r.total_dangling > 0 || r.codex.total_issues > 0 then exit 1
   in
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "hooks"
-       ~doc:"Check Claude Code settings.json hook entries for dangling c2c scripts.")
+       ~doc:"Check Claude Code settings.json hook entries for dangling c2c \
+             scripts, Codex managed-block drift, and the live Codex delivery \
+             mode (app-server / app-server-unavailable / hooks+wake / hooks / \
+             unavailable) with a remediation per degraded state.")
     cmd
