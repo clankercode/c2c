@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""DEPRECATED user-facing poll-inbox CLI (B122).
+
+Canonical surface: ``c2c poll-inbox`` (OCaml). This script remains for tests
+and legacy migration only.
+"""
 from __future__ import annotations
 
 import argparse
@@ -291,8 +296,13 @@ def print_result(
 
 
 def main(argv: list[str] | None = None) -> int:
+    print(
+        "c2c_poll_inbox.py is DEPRECATED (B122). Use `c2c poll-inbox` (OCaml).",
+        file=sys.stderr,
+        flush=True,
+    )
     parser = argparse.ArgumentParser(
-        description="Poll a C2C inbox without relying on host-exposed MCP tools."
+        description="Poll a C2C inbox (DEPRECATED — use `c2c poll-inbox`)."
     )
     parser.add_argument("--session-id", help="broker session id to drain")
     parser.add_argument("--broker-root", type=Path, help="broker root directory")

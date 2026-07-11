@@ -39,7 +39,7 @@ COPY ocaml ./ocaml
 USER root
 RUN rm -rf /home/opam/c2c/_build && chown -R opam:opam /home/opam/c2c
 USER opam
-RUN opam exec -- dune build --release ocaml/cli/c2c.exe
+RUN opam exec -- dune build --release ocaml/cli/c2c.exe ocaml/server/c2c_mcp_server.exe
 
 # ----------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
@@ -52,11 +52,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip install --no-cache-dir pytest pytest-timeout \
     && rm -rf /var/cache/pip
 
-# c2c main binary (from OCaml builder)
+# c2c main binary + canonical MCP server (OCaml; B122).
 COPY --from=builder /home/opam/c2c/_build/default/ocaml/cli/c2c.exe /usr/local/bin/c2c
-RUN chmod +x /usr/local/bin/c2c
+COPY --from=builder /home/opam/c2c/_build/default/ocaml/server/c2c_mcp_server.exe /usr/local/bin/c2c-mcp-server
+RUN chmod +x /usr/local/bin/c2c /usr/local/bin/c2c-mcp-server
 
-# Python deliver daemon + its runtime dependencies.
+# Python deliver daemon + deps — TEST/legacy container harness only (B122).
+# User-facing MCP must use c2c-mcp-server above, not python3 c2c_mcp.py.
 # c2c_deliver_inbox.py imports c2c_poll_inbox, c2c_poker, and c2c_mcp
 # from the repo root, so all four must be present in the container and in PYTHONPATH.
 COPY c2c_deliver_inbox.py /usr/local/bin/c2c_deliver_inbox.py

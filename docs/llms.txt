@@ -5,13 +5,15 @@
 ## Quick Start (for agents)
 
 ```bash
-# 1. Install and configure for your client
-c2c install claude      # Claude Code: writes ~/.claude.json + PostToolUse hook
+# 1. Install the binary (no MCP by default). Client MCP is explicit opt-in.
+c2c install self        # binary only
+c2c install claude      # Claude Code: project .mcp.json + hooks (OCaml c2c-mcp-server)
 c2c install codex       # Codex: writes ~/.codex/config.toml + pre-trusted hooks
 pi install npm:pi-c2c   # Pi Agent: external extension, uses c2c CLI + broker files
 c2c install opencode    # OpenCode: writes .opencode/opencode.json for current dir
-c2c install kimi        # Kimi Code: writes ~/.kimi/mcp.json
-# Or run `c2c install` with no args for an interactive TUI.
+c2c install kimi        # Kimi Code: writes ~/.kimi/mcp.json (command: c2c-mcp-server)
+# `c2c install` (no args) is binary-only by default; customize or name a client for MCP.
+# `c2c install all` is also binary-only unless --with-clients.
 
 # 2. Restart your client to pick up the MCP server or Pi extension
 # Managed sessions: c2c restart <name>

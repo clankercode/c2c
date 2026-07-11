@@ -500,9 +500,21 @@ bi: install-all
 bii: install-all
     ./restart-self
 
-# Legacy: install Python wrapper scripts to ~/.local/bin
+# Retired (B122): Python wrapper install is no longer a supported user path.
+# Canonical install: `just install-all` / `c2c install self` / `c2c install <client>`.
+# Python modules remain in-tree for tests only.
 install-python-legacy:
-    python3 c2c_install.py
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "error: just install-python-legacy is retired (B122)." >&2
+    echo "Use: just install-all   # or: c2c install self && c2c install <client>" >&2
+    echo "MCP server: c2c-mcp-server (OCaml), not python3 c2c_mcp.py" >&2
+    echo "Override for isolated migration only: C2C_ALLOW_PYTHON_LEGACY=1 just install-python-legacy" >&2
+    if [[ "${C2C_ALLOW_PYTHON_LEGACY:-}" == "1" ]]; then
+      python3 c2c_install.py
+      exit 0
+    fi
+    exit 1
 
 # Quick c2c broker status
 status:

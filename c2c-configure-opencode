@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Deprecated user-facing wrapper (B122). Python configure paths are retired.
 set -euo pipefail
-SCRIPT_DIR="$(dirname "$0")"
-exec python3 "$SCRIPT_DIR/c2c_configure_opencode.py" "$@"
+cat >&2 <<'EOF'
+error: c2c-configure-opencode is retired (Python MCP path).
+
+Use the OCaml installer instead:
+  c2c install opencode
+
+MCP server binary: c2c-mcp-server (not python3 c2c_mcp.py)
+EOF
+exit 1

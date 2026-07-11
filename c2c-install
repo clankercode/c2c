@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# Deprecated user-facing wrapper (B122). Python install path is retired.
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec python3 "$SCRIPT_DIR/c2c_cli.py" install "$@"
+cat >&2 <<'EOF'
+error: c2c-install (Python) is retired (B122).
+
+Use the OCaml installer instead:
+  c2c install self
+  c2c install <claude|codex|opencode|kimi|grok>
+  # or: just install-all
+
+MCP server binary: c2c-mcp-server (not python3 c2c_mcp.py)
+EOF
+exit 1

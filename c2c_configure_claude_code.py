@@ -276,6 +276,14 @@ def configure_hook(*, force: bool) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from c2c_python_legacy import require_python_legacy
+
+    refused = require_python_legacy(
+        "c2c_configure_claude_code.py",
+        ocaml_hint="c2c install claude  # project .mcp.json; --global only if advanced",
+    )
+    if refused is not None:
+        return refused
     parser = argparse.ArgumentParser(
         description=(
             "Configure ~/.claude.json (MCP server) and ~/.claude/settings.json"
