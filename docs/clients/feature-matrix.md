@@ -252,6 +252,9 @@ command path. (3) Skill snippets: edit `.collab/skills/c2c-src/`, run
 | OpenCode | `$OPENCODE_SESSION_ID` | Native TS plugin + promptAsync | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
 | Kimi | `kimi-user-host` (auto) | Notification-store push (`C2c_kimi_notifier`) | File-based push + tmux wake | `c2c start kimi` |
 | Grok | `$GROK_SESSION_ID` / hook payload | Monitor + `c2c monitor` (preferred); SessionStart identity skill | Monitor line inject | TUI restart / new session (`c2c install grok`) |
+| Cursor Agent | `$CURSOR_AGENT` / `$CURSOR_INVOKED_AS=cursor-agent` (B134 best-effort) | n/a (unofficial — no install/hooks) | n/a | n/a — labeling only (`client=cursor`, alias `cursor-…`) |
+
+> **Cursor Agent (unofficial):** c2c does **not** ship install, hooks, or delivery for Cursor. B134 only ensures `c2c init` / client-type inference labels Cursor sessions as `cursor` (not `codex`) when `CURSOR_AGENT` or `CURSOR_INVOKED_AS=cursor-agent` is set. Prefer `c2c init --client …` if you need a different identity.
 
 ## Cross-client DM matrix
 

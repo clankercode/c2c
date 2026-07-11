@@ -715,14 +715,33 @@ let native_session_id_env_keys = function
   | "kimi" | "crush" | "codex-headless" -> []
   | _ -> []
 
+(* Cursor Agent (unofficial / best-effort labeling only — B134): not a
+   first-class install/hooks client, but must not be mislabeled as Codex when
+   CURSOR_AGENT / CURSOR_INVOKED_AS markers are present. *)
+let cursor_agent_env_present () =
+  let truthy_flag = function
+    | Some v ->
+        let v = String.lowercase_ascii (String.trim v) in
+        v <> "" && not (List.mem v [ "0"; "false"; "no" ])
+    | None -> false
+  in
+  truthy_flag (Sys.getenv_opt "CURSOR_AGENT")
+  ||
+  match Sys.getenv_opt "CURSOR_INVOKED_AS" with
+  | Some v when String.lowercase_ascii (String.trim v) = "cursor-agent" -> true
+  | _ -> false
+
 let inferred_client_type_from_env () =
   match first_nonempty_env [ "C2C_MCP_CLIENT_TYPE" ] with
   | Some client_type -> Some client_type
   | None ->
+      (* Prefer genuine harness-native session keys over unofficial Cursor
+         markers so CODEX_THREAD_ID / Claude / OpenCode / Grok still win. *)
       if first_nonempty_env [ "CODEX_THREAD_ID" ] <> None then Some "codex"
       else if first_nonempty_env [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID" ] <> None then Some "claude"
       else if first_nonempty_env [ "C2C_OPENCODE_SESSION_ID" ] <> None then Some "opencode"
       else if first_nonempty_env [ "GROK_SESSION_ID" ] <> None then Some "grok"
+      else if cursor_agent_env_present () then Some "cursor"
       else None
 
 let session_id_from_env ?client_type () =

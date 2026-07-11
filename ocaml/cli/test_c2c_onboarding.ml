@@ -62,6 +62,9 @@ let c2c_base_env ~home ~broker ?(env=[]) () =
   ; "CLAUDE_CODE_SESSION_ID="
   ; "CODEX_THREAD_ID="
   ; "C2C_OPENCODE_SESSION_ID="
+  ; "GROK_SESSION_ID="
+  ; "CURSOR_AGENT="
+  ; "CURSOR_INVOKED_AS="
   (* Hermeticity: when this suite runs from inside a Claude Code session the
      operator's CLAUDE_CONFIG_DIR (e.g. ~/.claude-p) leaks in and
      resolve_claude_dir writes the /c2c skill there instead of the temp HOME. *)
@@ -578,6 +581,108 @@ let test_send_poll_peek_json_schema_v1 () =
     (match Yojson.Safe.from_string out with `List [] -> true | _ -> false)
 
 (* ---------------------------------------------------------------- *)
+(* B134: client detect — Grok native env + Cursor Agent markers *)
+
+let json_assoc_string key json =
+  match json with
+  | `Assoc fields ->
+      (match List.assoc_opt key fields with
+       | Some (`String s) -> Some s
+       | _ -> None)
+  | _ -> None
+
+let registration_client_type ~broker ~session_id =
+  let registry_json = read_json_file (broker // "broker" // "registry.json") in
+  let items =
+    match registry_json with
+    | `List items -> items
+    | _ -> []
+  in
+  let rec find = function
+    | [] -> None
+    | row :: rest ->
+        (match json_str_member "session_id" row, json_str_member "client_type" row with
+         | Some sid, Some ct when sid = session_id -> Some ct
+         | _ -> find rest)
+  in
+  find items
+
+let test_init_detects_grok_from_env () =
+  (* B134: GROK_SESSION_ID must drive client=grok + grok- alias prefix
+     (parity with MCP inferred_client_type_from_env; not PATH-guessed codex). *)
+  with_temp_env @@ fun tmp ->
+  let sid = Printf.sprintf "grok-b134-%d" (Unix.getpid ()) in
+  let rc, out, err =
+    run_c2c_status_split ~env:["GROK_SESSION_ID", sid]
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("init exits 0: " ^ err) 0 rc;
+  let alias =
+    match Yojson.Safe.from_string out |> json_assoc_string "alias" with
+    | Some a -> a
+    | None -> failf "init --json missing alias: %s" out
+  in
+  check bool ("alias starts with grok-: " ^ alias) true
+    (String.starts_with ~prefix:"grok-" alias);
+  check (option string) "registration client_type=grok" (Some "grok")
+    (registration_client_type ~broker:tmp ~session_id:sid)
+
+let test_init_detects_cursor_agent_not_codex () =
+  (* B134: Cursor Agent is unofficial best-effort labeling only — must get
+     cursor- alias / client=cursor, never silent PATH-based codex-. *)
+  with_temp_env @@ fun tmp ->
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:[ "CURSOR_AGENT", "1"; "CURSOR_INVOKED_AS", "cursor-agent" ]
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("init exits 0: " ^ err) 0 rc;
+  let alias =
+    match Yojson.Safe.from_string out |> json_assoc_string "alias" with
+    | Some a -> a
+    | None -> failf "init --json missing alias: %s" out
+  in
+  check bool ("alias starts with cursor-: " ^ alias) true
+    (String.starts_with ~prefix:"cursor-" alias);
+  check bool ("alias must not use codex- prefix: " ^ alias) false
+    (String.starts_with ~prefix:"codex-" alias);
+  let sid =
+    match Yojson.Safe.from_string out |> json_assoc_string "session_id" with
+    | Some s -> s
+    | None -> failf "init --json missing session_id: %s" out
+  in
+  check (option string) "registration client_type=cursor" (Some "cursor")
+    (registration_client_type ~broker:tmp ~session_id:sid);
+  (* Env-less statefile path: Cursor has no native session key, so init
+     persists default-session.json with client=cursor. *)
+  let statefile = read_file (tmp // "broker" // "default-session.json") in
+  check bool "statefile client=cursor" true
+    (string_contains statefile "\"client\": \"cursor\""
+     || string_contains statefile "\"client\":\"cursor\"")
+
+let test_init_codex_thread_id_still_codex () =
+  (* Regression: genuine Codex detection must remain unchanged. *)
+  with_temp_env @@ fun tmp ->
+  let sid = Printf.sprintf "codex-b134-%d" (Unix.getpid ()) in
+  let rc, out, err =
+    run_c2c_status_split ~env:["CODEX_THREAD_ID", sid]
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("init exits 0: " ^ err) 0 rc;
+  let alias =
+    match Yojson.Safe.from_string out |> json_assoc_string "alias" with
+    | Some a -> a
+    | None -> failf "init --json missing alias: %s" out
+  in
+  check bool ("alias starts with codex-: " ^ alias) true
+    (String.starts_with ~prefix:"codex-" alias);
+  check (option string) "registration client_type=codex" (Some "codex")
+    (registration_client_type ~broker:tmp ~session_id:sid)
+
+(* ---------------------------------------------------------------- *)
 (* Alcotest registration *)
 
 let () =
@@ -589,6 +694,9 @@ let () =
         ; test_case "init claude CLI-only emits JSON onboarding, writes skill, and reruns" `Quick test_init_claude_cli_only_json_onboarding_and_rerun
         ; test_case "send without alias suggests onboarding commands" `Quick test_send_without_alias_error_suggests_onboarding_commands
         ; test_case "init creates identity.json" `Quick test_identity_json_created
+        ; test_case "init GROK_SESSION_ID → grok client/alias (B134)" `Quick test_init_detects_grok_from_env
+        ; test_case "init CURSOR_AGENT → cursor not codex (B134)" `Quick test_init_detects_cursor_agent_not_codex
+        ; test_case "init CODEX_THREAD_ID still codex (B134)" `Quick test_init_codex_thread_id_still_codex
         ] )
     ; ( "relay_identity",
         [ test_case "relay identity show parses identity.json" `Quick test_relay_identity_show

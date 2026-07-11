@@ -12,7 +12,8 @@ let () =
   List.iter
     (fun k -> Unix.putenv k "")
     [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_MCP_SESSION_ID"
-    ; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"; "C2C_OPENCODE_SESSION_ID" ]
+    ; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"; "C2C_OPENCODE_SESSION_ID"
+    ; "GROK_SESSION_ID"; "CURSOR_AGENT"; "CURSOR_INVOKED_AS" ]
 
 let with_temp_dir f =
   let base = Filename.get_temp_dir_name () in
@@ -2179,6 +2180,52 @@ let test_session_id_from_env_uses_client_specific_opencode_fallback () =
     (fun () ->
       check (option string) "session id from env" (Some "ses-opencode-123")
         (C2c_mcp.session_id_from_env ~client_type:"opencode" ()))
+
+(* B134: native client-type inference — Grok + unofficial Cursor labeling. *)
+let with_scrubbed_client_env f =
+  let keys =
+    [ "C2C_MCP_SESSION_ID"; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"
+    ; "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_OPENCODE_SESSION_ID"
+    ; "GROK_SESSION_ID"; "CURSOR_AGENT"; "CURSOR_INVOKED_AS" ]
+  in
+  List.iter (fun k -> Unix.putenv k "") keys;
+  Fun.protect ~finally:(fun () -> List.iter (fun k -> Unix.putenv k "") keys) f
+
+let test_inferred_client_type_from_env_grok () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "GROK_SESSION_ID" "grok-sess-b134";
+      check (option string) "GROK_SESSION_ID → grok" (Some "grok")
+        (C2c_mcp.inferred_client_type_from_env ());
+      check (option string) "session id via inferred grok" (Some "grok-sess-b134")
+        (C2c_mcp.session_id_from_env ()))
+
+let test_inferred_client_type_from_env_cursor_agent_flag () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CURSOR_AGENT" "1";
+      check (option string) "CURSOR_AGENT=1 → cursor" (Some "cursor")
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_from_env_cursor_invoked_as () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CURSOR_INVOKED_AS" "cursor-agent";
+      check (option string) "CURSOR_INVOKED_AS=cursor-agent → cursor" (Some "cursor")
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_codex_wins_over_cursor () =
+  (* Genuine Codex markers must still win when both are somehow present. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CODEX_THREAD_ID" "codex-thread-keep";
+      Unix.putenv "CURSOR_AGENT" "1";
+      check (option string) "CODEX_THREAD_ID beats CURSOR_AGENT" (Some "codex")
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_cursor_not_codex_without_codex_env () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CURSOR_AGENT" "1";
+      check (option string) "cursor without CODEX_THREAD_ID is not codex" (Some "cursor")
+        (C2c_mcp.inferred_client_type_from_env ());
+      check bool "not Some \"codex\"" true
+        (C2c_mcp.inferred_client_type_from_env () <> Some "codex"))
 
 let test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing ()
     =
@@ -15428,6 +15475,16 @@ let () =
              test_session_id_from_env_prefers_legacy_claude_session_id
          ; test_case "session_id_from_env uses client-specific opencode fallback" `Quick
              test_session_id_from_env_uses_client_specific_opencode_fallback
+         ; test_case "inferred_client_type_from_env: GROK_SESSION_ID → grok (B134)" `Quick
+             test_inferred_client_type_from_env_grok
+         ; test_case "inferred_client_type_from_env: CURSOR_AGENT=1 → cursor (B134)" `Quick
+             test_inferred_client_type_from_env_cursor_agent_flag
+         ; test_case "inferred_client_type_from_env: CURSOR_INVOKED_AS → cursor (B134)" `Quick
+             test_inferred_client_type_from_env_cursor_invoked_as
+         ; test_case "inferred_client_type_from_env: CODEX_THREAD_ID beats CURSOR (B134)" `Quick
+             test_inferred_client_type_codex_wins_over_cursor
+         ; test_case "inferred_client_type_from_env: cursor is not codex (B134)" `Quick
+             test_inferred_client_type_cursor_not_codex_without_codex_env
          ; test_case "tools/call register uses CODEX_THREAD_ID when C2C session id missing" `Quick
              test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing
          ; test_case "tools/call register uses managed CODEX_THREAD_ID when C2C session id missing" `Quick

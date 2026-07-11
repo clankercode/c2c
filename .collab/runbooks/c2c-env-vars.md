@@ -57,6 +57,8 @@ Explicit session ID override. Set this when launching one-shot child CLI probes 
 
 When `C2C_MCP_SESSION_ID` is unset, session resolution falls back to the host client's own export: `CLAUDE_SESSION_ID` (legacy Claude Code; wins when both are set) then `CLAUDE_CODE_SESSION_ID` (current Claude Code >= v2.1.x Bash-tool env), `CODEX_THREAD_ID` (codex), `C2C_OPENCODE_SESSION_ID` (opencode), `GROK_SESSION_ID` (Grok Build TUI; also injected into Grok hook processes). kimi/gemini have no native key. If none is present, the CLI additionally falls back to the per-repo `<broker_root>/default-session.json` statefile written by `c2c init` (validated against the registry; last-resort, single identity per repo, CLI-only — the MCP server never reads it).
 
+**Client-type inference (B134).** The same ambient keys drive `inferred_client_type_from_env` / `c2c init` detect (shared): `C2C_MCP_CLIENT_TYPE` override → `CODEX_THREAD_ID` → Claude session keys → OpenCode → `GROK_SESSION_ID` → unofficial Cursor Agent markers (`CURSOR_AGENT` truthy, or `CURSOR_INVOKED_AS=cursor-agent`). Cursor labeling is **best-effort identity only** (alias prefix `cursor-`, `client: "cursor"`) — not install/hooks/MCP parity. Genuine Codex markers always win over Cursor.
+
 ### `C2C_MCP_AUTO_REGISTER_ALIAS`
 
 Alias the broker auto-registers on startup, so you keep a stable alias across restarts without calling `register` manually. Also written by `c2c install`.

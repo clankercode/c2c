@@ -844,6 +844,13 @@ val with_session_lwt :
 (** Lwt-returning variant of [with_session]; see that function for the
     contract. The body [f] is invoked AFTER the touch has been stamped. *)
 
+val inferred_client_type_from_env : unit -> string option
+(** Infer the host client type from ambient env. Order: explicit
+    [C2C_MCP_CLIENT_TYPE], then harness-native session keys ([CODEX_THREAD_ID],
+    Claude, OpenCode, [GROK_SESSION_ID]), then unofficial Cursor Agent markers
+    ([CURSOR_AGENT] / [CURSOR_INVOKED_AS=cursor-agent]) — best-effort labeling
+    only (B134); not install/hooks parity. *)
+
 val session_id_from_env : ?client_type:string -> unit -> string option
 (** Resolve the current broker session id from the ambient client env. Prefers
     explicit c2c-managed ids and falls back to harness-native ids when safe. *)
