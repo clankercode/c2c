@@ -446,6 +446,18 @@ let recompute_gemini_artifacts () =
    deliver_watch_artifacts "gemini",
    None)
 
+let recompute_grok_artifacts () =
+  let home = home_dir () in
+  let skill = home // ".grok" // "skills" // "c2c" // "SKILL.md" in
+  let session_skill = home // ".grok" // "skills" // "c2c-session" // "SKILL.md" in
+  let hooks = home // ".grok" // "hooks" // "c2c-session.json" in
+  ( []
+  , [ C2c_install_manifest.owned_file skill
+    ; C2c_install_manifest.owned_file session_skill
+    ; C2c_install_manifest.owned_file hooks
+    ]
+  , None )
+
 let recompute_self_artifacts () =
   let home = home_dir () in
   let bin = home // ".local" // "bin" in
@@ -498,6 +510,7 @@ let recompute_artifacts_for_component ~component ~target_dir =
   | "opencode" -> recompute_opencode_artifacts ~target_dir
   | "crush" -> recompute_crush_artifacts ()
   | "gemini" -> recompute_gemini_artifacts ()
+  | "grok" -> recompute_grok_artifacts ()
   | "git-hook" -> ([], recompute_git_hook_artifacts ~target_dir, None)
   | "git-shim" -> ([], recompute_git_shim_artifacts (), None)
   | _ -> ([], [], None)
@@ -651,7 +664,7 @@ let run_uninstall ~output_mode ~dry_run ~component ~target_dir_opt ~alias_opt =
     exit 124
   end;
   if component = "all" then begin
-    let components = [ "claude"; "codex"; "kimi"; "opencode"; "crush"; "gemini"; "git-shim"; "git-hook" ] in
+    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "crush"; "gemini"; "git-shim"; "git-hook" ] in
     let target_dir = resolve_target_dir target_dir_opt in
     let all_removed = ref [] in
     List.iter

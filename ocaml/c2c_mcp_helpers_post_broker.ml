@@ -711,6 +711,7 @@ let native_session_id_env_keys = function
   | "claude" -> [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID" ]
   | "codex" -> [ "CODEX_THREAD_ID" ]
   | "opencode" -> [ "C2C_OPENCODE_SESSION_ID" ]
+  | "grok" -> [ "GROK_SESSION_ID" ]
   | "kimi" | "crush" | "codex-headless" -> []
   | _ -> []
 
@@ -721,6 +722,7 @@ let inferred_client_type_from_env () =
       if first_nonempty_env [ "CODEX_THREAD_ID" ] <> None then Some "codex"
       else if first_nonempty_env [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID" ] <> None then Some "claude"
       else if first_nonempty_env [ "C2C_OPENCODE_SESSION_ID" ] <> None then Some "opencode"
+      else if first_nonempty_env [ "GROK_SESSION_ID" ] <> None then Some "grok"
       else None
 
 let session_id_from_env ?client_type () =
