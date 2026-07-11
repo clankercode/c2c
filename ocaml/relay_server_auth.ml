@@ -45,9 +45,12 @@ let auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified =
      doesn't exist yet so per-request header auth can't work. handle_register
      does its own crypto verification; auth_decision just allows it through.
      Room mutation routes (join_room, leave_room, send_room, set_room_visibility,
-     invite/uninvite/knock/knock-decision) similarly carry body-level Ed25519 proof via verify_room_op_proof
-     and also accept an unsigned legacy path. They do their own auth at the handler
-     level; bypassing header auth here lets signed AND unsigned bodies through. *)
+     invite/uninvite/knock/knock-decision) similarly carry body-level Ed25519 proof
+     via verify_room_op_proof (send_room via verify_room_send_envelope). They do
+     their own auth at the handler level; bypassing header auth here hands the
+     body to the handler, which since B114 REJECTS unsigned bodies unless the
+     dev-only unsigned gate is active (C2C_REQUIRE_SIGNED_ROOM_OPS=0 on a
+     token-less relay). *)
   let is_self_auth =
     path = "/register"
     || path = "/join_room"

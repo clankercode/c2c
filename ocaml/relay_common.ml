@@ -71,20 +71,26 @@ let bare_alias (s : string) : string =
   | None -> s
   | Some i -> String.sub s 0 i
 
-(* Gate for Phase 2 migration: when C2C_REQUIRE_SIGNED_ROOM_OPS=1,
-   room ops (join/leave/send/invite/uninvite/set_visibility) require
-   body-level Ed25519 proof and reject unsigned requests.
-   Default (unset or "0"): legacy behavior — accept unsigned.
-   Migration path:
-     Phase 1: server ships with gate off; OCaml CLI updated to sign.
-     Phase 2: Python relay client updated to sign.
-     Phase 3: gate defaults to "1" (require signed).
-   Operators can set C2C_REQUIRE_SIGNED_ROOM_OPS=0 on the server to
-   temporarily revert if needed during the transition. *)
-let require_signed_room_ops () =
-  match Sys.getenv_opt "C2C_REQUIRE_SIGNED_ROOM_OPS" with
-  | Some "1" -> true
-  | _ -> false
+(* B114 (Phase 3 landed): signed room-op proofs and signed /send_room
+   envelopes are MANDATORY by default. Room ops
+   (join/leave/send/invite/uninvite/set_visibility/knock/knock-decision)
+   require a body-level Ed25519 proof and reject unsigned requests with
+   relay_err_unsigned_room_op.
+
+   The legacy unsigned compatibility path survives only as an explicit
+   DEVELOPMENT gate: C2C_REQUIRE_SIGNED_ROOM_OPS=0, honored ONLY when the
+   relay has no Bearer token configured (dev mode, auth_mode="dev"). A
+   token-configured (production) relay ignores the gate — there is no
+   unsigned downgrade in production. C2C_REQUIRE_SIGNED_ROOM_OPS=1 is
+   accepted and identical to the default.
+
+   NOTE (B098 "bus, never RPC"): this gates request authentication only.
+   Message content never authorizes anything regardless of this setting. *)
+let require_signed_room_ops ~token_configured =
+  token_configured
+  || (match Sys.getenv_opt "C2C_REQUIRE_SIGNED_ROOM_OPS" with
+      | Some "0" -> false
+      | _ -> true)
 
 (* Layer 4 slice 5: signed invite / uninvite / set_visibility. *)
 let room_invite_sign_ctx = "c2c/v1/room-invite"
