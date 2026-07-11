@@ -447,6 +447,16 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       extra_frontend_args =
         frontend_extra_args ~yolo ~extra:(model_args @ extra_args) }
   in
+  (* B137: hand this managed app-server session's broker session id to the hooks
+     the stock frontend will fire. [build_frontend_env] snapshots
+     [Unix.environment ()], so exporting here — BEFORE [start] spawns the
+     frontend — makes every hook that frontend fires inherit the marker. The
+     hook adopts it as its identity (the app-server deliver loop owns this
+     session's registration + delivery) instead of self-registering a SECOND
+     per-thread identity. [name] is exactly the session id [run_delivery_loop]
+     registers under. Reset on the fallback path below so a hook-fallback launch
+     never inherits it (there the hook owns registration/delivery itself). *)
+  (try Unix.putenv "C2C_CODEX_APPSERVER_SESSION" name with _ -> ());
   (* IMPORTANT: no routable alias is published before start succeeds — a version
      or capability failure returns a diagnostic here, before any registration. *)
   let start cfg = match backend with
@@ -458,6 +468,11 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       (* No routable identity was persisted (start failed before Running), so
          nothing to clean up here. Best-effort remove the empty instance dir we
          created above so a fallback launch doesn't inherit a stray dir. *)
+      (* B137: clear the app-server identity marker before falling back to the
+         hook path — the fallback child re-snapshots the env, and a stale marker
+         would make its hook abstain from the registration/delivery it now owns.
+         Unix has no unsetenv; an empty value reads as unset (hooks trim-guard). *)
+      (try Unix.putenv "C2C_CODEX_APPSERVER_SESSION" "" with _ -> ());
       (try if Sys.readdir instance_dir = [||] then Unix.rmdir instance_dir with _ -> ());
       report_diagnostic diag;
       (* Graceful fallback to the hook-backed launch (AC7). Do NOT forward

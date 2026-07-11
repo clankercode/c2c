@@ -521,16 +521,17 @@ let test_managed_session_auto_register_honors_installer_alias_hint () =
                 (contains ~haystack:context ~needle:hint_alias)
           | None -> failf "expected managed onboarding output, got: %S" stdout)))
 
-(* --- B137: managed codex frontend adopts launcher alias (no dual-identity) ---
+(* --- B137: managed app-server frontend adopts launcher identity (no dual-id) --
 
-   A managed `c2c start/new codex` app-server session: the launcher (deliver
-   loop) has already registered under the managed session id with client_type
-   "codex-app-server", and the stock frontend inherits C2C_MCP_SESSION_ID =
-   that managed session id. The frontend's `c2c hook codex` fires with a
-   payload session_id = codex thread-id that is NOT the registered session id
-   and (on a fresh start) has no thread->instance mapping yet. The hook must
-   ADOPT the launcher identity via C2C_MCP_SESSION_ID rather than mint a
-   second per-thread identity, AND must not drain the launcher inbox (the
+   A real managed `c2c new codex` app-server session, as it appears to the hook
+   (per the B136 live finding): it sets NO C2C_MCP_SESSION_ID, its thread does
+   NOT map through the legacy config.json (managed_sid_for_payload = None), and
+   its broker registration is under the managed instance name (client_type
+   "codex-app-server") — NOT the payload thread id. The launcher instead hands
+   the hook its identity via the inherited marker C2C_CODEX_APPSERVER_SESSION.
+   The frontend's `c2c hook codex` fires with a payload session_id = codex
+   thread-id. The hook must ADOPT the launcher identity via the marker (not mint
+   a second per-thread identity) AND must not drain the launcher inbox (the
    ingress loop owns arrival-time delivery). *)
 let test_b137_managed_app_server_adopts_launcher_alias () =
   with_ctx (fun ctx ->
@@ -546,7 +547,11 @@ let test_b137_managed_app_server_adopts_launcher_alias () =
     let regs_before = C2c_mcp.Broker.list_registrations (broker ctx) in
     let rc, stdout, stderr =
       run_hook
-        ~extra_env:[ ("C2C_MCP_SESSION_ID", managed_sid) ]
+        (* Real app-server env: managed marker + launcher session marker, and
+           deliberately NO C2C_MCP_SESSION_ID (app-server does not set it). *)
+        ~extra_env:
+          [ ("C2C_CODEX_MANAGED", "1")
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid) ]
         ctx
         ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
     in
@@ -580,6 +585,84 @@ let test_b137_managed_app_server_adopts_launcher_alias () =
       (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
     check bool "message body not surfaced by hook" false
       (contains ~haystack:stdout ~needle:"ingress owns this"))
+
+(* Race window: the earliest SessionStart hook can fire BEFORE the app-server
+   deliver loop has landed its broker registration. The marker is inherited from
+   process spawn, so it is present even then. The hook must still adopt it (no
+   per-thread fork) and must not drain — otherwise fire-1 forks a vanilla
+   identity and fire-2 (post-registration) adopts the launcher, leaving the
+   dual-identity B137 is meant to kill. *)
+let test_b137_app_server_marker_adopts_before_registration () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-b137-prereg" in
+    let thread_id = "codex-thread-b137-prereg" in
+    let rc, _stdout, _stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_MANAGED", "1")
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid) ]
+        ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    let regs = C2c_mcp.Broker.list_registrations (broker ctx) in
+    (* Hook created NO registration: not under the thread id (no fork)... *)
+    check bool "no payload-thread fork before registration" false
+      (List.exists
+         (fun (r : C2c_mcp.registration) -> r.session_id = thread_id)
+         regs);
+    (* ...and not under the managed sid either (the launcher, not the hook,
+       owns that registration). *)
+    check int "hook self-registers nothing" 0 (List.length regs))
+
+(* The app-server ingress loop owns only the REPO inbox. Cross-repo mail lands
+   in the global sessions broker, which the loop does not cover — so the hook
+   must still deliver the global inbox for a managed app-server session, while
+   leaving the repo inbox for the ingress loop. Regression guard for the
+   codex-review HIGH finding (blanket ingress skip dropped global mail). *)
+let test_b137_app_server_still_delivers_global_inbox () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-b137-global" in
+    let thread_id = "codex-thread-b137-global" in
+    let launcher_alias = "zz-codex-b137-global-recv" in
+    let b = register_app_server ctx ~session_id:managed_sid ~alias:launcher_alias in
+    ignore (register ctx ~session_id:"codex-b137-global-peer" ~alias:"zz-codex-b137-gpeer");
+    (* Repo inbox message — ingress owns it, hook must NOT drain. *)
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-b137-gpeer"
+      ~to_alias:launcher_alias ~content:"repo owned by ingress" ();
+    (* Global (cross-repo) inbox message — hook MUST still deliver. *)
+    let global = C2c_mcp.Broker.create ~root:ctx.global_root in
+    let pid = Some (Unix.getpid ()) in
+    let pst = C2c_mcp.Broker.capture_pid_start_time pid in
+    C2c_mcp.Broker.register global ~session_id:managed_sid ~alias:launcher_alias
+      ~pid ~pid_start_time:pst ();
+    C2c_mcp.Broker.register global ~session_id:"codex-b137-global-peer"
+      ~alias:"zz-codex-b137-gpeer" ~pid ~pid_start_time:pst ();
+    C2c_mcp.Broker.enqueue_message global ~from_alias:"zz-codex-b137-gpeer"
+      ~to_alias:launcher_alias ~content:"cross-repo must arrive" ();
+    let rc, stdout, stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_MANAGED", "1")
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid) ]
+        ctx
+        ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    (match parse_context stdout with
+     | Some (_, context) ->
+         check bool "global cross-repo message delivered" true
+           (contains ~haystack:context ~needle:"cross-repo must arrive");
+         check bool "repo inbox message NOT delivered by hook" false
+           (contains ~haystack:context ~needle:"repo owned by ingress")
+     | None ->
+         failf "expected global delivery output, got: %S (stderr %S)" stdout stderr);
+    (* Repo inbox still holds its message (ingress will deliver it). *)
+    check int "repo inbox left for ingress loop" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
+    (* Global inbox was drained (delivered exactly once). *)
+    check int "global inbox drained by hook" 0
+      (List.length (C2c_mcp.Broker.read_inbox global ~session_id:managed_sid)))
 
 (* Guard: a codex subprocess that merely inherited C2C_MCP_SESSION_ID from a
    NON-codex managed parent (e.g. a codex spawned inside managed claude) must
@@ -1063,6 +1146,10 @@ let () =
             test_managed_session_auto_register_honors_installer_alias_hint
         ; test_case "B137 managed app-server adopts launcher alias" `Quick
             test_b137_managed_app_server_adopts_launcher_alias
+        ; test_case "B137 app-server marker adopts before registration" `Quick
+            test_b137_app_server_marker_adopts_before_registration
+        ; test_case "B137 app-server still delivers global inbox" `Quick
+            test_b137_app_server_still_delivers_global_inbox
         ; test_case "B137 non-codex env session not adopted" `Quick
             test_b137_non_codex_env_session_not_adopted
         ; test_case "deferrable held until turn boundary" `Quick
