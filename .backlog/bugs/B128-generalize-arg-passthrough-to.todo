@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-11T11:53:14Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-11T12:34:46Z"
 complexity: medium
 created_at: "2026-07-11T11:04:10Z"
 depends_on: []
+duration_minutes: 41.5485964375
 estimate_hours: 1
 id: B128
 priority: high
 started_at: "2026-07-11T11:53:14Z"
-status: in_progress
+status: done
 tags: []
 title: Generalize '--' arg passthrough to all c2c client wrappers (c2c start/new <client> -- <client-opts>)
-updated_at: "2026-07-11T11:53:14Z"
+updated_at: "2026-07-11T12:34:46Z"
 ---
 
 Generalize '--' arg passthrough to all c2c client wrappers (c2c start/new <client> -- <client-opts>)
