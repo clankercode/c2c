@@ -56,6 +56,11 @@ let hook_stop_cmd =
   const (fun () ->
     (* Uses C2c_hook_lib for shared stdin-parsing + drain logic, matching
        the standalone c2c_stop_hook.exe behaviour exactly. *)
+    (* B130: a dispatched subagent inherits the parent's session env and fires
+       the Stop hook too; draining here would leak the owner's DMs into the
+       subagent transcript. The standalone c2c_stop_hook.exe already guards
+       this; the CLI fallback must match. *)
+    if C2c_hook_lib.is_subagent_quiet () then exit 0;
     let session_id =
       match C2c_hook_lib.resolve_session_id () with
       | Ok sid -> sid

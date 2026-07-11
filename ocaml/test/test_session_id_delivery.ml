@@ -85,7 +85,7 @@ let test_send_session_writes_global_inbox () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
              send --session %s 'hello world' > %s 2>&1"
             (Filename.quote dir) (Filename.quote built_c2c)
@@ -121,7 +121,7 @@ let test_send_session_rejects_invalid_session_id () =
         let bad_sid = "../" ^ escaped_name in
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
              send --session %s 'hello world' > %s 2>&1"
             (Filename.quote dir) (Filename.quote built_c2c)
@@ -141,7 +141,7 @@ let test_send_session_rejects_reserved_sender () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
              send --from c2c --session %s 'hello world' > %s 2>&1"
             (Filename.quote dir) (Filename.quote built_c2c)
@@ -162,7 +162,7 @@ let test_send_session_rejects_reserved_sender_case_insensitive () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
              send --from C2C --session %s 'hello world' > %s 2>&1"
             (Filename.quote dir) (Filename.quote built_c2c)
@@ -197,7 +197,7 @@ let test_hook_reads_stdin_session_and_drains_global_inbox () =
            ~/.c2c broker. *)
         let cmd =
           Printf.sprintf
-            "printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
+            "printf %%s %s | env -u C2C_MCP_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u \
              C2C_MCP_BROKER_ROOT C2C_STATE_HOME=%s HOME=%s \
              C2C_POST_TOOL_FULL_INJECT=1 \
              C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
@@ -241,7 +241,7 @@ let test_cli_hook_reads_stdin_session_and_drains_global_inbox () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s hook < /dev/null > %s 2> %s"
             (Filename.quote sid) (Filename.quote dir) (Filename.quote dir)
             (Filename.quote built_c2c) (Filename.quote out)
@@ -286,7 +286,7 @@ let test_cli_hook_holds_deferrable_mid_turn () =
       (fun () ->
         let cmd =
           Printf.sprintf
-            "env C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER C2C_MCP_SESSION_ID=%s C2C_MCP_BROKER_ROOT=%s \
              C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s hook < /dev/null > %s 2> %s"
             (Filename.quote sid) (Filename.quote dir) (Filename.quote dir)
             (Filename.quote built_c2c) (Filename.quote out)
@@ -330,7 +330,7 @@ let test_hook_extracts_session_from_truncated_large_payload () =
            fallback into the empty temp dir (see the sibling hook test). *)
         let cmd =
           Printf.sprintf
-            "env -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
              C2C_STATE_HOME=%s HOME=%s C2C_POST_TOOL_FULL_INJECT=1 \
              C2C_SESSIONS_BROKER_ROOT=%s %s < %s > %s 2> %s"
             (Filename.quote dir) (Filename.quote dir)
@@ -376,7 +376,7 @@ let test_hook_merges_message_and_cold_boot_context () =
           in
           let cmd =
             Printf.sprintf
-              "printf %%s %s | env C2C_MCP_SESSION_ID=%s \
+              "printf %%s %s | env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER C2C_MCP_SESSION_ID=%s \
                C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s \
                C2C_POST_TOOL_FULL_INJECT=1 %s > %s 2> %s"
               (Filename.quote stdin_payload) (Filename.quote sid)
@@ -429,7 +429,7 @@ let test_hook_rejects_invalid_stdin_session_id () =
            the drain, but keep the sandbox uniform + defensive). *)
         let cmd =
           Printf.sprintf
-            "printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
+            "printf %%s %s | env -u C2C_MCP_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u \
              C2C_MCP_BROKER_ROOT C2C_STATE_HOME=%s HOME=%s \
              C2C_SESSIONS_BROKER_ROOT=%s %s > %s 2> %s"
             (Filename.quote stdin_payload) (Filename.quote dir)

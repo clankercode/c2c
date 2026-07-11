@@ -178,13 +178,32 @@ let read_stdin_session_id () =
   in
   try loop max_stdin_scan_bytes with _ -> None
 
-(* B042: detect subagent/silent context. When C2C_NO_AUTO_REGISTER=1 is set,
-   the session is a spawned subagent that should not auto-register or drain
-   inbox messages. Hooks should exit early when this returns true. *)
+(* B042 / B130: detect subagent/silent context. Hooks that run inside a
+   dispatched subagent must never auto-register OR drain/inject the owner
+   session's inbox — a subagent inherits the parent's env (incl.
+   C2C_MCP_SESSION_ID / CLAUDE_SESSION_ID) and fires the same c2c hooks, so
+   without this guard the parent's queued DMs leak into an unrelated
+   subagent's transcript (B130).
+
+   Two signals mark a subagent:
+   - C2C_NO_AUTO_REGISTER=1 (B042): explicit opt-out an operator/wrapper sets.
+   - CLAUDE_CODE_CHILD_SESSION (B130): Claude Code stamps every dispatched
+     Task-tool subagent process with this env var (value "1"). This is the
+     robust, harness-provided signal — nothing in c2c sets C2C_NO_AUTO_REGISTER
+     for Task-tool children, so B042 alone never fired for them.
+
+   Hooks should exit early (silent, no drain) when this returns true. *)
+let env_flag_truthy name =
+  match Sys.getenv_opt name with
+  | Some v ->
+      (match String.lowercase_ascii (String.trim v) with
+       | "" | "0" | "false" | "no" -> false
+       | _ -> true)
+  | None -> false
+
 let is_subagent_quiet () =
-  match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
-  | Some v when String.trim v = "1" -> true
-  | _ -> false
+  env_flag_truthy "C2C_NO_AUTO_REGISTER"
+  || env_flag_truthy "CLAUDE_CODE_CHILD_SESSION"
 let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 

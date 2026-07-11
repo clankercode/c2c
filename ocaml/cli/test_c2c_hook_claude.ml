@@ -253,6 +253,40 @@ let test_subagent_quiet_guard () =
     check int "no registrations created" 0
       (List.length (C2c_mcp.Broker.list_registrations (broker ctx))))
 
+(* B130: a dispatched Claude Code subagent inherits the parent session's env
+   (including C2C_MCP_SESSION_ID) and fires the same c2c hooks. Claude Code
+   marks such child processes with CLAUDE_CODE_CHILD_SESSION=1. The hook must
+   treat that as a subagent context and stay silent — it must NOT drain/inject
+   the owner session's queued DMs into the subagent's transcript. Regression
+   for the inbox-leak where a coordinator DM surfaced inside an unrelated
+   dispatched subagent. *)
+let test_child_session_no_inbox_leak () =
+  with_ctx (fun ctx ->
+    let owner_sid = "managed-claude-e2e-b130-0001" in
+    let b = register ctx ~session_id:owner_sid ~alias:"zz-claude-b130-owner" in
+    ignore (register ctx ~session_id:"claude-e2e-b130-peer" ~alias:"zz-claude-b130-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-claude-b130-peer"
+      ~to_alias:"zz-claude-b130-owner" ~content:"secret coordinator DM" ();
+    (* Subagent fires the hook: it resolves the owner identity via the inherited
+       C2C_MCP_SESSION_ID env, but CLAUDE_CODE_CHILD_SESSION=1 marks it as a
+       dispatched child. *)
+    let rc, stdout, stderr =
+      run_hook ctx
+        ~extra_env:
+          [ ("C2C_MCP_SESSION_ID", owner_sid)
+          ; ("CLAUDE_CODE_CHILD_SESSION", "1")
+          ]
+        ~payload:(payload ~session_id:"claude-e2e-b130-subagent" ())
+    in
+    check int "exit 0" 0 rc;
+    check string "subagent gets no injected context" "" (String.trim stdout);
+    check bool "DM body must not leak into subagent stdout" false
+      (contains ~haystack:stdout ~needle:"secret coordinator DM");
+    (* The DM must remain undrained in the owner inbox for real delivery. *)
+    let remaining = C2c_mcp.Broker.read_inbox b ~session_id:owner_sid in
+    check int "owner DM not drained by subagent" 1 (List.length remaining);
+    ignore stderr)
+
 let test_session_end_deregisters_hook_auto_registration () =
   with_ctx (fun ctx ->
     let sid = "claude-e2e-session-end-0001" in
@@ -413,6 +447,8 @@ let () =
         ; test_case "env sid unregistered blocks auto-register" `Quick
             test_env_sid_unregistered_blocks_auto_register
         ; test_case "subagent-quiet guard" `Quick test_subagent_quiet_guard
+        ; test_case "B130: CLAUDE_CODE_CHILD_SESSION subagent no inbox leak" `Quick
+            test_child_session_no_inbox_leak
         ; test_case "SessionEnd deregisters hook auto-registration" `Quick
             test_session_end_deregisters_hook_auto_registration
         ; test_case "SessionEnd keeps explicit registration" `Quick

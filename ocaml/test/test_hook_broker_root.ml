@@ -194,7 +194,7 @@ let test_e2e_vanilla_hook_delivers_repo_broker_dm () =
             in
             let cmd =
               Printf.sprintf
-                "cd %s && printf %%s %s | env -u C2C_MCP_SESSION_ID -u \
+                "cd %s && printf %%s %s | env -u C2C_MCP_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u \
                  C2C_MCP_BROKER_ROOT HOME=%s C2C_STATE_HOME=%s \
                  C2C_SESSIONS_BROKER_ROOT=%s C2C_POST_TOOL_FULL_INJECT=1 \
                  %s > %s 2> %s"

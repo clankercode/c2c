@@ -907,12 +907,23 @@ let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
   | Some alias ->
-  (* B042: skip auto-registration when C2C_NO_AUTO_REGISTER=1.
-     Spawned subagents inherit global c2c hooks and would auto-register
-     and spam the coordinator. Setting this env var silences them. *)
-  (match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
-   | Some v when String.trim v = "1" -> ()
-   | _ ->
+  (* B042 / B130: skip auto-registration in a dispatched-subagent context.
+     Spawned subagents inherit global c2c hooks / env and would auto-register
+     and spam the coordinator (B042). Two signals mark a subagent:
+     C2C_NO_AUTO_REGISTER=1 (explicit opt-out) and CLAUDE_CODE_CHILD_SESSION
+     (set by Claude Code on every Task-tool child; B130). *)
+  let env_flag_truthy name =
+    match Sys.getenv_opt name with
+    | Some v ->
+        (match String.lowercase_ascii (String.trim v) with
+         | "" | "0" | "false" | "no" -> false
+         | _ -> true)
+    | None -> false
+  in
+  (if env_flag_truthy "C2C_NO_AUTO_REGISTER"
+      || env_flag_truthy "CLAUDE_CODE_CHILD_SESSION"
+   then ()
+   else
   let session_id =
     match session_id_override with
     | Some sid when String.trim sid <> "" -> String.trim sid
