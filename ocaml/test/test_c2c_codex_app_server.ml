@@ -557,6 +557,32 @@ let test_live_auth_boundary () =
 
 (* ------------------------------------------------------------------ *)
 
+(* B128: the codex app-server transport is the OTHER argv tail-assembly site
+   (the hook-backed codex path + all non-codex clients go through
+   C2c_start.prepare_launch_args' `args @ extra_args`; the app-server frontend
+   goes through build_frontend_argv' `@ cfg.extra_frontend_args`). Prove that
+   `c2c start codex --app-server -- <opts>` forwards <opts> verbatim as the
+   frontend argv tail, after the fixed --remote/--remote-auth-token-env prefix,
+   commas preserved. *)
+let test_frontend_argv_appends_extra_frontend_args_verbatim_b128 () =
+  with_tmp_dir (fun dir ->
+    let extra = [ "--model"; "gpt-x,y"; "--profile"; "p,q" ] in
+    let cfg =
+      { (default_config ~instance_name:"b128" ~instance_dir:dir ~cwd:dir) with
+        extra_frontend_args = extra }
+    in
+    let ep = { transport = "ws"; host = "127.0.0.1"; port = 40999 } in
+    let argv =
+      Array.to_list (build_frontend_argv cfg ep ~token_env_var:"C2C_TOK")
+    in
+    let ln = List.length argv and sn = List.length extra in
+    let rec drop n l = if n <= 0 then l else match l with _ :: tl -> drop (n - 1) tl | [] -> [] in
+    Alcotest.(check bool) "extra_frontend_args are the verbatim frontend argv tail"
+      true (sn <= ln && drop (ln - sn) argv = extra);
+    Alcotest.(check (list string)) "fixed prefix precedes the passthrough tail"
+      [ cfg.codex_bin; "--remote"; endpoint_uri ep; "--remote-auth-token-env"; "C2C_TOK" ]
+      (List.filteri (fun i _ -> i < ln - sn) argv))
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_codex_app_server"
@@ -592,5 +618,8 @@ let () =
       ( "security",
         [ Alcotest.test_case "secret hygiene" `Quick test_secret_hygiene;
           Alcotest.test_case "handshake refused offline" `Quick test_handshake_refused_when_no_server;
-          Alcotest.test_case "live auth boundary" `Quick test_live_auth_boundary ] )
+          Alcotest.test_case "live auth boundary" `Quick test_live_auth_boundary ] );
+      ( "passthrough",
+        [ Alcotest.test_case "frontend argv appends extra_frontend_args verbatim (B128)"
+            `Quick test_frontend_argv_appends_extra_frontend_args_verbatim_b128 ] )
     ]

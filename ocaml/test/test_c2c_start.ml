@@ -41,6 +41,15 @@ let rec has_adjacent_pair left right = function
   | _ :: tl -> has_adjacent_pair left right tl
   | [] -> false
 
+(* [is_suffix suffix lst] — true iff [suffix] is exactly the final elements of
+   [lst] (verbatim, in order). Stronger than [has_adjacent_pair]: proves the
+   whole forwarded block lands at the TAIL of the argv, with no reordering,
+   insertion, or truncation. Used by the B128 passthrough tests. *)
+let is_suffix suffix lst =
+  let ln = List.length lst and sn = List.length suffix in
+  let rec drop n l = if n <= 0 then l else match l with _ :: tl -> drop (n - 1) tl | [] -> [] in
+  sn <= ln && drop (ln - sn) lst = suffix
+
 let env_contains env expected =
   Array.exists (fun entry -> String.equal entry expected) env
 
@@ -279,6 +288,95 @@ let test_prepare_launch_args_forwards_extra_args_for_codex () =
   check bool "forwards --profile" true
     (has_adjacent_pair "--profile" "myprofile" args)
 
+(* B128: `--` passthrough is generalized across ALL managed `c2c start`
+   clients via the single shared tail append in [prepare_launch_args]
+   (`args @ extra_args`) — not per-client copies. The #372 tests above cover
+   claude/opencode/codex; these extend the coverage to kimi and gemini so
+   every supported client wrapper is proven to forward post-`--` args verbatim.
+
+   Kimi note: pass an explicit `--mcp-config-file` in extra_args so the adapter
+   skips writing a per-instance MCP config to disk (keeps the unit test
+   hermetic — see [has_explicit_kimi_mcp_config]); the extra args are still
+   appended verbatim at the tail. *)
+let test_prepare_launch_args_forwards_extra_args_for_kimi () =
+  let extra =
+    [ "--mcp-config-file"; "/tmp/b128-kimi.json"; "--custom-flag"; "val,with,commas" ]
+  in
+  let args =
+    C2c_start.prepare_launch_args ~name:"kimi-b128" ~client:"kimi"
+      ~extra_args:extra ~broker_root:"/tmp/broker" ()
+  in
+  (* The whole extra_args block is the verbatim tail of the argv — no
+     reorder/insert/truncate, commas preserved. *)
+  check bool "kimi: full extra_args forwarded verbatim as the argv tail" true
+    (is_suffix extra args)
+
+let test_prepare_launch_args_forwards_extra_args_for_gemini () =
+  let extra = [ "--sandbox"; "a,b,c" ] in
+  let args =
+    C2c_start.prepare_launch_args ~name:"gem-b128" ~client:"gemini"
+      ~extra_args:extra ~broker_root:"/tmp/broker" ()
+  in
+  check bool "gemini: full extra_args forwarded verbatim as the argv tail" true
+    (is_suffix extra args)
+
+(* B128: the `--` boundary is explicit and tested. Pre-`--` flags parse as c2c
+   flags; post-`--` tokens are forwarded verbatim and NEVER parsed as c2c flags
+   — even when they are byte-for-byte identical to a real c2c flag name
+   (`--model`, `-n`, `--alias`). Proven against a minimal cmdliner term that
+   mirrors the `c2c start` grammar (client pos + -n/--name + -m/--model opts +
+   `pos_all` passthrough, stripping the leading client name + `--`). *)
+let test_extra_argv_boundary_c2c_flag_not_consumed_b128 () =
+  let extra_argv =
+    Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"ARG" ~doc:"")
+  in
+  let client =
+    Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT" ~doc:"")
+  in
+  let name =
+    Cmdliner.Arg.(value & opt (some string) None & info ["name"; "n"] ~docv:"NAME" ~doc:"")
+  in
+  let model =
+    Cmdliner.Arg.(value & opt (some string) None & info ["model"; "m"] ~docv:"MODEL" ~doc:"")
+  in
+  (* Declare the real `--alias` option too, so its post-`--` non-consumption is
+     a genuine "declared-but-not-parsed" proof, not just an undeclared token. *)
+  let alias =
+    Cmdliner.Arg.(value & opt (some string) None & info ["alias"] ~docv:"ALIAS" ~doc:"")
+  in
+  let captured_name = ref None in
+  let captured_model = ref None in
+  let captured_alias = ref (Some "sentinel") in
+  let captured_extra = ref [] in
+  let term =
+    let open Cmdliner.Term.Syntax in
+    let+ _client = client
+    and+ n = name
+    and+ m = model
+    and+ a = alias
+    and+ all = extra_argv in
+    captured_name := n;
+    captured_model := m;
+    captured_alias := a;
+    (* Strip client name (pos 0) and `--` (pos 1) — same as the real term. *)
+    captured_extra := (match all with _ :: _ :: rest -> rest | _ -> [])
+  in
+  let cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start") term in
+  let argv =
+    [| "c2c"; "start"; "opencode"; "-n"; "real-name";
+       "--"; "--model"; "gpt-x"; "-n"; "not-c2c-name"; "--alias"; "z" |]
+  in
+  let _ = Cmdliner.Cmd.eval ~argv cmd in
+  check (option string) "pre-`--` -n parses as c2c name"
+    (Some "real-name") !captured_name;
+  check (option string) "post-`--` --model NOT parsed as c2c model"
+    None !captured_model;
+  check (option string) "post-`--` --alias NOT parsed as c2c alias"
+    None !captured_alias;
+  check (list string) "post-`--` tokens forwarded verbatim"
+    [ "--model"; "gpt-x"; "-n"; "not-c2c-name"; "--alias"; "z" ]
+    !captured_extra
+
 (* #470 regression guard: the `c2c start` Cmdliner term parses trailing
    args after `--` via `pos_all string []`. The previous shape
    `pos_right 1 (list string) []` used the `list string` converter, which
@@ -346,6 +444,7 @@ let test_tmux_message_payload_uses_c2c_envelope () =
     ; ts = 0.0
     ; ephemeral = false
     ; message_id = None
+    ; pow_difficulty = None
     }
   in
   let payload = C2c_start.tmux_message_payload [ msg ] in
@@ -3919,6 +4018,12 @@ let () =
             `Quick, test_prepare_launch_args_forwards_extra_args_for_opencode )
         ; ( "prepare_launch_args_forwards_extra_args_for_codex",
             `Quick, test_prepare_launch_args_forwards_extra_args_for_codex )
+        ; ( "prepare_launch_args_forwards_extra_args_for_kimi",
+            `Quick, test_prepare_launch_args_forwards_extra_args_for_kimi )
+        ; ( "prepare_launch_args_forwards_extra_args_for_gemini",
+            `Quick, test_prepare_launch_args_forwards_extra_args_for_gemini )
+        ; ( "extra_argv_boundary_c2c_flag_not_consumed_b128",
+            `Quick, test_extra_argv_boundary_c2c_flag_not_consumed_b128 )
         ; ( "extra_argv_preserves_commas_470",
             `Quick, test_extra_argv_preserves_commas_470 )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",

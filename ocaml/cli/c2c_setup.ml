@@ -1920,7 +1920,7 @@ let install_client_pipe_list = String.concat "|" install_subcommand_clients
 let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi"; "grok" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
 let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "crush" ]
-let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "gemini"; "crush"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
 (* codex is no longer here: its delivery is via config.toml hooks

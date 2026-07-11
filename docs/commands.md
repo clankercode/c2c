@@ -917,7 +917,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] …` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For `codex`, also accepts `--yolo`, `--app-server`, `--thread-id ID` (see the Codex session grammar below). |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--app-server`, `--thread-id ID` (see the Codex session grammar below). |
 | `codex [--alias A] [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
 | `new codex [--alias A] [--yolo] [--app-server] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
 | `resume codex ALIAS [--yolo] [--app-server] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
@@ -928,6 +928,47 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `sessions [--json]` | List registered broker sessions with session ID, alias, client type, cwd, and liveness. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `scripts/c2c_tmux.py supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor (Python script, not a `c2c` subcommand). Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
+
+### Argument passthrough (`--`) — any client wrapper
+
+`--` is the explicit boundary between c2c's own options and the launched
+client's options. It works uniformly for **every managed agent client**
+`c2c start CLIENT` wrapper — `claude`, `codex`, `opencode`, `kimi`,
+`gemini` — not just codex:
+
+- Everything **before** `--` is parsed as a c2c flag (`-n`, `-m`,
+  `--alias`, `--worktree`, …).
+- Everything **after** `--` is forwarded **verbatim** to the client's
+  argv and is **never** interpreted as a c2c flag — even a token that is
+  byte-for-byte identical to a real c2c flag (e.g. `--model` after `--`
+  reaches the client, not c2c). Commas inside an argument are preserved
+  (no token splitting).
+
+> The two non-agent launchers (`c2c start tmux`, `c2c start pty`) do **not**
+> use this agent-argv passthrough: `tmux` **types** the tail into the target
+> pane, and `pty` runs a command under a PTY via its own `--`-delimited
+> command grammar. Their exact tail handling differs from the rule above — see
+> `c2c start tmux --help` / `c2c start pty --help` for their specific syntax.
+
+```sh
+c2c start opencode -- --model some-model      # opencode gets `--model some-model`
+c2c start claude   -- --print "hello, world"  # claude gets `--print "hello, world"`
+c2c start gemini   -- --resume 3              # gemini gets `--resume 3`
+```
+
+**Suggested-alias convention.** Because the boundary is a trailing `--`,
+a handy shell alias that **ends in `--`** makes passthrough Just Work for
+any wrapped client. Codex is the primary worked example (`c2c new codex`,
+below), but the convention generalizes:
+
+```sh
+alias oc='c2c start opencode --'
+oc --model some-model                          # -> c2c start opencode -- --model some-model
+```
+
+Codex additionally exposes the `--` boundary on its own `c2c codex` /
+`c2c new codex` / `c2c resume codex` shortcuts (see the Codex session
+grammar below); the passthrough semantics are identical.
 
 ### Codex session grammar (app-server-backed)
 
@@ -964,16 +1005,18 @@ Key semantics:
   `failed-startup` — using the same terminology across help, completions,
   `stop`/`restart`, and `resume`.
 
-**`--` passthrough (recommended).** Everything after a literal `--` is forwarded
-verbatim to the stock `codex` frontend and is never parsed as a c2c flag. For
-example:
+**`--` passthrough (recommended).** This is the codex-specific instance of the
+general [Argument passthrough (`--`)](#argument-passthrough----any-client-wrapper)
+rule above: everything after a literal `--` is forwarded verbatim to the stock
+`codex` frontend and is never parsed as a c2c flag. For example:
 
 ```sh
 c2c new codex -- --model gpt-5.3-codex-spark
 ```
 
 Because of this boundary, the handy convention is a shell alias that **ends in
-`--`** so passthrough Just Works:
+`--`** so passthrough Just Works (the same convention applies to any
+`c2c start CLIENT --` wrapper):
 
 ```sh
 alias cx='c2c new codex --'
@@ -1038,7 +1081,7 @@ cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-
 
 | Command | Description |
 |---------|-------------|
-| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. |
+| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. Post-`--` args forward verbatim to agent clients' argv (see **Argument passthrough**). |
 | `stop NAME [--json]` | Stop a managed instance. |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
