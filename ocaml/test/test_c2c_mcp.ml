@@ -4019,6 +4019,90 @@ let test_enqueue_to_dead_peer_queues_offline () =
       let eph = List.find (fun (m : C2c_mcp.message) -> m.content = "ephemeral-offline") inbox2 in
       check bool "ephemeral flag preserved offline" true eph.ephemeral)
 
+(* B127 AC6: the dm_enqueue broker.log event carries the same message_id as
+   the persisted inbox row, so each enqueue is traceable in the audit log. *)
+let test_dm_enqueue_log_includes_message_id () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sid-logrecip"
+        ~alias:"zz-log-recip" ~pid:None ~pid_start_time:None ();
+      ignore
+        (C2c_mcp.Broker.enqueue_message_with_result broker
+           ~from_alias:"zz-log-sender" ~to_alias:"zz-log-recip"
+           ~content:"trace me" ());
+      let row_mid =
+        match
+          (List.hd (C2c_mcp.Broker.read_inbox broker ~session_id:"sid-logrecip"))
+            .message_id
+        with
+        | Some m -> m
+        | None -> failwith "persisted row missing message_id"
+      in
+      let log_path = Filename.concat dir "broker.log" in
+      let lines = ref [] in
+      let ic = open_in log_path in
+      (try
+         while true do
+           lines := input_line ic :: !lines
+         done
+       with End_of_file -> ());
+      close_in ic;
+      match
+        List.find_opt
+          (fun l -> string_contains l "dm_enqueue")
+          (List.rev !lines)
+      with
+      | None -> failwith "no dm_enqueue event in broker.log"
+      | Some l ->
+          let open Yojson.Safe.Util in
+          let log_mid =
+            Yojson.Safe.from_string l |> member "message_id" |> to_string_option
+          in
+          check (option string) "dm_enqueue log message_id matches row"
+            (Some row_mid) log_mid)
+
+(* B127 AC6 (send_all emitter): the fan-out dm_enqueue event also carries the
+   message_id of the row it persisted. *)
+let test_send_all_dm_enqueue_log_includes_message_id () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sid-sa-sender"
+        ~alias:"zz-sa-sender" ~pid:None ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sid-sa-recip"
+        ~alias:"zz-sa-recip" ~pid:None ~pid_start_time:None ();
+      ignore
+        (C2c_mcp.Broker.send_all broker ~from_alias:"zz-sa-sender"
+           ~content:"broadcast trace" ~exclude_aliases:[]);
+      let row_mid =
+        match
+          (List.hd (C2c_mcp.Broker.read_inbox broker ~session_id:"sid-sa-recip"))
+            .message_id
+        with
+        | Some m -> m
+        | None -> failwith "send_all row missing message_id"
+      in
+      let lines = ref [] in
+      let ic = open_in (Filename.concat dir "broker.log") in
+      (try
+         while true do
+           lines := input_line ic :: !lines
+         done
+       with End_of_file -> ());
+      close_in ic;
+      match
+        List.find_opt
+          (fun l -> string_contains l "send_all" && string_contains l "dm_enqueue")
+          (List.rev !lines)
+      with
+      | None -> failwith "no send_all dm_enqueue event in broker.log"
+      | Some l ->
+          let open Yojson.Safe.Util in
+          let log_mid =
+            Yojson.Safe.from_string l |> member "message_id" |> to_string_option
+          in
+          check (option string) "send_all dm_enqueue log message_id matches row"
+            (Some row_mid) log_mid)
+
 let test_enqueue_unknown_alias_still_rejects () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -15488,6 +15572,10 @@ let () =
              test_j4_tool_descriptions_reference_schema_v1
          ; test_case "enqueue to dead peer queues offline (B127)" `Quick
              test_enqueue_to_dead_peer_queues_offline
+         ; test_case "dm_enqueue log includes message_id (B127)" `Quick
+             test_dm_enqueue_log_includes_message_id
+         ; test_case "send_all dm_enqueue log includes message_id (B127)" `Quick
+             test_send_all_dm_enqueue_log_includes_message_id
          ; test_case "enqueue unknown alias still rejects (B127)" `Quick
              test_enqueue_unknown_alias_still_rejects
          ; test_case "offline queue migrates on re-register (B127)" `Quick

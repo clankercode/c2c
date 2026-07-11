@@ -50,6 +50,15 @@ let contains_substring ~haystack ~needle =
 let register_alive broker ~session_id ~alias =
   Broker.register broker ~session_id ~alias ~pid:None ~pid_start_time:None ()
 
+(* A pid far above any plausible pid_max — /proc/<pid> never exists, so
+   [registration_is_alive] returns false. Used to register a known-but-dead
+   peer (B127 offline-queue path). *)
+let dead_pid = 0x7f00_0000
+
+let register_dead broker ~session_id ~alias =
+  Broker.register broker ~session_id ~alias ~pid:(Some dead_pid)
+    ~pid_start_time:None ()
+
 (* ------------------------------------------------------------------------- *)
 (* send: missing sender alias (no session, no fallback) → error              *)
 (* ------------------------------------------------------------------------- *)
@@ -298,6 +307,88 @@ let test_send_ephemeral_flag () =
       check int "one message queued" 1 (List.length drained);
       let msg = List.hd drained in
       check bool "queued msg.ephemeral=true" true msg.C2c_mcp_helpers.ephemeral)
+
+(* ------------------------------------------------------------------------- *)
+(* B127: send to a known-but-dead local alias → durable offline queue.       *)
+(* MCP-parity check that the handler receipt sets queued_offline, the mail    *)
+(* lands in the dead registration's inbox, and liveness is never faked.       *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_offline_queues_durably () =
+  with_temp_dir (fun parent ->
+      (* Nest the broker under a clean parent: the handler's dead-target
+         fallback scans sibling broker roots in [dirname primary_root], so a
+         broker placed directly in /tmp would scan all of /tmp. *)
+      let dir = Filename.concat parent "broker" in
+      Unix.mkdir dir 0o755;
+      let broker = Broker.create ~root:dir in
+      register_alive broker ~session_id:"session-sender" ~alias:"sender";
+      register_dead broker ~session_id:"session-recipient" ~alias:"recipient";
+      let args = `Assoc [
+        ("to_alias", `String "recipient");
+        ("content", `String "hold for resume");
+      ] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send ~broker
+           ~session_id_override:(Some "session-sender") ~arguments:args)
+      in
+      check bool "isError=false on offline queue" false (get_is_error result);
+      let body = yojson_of_string (get_text_content result) in
+      let open Yojson.Safe.Util in
+      check bool "receipt.queued=true" true (body |> member "queued" |> to_bool);
+      check bool "receipt.queued_offline=true" true
+        (body |> member "queued_offline" |> to_bool);
+      check string "from_alias" "sender" (body |> member "from_alias" |> to_string);
+      check string "to_alias" "recipient" (body |> member "to_alias" |> to_string);
+      (* Mail is durable in the dead registration's own inbox (no drain). *)
+      let inbox = Broker.read_inbox broker ~session_id:"session-recipient" in
+      check int "offline mail persisted to dead session inbox" 1
+        (List.length inbox);
+      check string "persisted content" "hold for resume"
+        (List.hd inbox).C2c_mcp_helpers.content;
+      (* Offline queueing must NOT resurrect the peer. *)
+      let reg =
+        List.find_opt
+          (fun (r : C2c_mcp_helpers.registration) ->
+            r.session_id = "session-recipient")
+          (Broker.list_registrations broker)
+      in
+      (match reg with
+       | Some r ->
+           check bool "recipient still not alive after offline queue" false
+             (Broker.registration_is_alive r)
+       | None -> fail "recipient registration vanished"))
+
+(* ------------------------------------------------------------------------- *)
+(* B127: an ephemeral offline message keeps its ephemeral flag on the durable *)
+(* row (it must be durable while waiting; archive-skip happens on drain).     *)
+(* ------------------------------------------------------------------------- *)
+
+let test_send_offline_preserves_ephemeral () =
+  with_temp_dir (fun parent ->
+      let dir = Filename.concat parent "broker" in
+      Unix.mkdir dir 0o755;
+      let broker = Broker.create ~root:dir in
+      register_alive broker ~session_id:"session-sender" ~alias:"sender";
+      register_dead broker ~session_id:"session-recipient" ~alias:"recipient";
+      let args = `Assoc [
+        ("to_alias", `String "recipient");
+        ("content", `String "off the record, offline");
+        ("ephemeral", `Bool true);
+      ] in
+      let result = Lwt_main.run
+        (C2c_send_handlers.send ~broker
+           ~session_id_override:(Some "session-sender") ~arguments:args)
+      in
+      check bool "isError=false" false (get_is_error result);
+      let body = yojson_of_string (get_text_content result) in
+      let open Yojson.Safe.Util in
+      check bool "receipt.queued_offline=true" true
+        (body |> member "queued_offline" |> to_bool);
+      let inbox = Broker.read_inbox broker ~session_id:"session-recipient" in
+      check int "one offline message persisted" 1 (List.length inbox);
+      check bool "durable offline row keeps ephemeral=true" true
+        (List.hd inbox).C2c_mcp_helpers.ephemeral)
 
 (* ------------------------------------------------------------------------- *)
 (* send_all: missing sender alias → error                                    *)
@@ -678,6 +769,8 @@ let test_set = [
   "send tag=fail prefix", `Quick, test_send_tag_fail_prefix;
   "send tag=urgent prefix", `Quick, test_send_tag_urgent_prefix;
   "send ephemeral flag", `Quick, test_send_ephemeral_flag;
+  "send offline queues durably (B127)", `Quick, test_send_offline_queues_durably;
+  "send offline preserves ephemeral (B127)", `Quick, test_send_offline_preserves_ephemeral;
   "send_all missing sender", `Quick, test_send_all_missing_sender;
   "send_all basic broadcast", `Quick, test_send_all_basic_broadcast;
   "send_all exclude_aliases", `Quick, test_send_all_exclude_aliases;

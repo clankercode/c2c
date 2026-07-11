@@ -2544,6 +2544,9 @@ open C2c_mcp_helpers
     flush stderr;
     with_inbox_lock t ~session_id (fun () ->
         let current = load_inbox t ~session_id in
+        (* B127 AC6: generate the id once so the persisted row and the
+           dm_enqueue broker.log event carry the same message_id. *)
+        let mid = generate_msg_id () in
         let next =
           current
           @ [ { from_alias
@@ -2554,7 +2557,7 @@ open C2c_mcp_helpers
               ; enc_status = None
               ; ts = Unix.gettimeofday ()
               ; ephemeral
-              ; message_id = Some (generate_msg_id ())
+              ; message_id = Some mid
               }
             ]
         in
@@ -2575,6 +2578,7 @@ open C2c_mcp_helpers
              ; ("resolved_session_id", `String session_id)
              ; ("inbox_path", `String ipath)
              ; ("offline", `Bool offline)
+             ; ("message_id", `String mid)
              ]
            in
            log_broker_event ~broker_root "dm_enqueue" fields
@@ -2718,9 +2722,11 @@ open C2c_mcp_helpers
                 | Resolved session_id ->
                     with_inbox_lock t ~session_id (fun () ->
                         let current = load_inbox t ~session_id in
+                        (* Same id in the persisted row and the log event. *)
+                        let mid = generate_msg_id () in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = Some (generate_msg_id ()) } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = Some mid } ]
                         in
                         let ipath = inbox_path t ~session_id in
                         (* Per-DM trace for send_all fan-out — same diagnostic
@@ -2734,6 +2740,7 @@ open C2c_mcp_helpers
                             ; ("to_alias", `String reg.alias)
                             ; ("resolved_session_id", `String session_id)
                             ; ("inbox_path", `String ipath)
+                            ; ("message_id", `String mid)
                             ]
                           in
                           let broker_root = root t in

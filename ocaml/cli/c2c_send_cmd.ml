@@ -216,7 +216,7 @@ let send_cmd =
      and exit 0 regardless. *)
   let fail_if_queued =
     Cmdliner.Arg.(value & flag & info ["fail-if-queued"]
-      ~doc:"Exit non-zero (3) when the message is only queued locally and not confirmed delivered (e.g. a remote alias@host target). Opt-in; lets scripts detect non-delivery. Local same-broker targets still exit 0.")
+      ~doc:"Exit non-zero (3) when the message is only queued and not confirmed delivered to a live recipient (a remote alias@host target, or an offline local alias whose mail was durably queued). Opt-in; lets scripts detect non-delivery. Live same-broker targets deliver synchronously and still exit 0.")
   in
   let+ json = json_flag
   and+ args = args
@@ -513,11 +513,15 @@ let send_cmd =
           | None -> ())
      end;
      (* B088: opt-in strict exit. Default stays 0 (fire-and-forget
-        back-compat) — only [--fail-if-queued] turns a remote-only-queued
+        back-compat) — [--fail-if-queued] turns any not-synchronously-delivered
         send into a non-zero exit so scripts can detect non-delivery.
-        B127: offline durable queue is intentionally exit 0 and is NOT
-        treated as fail-if-queued (mail is persisted locally). *)
-     if fail_if_queued && delivery_state = "queued" then exit 3
+        B127 Tests §1: an offline durable queue ([queued_offline]) is queued,
+        not confirmed delivered to a live recipient, so [--fail-if-queued]
+        exits 3 for it too. A plain send (no flag) still exits 0; the mail is
+        durably persisted either way. *)
+     if fail_if_queued
+        && (delivery_state = "queued" || delivery_state = "queued_offline")
+     then exit 3
    with Invalid_argument msg ->
      (* Catch-all for errors from Session sends or other paths. *)
      Printf.eprintf "error: %s\n%!" msg;

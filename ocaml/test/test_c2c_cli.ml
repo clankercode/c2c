@@ -774,6 +774,42 @@ let test_send_dead_alias_json_queued_offline () =
           check bool "json does not claim delivered" false
             (string_contains content "\"state\": \"delivered\"")))
 
+(* B127 Tests §1: a plain offline send exits 0, but [--fail-if-queued] must
+   exit 3 — the mail is durably queued, not synchronously delivered to a live
+   recipient, which is exactly the non-delivery a script opts in to detect.
+   The message is still persisted regardless of the exit code. *)
+let test_send_dead_alias_fail_if_queued_exits_3 () =
+  with_temp_dir (fun parent_dir ->
+      let broker_dir = Filename.concat parent_dir "broker" in
+      Unix.mkdir broker_dir 0o755;
+      let broker = C2c_mcp.Broker.create ~root:broker_dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b127f-sender-sid" ~alias:"b127f-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"b127f-dead-sid" ~alias:"b127f-dead-target"
+        ~pid:(Some 99999999) ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-dead-fiq" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b127f-sender-sid \
+             %s send --fail-if-queued b127f-dead-target 'strict offline' > %s 2>&1"
+            (Filename.quote broker_dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int
+            (Printf.sprintf "offline --fail-if-queued exits 3 (output: %s)" content)
+            3 rc;
+          check bool "still reports queued_offline" true
+            (string_contains content "queued_offline");
+          (* Durable regardless of the strict exit code. *)
+          let inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"b127f-dead-sid"
+          in
+          check int "message persisted despite exit 3" 1 (List.length inbox)))
+
 (* B071/B072: a registration with pid=None (unknown liveness) MUST route —
    unknown is the documented fallback when no stable agent pid is found. *)
 let test_send_unknown_liveness_alias_routes () =
@@ -3715,6 +3751,7 @@ let () =
         ; ( "send not-found error mentions scanned brokers", `Quick, test_send_not_found_error_mentions_scanned_brokers )
         ; ( "send to dead alias queues offline (B072/B127)", `Quick, test_send_dead_alias_queues_offline )
         ; ( "send to dead alias --json reports queued_offline (B127)", `Quick, test_send_dead_alias_json_queued_offline )
+        ; ( "send to dead alias --fail-if-queued exits 3 (B127)", `Quick, test_send_dead_alias_fail_if_queued_exits_3 )
         ; ( "send to unknown-liveness alias routes (B071/B072)", `Quick, test_send_unknown_liveness_alias_routes )
         ; ( "send to remote @host reports queued, not ok (B088)", `Quick, test_send_remote_target_reports_queued_not_ok )
         ; ( "send to remote @host --json surfaces delivery.state queued (B088)", `Quick, test_send_remote_target_json_delivery_state_queued )
