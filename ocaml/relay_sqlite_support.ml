@@ -85,6 +85,16 @@ CREATE TABLE IF NOT EXISTS request_nonces (
     ts REAL NOT NULL
 );
 
+-- B116: DELETE /binding/<id> revocation-proof nonces. A DEDICATED table
+-- (not request_nonces) so revoke replay state is never touched by the
+-- outer Ed25519 request verifier, which consumes header nonces into
+-- request_nonces before signature verification. Persisted so replay
+-- protection survives a restart within the freshness window.
+CREATE TABLE IF NOT EXISTS revoke_nonces (
+    nonce TEXT PRIMARY KEY,
+    ts REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS room_invites (
     room_id TEXT NOT NULL,
     identity_pk_b64 TEXT NOT NULL,

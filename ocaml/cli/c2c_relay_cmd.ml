@@ -1303,10 +1303,24 @@ let relay_mobile_pair_cmd =
           let bid = binding_id in
           if bid = None then (Printf.eprintf "error: --binding-id required for revoke.\n%!"; exit 1);
           let bid = Option.get bid in
-          let result = Lwt_main.run
-            (Relay.Relay_client.mobile_pair_revoke client ~binding_id:bid)
-          in
-          print_result_and_exit result
+          (* B116: revocation requires a proof signed by the machine
+             identity that created the binding (the phone key can also
+             revoke, from the phone side). *)
+          (match Relay_identity.load () with
+           | Error _ ->
+               Printf.eprintf
+                 "error: no identity.json found. Binding revocation requires the machine identity that created the binding — run 'c2c relay identity init' first.\n%!";
+               exit 1
+           | Ok id ->
+               let proof = Relay_signed_ops.sign_binding_revoke id ~binding_id:bid in
+               let result = Lwt_main.run
+                 (Relay.Relay_client.mobile_pair_revoke client ~binding_id:bid
+                    ~revoke_pk:proof.Relay_signed_ops.identity_pk_b64
+                    ~ts:proof.Relay_signed_ops.ts
+                    ~nonce:proof.Relay_signed_ops.nonce
+                    ~sig_b64:proof.Relay_signed_ops.sig_b64)
+               in
+               print_result_and_exit result)
       | "init" ->
           (match Relay_identity.load () with
            | Error _ ->

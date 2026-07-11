@@ -44,16 +44,18 @@ operator Bearer token only (Ed25519 rejected): %s &middot;
 <code>/list?include_dead=1</code> &middot; %s.<!-- /auth-class:admin --></li>
 <li><!-- auth-class:self-auth --><strong>Handler-checked (self-auth)</strong>
 &mdash; these routes bypass the outer header-auth gate; what happens next
-is route-specific, not a uniform check. Most handlers verify real proofs
-(<code>/register</code>: body-level Ed25519 + optional PoW; room ops and
-<code>/send_room</code>: mandatory signed bodies/envelopes &mdash; unsigned
-requests are rejected unless the operator explicitly enables the legacy
-dev-only gate <code>C2C_REQUIRE_SIGNED_ROOM_OPS=0</code> on a token-less
-relay; mobile-pairing tokens; WebSocket signature headers), but
-<code>/binding/*</code> revocation still accepts requests with
-no check at all beyond the bare binding ID in the request. (Inbox reads and drains are
-no longer in this class &mdash; since B115 they are ordinary peer routes
-requiring an Ed25519 request whose bound alias owns the inbox.)
+is route-specific, not a uniform check. Each handler enforces its own
+policy: <code>/register</code> takes a body-level Ed25519 proof + optional
+PoW; room ops and <code>/send_room</code> require mandatory signed
+bodies/envelopes &mdash; unsigned requests are rejected unless the operator
+explicitly enables the legacy dev-only gate
+<code>C2C_REQUIRE_SIGNED_ROOM_OPS=0</code> on a token-less relay;
+<code>/binding/*</code> revocation requires a signed owner proof from the
+binding's machine or phone key &mdash; a bare binding ID neither deletes a
+binding nor reveals whether it exists; mobile-pairing tokens; WebSocket
+signature headers. (Inbox reads and drains are no longer in this class
+&mdash; since B115 they are ordinary peer routes requiring an Ed25519
+request whose bound alias owns the inbox.)
 Routes: %s &middot;
 %s.<!-- /auth-class:self-auth --></li>
 </ul>

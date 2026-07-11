@@ -156,6 +156,17 @@
  (modules test_relay_observer_contract)
  (libraries c2c_mcp alcotest base64 mirage-crypto-ec unix str))
 
+; B116: DELETE /binding/<id> owner-proof enforcement — HTTP-level suite
+; against the production callback on a TOKEN-CONFIGURED loopback server
+; (Relay_test_support_real). Proves anonymous/bare-ID revocation is
+; rejected without an existence oracle and machine/phone owner proofs
+; revoke; covers wrong-key, replay, and stale-ts rejection.
+(test
+ (name test_relay_binding_revoke_auth)
+ (modules test_relay_binding_revoke_auth)
+ (libraries c2c_mcp relay_test_support_real alcotest base64 yojson unix
+   lwt.unix cohttp))
+
 (test
  (name test_relay_device_pair)
  (modules test_relay_device_pair)

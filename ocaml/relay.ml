@@ -31,6 +31,9 @@ module InMemoryRelay : RELAY = struct
     bindings : (string, string) Hashtbl.t;
     register_nonces : (string, float) Hashtbl.t;
     request_nonces : (string, float) Hashtbl.t;
+    (* B116: dedicated revoke-proof nonce store, isolated from
+       request_nonces (which the outer verifier writes pre-auth). *)
+    revoke_nonces : (string, float) Hashtbl.t;
     inboxes : ((string * string), Yojson.Safe.t list) Hashtbl.t;
     dead_letter : Yojson.Safe.t Queue.t;
     rooms : (string, string list) Hashtbl.t;
@@ -48,8 +51,11 @@ module InMemoryRelay : RELAY = struct
     persist_dir : string option;  (* if set, room history is also written to disk *)
     (* S5a: In-memory pairing token store *)
     pairing_tokens : (string, (string * string * float)) Hashtbl.t;
-    (* S5a: In-memory observer bindings *)
-    observer_bindings_mem : (string, (string * string)) Hashtbl.t;
+    (* S5a: In-memory observer bindings —
+       (phone_ed25519, phone_x25519, machine_ed25519, provenance_sig).
+       B116: the machine key MUST be stored (not dropped) — binding
+       revocation authorizes against it. *)
+    observer_bindings_mem : (string, (string * string * string * string)) Hashtbl.t;
     (* S5b: Device-pair pending table (RFC 8628 OAuth, ephemeral) *)
     device_pair_pending_mem : (string, device_pair_pending) Hashtbl.t;
     (* #379: this relay's own host identity for alias@host validation *)
@@ -112,6 +118,7 @@ module InMemoryRelay : RELAY = struct
       bindings = Hashtbl.create 16;
       register_nonces = Hashtbl.create 64;
       request_nonces = Hashtbl.create 256;
+      revoke_nonces = Hashtbl.create 64;
       inboxes = Hashtbl.create 16;
       dead_letter = Queue.create ();
       rooms = Hashtbl.create 16;
@@ -329,12 +336,17 @@ module InMemoryRelay : RELAY = struct
       if now > expires_at then (Hashtbl.remove t.pairing_tokens binding_id; false)
       else true
 
-  (* S5a: In-memory observer bindings *)
-  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey ~machine_ed25519_pubkey:_ ~provenance_sig:_ =
-    Hashtbl.replace t.observer_bindings_mem binding_id (phone_ed25519_pubkey, phone_x25519_pubkey)
+  (* S5a: In-memory observer bindings. B116: keep the machine key and
+     provenance sig — revocation authorization compares against the stored
+     machine/phone Ed25519 keys, so dropping them would make owner revoke
+     impossible on this backend. *)
+  let add_observer_binding t ~binding_id ~phone_ed25519_pubkey ~phone_x25519_pubkey ~machine_ed25519_pubkey ~provenance_sig =
+    Hashtbl.replace t.observer_bindings_mem binding_id
+      (phone_ed25519_pubkey, phone_x25519_pubkey, machine_ed25519_pubkey,
+       provenance_sig)
 
   let get_observer_binding t ~binding_id =
-    Option.map (fun (ed, x) -> (ed, x, "", "")) (Hashtbl.find_opt t.observer_bindings_mem binding_id)
+    Hashtbl.find_opt t.observer_bindings_mem binding_id
 
   let remove_observer_binding t ~binding_id =
     Hashtbl.remove t.observer_bindings_mem binding_id
@@ -452,6 +464,10 @@ module InMemoryRelay : RELAY = struct
   let check_request_nonce t ~nonce ~ts =
     with_lock t (fun () ->
       check_nonce_in t.request_nonces ~ttl:request_nonce_ttl ~nonce ~ts)
+
+  let check_revoke_nonce t ~nonce ~ts =
+    with_lock t (fun () ->
+      check_nonce_in t.revoke_nonces ~ttl:request_nonce_ttl ~nonce ~ts)
 
   let heartbeat t ~node_id ~session_id =
     with_lock t (fun () ->
@@ -1478,6 +1494,28 @@ module SqliteRelay : RELAY = struct
       )
     )
 
+  (* B116: dedicated revoke-proof nonce store (persisted). Same TTL as
+     request nonces (120s > the 30s signed-request window, no eviction
+     gap) but a distinct table so the pre-auth outer verifier never writes
+     here. *)
+  let check_revoke_nonce t ~nonce ~ts =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      let cutoff = ts -. 120.0 in
+      let del_stmt = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
+      Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
+      Sqlite3.step del_stmt |> ignore;
+      let has_row = exec_prepared conn "SELECT nonce FROM revoke_nonces WHERE nonce = ?" [`Text nonce] in
+      if has_row then Res.Error relay_err_nonce_replay
+      else (
+        let ins_stmt = Sqlite3.prepare conn "INSERT INTO revoke_nonces (nonce, ts) VALUES (?, ?)" in
+        Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
+        Sqlite3.bind_double ins_stmt 2 ts |> ignore;
+        Sqlite3.step ins_stmt |> ignore;
+        Res.Ok ()
+      )
+    )
+
   let heartbeat t ~node_id ~session_id =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
@@ -1672,6 +1710,15 @@ module SqliteRelay : RELAY = struct
         Sqlite3.bind_text del 2 session_id |> ignore;
         Sqlite3.step del |> ignore
       ) !stale_keys;
+      (* B116: sweep expired revoke-proof nonces on a SERVER-time basis.
+         check_revoke_nonce only self-cleans when another owner revoke
+         runs it (rare), so without this the persisted revoke_nonces table
+         would accumulate durable rows. request_nonces/register_nonces
+         self-clean on their frequent per-request hits, so this gc sweep is
+         specific to the low-traffic revoke store. *)
+      let del_revoke = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
+      Sqlite3.bind_double del_revoke 1 (now -. request_nonce_ttl) |> ignore;
+      Sqlite3.step del_revoke |> ignore;
       `Ok (List.rev !expired_aliases, pruned)
     )
 
@@ -3893,22 +3940,149 @@ end = struct
                           "confirmation", `String confirm_b64
                         ])
 
-  (* S5a: DELETE /binding/<binding_id> — revoke a mobile binding *)
-  let handle_mobile_pair_revoke relay ~client_ip binding_id =
+  (* S5a/B116: DELETE /binding/<binding_id> — revoke a mobile binding.
+
+     B111 found the original handler treated a bare binding ID as both
+     authority and an existence oracle. Revocation now requires a signed
+     owner proof in the JSON body:
+
+       { "revoke_pk": <b64url Ed25519 pk>,   -- machine OR phone key
+         "ts":        <unix epoch seconds, string>,
+         "nonce":     <b64url random>,
+         "sig":       <b64url Ed25519 sig> }
+
+     sig covers canonical_msg(binding_revoke_sign_ctx,
+     [binding_id; revoke_pk; ts; nonce]).
+
+     Replay + freshness follow the SAME signed-request pattern as every
+     other peer route (spec §5.1): the ts must be within
+     [-request_ts_past_window, +request_ts_future_window] of now, and the
+     nonce is consumed through a DEDICATED revoke-nonce store
+     (R.check_revoke_nonce) — separate from request_nonces because the
+     outer Ed25519 request verifier writes header nonces to request_nonces
+     BEFORE signature verification, so sharing that store would let an
+     attacker pre-seed/grief a revoke nonce with a bogus Authorization
+     header. SqliteRelay persists the revoke-nonce table to disk, so
+     replay protection survives a relay restart within the freshness
+     window (InMemoryRelay is in-memory, matching all other signed ops in
+     dev/test).
+
+     Ordering is deliberate for two invariants:
+
+     1. No existence oracle. Every denial that could reveal binding
+        state — non-owner key, unknown binding, AND a replayed proof —
+        funnels through the identical 401 `revoke_denied` body. Shape
+        failures (missing fields, bad encoding, non-finite/stale ts, bad
+        sig) reject BEFORE any store or nonce access, so their distinct
+        codes are existence-independent.
+     2. No anonymous nonce-store growth (DoS). The owner check runs
+        BEFORE the nonce is recorded, so only a request whose signature
+        verifies AND whose key owns the binding ever writes to the nonce
+        store. A stranger's valid-but-non-owner signature is denied
+        without touching the store; nonce length is bounded up front too.
+
+     Unconditional: dev mode (no server token) does not bypass any of it. *)
+  let handle_mobile_pair_revoke relay ~client_ip binding_id body =
+    let deny_uniform () =
+      Relay_ratelimit.structured_log ~event:"pair_revoke"
+        ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+        ~result:"denied" ();
+      respond_unauthorized
+        (json_error_str relay_err_revoke_denied
+           "binding revocation denied: unknown binding or proof key does not own it")
+    in
+    let reject code msg =
+      Relay_ratelimit.structured_log ~event:"pair_revoke"
+        ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+        ~result:"bad_proof" ();
+      respond_unauthorized (json_error_str code msg)
+    in
     if not (is_valid_binding_id binding_id) then
       respond_bad_request (json_error_str err_bad_request "binding_id must be 8-64 chars of [A-Za-z0-9_-]")
     else
-      let existed = match R.get_observer_binding relay ~binding_id with
-        | None -> false
-        | Some _ -> true
+      let get_field name =
+        match body with
+        | `Assoc l ->
+          (match List.assoc_opt name l with
+           | Some (`String s) when s <> "" -> Some s
+           | _ -> None)
+        | _ -> None
       in
-      R.remove_observer_binding relay ~binding_id;
-      (if existed then push_pseudo_unregistration_to_observers ~binding_id else ());
-      Relay_ratelimit.structured_log ~event:"pair_revoke"
-        ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
-        ~result:(if existed then "ok" else "not_found") ();
-      if existed then respond_ok (`Assoc ["ok", `Bool true; "binding_id", `String binding_id])
-      else respond_not_found (json_error_str err_not_found "binding_id not found")
+      match get_field "revoke_pk", get_field "ts",
+            get_field "nonce", get_field "sig" with
+      | None, _, _, _ | _, None, _, _ | _, _, None, _ | _, _, _, None ->
+        reject relay_err_missing_proof_field
+          "binding revocation requires a signed owner proof: revoke_pk, ts, nonce, sig"
+      (* Bound the nonce length before it can reach any store — a legit
+         proof nonce is ~22 chars (16 random bytes, b64url); refuse
+         anything oversized as malformed so it cannot bloat the store. *)
+      | _, _, Some nonce, _ when String.length nonce > 128 ->
+        reject relay_err_missing_proof_field "nonce too long"
+      | Some revoke_pk_b64, Some ts, Some nonce, Some sig_b64 ->
+        match decode_b64url revoke_pk_b64 with
+        | Error _ ->
+          reject relay_err_signature_invalid "revoke_pk not base64url-nopad"
+        | Ok pk_raw when String.length pk_raw <> 32 ->
+          reject relay_err_signature_invalid "revoke_pk must be 32 bytes"
+        | Ok pk_raw ->
+          match decode_b64url sig_b64 with
+          | Error _ ->
+            reject relay_err_signature_invalid "sig not base64url-nopad"
+          | Ok sig_raw when String.length sig_raw <> 64 ->
+            reject relay_err_signature_invalid "sig must be 64 bytes"
+          | Ok sig_raw ->
+            let now = Unix.gettimeofday () in
+            (match float_of_string_opt ts with
+             | None ->
+               reject relay_err_timestamp_out_of_window
+                 "ts must be unix epoch seconds"
+             | Some ts_f
+               (* is_finite also rejects nan/inf, whose window comparison
+                  would otherwise be vacuously false — a non-expiring
+                  proof. Same window as all signed peer requests. *)
+               when (not (Float.is_finite ts_f))
+                    || ts_f -. now > request_ts_future_window
+                    || now -. ts_f > request_ts_past_window ->
+               reject relay_err_timestamp_out_of_window
+                 (Printf.sprintf "ts skew %.1fs outside signed-request window"
+                    (ts_f -. now))
+             | Some ts_f ->
+               let blob = Relay_identity.canonical_msg
+                   ~ctx:binding_revoke_sign_ctx
+                   [ binding_id; revoke_pk_b64; ts; nonce ] in
+               if not (Relay_identity.verify ~pk:pk_raw ~msg:blob
+                         ~sig_:sig_raw) then
+                 reject relay_err_signature_invalid
+                   "revocation proof signature does not verify"
+               else begin
+                 (* Owner check BEFORE nonce consumption: only a verified
+                    owner writes to the nonce store (no anonymous growth),
+                    and unknown-binding / non-owner both deny uniformly. *)
+                 let owner =
+                   match R.get_observer_binding relay ~binding_id with
+                   | None -> false
+                   | Some (phone_ed, _phone_x, machine_ed, _sig) ->
+                     revoke_pk_b64 = machine_ed || revoke_pk_b64 = phone_ed
+                 in
+                 if not owner then deny_uniform ()
+                 else
+                   (* Replay check consumes the nonce via the DEDICATED
+                      persisted revoke-nonce store (never touched by the
+                      pre-auth outer Ed25519 verifier, which writes header
+                      nonces to request_nonces). A replay denies through
+                      the SAME revoke_denied body as a non-owner — no
+                      oracle. *)
+                   match R.check_revoke_nonce relay ~nonce ~ts:ts_f with
+                   | Error _ -> deny_uniform ()
+                   | Ok () ->
+                     R.remove_observer_binding relay ~binding_id;
+                     push_pseudo_unregistration_to_observers ~binding_id;
+                     Relay_ratelimit.structured_log ~event:"pair_revoke"
+                       ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                       ~result:"ok" ();
+                     respond_ok (`Assoc [ "ok", `Bool true;
+                                          "binding_id", `String binding_id ])
+               end)
 
   (* S5b: Device-login OAuth-style fallback (§S5b).
      User flow: machine init → phone registers via web → machine polls to claim. *)
@@ -4657,7 +4831,14 @@ end = struct
 
       | `DELETE, path when String.starts_with ~prefix:"/binding/" path ->
         let binding_id = String.sub path 9 (String.length path - 9) in
-        handle_mobile_pair_revoke relay ~client_ip binding_id
+        (* B116: an unparseable body gets the same missing-proof rejection
+           as an absent one — never a distinct parse error that could be
+           probed. *)
+        let json = match parse_body () with
+          | Ok j -> j
+          | Error _ -> `Null
+        in
+        handle_mobile_pair_revoke relay ~client_ip binding_id json
 
       (* === S5b: Device-pair endpoints === *)
       | `POST, "/device-pair/init" ->

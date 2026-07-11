@@ -75,6 +75,16 @@ val verify_history_envelope :
   room_id:string -> from_alias:string -> content:string
   -> Yojson.Safe.t -> (unit, string) result
 
+(** [sign_binding_revoke identity ~binding_id] produces the owner proof
+    required by DELETE /binding/<binding_id> (B116). [ts] in the returned
+    proof is Unix epoch seconds (6 decimal places), NOT RFC 3339. The
+    signing key must be the machine or phone Ed25519 key recorded on the
+    binding; the server applies the same freshness window and nonce replay
+    store as signed peer requests, and requires the verified key to own
+    the binding before consuming the nonce. *)
+val sign_binding_revoke :
+  Relay_identity.t -> binding_id:string -> signed_proof
+
 (** [sign_request identity ~alias ~meth ~path ~body_str ()] produces the
     Authorization header value for a peer route request per spec §5.1.
     Returns: "Ed25519 alias=<a>,ts=<t>,nonce=<n>,sig=<s>".

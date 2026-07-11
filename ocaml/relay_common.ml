@@ -9,6 +9,10 @@ let relay_err_signature_invalid = "signature_invalid"
 let relay_err_timestamp_out_of_window = "timestamp_out_of_window"
 let relay_err_nonce_replay = "nonce_replay"
 let relay_err_missing_proof_field = "missing_proof_field"
+(* B116: uniform denial for binding revocation — deliberately covers BOTH
+   "binding does not exist" and "proof key does not own this binding" so a
+   valid-signature probe cannot be used as a binding-existence oracle. *)
+let relay_err_revoke_denied = "revoke_denied"
 let relay_err_not_found = "not_found"
 
 (* Signature windows (spec §4.3): 120s past / 30s future, 10 min nonce TTL *)
@@ -141,6 +145,14 @@ let canonical_visibility_or_raw v =
 
 (* S5a: Mobile pair token signing context *)
 let mobile_pair_token_sign_ctx = "c2c/v1/mobile-pair-token"
+
+(* B116: Binding revocation proof signing context.
+   Blob shape: binding_id || revoke_pk_b64 || ts || nonce, where revoke_pk
+   must be the machine or phone Ed25519 key stored on the binding. ts is
+   Unix epoch seconds (string, as signed). Freshness + replay reuse the
+   signed-request pattern (request_ts_past/future_window +
+   check_request_nonce), so no B116-specific window constant is needed. *)
+let binding_revoke_sign_ctx = "c2c/v1/binding-revoke"
 
 (* E2E S2: pubkey binding sign context.
    Blob shape: alias || ed_pubkey_b64 || x25519_b64 || signed_at_rfc3339.
