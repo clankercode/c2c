@@ -545,6 +545,94 @@ let test_resolve_then_inject_reproduces_and_fixes_split () =
         failf "expected Injected after resolve, got %s"
           (C2c_wake_inject.outcome_to_string o))
 
+(* #5 isolation: two different tmux panes that both inherited the SAME outer
+   herdr pane must NOT match — their effective (tmux) targets differ. Guards
+   against cross-wiring sidecars via the leaked outer herdr pane. *)
+let test_resolve_shared_herdr_different_tmux_not_followed () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-tA" ~alias:"zw-b120-tA"
+              ~tmux_location:"%60" ~herdr_pane:"w9:p9");
+    ignore (register_hook ctx ~session_id:"zw-b120-tB" ~alias:"zw-b120-tB"
+              ~tmux_location:"%61" ~herdr_pane:"w9:p9");
+    check string "different tmux panes not cross-wired by shared herdr"
+      "zw-b120-tA" (resolve ctx ~session_id:"zw-b120-tA"))
+
+(* tmux-only managed row vs herdr-only hook row: effective targets are
+   different kinds -> no match (the tmux session's real pane is the tmux one). *)
+let test_resolve_tmux_only_vs_herdr_only_no_match () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-tmuxonly" ~alias:"zw-b120-tmuxonly"
+              ~tmux_location:"%62");
+    ignore (register_hook ctx ~session_id:"zw-b120-herdronly"
+              ~alias:"zw-b120-herdronly" ~herdr_pane:"w9:p1");
+    check string "tmux-only and herdr-only do not match"
+      "zw-b120-tmuxonly" (resolve ctx ~session_id:"zw-b120-tmuxonly"))
+
+(* Same real tmux pane on both rows, even when the managed row also carries the
+   leaked outer herdr pane -> matches on the tmux target. *)
+let test_resolve_same_tmux_with_leaked_herdr_matches () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-leak-mgd" ~alias:"zw-b120-leak-mgd"
+              ~tmux_location:"%63" ~herdr_pane:"w9:p2");
+    ignore (register_hook ctx ~session_id:"zw-b120-leak-uuid"
+              ~alias:"zw-b120-leak-uuid" ~tmux_location:"%63" ~herdr_pane:"w9:p2");
+    check string "same tmux pane reconciles despite leaked herdr"
+      "zw-b120-leak-uuid" (resolve ctx ~session_id:"zw-b120-leak-mgd"))
+
+(* #6 selection: prefer the most-recently-active hook candidate. *)
+let test_resolve_prefers_most_recent_candidate () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-sel-mgd" ~alias:"zw-b120-sel-mgd"
+              ~tmux_location:"%64");
+    let b_old = register_hook ctx ~session_id:"zw-b120-sel-old"
+                  ~alias:"zw-b120-sel-old" ~tmux_location:"%64" in
+    let b_new = register_hook ctx ~session_id:"zw-b120-sel-new"
+                  ~alias:"zw-b120-sel-new" ~tmux_location:"%64" in
+    (* Make -new the most recently active. *)
+    C2c_mcp.Broker.touch_session b_old ~session_id:"zw-b120-sel-old";
+    Unix.sleepf 0.01;
+    C2c_mcp.Broker.touch_session b_new ~session_id:"zw-b120-sel-new";
+    check string "most-recently-active hook candidate wins"
+      "zw-b120-sel-new" (resolve ctx ~session_id:"zw-b120-sel-mgd"))
+
+(* #2 the after-startup race, deterministic: the sidecar re-resolves on every
+   attempt (this is what watch_loop does), so a hook that registers AFTER the
+   first attempt is adopted on the next one. Simulated via the attempt
+   primitive (resolve then inject) rather than the inotify subprocess. *)
+let test_race_hook_registers_after_startup () =
+  with_ctx (fun ctx ->
+    ignore (register ctx ~session_id:"zw-b120-race-mgd" ~alias:"zw-b120-race-mgd"
+              ~tmux_location:"%65");
+    (* Attempt #1: no hook yet, no DM anywhere -> resolve self, empty inbox. *)
+    let t1 = resolve ctx ~session_id:"zw-b120-race-mgd" in
+    check string "attempt 1 resolves to self (no hook yet)"
+      "zw-b120-race-mgd" t1;
+    check outcome "attempt 1 nothing to inject" (Skipped "inbox_empty")
+      (inject ctx ~session_id:t1);
+    (* Hook registers (SessionStart fires) and a peer DMs the hook identity. *)
+    ignore (register_hook ctx ~session_id:"zw-b120-race-uuid"
+              ~alias:"zw-b120-race-uuid" ~tmux_location:"%65");
+    enqueue ctx ~to_alias:"zw-b120-race-uuid" ~from_session:"zw-b120-race-peer"
+      ~from_alias:"zw-b120-race-peer" ~content:"late wake";
+    (* Attempt #2: re-resolution adopts the hook and injects. *)
+    let t2 = resolve ctx ~session_id:"zw-b120-race-mgd" in
+    check string "attempt 2 adopts the freshly-registered hook"
+      "zw-b120-race-uuid" t2;
+    match inject ctx ~session_id:t2 with
+    | Injected { message_count; _ } -> check int "late DM seen" 1 message_count
+    | o -> failf "expected Injected on attempt 2, got %s"
+             (C2c_wake_inject.outcome_to_string o))
+
+(* NOTE on watch_loop coverage: watch_loop is thin glue — its [attempt] is
+   exactly [resolve_wake_watch_target] followed by [maybe_inject], both covered
+   above (incl. the after-startup race), and its inotify event filter only
+   decides WHEN to call attempt. A direct watch_loop test is intentionally
+   omitted: it drives a real `inotifywait -m` subprocess that does not exit on
+   pipe close (only on a later fs write via SIGPIPE), so a bounded
+   max_iterations run hangs on cleanup — inherently non-hermetic. The live
+   loop is exercised by the tmux managed-codex-resume validation documented in
+   the B120 finding. *)
+
 let () =
   Random.self_init ();
   run "c2c_wake_inject"
@@ -586,5 +674,15 @@ let () =
             test_resolve_herdr_pane_shared
         ; test_case "B120: resolve-then-inject reproduces + fixes split" `Quick
             test_resolve_then_inject_reproduces_and_fixes_split
+        ; test_case "B120: shared herdr / different tmux not cross-wired" `Quick
+            test_resolve_shared_herdr_different_tmux_not_followed
+        ; test_case "B120: tmux-only vs herdr-only no match" `Quick
+            test_resolve_tmux_only_vs_herdr_only_no_match
+        ; test_case "B120: same tmux with leaked herdr matches" `Quick
+            test_resolve_same_tmux_with_leaked_herdr_matches
+        ; test_case "B120: prefers most-recent hook candidate" `Quick
+            test_resolve_prefers_most_recent_candidate
+        ; test_case "B120: race - hook registers after startup" `Quick
+            test_race_hook_registers_after_startup
         ] )
     ]

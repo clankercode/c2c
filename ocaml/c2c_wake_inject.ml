@@ -492,21 +492,34 @@ let maybe_inject ?now ~(broker_root : string) ~(session_id : string) () : outcom
  * deliver/wake sidecar adopts it as its watch target.
  *)
 
-(* Two registrations name the same pane when a tmux_location or a herdr_pane is
-   present on both and equal. cwd is deliberately NOT used: two codex sessions
-   can share a cwd, which would cross-wire unrelated sessions. *)
+(* The EFFECTIVE wake target of a registration, using the same "innermost
+   surface wins" rule as [backend_of_registration]: a session in tmux inside a
+   herdr-hosted terminal captures BOTH its real $TMUX_PANE and the OUTER herdr
+   pane (env leak), and the tmux pane is the one to inject into. So tmux
+   takes precedence; herdr is the target only when no tmux pane is present.
+   cwd is deliberately never a target: two codex sessions can share a cwd. *)
+let effective_wake_target (r : C2c_mcp_helpers.registration) :
+    [ `Tmux of string | `Herdr of string ] option =
+  let nonempty = function
+    | Some s when String.trim s <> "" -> Some (String.trim s)
+    | _ -> None
+  in
+  match nonempty r.tmux_location with
+  | Some t -> Some (`Tmux t)
+  | None -> (match nonempty r.herdr_pane with Some h -> Some (`Herdr h) | None -> None)
+
+(* Two registrations name the same pane when their EFFECTIVE targets are equal.
+   Comparing effective targets (not OR-ing tmux/herdr independently) prevents
+   cross-wiring two different tmux panes that both inherited the same outer
+   herdr pane: their tmux targets differ, so they do not match. *)
 let wake_target_shared
     (a : C2c_mcp_helpers.registration) (b : C2c_mcp_helpers.registration) : bool =
-  let eq_some x y =
-    match x, y with
-    | Some x, Some y -> String.trim x <> "" && String.trim x = String.trim y
-    | _ -> false
-  in
-  eq_some a.tmux_location b.tmux_location || eq_some a.herdr_pane b.herdr_pane
+  match effective_wake_target a, effective_wake_target b with
+  | Some x, Some y -> x = y
+  | _ -> false
 
 let has_wake_target (r : C2c_mcp_helpers.registration) : bool =
-  (match r.tmux_location with Some s -> String.trim s <> "" | None -> false)
-  || (match r.herdr_pane with Some s -> String.trim s <> "" | None -> false)
+  effective_wake_target r <> None
 
 (* Given the sidecar's configured session_id, return the session_id it should
    actually watch:
