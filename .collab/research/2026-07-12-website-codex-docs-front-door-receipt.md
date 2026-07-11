@@ -7,10 +7,11 @@
   1. B131 (live supervisor wiring) is being built in parallel → frame app-server
      interactive delivery as **landing now / being wired in**, not
      "follow-up slice / hooks-only today", and never as turnkey-shipped.
-  2. **No `--app-server` flag in the end state** (B131 removes it) → present
-     `c2c new codex` / `c2c start codex` as THE codex command: app-server-backed
-     on supported Codex, hooks as the automatic fallback for older Codex. No
-     flag mentions on any page this slice touched.
+  2. **No legacy command option in the end state** (B131 removes the older
+     command grammar) → present `c2c new codex` / `c2c start codex` as THE
+     codex command: app-server-backed on supported Codex, hooks as the
+     automatic fallback for older Codex. The removed option is absent from all
+     eight changed files.
 
 ## One-line framing used everywhere
 
@@ -31,7 +32,7 @@ composer-empty gating language. Alpha framing of the site unchanged.
 |---|---|
 | `docs/index.md` | New "What's New" top bullet (codex app-server interactive delivery, landing now); Codex row of the client auto-delivery table updated (hook-boundary; app-server interactive delivery landing now). |
 | `docs/overview.md` | Codex receive bullet: hook-boundary semantics made explicit (vanilla + managed alike); canonical launcher + app-server landing-now framing + `c2c doctor hooks` + link to `/client-delivery/#codex`. MCP-setup Codex section: one pointer sentence to the delivery transports. |
-| `docs/get-started.md` | Only the "Codex delivery" note in Advanced § managed sessions (T005-authored) — updated per coordinator directives: `--app-server` flag mention removed, "follow-up slice" → "live supervisor wiring being wired in", added `c2c new codex`. Front-door/intro steps untouched. |
+| `docs/get-started.md` | Only the "Codex delivery" note in Advanced § managed sessions (T005-authored) — updated per coordinator directives: removed legacy command-option wording, "follow-up slice" → "live supervisor wiring being wired in", added `c2c new codex`. Front-door/intro steps untouched. |
 | `docs/llms.txt` | Codex receive bullet rewritten (stale "still being ported" claim removed — see Contradictions); Codex install-link descriptor updated. |
 | `docs/llms-codex-install.txt` | Stale "still being ported" claim removed; Managed-sessions block extended with `c2c new codex` / `c2c resume codex ALIAS`; verbatim T006 passthrough examples (`c2c new codex -- --model gpt-5.3-codex-spark`, `alias cx='c2c new codex --'`) copied from `docs/commands.md`; new "Delivery" section (hooks today, app-server landing now, `c2c doctor hooks`). |
 | `docs/MSG_IO_METHODS.md` | Drive-by: Codex row of the hooks client-support table carried the same stale "still being ported" claim — fixed with the same framing. Not a T005-owned page. |
@@ -49,10 +50,10 @@ Other `docs/llms-*-install.txt` files do not mention codex delivery — unchange
   `docs/llms-codex-install.txt`, root `llms.txt`, `docs/MSG_IO_METHODS.md`) and
   contradicted T005's client-delivery.md. All four fixed here.
 - **Known residual skew (deliberate, for coordinator/B131 reconciliation):**
-  T005's pages still say "wiring is a follow-up slice" and document the
-  `--app-server` flag; per coordinator instruction this slice matched the
-  newer "landing now / no flag" framing instead, and T005's pages are left
-  for the B131 reconciliation pass.
+  T005's pages still say "wiring is a follow-up slice" and retain older command
+  grammar; per coordinator instruction this slice matched the newer
+  "landing now / removed legacy option" framing instead, and T005's pages are
+  left for the B131 reconciliation pass.
 
 ## FLAGGED status-assertion sentences (for the post-B131 flip-to-shipped pass)
 
@@ -92,7 +93,8 @@ Grep key: `landing now` and `until` land on every one of these.
   live-tested examples).
 - `c2c start codex` / `c2c new codex` / `c2c resume codex ALIAS` grammar rows
   match `docs/commands.md` § Managed instances.
-- No invented flags; no `--app-server` shown anywhere in this slice's pages.
+- No invented flags; the removed legacy command option appears in none of the
+  eight changed files.
 
 ## Verification (return codes)
 
@@ -100,6 +102,6 @@ Grep key: `landing now` and `until` land on every one of these.
 |---|---|---|
 | `just build` | 0 | run after doc edits; codegen no-ops, dune targets built |
 | docs build (`cd docs && bundle exec jekyll build`) | n/a | jekyll not installable in this env (pre-existing toolchain gap, same as T005) — per `docs/CLAUDE.md`, text-only fallback used |
-| fence/link lint (python, all 7 changed files) | 0 | fences balanced; no unclosed links; internal links well-formed; `/client-delivery/#codex` anchor exists (`## Codex` heading + permalink) |
-| `grep -- "--app-server"` over the 7 changed files | 1 (clean) | no flag mentions remain |
+| fence/link lint (python, all 8 changed files) | 0 | fences balanced; no unclosed links; internal links well-formed; `/client-delivery/#codex` anchor exists (`## Codex` heading + permalink) |
+| retired legacy-option search over all 8 changed files | 1 (clean) | no retired-option mentions remain |
 | `just check` | not run in full | pre-existing sole failure is the Grok skill-codegen drift (per T005 receipt); this slice touched no skill files |
