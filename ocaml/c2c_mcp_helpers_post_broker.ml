@@ -903,25 +903,44 @@ let hook_client_type_conflict_with (reg : registration) =
       String.lowercase_ascii mine <> String.lowercase_ascii theirs
   | _ -> false
 
+(* B042 / B130: canonical dispatched-subagent detection, shared by every c2c
+   hook / injection entrypoint (this module, C2c_hook_lib, the standalone
+   cold-boot + post-compact hook binaries). A dispatched Claude Code subagent
+   inherits the parent session's env (incl. C2C_MCP_SESSION_ID /
+   CLAUDE_SESSION_ID) and fires the same c2c hooks; without gating, the parent
+   session's inbox DMs and owner-scoped context (logs / findings / memory,
+   post-compact) leak into the unrelated subagent transcript, and the
+   subagent even consumes the owner's one-shot cold-boot marker.
+
+   Two signals mark a subagent:
+   - C2C_NO_AUTO_REGISTER=1 (B042): explicit opt-out an operator/wrapper sets.
+   - CLAUDE_CODE_CHILD_SESSION (B130): Claude Code stamps every dispatched
+     Task-tool child process with this (value "1") — the robust,
+     harness-provided signal.
+
+   Parsing fails safe toward *delivery* (a normal top-level session must never
+   be silenced): only a recognised truthy value counts as a subagent. Common
+   falsy spellings (empty, 0, false, no, off) are treated as not-a-subagent. *)
+let subagent_env_truthy name =
+  match Sys.getenv_opt name with
+  | Some v ->
+      (match String.lowercase_ascii (String.trim v) with
+       | "" | "0" | "false" | "no" | "off" -> false
+       | _ -> true)
+  | None -> false
+
+let is_subagent_context () =
+  subagent_env_truthy "C2C_NO_AUTO_REGISTER"
+  || subagent_env_truthy "CLAUDE_CODE_CHILD_SESSION"
+
 let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
   | Some alias ->
-  (* B042 / B130: skip auto-registration in a dispatched-subagent context.
-     Spawned subagents inherit global c2c hooks / env and would auto-register
-     and spam the coordinator (B042). Two signals mark a subagent:
-     C2C_NO_AUTO_REGISTER=1 (explicit opt-out) and CLAUDE_CODE_CHILD_SESSION
-     (set by Claude Code on every Task-tool child; B130). *)
-  let env_flag_truthy name =
-    match Sys.getenv_opt name with
-    | Some v ->
-        (match String.lowercase_ascii (String.trim v) with
-         | "" | "0" | "false" | "no" -> false
-         | _ -> true)
-    | None -> false
-  in
-  (if env_flag_truthy "C2C_NO_AUTO_REGISTER"
-      || env_flag_truthy "CLAUDE_CODE_CHILD_SESSION"
+  (* B042 / B130: skip auto-registration in a dispatched-subagent context —
+     spawned subagents inherit global c2c hooks / env and would auto-register
+     and spam the coordinator. See [is_subagent_context]. *)
+  (if is_subagent_context ()
    then ()
    else
   let session_id =

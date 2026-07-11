@@ -192,18 +192,13 @@ let read_stdin_session_id () =
      robust, harness-provided signal — nothing in c2c sets C2C_NO_AUTO_REGISTER
      for Task-tool children, so B042 alone never fired for them.
 
-   Hooks should exit early (silent, no drain) when this returns true. *)
-let env_flag_truthy name =
-  match Sys.getenv_opt name with
-  | Some v ->
-      (match String.lowercase_ascii (String.trim v) with
-       | "" | "0" | "false" | "no" -> false
-       | _ -> true)
-  | None -> false
+   Hooks should exit early (silent, no drain) when this returns true.
 
-let is_subagent_quiet () =
-  env_flag_truthy "C2C_NO_AUTO_REGISTER"
-  || env_flag_truthy "CLAUDE_CODE_CHILD_SESSION"
+   Delegates to the canonical detector in C2c_mcp_helpers_post_broker so the
+   parse rules (and the set of subagent signals) stay identical across every
+   entrypoint — the hooks here, the MCP auto-register path, and the standalone
+   cold-boot / post-compact hook binaries. *)
+let is_subagent_quiet () = C2c_mcp_helpers_post_broker.is_subagent_context ()
 let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 

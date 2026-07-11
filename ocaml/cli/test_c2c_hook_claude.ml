@@ -287,6 +287,42 @@ let test_child_session_no_inbox_leak () =
     check int "owner DM not drained by subagent" 1 (List.length remaining);
     ignore stderr)
 
+(* B130: unit-cover the canonical dispatched-subagent detector that every c2c
+   hook / injection entrypoint now delegates to (hook_lib, MCP auto-register,
+   standalone cold-boot + post-compact binaries). Locks both signals and the
+   fail-safe parse (falsy spellings must never silence a top-level session). *)
+let with_env_saved names f =
+  let saved = List.map (fun n -> (n, Sys.getenv_opt n)) names in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun (n, v) ->
+          match v with Some s -> Unix.putenv n s | None -> Unix.putenv n "")
+        saved)
+    f
+
+let test_is_subagent_context_signals () =
+  with_env_saved [ "C2C_NO_AUTO_REGISTER"; "CLAUDE_CODE_CHILD_SESSION" ] (fun () ->
+    let set = Unix.putenv in
+    let is () = C2c_mcp_helpers_post_broker.is_subagent_context () in
+    set "C2C_NO_AUTO_REGISTER" "";
+    set "CLAUDE_CODE_CHILD_SESSION" "";
+    check bool "empty env is not a subagent" false (is ());
+    set "CLAUDE_CODE_CHILD_SESSION" "1";
+    check bool "CHILD_SESSION=1 is a subagent" true (is ());
+    set "CLAUDE_CODE_CHILD_SESSION" "  TRUE  ";
+    check bool "CHILD_SESSION=TRUE (padded) is a subagent" true (is ());
+    List.iter
+      (fun v ->
+        set "CLAUDE_CODE_CHILD_SESSION" v;
+        check bool
+          (Printf.sprintf "CHILD_SESSION=%S is not a subagent" v)
+          false (is ()))
+      [ "0"; "false"; "no"; "off"; "" ];
+    set "CLAUDE_CODE_CHILD_SESSION" "";
+    set "C2C_NO_AUTO_REGISTER" "1";
+    check bool "C2C_NO_AUTO_REGISTER=1 is a subagent" true (is ()))
+
 let test_session_end_deregisters_hook_auto_registration () =
   with_ctx (fun ctx ->
     let sid = "claude-e2e-session-end-0001" in
@@ -449,6 +485,8 @@ let () =
         ; test_case "subagent-quiet guard" `Quick test_subagent_quiet_guard
         ; test_case "B130: CLAUDE_CODE_CHILD_SESSION subagent no inbox leak" `Quick
             test_child_session_no_inbox_leak
+        ; test_case "B130: is_subagent_context signals + fail-safe parse" `Quick
+            test_is_subagent_context_signals
         ; test_case "SessionEnd deregisters hook auto-registration" `Quick
             test_session_end_deregisters_hook_auto_registration
         ; test_case "SessionEnd keeps explicit registration" `Quick
