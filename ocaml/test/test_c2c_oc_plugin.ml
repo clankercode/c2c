@@ -15,7 +15,7 @@ open Alcotest
  * --------------------------------------------------------------------------- *)
 
 let msg ?(from_alias="") ?(to_alias="") ?(reply_via=None) ?(enc_status=None) content =
-  C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via; enc_status; ts = 0.0; ephemeral = false; message_id = None }
+  C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via; enc_status; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None }
 
 let with_tmp_dir f =
   let base = Filename.get_temp_dir_name () in

@@ -3274,6 +3274,7 @@ let seed_message broker ~session_id ~from_alias ~content =
     ; ts = Unix.gettimeofday ()
     ; ephemeral = false
     ; message_id = None
+    ; pow_difficulty = None
     }
   in
   C2c_mcp.Broker.enqueue_by_session_id broker ~session_id ~messages:[ msg ]

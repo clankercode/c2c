@@ -12,7 +12,8 @@ let () =
   List.iter
     (fun k -> Unix.putenv k "")
     [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_MCP_SESSION_ID"
-    ; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"; "C2C_OPENCODE_SESSION_ID" ]
+    ; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"; "C2C_OPENCODE_SESSION_ID"
+    ; "GROK_SESSION_ID"; "CURSOR_AGENT"; "CURSOR_INVOKED_AS" ]
 
 let with_temp_dir f =
   let base = Filename.get_temp_dir_name () in
@@ -543,7 +544,7 @@ let test_tools_call_history_ignores_session_id_argument () =
 let test_channel_notification_matches_claude_channel_shape () =
   let json =
     C2c_mcp.channel_notification ~with_reply_hint:false
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "debate me"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "debate me"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None }
   in
   let open Yojson.Safe.Util in
   check string "jsonrpc" "2.0" (json |> member "jsonrpc" |> to_string);
@@ -557,7 +558,7 @@ let test_channel_notification_matches_claude_channel_shape () =
 let test_channel_notification_empty_content () =
   let json =
     C2c_mcp.channel_notification ~with_reply_hint:false
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = ""; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = ""; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None }
   in
   let open Yojson.Safe.Util in
   check string "jsonrpc" "2.0" (json |> member "jsonrpc" |> to_string);
@@ -574,7 +575,7 @@ let test_channel_notification_special_chars () =
   let content = "line1\nline2\t\"quoted\" <angle> \xc3\xa9\xc3\xa0\xc3\xbc" in
   let json =
     C2c_mcp.channel_notification ~with_reply_hint:false
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None }
   in
   let open Yojson.Safe.Util in
   (* Round-trip through Yojson serialization to verify escaping is valid *)
@@ -589,7 +590,7 @@ let test_channel_notification_special_chars () =
 let test_channel_notification_has_no_id_field () =
   let json =
     C2c_mcp.channel_notification ~with_reply_hint:false
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "test"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None }
   in
   let open Yojson.Safe.Util in
   (* JSON-RPC 2.0 notifications MUST NOT include an "id" field *)
@@ -664,7 +665,7 @@ let test_initialize_without_channel_capability () =
 let test_channel_notification_method_is_correct () =
   let json =
     C2c_mcp.channel_notification ~with_reply_hint:false
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "check method"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None }
   in
   let open Yojson.Safe.Util in
   let method_str = json |> member "method" |> to_string in
@@ -677,7 +678,7 @@ let test_channel_notification_method_is_correct () =
 let test_channel_notification_with_role () =
   let json =
     C2c_mcp.channel_notification ~with_reply_hint:false ~role:(Some "coordinator")
-      { from_alias = "cairn-vigil"; to_alias = "stanza-coder"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
+      { from_alias = "cairn-vigil"; to_alias = "stanza-coder"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None }
   in
   let open Yojson.Safe.Util in
   let meta = json |> member "params" |> member "meta" in
@@ -687,7 +688,7 @@ let test_channel_notification_with_role () =
 let test_channel_notification_without_role_omits () =
   let json =
     C2c_mcp.channel_notification ~with_reply_hint:false
-      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
+      { from_alias = "storm-ember"; to_alias = "storm-storm"; content = "hi"; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None }
   in
   let open Yojson.Safe.Util in
   let meta = json |> member "params" |> member "meta" in
@@ -704,7 +705,7 @@ let test_channel_notification_ts_utc_hhmm () =
      Mirror of format_c2c_envelope: Printf.sprintf "%02d:%02d" tm.tm_hour tm.tm_min. *)
   let json =
     C2c_mcp.channel_notification ~with_reply_hint:false
-      { from_alias = "jungle-coder"; to_alias = "stanza-coder"; content = "ping"; deferrable = false; reply_via = None; enc_status = None; ts = 1746009600.0; ephemeral = false; message_id = None }
+      { from_alias = "jungle-coder"; to_alias = "stanza-coder"; content = "ping"; deferrable = false; reply_via = None; enc_status = None; ts = 1746009600.0; ephemeral = false; message_id = None; pow_difficulty = None }
   in
   let open Yojson.Safe.Util in
   let meta = json |> member "params" |> member "meta" in
@@ -720,7 +721,7 @@ let test_channel_notification_ts_utc_hhmm () =
 (* ---- Reply hint (Slice F of the 2026-06-18 design) ---- *)
 
 let mk_msg ?(from = "alice") ?(to_alias = "bob") ?(content = "hi") ?(ts = 0.0) () : C2c_mcp.message =
-  { from_alias = from; to_alias = to_alias; content = content; deferrable = false; reply_via = None; enc_status = None; ts = ts; ephemeral = false; message_id = None }
+  { from_alias = from; to_alias = to_alias; content = content; deferrable = false; reply_via = None; enc_status = None; ts = ts; ephemeral = false; message_id = None; pow_difficulty = None }
 
 let test_channel_notification_appends_reply_hint_by_default () =
   let json =
@@ -2179,6 +2180,52 @@ let test_session_id_from_env_uses_client_specific_opencode_fallback () =
     (fun () ->
       check (option string) "session id from env" (Some "ses-opencode-123")
         (C2c_mcp.session_id_from_env ~client_type:"opencode" ()))
+
+(* B134: native client-type inference — Grok + unofficial Cursor labeling. *)
+let with_scrubbed_client_env f =
+  let keys =
+    [ "C2C_MCP_SESSION_ID"; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"
+    ; "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_OPENCODE_SESSION_ID"
+    ; "GROK_SESSION_ID"; "CURSOR_AGENT"; "CURSOR_INVOKED_AS" ]
+  in
+  List.iter (fun k -> Unix.putenv k "") keys;
+  Fun.protect ~finally:(fun () -> List.iter (fun k -> Unix.putenv k "") keys) f
+
+let test_inferred_client_type_from_env_grok () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "GROK_SESSION_ID" "grok-sess-b134";
+      check (option string) "GROK_SESSION_ID → grok" (Some "grok")
+        (C2c_mcp.inferred_client_type_from_env ());
+      check (option string) "session id via inferred grok" (Some "grok-sess-b134")
+        (C2c_mcp.session_id_from_env ()))
+
+let test_inferred_client_type_from_env_cursor_agent_flag () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CURSOR_AGENT" "1";
+      check (option string) "CURSOR_AGENT=1 → cursor" (Some "cursor")
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_from_env_cursor_invoked_as () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CURSOR_INVOKED_AS" "cursor-agent";
+      check (option string) "CURSOR_INVOKED_AS=cursor-agent → cursor" (Some "cursor")
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_codex_wins_over_cursor () =
+  (* Genuine Codex markers must still win when both are somehow present. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CODEX_THREAD_ID" "codex-thread-keep";
+      Unix.putenv "CURSOR_AGENT" "1";
+      check (option string) "CODEX_THREAD_ID beats CURSOR_AGENT" (Some "codex")
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_cursor_not_codex_without_codex_env () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CURSOR_AGENT" "1";
+      check (option string) "cursor without CODEX_THREAD_ID is not codex" (Some "cursor")
+        (C2c_mcp.inferred_client_type_from_env ());
+      check bool "not Some \"codex\"" true
+        (C2c_mcp.inferred_client_type_from_env () <> Some "codex"))
 
 let test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing ()
     =
@@ -11828,7 +11875,7 @@ let slice_b_make_signed_envelope
 let slice_b_make_message ~from_alias ~to_alias ~content : C2c_mcp.message =
   { from_alias; to_alias; content
   ; deferrable = false; reply_via = None
-  ; enc_status = None; ts = 0.0; ephemeral = false; message_id = None }
+  ; enc_status = None; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None }
 
 (* Slice B test 1: empty pin store + v2 envelope with from_ed25519
    → on success the broker pins the claimed key. *)
@@ -15428,6 +15475,16 @@ let () =
              test_session_id_from_env_prefers_legacy_claude_session_id
          ; test_case "session_id_from_env uses client-specific opencode fallback" `Quick
              test_session_id_from_env_uses_client_specific_opencode_fallback
+         ; test_case "inferred_client_type_from_env: GROK_SESSION_ID → grok (B134)" `Quick
+             test_inferred_client_type_from_env_grok
+         ; test_case "inferred_client_type_from_env: CURSOR_AGENT=1 → cursor (B134)" `Quick
+             test_inferred_client_type_from_env_cursor_agent_flag
+         ; test_case "inferred_client_type_from_env: CURSOR_INVOKED_AS → cursor (B134)" `Quick
+             test_inferred_client_type_from_env_cursor_invoked_as
+         ; test_case "inferred_client_type_from_env: CODEX_THREAD_ID beats CURSOR (B134)" `Quick
+             test_inferred_client_type_codex_wins_over_cursor
+         ; test_case "inferred_client_type_from_env: cursor is not codex (B134)" `Quick
+             test_inferred_client_type_cursor_not_codex_without_codex_env
          ; test_case "tools/call register uses CODEX_THREAD_ID when C2C session id missing" `Quick
              test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing
          ; test_case "tools/call register uses managed CODEX_THREAD_ID when C2C session id missing" `Quick

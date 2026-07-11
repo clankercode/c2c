@@ -753,6 +753,40 @@ let real_history_contains ~endpoint ~token ~thread_id ~message_id : history_prob
             else `Absent
           with _ -> `Unknown))
 
+(* Discover the thread(s) the attached frontend has LOADED, so the B131 deliver
+   loop can inject/turn into the SAME thread the operator sees in the remote TUI.
+   `thread/loaded/list` {} -> {result:{data:[threadId,...]}} (T001 spike §protocol).
+   Returns the ids in the order the server reports them (most-recent last by
+   observation); [] on any error / auth failure / unavailable method. LIVE-gated
+   like the other real clients — a non-live call refuses the socket and returns
+   []. Reuses the module WS + JSON-RPC plumbing (no second implementation). *)
+let real_loaded_threads ~(endpoint : Ep.endpoint) ~(token : string) : string list =
+  let live = try Sys.getenv "C2C_CODEX_INGRESS_LIVE" = "1" with Not_found -> false in
+  if not live then []
+  else
+    let timeout = 8.0 in
+    let fd = ref None in
+    let close () = match !fd with Some f -> (try Unix.close f with _ -> ()); fd := None | None -> () in
+    Fun.protect ~finally:close (fun () ->
+        match (try Ok (ws_connect endpoint ~token ~timeout) with _ -> Error ()) with
+        | Error () -> []
+        | Ok f -> (
+            fd := Some f;
+            try
+              let _ = rpc_call f ~meth:"initialize" ~params:init_params in
+              let resp = rpc_call f ~meth:"thread/loaded/list" ~params:(`Assoc []) in
+              match resp with
+              | `Assoc l -> (
+                  match List.assoc_opt "result" l with
+                  | Some (`Assoc rl) -> (
+                      match List.assoc_opt "data" rl with
+                      | Some (`List xs) ->
+                          List.filter_map (function `String s -> Some s | _ -> None) xs
+                      | _ -> [])
+                  | _ -> [])
+              | _ -> []
+            with _ -> []))
+
 let real_client () : client =
   let live = try Sys.getenv "C2C_CODEX_INGRESS_LIVE" = "1" with Not_found -> false in
   if not live then

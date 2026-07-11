@@ -78,8 +78,8 @@ c2c list --all
 - **Expected**:
   - `<c2c event="message" from="..." to="<client-alias>">ping</c2c>` appears in the client's transcript / output
   - For Claude/OpenCode: PostToolUse hook fires on next tool use and inbox is drained
-  - For Codex in hook mode (vanilla or managed without `--app-server`): installed hooks (`c2c hook codex`) drain and inject via `hookSpecificOutput.additionalContext` on the next hook fire (turn boundary) — NOT on arrival. An idle session surfaces the message on its next turn (or via the tmux/herdr wake nudge when `delivery_mode=hooks+wake`).
-  - For managed Codex with `--app-server`, once the supervision-wiring slice has landed (row 2b has the gate): the message is injected into the thread's model-visible history on arrival — it does **not** render in the TUI transcript. Verify with a follow-up turn (ask the model to echo the marker), not by watching the pane. Any typed composer draft must survive byte-exact. Before that slice lands, app-server-launched sessions still deliver at the hook boundary (same expectations as the hook-mode bullet above).
+  - For Codex in hook mode (vanilla, or managed on a Codex too old for the app-server transport): installed hooks (`c2c hook codex`) drain and inject via `hookSpecificOutput.additionalContext` on the next hook fire (turn boundary) — NOT on arrival. An idle session surfaces the message on its next turn (or via the tmux/herdr wake nudge when `delivery_mode=hooks+wake`).
+  - For managed Codex on a supported Codex (app-server transport, the default — B131): the message is injected into the thread's model-visible history on arrival — it does **not** render in the TUI transcript. Verify with a follow-up turn (ask the model to echo the marker), not by watching the pane. Any typed composer draft must survive byte-exact; eligible local mail on an idle thread also starts one gated auto-turn (T007).
   - For Pi Agent: `pi-c2c` drains the inbox and injects via `pi.sendMessage`
   - For Kimi: message appears in notification store / TUI prefill
 - **Failure modes**:
@@ -90,17 +90,17 @@ c2c list --all
 
 ---
 
-## 2b. Codex app-server delivery (managed `--app-server` only)
+## 2b. Codex app-server delivery (managed, default on supported Codex)
 
-**Gate — check this first.** This row only applies once the supervision-wiring
-slice has landed (the ingress/auto-turn dispatcher ships in the c2c library
-but is not yet driven by `c2c start codex` supervision). If your build
-predates it, mark this row SKIP and exercise the library path with
-`scripts/codex-autoturn-e2e.py` (inside tmux) instead — that harness proves
-the same contract against a real codex.
+**Applies to** managed Codex on codex-cli ≥ 0.144 — the app-server transport is
+the default managed path (B131 wired the supervision loop; no flag). On older
+codex expect the minimum-version message + hook fallback, and mark this row
+SKIP. The library-level harness `scripts/codex-autoturn-e2e.py` (inside tmux)
+proves the same contract against a real codex if you want a supervision-free
+check.
 
 - **Setup**:
-  - Inside tmux: `c2c start codex --app-server -n test-cx-appserver-<rand>`
+  - Inside tmux: `c2c start codex -n test-cx-appserver-<rand>`
     (codex ≥ 0.144 required; on older codex expect the minimum-version
     message + hook fallback, and mark this row SKIP)
   - `c2c dev instances --json` shows `"delivery_mode": "app-server"` and

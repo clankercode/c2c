@@ -17,7 +17,7 @@ Last updated: 2026-07-11 (Codex app-server transport + delivery-mode vocabulary)
 | Feature | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok |
 |---------|-------------|-------|----------|----------|------|------|
 | MCP attachment | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ⚠️ CLI-based (pi extension shells to `c2c`, not MCP) | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ❌ **not by default** (CLI-first; no MCP written by install) |
-| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | Today: Codex hooks (`c2c hook codex` via UserPromptSubmit/PostToolUse/SessionStart/SessionEnd) for vanilla and managed sessions — hook-boundary delivery, not arrival-time; legacy idle wake via tmux/herdr nudge **input injection** (`delivery_mode=hooks+wake`), otherwise explicit polling remains the idle fallback. Canonical direction: app-server delivery stack (`c2c start codex --app-server` — authenticated loopback injection on arrival, draft-safe, gated auto-turn for eligible local mail) is library-proven; managed supervision wiring is the follow-up slice | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox -> `pi.sendMessage` | c2c.ts plugin -> `promptAsync` | Notification-store (`C2c_kimi_notifier`) | **Monitor + `c2c monitor`** (preferred). SessionStart auto-registers + writes `c2c-session` identity skill. No `additionalContext` inject |
+| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | Today: Codex hooks (`c2c hook codex` via UserPromptSubmit/PostToolUse/SessionStart/SessionEnd) for vanilla and managed sessions — hook-boundary delivery, not arrival-time; legacy idle wake via tmux/herdr nudge **input injection** (`delivery_mode=hooks+wake`), otherwise explicit polling remains the idle fallback. Default managed path (supported Codex): app-server delivery stack (`c2c start codex` / `c2c new codex` — authenticated loopback injection on arrival, draft-safe, gated auto-turn for eligible local mail) is wired into managed supervision and shipped (B131); hooks are the automatic fallback for older Codex | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox -> `pi.sendMessage` | c2c.ts plugin -> `promptAsync` | Notification-store (`C2c_kimi_notifier`) | **Monitor + `c2c monitor`** (preferred). SessionStart auto-registers + writes `c2c-session` identity skill. No `additionalContext` inject |
 | MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | n/a (no MCP) | ❌ same | ❌ same | n/a (no MCP default) |
 | Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ via `c2c` CLI room subcommands | ✅ all room tools | ✅ all room tools | ✅ via `c2c` CLI |
 | Ephemeral DMs | ✅ | ✅ | ? | ✅ | ✅ | ✅ CLI `--ephemeral` |
@@ -68,20 +68,20 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 (`app-server` / `hooks+wake` / `hooks` / `unavailable`; run `c2c doctor hooks`
 for the classification + remediation).
 
-*App-server transport* — managed `c2c start codex --app-server` (or
-`C2C_CODEX_APP_SERVER=1`) runs `codex app-server` on an **authenticated
-loopback WebSocket** (`--ws-auth capability-token`; a bare listener is never
-used) with the stock remote TUI attached. Its delivery stack — inbound c2c
-mail injected into the thread's model-visible history on arrival (draft-safe
-— the composer is frontend-only state the app-server cannot touch), and one
-gated turn for eligible **local** mail when the thread is explicitly idle and
-DND is off (active/unknown status and relay-origin mail stay queued,
-fail-closed) — is implemented and proven at the library level; **managed
-supervision wiring is the follow-up slice, so until it lands an
-app-server-launched session still receives at the hook boundary**.
-`c2c instances` reports `delivery_mode=app-server` only while the unit is
-`online-attached`, plus the `app_server_status` lifecycle field. Full
-contract + current wiring status: [client-delivery](/client-delivery/#codex).
+*App-server transport* — the default managed path (`c2c start codex` /
+`c2c new codex`) on a supported Codex (codex-cli ≥ 0.144; no flag) runs `codex
+app-server` on an **authenticated loopback WebSocket** (`--ws-auth
+capability-token`; a bare listener is never used) with the stock remote TUI
+attached. Its delivery stack — inbound c2c mail injected into the thread's
+model-visible history on arrival (draft-safe — the composer is frontend-only
+state the app-server cannot touch), and one gated turn for eligible **local**
+mail when the thread is explicitly idle and DND is off (active/unknown status
+and relay-origin mail stay queued, fail-closed) — is **wired into managed
+supervision and shipped (B131)**, proven live end-to-end with real `c2c new
+codex`. Older Codex or an app-server startup failure falls back automatically
+to the hook boundary. `c2c instances` reports `delivery_mode=app-server` only
+while the unit is `online-attached`, plus the `app_server_status` lifecycle
+field. Full contract: [client-delivery](/client-delivery/#codex).
 
 *Hook fallback* — Codex hooks for vanilla and hook-mode managed sessions.
 `c2c install codex` writes a pre-trusted hooks block to `~/.codex/config.toml`
@@ -247,11 +247,14 @@ command path. (3) Skill snippets: edit `.collab/skills/c2c-src/`, run
 | Client | Session ID source | Delivery mechanism | Notification | Restart / Launch |
 |--------|-------------------|--------------------|--------------|-----------------|
 | Claude Code | `$CLAUDE_SESSION_ID` | PostToolUse hook (auto) | Implicit (every tool) | `c2c start claude` |
-| Codex | Hook payload session / auto alias (app-server mode: deterministic session-id-derived alias) | Codex hooks (`c2c hook codex`) today; app-server injection stack library-proven (supervision wiring = follow-up slice) | Hooks: `additionalContext` from UserPromptSubmit/PostToolUse (hook-boundary). App-server stack (once wired): model-visible on arrival, read on next turn, gated auto-turn for local mail | `c2c start codex` |
+| Codex | Hook payload session / auto alias (app-server mode: deterministic session-id-derived alias) | Default (supported Codex): app-server injection stack wired into managed supervision + shipped (B131); hooks (`c2c hook codex`) are the fallback for older Codex | App-server (default): model-visible on arrival, read on next turn, gated auto-turn for local mail. Hooks (fallback): `additionalContext` from UserPromptSubmit/PostToolUse (hook-boundary) | `c2c start codex` |
 | Pi Agent | Extension session alias | `pi-c2c` extension -> `c2c poll-inbox` -> `pi.sendMessage` | `fs.watch` inbox watcher + 60s safety poll | n/a (`pi install npm:pi-c2c`) |
 | OpenCode | `$OPENCODE_SESSION_ID` | Native TS plugin + promptAsync | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
 | Kimi | `kimi-user-host` (auto) | Notification-store push (`C2c_kimi_notifier`) | File-based push + tmux wake | `c2c start kimi` |
 | Grok | `$GROK_SESSION_ID` / hook payload | Monitor + `c2c monitor` (preferred); SessionStart identity skill | Monitor line inject | TUI restart / new session (`c2c install grok`) |
+| Cursor Agent | `$CURSOR_AGENT` / `$CURSOR_INVOKED_AS=cursor-agent` (B134 best-effort) | n/a (unofficial — no install/hooks) | n/a | n/a — labeling only (`client=cursor`, alias `cursor-…`) |
+
+> **Cursor Agent (unofficial):** c2c does **not** ship install, hooks, or delivery for Cursor. B134 only ensures `c2c init` / client-type inference labels Cursor sessions as `cursor` (not `codex`) when `CURSOR_AGENT` or `CURSOR_INVOKED_AS=cursor-agent` is set. Prefer `c2c init --client …` if you need a different identity.
 
 ## Cross-client DM matrix
 

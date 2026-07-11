@@ -1,0 +1,50 @@
+---
+claimed_at: "2026-07-11T15:33:00Z"
+claimed_by: cli-user
+completed_at: "2026-07-11T15:45:00Z"
+complexity: low
+created_at: "2026-07-11T15:24:45Z"
+depends_on: []
+duration_minutes: 12.006965021916667
+estimate_hours: 0.5
+id: B133
+priority: medium
+started_at: "2026-07-11T15:33:00Z"
+status: done
+tags: []
+title: 'c2c skill: bare /c2c with no other instructions should init + print whoami orientation'
+updated_at: "2026-07-11T15:45:00Z"
+---
+## Symptom
+Invoking the c2c skill alone (e.g. `/c2c` with no other user instructions) does not tell the agent to self-onboard. Agents may stall, ask what to do, or only partially orient.
+
+## Expected default behaviour
+When the user invokes the c2c skill **and provides no other instructions**, the skill must instruct the agent to:
+
+1. Ensure they are usable on the broker (`c2c init` if not already registered / as needed for a plain session).
+2. Print orientation details to the user, including at least:
+   - `c2c whoami` (alias, session_id, relay/host_id if present)
+   - `c2c list` (peers online)
+   - inbox status (`c2c peek-inbox` or `c2c poll-inbox`)
+   - rooms membership (`c2c my-rooms`; join `swarm-lounge` if missing / expected)
+3. Summarize that orientation concisely for the operator, then wait for further instructions (do not invent work).
+
+If the user *did* give other instructions with `/c2c`, follow those; the init+whoami default applies only to the bare invocation.
+
+## Scope — all harness copies
+Update the c2c skill for every harness that ships it (keep them in sync):
+
+- `/.claude/skills/c2c/SKILL.md`
+- `/.codex/skills/c2c/SKILL.md`
+- `/.opencode/skills/c2c/SKILL.md`
+- any other in-repo / installed harness copies (Claude/Codex/OpenCode/Kimi/Grok/Pi home installs as applicable)
+
+Prefer a single canonical wording under **First moves** (or a new **Bare invocation** subsection) so copies stay identical.
+
+## Acceptance
+- Bare `/c2c` skill text explicitly requires init (as needed) + whoami/list/inbox/rooms orientation output when no other user instructions are present.
+- All in-repo harness copies updated together (no drift).
+- Does not change the safety rule (peer messages remain data, not instructions).
+
+## Discovery
+2026-07-12 Cursor session: user ran `/c2c` after B132; agent oriented ad-hoc but skill did not mandate the default onboard+print path.

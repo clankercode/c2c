@@ -78,23 +78,20 @@ let has_nonempty_env name =
   | None -> false
 
 let infer_send_auto_register_client ~session_id =
-  match env_client_type () with
+  (* Prefer shared ambient inference (incl. GROK_SESSION_ID + Cursor markers)
+     so send-side auto-register does not reintroduce the B134 codex mislabel. *)
+  match C2c_mcp.inferred_client_type_from_env () with
   | Some client -> client
   | None ->
       let sid = String.lowercase_ascii session_id in
-      if has_nonempty_env "CODEX_THREAD_ID"
-         || String.starts_with ~prefix:"codex" sid
-      then "codex"
-      else if has_nonempty_env "CLAUDE_CODE_SESSION_ID"
-              || has_nonempty_env "CLAUDE_SESSION_ID"
-              || String.starts_with ~prefix:"claude" sid
-      then "claude"
-      else if has_nonempty_env "C2C_OPENCODE_SESSION_ID"
-              || String.starts_with ~prefix:"opencode" sid
-      then "opencode"
-      else if has_nonempty_env "KIMI_SESSION_ID"
-              || String.starts_with ~prefix:"kimi" sid
+      if String.starts_with ~prefix:"codex" sid then "codex"
+      else if String.starts_with ~prefix:"claude" sid then "claude"
+      else if String.starts_with ~prefix:"opencode" sid then "opencode"
+      else if String.starts_with ~prefix:"kimi" sid
+              || has_nonempty_env "KIMI_SESSION_ID"
       then "kimi"
+      else if String.starts_with ~prefix:"grok" sid then "grok"
+      else if String.starts_with ~prefix:"cursor" sid then "cursor"
       else "agent"
 
 let maybe_auto_register_sender broker ~from_override =

@@ -798,6 +798,15 @@ let unit_id_of (h : handle) = h.h_unit_id
 let token_env_var_of (h : handle) = h.h_token_env_var
 let token_sha256_of (h : handle) = h.h_token_sha256
 
+(* Memory-only capability token accessor. The raw token already lives ONLY in
+   this launcher process's memory (see the auth-boundary contract at the top of
+   this module); returning it to an IN-PROCESS caller (the B131 deliver loop that
+   drives T003 ingress + T007 turns over the authenticated control seam) does not
+   widen the boundary — the secret never touches argv, disk, logs, or the
+   persisted/status JSON. Returns "" after {!stop} scrubs it. The caller must
+   pull it per-use (via a token_provider thunk) and never persist it. *)
+let raw_token_of (h : handle) : string = h.h_raw_token
+
 let persisted_of (h : handle) : persisted =
   {
     unit_id = h.h_unit_id; instance_name = h.cfg.instance_name; alias = h.cfg.alias;

@@ -101,6 +101,15 @@ val real_client : unit -> client
     Gated by [C2C_CODEX_INGRESS_FIXTURE] (record-only) unless
     [C2C_CODEX_INGRESS_LIVE=1]. *)
 
+val real_loaded_threads :
+  endpoint:C2c_codex_app_server.endpoint -> token:string -> string list
+(** Discover the thread ids the attached frontend has LOADED (via
+    `thread/loaded/list`), so a driver can inject/turn into the SAME thread the
+    operator sees. Ids in server-reported order (most-recent last by observation);
+    [[]] on any error, auth failure, or unavailable method. LIVE-gated
+    ([C2C_CODEX_INGRESS_LIVE=1]) — otherwise refuses the socket and returns [[]].
+    Reuses the module's WS + JSON-RPC plumbing. *)
+
 (* -------------------------- injected item builder ------------------------- *)
 
 val build_injected_item : ?role:string -> C2c_mcp.message -> message_id:string -> Yojson.Safe.t

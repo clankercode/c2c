@@ -28,21 +28,14 @@ let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
 
 (* --- subcommand: init ---------------------------------------------------- *)
 
-let native_client_type_from_env () =
-  match env_client_type () with
-  | Some _ as client -> client
-  | None ->
-      let has_nonempty_env key =
-        match Sys.getenv_opt key with
-        | Some value -> String.trim value <> ""
-        | None -> false
-      in
-      if has_nonempty_env "CODEX_THREAD_ID" then Some "codex"
-      else if has_nonempty_env "CLAUDE_SESSION_ID"
-              || has_nonempty_env "CLAUDE_CODE_SESSION_ID"
-      then Some "claude"
-      else if has_nonempty_env "C2C_OPENCODE_SESSION_ID" then Some "opencode"
-      else None
+(* Shared with MCP inference (B134): keep init + inferred_client_type_from_env
+   in lockstep so GROK_SESSION_ID / Cursor markers are not silently dropped. *)
+let native_client_type_from_env () = C2c_mcp.inferred_client_type_from_env ()
+
+(* PATH uniqueness candidates (B102/B134). Include grok; do NOT include Cursor
+   (no reliable PATH binary — Cursor uses env markers only). When more than one
+   of these is present, fail closed (None) rather than silently picking Codex. *)
+let path_detectable_binaries = [ "opencode"; "claude"; "codex"; "kimi"; "grok" ]
 
 let detect_client () =
   (* A shell commonly has several agent CLIs on PATH.  Picking the first one
@@ -69,7 +62,7 @@ let detect_client () =
                 List.exists (fun d -> Sys.file_exists (d // name))
                   (String.split_on_char ':' path)
               in
-              match List.filter has_bin [ "opencode"; "claude"; "codex"; "kimi" ] with
+              match List.filter has_bin path_detectable_binaries with
               | [ client ] -> Some client
               | _ -> None)
 
@@ -267,8 +260,10 @@ let init_cmd =
   let reg_pid = resolve_registration_pid ~session_id () in
   let reg_pid_start = C2c_mcp.Broker.capture_pid_start_time reg_pid in
   (try
+     (* Prefer detect_client / --client resolution over bare C2C_MCP_CLIENT_TYPE
+        so Grok/Cursor native markers persist into registration + statefile (B134). *)
      C2c_mcp.Broker.register broker ~session_id ~alias ~pid:reg_pid ~pid_start_time:reg_pid_start
-       ~client_type:(env_client_type ()) ~from_auto_gen:alias_from_auto_gen ()
+       ~client_type:client_resolved ~from_auto_gen:alias_from_auto_gen ()
    with Invalid_argument msg ->
      (if json then
         print_json (`Assoc [("ok", `Bool false); ("error", `String msg)])

@@ -189,19 +189,18 @@ Use `c2c instances` to list running managed sessions and `c2c stop <name>` to sh
 
 **Codex delivery.** Managed `c2c start codex` (or `c2c new codex` for a
 fresh thread) is the canonical way to run a Codex peer (a stable alias is
-generated automatically; `--alias` overrides it). On supported Codex the
-session runs behind an authenticated loopback app-server with the stock
-remote TUI attached; hooks are the automatic fallback for older Codex. Today
-delivery uses Codex hooks — messages surface at hook boundaries (the
-session's next turn), not on arrival. App-server interactive delivery is
-landing now: its delivery stack — arrival-time injection into the thread's
-model-visible history without ever touching a typed draft, plus one gated
-turn for eligible local mail when the session is idle — is library-proven,
-with the live supervisor wiring being wired in (until it is confirmed live,
-sessions receive at the hook boundary). `c2c doctor hooks` shows which
-delivery mode a session actually has (`app-server` / `hooks+wake` / `hooks` /
-`unavailable`) with a fix for each degraded state. Full contract and current
-wiring status: [Per-Client Delivery § Codex](/client-delivery/#codex).
+generated automatically; `--alias` overrides it). On a supported Codex
+(codex-cli ≥ 0.144) it runs Codex behind an authenticated loopback
+app-server by default — no flag — and the managed supervisor delivers c2c
+mail arrival-time: injection into the thread's model-visible history without
+ever touching a typed draft, plus one gated turn for eligible local mail
+when the session is idle and DND is off (B131, proven live end-to-end).
+Older Codex, or an app-server startup failure, falls back automatically to
+Codex hooks — where messages surface at hook boundaries (the session's next
+turn), not on arrival. `c2c doctor hooks` shows which delivery mode a
+session actually has (`app-server` / `hooks+wake` / `hooks` / `unavailable`)
+with a fix for each degraded state. Full contract:
+[Per-Client Delivery § Codex](/client-delivery/#codex).
 
 ---
 

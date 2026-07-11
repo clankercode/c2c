@@ -47,7 +47,7 @@ let handle_send_sim relay ~from_alias ~to_alias ~content =
   let self_host = R.InMemoryRelay.self_host relay in
   if not (R.host_acceptable ~self_host host_opt) then
     (* #379 fix: write to dead_letter so rejection is observable *)
-    let msg_id = Uuidm.to_string (Uuidm.v `V4) in
+    let msg_id = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
     let ts = Unix.gettimeofday () in
     let dl = `Assoc [
       ("ts", `Float ts);
@@ -61,7 +61,7 @@ let handle_send_sim relay ~from_alias ~to_alias ~content =
     `Cross_host_rejected
       (Printf.sprintf "cross-host send to %S not supported (relay does not forward to other hosts)" to_alias)
   else
-    match R.InMemoryRelay.send relay ~from_alias ~to_alias:stripped_to_alias ~content ~message_id:None with
+    match R.InMemoryRelay.send relay ~from_alias ~to_alias:stripped_to_alias ~content ~message_id:None ~pow_difficulty:(-1) with
     | `Ok ts -> `Ok ts
     | `Duplicate ts -> `Duplicate ts
     | `Error (err, msg) -> `Error (err, msg)
