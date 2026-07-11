@@ -3,6 +3,11 @@
 **Author:** stanza-coder
 **Date:** 2026-04-28 15:20 AEST (UTC 05:20)
 **Severity:** OPERATIONAL — recovery procedure known
+**Fix status (2026-07-11 / B125):** MITIGATED for agent paths via
+machine-wide slot gate + shared Dune cache in
+`scripts/dune-build-locked.sh` (see
+`.collab/findings/2026-07-11T08-00-00Z-b125-parallel-dune-global-gate.md`).
+Per-worktree flock alone was insufficient for cross-worktree hangs.
 **Discovered during:** quota-burn parallel-subagent dispatch (Max
 directive to hit 95% by 5h reset)
 
