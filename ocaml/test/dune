@@ -61,6 +61,11 @@
  (modules test_c2c_codex_app_server)
  (libraries c2c_mcp alcotest yojson unix))
 
+(test
+ (name test_c2c_codex_ingress)
+ (modules test_c2c_codex_ingress)
+ (libraries c2c_mcp alcotest yojson unix))
+
 ; Dogfood driver for the codex app-server launcher primitive (T002). NOT part
 ; of the public `c2c` CLI — a standalone foreground executable meant to be run
 ; inside a tmux pane so the `codex --remote` frontend inherits the pane tty.
@@ -69,6 +74,14 @@
  (name dev_codex_app_server_dogfood)
  (modules dev_codex_app_server_dogfood)
  (libraries c2c_mcp unix))
+
+; T003 dogfood driver: exercises the REAL app-server injection path against a
+; live authenticated codex app-server (orchestrated by
+; scripts/codex-ingress-dogfood.py). NOT part of the public `c2c` CLI.
+(executable
+ (name dev_codex_ingress_dogfood)
+ (modules dev_codex_ingress_dogfood)
+ (libraries c2c_mcp yojson unix))
 
 (test
  (name test_c2c_kimi_notifier)
