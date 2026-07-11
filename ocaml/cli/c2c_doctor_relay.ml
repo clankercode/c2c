@@ -251,12 +251,21 @@ let check_reachable ~probe =
       let version = j |> member "version" |> to_string_option |> Option.value ~default:"?" in
       let git_hash = j |> member "git_hash" |> to_string_option |> Option.value ~default:"?" in
       let auth_mode = j |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown" in
-      if ok then
+      (* B121: protocol-skew health is rewritten to ok:false/incompatible_client
+         by Relay_client.health — still proves the host is up; the dedicated
+         relay.protocol check carries the FAIL + upgrade guidance. *)
+      if ok || Relay.Relay_client.is_protocol_incompatible j then
+        let version =
+          if version = "?" then
+            j |> member "server_version" |> to_string_option
+            |> Option.value ~default:"?"
+          else version
+        in
         { check_id = "relay.reachable"
         ; status = Pass
         ; message = sprintf "relay reachable — %s @ %s (auth: %s)"
             version git_hash auth_mode
-        ; detail = Some (sprintf "GET %s/health → ok" probe.url)
+        ; detail = Some (sprintf "GET %s/health → responded" probe.url)
         ; fix_command = None
         ; docs_url = Some docs_relay }
       else
@@ -275,6 +284,65 @@ let check_reachable ~probe =
         ; detail = Some (Yojson.Safe.pretty_to_string j)
         ; fix_command = None
         ; docs_url = Some docs_relay }
+
+(* B121: wire protocol compatibility. Distinct from reachability — the relay
+   can be up while this client is too old (or too new) for its wire version. *)
+let check_protocol ~probe =
+  match probe.health with
+  | None ->
+      { check_id = "relay.protocol"
+      ; status = Inconclusive
+      ; message = "protocol check skipped (relay unreachable)"
+      ; detail = None; fix_command = None; docs_url = Some docs_relay }
+  | Some j when Relay.Relay_client.is_protocol_incompatible j ->
+      let open Yojson.Safe.Util in
+      let msg =
+        j |> member "error" |> to_string_option
+        |> Option.value
+             ~default:(sprintf
+               "relay %s speaks an incompatible protocol; upgrade c2c \
+                (git pull && just install-all)"
+               probe.url)
+      in
+      { check_id = "relay.protocol"
+      ; status = Fail
+      ; message = msg
+      ; detail = Some (Yojson.Safe.pretty_to_string j)
+      ; fix_command = Some "git pull && just install-all   # then retry c2c relay status"
+      ; docs_url = Some docs_relay }
+  | Some j ->
+      (match Relay.Relay_client.protocol_compat_of_health j with
+       | Relay.Relay_client.Compatible ->
+           let open Yojson.Safe.Util in
+           let pv =
+             match j |> member "protocol_version" with
+             | `Int i -> string_of_int i
+             | _ -> string_of_int Version.relay_protocol_version
+           in
+           { check_id = "relay.protocol"
+           ; status = Pass
+           ; message = sprintf "protocol compatible (v%s)" pv
+           ; detail = None; fix_command = None; docs_url = Some docs_relay }
+       | Relay.Relay_client.Unknown ->
+           { check_id = "relay.protocol"
+           ; status = Pass
+           ; message =
+               "protocol version not advertised (pre-B121 relay; assuming compatible)"
+           ; detail = None; fix_command = None; docs_url = Some docs_relay }
+       | (Relay.Relay_client.Client_too_old _ | Relay.Relay_client.Client_too_new _)
+         as compat ->
+           let msg =
+             match Relay.Relay_client.upgrade_message ~url:probe.url compat with
+             | Some m -> m
+             | None -> "incompatible relay protocol"
+           in
+           { check_id = "relay.protocol"
+           ; status = Fail
+           ; message = msg
+           ; detail = Some (Yojson.Safe.pretty_to_string j)
+           ; fix_command =
+               Some "git pull && just install-all   # then retry c2c relay status"
+           ; docs_url = Some docs_relay })
 
 let check_lease ~probe ~local_aliases ~local_total =
   if probe.health = None then
@@ -502,6 +570,7 @@ let run_checks () =
   let checks =
     [ check_configured ~probe
     ; check_reachable ~probe
+    ; check_protocol ~probe
     ; check_lease ~probe ~local_aliases ~local_total
     ; check_connector ~relay_url:probe.url ~scoped_procs ~state ~now
     ; check_outbox ~broker_root

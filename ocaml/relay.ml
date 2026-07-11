@@ -2595,6 +2595,12 @@ end = struct
     respond_ok ~headers:[pow_header] (json_ok [
       ("version", `String Version.version);
       ("git_hash", `String git_hash);
+      (* B121: wire protocol negotiation. Clients compare these against
+         Version.relay_protocol_version and surface an upgrade message
+         when the numbers diverge instead of opaque auth/HTTP errors. *)
+      ("protocol_version", `Int Version.relay_protocol_version);
+      ("min_client_protocol_version",
+       `Int Version.relay_min_client_protocol_version);
       ("auth_mode", `String auth_mode);
       ("pow", `Assoc [
         ("enabled", `Bool pow_enabled);
