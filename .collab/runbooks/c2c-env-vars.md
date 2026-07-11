@@ -144,7 +144,7 @@ Set to `1` by every managed Codex launch (`C2c_codex_session.run`, `ocaml/c2c_co
 
 ### `C2C_CODEX_INGRESS_LIVE`
 
-Set to `1` by a managed app-server Codex session (`C2c_codex_session.run_delivery_loop`, `ocaml/c2c_codex_session.ml`) to unlock the real ingress/auto-turn WebSocket clients in the launcher process. It is exported **after** the codex frontend + app-server children are already spawned (both snapshot `Unix.environment ()` at spawn time), so it is **NOT** inherited by the codex frontend or the hooks it fires — do not rely on it as a "managed session" marker inside a hook process. The `c2c hook codex` B136 nudge treats a set `C2C_CODEX_INGRESS_LIVE` as one (belt-and-suspenders) app-server signal, but the load-bearing managed markers are the thread→instance mapping and `C2C_MCP_SESSION_ID` (see below).
+Set to `1` by a managed app-server Codex session (`C2c_codex_session.run_delivery_loop`, `ocaml/c2c_codex_session.ml`) to unlock the real ingress/auto-turn WebSocket clients in the launcher process. It is exported **after** the codex frontend + app-server children are already spawned (both snapshot `Unix.environment ()` at spawn time), so it is **NOT** inherited by the codex frontend or the hooks it fires — do not rely on it as a "managed session" marker inside a hook process. The `c2c hook codex` B136 nudge treats a set `C2C_CODEX_INGRESS_LIVE` as one (belt-and-suspenders) app-server signal; the load-bearing managed marker is `C2C_CODEX_MANAGED` (above), which — unlike the thread→instance mapping, `C2C_MCP_SESSION_ID`, or the broker registration — is reliably present for a real app-server session.
 
 ### `C2C_CODEX_APPSERVER_NUDGE_EVERY`
 

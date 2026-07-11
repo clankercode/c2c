@@ -52,7 +52,10 @@ Nudge shows iff ALL hold:
 
 The tip only emits after the incremented counter is durably written (I/O
 failure ⇒ no tip), and the read-modify-write is flock-serialized
-(`with_codex_nudge_lock`) so concurrent SessionStart hooks can't all emit.
+(`with_codex_nudge_lock`) so concurrent SessionStart hooks can't all emit. The
+lock **fails closed**: if the lockfile can't be opened or the lock can't be
+taken, no tip is shown (a lock failure can never let two hooks emit
+unserialized).
 
 ## Counter location
 

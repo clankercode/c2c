@@ -325,21 +325,24 @@ let write_codex_appserver_nudge_count ~broker_root n =
 
 (* Serialize the read-modify-write of the counter across concurrent SessionStart
    hooks (each is a separate process) with an flock on a sibling lockfile, so two
-   simultaneous starts cannot both read N-1, both write N, and both emit. Falls
-   back to running [f] unlocked if the lock cannot be taken (best-effort). *)
+   simultaneous starts cannot both read N-1, both write N, and both emit. [f]
+   returns the tip string ("" = no tip). Fails CLOSED — returns "" without
+   running [f] — if the lockfile cannot be opened or the lock cannot be taken,
+   so a lock failure can never let two hooks emit unserialized. *)
 let with_codex_nudge_lock ~broker_root f =
   let lock_path = codex_appserver_nudge_count_path ~broker_root ^ ".lock" in
   match
     (try Some (Unix.openfile lock_path [ Unix.O_CREAT; Unix.O_RDWR ] 0o600)
      with _ -> None)
   with
-  | None -> f ()
+  | None -> ""
   | Some fd ->
       Fun.protect
         ~finally:(fun () -> (try Unix.close fd with _ -> ()))
         (fun () ->
-          (try Unix.lockf fd Unix.F_LOCK 0 with _ -> ());
-          f ())
+          match (try Unix.lockf fd Unix.F_LOCK 0; true with _ -> false) with
+          | true -> f ()
+          | false -> "")
 
 let codex_appserver_nudge_text =
   "Tip: you're receiving c2c messages at turn boundaries (they surface when \
