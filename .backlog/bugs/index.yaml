@@ -126,3 +126,4 @@ bugs:
     - file: B127-offline-managed-alias-rejects.todo
     - file: B128-generalize-arg-passthrough-to.todo
     - file: B129-c2c-start-pty-cmd-broken-since.todo
+    - file: B130-c2c-dm-to-coordinator-session.todo
