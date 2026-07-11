@@ -1,0 +1,19 @@
+---
+complexity: medium
+depends_on: []
+estimate_hours: 2
+id: B116
+priority: critical
+status: pending
+tags: []
+title: Require authorization to revoke mobile relay bindings
+---
+B111 found that DELETE /binding/<binding_id> reaches mobile binding revocation through a self-auth bypass. The handler validates only binding-ID shape, then removes a matching binding and exposes existence; no bearer credential, Ed25519 proof, or binding-owner proof is required.
+
+Acceptance criteria:
+- Require a proof bound to the machine or phone key that created the binding, or a narrowly scoped revocation credential.
+- A bare binding ID must not authorize deletion or disclose binding existence.
+- Add token-configured integration tests proving anonymous revocation is rejected and an authorized owner can revoke.
+- Keep the live validation non-destructive; do not test against production bindings.
+
+Evidence: B111 audit.
