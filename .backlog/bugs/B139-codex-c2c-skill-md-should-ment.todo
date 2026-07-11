@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-11T16:20:54Z"
+claimed_by: cli-user
+completed_at: null
 complexity: low
 created_at: "2026-07-11T16:20:42Z"
 depends_on: []
 estimate_hours: 1
 id: B139
 priority: low
-status: pending
+started_at: "2026-07-11T16:20:54Z"
+status: in_progress
 tags: []
 title: Codex c2c SKILL.md should mention 'c2c new codex' / cx alias for arrival-time app-server delivery
-updated_at: "2026-07-11T16:20:42Z"
+updated_at: "2026-07-11T16:20:54Z"
 ---
 The installed codex AGENTS.md block + the B136 runtime SessionStart nudge mention 'c2c new codex' (alias cx='c2c new codex --') for arrival-time app-server delivery, but the codex c2c SKILL.md does not. Add a concise line to the canonical skill source (.collab/skills/c2c/SKILL.md) and regenerate all synced/embedded copies (just sync-skills + just codegen-claude-skill) so just check stays green. Keep it short; point vanilla codex users at managed 'c2c new codex' for the tightest c2c integration.
