@@ -214,8 +214,9 @@ let report_diagnostic (d : C2c_codex_app_server.diagnostic) : unit =
    | Some cur, Some min ->
        Printf.eprintf "  codex version %s; minimum supported for app-server mode is %s.\n" cur min
    | _ -> ());
-  Printf.eprintf "  falling back to the hook-backed Codex launch. To require app-server mode,\n\
-                 \  upgrade codex and retry, or run without --app-server for hooks.\n";
+  Printf.eprintf "  falling back to the hook-backed Codex launch automatically. To get\n\
+                 \  arrival-time app-server delivery, upgrade codex (>= %s) and relaunch.\n"
+    (let (a, b, c) = codex_min_version in Printf.sprintf "%d.%d.%d" a b c);
   Printf.eprintf "  diagnostic: %s\n%!" (Yojson.Safe.to_string j)
 
 type resolved = {
@@ -372,7 +373,24 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
       is_dnd = (fun () -> try C2c_mcp.Broker.is_dnd broker ~session_id:name with _ -> false);
       register;
       deregister;
-      on_pass = log_deliver_pass ~instance_dir;
+      on_pass =
+        (* Collapse runs of identical passes into a single log line — log only
+           when the structured outcome CHANGES. An idle session polls once/sec and
+           each idle pass returns the same benign outcome; logging every one grows
+           codex-deliver.log unbounded (~86k lines/day). Dedup-on-change keeps
+           every state transition while dropping the steady-state repeats.
+           (po_injected_count is a session cumulative, so it cannot be used as a
+           per-pass "did work" signal — hence compare the whole outcome.)
+           B131 review (2026-07-12). *)
+        (let last_pass = ref "" in
+         fun po ->
+           let key =
+             Yojson.Safe.to_string (C2c_codex_autoturn.pass_outcome_to_json po)
+           in
+           if key <> !last_pass then begin
+             last_pass := key;
+             log_deliver_pass ~instance_dir po
+           end);
       now = Unix.gettimeofday;
       sleep = (fun s -> try Unix.sleepf s with _ -> ());
       poll_interval_s = 1.0;

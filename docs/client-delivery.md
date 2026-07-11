@@ -241,6 +241,15 @@ supervisor:
   hook launch — `c2c doctor hooks` then reports `app-server-unavailable`
   with the remediation (upgrade Codex, then relaunch `c2c start codex`).
 
+**Known caveat — two aliases per session.** The managed launcher registers the
+routable app-server alias (the one `c2c instances` reports and the delivery loop
+drives), but the stock Codex frontend also runs its own `c2c hook codex`
+SessionStart, which self-registers a *second*, separate alias. So `c2c list` may
+show two entries for one session; only the launcher alias gets arrival-time
+app-server delivery (the hook alias delivers at the hook boundary). Reconciling
+the two identities is a follow-up (frontend-env parity), tracked separately from
+the delivery-loop wiring.
+
 Supported Codex: **codex-cli ≥ 0.144** (validated on 0.144.1). The app-server
 protocol and hook events are upstream surfaces that can drift across Codex
 releases — when something stops matching this page, check the official
