@@ -956,7 +956,7 @@ let send_with_cross_host_check relay ~from_alias ~to_alias ~content =
   if (not opaque_host_route) && not (Relay.host_acceptable ~self_host host_opt) then begin
     (* Mirror relay.ml:3177-3187: generate dead_letter entry with reason
        cross_host_not_implemented before returning the error. *)
-    let msg_id = Uuidm.to_string (Uuidm.v `V4) in
+    let msg_id = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
     let ts = Unix.gettimeofday () in
     let dl = `Assoc [
       ("ts", `Float ts);
