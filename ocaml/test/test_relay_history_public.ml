@@ -119,6 +119,51 @@ let test_mem_visibility_downgrade_persists () =
     check string "downgraded visibility survives restart" "gated"
       (Relay.InMemoryRelay.room_visibility_of t2 ~room_id:"mem-dg"))
 
+let write_file path content =
+  let dir = Filename.dirname path in
+  let rec mkdir_p d =
+    if not (Sys.file_exists d) then begin
+      mkdir_p (Filename.dirname d);
+      (try Unix.mkdir d 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+    end
+  in
+  mkdir_p dir;
+  let oc = open_out path in
+  output_string oc content; close_out oc
+
+let test_mem_legacy_room_without_meta_stays_open () =
+  (* A pre-B117 persisted room has history.jsonl but NO meta.json. Per the AC's
+     compatible-rollout requirement it must default OPEN (it was anonymously
+     readable before this feature existed). *)
+  with_temp_dir (fun dir ->
+    write_file (Filename.concat dir "rooms/legacy/history.jsonl")
+      "{\"message_id\":\"m1\",\"from_alias\":\"alice\",\"content\":\"hi\",\"ts\":1.0}\n";
+    let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+    check bool "legacy room without meta.json defaults open (compatible rollout)"
+      true (Relay.InMemoryRelay.history_public_of t ~room_id:"legacy"))
+
+let test_mem_corrupt_meta_fails_closed () =
+  (* meta.json EXISTS but is unparseable ⇒ a deliberate policy was written but
+     cannot be trusted ⇒ fail closed (member-only), never re-open. *)
+  with_temp_dir (fun dir ->
+    write_file (Filename.concat dir "rooms/corrupt/history.jsonl")
+      "{\"message_id\":\"m1\",\"from_alias\":\"alice\",\"content\":\"hi\",\"ts\":1.0}\n";
+    write_file (Filename.concat dir "rooms/corrupt/meta.json") "{ this is not json";
+    let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+    check bool "corrupt meta.json fails closed" false
+      (Relay.InMemoryRelay.history_public_of t ~room_id:"corrupt"))
+
+let test_mem_incomplete_meta_fails_closed () =
+  (* meta.json parses but omits history_public ⇒ fail closed. *)
+  with_temp_dir (fun dir ->
+    write_file (Filename.concat dir "rooms/partial/history.jsonl")
+      "{\"message_id\":\"m1\",\"from_alias\":\"alice\",\"content\":\"hi\",\"ts\":1.0}\n";
+    write_file (Filename.concat dir "rooms/partial/meta.json")
+      "{\"visibility\":\"public\"}";
+    let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+    check bool "meta.json missing history_public fails closed" false
+      (Relay.InMemoryRelay.history_public_of t ~room_id:"partial"))
+
 let test_mem_unknown_room_default () =
   let t = Relay.InMemoryRelay.create () in
   (* No such room stored: default is open (public default), matching the
@@ -228,6 +273,9 @@ let () =
         test_case "visibility downgrade clears" `Quick test_mem_visibility_downgrade_clears;
         test_case "persists across restart" `Quick test_mem_persists_across_restart;
         test_case "downgrade persists across restart" `Quick test_mem_visibility_downgrade_persists;
+        test_case "legacy room without meta stays open" `Quick test_mem_legacy_room_without_meta_stays_open;
+        test_case "corrupt meta fails closed" `Quick test_mem_corrupt_meta_fails_closed;
+        test_case "incomplete meta fails closed" `Quick test_mem_incomplete_meta_fails_closed;
         test_case "unknown room default" `Quick test_mem_unknown_room_default;
       ];
       "SqliteRelay", [

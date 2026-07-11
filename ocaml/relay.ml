@@ -130,16 +130,25 @@ module InMemoryRelay : RELAY = struct
       let entries = try Array.to_list (Sys.readdir rooms_dir) with Sys_error _ -> [] in
       List.iter (fun room_id ->
         let path = room_meta_json_path persist_dir room_id in
-        if Sys.file_exists path then
-          try
-            let j = Yojson.Safe.from_file path in
+        if Sys.file_exists path then begin
+          (* B117 (review P1): meta.json EXISTS but is unreadable / malformed /
+             missing a field ⇒ a deliberate policy was written but we can't
+             trust it, so fail CLOSED (member-only) rather than re-open a
+             possibly-closed history. A truly ABSENT meta.json is a legacy
+             pre-B117 room (no branch here) and keeps the AC-mandated
+             compatible-rollout default (public/unlisted → open). *)
+          let fail_closed () =
+            Hashtbl.replace room_history_public room_id false in
+          match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+          | None -> fail_closed ()
+          | Some j ->
             (match Yojson.Safe.Util.member "visibility" j with
              | `String v -> Hashtbl.replace room_visibility room_id (canonical_visibility_or_raw v)
              | _ -> ());
             (match Yojson.Safe.Util.member "history_public" j with
              | `Bool b -> Hashtbl.replace room_history_public room_id b
-             | _ -> ())
-          with _ -> ()
+             | _ -> fail_closed ())
+        end
       ) entries
     end
 
