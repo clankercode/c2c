@@ -139,8 +139,16 @@ type config = {
   max_pending_queue : int;     (** backpressure threshold for health.overloaded *)
   backoff_base_s : float;
   backoff_max_s : float;
+  stale_pending_threshold_s : float;
+      (** B168: age (from [le_first_seen]) after which a still-pending inject
+          entry force-retries even if [le_next_eligible] is in the future.
+          Default [120.] (2 minutes). Ensures messages cannot sit forever
+          behind a long backoff when the session is otherwise healthy. *)
   now : unit -> float;         (** clock seam *)
 }
+
+(** Default B168 stale-pending force-retry threshold (2 minutes). *)
+val default_stale_pending_threshold_s : float
 
 val default_config :
   broker_root:string ->
@@ -178,6 +186,9 @@ type health = {
   dead_letter_count : int;
   injected_count : int;
   overloaded : bool;
+  stale_forced_count : int;
+      (** B168: how many pending entries had their inject backoff bypassed this
+          pass because they exceeded {!config.stale_pending_threshold_s}. *)
   last_error : string option;
   last_protocol_error : string option;
 }

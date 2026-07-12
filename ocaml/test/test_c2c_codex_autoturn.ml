@@ -74,11 +74,17 @@ type cfg_handle = {
 
 let mk_cfg ?(provenance = A.default_provenance) ?now ~root ~inject_client ~turn_client () =
   let active = ref true and dnd = ref false in
-  let ing = I.default_config ~broker_root:root ~session_id:"sess" ~managed_identity:"unit-x"
-      ~endpoint:ep ~thread_id:"thread-1" ~token_provider:(fun () -> Some "raw") ~client:inject_client in
+  let clock = Option.value now ~default:(fun () -> 5000.0) in
+  let ing =
+    { (I.default_config ~broker_root:root ~session_id:"sess" ~managed_identity:"unit-x"
+         ~endpoint:ep ~thread_id:"thread-1" ~token_provider:(fun () -> Some "raw")
+         ~client:inject_client)
+      with now = clock }
+  in
   let base = A.default_config ~ingress_cfg:ing ~turn_client
       ~session_active:(fun () -> !active) ~is_dnd:(fun () -> !dnd) in
-  let cfg = { base with provenance; now = Option.value now ~default:(fun () -> 5000.0) } in
+  (* Keep autoturn + ingress clocks in lockstep so B168 ages are deterministic. *)
+  let cfg = { base with provenance; now = clock; ingress_cfg = ing } in
   { active; dnd; cfg }
 
 let qr o = Option.map A.queued_reason_to_string o.A.po_queued_reason
@@ -394,7 +400,93 @@ let test_metrics_no_bodies () =
   in
   Alcotest.(check bool) "metrics never leak the body" false (contains s "SECRET-BODY-XYZ");
   Alcotest.(check bool) "recipient is redacted (no raw managed id)" false (contains s "unit-x");
-  Alcotest.(check bool) "recipient present" true (contains s "rcpt-")
+  Alcotest.(check bool) "recipient present" true (contains s "rcpt-");
+  Alcotest.(check bool) "B168 age metric present" true (contains s "oldest_eligible_age_s");
+  Alcotest.(check bool) "B168 stale_released metric present" true (contains s "stale_released")
+
+(* ---- B168: idle immediate + 2-minute stale failed-batch release ---- *)
+
+let test_idle_delivers_immediately_without_waiting_for_stale () =
+  (* Idle + eligible local mail must auto-turn on the first pass — the 2-minute
+     stale threshold is a backstop, not a delay. *)
+  let root = mk_root () in
+  seed_inbox ~root [ mk_msg ~from:"peer" ~message_id:"m1" "hi" ];
+  let clock = ref 1000.0 in
+  let ic, injected = mk_inject_client () in
+  let th = mk_turn_harness () in
+  let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client ~now:(fun () -> !clock) () in
+  let cfg = { h.cfg with stale_inbox_threshold_s = 120.0 } in
+  let o = A.deliver_pass cfg in
+  Alcotest.(check int) "inject immediate" 1 (List.length !injected);
+  Alcotest.(check int) "turn immediate (no 2min wait)" 1 (n_starts th);
+  Alcotest.(check bool) "turn started" true (o.A.po_turn_started <> None);
+  Alcotest.(check int) "no stale release needed" 0 o.A.po_stale_released
+
+let test_stale_turn_failed_retries_when_idle () =
+  (* A rejected turn claims its messages; before the stale threshold they stay
+     claimed. After >= 2 minutes the failed batch is released and a new turn
+     fires while idle. *)
+  let root = mk_root () in
+  seed_inbox ~root [ mk_msg ~from:"peer" ~message_id:"m1" "retry-me" ];
+  let clock = ref 1000.0 in
+  let ic, _ = mk_inject_client () in
+  let th = mk_turn_harness () in
+  th.outcomes := [ A.Turn_rejected "unsupported_here" ];
+  let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client ~now:(fun () -> !clock) () in
+  let cfg = { h.cfg with stale_inbox_threshold_s = 120.0 } in
+  let o1 = A.deliver_pass cfg in
+  Alcotest.(check (option string)) "first pass turn_failed" (Some "turn_failed") (qr o1);
+  Alcotest.(check int) "one failed attempt" 1 (n_starts th);
+  (* still inside the stale window — no re-batch *)
+  clock := 1050.0;
+  let o2 = A.deliver_pass cfg in
+  Alcotest.(check int) "no refire before stale threshold" 1 (n_starts th);
+  Alcotest.(check int) "no release yet" 0 o2.A.po_stale_released;
+  Alcotest.(check (option string)) "no eligible while claimed"
+    (Some "no_eligible") (qr o2);
+  (* past stale threshold + idle → release + re-turn *)
+  clock := 1120.0;
+  th.outcomes := [];  (* default Turn_started *)
+  let o3 = A.deliver_pass cfg in
+  Alcotest.(check int) "stale released the failed batch" 1 o3.A.po_stale_released;
+  Alcotest.(check int) "second turn after stale release" 2 (n_starts th);
+  Alcotest.(check bool) "turn re-started" true (o3.A.po_turn_started <> None);
+  Alcotest.(check (list string)) "same message re-batched" [ "m1" ] o3.A.po_batch_message_ids
+
+let test_stale_does_not_break_active_serialization () =
+  (* Even with mail older than 2 minutes, an active turn must NOT be raced —
+     B098 / T007 serialization wins over the stale SLA. *)
+  let root = mk_root () in
+  seed_inbox ~root [ mk_msg ~from:"peer" ~message_id:"m1" "first" ];
+  let clock = ref 1000.0 in
+  let ic, _ = mk_inject_client () in
+  let th = mk_turn_harness () in
+  let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client ~now:(fun () -> !clock) () in
+  let cfg = { h.cfg with stale_inbox_threshold_s = 120.0 } in
+  let _ = A.deliver_pass cfg in
+  Alcotest.(check int) "turn1" 1 (n_starts th);
+  th.status := `Active;
+  (* mid-turn arrival at t=1000 (injected + eligible, serialized behind active) *)
+  seed_inbox ~root
+    [ mk_msg ~from:"peer" ~message_id:"m1" "first";
+      mk_msg ~from:"peer" ~message_id:"m2" "stale-while-active" ];
+  let o_mid = A.deliver_pass cfg in
+  Alcotest.(check (option string)) "mid-turn arrival queued"
+    (Some "active_turn") (qr o_mid);
+  Alcotest.(check int) "eligible m2 counted" 1 o_mid.A.po_eligible_pending;
+  (* advance past 2 minutes while still active — still must not start a turn *)
+  clock := 1300.0;
+  let o2 = A.deliver_pass cfg in
+  Alcotest.(check (option string)) "still serialized behind active turn"
+    (Some "active_turn") (qr o2);
+  Alcotest.(check int) "NO second turn while active even when stale" 1 (n_starts th);
+  Alcotest.(check bool) "oldest eligible age grows for m2 while active" true
+    (o2.A.po_oldest_eligible_age_s >= 120.0);
+  (* after idle, the follow-up fires (stale age does not change this path) *)
+  th.status := `Idle;
+  let o3 = A.deliver_pass cfg in
+  Alcotest.(check int) "follow-up after idle" 2 (n_starts th);
+  Alcotest.(check (list string)) "follow-up carries m2" [ "m2" ] o3.A.po_batch_message_ids
 
 let () =
   Alcotest.run "c2c_codex_autoturn"
@@ -426,5 +518,12 @@ let () =
           Alcotest.test_case "claim recovery (no probe): holds" `Quick
             test_claim_recovery_no_probe_holds;
           Alcotest.test_case "idempotent across restart" `Quick test_idempotent_restart ] );
+      ( "b168-idle-stale",
+        [ Alcotest.test_case "idle delivers immediately (no 2min wait)" `Quick
+            test_idle_delivers_immediately_without_waiting_for_stale;
+          Alcotest.test_case "stale Turn_failed re-batches when idle" `Quick
+            test_stale_turn_failed_retries_when_idle;
+          Alcotest.test_case "stale does not break active serialization" `Quick
+            test_stale_does_not_break_active_serialization ] );
       ( "hygiene",
         [ Alcotest.test_case "metrics leak no bodies/creds" `Quick test_metrics_no_bodies ] ) ]

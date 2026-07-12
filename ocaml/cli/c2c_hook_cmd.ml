@@ -631,16 +631,20 @@ let hook_codex_cmd =
                          ~session_id:sid ~alias ~client:(Some "codex"));
                   (sid, Some alias))
        in
-       (* B137: is this an app-server-backed managed codex session? Detected by
-          the inherited launcher marker (C2C_CODEX_APPSERVER_SESSION — present
-          even before the launcher's broker registration lands, so the earliest
-          hook fire is covered too) OR by the resolved session already carrying a
-          "codex-app-server" registration. For such a session the app-server
-          C2c_codex_ingress loop owns delivery and the launcher owns the
-          registration — the hook is IDENTITY-ONLY (adopted above; it does not
-          register, drain, or touch wake targets). Hook-fallback managed codex
-          (client_type "codex") is NOT ingress-owned — hooks remain its delivery
-          + wake path. *)
+       (* B137 / B168: is this an app-server-backed managed codex session?
+          Detected by the inherited launcher marker (C2C_CODEX_APPSERVER_SESSION
+          — present even before the launcher's broker registration lands, so the
+          earliest hook fire is covered too) OR by the resolved session already
+          carrying a "codex-app-server" registration.
+          B168 decision: KEEP PostToolUse/UserPromptSubmit/Session* hooks
+          ACTIVE (installed + identity adoption + onboarding wake text) for
+          app-server agents — do not strip them. Delivery itself stays owned by
+          the app-server deliver loop (idle inject + auto-turn, plus the 2-minute
+          stale-inbox force-retry). The hook remains IDENTITY-ONLY for drain
+          (adopted above; it does not register, drain, or touch wake targets) so
+          we never dual-drain or dual-identity-storm. Hook-fallback managed
+          codex (client_type "codex") is NOT ingress-owned — hooks remain its
+          delivery + wake path. *)
        let ingress_owned =
          (match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
           | Some s when String.trim s <> "" -> true
@@ -700,17 +704,16 @@ let hook_codex_cmd =
        let full_drain = event = "SessionStart" || event = "UserPromptSubmit" in
        let repo_broker, messages =
          if ingress_owned then
-           (* B137: app-server session — the hook drains NOTHING. The
-              C2c_codex_ingress loop owns arrival-time delivery of the repo
-              inbox; a second drainer here would race it and steal messages
-              before injection. The global cross-repo inbox is deliberately not
-              drained either: doing so from the frontend hook would let a NESTED
-              codex that inherited C2C_CODEX_APPSERVER_SESSION consume mail
-              addressed to the parent app-server identity (misrouting into the
-              wrong transcript). Global-inbox delivery for app-server sessions
-              belongs to a future extension of the ingress loop, not this hook.
-              Identity was still adopted above, so no duplicate registration is
-              created — which is all B137 requires of the hook. *)
+           (* B137 / B168: app-server session — the hook drains NOTHING (still
+              runs identity-only; PostToolHook stays installed/active). The
+              C2c_codex_deliver_loop owns arrival-time delivery of the repo
+              inbox (and B141 global inject-only); a second drainer here would
+              race it and steal messages before injection / dual-delivery
+              storm. Nested codex inheriting C2C_CODEX_APPSERVER_SESSION still
+              cannot steal parent mail because this path never drains. Idle +
+              >2min stale delivery are enforced in the app-server loop (B168),
+              not by re-enabling hook drain. Identity was still adopted above,
+              so no duplicate registration is created. *)
            (Some broker, [])
          else if full_drain then begin
            let repo_messages =

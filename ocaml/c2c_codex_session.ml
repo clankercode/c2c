@@ -632,8 +632,18 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
            B131 review (2026-07-12). *)
         (let last_pass = ref "" in
          fun po ->
+           (* Exclude continuously-growing age from the dedup key (B168) so an
+              idle session with a stuck eligible message does not log every
+              poll; state transitions still log. *)
            let key =
-             Yojson.Safe.to_string (C2c_codex_autoturn.pass_outcome_to_json po)
+             match C2c_codex_autoturn.pass_outcome_to_json po with
+             | `Assoc fields ->
+                 Yojson.Safe.to_string
+                   (`Assoc
+                      (List.filter
+                         (fun (k, _) -> k <> "oldest_eligible_age_s")
+                         fields))
+             | j -> Yojson.Safe.to_string j
            in
            if key <> !last_pass then begin
              last_pass := key;
@@ -705,7 +715,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
         (let last_global = ref "" in
          fun gh ->
            let key =
-             (* Exclude the continuously-growing pending age from the dedup
+             (* Exclude the continuously-growing pending ages from the dedup
                 key — a stuck-pending message would otherwise produce a new
                 "changed" snapshot (and a log line) every pass. *)
              Yojson.Safe.to_string
@@ -713,7 +723,9 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
                 | `Assoc fields ->
                     `Assoc
                       (List.filter
-                         (fun (k, _) -> k <> "oldest_pending_age_s")
+                         (fun (k, _) ->
+                            k <> "oldest_pending_age_s"
+                            && k <> "stale_forced_count")
                          fields)
                 | j -> j)
            in

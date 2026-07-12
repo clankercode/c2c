@@ -313,6 +313,61 @@ let test_no_turn_no_approval_data_item () =
   Alcotest.(check bool) "message_id value present in machine metadata" true (contains "m1");
   Alcotest.(check bool) "canonical c2c envelope present" true (contains "<c2c event=")
 
+(* ---- B168: stale-pending force-retry (2-minute SLA) ---- *)
+
+let test_non_stale_respects_backoff () =
+  (* Before the stale threshold, exponential backoff still holds. *)
+  let root = mk_root () in
+  seed_inbox ~root ~session_id:"sess" [ mk_msg ~message_id:"m1" "wait" ];
+  let client1, calls1 = mk_client [ I.Inj_recoverable I.Server_unavailable ] in
+  let c1 =
+    { (cfg ~root ~client:client1 ~now:(fun () -> 1000.0) ()) with
+      backoff_base_s = 1000.0; backoff_max_s = 10000.0;
+      stale_pending_threshold_s = 120.0 }
+  in
+  let _ = I.deliver_pass c1 in
+  Alcotest.(check int) "first inject attempt" 1 (ncalls calls1);
+  (* age = 10s << 120; next_eligible is far in the future → no inject *)
+  let client2, calls2 = mk_client [ I.Inj_ok ] in
+  let c2 =
+    { (cfg ~root ~client:client2 ~now:(fun () -> 1010.0) ()) with
+      backoff_base_s = 1000.0; backoff_max_s = 10000.0;
+      stale_pending_threshold_s = 120.0 }
+  in
+  let h2 = I.deliver_pass c2 in
+  Alcotest.(check int) "backoff holds before stale threshold" 0 (ncalls calls2);
+  Alcotest.(check int) "no stale force" 0 h2.stale_forced_count;
+  Alcotest.(check (option string)) "still pending" (Some "pending_injection")
+    (Option.map I.delivery_state_to_string (state_of c2 "m1"))
+
+let test_stale_pending_force_retry () =
+  (* B168: once a pending inject has sat >= 2 minutes, force another inject
+     attempt even if le_next_eligible is still in the future. *)
+  let root = mk_root () in
+  seed_inbox ~root ~session_id:"sess" [ mk_msg ~message_id:"m1" "stale-me" ];
+  let client1, calls1 = mk_client [ I.Inj_recoverable I.Server_unavailable ] in
+  let c1 =
+    { (cfg ~root ~client:client1 ~now:(fun () -> 1000.0) ()) with
+      backoff_base_s = 1000.0; backoff_max_s = 10000.0;
+      stale_pending_threshold_s = 120.0 }
+  in
+  let _ = I.deliver_pass c1 in
+  Alcotest.(check int) "first inject attempt" 1 (ncalls calls1);
+  (* age = 120s, next_eligible still ~2000 → force-retry *)
+  let client2, calls2 = mk_client [ I.Inj_ok ] in
+  let c2 =
+    { (cfg ~root ~client:client2 ~now:(fun () -> 1120.0) ()) with
+      backoff_base_s = 1000.0; backoff_max_s = 10000.0;
+      stale_pending_threshold_s = 120.0 }
+  in
+  let h2 = I.deliver_pass c2 in
+  Alcotest.(check int) "stale force-retry injects" 1 (ncalls calls2);
+  Alcotest.(check int) "stale_forced_count recorded" 1 h2.stale_forced_count;
+  Alcotest.(check (option string)) "injected after stale force" (Some "injected")
+    (Option.map I.delivery_state_to_string (state_of c2 "m1"));
+  Alcotest.(check bool) "oldest_pending_age reports zero once injected"
+    true (h2.oldest_pending_age_s = 0.0)
+
 let () =
   Alcotest.run "c2c_codex_ingress"
     [ ( "persist-first",
@@ -338,4 +393,7 @@ let () =
           Alcotest.test_case "ordered multi-message" `Quick test_ordered_multi_message ] );
       ( "semantics",
         [ Alcotest.test_case "ephemeral no archive" `Quick test_ephemeral_no_archive;
-          Alcotest.test_case "no turn / no approval / data item" `Quick test_no_turn_no_approval_data_item ] ) ]
+          Alcotest.test_case "no turn / no approval / data item" `Quick test_no_turn_no_approval_data_item ] );
+      ( "b168-stale-pending",
+        [ Alcotest.test_case "non-stale respects inject backoff" `Quick test_non_stale_respects_backoff;
+          Alcotest.test_case "stale pending force-retries inject" `Quick test_stale_pending_force_retry ] ) ]

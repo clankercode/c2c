@@ -129,14 +129,20 @@ type config = {
   max_pending_queue : int;
   backoff_base_s : float;
   backoff_max_s : float;
+  stale_pending_threshold_s : float;
   now : unit -> float;
 }
+
+(* B168: 2-minute SLA for force-retrying injects still stuck in backoff. *)
+let default_stale_pending_threshold_s = 120.0
 
 let default_config ~broker_root ~session_id ~managed_identity ~endpoint ~thread_id
     ~token_provider ~client =
   { broker_root; session_id; managed_identity; endpoint; thread_id; token_provider;
     client; role = "developer"; max_batch = 32; max_pending_queue = 256;
-    backoff_base_s = 1.0; backoff_max_s = 60.0; now = Unix.gettimeofday }
+    backoff_base_s = 1.0; backoff_max_s = 60.0;
+    stale_pending_threshold_s = default_stale_pending_threshold_s;
+    now = Unix.gettimeofday }
 
 (* ---------------------------------- ledger -------------------------------- *)
 
@@ -292,6 +298,7 @@ type health = {
   dead_letter_count : int;
   injected_count : int;
   overloaded : bool;
+  stale_forced_count : int;
   last_error : string option;
   last_protocol_error : string option;
 }
@@ -305,6 +312,7 @@ let health_to_json h =
       ("dead_letter_count", `Int h.dead_letter_count);
       ("injected_count", `Int h.injected_count);
       ("overloaded", `Bool h.overloaded);
+      ("stale_forced_count", `Int h.stale_forced_count);
       ("last_error", match h.last_error with Some s -> `String s | None -> `Null);
       ( "last_protocol_error",
         match h.last_protocol_error with Some s -> `String s | None -> `Null ) ]
@@ -342,12 +350,16 @@ let backoff_delay (cfg : config) ~retry_count =
   let d = cfg.backoff_base_s *. (2.0 ** float_of_int retry_count) in
   Float.min d cfg.backoff_max_s
 
-(* Advance one message. Mutates [lg]. Returns [true] iff it issued an
-   inject_items request this pass (so the caller can debit the batch budget only
-   for real injections — a backoff-blocked or terminal message costs no slot).
-   When [can_inject] is false the injection site is skipped and the entry is left
-   untouched for a later pass; non-injecting transitions still run. *)
-let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id ~can_inject : bool =
+(* Advance one message. Mutates [lg]. Returns [(did_inject, stale_forced)] —
+   [did_inject] iff it issued an inject_items request this pass (so the caller
+   can debit the batch budget only for real injections — a backoff-blocked or
+   terminal message costs no slot). [stale_forced] is true when B168's stale
+   threshold cleared a still-pending [le_next_eligible] so the inject could
+   proceed this pass. When [can_inject] is false the injection site is skipped
+   and the entry is left untouched for a later pass; non-injecting transitions
+   still run. *)
+let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id ~can_inject :
+    bool * bool =
   let now = cfg.now () in
   let existing = Hashtbl.find_opt lg.lg_entries message_id in
   let entry =
@@ -360,9 +372,17 @@ let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id 
   in
   Hashtbl.replace lg.lg_entries message_id entry;
   match entry.le_state with
-  | Injected | Dead_lettered | Fallback_pending -> false  (* terminal / owned elsewhere *)
+  | Injected | Dead_lettered | Fallback_pending -> (false, false)  (* terminal / owned elsewhere *)
   | Persisted | Pending_injection | Injecting ->
-      if now < entry.le_next_eligible then false  (* backoff not elapsed *)
+      let age = now -. entry.le_first_seen in
+      let stale_forced =
+        age >= cfg.stale_pending_threshold_s && now < entry.le_next_eligible
+      in
+      (* B168: once a pending inject has sat longer than the stale threshold,
+         force another attempt even if exponential backoff has not elapsed —
+         messages must not remain uninjected indefinitely behind a long
+         backoff while the session is otherwise healthy. *)
+      if (not stale_forced) && now < entry.le_next_eligible then (false, false)
       else begin
         (* Ambiguous-ack recovery: an entry still in Injecting means a prior pass
            wrote the request but never saw the ack. Reconcile via history if the
@@ -381,10 +401,10 @@ let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id 
         in
         if reconciled then begin
           Hashtbl.replace lg.lg_entries message_id { entry with le_state = Injected };
-          false  (* reconcile is a read-only history probe, not an injection *)
+          (false, stale_forced)  (* reconcile is a read-only history probe, not an injection *)
         end
         else if not can_inject then
-          false  (* batch budget exhausted — leave untouched for the next pass *)
+          (false, stale_forced)  (* batch budget exhausted — leave untouched for the next pass *)
         else begin
           match cfg.token_provider () with
           | None ->
@@ -395,7 +415,7 @@ let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id 
                   le_last_attempt = now; le_next_eligible = now +. backoff_delay cfg ~retry_count:rc;
                   le_last_error = Some (recoverable_to_string Auth_failed) };
               lg.lg_last_error <- Some (recoverable_to_string Auth_failed);
-              false
+              (false, stale_forced)
           | Some token ->
               (* WRITE-AHEAD: persist Injecting before sending, so a crash mid
                  request leaves a reconcilable marker. *)
@@ -440,11 +460,11 @@ let step_message (cfg : config) (lg : ledger) (m : C2c_mcp.message) ~message_id 
                    append_dead_letter cfg ~message_id ~reason:(sanitize_reason why);
                    lg.lg_last_protocol_error <- Some (sanitize_reason why);
                    lg.lg_last_error <- Some "dead_letter:malformed");
-              true  (* an inject_items request was issued this pass *)
+              (true, stale_forced)  (* an inject_items request was issued this pass *)
         end
       end
 
-let compute_health (cfg : config) (lg : ledger) : health =
+let compute_health (cfg : config) (lg : ledger) ~(stale_forced_count : int) : health =
   let now = cfg.now () in
   let pending = ref 0 and retries = ref 0 and fallback = ref 0 and dead = ref 0
   and injected = ref 0 and oldest = ref 0.0 in
@@ -467,6 +487,7 @@ let compute_health (cfg : config) (lg : ledger) : health =
     dead_letter_count = !dead;
     injected_count = !injected;
     overloaded = !pending > cfg.max_pending_queue;
+    stale_forced_count;
     last_error = lg.lg_last_error;
     last_protocol_error = lg.lg_last_protocol_error }
 
@@ -493,16 +514,20 @@ let deliver_pass (cfg : config) : health =
   (* 3. advance messages in inbox order, spending the batch budget only on real
      injections (backoff-blocked/terminal messages cost no slot). Never drains. *)
   let budget = ref cfg.max_batch in
+  let stale_forced = ref 0 in
   List.iter
     (fun (m : C2c_mcp.message) ->
       match m.message_id with
       | None -> ()
       | Some mid ->
-          let injected = step_message cfg lg m ~message_id:mid ~can_inject:(!budget > 0) in
+          let injected, forced =
+            step_message cfg lg m ~message_id:mid ~can_inject:(!budget > 0)
+          in
+          if forced then incr stale_forced;
           if injected then decr budget)
     msgs;
   save_ledger cfg lg;
-  compute_health cfg lg
+  compute_health cfg lg ~stale_forced_count:!stale_forced
 
 (* ============================ real WS JSON-RPC client ====================== *)
 (* Synchronous WebSocket (RFC 6455) client: masked client frames, unmasked
