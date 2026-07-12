@@ -134,6 +134,8 @@ val restart_result_path : instance_dir:string -> request_id:string -> string
 val request_restart : instance_dir:string -> force:bool -> string
 val await_restart_result :
   instance_dir:string -> request_id:string -> timeout_s:float -> string option
+val resolve_restart_executable :
+  ?path:string option -> ?self:string -> unit -> string option
 
 (* --------------------------------- run ------------------------------------ *)
 

@@ -65,7 +65,7 @@ type deps = {
           exception it raises and never lets it wedge supervision. *)
   on_thread_discovered : string -> unit;
       (** Fired exactly once for the first authoritative loaded thread. *)
-  restart_requested : thread_id:string -> bool;
+  restart_requested : thread_id:string -> string option;
       (** Checked between passes. Production returns [true] only after the
           app-server thread is authoritatively Idle, or an explicit force. *)
   global_broker_root : string option;
@@ -100,7 +100,8 @@ type outcome = {
   passes : int;                  (** number of deliver passes run *)
   global_passes : int;           (** B141: global (cross-repo) ingress passes run *)
   degraded : bool;               (** true iff no thread was ever discovered *)
-  restart_requested : bool;      (** launcher should stop and in-place re-exec *)
+  restart_executable : string option;
+      (** validated executable path when launcher should stop and re-exec *)
 }
 
 (** Build the autoturn config the loop drives, for a discovered [thread_id].

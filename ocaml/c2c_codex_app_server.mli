@@ -143,6 +143,7 @@ type config = {
   min_codex_version : int * int * int;
   extra_server_args : string list;
   extra_frontend_args : string list;
+  resume_thread : string option;
 }
 
 val default_config : instance_name:string -> instance_dir:string -> cwd:string -> config

@@ -69,3 +69,31 @@ The unit was stopped with:
 
 PID `1563003` was verified dead before removing the isolated instance and
 broker artifacts. No real peer or room received a test message.
+
+## PATH-invoked upgrade-target proof (rereview)
+
+The executable-selection regression was tested from the same tmux pane with a
+normal bare `c2c` shell invocation (not `c2c.exe` as argv0). The running owner
+had the worktree build mapped; the PATH target was subsequently the installed
+`/home/xertrov/.local/bin/c2c`. On restart the owner resolved and validated that
+absolute PATH target before stopping either child, acknowledged the request,
+and execed the installed binary:
+
+```text
+alias=b153-path-proof
+pid_before=1860741
+pid_after=1860741
+exe_before=/home/xertrov/src/c2c/.worktrees/b153-codex-app-server-lifecycle/_build/default/ocaml/cli/c2c.exe (deleted after rebuild)
+exe_after=/home/xertrov/.local/bin/c2c
+thread_before=019f559f-8b5e-7271-a7a8-4e7cde24768b
+thread_after=019f559f-8b5e-7271-a7a8-4e7cde24768b
+pane_before=railmap:3.1
+pane_after=railmap:3.1
+result=owner accepted in-place restart (idle-gated)
+```
+
+This proof also caught and fixed the frontend resume argv: an exact-thread
+restart now launches `codex resume <THREAD> --remote ...`, rather than plain
+`codex --remote ...` (which creates a fresh thread). The proof unit was stopped
+through `scripts/c2c_tmux.py`, PID `1860741` was verified dead, its isolated
+registration was deregistered, and its instance/broker artifacts were removed.

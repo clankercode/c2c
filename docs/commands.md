@@ -1478,5 +1478,9 @@ The command waits for the owning launcher to acknowledge its decision. It exits
 0 only for `restarting`, exits 2 for an observable active/unknown skip, and
 exits 3 when `--timeout` expires; it never falls back to an external respawn for
 an app-server mapping, including starting or otherwise unknown lifecycle state.
+Before acknowledging, the owner resolves and validates the current `c2c` on
+`PATH`; this deliberately selects a newly installed upgrade binary even when
+the running process still has the old executable mapped. Resolution failure is
+an observable skip and leaves the attached app-server/frontend untouched.
 Ingress and auto-turn ledgers remain in the broker across the exec boundary, so
 already-injected messages are not replayed.

@@ -50,7 +50,7 @@ let mk_harness ?(steps = []) () =
 let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     ?(broker_root = temp_broker_root ()) ?(global_broker_root = None)
     ?(is_dnd = fun () -> false) ?(on_thread_discovered = fun _ -> ())
-    ?(restart_requested = fun ~thread_id:_ -> false)
+    ?(restart_requested = fun ~thread_id:_ -> None)
     (h : harness) : DL.deps =
   { broker_root;
     session_id = "deliver-loop-test-sess";
@@ -121,11 +121,13 @@ let test_discovery_persists_then_restart_before_delivery () =
     DL.run
       (mk_deps
          ~on_thread_discovered:(fun tid -> discovered := tid :: !discovered)
-         ~restart_requested:(fun ~thread_id -> thread_id = "thread-1") h)
+         ~restart_requested:(fun ~thread_id ->
+           if thread_id = "thread-1" then Some "/resolved/c2c" else None) h)
   in
   Alcotest.(check (list string)) "thread callback exactly once"
     [ "thread-1" ] (List.rev !discovered);
-  Alcotest.(check bool) "restart requested" true o.DL.restart_requested;
+  Alcotest.(check (option string)) "restart executable returned"
+    (Some "/resolved/c2c") o.DL.restart_executable;
   Alcotest.(check int) "restart happens before another ingress pass" 0 o.DL.passes;
   Alcotest.(check int) "deregistered once" 1 h.deregisters
 

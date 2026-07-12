@@ -650,13 +650,14 @@ type config = {
   min_codex_version : int * int * int;
   extra_server_args : string list;
   extra_frontend_args : string list;
+  resume_thread : string option;
 }
 
 let default_config ~instance_name ~instance_dir ~cwd =
   {
     cwd; codex_bin = "codex"; instance_name; alias = None; instance_dir;
     readiness_timeout_s = 30.0; reap_timeout_s = 5.0; min_codex_version = (0, 144, 0);
-    extra_server_args = []; extra_frontend_args = [];
+    extra_server_args = []; extra_frontend_args = []; resume_thread = None;
   }
 
 (* --------------------------------------------------------------------------- *)
@@ -831,8 +832,12 @@ let build_server_argv (cfg : config) (ep : endpoint) ~(sha256 : string) : string
 (* Frontend argv carries ONLY the env-var NAME — the raw token is passed via the
    child environment (see {!build_frontend_env}), never argv. *)
 let build_frontend_argv (cfg : config) (ep : endpoint) ~(token_env_var : string) : string array =
+  let command = match cfg.resume_thread with
+    | Some thread when String.trim thread <> "" -> [ cfg.codex_bin; "resume"; thread ]
+    | _ -> [ cfg.codex_bin ]
+  in
   Array.of_list
-    ([ cfg.codex_bin; "--remote"; endpoint_uri ep; "--remote-auth-token-env"; token_env_var ]
+    (command @ [ "--remote"; endpoint_uri ep; "--remote-auth-token-env"; token_env_var ]
      @ cfg.extra_frontend_args)
 
 (* Frontend env = current process env + the raw token under [token_env_var]. This

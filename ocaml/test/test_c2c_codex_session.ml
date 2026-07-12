@@ -234,6 +234,27 @@ let test_restart_result_ack () =
         (S.await_restart_result ~instance_dir:dir ~request_id ~timeout_s:0.1);
       Alcotest.(check bool) "result consumed" false (Sys.file_exists result_path))
 
+let make_executable path =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "#!/bin/sh\nexit 0\n");
+  Unix.chmod path 0o755
+
+let test_restart_executable_resolves_bare_path_launch () =
+  with_tmp_dir (fun dir ->
+      let installed = Filename.concat dir "c2c" in
+      make_executable installed;
+      Alcotest.(check (option string)) "PATH c2c selected over bare argv0"
+        (Some (Unix.realpath installed))
+        (S.resolve_restart_executable ~path:(Some dir) ~self:"c2c" ()))
+
+let test_restart_executable_fails_before_stop_when_unavailable () =
+  with_tmp_dir (fun dir ->
+      Alcotest.(check (option string)) "no executable means no restart target"
+        None
+        (S.resolve_restart_executable ~path:(Some dir)
+           ~self:"definitely-missing-c2c" ()))
+
 let test_thread_persistence_repairs_config_independently () =
   let name = Printf.sprintf "b153-persist-%d-%d" (Unix.getpid ()) (Random.bits ()) in
   let dir = C2c_start.instance_dir name in
@@ -607,6 +628,8 @@ let () =
     ; ( "restart-control",
         [ test_case "request is atomic JSON" `Quick test_restart_request_roundtrip
         ; test_case "result acknowledgement observed" `Quick test_restart_result_ack
+        ; test_case "bare argv0 resolves PATH upgrade target" `Quick test_restart_executable_resolves_bare_path_launch
+        ; test_case "missing target fails before stop" `Quick test_restart_executable_fails_before_stop_when_unavailable
         ; test_case "thread repairs config independently" `Quick test_thread_persistence_repairs_config_independently ] )
     ; ( "identity-resolve",
         [ test_case "resume unknown rejected" `Quick test_resolve_resume_unknown_rejected

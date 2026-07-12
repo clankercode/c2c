@@ -583,6 +583,18 @@ let test_frontend_argv_appends_extra_frontend_args_verbatim_b128 () =
       [ cfg.codex_bin; "--remote"; endpoint_uri ep; "--remote-auth-token-env"; "C2C_TOK" ]
       (List.filteri (fun i _ -> i < ln - sn) argv))
 
+let test_frontend_argv_resumes_exact_thread () =
+  with_tmp_dir (fun dir ->
+    let cfg =
+      { (default_config ~instance_name:"resume" ~instance_dir:dir ~cwd:dir) with
+        resume_thread = Some "019f-exact-thread" }
+    in
+    let ep = { transport = "ws"; host = "127.0.0.1"; port = 40999 } in
+    Alcotest.(check (list string)) "resume subcommand precedes remote options"
+      [ cfg.codex_bin; "resume"; "019f-exact-thread"; "--remote";
+        endpoint_uri ep; "--remote-auth-token-env"; "C2C_TOK" ]
+      (Array.to_list (build_frontend_argv cfg ep ~token_env_var:"C2C_TOK")))
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_codex_app_server"
@@ -621,5 +633,7 @@ let () =
           Alcotest.test_case "live auth boundary" `Quick test_live_auth_boundary ] );
       ( "passthrough",
         [ Alcotest.test_case "frontend argv appends extra_frontend_args verbatim (B128)"
-            `Quick test_frontend_argv_appends_extra_frontend_args_verbatim_b128 ] )
+            `Quick test_frontend_argv_appends_extra_frontend_args_verbatim_b128
+        ; Alcotest.test_case "frontend argv resumes exact thread"
+            `Quick test_frontend_argv_resumes_exact_thread ] )
     ]

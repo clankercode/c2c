@@ -293,6 +293,49 @@ let await_restart_result ~instance_dir ~request_id ~(timeout_s : float) : string
   in
   loop ()
 
+let executable_file path =
+  try
+    let st = Unix.stat path in
+    if st.Unix.st_kind <> Unix.S_REG then false
+    else (Unix.access path [ Unix.X_OK ]; true)
+  with _ -> false
+
+(* Resolve the UPGRADE target at request-decision time, not launcher startup:
+   `c2c install` may have replaced the PATH binary while this owner kept the old
+   executable mapped. Return an absolute, already-validated path so the caller
+   can acknowledge safely BEFORE stopping its owned app-server/frontend. *)
+let resolve_restart_executable ?(path = Sys.getenv_opt "PATH")
+    ?(self = Sys.executable_name) () : string option =
+  let absolute_if_executable p =
+    let p = if Filename.is_relative p then Filename.concat (Sys.getcwd ()) p else p in
+    if executable_file p then Some (try Unix.realpath p with _ -> p) else None
+  in
+  let from_path () =
+    match path with
+    | None -> None
+    | Some value ->
+        let rec find = function
+          | [] -> None
+          | dir :: rest ->
+              let dir = if dir = "" then Sys.getcwd () else dir in
+              let candidate = Filename.concat dir "c2c" in
+              (match absolute_if_executable candidate with
+               | Some _ as found -> found
+               | None -> find rest)
+        in
+        find (String.split_on_char ':' value)
+  in
+  match from_path () with
+  | Some _ as found -> found
+  | None -> absolute_if_executable self
+
+let restart_environment () =
+  let key e = try String.sub e 0 (String.index e '=') with Not_found -> e in
+  C2c_start.filter_env_for_restart ()
+  |> Array.to_list
+  |> List.filter (fun e -> key e <> "C2C_CODEX_INGRESS_LIVE")
+  |> Array.of_list
+
 let write_mapping ~instance_dir (m : mapping) : unit =
   (try if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir
    with _ -> ());
@@ -578,11 +621,17 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
       restart_requested =
         (fun ~thread_id ->
           match consume_restart_request ~instance_dir with
-          | None -> false
+          | None -> None
           | Some req when req.rr_force ->
-              write_restart_result ~instance_dir ~request_id:req.rr_id
-                ~result:"restarting";
-              true
+              (match resolve_restart_executable () with
+               | None ->
+                   write_restart_result ~instance_dir ~request_id:req.rr_id
+                     ~result:"skipped-executable-unavailable";
+                   None
+               | Some exe ->
+                   write_restart_result ~instance_dir ~request_id:req.rr_id
+                     ~result:"restarting";
+                   Some exe)
           | Some req ->
               (match token_provider () with
                | None ->
@@ -590,21 +639,27 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
                      ~result:"skipped-unknown";
                    Printf.eprintf "%s restart skipped: app-server status unknown\n%!"
                      app_server_log_label;
-                   false
+                   None
                | Some token ->
                    match turn_client.C2c_codex_autoturn.thread_status
                            ~endpoint ~token ~thread_id with
                    | `Idle ->
-                       write_restart_result ~instance_dir ~request_id:req.rr_id
-                         ~result:"restarting";
-                       true
+                       (match resolve_restart_executable () with
+                        | None ->
+                            write_restart_result ~instance_dir ~request_id:req.rr_id
+                              ~result:"skipped-executable-unavailable";
+                            None
+                        | Some exe ->
+                            write_restart_result ~instance_dir ~request_id:req.rr_id
+                              ~result:"restarting";
+                            Some exe)
                    | status ->
                        write_restart_result ~instance_dir ~request_id:req.rr_id
                          ~result:(match status with `Active -> "skipped-active" | _ -> "skipped-unknown");
                        Printf.eprintf "%s restart skipped: thread is %s (use --force to override)\n%!"
                          app_server_log_label
                          (C2c_codex_autoturn.thread_status_to_string status);
-                       false));
+                       None));
       global_broker_root =
         (* B141: cross-repo (sessions-broker) mail for this session is
            delivered by the loop's inject-only global pass. None when the
@@ -693,7 +748,8 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       C2c_codex_app_server.alias = Some alias;
       min_codex_version = codex_min_version;
       extra_frontend_args =
-        frontend_extra_args ~yolo ~extra:(model_args @ extra_args) }
+        frontend_extra_args ~yolo ~extra:(model_args @ extra_args);
+      resume_thread = thread }
   in
   (* B137: hand this managed app-server session's broker session id to the hooks
      the stock frontend will fire. [build_frontend_env] snapshots
@@ -794,9 +850,9 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       (match load_mapping ~instance_dir with
        | Some m -> write_mapping ~instance_dir { m with updated_at = Unix.gettimeofday () }
        | None -> ());
-      if final.C2c_codex_deliver_loop.restart_requested then begin
-        match final.C2c_codex_deliver_loop.thread_id with
-        | Some exact_thread ->
+      (match final.C2c_codex_deliver_loop.restart_executable,
+             final.C2c_codex_deliver_loop.thread_id with
+        | Some executable, Some exact_thread ->
             let argv =
               let passthrough =
                 (match model_override with
@@ -805,15 +861,14 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
                 @ extra_args
               in
               Array.of_list
-                ([ Sys.executable_name; "resume"; "codex"; alias;
+                ([ executable; "resume"; "codex"; alias;
                    "--thread-id"; exact_thread ]
                  @ (if passthrough = [] then [] else "--" :: passthrough))
             in
             Printf.eprintf "%s restarting in place on thread %s\n%!"
               app_server_log_label exact_thread;
-            Unix.execve argv.(0) argv (Unix.environment ())
-        | None -> ()
-      end;
+            Unix.execve argv.(0) argv (restart_environment ())
+        | _ -> ());
       (match final.C2c_codex_deliver_loop.final with
        | C2c_codex_app_server.Sv_server_died ->
            Printf.eprintf "%s%s%s app-server died; session torn down.\n%!"
