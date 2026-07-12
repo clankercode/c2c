@@ -1,17 +1,15 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-12T14:08:36Z"
 depends_on: []
 estimate_hours: 2
 id: B162
 priority: high
+started_at: null
 status: pending
-tags:
-    - claude
-    - hooks
-    - delivery
-    - ux
-title: Claude Stop-hook c2c delivery must not surface a message payload as
+tags: []
+title: Claude Stop-hook c2c delivery must not surface a message payload as Stop hook error
 updated_at: "2026-07-12T14:08:36Z"
 ---
 Problem
