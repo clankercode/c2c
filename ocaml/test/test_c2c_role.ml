@@ -77,6 +77,23 @@ let test_claude_renderer () =
   contains ~msg:"claude: prompt prepends body" ~pattern:"primary\n\nYou are a test agent" output;
   contains ~msg:"claude: claude section present" ~pattern:"claude:" output
 
+(* B171: Claude Code drops agents whose description is empty/missing. Role
+   files often omit description (default ""), so the renderer must emit a
+   non-empty fallback so `claude --agent <instance>` can resolve the file. *)
+let test_claude_renderer_empty_description_fallback () =
+  let role = { C2c_role.empty with body = "Do the thing." } in
+  let output = C2c_role.Claude_renderer.render role ~name:"b171-probe" in
+  contains ~msg:"claude: empty description gets managed-agent fallback"
+    ~pattern:"description: c2c managed agent b171-probe" output;
+  contains_not ~msg:"claude: must not emit empty quoted description"
+    ~pattern:"description: \"\"" output
+
+let test_claude_renderer_empty_description_uses_role_label () =
+  let role = { C2c_role.empty with role = "primary"; body = "body" } in
+  let output = C2c_role.Claude_renderer.render role ~name:"b171-role-label" in
+  contains ~msg:"claude: empty description falls back to role label"
+    ~pattern:"description: primary" output
+
 let test_codex_renderer () =
   let output = C2c_role.Codex_renderer.render role_input in
   contains ~msg:"codex: description field present" ~pattern:"description: Test role for regression" output;
@@ -217,6 +234,10 @@ let tests = [
   "opencode_renderer_default_steps", `Quick, test_opencode_renderer_default_steps;
   "opencode_renderer_user_steps", `Quick, test_opencode_renderer_user_steps_preserved;
   "claude_renderer",             `Quick, test_claude_renderer;
+  "claude_renderer_empty_description_fallback", `Quick,
+    test_claude_renderer_empty_description_fallback;
+  "claude_renderer_empty_description_uses_role_label", `Quick,
+    test_claude_renderer_empty_description_uses_role_label;
   "codex_renderer",              `Quick, test_codex_renderer;
   "kimi_renderer",               `Quick, test_kimi_renderer;
   "roundtrip",                   `Quick, test_roundtrip_opencode;

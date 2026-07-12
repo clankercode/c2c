@@ -441,10 +441,24 @@ module OpenCode_renderer = struct
 end
 
 module Claude_renderer = struct
+  (* Claude Code (verified 2.1.207) refuses to load project agents under
+     `.claude/agents/*.md` when frontmatter `description` is missing or empty
+     — `claude --agent <name>` then exits with "not found" while still listing
+     only built-ins/plugins. Role files often leave description blank (default
+     empty), so always emit a non-empty description for Claude. (B171) *)
+  let description_for_claude ~(name : string) (r : t) : string =
+    match String.trim r.description with
+    | d when d <> "" -> d
+    | _ ->
+        match String.trim r.role with
+        (* Avoid ':' so yaml_scalar does not needlessly quote the value. *)
+        | "" | "subagent" -> "c2c managed agent " ^ name
+        | role -> role
+
   let render ?resolved_pmodel (r : t) ~(name : string) =
     let lines = ref [] in
     lines := ("name: " ^ yaml_scalar name) :: !lines;
-    lines := ("description: " ^ yaml_scalar r.description) :: !lines;
+    lines := ("description: " ^ yaml_scalar (description_for_claude ~name r)) :: !lines;
     let single_client = List.length r.compatible_clients = 1 in
     let model_to_emit = if single_client then (match resolved_pmodel with Some m -> Some m | None -> r.model) else None in
     (match model_to_emit with Some m -> lines := ("model: " ^ m) :: !lines | None -> ());
