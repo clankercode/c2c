@@ -51,8 +51,21 @@ val stop_daemon : alias:string -> unit
 val pidfile_path : string -> string
 
 (** [already_running alias] returns [true] iff the notifier pidfile for
-    [alias] names a live process. Exposed for tests + the supervisor. *)
+    [alias] names a process that is alive AND whose comm matches the daemon's
+    ([notifier_comm]) — i.e. *our* notifier, not merely some live pid (guards
+    the PID-reuse footgun). Exposed for tests + the supervisor. *)
 val already_running : string -> bool
+
+(** The daemon's [/proc/<pid>/comm] value (as set via prctl PR_SET_NAME). This
+    14-char string is stored verbatim by the kernel (under the 15-char limit).
+    Identity token for [pid_is_our_notifier]. *)
+val notifier_comm : string
+
+(** [pid_is_our_notifier pid] is [true] iff [pid] is alive AND its
+    [/proc/<pid>/comm] equals [notifier_comm]. Fail-closed on any read failure
+    or mismatch. Used to avoid signalling an unrelated same-UID process after a
+    stale-pidfile PID reuse. *)
+val pid_is_our_notifier : int -> bool
 
 (** B145 upgrade-correctness. The detached notifier is deduped on startup, so
     without this a daemon that outlives [c2c restart] keeps running stale code
