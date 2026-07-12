@@ -8,11 +8,12 @@ depends_on: []
 estimate_hours: 2
 id: B162
 priority: high
+reason: Implementation and peer review are complete; the sole remaining acceptance proof is a vanilla Claude Stop-turn transcript, blocked because scripts/cc-quota reports 7d usage at 100%.
 started_at: "2026-07-12T15:43:01Z"
-status: in_progress
+status: blocked
 tags: []
 title: Claude Stop-hook c2c delivery must not surface a message payload as Stop hook error
-updated_at: "2026-07-12T15:43:01Z"
+updated_at: "2026-07-12T15:57:10Z"
 ---
 Problem
 
