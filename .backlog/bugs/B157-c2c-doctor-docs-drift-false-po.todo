@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-12T12:25:19Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T13:31:44Z"
 complexity: low
 created_at: "2026-07-12T11:47:43Z"
 depends_on: []
+duration_minutes: 66.42649833565
 estimate_hours: 1
 id: B157
 priority: low
 started_at: "2026-07-12T12:25:19Z"
-status: in_progress
+status: done
 tags: []
 title: c2c doctor docs-drift false-positives — real commands flagged "not registered" (command groups + Tier3 commands)
-updated_at: "2026-07-12T12:25:19Z"
+updated_at: "2026-07-12T13:31:44Z"
 ---
 c2c doctor docs-drift false-positives — real commands flagged "not registered" (command groups + Tier3 commands)
 
