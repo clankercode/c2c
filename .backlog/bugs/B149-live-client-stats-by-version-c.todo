@@ -1,14 +1,19 @@
 ---
+claimed_at: "2026-07-12T06:10:51Z"
+claimed_by: cli-user
+completed_at: "2026-07-12T06:26:16Z"
 complexity: medium
 created_at: "2026-07-12T06:10:51Z"
 depends_on: []
+duration_minutes: 15.429126079566666
 estimate_hours: 1
 id: B149
 priority: high
-status: pending
+started_at: "2026-07-12T06:10:51Z"
+status: done
 tags: []
 title: 'Live client stats by version: clients send client_version + os in /register connection metadata; /stats connected gains by_version (+ by_os); hourly routine persists the full stats JSON as historical snapshots (sqlite stats_snapshots table / persist_dir stats-history.jsonl)'
-updated_at: "2026-07-12T06:10:51Z"
+updated_at: "2026-07-12T06:26:16Z"
 ---
 
 Live client stats by version: clients send client_version + os in /register connection metadata; /stats connected gains by_version (+ by_os); hourly routine persists the full stats JSON as historical snapshots (sqlite stats_snapshots table / persist_dir stats-history.jsonl)
