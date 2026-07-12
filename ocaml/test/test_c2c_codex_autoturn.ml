@@ -181,6 +181,19 @@ let test_turn_input_dedupes_same_id_and_excludes_remote_collision () =
       Alcotest.(check bool) "remote collision excluded" false (json_contains item "REMOTE-SENTINEL")
   | _ -> Alcotest.fail "expected exactly one turn input item"
 
+let test_remote_first_id_collision_never_auto_turns_later_local_row () =
+  let root = mk_root () in
+  seed_inbox ~root
+    [ mk_msg ~from:"remote-peer@host" ~message_id:"remote-first-id" "REMOTE-FIRST";
+      mk_msg ~from:"local-peer" ~message_id:"remote-first-id" "LOCAL-SECOND" ];
+  let ic, _ = mk_inject_client () in
+  let th = mk_turn_harness () in
+  let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client () in
+  let o = A.deliver_pass h.cfg in
+  Alcotest.(check int) "remote first produces no auto-turn" 0 (n_starts th);
+  Alcotest.(check (option string)) "remote first remains remote-only"
+    (Some "remote_only") (qr o)
+
 let test_remote_provenance_no_turn () =
   let root = mk_root () in
   seed_inbox ~root [ mk_msg ~from:"peer@relay-a" ~message_id:"r1" "from afar" ];
@@ -394,6 +407,8 @@ let () =
             test_turn_input_carries_explicit_data_envelope;
           Alcotest.test_case "auto-turn input dedupes IDs and excludes remote collision" `Quick
             test_turn_input_dedupes_same_id_and_excludes_remote_collision;
+          Alcotest.test_case "remote-first ID collision never auto-turns later local row" `Quick
+            test_remote_first_id_collision_never_auto_turns_later_local_row;
           Alcotest.test_case "remote provenance: inject, no turn" `Quick test_remote_provenance_no_turn;
           Alcotest.test_case "canonical/#-form sender fails closed (no turn)" `Quick
             test_canonical_form_fails_closed;

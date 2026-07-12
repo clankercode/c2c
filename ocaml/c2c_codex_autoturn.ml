@@ -425,12 +425,17 @@ let mk_outcome ?queued_reason ?turn_started ?batch_key ?(batch_message_ids = [])
 let eligible_pending (cfg : config) (lg : ledger) (msgs : C2c_mcp.message list) :
     ((C2c_mcp.message * string) list * int) =
   let claimed = claimed_message_ids lg in
-  let pending = ref [] and remote = ref 0 and selected = Hashtbl.create 8 in
+  (* Match ingress's per-message-id persistence exactly: the first inbox row
+     owns an id. A later row with the same id must not borrow that row's
+     [Injected] ledger state or provenance to enter an auto-turn. *)
+  let pending = ref [] and remote = ref 0 and seen = Hashtbl.create 8 in
   List.iter
     (fun (m : C2c_mcp.message) ->
       match m.message_id with
       | None -> ()  (* not yet persisted an id (impossible post-inject) *)
       | Some mid -> (
+          if Hashtbl.mem seen mid then () else begin
+          Hashtbl.add seen mid ();
           match cfg.provenance m with
           | `Remote ->
               (* remote mail is injected DATA but never turned *)
@@ -438,13 +443,12 @@ let eligible_pending (cfg : config) (lg : ledger) (msgs : C2c_mcp.message list) 
                | Some Ingress.Injected when not (Hashtbl.mem claimed mid) -> incr remote
                | _ -> ())
           | `Local -> (
-              if Hashtbl.mem claimed mid || Hashtbl.mem selected mid then ()
+              if Hashtbl.mem claimed mid then ()
               else
                 match Ingress.ledger_state cfg.ingress_cfg ~message_id:mid with
                 | Some Ingress.Injected ->
-                    Hashtbl.add selected mid ();
                     pending := (m, mid) :: !pending
-                | _ -> ())))
+                | _ -> ()) end))
     msgs;
   (List.rev !pending, !remote)
 
