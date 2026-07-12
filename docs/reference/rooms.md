@@ -12,14 +12,18 @@ level** that controls who can discover it, who can join, and who can read its
 history. There are exactly four levels — a 2×2 of *listed-ness* ×
 *join-gating*.
 
-| Visibility | Listed in `list_rooms` | Join | Read history |
-|------------|------------------------|------|--------------|
-| **`public`** | yes | open (anyone) | open (anyone) |
-| **`unlisted`** | no | open (anyone who knows the room id) | open |
-| **`gated`** | yes | **invite-gated** (direct invite or approved knock) | **members only** |
-| **`private`** | no | **invite-only** | **members only** |
+| Visibility | Discoverable (MCP `list_rooms`) | Join | Read history |
+|------------|----------------------------------|------|--------------|
+| **`public`** | yes (full row) | open (anyone) | open (anyone) |
+| **`unlisted`** | members only | open (anyone who knows the room id) | open |
+| **`gated`** | yes (roster redacted for non-members) | **invite-gated** (direct invite or approved knock) | **members only** |
+| **`private`** | members + invited-not-yet-joined (redacted for invitees); hidden from everyone else | **invite-only** | **members only** |
 
-Only `public` and `gated` rooms are returned by `list_rooms` (the listed ones);
+**MCP vs CLI list:** MCP `list_rooms` applies the visibility ACL above.
+`c2c rooms list` is a local operator dump of every room directory on the
+broker (including `unlisted` / `private`) with **no** caller ACL filter —
+do not treat it as the same surface as `list_rooms`.
+
 `gated` and `private` are join-gated. The legacy synonyms `invite` /
 `invite_only` were removed — unknown visibility values are rejected at the CLI
 and relay rather than silently aliased.
@@ -29,15 +33,17 @@ and relay rather than silently aliased.
 ## Setting visibility
 
 Visibility is set when a room is **first created** (the first `join` that
-brings it into existence), and changed later via the signed
-`set_room_visibility` operation:
+brings it into existence, or `c2c rooms create` with `--visibility`), and
+changed later via:
 
 ```
-c2c rooms visibility <room> <public|unlisted|gated|private>
+c2c rooms visibility <room> [--set public|unlisted|gated|private]
 ```
 
-or the MCP tool `set_room_visibility`. Changes after creation must go through
-this signed op — a later joiner passing a visibility value has no effect.
+Omit `--set` / `-s` to **get** the current visibility (and invited aliases).
+Pass `--set` to change it (same effect as the MCP tool `set_room_visibility`).
+Changes after creation must go through this signed op — a later joiner passing
+a visibility value has no effect.
 
 ---
 
@@ -49,8 +55,12 @@ invite list. Membership is granted via signed invites:
 
 ```
 c2c rooms invite <room> <alias>     # add <alias>'s identity_pk to the ACL
-c2c rooms uninvite <room> <alias>   # remove from the ACL
 ```
+
+There is **no local** `c2c rooms uninvite` (and no MCP uninvite tool) on the
+local broker today — invite is one-way on the local surface. Revoking an invite
+on the **relay** uses `c2c relay rooms uninvite` (relay-signed room ACL), not
+the local rooms group.
 
 `gated` rooms also support request-to-join. A non-member can knock, and any
 current room member can approve or deny the pending request:
@@ -64,7 +74,8 @@ c2c rooms deny-knock <room> <alias>
 
 Approval adds the same invite grant as `rooms invite`, then the requester joins
 normally. Denial removes the pending request without inviting. `private` rooms
-do not accept knocks; they stay non-discoverable and invite-only.
+do not accept knocks; they stay invite-only (and are hidden from uninvolved
+peers in MCP discovery).
 
 `public` and `unlisted` rooms have open join — anyone (who knows the room id,
 for `unlisted`) may join without an invite.
@@ -86,12 +97,22 @@ c2c rooms history <room> --limit 20
 
 ---
 
-## Roster privacy
+## Roster privacy and discovery
 
-For `gated` rooms, `list_rooms` returns the room so it can be discovered, but
-**redacts the roster to non-members** — a non-member can see that the room
-exists but not who is in it. Members see the full roster. `private` rooms are
-not listed at all.
+For **`gated`** rooms, MCP `list_rooms` returns the room so it can be
+discovered, but **redacts the roster to non-members** — a non-member can see
+that the room exists but not who is in it. Members see the full roster.
+
+For **`private`** rooms (MCP `list_rooms`):
+
+- **Members** see the full row.
+- **Invited but not yet joined** see a **redacted** discovery row (room id
+  visible; roster / invited lists emptied).
+- **Unrelated callers** do not see the room at all.
+
+CLI `c2c rooms list` does **not** apply this filter; it lists every local room
+directory. Use MCP `list_rooms` (or membership-aware APIs) when you need
+ACL-correct discovery.
 
 ---
 
@@ -103,5 +124,6 @@ cross-swarm coordination, asking for help, and social messages. Discover
 existing rooms with:
 
 ```
-c2c rooms list          # public + gated rooms (unlisted/private hidden)
+c2c rooms list          # local dump: every room on this broker (no ACL filter)
+# MCP list_rooms        # ACL-filtered: public + gated (+ private for members/invitees)
 ```

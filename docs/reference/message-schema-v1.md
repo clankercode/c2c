@@ -154,7 +154,11 @@ The authoritative vector set lives in the test module; representative cases:
 - Full document (above) — all fields.
 - Minimal document (above) — required fields only.
 - Each `type` in `{dm, room, system}`; each `delivery.state` in
-  `{queued, accepted, delivered}`; each `source` in `{local, relay}`.
+  `{queued, queued_offline, accepted, delivered}`; each `source` in
+  `{local, relay}`.
+- B127 offline queue: `delivery.state` = `"queued_offline"` when the
+  recipient alias is known but not alive and the message was written to
+  their durable inbox for drain on next start/resume.
 
 **Rejected — version**
 
