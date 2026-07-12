@@ -187,7 +187,7 @@ gate pushes.
 
 - Complements DND: sender-side counterpart. Same broker push-gate.
 - Feeds the GUI: compose box can offer a "low priority" checkbox.
-- Suggested default for system events (peer_register, and the unused/legacy
-  peer_renamed event type from pre-B135 rename support,
+- Suggested default for system events (peer_register, the peer_renamed
+  notice emitted by the B140 `c2c rename` flow,
   sweep notices): these are informational and should be `deferrable:
   true` by default. Cuts interrupt-spam for agents in deep work.

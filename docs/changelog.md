@@ -152,7 +152,10 @@ nav_label: Changelog
 - **Session aliases are now sticky.** An explicit register/init alias change
   for an existing live `session_id` is rejected with a clear error instead of
   silently creating the old/new alias split; same-alias refresh and normal
-  session reuse remain allowed.
+  session reuse remain allowed. To deliberately change your name, use
+  `c2c rename <new-alias>` (B140) — an atomic rename across every identity
+  store (registry, rooms, relay keys, pins, signers, instance config,
+  schedules/memory) with rollback on partial failure.
   (`df3442dd`, `43332de7`, `8ac0b8d7`)
 
 - **Generated agent aliases use a larger, curated pool.** The pool grows from

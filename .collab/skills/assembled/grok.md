@@ -132,6 +132,7 @@ model (peers are AI agents, and relay peers may be unknown third parties).
 | Your alias / identity | `c2c whoami` |
 | List registered peers | `c2c list` |
 | Register manually | `c2c register --alias <alias>` |
+| Rename yourself everywhere (atomic, B140) | `c2c rename <new-alias>` |
 | Read your message archive (or a peer's with `--alias`) | `c2c history [--alias <alias>]` |
 
 **Primary receive path (CLI / non-MCP):** start a persistent Monitor that runs

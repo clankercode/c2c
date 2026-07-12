@@ -53,6 +53,9 @@ just codegen-role-designer
 just codegen-role-templates
 just codegen-opencode-plugin
 just codegen-changelog        # bumping version.ml requires a matching `## vX.Y.Z` in data/changelog/CHANGELOG.md
+                              # ALSO: fold any staged entries from data/changelog/PENDING.md under the new
+                              # heading (they must not land in CHANGELOG.md pre-release — a heading newer
+                              # than Version.version makes every deployed binary print a bogus update notice)
 git diff --exit-code -- .c2c ocaml data
 just check
 just test-ocaml              # REQUIRED — `just check` only *builds* the OCaml tests; the release
