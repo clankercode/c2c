@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-12T15:54:29Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T17:26:25Z"
 complexity: medium
 created_at: "2026-07-12T15:48:13Z"
 depends_on: []
+duration_minutes: 91.94708051205
 estimate_hours: 1
 id: B170
 priority: high
 started_at: "2026-07-12T15:54:29Z"
-status: in_progress
+status: done
 tags: []
 title: 'Error updating for c2c that was v0.10.0, doesnt handle 302s:'
-updated_at: "2026-07-12T15:54:29Z"
+updated_at: "2026-07-12T17:26:25Z"
 ---
 
 Error updating for c2c that was v0.10.0, doesnt handle 302s:
