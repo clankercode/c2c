@@ -377,3 +377,6 @@ The launcher is also the managed lifecycle owner recorded by `c2c instances`.
 `c2c restart <alias>` sends it an idle-gated control request; the launcher
 stops its authenticated unit and re-execs itself on the persisted exact thread,
 preserving the current pane/TTY. `--force` explicitly bypasses the idle gate.
+The caller waits for a durable owner result rather than treating request-file
+creation as success; active/unknown skips and owner timeouts are nonzero and
+machine-distinguishable for batch restart orchestration.

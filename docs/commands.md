@@ -1474,5 +1474,9 @@ in place by the launcher so the replacement frontend retains the same terminal
 and resumes the exact thread. By default the request is accepted only when the
 app-server reports the thread as `idle`; active or unknown status is skipped.
 Use `c2c restart <alias> --force` only when intentionally interrupting a turn.
+The command waits for the owning launcher to acknowledge its decision. It exits
+0 only for `restarting`, exits 2 for an observable active/unknown skip, and
+exits 3 when `--timeout` expires; it never falls back to an external respawn for
+an app-server mapping, including starting or otherwise unknown lifecycle state.
 Ingress and auto-turn ledgers remain in the broker across the exec boundary, so
 already-injected messages are not replayed.
