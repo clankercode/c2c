@@ -492,6 +492,10 @@ let test_stop_hook_delivers_deferrable_at_turn_boundary () =
     (* Stop is a turn boundary: FULL drain — deferrable delivered too. *)
     let r = run_hook ~env ~stdin_payload:payload ~hook_name:"c2c_stop_hook" () in
     check int "stop hook exits 0" 0 r.rc;
+    (* Claude Code parses stdout as the successful Stop-hook JSON response.
+       Stderr or a non-zero exit would instead be rendered as a hook error,
+       which must never be how ordinary c2c mail reaches the model. *)
+    check string "stop hook emits no stderr" "" r.stderr;
     (match parse_stop_hook_reason r with
      | None -> Alcotest.fail "expected stop hook to block with messages"
      | Some reason ->
