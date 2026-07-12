@@ -476,6 +476,40 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
            at loop start, false once a frontend thread loads. Best-effort —
            write_delivery_degraded never raises. *)
         (fun degraded -> write_delivery_degraded ~instance_dir ~unit_id degraded);
+      global_broker_root =
+        (* B141: cross-repo (sessions-broker) mail for this session is
+           delivered by the loop's inject-only global pass. None when the
+           rendezvous root can't resolve — global delivery just stays off. *)
+        (try Some (C2c_repo_fp.resolve_sessions_broker_root ()) with _ -> None);
+      on_global_pass =
+        (* Same dedup-on-change policy as on_pass: an idle session's global
+           pass returns the same health snapshot every second. *)
+        (let last_global = ref "" in
+         fun gh ->
+           let key =
+             (* Exclude the continuously-growing pending age from the dedup
+                key — a stuck-pending message would otherwise produce a new
+                "changed" snapshot (and a log line) every pass. *)
+             Yojson.Safe.to_string
+               (match C2c_codex_ingress.health_to_json gh with
+                | `Assoc fields ->
+                    `Assoc
+                      (List.filter
+                         (fun (k, _) -> k <> "oldest_pending_age_s")
+                         fields)
+                | j -> j)
+           in
+           if key <> !last_global then begin
+             last_global := key;
+             try
+               let line =
+                 `Assoc [ ("ts", `Float (Unix.gettimeofday ()));
+                          ("global_pass", C2c_codex_ingress.health_to_json gh) ]
+                 |> Yojson.Safe.to_string
+               in
+               C2c_io.append_jsonl (instance_dir // "codex-deliver.log") line
+             with _ -> ()
+           end);
       now = Unix.gettimeofday;
       sleep = (fun s -> try Unix.sleepf s with _ -> ());
       poll_interval_s = 1.0;

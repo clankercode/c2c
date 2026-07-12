@@ -38,16 +38,18 @@ type harness = {
   mutable registers : int;
   mutable deregisters : int;
   mutable passes : int;
+  mutable global_pass_events : Ing.health list;  (* on_global_pass calls *)
   mutable degraded_events : bool list;       (* on_degraded calls, in order *)
   clock : float ref;
 }
 
 let mk_harness ?(steps = []) () =
   { steps; registers = 0; deregisters = 0; passes = 0;
-    degraded_events = []; clock = ref 0.0 }
+    global_pass_events = []; degraded_events = []; clock = ref 0.0 }
 
 let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
-    ?(broker_root = temp_broker_root ()) (h : harness) : DL.deps =
+    ?(broker_root = temp_broker_root ()) ?(global_broker_root = None)
+    ?(is_dnd = fun () -> false) (h : harness) : DL.deps =
   { broker_root;
     session_id = "deliver-loop-test-sess";
     managed_identity = "deliver-loop-test-alias";
@@ -62,11 +64,13 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
         | x :: rest -> h.steps <- rest; x
         | [] -> Ep.Sv_frontend_exited);
     session_active = (fun () -> true);
-    is_dnd = (fun () -> false);
+    is_dnd;
     register = (fun () -> h.registers <- h.registers + 1);
     deregister = (fun () -> h.deregisters <- h.deregisters + 1);
     on_pass = (fun _ -> h.passes <- h.passes + 1);
     on_degraded = (fun b -> h.degraded_events <- h.degraded_events @ [ b ]);
+    global_broker_root;
+    on_global_pass = (fun gh -> h.global_pass_events <- h.global_pass_events @ [ gh ]);
     now = (fun () -> !(h.clock));
     sleep = (fun s -> h.clock := !(h.clock) +. s);
     poll_interval_s = 1.0;
@@ -76,8 +80,7 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
 (* ------------------------------------------------------------------ *)
 
 let test_start_on_attach_and_drive () =
-  let h = { steps = [ Ep.Sv_running; Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ];
-            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ] () in
   let o = DL.run (mk_deps h) in
   Alcotest.(check int) "registered exactly once" 1 h.registers;
   Alcotest.(check int) "deregistered exactly once" 1 h.deregisters;
@@ -91,8 +94,7 @@ let test_start_on_attach_and_drive () =
 let test_stop_on_immediate_exit () =
   (* Frontend already exited: loop returns on the first step, having registered
      and (in the finally) deregistered — no orphaned loop. *)
-  let h = { steps = [ Ep.Sv_frontend_exited ];
-            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
+  let h = mk_harness ~steps:[ Ep.Sv_frontend_exited ] () in
   let o = DL.run (mk_deps h) in
   Alcotest.(check int) "registered" 1 h.registers;
   Alcotest.(check int) "deregistered on exit" 1 h.deregisters;
@@ -102,8 +104,7 @@ let test_stop_on_immediate_exit () =
   Alcotest.(check bool) "final is terminal" true (o.DL.final = Ep.Sv_frontend_exited)
 
 let test_server_death_terminal () =
-  let h = { steps = [ Ep.Sv_running; Ep.Sv_server_died ];
-            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_server_died ] () in
   let o = DL.run (mk_deps h) in
   Alcotest.(check bool) "server death is terminal" true (o.DL.final = Ep.Sv_server_died);
   Alcotest.(check int) "deregistered" 1 h.deregisters;
@@ -112,8 +113,7 @@ let test_server_death_terminal () =
 let test_degraded_no_thread () =
   (* Frontend never loads a thread: keep supervising, never deliver, mark
      degraded. The session is still reaped on exit. *)
-  let h = { steps = [ Ep.Sv_running; Ep.Sv_running; Ep.Sv_offline ];
-            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_offline ] () in
   let o = DL.run (mk_deps ~discover:(fun () -> []) h) in
   Alcotest.(check (option string)) "no thread discovered" None o.DL.thread_id;
   Alcotest.(check bool) "degraded" true o.DL.degraded;
@@ -124,7 +124,7 @@ let test_degraded_no_thread () =
 let test_max_wall_bound () =
   (* An always-running supervisor must still return under the wall-clock bound
      (sleep advances the fake clock), deregistering cleanly. *)
-  let h = { steps = []; registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
+  let h = mk_harness () in
   (* steps=[] means supervise_step returns Sv_frontend_exited by default — force
      an always-running supervisor via a custom step fn. *)
   let broker_root = temp_broker_root () in
@@ -139,8 +139,7 @@ let test_discover_throttle_reused_after_found () =
   (* Once a thread is discovered, discovery is not attempted again (the loop
      stops probing thread/loaded/list). *)
   let discover_calls = ref 0 in
-  let h = { steps = [ Ep.Sv_running; Ep.Sv_running; Ep.Sv_running; Ep.Sv_offline ];
-            registers = 0; deregisters = 0; passes = 0; degraded_events = []; clock = ref 0.0 } in
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_running; Ep.Sv_offline ] () in
   let base = mk_deps h in
   let deps = { base with DL.discover_threads =
       (fun () -> incr discover_calls; [ "thread-x" ]) } in
@@ -164,6 +163,108 @@ let test_on_degraded_stays_degraded_no_thread () =
   Alcotest.(check (list bool)) "only the initial degraded=true, never healthy"
     [ true ] h.degraded_events
 
+(* ------------------------- B141: global (cross-repo) inbox ------------------------- *)
+
+let mk_msg ?(from = "cross-repo-peer") ?message_id content : C2c_mcp.message =
+  { from_alias = from; to_alias = "deliver-loop-test-alias"; content;
+    deferrable = false; reply_via = None; enc_status = None; ts = 1000.0;
+    ephemeral = false; message_id; pow_difficulty = None }
+
+let seed_global_inbox ~root msgs =
+  let b = C2c_mcp.Broker.create ~root in
+  C2c_mcp.Broker.save_inbox b ~session_id:"deliver-loop-test-sess" msgs
+
+let read_global_inbox ~root =
+  let b = C2c_mcp.Broker.create ~root in
+  C2c_mcp.Broker.read_inbox b ~session_id:"deliver-loop-test-sess"
+
+(* Recording inject client: captures (thread, message_id) per inject. *)
+let recording_inject_client () =
+  let calls = ref [] in
+  ( { Ing.inject_items =
+        (fun ~endpoint:_ ~token:_ ~thread_id ~message_id ~items:_ ->
+          calls := (thread_id, message_id) :: !calls;
+          Ing.Inj_ok);
+      history_contains = None },
+    calls )
+
+let test_global_inbox_injected_no_turn () =
+  (* Cross-repo mail in the sessions-broker inbox is injected into the attached
+     thread (arrival-time model-visibility) but NEVER starts a turn, and is
+     never drained from the inbox. *)
+  let groot = temp_broker_root () in
+  seed_global_inbox ~root:groot [ mk_msg ~message_id:"gm-1" "cross-repo hello" ];
+  let inject_client, calls = recording_inject_client () in
+  let turns = ref 0 in
+  let turn_client =
+    { AT.thread_status = (fun ~endpoint:_ ~token:_ ~thread_id:_ -> `Idle);
+      start_turn =
+        (fun ~endpoint:_ ~token:_ ~thread_id:_ ~batch_key:_ ~items:_ ->
+          incr turns; AT.Turn_started "turn-x");
+      turn_in_history = None }
+  in
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ] () in
+  let base = mk_deps ~global_broker_root:(Some groot) h in
+  let deps = { base with DL.inject_client; turn_client } in
+  let o = DL.run deps in
+  Alcotest.(check bool) "global pass ran" true (o.DL.global_passes > 0);
+  Alcotest.(check bool) "on_global_pass fired" true (h.global_pass_events <> []);
+  Alcotest.(check bool) "injected the cross-repo message into the thread" true
+    (List.exists (fun (t, _) -> t = "thread-1") !calls);
+  Alcotest.(check int) "exactly one injection (ledger dedupes across passes)" 1
+    (List.length !calls);
+  Alcotest.(check int) "cross-repo mail never starts a turn" 0 !turns;
+  Alcotest.(check int) "never drained from the global inbox" 1
+    (List.length (read_global_inbox ~root:groot))
+
+let test_global_none_disables () =
+  (* global_broker_root = None → no global pass, even with running steps. *)
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ] () in
+  let o = DL.run (mk_deps h) in
+  Alcotest.(check int) "no global passes when unset" 0 o.DL.global_passes;
+  Alcotest.(check bool) "no global sink events" true (h.global_pass_events = [])
+
+let test_global_no_inbox_file_no_artifacts () =
+  (* A configured root whose inbox file does not exist: the loop must not run a
+     global pass NOR create broker artifacts in the sessions root. *)
+  let groot = temp_broker_root () in
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ] () in
+  let o = DL.run (mk_deps ~global_broker_root:(Some groot) h) in
+  Alcotest.(check int) "no global passes without an inbox file" 0 o.DL.global_passes;
+  Alcotest.(check bool) "no inbox file created as a side effect" false
+    (Sys.file_exists (Filename.concat groot "deliver-loop-test-sess.inbox.json"))
+
+let test_global_respects_dnd () =
+  (* DND on: the global pass is skipped (fail-closed, same as the T007 gate);
+     mail stays durably queued. *)
+  let groot = temp_broker_root () in
+  seed_global_inbox ~root:groot [ mk_msg ~message_id:"gm-dnd" "held by dnd" ];
+  let inject_client, calls = recording_inject_client () in
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ] () in
+  let base = mk_deps ~global_broker_root:(Some groot) ~is_dnd:(fun () -> true) h in
+  let deps = { base with DL.inject_client } in
+  let o = DL.run deps in
+  Alcotest.(check int) "no global passes under DND" 0 o.DL.global_passes;
+  Alcotest.(check int) "nothing injected under DND" 0 (List.length !calls);
+  Alcotest.(check int) "mail still queued" 1
+    (List.length (read_global_inbox ~root:groot))
+
+let test_build_global_ingress_config () =
+  let h = mk_harness () in
+  let deps_none = mk_deps h in
+  Alcotest.(check bool) "None root -> no config" true
+    (DL.build_global_ingress_config deps_none ~thread_id:"t" = None);
+  let groot = temp_broker_root () in
+  let deps_some = mk_deps ~global_broker_root:(Some groot) h in
+  match DL.build_global_ingress_config deps_some ~thread_id:"t-42" with
+  | None -> Alcotest.fail "expected Some config for a set global root"
+  | Some cfg ->
+      Alcotest.(check string) "config targets the sessions root" groot
+        cfg.Ing.broker_root;
+      Alcotest.(check string) "same session key" "deliver-loop-test-sess"
+        cfg.Ing.session_id;
+      Alcotest.(check string) "same thread" "t-42" cfg.Ing.thread_id
+
 let () =
   let open Alcotest in
   run "c2c_codex_deliver_loop"
@@ -176,4 +277,10 @@ let () =
         ; test_case "discovery stops after found" `Quick test_discover_throttle_reused_after_found
         ; test_case "on_degraded transitions true->false on thread load" `Quick test_on_degraded_transition_healthy
         ; test_case "on_degraded stays true when no thread loads" `Quick test_on_degraded_stays_degraded_no_thread ] )
+    ; ( "global-inbox (B141)",
+        [ test_case "cross-repo mail injected, no turn, never drained" `Quick test_global_inbox_injected_no_turn
+        ; test_case "None root disables global delivery" `Quick test_global_none_disables
+        ; test_case "no inbox file: no pass, no artifacts" `Quick test_global_no_inbox_file_no_artifacts
+        ; test_case "DND skips the global pass" `Quick test_global_respects_dnd
+        ; test_case "build_global_ingress_config shape" `Quick test_build_global_ingress_config ] )
     ]
