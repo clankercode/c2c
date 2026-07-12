@@ -496,6 +496,10 @@ install-all: codegen-role-designer codegen-opencode-plugin codegen-c2c-skills
       chmod +x ~/.local/bin/c2c-deliver-inbox; \
       scripts/c2c-install-stamp.sh; \
     '
+    # I010: offer to restart managed sessions still on the old binary.
+    # TTY-gated + non-blocking (C2C_SKIP_RESTART_PROMPT=1 to force quiet). Never
+    # fails the install.
+    scripts/c2c-post-install-restart-prompt.sh || true
 
 # Primary install path: current OCaml binaries only
 install: install-all

@@ -77,6 +77,7 @@ let command_tier_map () : (string * safety) list =
   ; "stop", Tier2
   ; "agent", Tier2
   ; "restart", Tier2
+  ; "restart-stale", Tier2
   ; "reset-thread", Tier2
   (* rooms subcommands (send, join, leave, list, members, history, tail, delete, visibility, invite)
      are not top-level commands; they inherit tier from the rooms parent. *)

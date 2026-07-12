@@ -69,6 +69,7 @@ let all_cmds =
   ; C2c_gui_cmd.gui
   ; C2c_managed_cmd.stop
   ; C2c_managed_cmd.restart
+  ; C2c_managed_cmd.restart_stale
   ; C2c_managed_cmd.reset_thread
   ; C2c_dev_cmd.restart_self_deprecated
   ; C2c_instances_cmd.instances_deprecated

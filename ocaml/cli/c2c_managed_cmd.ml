@@ -817,6 +817,225 @@ let restart_cmd =
 let restart : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance.") restart_cmd
 
+(* --- subcommand: restart-stale (idea I010) -------------------------------- *)
+
+(* What restart-stale decided to do for one managed instance. *)
+type stale_action =
+  | Restarted              (* app-server codex: owner accepted in-place restart *)
+  | Would_restart          (* --dry-run: an app-server codex that would restart *)
+  | Guided of string       (* stale, but not safe to auto-restart: manual cmd *)
+  | Skipped of string      (* current / unknown / coordinator-excluded / self *)
+  | Failed of string       (* auto-restart was attempted and failed *)
+
+(* Request an in-place restart of one app-server Codex instance via the B153
+   owner-control seam, called DIRECTLY (not by shelling out to `c2c restart`).
+   The live owner self-reexecs in its own pane; we only write the request and
+   await its result. Calling the seam inline — rather than spawning a child —
+   means restart-stale can never execve into a supervisor / capture its own
+   terminal (closing the child-fallback TOCTOU), and a failure degrades to a
+   [Failed] row instead of aborting the rolling batch. *)
+let request_app_server_restart ~name ~force ~timeout_s : stale_action =
+  let instance_dir = C2c_start.instance_dir name in
+  try
+    let request_id = C2c_codex_session.request_restart ~instance_dir ~force in
+    match
+      C2c_codex_session.await_restart_result ~instance_dir ~request_id ~timeout_s
+    with
+    | Some "restarting" -> Restarted
+    | Some result -> Skipped (Printf.sprintf "app-server owner declined: %s" result)
+    | None -> Failed "timed out waiting for app-server owner"
+  with exn ->
+    Failed (Printf.sprintf "app-server restart error: %s" (Printexc.to_string exn))
+
+let restart_stale_cmd =
+  let dry_run =
+    Cmdliner.Arg.(value & flag & info [ "dry-run" ]
+      ~doc:"Report what would be restarted without changing any process state.")
+  in
+  let exclude_coordinator =
+    Cmdliner.Arg.(value & flag & info [ "exclude-coordinator" ]
+      ~doc:"Skip the coordinator instance (otherwise it is restarted last).")
+  in
+  let force =
+    Cmdliner.Arg.(value & flag & info [ "force" ]
+      ~doc:"Treat every running instance as stale, and pass --force to \
+            app-server restarts (overriding their idle gate).")
+  in
+  let timeout =
+    Cmdliner.Arg.(value & opt (some float) None & info [ "timeout" ]
+      ~docv:"SECONDS"
+      ~doc:"Per-instance restart timeout in seconds (default: 20).")
+  in
+  let+ json = json_flag
+  and+ dry_run = dry_run
+  and+ exclude_coordinator = exclude_coordinator
+  and+ force = force
+  and+ timeout = timeout in
+  let output_mode = if json then Json else Human in
+  let timeout_s = Option.value timeout ~default:20.0 in
+  let installed = "/proc/self/exe" in
+  let coord_alias =
+    String.lowercase_ascii (C2c_swarm_config.swarm_config_coordinator_alias ())
+  in
+  let self_name = Sys.getenv_opt "C2C_INSTANCE_NAME" in
+  (* NB: the coordinator is matched by managed-instance NAME against the
+     configured coordinator alias. The convention is name == alias (e.g.
+     `c2c start claude -n coordinator1`); if an operator gives the coordinator
+     a name that differs from its alias, coordinator-last ordering won't apply
+     to it. *)
+  let is_coord mi = String.lowercase_ascii mi.mi_name = coord_alias in
+  (* Hash the installed binary at most once for the whole run (lazily, only if
+     an inode mismatch forces a content compare). *)
+  let installed_img = C2c_stale.installed_image installed in
+  (* Dedup classification across processes sharing one executable inode. *)
+  let verdict_memo : (int * int, C2c_stale.verdict) Hashtbl.t = Hashtbl.create 8 in
+  let classify_pid pid =
+    match C2c_stale.dev_ino_of_pid pid with
+    | None -> C2c_stale.classify_installed installed_img pid (* -> Unknown *)
+    | Some key -> (
+        match Hashtbl.find_opt verdict_memo key with
+        | Some v -> v
+        | None ->
+            let v = C2c_stale.classify_installed installed_img pid in
+            Hashtbl.replace verdict_memo key v;
+            v)
+  in
+  let is_app_server mi =
+    C2c_codex_session.load_mapping
+      ~instance_dir:(C2c_start.instance_dir mi.mi_name) <> None
+  in
+  (* Running managed instances with a live outer pid. *)
+  let running =
+    C2c_health_cmd.read_managed_instances ()
+    |> List.filter_map (fun mi ->
+         match mi.mi_pid with
+         | Some pid when mi.mi_status = "running" -> Some (mi, pid)
+         | _ -> None)
+  in
+  (* Rolling order: non-coordinators first, coordinator last so the swarm never
+     goes fully dark mid-upgrade. *)
+  let ordered =
+    let non_coord, coord =
+      List.partition (fun (mi, _) -> not (is_coord mi)) running
+    in
+    non_coord @ coord
+  in
+  (* Sequentially classify and (unless dry-run) act on each instance. *)
+  let results =
+    List.map
+      (fun (mi, pid) ->
+        let verdict = classify_pid pid in
+        let eligible = force || verdict = C2c_stale.Stale in
+        let action =
+          if self_name = Some mi.mi_name then
+            Skipped "self (cannot restart the running command's own session)"
+          else if exclude_coordinator && is_coord mi then
+            Skipped "coordinator excluded (--exclude-coordinator)"
+          else
+            match verdict with
+            | C2c_stale.Unknown reason when not force ->
+                Skipped (Printf.sprintf "unknown identity: %s" reason)
+            | _ when not eligible -> Skipped "already current"
+            | _ ->
+                if not (is_app_server mi) then
+                  (* TUI/hook clients: `c2c restart` would execve into a new
+                     supervisor and capture THIS terminal, dragging the agent
+                     off its own tmux pane. Safe in-place restart of these is
+                     the follow-up idea I011; for now emit the manual command. *)
+                  Guided (Printf.sprintf "c2c restart %s" mi.mi_name)
+                else if dry_run then Would_restart
+                else begin
+                  (* Progress: the app-server request+await can take up to
+                     ~timeout_s, so tell the operator which instance we're on. *)
+                  if output_mode = Human then
+                    Printf.eprintf
+                      "[restart-stale] requesting app-server restart for '%s'...\n%!"
+                      mi.mi_name;
+                  request_app_server_restart ~name:mi.mi_name ~force ~timeout_s
+                end
+        in
+        (mi, verdict, action))
+      ordered
+  in
+  let count p = List.length (List.filter p results) in
+  let n_restarted = count (fun (_, _, a) -> a = Restarted) in
+  let n_would = count (fun (_, _, a) -> a = Would_restart) in
+  let n_guided = count (fun (_, _, a) -> match a with Guided _ -> true | _ -> false) in
+  let n_failed = count (fun (_, _, a) -> match a with Failed _ -> true | _ -> false) in
+  let n_skipped = count (fun (_, _, a) -> match a with Skipped _ -> true | _ -> false) in
+  (match output_mode with
+   | Json ->
+       let action_json = function
+         | Restarted -> `Assoc [ ("kind", `String "restarted") ]
+         | Would_restart -> `Assoc [ ("kind", `String "would_restart") ]
+         | Guided cmd -> `Assoc [ ("kind", `String "guided"); ("command", `String cmd) ]
+         | Skipped r -> `Assoc [ ("kind", `String "skipped"); ("reason", `String r) ]
+         | Failed r -> `Assoc [ ("kind", `String "failed"); ("reason", `String r) ]
+       in
+       print_json
+         (`Assoc
+           [ ("ok", `Bool (n_failed = 0));
+             ("dry_run", `Bool dry_run);
+             ("instances",
+              `List
+                (List.map
+                   (fun (mi, verdict, action) ->
+                     `Assoc
+                       [ ("name", `String mi.mi_name);
+                         ("client", `String mi.mi_client);
+                         ("coordinator", `Bool (is_coord mi));
+                         ("verdict", `String (C2c_stale.verdict_label verdict));
+                         ("action", action_json action) ])
+                   results));
+             ("summary",
+              `Assoc
+                [ ("restarted", `Int n_restarted);
+                  ("would_restart", `Int n_would);
+                  ("needs_manual_restart", `Int n_guided);
+                  ("skipped", `Int n_skipped);
+                  ("failed", `Int n_failed) ]) ])
+   | Human ->
+       if results = [] then
+         Printf.printf "No running managed instances found.\n%!"
+       else begin
+         Printf.printf "c2c restart-stale%s — %d running managed instance(s)\n\n"
+           (if dry_run then " (dry-run)" else "") (List.length results);
+         List.iter
+           (fun (mi, verdict, action) ->
+             let action_str =
+               match action with
+               | Restarted -> "restarted (app-server owner accepted)"
+               | Would_restart -> "would restart (app-server)"
+               | Guided cmd -> Printf.sprintf "manual: %s" cmd
+               | Skipped r -> Printf.sprintf "skipped (%s)" r
+               | Failed r -> Printf.sprintf "FAILED (%s)" r
+             in
+             Printf.printf "  %-18s %-10s %-8s %s%s\n"
+               mi.mi_name mi.mi_client
+               (C2c_stale.verdict_label verdict)
+               action_str
+               (if is_coord mi then "  [coordinator]" else ""))
+           results;
+         Printf.printf
+           "\nSummary: %d restarted, %d would-restart, %d need manual restart, \
+            %d skipped, %d failed.\n%!"
+           n_restarted n_would n_guided n_skipped n_failed;
+         if n_guided > 0 then
+           Printf.printf
+             "\n%d stale session(s) need a manual in-pane restart — run the \
+              `c2c restart <name>` command shown above inside each session's \
+              own tmux pane. Automated in-place restart of TUI clients is \
+              tracked as follow-up idea I011.\n%!"
+             n_guided
+       end);
+  exit (if n_failed = 0 then 0 else 1)
+
+let restart_stale : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "restart-stale"
+       ~doc:"Restart managed instances running an outdated c2c binary.")
+    restart_stale_cmd
+
 let reset_thread_cmd =
   let name =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Instance name to reset.")
