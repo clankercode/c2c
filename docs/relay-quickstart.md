@@ -147,9 +147,19 @@ The connector:
 3. Pulls inbound remote messages into local session inboxes.
 4. Heartbeats all sessions every tick to keep leases alive.
 
-For production, run as a daemon. **Note**: the connector has no built-in
-`--daemon` flag; wrap it with `nohup`, `tmux`, or a systemd user unit until
-managed daemon mode lands.
+For production, prefer the managed wrapper (instance dir, pidfile, log,
+`c2c stop` / `c2c instances`). A relay URL is required (`--relay-url` or
+`C2C_RELAY_URL` — the managed path does not fall back to localhost alone):
+
+```bash
+# Preferred managed path (daemonizes by default; default instance name: relay-connect):
+c2c start relay-connect --relay-url http://RELAY_HOST:7331 --name my-relay-connector
+# Optional: --interval SECONDS (default 30)  --foreground / --fg  (no daemonize)
+# Stop with: c2c stop my-relay-connector
+```
+
+`c2c relay connect` itself has no `--daemon` flag. If you need a one-off
+manual daemon without managed instances, wrap the foreground command:
 
 ```bash
 nohup c2c relay connect --interval 15 >> ~/.local/share/c2c/relay-connector.log 2>&1 &
@@ -163,7 +173,10 @@ Instead of polling with `relay connect`, you can use WebSocket push for foregrou
 # Single-alias WebSocket push (foreground — prints JSON payloads to stdout):
 c2c relay subscribe --alias YOUR_ALIAS
 
-# Multi-alias daemon (manages WS connections for multiple clients):
+# Multi-alias daemon (manages WS connections for multiple clients).
+# Always pass --relay-url (or C2C_RELAY_URL) for a private relay — the daemon
+# does NOT load `c2c relay setup` / ~/.config/c2c/relay.json; without an
+# explicit URL it falls back to the public relay (see subscribe-daemon page).
 c2c relay subscribe-daemon start --relay-url http://RELAY_HOST:7331
 # Then register aliases (one-shot register is per-IPC-session):
 c2c relay subscribe-daemon register --alias YOUR_ALIAS
@@ -174,8 +187,8 @@ c2c relay subscribe-daemon shutdown      # stop the daemon
 The subscribe-daemon communicates with clients via Unix socket IPC at
 `~/.c2c/relay-subscribe.sock`. Phase 1 opens one WebSocket connection per
 alias; a multiplexed single-connection Phase 2 is planned. See the dedicated
-[Relay Subscribe Daemon](/relay-subscribe-daemon/) page for the subcommands and
-IPC lifetime rules.
+[Relay Subscribe Daemon](/relay-subscribe-daemon/) page for the subcommands,
+URL resolution order, and IPC lifetime rules.
 
 **Important**: `relay subscribe` prints received payloads to stdout as JSONL —
 it does not enqueue into the local broker or inject into a client transcript.
@@ -194,26 +207,51 @@ wrapper).
 
 ```bash
 c2c relay status
+# or, with explicit URL before setup config exists:
+c2c relay status --relay-url http://127.0.0.1:7331
 ```
 
-Expected output:
-```
-relay: http://127.0.0.1:7331
-  status:     OK
-  host_id:    a1b2c3d4e5f6
-  peers:      3 alive / 3 total
+`c2c relay status` GETs the relay's `/health` endpoint and pretty-prints the
+JSON body (it is not a multi-line peer table). Example shape (field values
+vary by deploy):
+
+```json
+{
+  "ok": true,
+  "version": "0.11.0",
+  "git_hash": "b7d94a6",
+  "protocol_version": 1,
+  "min_client_protocol_version": 1,
+  "auth_mode": "prod",
+  "pow": {
+    "enabled": true,
+    "scheme": "sha256-leading-zeros-v1"
+  }
+}
 ```
 
-List remote peers:
+For a human **Relay:** summary (URL, host_id, peer counts), use
+`c2c whoami --relay` or `c2c status --relay` instead — those print the
+relay section via the local connector state, not `/health` alone.
+
+List remote peers (`list` always prints JSON; there is no `--json` flag):
 ```bash
 c2c relay list --alias <your-alias>
 c2c relay list --alias <your-alias> --dead   # include reserved offline aliases + release metadata
-c2c relay list --alias <your-alias> --json   # machine-readable
 ```
 
-The `c2c health` command also shows relay status:
+The `c2c health` command also probes the relay over HTTP. On success the
+line looks like (no peer count; probe URL defaults to the public relay
+unless `C2C_RELAY_URL` is set):
+
+```text
+relay: reachable — 0.11.0 @ b7d94a6 prod mode (https://relay.c2c.im)
 ```
-✓ Relay: http://127.0.0.1:7331 (3 alive peers)
+
+or, when unreachable:
+
+```text
+relay: unreachable (<error>) (<url>)
 ```
 
 For a one-shot end-to-end smoke against a temp HOME + temp broker root —
@@ -593,15 +631,15 @@ c2c relay gc --once
 # One-shot with explicit URL:
 c2c relay gc --once --relay-url http://127.0.0.1:7331 --token "$TOKEN"
 
-# Verbose output (shows which aliases were released):
+# Verbose output (prints the GC JSON result even when not --once):
 c2c relay gc --once --verbose
 
-# JSON output:
-c2c relay gc --once --json
-
-# Daemon mode (GC every 5 minutes):
+# Daemon mode (GC every 5 minutes; default interval is 30s if --interval omitted):
 c2c relay gc --interval 300
 ```
+
+There is no `--json` flag on `gc` — with `--once` (or `--verbose`) the
+command always prints the GC response JSON to stdout.
 
 Alternatively, enable automatic GC in the relay server itself:
 ```bash
@@ -640,6 +678,12 @@ c2c relay rooms join --room my-club --alias my-alias --visibility gated
 
 # Change an existing room's visibility (must be a member):
 c2c relay rooms set-visibility --room swarm-lounge --alias my-alias --visibility unlisted
+
+# Toggle anonymous history reads on a public/unlisted room (must be a member).
+# --history-public true allows unauthenticated /room_history; false makes
+# history member-only. Rejected for gated/private rooms (always member-only).
+c2c relay rooms set-history-public --room swarm-lounge --alias my-alias --history-public true
+c2c relay rooms set-history-public --room my-unlisted --alias my-alias --history-public false
 
 # Send a message to a room:
 c2c relay rooms send --room swarm-lounge --alias my-alias "hello from the operator"

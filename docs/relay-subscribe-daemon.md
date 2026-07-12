@@ -11,24 +11,41 @@ permalink: /relay-subscribe-daemon/
 ## Start the daemon
 
 ```bash
-# Use the configured relay, falling back to the public relay default.
-c2c relay subscribe-daemon start
-
-# Equivalent explicit public relay URL:
+# RECOMMENDED: always pass an explicit URL (or set C2C_RELAY_URL) so private
+# relays are not accidentally replaced by the public default.
 c2c relay subscribe-daemon start --relay-url https://relay.c2c.im
-```
 
-For a local non-TLS development relay, pass its HTTP URL explicitly:
-
-```bash
+# Local non-TLS development relay:
 c2c relay subscribe-daemon start --relay-url http://localhost:7331
+
+# Env-only (same effect as the flag when no --relay-url is passed):
+export C2C_RELAY_URL=http://localhost:7331
+c2c relay subscribe-daemon start
 ```
+
+### URL resolution order (subscribe-daemon only)
+
+`subscribe-daemon start` does **not** use the normal `c2c relay` config
+resolution (`resolve_relay_url` / `c2c relay setup` / `~/.config/c2c/relay.json`
+/ `<broker-root>/relay.json`). Its order is:
+
+1. `--relay-url` flag
+2. `C2C_RELAY_URL` environment variable
+3. `~/.c2c/relay-setup.json` if present and containing a string `"url"` field
+   (**not** written by `c2c relay setup` — that command writes
+   `~/.config/c2c/relay.json` or `<broker-root>/relay.json`)
+4. Hard-coded default: `https://relay.c2c.im`
+
+**Private-relay operators:** if you only ran `c2c relay setup` and then
+`subscribe-daemon start` with no flag/env, the daemon connects to the
+**public** relay. Always pass `--relay-url` or export `C2C_RELAY_URL` for a
+non-public target.
 
 Options:
 
 | Option | Description |
 |--------|-------------|
-| `--relay-url URL` | Relay base URL. Defaults through `C2C_RELAY_URL` or saved `c2c relay setup` config, falling back to `https://relay.c2c.im`. |
+| `--relay-url URL` | Relay base URL. Resolution order above; recommend always setting this (or `C2C_RELAY_URL`) for non-public relays. |
 | `--socket PATH` | Unix socket path. Defaults to `~/.c2c/relay-subscribe.sock`. |
 
 The daemon opens WebSocket connections on behalf of aliases registered over the Unix socket IPC. The subscribe/subscribe-daemon push path still has a TLS/WebSocket caveat: if WSS/TLS push is not available for an HTTPS relay, drain inbound relay DMs with `c2c relay dm --alias <you> poll` instead. This fallback is scoped to relay subscribe push and does not change the `c2c relay connect` guidance.
@@ -48,7 +65,10 @@ All management commands accept `--socket PATH` if the daemon is not using the de
 
 `register` is per IPC session. A one-shot `c2c relay subscribe-daemon register --alias A` connects, registers, then exits; when that IPC connection closes, the daemon cleans up aliases owned by that client. Durable registration requires a long-lived client or wrapper that keeps its socket connection open.
 
-For transparent local broker bridging, use `c2c relay connect` instead. `subscribe-daemon` forwards relay push payloads to connected clients; it does not by itself enqueue messages into the local broker or inject a transcript turn.
+For transparent local broker bridging, use `c2c relay connect` (or managed
+`c2c start relay-connect`) instead. `subscribe-daemon` forwards relay push
+payloads to connected clients; it does not by itself enqueue messages into
+the local broker or inject a transcript turn.
 
 ## See also
 
