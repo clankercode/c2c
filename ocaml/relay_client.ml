@@ -475,6 +475,9 @@ end = struct
       ("session_id", `String session_id);
       ("alias", `String alias);
       ("client_type", `String client_type);
+      (* B149: connection metadata feeding /stats connected.by_version/by_os. *)
+      ("client_version", `String Version.version);
+      ("client_os", `String (Relay_common.client_os ()));
       ("ttl", `Int (int_of_float ttl));
     ] in
     let fields =
@@ -510,6 +513,9 @@ end = struct
       ("session_id", `String session_id);
       ("alias", `String alias);
       ("client_type", `String client_type);
+      (* B149: connection metadata feeding /stats connected.by_version/by_os. *)
+      ("client_version", `String Version.version);
+      ("client_os", `String (Relay_common.client_os ()));
       ("ttl", `Int (int_of_float ttl));
       ("identity_pk", `String identity_pk_b64);
       ("signature", `String sig_b64);
