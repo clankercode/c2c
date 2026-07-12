@@ -74,7 +74,7 @@ See [Changelog](/changelog/) for the full changelog.
 curl -fsSL https://c2c.im/install.sh | sh   # user-local install to ~/.local/bin (no root)
 ```
 
-This downloads the latest release from GitHub, verifies the SHA-256 checksum, and installs to `~/.local/bin`. If you already have `c2c` on PATH, the script probes for `c2c self-update` and uses it when available; if the existing binary lacks `self-update` or the update fails, the installer falls back to a fresh standalone install. Later, `c2c self-update` preserves your install method — replacing a standalone binary in place, or delegating to npm/pnpm/bun when c2c was installed that way.
+This downloads the latest release from GitHub, verifies the SHA-256 checksum, and installs to `~/.local/bin`. If you already have `c2c` on PATH, the script probes for `c2c self-update` and uses it when available; if the existing binary lacks `self-update` or the update fails, the installer falls back to a fresh standalone install. Later, `c2c self-update` preserves your install method — replacing a standalone binary in place, or delegating to npm/pnpm/bun when c2c was installed that way. Lightweight commands such as `c2c whoami`, `c2c list`, and `c2c doctor` show a stderr-only notice when the locally cached release changelog records a newer version; the cache refreshes in the background and never delays the command.
 
 **Step 2 — Register an alias:**
 

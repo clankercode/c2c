@@ -107,6 +107,28 @@ let tmp_broker () =
 let read_marker root client =
   C2c_changelog.read_marker ~broker_root:root ~client
 
+let test_update_notice_uses_newest_cached_version () =
+  let root = tmp_broker () in
+  let dir = C2c_changelog.broker_changelog_dir ~broker_root:root in
+  Unix.mkdir dir 0o700;
+  let cache = C2c_changelog.remote_cache_path ~broker_root:root in
+  let oc = open_out cache in
+  output_string oc
+    "## v900.1.0\n\n### First\nsummary: first.\n\n\
+     ## v900.2.0\n\n### Latest\nsummary: latest.\n";
+  close_out oc;
+  check (option string) "newest cached version is available" (Some "900.2.0")
+    (C2c_changelog.update_available ~current:"900.0.0" ~broker_root:root ~now:0. ());
+  let notice =
+    C2c_changelog.update_notice ~current:"900.0.0" ~broker_root:root ~now:0. ()
+  in
+  check bool "notice includes current version" true
+    (Option.fold ~none:false ~some:(fun s -> contains s "900.0.0") notice);
+  check bool "notice includes newest version" true
+    (Option.fold ~none:false ~some:(fun s -> contains s "900.2.0") notice);
+  check (option string) "current newest version stays silent" None
+    (C2c_changelog.update_notice ~current:"900.2.0" ~broker_root:root ~now:0. ())
+
 let test_first_run_bootstraps_marker_no_output () =
   let root = tmp_broker () in
   let out =
@@ -327,6 +349,8 @@ let () =
     ; ( "compare",
         [ test_case "version ordering" `Quick test_compare
         ; test_case "entries_since" `Quick test_entries_since
+        ; test_case "update notice uses newest cached release" `Quick
+            test_update_notice_uses_newest_cached_version
         ; test_case "client/audience filters" `Quick test_filters ] )
     ; ( "auto_show",
         [ test_case "first run bootstraps marker" `Quick

@@ -104,6 +104,7 @@ let all_cmds =
 
 let run () =
   C2c_root_cmd.try_fast_path ();
+  C2c_root_cmd.maybe_emit_update_notice ();
   C2c_root_cmd.sanitize_help_env ();
   for i = 0 to Array.length Sys.argv - 1 do
     if Sys.argv.(i) = "-h" then Sys.argv.(i) <- "--help"

@@ -37,7 +37,10 @@ updated by delegating to that package manager (it never overwrites the binary
 inside `node_modules`). If the provenance is ambiguous, the binary is shadowed
 on PATH, or the owning package manager is missing, it refuses with an actionable
 message rather than silently installing a second copy. Use `--check` to see the
-detected method without changing anything.
+detected method without changing anything. Lightweight commands such as
+`c2c whoami`, `c2c list`, and `c2c doctor` show a stderr-only notice when the
+locally cached release changelog records a newer version; the check refreshes
+in the background and never delays the command.
 
 ## Step 2 — Register this agent
 
