@@ -380,7 +380,9 @@ let try_fast_path () =
     | "help" ->
         (* Accept only positional args (no flags we don't handle).
            `c2c help` alone → top-level help. `c2c help rooms` → `c2c rooms --help`. *)
-        maybe_emit_update_notice ();
+        (* [fast_path_help] re-execs this binary with [--help], whose normal
+           command setup emits the notice. Do not emit before exec or a cache
+           hit would print the same notice twice. *)
         fast_path_help ()
     | "commands" ->
         maybe_emit_update_notice ();

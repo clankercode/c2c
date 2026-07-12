@@ -1023,6 +1023,50 @@ let test_whoami_output_contains_alias_field () =
         (string_contains content "session_id:"))
 
 (* ------------------------------------------------------------------------- *)
+(* Cached update notice — help re-exec must emit it exactly once             *)
+(* ------------------------------------------------------------------------- *)
+
+let count_substring haystack needle =
+  let haystack_len = String.length haystack in
+  let needle_len = String.length needle in
+  let rec loop index count =
+    if index + needle_len > haystack_len then count
+    else if String.sub haystack index needle_len = needle then
+      loop (index + needle_len) (count + 1)
+    else loop (index + 1) count
+  in
+  if needle_len = 0 then 0 else loop 0 0
+
+let test_help_emits_cached_update_notice_once () =
+  with_temp_dir (fun broker_root ->
+      let changelog_dir = Filename.concat broker_root "changelog" in
+      Unix.mkdir changelog_dir 0o700;
+      write_file (Filename.concat changelog_dir "remote.md")
+        "## v999.0.0\n\n### Test update\nsummary: cached test update.\n";
+      List.iter
+        (fun args ->
+          let stdout_path = Filename.temp_file "c2c-help-update" ".out" in
+          let stderr_path = Filename.temp_file "c2c-help-update" ".err" in
+          Fun.protect
+            ~finally:(fun () ->
+              Sys.remove stdout_path |> ignore;
+              Sys.remove stderr_path |> ignore)
+            (fun () ->
+              let command =
+                c2c_cmd
+                  (Printf.sprintf
+                     "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s \\
+                      C2C_CHANGELOG_FETCH_DISABLE=1 c2c %s > %s 2> %s"
+                     (Filename.quote broker_root) args
+                     (Filename.quote stdout_path) (Filename.quote stderr_path))
+              in
+              check int ("c2c " ^ args ^ " exits 0") 0 (Sys.command command);
+              let stderr = read_file stderr_path in
+              check int ("c2c " ^ args ^ " emits one cached update notice") 1
+                (count_substring stderr "notice: c2c update available")))
+        [ "help"; "--help" ])
+
+(* ------------------------------------------------------------------------- *)
 (* c2c history — verify message history display                             *)
 (* ------------------------------------------------------------------------- *)
 
@@ -3893,6 +3937,10 @@ let () =
         [ ( "whoami exits 0", `Quick, test_whoami_exits_zero )
         ; ( "whoami output contains alias field", `Quick, test_whoami_output_contains_alias_field )
         ] )
+    ; ( "update_notice",
+        [ ( "help emits cached update notice once", `Quick,
+            test_help_emits_cached_update_notice_once )
+        ] )
     ; ( "history",
         [ ( "history exits 0", `Quick, test_history_exits_zero )
         ] )
@@ -4090,4 +4138,3 @@ let () =
         ; ( "register cmd env-alias rename refused sticky alias", `Quick, test_register_cmd_env_alias_rename_refused_sticky_alias )
         ] )
     ]
- 
