@@ -9,8 +9,9 @@ nav_label: Changelog
 
 ## Unreleased
 
-Post-`v0.11.0` ships (not yet folded into a versioned release). Agent-facing
-staging for the same items lives in `data/changelog/PENDING.md`.
+_(empty — next cycle)_
+
+## 0.12.0 — 2026-07-13
 
 - **`c2c statusline` prints a fast, local-only status bar summary.** Shows
   alias, relay connectivity, and peer counts for the current-repo broker and
@@ -26,7 +27,7 @@ staging for the same items lives in `data/changelog/PENDING.md`.
   refused (sticky alias from 0.11.0 / B135).
   (B140; `fcee9c07`, `eb8ce31c`, `c9eee24b`)
 
-- **Kimi install/start is temporarily disabled for this pre-release window.**
+- **Kimi install/start is temporarily disabled for this release window.**
   `c2c start kimi`, `c2c new kimi`, and `c2c install kimi` refuse with a
   friendly `[DISABLED]` notice while `kimi_disabled_for_release = true`.
   Notifier, hooks, and adapters remain in-tree; flip that single flag to
