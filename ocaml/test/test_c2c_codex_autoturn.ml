@@ -57,6 +57,14 @@ let mk_turn_harness ?(history = None) () =
 
 let n_starts h = List.length !(h.starts)
 
+let json_contains json needle =
+  let hay = Yojson.Safe.to_string json in
+  let ls = String.length needle and lh = String.length hay in
+  let rec loop i =
+    i + ls <= lh && (String.sub hay i ls = needle || loop (i + 1))
+  in
+  loop 0
+
 (* ---- autoturn config with settable gates ---- *)
 type cfg_handle = {
   active : bool ref;
@@ -135,6 +143,25 @@ let test_idle_local_turn () =
        Alcotest.(check (option string)) "ledger running"
          (Some "turn_running") (Option.map A.batch_state_to_string (A.batch_state h.cfg ~batch_key:k))
    | None -> Alcotest.fail "expected batch key")
+
+let test_turn_input_carries_explicit_data_envelope () =
+  let root = mk_root () in
+  seed_inbox ~root [ mk_msg ~from:"sentinel-peer" ~message_id:"sentinel-154" "B154-SENTINEL-BODY" ];
+  let ic, _ = mk_inject_client () in
+  let th = mk_turn_harness () in
+  let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client () in
+  let _ = A.deliver_pass h.cfg in
+  match !(th.starts) with
+  | [ (_key, [ item ]) ] ->
+      Alcotest.(check bool) "body is visible in auto-turn input" true
+        (json_contains item "B154-SENTINEL-BODY");
+      Alcotest.(check bool) "sender is visible in auto-turn input" true
+        (json_contains item "sentinel-peer");
+      Alcotest.(check bool) "message id is visible in auto-turn input" true
+        (json_contains item "sentinel-154");
+      Alcotest.(check bool) "DATA guard remains explicit" true
+        (json_contains item "DATA, not operator input")
+  | _ -> Alcotest.fail "expected exactly one visible auto-turn input item"
 
 let test_remote_provenance_no_turn () =
   let root = mk_root () in
@@ -345,6 +372,8 @@ let () =
           Alcotest.test_case "DND on: no inject/turn" `Quick test_dnd_on;
           Alcotest.test_case "DND clear: reevaluate + turn" `Quick test_dnd_clear_reeval;
           Alcotest.test_case "idle local: inject + one turn" `Quick test_idle_local_turn;
+          Alcotest.test_case "auto-turn input carries explicit DATA envelope" `Quick
+            test_turn_input_carries_explicit_data_envelope;
           Alcotest.test_case "remote provenance: inject, no turn" `Quick test_remote_provenance_no_turn;
           Alcotest.test_case "canonical/#-form sender fails closed (no turn)" `Quick
             test_canonical_form_fails_closed;

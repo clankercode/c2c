@@ -112,6 +112,10 @@ val real_loaded_threads :
 
 (* -------------------------- injected item builder ------------------------- *)
 
+val data_text : C2c_mcp.message -> message_id:string -> string
+(** Canonical, explicitly-delimited c2c DATA envelope for a model-visible
+    surface. This never grants operator or approval authority. *)
+
 val build_injected_item : ?role:string -> C2c_mcp.message -> message_id:string -> Yojson.Safe.t
 (** Data-only Responses API item. Role defaults to ["developer"] (deliberately
     NOT ["user"] — an injected peer message must not forge operator input). The

@@ -138,10 +138,12 @@ val active_batch_key : config -> string option
 (** Stable batch/idempotency key from (thread_id, ordered message_ids). *)
 val batch_key_of : config -> message_ids:string list -> string
 
-val build_turn_nudge : batch_key:string -> count:int -> Yojson.Safe.t
-(** Neutral, content-free DATA turn input. Role ["developer"] (never operator
-    ["user"]) — carries only a count + batch key, NO message body/credential, so
-    B098 stays airtight. *)
+val build_turn_nudge :
+  batch_key:string -> messages:(C2c_mcp.message * string) list -> Yojson.Safe.t
+(** Explicitly-delimited c2c DATA turn input. It contains the same canonical
+    envelopes as passive ingress because some app-server builds do not expose
+    injected history to the subsequent auto-started turn. It is never operator
+    input and cannot satisfy an approval. *)
 
 (* -------------------------------- outcome --------------------------------- *)
 

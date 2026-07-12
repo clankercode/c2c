@@ -81,7 +81,7 @@ type client = {
    for operator input or a local approval. The text is unmistakably marked as a
    relayed c2c message and carries a machine-readable metadata line so a history
    reconcile can find it by message_id. *)
-let build_injected_item ?(role = "developer") (m : C2c_mcp.message) ~message_id : Yojson.Safe.t =
+let data_text (m : C2c_mcp.message) ~message_id : string =
   let meta =
     `Assoc
       [ ("c2c", `Bool true);
@@ -105,10 +105,14 @@ let build_injected_item ?(role = "developer") (m : C2c_mcp.message) ~message_id 
         "c2c-meta: " ^ Yojson.Safe.to_string meta;
         envelope ]
   in
+  text
+
+let build_injected_item ?(role = "developer") (m : C2c_mcp.message) ~message_id : Yojson.Safe.t =
   `Assoc
     [ ("type", `String "message");
       ("role", `String role);
-      ("content", `List [ `Assoc [ ("type", `String "input_text"); ("text", `String text) ] ]) ]
+      ("content", `List [ `Assoc [ ("type", `String "input_text");
+                                      ("text", `String (data_text m ~message_id)) ] ]) ]
 
 (* -------------------------------- config ---------------------------------- *)
 
