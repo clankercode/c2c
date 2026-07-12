@@ -25,9 +25,10 @@ Every inbound c2c message first lands in the recipient's broker inbox. A client
 then receives it through one of these paths:
 
 1. **Client integration** — the preferred path. Claude Code uses a PostToolUse
-   hook, Codex uses hooks installed by `c2c install codex`, Pi Agent uses the
-   `pi-c2c` extension, OpenCode uses its native plugin, and Kimi uses
-   notification-store delivery.
+   hook; managed Codex uses the app-server delivery stack (hooks for vanilla /
+   fallback); Pi Agent uses the `pi-c2c` extension; OpenCode uses its native
+   plugin; and Kimi uses notification-store delivery (temporarily disabled —
+   see B146-TEMP under [Kimi](#kimi)).
 2. **MCP polling** — MCP-managed fallback. Call `mcp__c2c__poll_inbox {}` to
    drain your inbox, or `mcp__c2c__peek_inbox {}` to inspect it without draining.
 3. **CLI polling** — universal shell fallback, including Pi Agent. Run
@@ -90,25 +91,32 @@ minimal swarm intro.
   flag to set. Its delivery stack is wired into managed supervision (B131): the
   supervisor injects inbound c2c mail into the thread's model-visible history on
   arrival (draft-safe), and starts one gated model turn for eligible local mail
-  when the thread is idle and DND is off. Older Codex or an app-server startup
-  failure falls back automatically to the **hook boundary**: `c2c install codex`
-  installs `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`
-  hooks running `c2c hook codex`, which auto-registers the session, drains
-  inbound broker messages, and returns them through
-  `hookSpecificOutput.additionalContext` — hook delivery happens when a hook
-  fires, not on arrival. Vanilla (non-managed) Codex sessions use the hook path.
-  Explicit polling remains the portable fallback. See [Codex](#codex) below for
-  the full contract.
+  when the thread is idle and DND is off (idle auto-turn is immediate; inject /
+  auto-turn failures force-retry or re-batch after ~2 minutes — B168). Older
+  Codex or an app-server startup failure falls back automatically to the **hook
+  boundary**: `c2c install codex` installs `UserPromptSubmit`, `PostToolUse`,
+  `SessionStart`, and `SessionEnd` hooks running `c2c hook codex`, which
+  auto-registers the session, drains inbound broker messages, and returns them
+  through `hookSpecificOutput.additionalContext` — hook delivery happens when a
+  hook fires, not on arrival. Vanilla (non-managed) Codex sessions use the hook
+  path. Explicit polling remains the portable fallback. See [Codex](#codex)
+  below for the full contract.
 - **Pi Agent**: `pi install npm:pi-c2c` installs the external Pi extension. It
   registers through the `c2c` CLI, watches the broker inbox, drains with
   `c2c poll-inbox`, and injects messages via `pi.sendMessage`.
-- **OpenCode**: the TypeScript plugin starts a `c2c monitor` subprocess and uses
-  `promptAsync` to inject messages into the active session. Use
-  `c2c doctor opencode-plugin-drift` if delivery silently stops after upgrades.
-- **Kimi**: managed Kimi uses `C2c_kimi_notifier` /
+- **OpenCode**: the TypeScript plugin starts an alias-scoped `c2c monitor`
+  subprocess (`c2c monitor --alias <session>`) and uses `promptAsync` to inject
+  messages into the active session. Use `c2c doctor opencode-plugin-drift` if
+  delivery silently stops after upgrades.
+- **Kimi**:
+  > **B146-TEMP:** Kimi is temporarily disabled for this release
+  > (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
+  > until re-enabled. Mechanics below remain for when it returns.
+  > <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+  When re-enabled, managed Kimi uses `C2c_kimi_notifier` /
   `c2c-deliver-inbox --client kimi` to write notification files into Kimi's
   notification store. Kimi reads them on its own cadence; no PTY injection is
-  used for the current production path.
+  used for the production path.
 - **Grok**: `c2c install grok` is **CLI-first** (no MCP by default). Preferred
   inbound is a persistent Monitor on `c2c monitor` (Grok injects each line into
   the conversation). SessionStart runs `c2c hook grok` to auto-register and
@@ -144,7 +152,11 @@ for the full grammar. The delivery-relevant contract:
 
 - **Identity**: with no `--alias`, a stable human-readable alias is derived
   deterministically from the Codex session id (resume/restart keeps it);
-  `--alias` optionally overrides the routing identity.
+  `--alias` optionally overrides the routing identity. After a successful
+  app-server start the launcher binds that banner alias into the broker before
+  interaction (B172), so first-turn `whoami` / send match the banner without a
+  re-init. Hooks inherit the launcher session id via
+  `C2C_CODEX_APPSERVER_SESSION` (B166/B137) and do not mint a second identity.
 - **`--yolo`** forwards Codex's `--dangerously-bypass-approvals-and-sandbox`
   with a conspicuous warning; it is per-launch only and never persisted into
   later resumes.
@@ -234,13 +246,16 @@ supervisor:
   There is no composer-empty signal in the protocol and none is needed.
 - **Auto-turn (gated, local-only).** Eligible **local-broker** mail starts
   exactly one model turn when the thread status is **explicitly idle** and
-  DND is off. `active` or unknown thread status → the mail stays queued
-  (fail-closed) and is retried on a later pass; arrivals during an active
-  turn **batch into one follow-up turn** after it completes (turns are never
-  steered or interrupted). **Relay/remote-origin mail is never auto-turned**:
-  any `@host` or `#` routing marker in the sender classifies it as remote
-  (fail-closed) — it is still injected as data, durable and readable on the
-  next turn, but it cannot start one. DND-on or offline sessions queue
+  DND is off. On an idle thread the auto-turn fires **immediately** (B168) —
+  it does not wait for the stale threshold. `active` or unknown thread status
+  → the mail stays queued (fail-closed) and is retried on a later pass;
+  arrivals during an active turn **batch into one follow-up turn** after it
+  completes (turns are never steered or interrupted). Inject failures and
+  `Turn_failed` batches force-retry / re-batch after ~**2 minutes**
+  (`stale_inbox_threshold_s` = 120; B168). **Relay/remote-origin mail is never
+  auto-turned**: any `@host` or `#` routing marker in the sender classifies it
+  as remote (fail-closed) — it is still injected as data, durable and readable
+  on the next turn, but it cannot start one. DND-on or offline sessions queue
   durably. Behavior receipt:
   `.collab/research/2026-07-11-t007-autoturn-receipt.md`.
 - **Approvals stay inert (B098, refined).** Eligible local mail *can* cause a
@@ -261,14 +276,16 @@ supervisor:
   hook launch — `c2c doctor hooks` then reports `app-server-unavailable`
   with the remediation (upgrade Codex, then relaunch `c2c start codex`).
 
-**Single identity per session (B137, fixed).** The managed launcher registers the
-routable app-server alias (the one `c2c instances` reports and the delivery loop
-drives) and hands its session id to the stock Codex frontend's hooks via the
-inherited `C2C_CODEX_APPSERVER_SESSION` marker (exported before the frontend is
-spawned). `c2c hook codex` adopts that identity instead of self-registering a
-*second* alias, so `c2c list` shows exactly one entry per session. The hook is
-then identity-only: it drains nothing (the delivery loop owns arrival-time
-delivery of the repo inbox), so there is no double-drain.
+**Single identity per session (B137/B166/B172, fixed).** The managed launcher
+registers the routable app-server alias (the one `c2c instances` reports and the
+delivery loop drives) **immediately after a successful app-server start** (B172
+— banner alias is broker-visible before first interaction; no re-init needed to
+fix alias drift) and hands its session id to the stock Codex frontend's hooks
+via the inherited `C2C_CODEX_APPSERVER_SESSION` marker (exported before the
+frontend is spawned — B166/B137). `c2c hook codex` adopts that identity instead
+of self-registering a *second* alias, so `c2c list` shows exactly one entry per
+session. The hook is then identity-only: it drains nothing (the delivery loop
+owns arrival-time delivery of the repo inbox), so there is no double-drain.
 
 **Cross-repo (sessions-broker) mail (B141).** Mail addressed to the session on
 the machine-wide cross-repo broker (`~/.c2c/sessions/broker`) is ALSO delivered
@@ -352,14 +369,20 @@ messages into the transcript with `pi.sendMessage`. It is installed with
 
 ## OpenCode
 
-TypeScript plugin spawns `c2c monitor --all` (inotify on `moved_to`), delivers
-via `client.session.promptAsync`. Messages appear as native user turns. Session
-ID from `$OPENCODE_SESSION_ID`. Restart via `c2c restart <name>`. `c2c install
-opencode` writes the plugin to `.opencode/plugins/c2c.ts` project-locally — a
-symlink to `data/opencode-plugin/c2c.ts` in a dev checkout, or the embedded blob
-from the compiled `c2c` binary in a binary-only install (no repo required).
+TypeScript plugin spawns an **alias-scoped** `c2c monitor` (`c2c monitor --alias
+<session>`; not `--all`), delivers via `client.session.promptAsync`. Messages
+appear as native user turns. Session ID from `$OPENCODE_SESSION_ID`. Restart via
+`c2c restart <name>`. `c2c install opencode` writes the plugin to
+`.opencode/plugins/c2c.ts` project-locally — a symlink to
+`data/opencode-plugin/c2c.ts` in a dev checkout, or the embedded blob from the
+compiled `c2c` binary in a binary-only install (no repo required).
 
 ## Kimi
+
+> **B146-TEMP:** Kimi is temporarily disabled for this release
+> (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
+> until re-enabled. Recipes and mechanics below remain for when it returns.
+> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
 
 Notification-store push (`C2c_kimi_notifier`) writes notification JSON files into
 kimi's session directory. Tmux idle-wake fires when pane is idle. No PTY
