@@ -380,12 +380,12 @@ let test_global_list_hides_dead_and_keeps_repository_groups () =
   let env = [ ("HOME", home); ("XDG_STATE_HOME", dir // "xdg-empty") ] in
   let rc, out, _ = run_c2c ~env [ "list"; "--global" ] in
   check int "global list exits 0" 0 rc;
-  check bool "live repository group rendered" true (string_contains out "repo: repo-alpha");
+  check bool "other repository group rendered" true (string_contains out "other repository broker");
   check bool "live peer rendered" true (string_contains out "zzqglobal-alpha-live");
-  check bool "dead repository group hidden" false (string_contains out "repo: repo-beta");
+  check bool "opaque repository hash hidden" false (string_contains out "repo-alpha");
   let rc_all, out_all, _ = run_c2c ~env [ "list"; "--global"; "--all" ] in
   check int "global --all exits 0" 0 rc_all;
-  check bool "dead repository group restored" true (string_contains out_all "repo: repo-beta");
+  check bool "dead repository group restored" true (string_contains out_all "other repository broker");
   check bool "dead peer restored" true (string_contains out_all "zzqglobal-beta-dead")
 
 (* ---------------------------------------------------------------- *)

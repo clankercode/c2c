@@ -112,7 +112,7 @@ let list_cmd =
   in
   let global =
     Cmdliner.Arg.(value & flag & info [ "global"; "g" ]
-      ~doc:"Scan all known broker roots (across all repos) and group visible sessions by repository. Each row is annotated with its repo fingerprint and path; confirmed-dead rows stay hidden unless --all is passed. Use this to find sessions started in other repos or on other brokers.")
+      ~doc:"Scan all known broker roots (across all repos) and group visible sessions by current versus other repository broker. Human output hides opaque repo fingerprints; use --json for broker paths/fingerprints when diagnosing routing. Confirmed-dead rows stay hidden unless --all is passed.")
   in
   let alive_only =
     Cmdliner.Arg.(value & flag & info [ "alive"; "A" ]
@@ -583,13 +583,17 @@ let list_cmd =
             (* Print only repositories with a visible row.  After the default
                dead-session filter, retaining an empty broker header would
                still expose the stale repository as list noise. *)
+            let current_root = try Some (resolve_broker_root ()) with _ -> None in
             all_roots
             |> List.filter (fun key -> Hashtbl.mem by_broker key)
             |> List.iter (fun (fp, root) ->
               let regs = try Hashtbl.find by_broker (fp, root) with Not_found -> [] in
-              Printf.printf "\n[%s]\n  repo: %s\n  root: %s\n"
-                (if enriched then "enriched" else "sessions")
-                fp root;
+              let scope = match current_root with
+                | Some current when current = root -> "current repository"
+                | _ -> "other repository broker"
+              in
+              Printf.printf "\n[%s]\n"
+                (if enriched then scope ^ ", enriched" else scope);
               List.iter (fun r ->
                 let alive_str =
                   match C2c_mcp.Broker.registration_liveness_state r with
