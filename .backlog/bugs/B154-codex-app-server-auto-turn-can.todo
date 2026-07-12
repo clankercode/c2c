@@ -1,17 +1,18 @@
 ---
 claimed_at: "2026-07-12T09:34:51Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T09:54:13Z"
 complexity: high
 created_at: "2026-07-12T09:32:26Z"
 depends_on: []
+duration_minutes: 19.371114732966667
 estimate_hours: 6
 id: B154
 priority: high
 started_at: "2026-07-12T09:34:51Z"
-status: in_progress
+status: done
 tags: []
 title: Codex app-server auto-turn can expose count-only nudge without c2c payload
-updated_at: "2026-07-12T09:34:51Z"
+updated_at: "2026-07-12T09:54:13Z"
 ---
 Observed 2026-07-12 in a live Codex session: the transcript showed only the content-free system nudge "1 new c2c message(s) were injected..." (batch batch-09e011109d4fbeb73f7ff7da); no actual c2c envelope/body was visible, and c2c poll-inbox returned no messages. The intended path injects full envelopes as developer thread history, then starts a turn with C2c_codex_autoturn.build_turn_nudge, which deliberately has no body. Either injected developer items are not model-visible to the subsequent app-server turn, or their shape/role is wrong. Reproduce in tmux with a unique sentinel local DM; capture JSON-RPC/delivery log and model-visible transcript. Acceptance: auto-turn exposes sender, message ID, and sentinel body as clearly delimited DATA; preserve B098 (never operator/approval semantics), persist-first/idempotent injection, and exact-once batching; add an E2E regression failing for nudge-only visibility. Do not blindly use a normal user chat message: first establish a safe non-user app-server representation, otherwise include a delimited DATA envelope in the turn input with approval-invariant coverage.
