@@ -140,3 +140,4 @@ bugs:
     - file: B141-app-server-codex-sessions-deli.todo
     - file: B142-c2c-monitor-relay-watch-termin.todo
     - file: B143-delivery-reply-hint-should-def.todo
+    - file: B144-add-live-codex-e2e-coverage-fo.todo
