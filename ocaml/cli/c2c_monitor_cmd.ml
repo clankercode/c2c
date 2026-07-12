@@ -752,7 +752,8 @@ let monitor_cmd =
                  (`{ ok, messages }` or `{ ok:false, error_code, error }`)
                  WITHOUT clearing the relay inbox. The response is classified by
                  the caller — errors are surfaced (not swallowed), and a terminal
-                 auth/identity failure exits non-zero (H3). *)
+                 auth/identity failure applies the local-watch terminal policy
+                 (H3/B142). *)
               match auth_header_opt with
               | Some auth ->
                   Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
@@ -765,9 +766,9 @@ let monitor_cmd =
                terminal (auth/identity — will not self-heal) relay failures.
                [err_streak] drives exponential backoff and reconnect reporting so
                a flapping relay does not hammer the endpoint and a recovery is
-               announced. A terminal failure exits non-zero with a clear stderr
-               message so a supervisor notices, instead of the monitor spinning
-               forever reporting a healthy-looking but dead relay stream. *)
+               announced. A terminal failure is reported clearly and then either
+               exits a pure-relay monitor non-zero for its supervisor, or disables
+               only relay watching while local receive continues. *)
             let err_streak = ref 0 in
             (* B142: log the terminal message ONCE (a terminal error repeats
                every peek cycle; without this guard the relay loop would spam
