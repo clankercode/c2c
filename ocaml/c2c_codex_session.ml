@@ -82,10 +82,13 @@ let online_attached_log_body ~(alias : string) ~(endpoint : string) : string =
 
 (* Keep managed identity scoped to the remote frontend.  This is intentionally
    the normal c2c session marker: bare `c2c init` and CLI commands then reuse
-   the launcher registration instead of synthesizing a second alias. *)
-let app_server_frontend_env ~session_id =
+   the launcher registration instead of synthesizing a second alias.
+   AUTO_REGISTER_ALIAS is a whoami/send belt-and-suspenders when a process
+   inherits the frontend env but session_id lookup is briefly ambiguous. *)
+let app_server_frontend_env ~session_id ~alias =
   [ "C2C_MCP_SESSION_ID=" ^ session_id
   ; "C2C_CODEX_APPSERVER_SESSION=" ^ session_id
+  ; "C2C_MCP_AUTO_REGISTER_ALIAS=" ^ alias
   ; "C2C_CODEX_MANAGED=1" ]
 
 (* ------------------------- positional splitting --------------------------- *)
@@ -795,7 +798,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       min_codex_version = codex_min_version;
       extra_frontend_args =
         frontend_extra_args ~yolo ~extra:(model_args @ extra_args);
-      frontend_env = app_server_frontend_env ~session_id;
+      frontend_env = app_server_frontend_env ~session_id ~alias;
       resume_thread = thread }
   in
   (* B166/B137: the remote frontend receives the launcher session id BEFORE it
@@ -866,9 +869,11 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
         { session_id; alias;
           thread_id = (match handle_thread handle with Some t -> Some t | None -> thread);
           created_at = created; updated_at = now };
-      (* Register before the remote TUI can fire SessionStart.  The delivery
-         loop refreshes the same row while it is attached, but cannot be the
-         first registration because it waits for a loaded frontend thread. *)
+      (* B172: bind the banner alias into the broker before the operator can
+         interact (init-equivalent of `c2c init --alias <generated> --no-setup`
+         on the launcher session_id).  Do this immediately after start returns
+         so first-turn CLI whoami/send resolve the same identity the banner
+         prints.  The delivery loop refreshes the same row while attached. *)
       register_managed_app_server_identity
         ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
         ~pid:(Unix.getpid ());

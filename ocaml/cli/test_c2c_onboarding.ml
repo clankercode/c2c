@@ -410,6 +410,81 @@ let test_stale_session_statefile_ignored () =
   check bool "stale session id never adopted" false
     (string_contains out "stale-session-xyz")
 
+(* B172: managed `c2c new codex` registers under a launcher session_id, but
+   in-session shell tools typically export only CODEX_THREAD_ID. whoami must
+   map the live thread → managed session and print the banner alias. *)
+let test_whoami_maps_codex_thread_to_managed_alias () =
+  with_temp_env @@ fun tmp ->
+  let managed_sid = Printf.sprintf "managed-codex-%d" (Unix.getpid ()) in
+  let thread_id = "019f5761-cd05-7df1-9011-16a7cbfacacb" in
+  (* Avoid reserved client prefixes (codex-…) — CLI register is not from_auto_gen;
+     managed launchers mint codex-* via Broker.register ~from_auto_gen:true. *)
+  let alias = Printf.sprintf "banner-stack-digit-%04x" (Random.bits () land 0xffff) in
+  let instances_dir = tmp // "instances" in
+  let instance_dir = instances_dir // alias in
+  mkdir_p instance_dir;
+  (* Init-equivalent bind: register managed identity under the launcher sid. *)
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      [ "register"; "--alias"; alias; "--session-id"; managed_sid ]
+  in
+  check int "register managed alias exits 0" 0 rc;
+  (* App-server durable mapping (codex-session.json) after thread discovery. *)
+  write_file (instance_dir // "codex-session.json")
+    (Printf.sprintf
+       "{\"session_id\":%S,\"alias\":%S,\"thread_id\":%S,\"created_at\":1.0,\"updated_at\":2.0}\n"
+       managed_sid alias thread_id);
+  (* Also write config.json the way persist_discovered_thread does. *)
+  write_file (instance_dir // "config.json")
+    (Printf.sprintf
+       "{\"name\":%S,\"client\":\"codex\",\"session_id\":%S,\"resume_session_id\":%S,\
+\"codex_resume_target\":%S,\"alias\":%S,\"extra_args\":[],\"created_at\":1.0,\
+\"broker_root\":%S,\"auto_join_rooms\":\"\"}\n"
+       alias managed_sid thread_id thread_id alias (tmp // "broker"));
+  let rc, out, _ =
+    run_c2c_status_split
+      ~env:
+        [ "CODEX_THREAD_ID", thread_id
+        ; "C2C_INSTANCES_DIR", instances_dir
+        ]
+      ~home:tmp ~broker:tmp ["whoami"]
+  in
+  check int "whoami exits 0 with only CODEX_THREAD_ID" 0 rc;
+  check bool "whoami prints managed banner alias" true (string_contains out alias);
+  check bool "whoami prints managed session_id" true (string_contains out managed_sid);
+  check bool "whoami does not claim unregistered" false
+    (string_contains out "(not registered)");
+  (* session_id line must be the managed launcher id, not the raw thread. *)
+  check bool "whoami session_id line is managed identity" true
+    (string_contains out ("session_id: " ^ managed_sid));
+  check bool "whoami session_id line is not the thread uuid" false
+    (string_contains out ("session_id: " ^ thread_id))
+
+(* B172 first-turn race: thread not yet in codex-session.json, but the sole
+   alive codex-app-server registration is unambiguous. *)
+let test_whoami_sole_codex_app_server_before_thread_map () =
+  with_temp_env @@ fun tmp ->
+  let managed_sid = Printf.sprintf "managed-premap-%d" (Unix.getpid ()) in
+  let thread_id = "019f5761-aaaa-7df1-9011-16a7cbfacacb" in
+  let alias = Printf.sprintf "banner-premap-%04x" (Random.bits () land 0xffff) in
+  let rc, _, _ =
+    run_c2c_status_split
+      ~env:[ "C2C_MCP_CLIENT_TYPE", "codex-app-server" ]
+      ~home:tmp ~broker:tmp
+      [ "register"; "--alias"; alias; "--session-id"; managed_sid ]
+  in
+  check int "register sole app-server exits 0" 0 rc;
+  let rc, out, _ =
+    run_c2c_status_split
+      ~env:[ "CODEX_THREAD_ID", thread_id ]
+      ~home:tmp ~broker:tmp ["whoami"]
+  in
+  check int "whoami exits 0 before thread map" 0 rc;
+  check bool "whoami resolves sole managed alias" true (string_contains out alias);
+  check bool "whoami resolves managed session" true
+    (string_contains out ("session_id: " ^ managed_sid));
+  check bool "not unregistered" false (string_contains out "(not registered)")
+
 let test_register_captures_cwd () =
   with_temp_env @@ fun tmp ->
   let alias = Printf.sprintf "test-cwd-%d" (Unix.getpid ()) in
@@ -715,6 +790,10 @@ let () =
         [ test_case "init→whoami round-trip with zero session env (#10)" `Quick test_init_whoami_roundtrip_no_env
         ; test_case "env-derived session id shadows the statefile" `Quick test_env_session_id_wins_over_statefile
         ; test_case "stale statefile (unregistered session) is ignored" `Quick test_stale_session_statefile_ignored
+        ; test_case "B172 whoami maps CODEX_THREAD_ID → managed banner alias" `Quick
+            test_whoami_maps_codex_thread_to_managed_alias
+        ; test_case "B172 whoami sole codex-app-server before thread map" `Quick
+            test_whoami_sole_codex_app_server_before_thread_map
         ] )
     ; ( "json_schema_v1",
         [ test_case "send/peek/poll --json emit schema-v1 + legacy keys" `Quick test_send_poll_peek_json_schema_v1

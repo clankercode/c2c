@@ -90,10 +90,14 @@ let test_app_server_log_vocabulary () =
        ~endpoint:"ws://127.0.0.1:37305")
 
 let test_app_server_frontend_identity_env () =
-  let env = S.app_server_frontend_env ~session_id:"managed-codex-session" in
+  let env =
+    S.app_server_frontend_env ~session_id:"managed-codex-session"
+      ~alias:"codex-stack-digit-ca73"
+  in
   Alcotest.(check (list string)) "frontend gets stable managed identity"
     [ "C2C_MCP_SESSION_ID=managed-codex-session"
     ; "C2C_CODEX_APPSERVER_SESSION=managed-codex-session"
+    ; "C2C_MCP_AUTO_REGISTER_ALIAS=codex-stack-digit-ca73"
     ; "C2C_CODEX_MANAGED=1" ] env
 
 (* ------------------------------------------------------------------ *)
