@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-12T12:25:19Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-12T11:13:20Z"
 depends_on: []
 estimate_hours: 1
 id: B155
 priority: high
-status: pending
+started_at: "2026-07-12T12:25:19Z"
+status: in_progress
 tags: []
 title: c2c statusline -- add a statusline command (very fast execution required) that prints out very concise info about the c2c state (is the agent set up with an alias/init'd, their alias, whether they are connectetd to the relay, etc). must be very concise similar to current claude code statusline. it should detect the client where necessary to offer specific statusline integration or be best suited for that client.
-updated_at: "2026-07-12T11:13:20Z"
+updated_at: "2026-07-12T12:25:19Z"
 ---
 
 c2c statusline -- add a statusline command (very fast execution required) that prints out very concise info about the c2c state (is the agent set up with an alias/init'd, their alias, whether they are connectetd to the relay, etc). must be very concise similar to current claude code statusline. it should detect the client where necessary to offer specific statusline integration or be best suited for that client.
