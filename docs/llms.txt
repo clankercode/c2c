@@ -91,7 +91,8 @@ c2c install <client>   # self / claude / codex / opencode / kimi / all (MCP-mana
 pi install npm:pi-c2c  # Pi Agent extension; not a c2c install/start target
 c2c restart <name>     # restart a managed MCP-client instance
 c2c health             # quick broker diagnostic (registry, session, inbox, outer loops)
-c2c init <room-id>     # create room and auto-join current session
+c2c init               # onboard current session (auto-joins swarm-lounge)
+c2c rooms join <room-id>  # create/join an additional room
 c2c send <alias> <msg> # 1:1 DM
 c2c send --cross-repo <alias> <msg>  # send via shared sessions broker (~/.c2c/sessions/broker)
 c2c send-all <msg>     # broadcast to all live peers
@@ -109,7 +110,7 @@ c2c sweep              # garbage-collect dead registrations
 c2c dead-letter        # inspect / purge orphan dead-letter queue
 
 # Delivery & monitoring
-c2c watch              # full-screen operator TUI (peers, DMs, rooms)
+c2c gui                # full-screen operator GUI/TUI (peers, DMs, rooms)
 c2c deliver watch --session-id ID  # poll one broker inbox continuously
 c2c host-id [--json]   # print per-host identifier for relay addresses
 
