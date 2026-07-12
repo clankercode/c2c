@@ -23,6 +23,11 @@ let is_lower_hex value =
     (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
     value
 
+let string_mem needle hay =
+  let nl = String.length needle and hl = String.length hay in
+  let rec go i = i + nl <= hl && (String.sub hay i nl = needle || go (i+1)) in
+  nl = 0 || go 0
+
 let test_alias_deterministic () =
   (* Same fixed id + same taken predicate => identical alias every call. *)
   let a1 = S.derive_alias ~session_id:"fixed-session-A" ~taken:no_taken in
@@ -80,7 +85,11 @@ let test_app_server_log_vocabulary () =
   Alcotest.(check string) "online-attached fields"
     "online-attached: c2c-alias=codex-oak-fern-a1b2 endpoint=ws://127.0.0.1:37305"
     (S.online_attached_log_body ~alias:"codex-oak-fern-a1b2"
-       ~endpoint:"ws://127.0.0.1:37305")
+       ~endpoint:"ws://127.0.0.1:37305");
+  Alcotest.(check bool) "legacy generic alias field absent" false
+    (string_mem " alias="
+       (S.online_attached_log_body ~alias:"codex-oak-fern-a1b2"
+          ~endpoint:"ws://127.0.0.1:37305"))
 
 (* ------------------------------------------------------------------ *)
 (* --yolo forwarding + non-persistence                                 *)
@@ -482,11 +491,6 @@ let test_resolve_start_alias_resumes_mapping () =
 (* ------------------------------------------------------------------ *)
 (* --yolo is NEVER persisted into the identity mapping                 *)
 (* ------------------------------------------------------------------ *)
-
-let string_mem needle hay =
-  let nl = String.length needle and hl = String.length hay in
-  let rec go i = i + nl <= hl && (String.sub hay i nl = needle || go (i+1)) in
-  nl = 0 || go 0
 
 let test_yolo_not_persisted () =
   let sid = unique_sid () in
