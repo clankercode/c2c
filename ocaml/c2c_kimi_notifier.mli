@@ -45,6 +45,13 @@ val start_daemon :
     daemon is running. Removes the pidfile. *)
 val stop_daemon : alias:string -> unit
 
+(** [stop_all_daemons ()] reaps every kimi notifier on this host by scanning the
+    notifier state dir and calling the identity-gated {!stop_daemon} on each
+    alias found. Returns the number of pidfiles processed. Best-effort (an
+    unreadable state dir yields [0]). Used by the B146 temporary-disable path to
+    sweep a notifier left over from a pre-disable session. *)
+val stop_all_daemons : unit -> int
+
 (** [pidfile_path alias] is the on-disk pidfile for the [alias] notifier
     ([~/.local/share/c2c/kimi-notifiers/<alias>.pid]). Exposed for the
     supervisor teardown wiring + tests. *)
