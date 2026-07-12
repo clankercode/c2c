@@ -1,0 +1,35 @@
+---
+complexity: medium
+created_at: "2026-07-12T14:03:54Z"
+depends_on: []
+estimate_hours: 2
+id: B158
+priority: high
+status: pending
+tags:
+    - gemini
+    - deprecation
+    - skills
+    - codegen
+title: Remove Gemini entirely and prevent regenerated c2c skills from resurrecting it
+updated_at: "2026-07-12T14:03:54Z"
+---
+Problem
+
+Gemini is permanently deprecated, but its removal was only partial. The canonical `.collab/skills/c2c.md` has an uncommitted Gemini-removal edit while generated/served copies (for example `.codex/skills/c2c/SKILL.md`) still advertise Gemini. More importantly, the OCaml binary still contains Gemini setup, uninstall, deliver-watch, command-routing, and deprecation-test code, so the deprecated client remains part of the shipped surface.
+
+Investigation
+
+B063 was marked done after removing served-skill mentions, but the source-to-copy synchronization was not applied to the current edit. `justfile` has `sync-skills` and `sync-skills-check`; the task must trace every generated/embedded/client-facing source rather than only editing one copy.
+
+Acceptance criteria
+
+1. Remove Gemini as a supported, deprecated, routable, installable, uninstallable, startable, or delivery-watch client from production code, generated assets, skills, docs, help, manifests, and tests.
+2. Preserve an intentional, clear unsupported-client error only if command compatibility requires it; it must not leave Gemini listed in ordinary help or client lists.
+3. Make `.collab/skills/c2c.md` the source of truth, regenerate all synced/embedded copies, and strengthen the existing sync/check gate so Gemini cannot reappear in a shipped skill.
+4. Add focused regression coverage that scans the supported client surfaces and verifies Gemini is absent.
+5. Run the appropriate codegen/sync checks and `just check`.
+
+Blockers
+
+None known. Confirm whether old on-disk `~/.gemini` install artifacts need a one-time migration-only remover before deleting uninstall support.
