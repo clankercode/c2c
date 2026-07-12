@@ -60,3 +60,11 @@ exclude:
   # historical reference, but should NOT publish to https://c2c.im/.
   # See .collab/research/2026-04-29-docs-slimming-audit-cairn.md (#430).
   - superpowers/
+  - notes/
+  - c2c-research/
+  - phase1-implementation-steps.md
+  - agent-file-schema-draft.md
+  - docker-testing.md
+  - ocaml-module-structure.md
+  - team-self-upgrade-process.md
+  - x-codex-client-changes.md
