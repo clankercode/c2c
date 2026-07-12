@@ -631,3 +631,95 @@ let stop_daemon ~alias =
       wait ()
     end;
     (try Sys.remove (pidfile_path alias) with _ -> ())
+
+(* ─── B145: upgrade-correctness (stale-binary detect + ensure_daemon) ──────
+
+   The notifier is spawned fork+setsid DETACHED with its own pidfile and is
+   deduped on startup via [already_running]. Before B145 this meant a notifier
+   that outlived a [c2c restart] (its pid was untracked by the supervisor) kept
+   running the OLD binary image indefinitely after [just install-all] — a
+   fresh [c2c start] saw [already_running]=true and left the stale daemon be.
+
+   Two-layer fix:
+   1. The supervisor now tracks the notifier pid and tears it down on
+      stop/restart (see c2c_start.ml) — so a clean restart cycles it onto the
+      new binary.
+   2. Belt-and-braces here: [ensure_daemon] compares the RUNNING notifier's
+      binary SHA against the installed binary SHA and kills+respawns a stale
+      one even on a bare [c2c start] with no clean stop. *)
+
+type notifier_start_decision =
+  | Start_fresh    (* nothing running → start a new daemon *)
+  | Skip_current   (* running on the installed binary (or SHA undeterminable) → leave it *)
+  | Respawn_stale  (* running on a DIFFERENT binary SHA → kill + respawn on the new binary *)
+
+(* Pure decision function (unit-tested). Fail-SAFE: when either SHA cannot be
+   determined we do NOT kill a working notifier — we [Skip_current], preserving
+   pre-B145 behavior rather than risking a needless delivery gap. Only a
+   confidently-observed SHA mismatch triggers a respawn. *)
+let decide_notifier_start ~running ~running_sha ~installed_sha =
+  if not running then Start_fresh
+  else
+    match running_sha, installed_sha with
+    | Some r, Some i when r <> i -> Respawn_stale
+    | _ -> Skip_current
+
+(* Read the running notifier's binary SHA via [/proc/<pid>/exe]. Opening that
+   magic symlink reads the ORIGINAL executable inode even after the on-disk
+   file has been replaced by an upgrade (the inode outlives the path), which is
+   exactly what we need to detect a stale-code daemon. Returns [None] when the
+   process is gone or /proc is unreadable / SHA cannot be computed. *)
+let running_binary_sha pid =
+  let path = Printf.sprintf "/proc/%d/exe" pid in
+  match C2c_mcp_helpers.best_effort_file_sha256 path with
+  | "unknown" -> None
+  | sha -> Some sha
+
+(* SHA of the binary THIS process is running (/proc/self/exe) — i.e. the
+   just-installed image a fresh notifier fork would execute. [None] if
+   undeterminable. *)
+let installed_binary_sha () =
+  match
+    C2c_mcp_helpers.best_effort_file_sha256
+      (C2c_mcp_helpers.best_effort_server_executable ())
+  with
+  | "unknown" -> None
+  | sha -> Some sha
+
+(* Fixture hook (repo convention: external effects gated by env vars). When set,
+   these override the SHA sources so tests can drive [ensure_daemon] through the
+   Respawn_stale / Skip_current branches deterministically without a real
+   upgrade. Unset in production. *)
+let fixture_sha which =
+  match Sys.getenv_opt ("C2C_KIMI_NOTIFIER_FIXTURE_" ^ which ^ "_SHA") with
+  | Some s when String.trim s <> "" -> Some (String.trim s)
+  | _ -> None
+
+let ensure_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval = 2.0) () =
+  let running = already_running alias in
+  let running_pid = read_pid (pidfile_path alias) in
+  let running_sha =
+    match fixture_sha "RUNNING" with
+    | Some _ as s -> s
+    | None -> (match running_pid with Some p -> running_binary_sha p | None -> None)
+  in
+  let installed_sha =
+    match fixture_sha "INSTALLED" with
+    | Some _ as s -> s
+    | None -> installed_binary_sha ()
+  in
+  match decide_notifier_start ~running ~running_sha ~installed_sha with
+  | Start_fresh ->
+    start_daemon ~alias ~broker_root ~session_id ~tmux_pane ~interval ()
+  | Skip_current -> running_pid
+  | Respawn_stale ->
+    let short s = match s with
+      | Some x -> String.sub x 0 (min 12 (String.length x))
+      | None -> "?" in
+    Printf.eprintf
+      "[kimi-notifier] running daemon (pid %s) is on a stale binary \
+       (running=%s installed=%s); cycling onto the new binary\n%!"
+      (match running_pid with Some p -> string_of_int p | None -> "?")
+      (short running_sha) (short installed_sha);
+    stop_daemon ~alias;
+    start_daemon ~alias ~broker_root ~session_id ~tmux_pane ~interval ()
