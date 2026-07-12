@@ -20,6 +20,9 @@ module RegistrationLease : sig
   val registered_at : t -> float
   val last_seen : t -> float
   val opaque_host_id : t -> string option
+  (** B174: set host id when [id] is non-empty. Never clears an existing
+      value with empty input (heartbeat/register heal path). *)
+  val set_opaque_host_id : t -> string -> unit
 end = struct
   type t = {
     node_id : string;
@@ -38,7 +41,7 @@ end = struct
     enc_pubkey : string;
     signed_at : float;
     sig_b64 : string;
-    opaque_host_id : string option;
+    mutable opaque_host_id : string option;
     (** Client-supplied opaque identifier for the host (12-16 hex chars,
         computed by `c2c host-id`). Slice 1 of the
         opaque_host_id design (.collab/design/2026-06-17-c2c-opaque-host-id.md):
@@ -124,4 +127,6 @@ end = struct
   let registered_at t = t.registered_at
   let last_seen t = t.last_seen
   let opaque_host_id t = t.opaque_host_id
+  let set_opaque_host_id t id =
+    if id <> "" then t.opaque_host_id <- Some id
 end

@@ -718,18 +718,30 @@ module Relay_client = struct
   let health t = get t "/health"
 
   let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = Relay.default_lease_ttl) ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
-    let body = `Assoc [
-      ("node_id", `String node_id);
-      ("session_id", `String session_id);
-      ("alias", `String alias);
-      ("client_type", `String client_type);
-      (* B149: connection metadata — the relay aggregates these into the
-         public /stats connected.by_version / by_os counts (counts only,
-         never tied back to an alias in that surface). *)
-      ("client_version", `String Version.version);
-      ("client_os", `String (Relay_common.client_os ()));
-      ("ttl", `Int (int_of_float ttl));
-    ] in
+    (* B174: always report opaque_host_id so /stats machines count hosts, not
+       sessions. Prefer Host_id; fall back to the connector node_id (which is
+       already the host hash on the managed path). *)
+    let opaque_host_id =
+      try Host_id.compute_host_hash () with _ ->
+        if node_id <> "" then node_id else ""
+    in
+    let body = `Assoc (
+      [
+        ("node_id", `String node_id);
+        ("session_id", `String session_id);
+        ("alias", `String alias);
+        ("client_type", `String client_type);
+        (* B149: connection metadata — the relay aggregates these into the
+           public /stats connected.by_version / by_os counts (counts only,
+           never tied back to an alias in that surface). *)
+        ("client_version", `String Version.version);
+        ("client_os", `String (Relay_common.client_os ()));
+        ("ttl", `Int (int_of_float ttl));
+      ]
+      @ (if opaque_host_id <> "" then
+           [ ("opaque_host_id", `String opaque_host_id) ]
+         else [])
+    ) in
     let body, actor_id =
       match t.identity with
       | None -> body, ""
@@ -758,10 +770,22 @@ module Relay_client = struct
     post_with_pow_retry t "/register" ~alias ~route:"register" ~actor_id body
 
   let heartbeat t ~node_id ~session_id ?(alias : string option) () =
-    post t "/heartbeat" ?alias (`Assoc [
+    (* B174: report host id on heartbeat so long-lived sessions heal
+       connected.machines without a full re-register. *)
+    let opaque_host_id =
+      try Host_id.compute_host_hash () with _ ->
+        if node_id <> "" then node_id else ""
+    in
+    let fields = [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
-    ])
+    ] in
+    let fields =
+      if opaque_host_id <> "" then
+        fields @ [ ("opaque_host_id", `String opaque_host_id) ]
+      else fields
+    in
+    post t "/heartbeat" ?alias (`Assoc fields)
 
   let send t ~from_alias ~to_alias ~content ?message_id () =
     let base = [

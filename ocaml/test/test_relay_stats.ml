@@ -81,10 +81,10 @@ end) = struct
   let test_activity_dedup () =
     let t = fresh () in
     (* Same machine + alias twice — distinct counts stay 1, last_seen moves. *)
-    R.stats_note_activity t ~node_id:"zq-node-1" ~alias:"zq-stats-agent"
-      ~ts:(now -. (10. *. day));
-    R.stats_note_activity t ~node_id:"zq-node-1" ~alias:"zq-stats-agent"
-      ~ts:(now -. 50.);
+    R.stats_note_activity t ~machine_id:"zq-node-1" ~alias:"zq-stats-agent"
+      ~ts:(now -. (10. *. day)) ();
+    R.stats_note_activity t ~machine_id:"zq-node-1" ~alias:"zq-stats-agent"
+      ~ts:(now -. 50.) ();
     let stats = R.stats t ~now in
     check_window stats ~window:"1d" ~messages:0 ~aliases:1 ~machines:1;
     check_window stats ~window:"ever" ~messages:0 ~aliases:1 ~machines:1
@@ -92,10 +92,10 @@ end) = struct
   let test_activity_window_by_last_seen () =
     let t = fresh () in
     (* A machine last active 10d ago is in 28d but not 7d/1d. *)
-    R.stats_note_activity t ~node_id:"zq-node-stale" ~alias:"zq-stats-stale"
-      ~ts:(now -. (10. *. day));
-    R.stats_note_activity t ~node_id:"zq-node-live" ~alias:"zq-stats-live"
-      ~ts:(now -. 30.);
+    R.stats_note_activity t ~machine_id:"zq-node-stale" ~alias:"zq-stats-stale"
+      ~ts:(now -. (10. *. day)) ();
+    R.stats_note_activity t ~machine_id:"zq-node-live" ~alias:"zq-stats-live"
+      ~ts:(now -. 30.) ();
     let stats = R.stats t ~now in
     check_window stats ~window:"1d" ~messages:0 ~aliases:1 ~machines:1;
     check_window stats ~window:"7d" ~messages:0 ~aliases:1 ~machines:1;
@@ -148,6 +148,67 @@ end) = struct
     Alcotest.(check int) "connected.machines" 2 (conn_int stats ~field:"machines");
     Alcotest.(check int) "by_client_type.claude" 2 (conn_ct stats "claude");
     Alcotest.(check int) "by_client_type.codex" 1 (conn_ct stats "codex")
+
+  (* B174: unique_machines / connected.machines key on opaque_host_id, not
+     per-session node_id. CLI-style cli-<alias> node_ids must NOT inflate
+     the machine count when they share a host id. *)
+  let test_connected_machines_prefer_opaque_host () =
+    let t = fresh () in
+    let real_now = Unix.gettimeofday () in
+    ignore
+      (R.register t ~node_id:"cli-zq-a" ~session_id:"cli-zq-a"
+         ~alias:"zq-host-a1" ~client_type:"cli"
+         ~opaque_host_id:(Some "aabbccddeeff") ());
+    ignore
+      (R.register t ~node_id:"cli-zq-b" ~session_id:"cli-zq-b"
+         ~alias:"zq-host-b1" ~client_type:"cli"
+         ~opaque_host_id:(Some "aabbccddeeff") ());
+    ignore
+      (R.register t ~node_id:"cli-zq-c" ~session_id:"cli-zq-c"
+         ~alias:"zq-host-c1" ~client_type:"cli"
+         ~opaque_host_id:(Some "112233445566") ());
+    let stats = R.stats t ~now:real_now in
+    Alcotest.(check int) "B174 connected.clients" 3
+      (conn_int stats ~field:"clients");
+    Alcotest.(check int) "B174 connected.machines by host id" 2
+      (conn_int stats ~field:"machines")
+
+  (* B174: activity re-key retires a legacy node_id key once the real host
+     id is known — unique_machines must not keep both forever. *)
+  let test_activity_retires_legacy_node_key () =
+    let t = fresh () in
+    R.stats_note_activity t ~machine_id:"cli-zq-legacy" ~alias:"zq-leg"
+      ~ts:(now -. 100.) ();
+    R.stats_note_activity t ~machine_id:"aabbccddeeff"
+      ~retire_key:"cli-zq-legacy" ~alias:"zq-leg" ~ts:(now -. 10.) ();
+    let stats = R.stats t ~now in
+    check_window stats ~window:"1d" ~messages:0 ~aliases:1 ~machines:1;
+    check_window stats ~window:"ever" ~messages:0 ~aliases:1 ~machines:1
+
+  (* B174: heartbeat can heal a lease that registered without opaque_host_id
+     so connected.machines collapses without a full re-register. *)
+  let test_heartbeat_heals_opaque_host () =
+    let t = fresh () in
+    let real_now = Unix.gettimeofday () in
+    ignore
+      (R.register t ~node_id:"cli-zq-heal-a" ~session_id:"cli-zq-heal-a"
+         ~alias:"zq-heal-a" ~client_type:"cli" ());
+    ignore
+      (R.register t ~node_id:"cli-zq-heal-b" ~session_id:"cli-zq-heal-b"
+         ~alias:"zq-heal-b" ~client_type:"cli" ());
+    let before = R.stats t ~now:real_now in
+    Alcotest.(check int) "pre-heal machines = clients (no host id)" 2
+      (conn_int before ~field:"machines");
+    ignore
+      (R.heartbeat t ~node_id:"cli-zq-heal-a" ~session_id:"cli-zq-heal-a"
+         ~opaque_host_id:"aabbccddeeff");
+    ignore
+      (R.heartbeat t ~node_id:"cli-zq-heal-b" ~session_id:"cli-zq-heal-b"
+         ~opaque_host_id:"aabbccddeeff");
+    let after = R.stats t ~now:real_now in
+    Alcotest.(check int) "post-heal clients" 2 (conn_int after ~field:"clients");
+    Alcotest.(check int) "post-heal machines collapse to host" 1
+      (conn_int after ~field:"machines")
 
   (* B148: a lease drops out of connected once now advances past the alias
      release window (NOT alias_released is the liveness predicate). *)
@@ -207,6 +268,12 @@ end) = struct
         test_gc_prunes_events_keeps_ever;
       Alcotest.test_case "connected counts live leases" `Quick
         test_connected_counts;
+      Alcotest.test_case "connected machines prefer opaque host" `Quick
+        test_connected_machines_prefer_opaque_host;
+      Alcotest.test_case "activity retires legacy node key" `Quick
+        test_activity_retires_legacy_node_key;
+      Alcotest.test_case "heartbeat heals opaque host id" `Quick
+        test_heartbeat_heals_opaque_host;
       Alcotest.test_case "connected drops released leases" `Quick
         test_connected_expiry;
       Alcotest.test_case "connected buckets version and os" `Quick
@@ -239,8 +306,8 @@ let test_mem_persistence () =
   let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
   Relay.InMemoryRelay.stats_note_message t ~from_alias:"zq-mp-sender"
     ~ts:(real_now -. 10.);
-  Relay.InMemoryRelay.stats_note_activity t ~node_id:"zq-mp-node"
-    ~alias:"zq-mp-agent" ~ts:(real_now -. 10.);
+  Relay.InMemoryRelay.stats_note_activity t ~machine_id:"zq-mp-node"
+    ~alias:"zq-mp-agent" ~ts:(real_now -. 10.) ();
   (* Reopen on the same dir: a fresh handle replays the persisted events. *)
   let t2 = Relay.InMemoryRelay.create ~persist_dir:dir () in
   let stats = Relay.InMemoryRelay.stats t2 ~now:real_now in
@@ -383,8 +450,8 @@ let test_sqlite_persistence () =
   let t = Relay.SqliteRelay.create ~persist_dir:dir () in
   Relay.SqliteRelay.stats_note_message t ~from_alias:"zq-stats-persist"
     ~ts:(now -. 10.);
-  Relay.SqliteRelay.stats_note_activity t ~node_id:"zq-node-persist"
-    ~alias:"zq-stats-persist" ~ts:(now -. 10.);
+  Relay.SqliteRelay.stats_note_activity t ~machine_id:"zq-node-persist"
+    ~alias:"zq-stats-persist" ~ts:(now -. 10.) ();
   let t2 = Relay.SqliteRelay.create ~persist_dir:dir () in
   let stats = Relay.SqliteRelay.stats t2 ~now in
   check_window stats ~window:"ever" ~messages:1 ~aliases:1 ~machines:1

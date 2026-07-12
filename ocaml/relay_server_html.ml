@@ -238,10 +238,13 @@ plus <code>stats</code> with a per-window object for
 (each <code>{ messages, unique_aliases, unique_machines }</code>) and a
 <code>stats.connected</code> snapshot
 (<code>{ clients, machines, by_client_type, by_version, by_os }</code>) of the
-currently-connected leases (version/OS from client-reported
-<code>/register</code> metadata; older clients land under
-<code>"unknown"</code>). The server also appends an hourly historical snapshot
-of the full stats JSON to its store.</p>
+currently-connected leases. <code>unique_machines</code> /
+<code>connected.machines</code> count distinct client-reported
+<code>opaque_host_id</code> values (falling back to <code>node_id</code> only
+when a host id is absent) so multi-session hosts are not over-counted.
+Version/OS come from client-reported <code>/register</code> metadata; older
+clients land under <code>"unknown"</code>. The server also appends an hourly
+historical snapshot of the full stats JSON to its store.</p>
 
 <p>This is a curated quick-reference, not the full route set. Internal
 inter-relay federation routes (<code>/forward</code>,

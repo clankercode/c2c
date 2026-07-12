@@ -55,7 +55,12 @@ module type RELAY = sig
       signature verification) can never touch revoke replay state.
       Persisted by SqliteRelay; in-memory for InMemoryRelay. *)
   val check_revoke_nonce : t -> nonce:string -> ts:float -> (unit, string) result
-  val heartbeat : t -> node_id:string -> session_id:string -> (string * RegistrationLease.t)
+  (* B174: optional [opaque_host_id] heals leases that registered before the
+     client started sending host ids (heartbeat-only sessions). Non-empty
+     values are stored; empty/absent never clears an existing host id. *)
+  val heartbeat :
+    t -> node_id:string -> session_id:string -> ?opaque_host_id:string
+    -> (string * RegistrationLease.t)
   val list_peers : t -> ?include_dead:bool -> RegistrationLease.t list
   (* [pow_difficulty]: B014 — the sender's PoW difficulty (leading-zero bits)
      at send-accept time, stored as sibling metadata on the delivered message.
@@ -109,16 +114,21 @@ module type RELAY = sig
   val get_device_pair_pending : t -> user_code:string -> device_pair_pending option
   val set_device_pair_pending : t -> user_code:string -> device_pair_pending -> unit
   val remove_device_pair_pending : t -> user_code:string -> unit
-  (* B147: aggregate usage stats behind GET /stats. The HTTP handlers record
-     at accept time — [stats_note_message] on each accepted send operation
-     (DM /send, /send_all broadcast, /send_room, inbound /forward; duplicates
-     and rejects are not counted, and a fan-out counts once), and
+  (* B147 / B174: aggregate usage stats behind GET /stats. The HTTP handlers
+     record at accept time — [stats_note_message] on each accepted send
+     operation (DM /send, /send_all broadcast, /send_room, inbound /forward;
+     duplicates and rejects are not counted, and a fan-out counts once), and
      [stats_note_activity] on successful /register and /heartbeat.
-     [stats] aggregates message counts and distinct alias / machine (node_id)
-     counts over the 1d/7d/28d/ever windows. [ts]/[now] are caller-supplied
-     so window arithmetic is testable without a live clock. *)
+     [stats] aggregates message counts and distinct alias / machine counts
+     over the 1d/7d/28d/ever windows. Machine identity is the client
+     [opaque_host_id] when present (B174) — NOT [node_id], which is often
+     per-session (e.g. [cli-<alias>]) and over-counts unique machines.
+     [ts]/[now] are caller-supplied so window arithmetic is testable without
+     a live clock. *)
   val stats_note_message : t -> from_alias:string -> ts:float -> unit
-  val stats_note_activity : t -> node_id:string -> alias:string -> ts:float -> unit
+  val stats_note_activity :
+    t -> machine_id:string -> ?retire_key:string -> alias:string -> ts:float
+    -> unit -> unit
   val stats : t -> now:float -> Yojson.Safe.t
   (* B149: persist one historical snapshot of the full [stats] JSON, stamped
      [now]. Sqlite appends a row to the stats_snapshots table; the memory
@@ -130,6 +140,21 @@ end
 (* --- B147: usage-stats window definitions shared by both backends --- *)
 
 let stats_windows = [ ("1d", 86_400.); ("7d", 7. *. 86_400.); ("28d", 28. *. 86_400.) ]
+
+(* B174: resolve the machine key used by unique_machines / connected.machines.
+   Prefer the client-reported opaque host id (stable per physical/VM host via
+   [c2c host-id]); fall back to node_id only when the host id is absent so
+   older clients still contribute something rather than vanishing from the
+   machine counts. *)
+let stats_machine_id ~node_id ~opaque_host_id =
+  match opaque_host_id with
+  | Some id when id <> "" -> id
+  | _ -> node_id
+
+let stats_machine_id_of_lease (lease : RegistrationLease.t) =
+  stats_machine_id
+    ~node_id:(RegistrationLease.node_id lease)
+    ~opaque_host_id:(RegistrationLease.opaque_host_id lease)
 
 (* Message-event rows older than the largest window are gc-prunable; keep a
    day of slack so a windowed count near the boundary never under-reports

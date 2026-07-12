@@ -246,6 +246,11 @@ module InMemoryRelay : RELAY = struct
                    | `String n when n <> "" -> Some n
                    | _ -> None
                  in
+                 let retire_opt =
+                   match member "retire" j with
+                   | `String n when n <> "" -> Some n
+                   | _ -> None
+                 in
                  (match ts with
                   | None -> ()
                   | Some ts ->
@@ -262,7 +267,15 @@ module InMemoryRelay : RELAY = struct
                          alias_opt;
                        Option.iter
                          (fun n -> Hashtbl.replace stats_seen_machines n ts)
-                         node_opt
+                         node_opt;
+                       (* B174: replay re-key so legacy node_id keys stay dropped. *)
+                       Option.iter
+                         (fun old ->
+                           match node_opt with
+                           | Some n when n <> old ->
+                             Hashtbl.remove stats_seen_machines old
+                           | _ -> ())
+                         retire_opt
                      | _ -> ()))
                with _ -> ())
           done
@@ -415,19 +428,30 @@ module InMemoryRelay : RELAY = struct
         write_stats_totals d t.stats_messages_ever)
         t.persist_dir)
 
-  let stats_note_activity t ~node_id ~alias ~ts =
+  let stats_note_activity t ~machine_id ?(retire_key = "") ~alias ~ts () =
     with_lock t (fun () ->
-      Hashtbl.replace t.stats_seen_machines node_id ts;
+      Hashtbl.replace t.stats_seen_machines machine_id ts;
+      (* B174: when activity is re-keyed from a legacy per-session node_id to
+         the real opaque host id, drop the old key so unique_machines does
+         not keep both forever. *)
+      if retire_key <> "" && retire_key <> machine_id then
+        Hashtbl.remove t.stats_seen_machines retire_key;
       Hashtbl.replace t.stats_seen_aliases alias ts;
       Option.iter (fun d ->
-        append_stats_event_to_disk d
-          (`Assoc [ ("t", `String "a"); ("ts", `Float ts);
-                    ("node", `String node_id); ("alias", `String alias) ]))
+        let fields =
+          [ ("t", `String "a"); ("ts", `Float ts);
+            ("node", `String machine_id); ("alias", `String alias) ]
+          @ (if retire_key <> "" && retire_key <> machine_id then
+               [ ("retire", `String retire_key) ]
+             else [])
+        in
+        append_stats_event_to_disk d (`Assoc fields))
         t.persist_dir)
 
   (* B148: aggregate connected-lease counts. A lease is "currently connected"
      iff NOT [alias_released ~now ~last_seen] (Relay_common predicate). Emits
-     aggregate counts only — never aliases, node_ids, or session ids. *)
+     aggregate counts only — never aliases, node_ids, or session ids.
+     B174: machines are keyed by opaque_host_id when present (else node_id). *)
   let stats_connected t ~now =
     let clients = ref 0 in
     let machines = Hashtbl.create 16 in
@@ -444,7 +468,7 @@ module InMemoryRelay : RELAY = struct
         let last_seen = RegistrationLease.last_seen lease in
         if not (alias_released ~now ~last_seen) then begin
           incr clients;
-          Hashtbl.replace machines (RegistrationLease.node_id lease) ();
+          Hashtbl.replace machines (stats_machine_id_of_lease lease) ();
           bump by_ct (RegistrationLease.client_type lease);
           bump by_version (RegistrationLease.client_version lease);
           bump by_os (RegistrationLease.client_os lease)
@@ -598,6 +622,15 @@ module InMemoryRelay : RELAY = struct
              let effective_pk =
                if identity_pk <> "" then identity_pk
                else Option.value ~default:"" (Hashtbl.find_opt t.bindings alias)
+             in
+             (* B174: never clobber a stored host id with empty on re-register. *)
+             let opaque_host_id =
+               match opaque_host_id with
+               | Some id when id <> "" -> Some id
+               | _ ->
+                 (match existing with
+                  | Some ex -> RegistrationLease.opaque_host_id ex
+                  | None -> opaque_host_id)
              in
              let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
              Hashtbl.replace t.leases alias lease;
@@ -806,7 +839,7 @@ module InMemoryRelay : RELAY = struct
     with_lock t (fun () ->
       check_nonce_in t.revoke_nonces ~ttl:request_nonce_ttl ~nonce ~ts)
 
-  let heartbeat t ~node_id ~session_id =
+  let heartbeat t ~node_id ~session_id ?(opaque_host_id = "") =
     with_lock t (fun () ->
       let now = Unix.gettimeofday () in
       let found = ref None in
@@ -825,6 +858,8 @@ module InMemoryRelay : RELAY = struct
          (relay_err_unknown_alias, dummy_lease)
       | Some (_alias, lease) ->
          RegistrationLease.touch lease;
+         (* B174: heal host id on heartbeat when client now reports one. *)
+         RegistrationLease.set_opaque_host_id lease opaque_host_id;
          ("ok", lease)
     )
 
@@ -1510,13 +1545,19 @@ module SqliteRelay : RELAY = struct
          ON CONFLICT(alias) DO UPDATE SET last_seen = excluded.last_seen"
         [`Text from_alias; `Float ts] |> ignore)
 
-  let stats_note_activity t ~node_id ~alias ~ts =
+  let stats_note_activity t ~machine_id ?(retire_key = "") ~alias ~ts () =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       exec_prepared conn
         "INSERT INTO stats_seen_machines (machine_id, last_seen) VALUES (?, ?) \
          ON CONFLICT(machine_id) DO UPDATE SET last_seen = excluded.last_seen"
-        [`Text node_id; `Float ts] |> ignore;
+        [`Text machine_id; `Float ts] |> ignore;
+      (* B174: drop a legacy per-session node_id key once re-keyed to host id. *)
+      if retire_key <> "" && retire_key <> machine_id then
+        exec_prepared conn
+          "DELETE FROM stats_seen_machines WHERE machine_id = ?"
+          [`Text retire_key]
+        |> ignore;
       exec_prepared conn
         "INSERT INTO stats_seen_aliases (alias, last_seen) VALUES (?, ?) \
          ON CONFLICT(alias) DO UPDATE SET last_seen = excluded.last_seen"
@@ -1525,7 +1566,8 @@ module SqliteRelay : RELAY = struct
   (* B148: aggregate connected-lease counts from the leases table. Filters
      with the SAME [alias_released] predicate as the memory backend (applied in
      OCaml, not SQL) so the two backends can't disagree on liveness. Emits
-     aggregate counts only — never aliases, node_ids, or session ids. *)
+     aggregate counts only — never aliases, node_ids, or session ids.
+     B174: machines are keyed by opaque_host_id when present (else node_id). *)
   let stats_connected conn ~now =
     let clients = ref 0 in
     let machines = Hashtbl.create 16 in
@@ -1539,7 +1581,8 @@ module SqliteRelay : RELAY = struct
     in
     let stmt =
       Sqlite3.prepare conn
-        "SELECT node_id, client_type, last_seen, client_version, client_os FROM leases"
+        "SELECT node_id, client_type, last_seen, client_version, client_os, \
+         opaque_host_id FROM leases"
     in
     let col_string col = match Sqlite3.Data.to_string col with Some s -> s | None -> "" in
     let col_float col =
@@ -1555,9 +1598,15 @@ module SqliteRelay : RELAY = struct
         let last_seen = col_float (Sqlite3.column stmt 2) in
         let client_version = col_string (Sqlite3.column stmt 3) in
         let client_os = col_string (Sqlite3.column stmt 4) in
+        let opaque_host_id = col_string (Sqlite3.column stmt 5) in
         if not (alias_released ~now ~last_seen) then begin
           incr clients;
-          Hashtbl.replace machines node_id ();
+          let machine_id =
+            stats_machine_id ~node_id
+              ~opaque_host_id:
+                (if opaque_host_id = "" then None else Some opaque_host_id)
+          in
+          Hashtbl.replace machines machine_id ();
           bump by_ct client_type;
           bump by_version client_version;
           bump by_os client_os
@@ -1787,7 +1836,9 @@ module SqliteRelay : RELAY = struct
               | `NoPkNoBinding -> ""
               | `Mismatch -> assert false
             in
-            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=excluded.opaque_host_id, client_version=excluded.client_version, client_os=excluded.client_os" in
+            (* B174: coalesce opaque_host_id — empty excluded must not wipe a
+               previously stored host id (older clients re-registering). *)
+            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=CASE WHEN excluded.opaque_host_id = '' THEN leases.opaque_host_id ELSE excluded.opaque_host_id END, client_version=excluded.client_version, client_os=excluded.client_os" in
             bind_text stmt 1 alias |> ignore;
             bind_text stmt 2 node_id |> ignore;
             bind_text stmt 3 session_id |> ignore;
@@ -1806,7 +1857,21 @@ module SqliteRelay : RELAY = struct
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
               failwith ("register insert failed: " ^ Rc.to_string rc);
-            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
+            (* Read back coalesced host id so returned lease matches DB. *)
+            let effective_ohid =
+              match opaque_host_id with
+              | Some s when s <> "" -> Some s
+              | _ ->
+                let sel = prepare conn
+                  "SELECT opaque_host_id FROM leases WHERE alias = ?"
+                in
+                bind_text sel 1 alias |> ignore;
+                if step sel = ROW then
+                  let raw = Data.to_string_exn (column sel 0) in
+                  if raw = "" then None else Some raw
+                else None
+            in
+            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:effective_ohid () in
             ("ok", lease)
     )
 
@@ -2082,7 +2147,7 @@ module SqliteRelay : RELAY = struct
       )
     )
 
-  let heartbeat t ~node_id ~session_id =
+  let heartbeat t ~node_id ~session_id ?(opaque_host_id = "") =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let now = Unix.gettimeofday () in
@@ -2146,11 +2211,26 @@ module SqliteRelay : RELAY = struct
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias:"_error" () in
         (relay_err_unknown_alias, dummy)
       | Some lease ->
-        let up_stmt = Sqlite3.prepare conn "UPDATE leases SET last_seen = ? WHERE alias = ?" in
+        (* B174: heal host id when the client reports one on heartbeat. *)
+        let up_stmt =
+          if opaque_host_id <> "" then
+            Sqlite3.prepare conn
+              "UPDATE leases SET last_seen = ?, \
+               opaque_host_id = CASE WHEN ? = '' THEN opaque_host_id ELSE ? END \
+               WHERE alias = ?"
+          else
+            Sqlite3.prepare conn "UPDATE leases SET last_seen = ? WHERE alias = ?"
+        in
         Sqlite3.bind_double up_stmt 1 now |> ignore;
-        Sqlite3.bind_text up_stmt 2 (RegistrationLease.alias lease) |> ignore;
+        if opaque_host_id <> "" then begin
+          Sqlite3.bind_text up_stmt 2 opaque_host_id |> ignore;
+          Sqlite3.bind_text up_stmt 3 opaque_host_id |> ignore;
+          Sqlite3.bind_text up_stmt 4 (RegistrationLease.alias lease) |> ignore
+        end else
+          Sqlite3.bind_text up_stmt 2 (RegistrationLease.alias lease) |> ignore;
         Sqlite3.step up_stmt |> ignore;
         RegistrationLease.touch lease;
+        RegistrationLease.set_opaque_host_id lease opaque_host_id;
         ("ok", lease)
     )
 
@@ -3563,8 +3643,11 @@ end = struct
                     in
                     let difficulty = finish_register_result result in
                     (if fst result = "ok" then
-                       R.stats_note_activity relay ~node_id
-                         ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()));
+                       let lease = snd result in
+                       let machine_id = stats_machine_id_of_lease lease in
+                       R.stats_note_activity relay ~machine_id
+                         ~retire_key:node_id
+                         ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()) ());
                     respond_register_ok ~difficulty (json_of_register_result ~receipt result)
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
@@ -3574,8 +3657,11 @@ end = struct
         in
         let difficulty = finish_register_result result in
         (if fst result = "ok" then
-           R.stats_note_activity relay ~node_id
-             ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()));
+           let lease = snd result in
+           let machine_id = stats_machine_id_of_lease lease in
+           R.stats_note_activity relay ~machine_id
+             ~retire_key:node_id
+             ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()) ());
         respond_register_ok ~difficulty (json_of_register_result result)
 
   (* S-A1: bind verified Ed25519 signer to body claims. When ~verified_alias
@@ -3610,15 +3696,27 @@ end = struct
   let handle_heartbeat relay ~verified_alias body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
+    (* B174: optional host id heals leases that registered without one. *)
+    let opaque_host_id =
+      match get_opt_string body "opaque_host_id" with
+      | Some s when C2c_name.is_opaque_host_id s -> s
+      | Some s when s <> "" -> s
+      | _ -> ""
+    in
     if node_id = "" || session_id = "" then
       respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
     else
       let run_heartbeat () =
-        let result = R.heartbeat relay ~node_id ~session_id in
+        let result =
+          R.heartbeat relay ~node_id ~session_id ~opaque_host_id
+        in
         (if fst result = "ok" then
-           R.stats_note_activity relay ~node_id
-             ~alias:(stats_alias_key (RegistrationLease.alias (snd result)))
-             ~ts:(Unix.gettimeofday ()));
+           let lease = snd result in
+           let machine_id = stats_machine_id_of_lease lease in
+           R.stats_note_activity relay ~machine_id
+             ~retire_key:node_id
+             ~alias:(stats_alias_key (RegistrationLease.alias lease))
+             ~ts:(Unix.gettimeofday ()) ());
         respond_ok (json_of_heartbeat_result result)
       in
       match verified_alias with

@@ -467,9 +467,17 @@ end = struct
     request_raw t ~meth:`GET ~path:"/health" () >|= fun j ->
     if is_transport_error j then j else check_health_protocol t j
 
+  (* B174: always attach a host id so /stats unique_machines / connected.machines
+     can key on the real machine rather than per-session node_id (cli-<alias>).
+     Callers may still override; empty falls back to local Host_id. *)
+  let resolve_opaque_host_id opaque_host_id =
+    if opaque_host_id <> "" then opaque_host_id
+    else (try Host_id.compute_host_hash () with _ -> "")
+
   let register t ~node_id ~session_id ~alias
       ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "")
       ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id = "") () =
+    let opaque_host_id = resolve_opaque_host_id opaque_host_id in
     let base = [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
@@ -508,6 +516,7 @@ end = struct
       ?(client_type = "unknown") ?(ttl = default_lease_ttl)
       ?(opaque_host_id = "")
       ~identity_pk_b64 ~sig_b64 ~nonce ~ts () =
+    let opaque_host_id = resolve_opaque_host_id opaque_host_id in
     let base = [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
@@ -531,17 +540,30 @@ end = struct
       ~actor_id:identity_pk_b64 body
 
   let heartbeat t ~node_id ~session_id =
-    post t "/heartbeat" (`Assoc [
-      ("node_id", `String node_id);
-      ("session_id", `String session_id);
-    ])
-
-  let heartbeat_signed t ~node_id ~session_id ~auth_header =
-    let body = `Assoc [
+    let opaque_host_id = resolve_opaque_host_id "" in
+    let fields = [
       ("node_id", `String node_id);
       ("session_id", `String session_id);
     ] in
-    post_auth t "/heartbeat" body auth_header
+    let fields =
+      if opaque_host_id <> "" then
+        fields @ [ ("opaque_host_id", `String opaque_host_id) ]
+      else fields
+    in
+    post t "/heartbeat" (`Assoc fields)
+
+  let heartbeat_signed t ~node_id ~session_id ~auth_header =
+    let opaque_host_id = resolve_opaque_host_id "" in
+    let fields = [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+    ] in
+    let fields =
+      if opaque_host_id <> "" then
+        fields @ [ ("opaque_host_id", `String opaque_host_id) ]
+      else fields
+    in
+    post_auth t "/heartbeat" (`Assoc fields) auth_header
 
   let list_peers t ?(include_dead = false) () =
     if include_dead then get t "/list?include_dead=1" else get t "/list"
