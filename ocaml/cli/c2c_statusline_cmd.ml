@@ -8,8 +8,8 @@
      - what is my alias?
      - am I connected to the relay?
 
-   plus two cheap extras that are high-signal for a swarm: live peer count and
-   unread inbox count.
+   plus two cheap extras that are high-signal for a swarm: repo/machine peer
+   counts and unread inbox count.
 
    SPEED (hard requirement — this runs on every statusline refresh):
    everything here is PURE-LOCAL. No network round-trip is ever made. The
@@ -19,7 +19,11 @@
    process startup — well inside Claude Code's ~300ms statusLine budget. We
    deliberately do NOT run the archive scan `c2c status` does (that adds
    ~150ms+); statusline only touches registrations, the relay snapshot, the
-   connector-state file, and the caller's own inbox file.
+   connector-state file, the shared sessions broker, and the caller's own
+   inbox file.  "repo" is the current repository broker.  "machine" is the
+   deduplicated union of that broker and the shared sessions broker (the local
+   registration wins if a session is present in both); it is not a relay-live
+   claim.
 
    CLIENT DETECTION: the host client is inferred from the environment
    (C2c_mcp.inferred_client_type_from_env). For Claude Code specifically, the
@@ -71,7 +75,9 @@ type info = {
   alias : string option;
   relay_state : Relay_state.state;
   relay_configured : bool;
-  peers_alive : int;
+  peers_alive : int; (* compatibility alias for [peers_repo_alive] *)
+  peers_repo_alive : int;
+  peers_machine_alive : int;
   unread : int;
   client : string option;
   model : string option; (* client-supplied (Claude statusLine JSON), display only *)
@@ -91,9 +97,8 @@ let render_human ~color (i : info) =
     paint ~color (relay_severity i.relay_state) (relay_token i.relay_state)
   in
   let segs = ref [ head; relay ] in
-  if i.peers_alive > 0 then
-    segs := !segs @ [ Printf.sprintf "%d peer%s" i.peers_alive
-                        (if i.peers_alive = 1 then "" else "s") ];
+  segs := !segs @ [ Printf.sprintf "%d repo" i.peers_repo_alive
+                    ; Printf.sprintf "%d machine" i.peers_machine_alive ];
   if i.unread > 0 then
     segs := !segs @ [ paint ~color `Warn (Printf.sprintf "%d unread" i.unread) ];
   (match i.model with Some m when m <> "" -> segs := !segs @ [ paint ~color `Dim m ] | _ -> ());
@@ -106,6 +111,8 @@ let render_json (i : info) : Yojson.Safe.t =
     ; ("relay_state", `String (Relay_state.state_to_string i.relay_state))
     ; ("relay_configured", `Bool i.relay_configured)
     ; ("peers_alive", `Int i.peers_alive)
+    ; ("peers_repo_alive", `Int i.peers_repo_alive)
+    ; ("peers_machine_alive", `Int i.peers_machine_alive)
     ; ("unread", `Int i.unread)
     ; ("client", (match i.client with Some c -> `String c | None -> `Null))
     ; ("model", (match i.model with Some m -> `String m | None -> `Null))
@@ -211,6 +218,29 @@ let gather ~session_id_override ~model () : info =
       (fun acc r -> if C2c_mcp.Broker.registration_is_alive r then acc + 1 else acc)
       0 regs
   in
+  let sessions_regs =
+    try
+      let sessions = C2c_mcp.Broker.create
+          ~root:(C2c_repo_fp.resolve_sessions_broker_root ()) in
+      C2c_mcp.Broker.list_registrations sessions
+    with _ -> []
+  in
+  (* Deduplicate by the exact stable registration identity.  The current-repo
+     registration is inserted first, so it has precedence when a session is
+     visible through both the repo and sessions broker. *)
+  let seen = Hashtbl.create (List.length regs + List.length sessions_regs) in
+  let peers_machine_alive =
+    List.fold_left
+      (fun n r ->
+        let r : C2c_mcp.registration = r in
+        let key = (r.session_id, C2c_mcp.Broker.alias_casefold r.alias) in
+        if Hashtbl.mem seen key then n
+        else begin
+          Hashtbl.add seen key ();
+          if C2c_mcp.Broker.registration_is_alive r then n + 1 else n
+        end)
+      0 (regs @ sessions_regs)
+  in
   let unread =
     match session_id with
     | Some sid -> (try List.length (C2c_mcp.Broker.read_inbox broker ~session_id:sid) with _ -> 0)
@@ -222,6 +252,8 @@ let gather ~session_id_override ~model () : info =
     relay_state = classification.Relay_state.state;
     relay_configured = C2c_relay_state.relay_configured snap;
     peers_alive;
+    peers_repo_alive = peers_alive;
+    peers_machine_alive;
     unread;
     client;
     model }
@@ -316,7 +348,8 @@ let statusline : unit Cmdliner.Cmd.t =
          [ `S "DESCRIPTION"
          ; `P "Prints a single concise line summarising this context's c2c \
                state: registration/alias, relay connectivity (from local \
-               connector state — no network probe), live peer count, and \
+               connector state — no network probe), repo and machine peer \
+               counts, and \
                unread inbox count. Designed to run on every status-line \
                refresh, so it is pure-local and fast (~30-40ms)."
          ; `P "Colour is emitted only on a TTY and honours $(b,NO_COLOR). Use \

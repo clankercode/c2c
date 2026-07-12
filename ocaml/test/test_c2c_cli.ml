@@ -4009,7 +4009,11 @@ let test_statusline_json_reports_state () =
           check bool "alias resolves from session id" true
             (get "alias" = Some (`String "sl-selftest"));
           check bool "counts both live registrations" true
-            (get "peers_alive" = Some (`Int 2))
+            (get "peers_alive" = Some (`Int 2));
+          check bool "repo count is explicit" true
+            (get "peers_repo_alive" = Some (`Int 2));
+          check bool "machine count is explicit" true
+            (get "peers_machine_alive" = Some (`Int 2))
       | _ | (exception _) ->
           Alcotest.failf "statusline --json did not emit an object: %s" out)
 
