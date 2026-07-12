@@ -1,0 +1,36 @@
+---
+complexity: medium
+created_at: "2026-07-12T14:04:22Z"
+depends_on: []
+estimate_hours: 4
+id: B160
+priority: medium
+status: pending
+tags:
+    - performance
+    - statusline
+    - codex
+    - app-server
+    - architecture
+title: Profile and simplify the data path behind c2c startup/status indicators
+updated_at: "2026-07-12T14:04:22Z"
+---
+Problem
+
+The app-server startup banner and `c2c statusline` both need a small set of local state: identity/alias, managed app-server state, and relay/connectivity summary. The current statusline was explicitly designed to avoid network/process work and uses local registrations plus a relay snapshot, but the state is still assembled afresh by a full CLI process. Investigate whether a more efficient, simpler retrieval path is worth adopting.
+
+Scope
+
+Measure the end-to-end latency and syscall/file-read profile for the current `c2c statusline` path and the app-server startup-state reads. Compare at least: (a) retain the current OCaml path with targeted read/parsing improvements, (b) have the managed c2c/app-server supervisor publish a small atomically-written, versioned state snapshot for consumers to read, and (c) a tiny native helper only if measurements demonstrate that process startup/parsing dominates. Do not introduce a C implementation merely speculatively.
+
+Acceptance criteria
+
+1. Save a short research receipt with reproducible benchmarks for cold/warm statusline and managed Codex startup paths, including the machine/environment assumptions.
+2. Identify current files read, parsing work, freshness requirements, failure modes, and whether multiple writers/clients create consistency risks.
+3. Compare the three options above on latency, correctness/freshness, operational complexity, portability, and maintenance cost.
+4. Make and document a recommendation: retain/tune current behavior, or implement a narrowly scoped state-snapshot design with atomic-write/versioning/permissions semantics.
+5. If a change is recommended and low-risk, create a follow-up implementation bug with concrete acceptance criteria; otherwise close this task with evidence that current behavior is sufficient.
+
+Blockers
+
+Do not regress the statusline contract: no network calls, no process scans, bounded stdin handling, fast fail-open behavior, and no stale state presented as live without an explicit freshness indicator.
