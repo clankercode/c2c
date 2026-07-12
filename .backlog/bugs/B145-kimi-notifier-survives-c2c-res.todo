@@ -1,0 +1,39 @@
+---
+complexity: medium
+created_at: "2026-07-12T02:46:45Z"
+depends_on: []
+estimate_hours: 1
+id: B145
+priority: high
+status: pending
+tags:
+    - c2c
+    - kimi
+    - upgrade
+    - restart
+title: kimi notifier survives c2c restart and runs stale binary after upgrade
+updated_at: "2026-07-12T02:46:45Z"
+---
+SYMPTOM (suspected — needs live repro to confirm)
+After `just install-all` replaces the on-disk c2c binary, the kimi notification daemon (`C2c_kimi_notifier`) keeps running the OLD code even across a full `c2c restart <name>`. Kimi delivery therefore silently executes a stale binary until the notifier process is explicitly killed.
+
+ROOT CAUSE (structural, from source read 2026-07-12)
+- The kimi notifier is spawned `fork+setsid` DETACHED (`ocaml/c2c_start.ml:5057` -> `ocaml/c2c_kimi_notifier.ml:572`), with its own pidfile and comm `c2c-kimi-notif`.
+- It is NOT tracked in the outer supervisor`s sidecar pid list (the `stop_sidecar` set at `c2c_start.ml:4479-4480` covers deliver.pid/poker.pid, not the notifier).
+- On startup it guards with `already_running` dedup (`c2c_kimi_notifier.ml:561,567`), so a fresh `c2c start` does NOT replace it — it sees the existing daemon and leaves it be.
+- Net: `c2c stop`/`c2c restart` tear down the agent + tracked sidecars, but the detached notifier survives, and the relaunch dedups against it. It is a `fork` of the old image (no re-exec), so it runs old code indefinitely.
+
+IMPACT
+- Upgrade-correctness gap: kimi delivery behaviour/fixes shipped in a new binary do not take effect for a running kimi session even after the operator does the "correct" thing (`c2c restart`). This is exactly the class of "swarm split across binary versions" bug CLAUDE.md warns about, but silent.
+- Ties into idea I010 (`c2c restart-clients-after-upgrade`) and `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`.
+
+FIX DIRECTIONS
+1. Track the notifier pid in the supervisor and kill+respawn it on `c2c stop`/`c2c restart` (so restart actually cycles it onto the new binary). Simplest; makes restart correct.
+2. Give the notifier the Tier-2 self-detect: periodically compare its running-binary SHA (executable_sha256 machinery, `c2c_mcp_helpers.ml:362-389`) to the on-disk binary and gracefully re-exec/exit on drift. Robust even without a restart.
+3. At minimum: on `c2c start`, if `already_running` but the running notifier`s binary SHA != installed SHA, kill the stale one and respawn.
+
+AC
+- After `just install-all` + `c2c restart <kimi-session>`, the running kimi notifier is on the NEW binary SHA (verify via pid`s /proc/<pid>/exe or its reported version).
+- Live repro captured first (spawn kimi session, note notifier pid+SHA, install newer binary, restart, confirm OLD notifier still alive on old SHA) — then fix, then re-verify.
+
+Discovered during I010 design work (Max-driven session, 2026-07-12).
