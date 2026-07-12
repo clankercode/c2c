@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-12T03:02:26Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T03:11:16Z"
 complexity: medium
 created_at: "2026-07-12T01:46:48Z"
 depends_on: []
+duration_minutes: 8.84950167415
 estimate_hours: 1
 id: B143
 priority: high
 started_at: "2026-07-12T03:02:26Z"
-status: in_progress
+status: done
 tags: []
 title: Delivery reply hint should default to CLI (c2c send), mention MCP c2c_send as alternative
-updated_at: "2026-07-12T03:02:26Z"
+updated_at: "2026-07-12T03:11:16Z"
 ---
 The reply-hint system-reminder appended to delivered c2c messages currently confuses the two send surfaces.
 
