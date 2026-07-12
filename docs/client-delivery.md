@@ -201,11 +201,15 @@ supervisor:
   argv, never disk, never logs). Any future TCP/WebSocket exposure beyond
   loopback requires the same bearer authentication **plus** an explicit
   exposure warning; do not forward the port without it.
-- **Delivery = passive injection.** Inbound mail is injected into the
-  thread's model-visible history (`thread/inject_items`) on arrival, as DATA.
-  It is not rendered in the TUI transcript; the model reads it on its next
-  turn. Injection is persist-first and idempotent (at-least-once across an
-  ack-loss window; never drains the broker inbox).
+- **Delivery = passive injection plus visible auto-turn DATA.** Inbound mail is
+  injected into the thread's model-visible history (`thread/inject_items`) on
+  arrival, as DATA. It is not rendered in the TUI transcript. When eligible
+  local mail starts an auto-turn, that turn also carries the same explicitly
+  delimited DATA envelopes (sender, message ID, and body): some app-server
+  versions do not expose injected history to the immediately following turn.
+  Peer mail is still never operator input or an approval. Injection is
+  persist-first and idempotent (at-least-once across an ack-loss window; never
+  drains the broker inbox).
 - **Draft-safe by construction.** The composer is frontend-only state the
   app-server never sees, so neither injection nor an app-server `turn/start`
   can touch an operator's typed draft — proven live byte-for-byte (31/31

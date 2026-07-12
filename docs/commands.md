@@ -1040,9 +1040,11 @@ cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-
 over the app-server path, wired into managed supervision (B131): inbound c2c
 mail is injected into the thread's model-visible history on arrival over the
 authenticated loopback app-server (draft-safe; never rendered in the TUI
-transcript), and one gated turn fires for eligible **local** mail when the
-thread is explicitly idle and DND is off (relay-origin mail and mail arriving
-during an active/unknown-status turn stays queued, fail-closed; mid-turn
+transcript). If eligible **local** mail starts a gated turn, that turn contains
+the same explicitly delimited DATA envelopes, so the agent can read sender,
+message ID, and body even when the app-server does not surface injected history
+to the turn. The thread must be explicitly idle and DND off; relay-origin mail
+and mail arriving during an active/unknown-status turn stays queued, fail-closed; mid-turn
 arrivals batch into one follow-up turn). Hook-fallback sessions (vanilla, or
 managed on a too-old Codex) deliver at the hook boundary instead — messages
 surface on the session's next hook fire, not on arrival. Message
