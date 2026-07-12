@@ -950,6 +950,37 @@ let monitor_cmd =
           (now_hms ()) (if drain then "drain" else "peek");
       Printf.printf "%s relay watch: %s\n%!" (now_hms ()) relay_status_label
     end;
+    (* B150: surface any mail ALREADY queued in this session's live inbox at
+       startup. The inotify watch only fires on CHANGES, so messages sitting in
+       the inbox when the monitor starts would otherwise stay invisible until
+       the next inbox event. Runs after inotifywait is armed (the ready_flag
+       wait above), so a message that lands during this read still produces an
+       inotify event and is deduped against `seen` rather than lost.
+
+       Scoped to the default archive+inbox-watch mode (B070): that path shares
+       the `seen` set and emit_mutex with the live-inbox change handler, so a
+       startup-surfaced message is not re-printed when the same inbox is later
+       drained into the archive. --live (legacy) mode emits through a separate
+       non-deduped path, so surfacing there could double-print on a later
+       change; it is deliberately left out. Mirrors the inbox-change path:
+       peek by default, drain with --drain. *)
+    (if do_inbox_watch then
+       match inbox_sid, inbox_filename with
+       | Some sid, Some ifn ->
+           let inbox_path = Filename.concat broker_root ifn in
+           if Sys.file_exists inbox_path then begin
+             let msgs =
+               if drain then
+                 (try
+                    List.map message_record_to_json
+                      (Broker.drain_inbox ~drained_by:"c2c-monitor"
+                         (Broker.create ~root:broker_root) ~session_id:sid)
+                  with _ -> read_inbox_file inbox_path)
+               else read_inbox_file inbox_path
+             in
+             ignore (emit_filtered ~is_mine:true ~source:"local" msgs)
+           end
+       | _ -> ());
     Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
       try while true do
         (* If our parent died (reparented to init/PID 1), we are an orphan —
