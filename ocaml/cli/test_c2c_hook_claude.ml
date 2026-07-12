@@ -76,10 +76,10 @@ let with_ctx f =
     ~finally:(fun () -> try remove_tree dir with _ -> ())
     (fun () -> f { home; broker_root; global_root })
 
-(* Run `c2c hook claude` hermetically: env -i wipes any ambient
+(* Run a c2c hook subcommand hermetically: env -i wipes any ambient
    CLAUDE_*/C2C_* identity leaking in from the session running the tests.
    [extra_env] appends KEY=VALUE pairs (e.g. C2C_MCP_SESSION_ID). *)
-let run_hook ?(extra_env = []) ctx ~payload =
+let run_hook ?(subcommand = "claude") ?(extra_env = []) ctx ~payload =
   let dir = Filename.dirname ctx.home in
   let payload_path = dir // "payload.json" in
   let out_path = dir // "hook.out" in
@@ -91,13 +91,14 @@ let run_hook ?(extra_env = []) ctx ~payload =
   in
   let cmd =
     Printf.sprintf
-      "env -i HOME=%s PATH=%s C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s %s %s hook claude < %s > %s 2> %s"
+      "env -i HOME=%s PATH=%s C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s %s %s hook %s < %s > %s 2> %s"
       (Filename.quote ctx.home)
       (Filename.quote (Sys.getenv "PATH"))
       (Filename.quote ctx.broker_root)
       (Filename.quote ctx.global_root)
       extra
       (Filename.quote c2c_binary)
+      (Filename.quote subcommand)
       (Filename.quote payload_path)
       (Filename.quote out_path)
       (Filename.quote err_path)
@@ -490,6 +491,35 @@ let test_malformed_and_unhandled_payloads_are_silent () =
     check int "no registrations created" 0
       (List.length (C2c_mcp.Broker.list_registrations (broker ctx))))
 
+let test_stop_hook_returns_non_error_context () =
+  with_ctx (fun ctx ->
+    let sid = "claude-e2e-stop-feedback-0001" in
+    let b = register ctx ~session_id:sid ~alias:"zz-claude-stop-feedback" in
+    ignore (register ctx ~session_id:"claude-e2e-stop-peer-0001"
+              ~alias:"zz-claude-stop-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-claude-stop-peer"
+      ~to_alias:"zz-claude-stop-feedback" ~content:"ordinary stop-boundary mail" ();
+    let rc, stdout, stderr =
+      run_hook ~subcommand:"stop" ctx
+        ~payload:(payload ~event:"Stop" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    check string "no stderr: ordinary mail is not a hook error" "" stderr;
+    (match parse_context stdout with
+     | Some (event, context) ->
+         check string "hookEventName is Stop" "Stop" event;
+         check bool "full c2c body is preserved" true
+           (contains ~haystack:context ~needle:"ordinary stop-boundary mail")
+     | None -> failf "expected Stop additionalContext, got: %S" stdout);
+    let json = Yojson.Safe.from_string (String.trim stdout) in
+    (match json with
+     | `Assoc fields ->
+         check bool "no top-level decision" true
+           (not (List.mem_assoc "decision" fields))
+     | _ -> failf "expected JSON object, got: %S" stdout);
+    check int "Stop drain is destructive" 0
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid)))
+
 let () =
   Random.self_init ();
   run "c2c_hook_claude"
@@ -523,5 +553,7 @@ let () =
             test_session_start_refreshes_claude_skill
         ; test_case "malformed / unhandled payloads are silent" `Quick
             test_malformed_and_unhandled_payloads_are_silent
+        ; test_case "Stop returns non-error additionalContext" `Quick
+            test_stop_hook_returns_non_error_context
         ] )
     ]
