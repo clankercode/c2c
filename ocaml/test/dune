@@ -147,6 +147,12 @@
  (deps %{exe:../cli/c2c.exe}))
 
 (test
+ (name test_c2c_restart_stale)
+ (modules test_c2c_restart_stale)
+ (libraries alcotest yojson unix)
+ (deps %{exe:../cli/c2c.exe}))
+
+(test
  (name test_relay_remote_broker)
  (modules test_relay_remote_broker)
  (libraries c2c_mcp alcotest))
