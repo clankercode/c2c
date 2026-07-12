@@ -49,7 +49,9 @@ let mk_harness ?(steps = []) () =
 
 let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     ?(broker_root = temp_broker_root ()) ?(global_broker_root = None)
-    ?(is_dnd = fun () -> false) (h : harness) : DL.deps =
+    ?(is_dnd = fun () -> false) ?(on_thread_discovered = fun _ -> ())
+    ?(restart_requested = fun ~thread_id:_ -> None)
+    (h : harness) : DL.deps =
   { broker_root;
     session_id = "deliver-loop-test-sess";
     managed_identity = "deliver-loop-test-alias";
@@ -69,6 +71,8 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     deregister = (fun () -> h.deregisters <- h.deregisters + 1);
     on_pass = (fun _ -> h.passes <- h.passes + 1);
     on_degraded = (fun b -> h.degraded_events <- h.degraded_events @ [ b ]);
+    on_thread_discovered;
+    restart_requested;
     global_broker_root;
     on_global_pass = (fun gh -> h.global_pass_events <- h.global_pass_events @ [ gh ]);
     now = (fun () -> !(h.clock));
@@ -109,6 +113,23 @@ let test_server_death_terminal () =
   Alcotest.(check bool) "server death is terminal" true (o.DL.final = Ep.Sv_server_died);
   Alcotest.(check int) "deregistered" 1 h.deregisters;
   Alcotest.(check int) "one pass before death" 1 o.DL.passes
+
+let test_discovery_persists_then_restart_before_delivery () =
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running ] () in
+  let discovered = ref [] in
+  let o =
+    DL.run
+      (mk_deps
+         ~on_thread_discovered:(fun tid -> discovered := tid :: !discovered)
+         ~restart_requested:(fun ~thread_id ->
+           if thread_id = "thread-1" then Some "/resolved/c2c" else None) h)
+  in
+  Alcotest.(check (list string)) "thread callback exactly once"
+    [ "thread-1" ] (List.rev !discovered);
+  Alcotest.(check (option string)) "restart executable returned"
+    (Some "/resolved/c2c") o.DL.restart_executable;
+  Alcotest.(check int) "restart happens before another ingress pass" 0 o.DL.passes;
+  Alcotest.(check int) "deregistered once" 1 h.deregisters
 
 let test_degraded_no_thread () =
   (* Frontend never loads a thread: keep supervising, never deliver, mark
@@ -272,6 +293,7 @@ let () =
         [ test_case "start on attach + drive while running" `Quick test_start_on_attach_and_drive
         ; test_case "stop on immediate frontend exit" `Quick test_stop_on_immediate_exit
         ; test_case "server death is terminal" `Quick test_server_death_terminal
+        ; test_case "persist discovery then restart before delivery" `Quick test_discovery_persists_then_restart_before_delivery
         ; test_case "degraded when no thread loaded" `Quick test_degraded_no_thread
         ; test_case "wall-clock bound returns + deregisters" `Quick test_max_wall_bound
         ; test_case "discovery stops after found" `Quick test_discover_throttle_reused_after_found

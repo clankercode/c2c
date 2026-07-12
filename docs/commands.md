@@ -1467,3 +1467,20 @@ the sender and gives the reply tool call. Room and relay routing suffixes in
 the envelope's `to` value are not part of the displayed local identity.
 
 Room messages use `event="room_message"` and include `room_id`. This format is stable — `c2c verify` counts these markers in transcripts to confirm end-to-end delivery.
+App-server Codex launchers are normal managed instances: they appear in
+`c2c instances`, persist their launcher PID and the exact thread discovered by
+the attached frontend, and support `c2c restart <alias>`. Restart is performed
+in place by the launcher so the replacement frontend retains the same terminal
+and resumes the exact thread. By default the request is accepted only when the
+app-server reports the thread as `idle`; active or unknown status is skipped.
+Use `c2c restart <alias> --force` only when intentionally interrupting a turn.
+The command waits for the owning launcher to acknowledge its decision. It exits
+0 only for `restarting`, exits 2 for an observable active/unknown skip, and
+exits 3 when `--timeout` expires; it never falls back to an external respawn for
+an app-server mapping, including starting or otherwise unknown lifecycle state.
+Before acknowledging, the owner resolves and validates the current `c2c` on
+`PATH`; this deliberately selects a newly installed upgrade binary even when
+the running process still has the old executable mapped. Resolution failure is
+an observable skip and leaves the attached app-server/frontend untouched.
+Ingress and auto-turn ledgers remain in the broker across the exec boundary, so
+already-injected messages are not replayed.

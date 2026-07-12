@@ -208,6 +208,80 @@ let test_mapping_roundtrip () =
           Alcotest.(check string) "alias" m.alias m2.alias;
           Alcotest.(check (option string)) "thread_id" m.thread_id m2.thread_id)
 
+let test_restart_request_roundtrip () =
+  with_tmp_dir (fun dir ->
+      let request_id = S.request_restart ~instance_dir:dir ~force:true in
+      match C2c_io.read_json_opt (S.restart_request_path ~instance_dir:dir) with
+      | Some (`Assoc fields) ->
+          Alcotest.(check (option string)) "request id persisted" (Some request_id)
+            (match List.assoc_opt "request_id" fields with
+             | Some (`String s) -> Some s | _ -> None);
+          Alcotest.(check (option bool)) "force persisted" (Some true)
+            (match List.assoc_opt "force" fields with
+             | Some (`Bool b) -> Some b | _ -> None)
+      | _ -> Alcotest.fail "restart request should be valid JSON")
+
+let test_restart_result_ack () =
+  with_tmp_dir (fun dir ->
+      let request_id = S.request_restart ~instance_dir:dir ~force:false in
+      let result_path = S.restart_result_path ~instance_dir:dir ~request_id in
+      let oc = open_out result_path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+          Printf.fprintf oc "{\"request_id\":%S,\"result\":\"skipped-active\"}\n"
+            request_id);
+      Alcotest.(check (option string)) "explicit skip observed"
+        (Some "skipped-active")
+        (S.await_restart_result ~instance_dir:dir ~request_id ~timeout_s:0.1);
+      Alcotest.(check bool) "result consumed" false (Sys.file_exists result_path))
+
+let make_executable path =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "#!/bin/sh\nexit 0\n");
+  Unix.chmod path 0o755
+
+let test_restart_executable_resolves_bare_path_launch () =
+  with_tmp_dir (fun dir ->
+      let installed = Filename.concat dir "c2c" in
+      make_executable installed;
+      Alcotest.(check (option string)) "PATH c2c selected over bare argv0"
+        (Some (Unix.realpath installed))
+        (S.resolve_restart_executable ~path:(Some dir) ~self:"c2c" ()))
+
+let test_restart_executable_fails_before_stop_when_unavailable () =
+  with_tmp_dir (fun dir ->
+      Alcotest.(check (option string)) "no executable means no restart target"
+        None
+        (S.resolve_restart_executable ~path:(Some dir)
+           ~self:"definitely-missing-c2c" ()))
+
+let test_thread_persistence_repairs_config_independently () =
+  let name = Printf.sprintf "b153-persist-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+  let dir = C2c_start.instance_dir name in
+  C2c_io.mkdir_p dir;
+  Fun.protect
+    ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      S.write_mapping ~instance_dir:dir
+        { S.session_id = "sid"; alias = name; thread_id = Some "thread-exact";
+          created_at = 1.; updated_at = 2. };
+      C2c_start.write_config
+        { C2c_start.name; client = "codex"; session_id = "sid";
+          resume_session_id = "sid"; codex_resume_target = None; alias = name;
+          extra_args = []; created_at = 1.; last_launch_at = None;
+          last_exit_code = None; last_exit_reason = None; broker_root = "";
+          auto_join_rooms = ""; binary_override = None; model_override = None;
+          agent_name = None };
+      S.persist_discovered_thread ~instance_dir:dir ~name
+        ~thread_id:"thread-exact";
+      match C2c_start.load_config_opt name with
+      | Some cfg ->
+          Alcotest.(check (option string)) "config repaired despite fresh mapping"
+            (Some "thread-exact") cfg.codex_resume_target;
+          Alcotest.(check string) "resume id repaired" "thread-exact"
+            cfg.resume_session_id
+      | None -> Alcotest.fail "config missing")
+
 (* ------------------------------------------------------------------ *)
 (* Deliver-loop degraded signal persistence (B138)                     *)
 (* ------------------------------------------------------------------ *)
@@ -332,6 +406,16 @@ let test_glue_happy_publishes_after_start () =
           ~fallback:(fun ~extra_args:_ () -> fallback_called := true; 99) () in
       Alcotest.(check bool) "fallback NOT used on happy path" false !fallback_called;
       Alcotest.(check int) "clean exit" 0 rc;
+      Alcotest.(check bool) "managed config persisted" true
+        (Sys.file_exists (C2c_start.config_path alias));
+      Alcotest.(check bool) "launcher pid persisted" true
+        (Sys.file_exists (C2c_start.outer_pid_path alias));
+      (match C2c_start.load_config_opt alias with
+       | Some cfg ->
+           Alcotest.(check string) "managed client is codex" "codex" cfg.client;
+           Alcotest.(check string) "exact resume target persisted" sid
+             (Option.value cfg.codex_resume_target ~default:"")
+       | None -> Alcotest.fail "managed config must load");
       (* The routable mapping is published only after start returned Ok. *)
       match S.load_mapping ~instance_dir:(C2c_start.instance_dir alias) with
       | None -> Alcotest.fail "mapping should be published after Running"
@@ -541,6 +625,12 @@ let () =
         ; test_case "split_client_alias" `Quick test_split_client_alias_passthrough ] )
     ; ( "thread-conflict",
         [ test_case "reconcile" `Quick test_reconcile_thread ] )
+    ; ( "restart-control",
+        [ test_case "request is atomic JSON" `Quick test_restart_request_roundtrip
+        ; test_case "result acknowledgement observed" `Quick test_restart_result_ack
+        ; test_case "bare argv0 resolves PATH upgrade target" `Quick test_restart_executable_resolves_bare_path_launch
+        ; test_case "missing target fails before stop" `Quick test_restart_executable_fails_before_stop_when_unavailable
+        ; test_case "thread repairs config independently" `Quick test_thread_persistence_repairs_config_independently ] )
     ; ( "identity-resolve",
         [ test_case "resume unknown rejected" `Quick test_resolve_resume_unknown_rejected
         ; test_case "resume ok" `Quick test_resolve_resume_ok

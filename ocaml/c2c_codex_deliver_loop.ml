@@ -25,6 +25,8 @@ type deps = {
   deregister : unit -> unit;
   on_pass : Autoturn.pass_outcome -> unit;
   on_degraded : bool -> unit;
+  on_thread_discovered : string -> unit;
+  restart_requested : thread_id:string -> string option;
   global_broker_root : string option;
   on_global_pass : Ingress.health -> unit;
   now : unit -> float;
@@ -40,6 +42,7 @@ type outcome = {
   passes : int;
   global_passes : int;
   degraded : bool;
+  restart_executable : string option;
 }
 
 let build_autoturn_config (d : deps) ~(thread_id : string) : Autoturn.config =
@@ -119,13 +122,16 @@ let run (d : deps) : outcome =
                  None -> Some transition fires exactly once (the [!thread = None]
                  guard above), so [on_degraded false] is emitted once, on the
                  healthy transition. *)
-              thread := Some tid; report_degraded false
+              thread := Some tid;
+              (try d.on_thread_discovered tid with _ -> ());
+              report_degraded false
           | _ -> ()
         end
       in
-      let mk_outcome final =
+      let mk_outcome ?restart_executable final =
         { final; thread_id = !thread; passes = !passes;
-          global_passes = !global_passes; degraded = !thread = None }
+          global_passes = !global_passes; degraded = !thread = None;
+          restart_executable }
       in
       (* B141: deliver the session's GLOBAL (cross-repo sessions-broker) inbox
          too. This runs in the LAUNCHER's supervision process against the
@@ -158,6 +164,10 @@ let run (d : deps) : outcome =
           maybe_discover ();
           (match !thread with
            | Some tid ->
+               (match (try d.restart_requested ~thread_id:tid with _ -> None) with
+               | Some executable ->
+                 mk_outcome ~restart_executable:executable Ep.Sv_offline
+               | None -> begin
                let cfg = build_autoturn_config d ~thread_id:tid in
                (* deliver_pass never raises for a delivery/protocol error — it
                   records the reason and returns a pass_outcome. Guard anyway so
@@ -165,10 +175,13 @@ let run (d : deps) : outcome =
                (match (try Some (Autoturn.deliver_pass cfg) with _ -> None) with
                 | Some po -> incr passes; (try d.on_pass po with _ -> ())
                 | None -> ());
-               run_global_pass ~thread_id:tid
-           | None -> ());
-          if d.now () -. start >= d.max_wall_s then mk_outcome Ep.Sv_offline
-          else (d.sleep d.poll_interval_s; loop ())
+               run_global_pass ~thread_id:tid;
+               if d.now () -. start >= d.max_wall_s then mk_outcome Ep.Sv_offline
+               else (d.sleep d.poll_interval_s; loop ())
+               end)
+           | None ->
+               if d.now () -. start >= d.max_wall_s then mk_outcome Ep.Sv_offline
+               else (d.sleep d.poll_interval_s; loop ()))
         end
       in
       loop ())

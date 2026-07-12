@@ -773,10 +773,46 @@ let restart_cmd =
       ~docv:"SECONDS"
       ~doc:"Seconds to wait for outer process to exit before spawning restart (default: 5).")
   in
+  let force =
+    Cmdliner.Arg.(value & flag & info [ "force" ]
+      ~doc:"For an app-server Codex instance, restart even when thread status is active or unknown.")
+  in
   let+ name = name
-  and+ timeout = timeout in
+  and+ timeout = timeout
+  and+ force = force in
   let timeout_s = Option.value timeout ~default:5.0 in
-  exit (C2c_start.cmd_restart name ~timeout_s)
+  let instance_dir = C2c_start.instance_dir name in
+  match C2c_codex_session.load_mapping ~instance_dir with
+  | Some _ ->
+      (* Any app-server mapping stays on the owner-control seam, including
+         starting/unknown/offline records. Falling through to cmd_restart would
+         spawn the replacement on this caller's TTY and violate ownership. *)
+      (try
+         let request_id =
+           C2c_codex_session.request_restart ~instance_dir ~force
+         in
+         match C2c_codex_session.await_restart_result ~instance_dir ~request_id
+                 ~timeout_s with
+         | Some "restarting" ->
+             Printf.printf
+               "[c2c restart] owner accepted in-place restart for '%s'%s\n%!"
+               name (if force then " (forced)" else " (idle-gated)");
+             exit 0
+         | Some result ->
+             Printf.eprintf
+               "[c2c restart] owner skipped restart for '%s': %s\n%!"
+               name result;
+             exit 2
+         | None ->
+             Printf.eprintf
+               "[c2c restart] timed out after %.1fs waiting for app-server owner '%s'; no external restart was attempted\n%!"
+               timeout_s name;
+             exit 3
+       with exn ->
+         Printf.eprintf "error: could not request app-server restart: %s\n%!"
+           (Printexc.to_string exn);
+         exit 1)
+  | None -> exit (C2c_start.cmd_restart name ~timeout_s)
 
 let restart : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance.") restart_cmd
