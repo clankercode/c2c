@@ -235,6 +235,14 @@ override the `supervisors[]` list in `.c2c/repo.json` (#490 Slice 5e) when set.
 
 Set to `1` to suppress the MCP nudge on Tier1 CLI commands (`send`, `list`, `whoami`, `poll-inbox`, `peek-inbox`). When both `C2C_MCP_SESSION_ID` and `C2C_MCP_AUTO_REGISTER_ALIAS` are set, these commands print a hint suggesting the equivalent `mcp__c2c__*` tool instead. Set `C2C_CLI_FORCE=1` to silence the hint when you genuinely need the CLI (e.g. operator scripts, non-MCP sessions).
 
+### `PI_C2C_ASCII` (statusline glyphs)
+
+When truthy (`1` / `true` / `yes` / `on`), `c2c statusline` renders plain-text
+tokens instead of unicode glyphs — useful in minimal terminals or fonts that
+lack emoji/arrow support. Fallbacks: `🌐 ⇄` → `[relay]`, `📦` → `repo`,
+`🖥️` → `machine` (e.g. `c2c my-alias · [relay] off · repo 2 · machine 3`).
+`--json` field names are unaffected. See `docs/reference/statusline.md`.
+
 ### Metadata opt-out flags (not env vars)
 
 `c2c register --no-metadata` and the MCP `register` tool's `include_metadata:false` set the per-registration `metadata_opt_out` consent flag. This suppresses future metadata exposure/federation (e.g. cwd, canonical alias) while still capturing `cwd` for the Hardening-B worktree-mismatch guard. Defaults to metadata-on.
