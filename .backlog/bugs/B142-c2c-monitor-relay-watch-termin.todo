@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-12T03:19:11Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T03:30:00Z"
 complexity: medium
 created_at: "2026-07-12T00:07:32Z"
 depends_on: []
+duration_minutes: 10.820286092666667
 estimate_hours: 1
 id: B142
 priority: high
 started_at: "2026-07-12T03:19:11Z"
-status: in_progress
+status: done
 tags: []
 title: 'c2c monitor: relay-watch TERMINAL failure kills the WHOLE monitor (local inbox watch dies too)'
-updated_at: "2026-07-12T03:19:11Z"
+updated_at: "2026-07-12T03:30:00Z"
 ---
 c2c monitor auto-enables a relay-peek watcher whenever a relay is configured (the default https://relay.c2c.im IS configured out of the box) + an alias/identity resolves (decide_relay_watch, c2c_monitor_logic.ml:320-329). So a purely LOCAL agent silently gets relay-peek with no --relay opt-in.
 
