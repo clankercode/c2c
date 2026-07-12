@@ -398,3 +398,17 @@ let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
    usage/startup exit 1 so a supervisor can tell an auth/identity relay failure
    apart from a bad-invocation or broker-root error (A038/B182/B196). *)
 let exit_relay_terminal = 3
+
+(* B142: on a relay-peek TERMINAL failure, decide whether to tear the WHOLE
+   monitor process down. The relay-peek watcher runs in a background thread; a
+   terminal auth/identity/config failure there must NOT kill the main-thread
+   local inbox/archive inotify watch — a relay-side problem taking down local
+   receive (the primary CLI receive path) is the B142 defect.
+
+   Policy: exit non-zero ONLY when relay-watch is the SOLE reason the monitor is
+   running — i.e. no local watch is active — so a supervisor still notices a
+   dead pure-relay monitor. When a local watch is active, the caller logs the
+   terminal message once and stops ONLY the relay loop; the local watch keeps
+   running. Pure + unit-tested so the exit-vs-continue policy is decoupled from
+   the impure thread. *)
+let should_exit_on_relay_terminal ~local_watch_active = not local_watch_active

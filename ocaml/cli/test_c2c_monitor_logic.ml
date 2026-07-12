@@ -494,6 +494,24 @@ let test_exit_code_distinct () =
   Alcotest.(check bool) "relay terminal exit <> 1" true (L.exit_relay_terminal <> 1);
   Alcotest.(check bool) "relay terminal exit <> 0" true (L.exit_relay_terminal <> 0)
 
+(* ---------- B142: relay-terminal teardown policy ---------- *)
+
+(* Core B142 regression: a terminal relay-peek failure while a LOCAL inbox/
+   archive watch is active must NOT tear down the process — the relay loop is
+   disabled but local receive continues. Only a pure-relay monitor (no local
+   watch) exits so a supervisor notices. *)
+let test_terminal_with_local_watch_does_not_exit () =
+  Alcotest.(check bool)
+    "local watch active -> do NOT exit (log + stop relay loop only)"
+    false
+    (L.should_exit_on_relay_terminal ~local_watch_active:true)
+
+let test_terminal_without_local_watch_exits () =
+  Alcotest.(check bool)
+    "no local watch (sole relay source) -> exit so supervisor notices"
+    true
+    (L.should_exit_on_relay_terminal ~local_watch_active:false)
+
 let () =
   Alcotest.run "c2c_monitor_logic"
     [ ( "alias-resolution-order",
@@ -548,5 +566,11 @@ let () =
         ; Alcotest.test_case "terminal error code taxonomy" `Quick test_is_terminal_error_code_taxonomy
         ; Alcotest.test_case "real public-relay json strings" `Quick test_classify_real_relay_json_strings
         ; Alcotest.test_case "relay terminal exit code distinct" `Quick test_exit_code_distinct
+        ] )
+    ; ( "relay-terminal-teardown",
+        [ Alcotest.test_case "terminal + local watch active -> no exit" `Quick
+            test_terminal_with_local_watch_does_not_exit
+        ; Alcotest.test_case "terminal + no local watch -> exit" `Quick
+            test_terminal_without_local_watch_exits
         ] )
     ]
