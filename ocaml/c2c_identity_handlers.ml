@@ -408,6 +408,20 @@ let register ~broker ~session_id_override ~arguments =
               Lwt.return (tool_ok response_content)
             end)
 
+(* B140: deliberate atomic alias rename-everywhere. The sanctioned
+   counterpart to the B135 sticky-alias forbid — see
+   [Broker.rename_alias] for the store-by-store mechanics and the
+   rollback model. This handler is a thin shim so CLI and MCP share one
+   implementation. *)
+let rename ~broker ~session_id_override ~arguments =
+      let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
+      match optional_string_member "new_alias" arguments with
+      | None -> Lwt.return (tool_err "rename rejected: new_alias is required")
+      | Some new_alias -> (
+          match Broker.rename_alias broker ~session_id ~new_alias with
+          | Ok json -> Lwt.return (tool_ok (Yojson.Safe.to_string json))
+          | Error e -> Lwt.return (tool_err e))
+
 let list ~broker ~session_id_override:_ ~arguments =
       let alive_only =
         try match Yojson.Safe.Util.member "alive_only" arguments with

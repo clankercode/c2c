@@ -401,6 +401,18 @@ module Broker : sig
   val sticky_alias_error : session_id:string -> existing_alias:string -> requested_alias:string -> string
   (** Canonical sticky-alias rejection message for CLI and MCP tool errors. *)
 
+  val rename_alias : t -> session_id:string -> new_alias:string -> (Yojson.Safe.t, string) result
+  (** B140: deliberate atomic alias rename-everywhere — the sanctioned
+      counterpart to the B135 sticky-alias forbid. Updates registry row,
+      room memberships, relay identity key files, TOFU pins, plus
+      best-effort follow-ups (allowed_signers, archive marker, peer_renamed
+      room notices, broker.log event, instance-config sync, schedules and
+      memory dir moves). Any failure before commit unwinds completed steps
+      (no half-rename ever sticks). [Ok json] carries
+      {ok, old_alias, new_alias, rooms_renamed, keys_moved, pins_moved,
+      warnings}; [Error msg] explains the refusal or the rolled-back
+      failure. Shared by the CLI [c2c rename] and the MCP [rename] tool. *)
+
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
   val registration_is_alive : registration -> bool
