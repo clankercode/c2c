@@ -1,0 +1,35 @@
+---
+complexity: medium
+created_at: "2026-07-12T14:04:51Z"
+depends_on: []
+estimate_hours: 3
+id: B161
+priority: high
+status: pending
+tags:
+    - pi-c2c
+    - broker
+    - compatibility
+    - cross-repo
+title: Make pi-c2c resolve and use repo-level brokers exactly like the c2c CLI
+updated_at: "2026-07-12T14:04:51Z"
+---
+Problem
+
+The `~/src/pi-c2c` extension must participate in c2c per-repository broker topology exactly like the canonical `c2c` CLI. A Pi session launched from any clone should resolve the same repo-level broker for registration, send, list, poll, and automatic delivery, including the same override and split-brain safeguards. It must not silently fall back to a different global/default broker merely because the extension lives outside the target repository.
+
+Context
+
+The c2c CLI resolution contract is: explicit `C2C_MCP_BROKER_ROOT`, then `$C2C_STATE_HOME/c2c/repos/<repo-fingerprint>/broker`, then `~/.c2c/repos/<repo-fingerprint>/broker`; generic `XDG_STATE_HOME` is deliberately excluded. pi-c2c already has cross-repo sessions-broker handling, but that is additive and does not replace correct per-repo broker identity.
+
+Acceptance criteria
+
+1. Audit every pi-c2c broker operation (registration, inbound poll/watch, send, list/debug, and cleanup) against c2c CLI resolution semantics.
+2. Resolve the target repository from the active Pi workspace/cwd, compute the same remote-origin fingerprint/fallback as c2c, and use the resulting per-repo broker consistently. Explicit environment overrides must win.
+3. Preserve the sessions broker as an additional cross-repo route; do not substitute it for the per-repo broker.
+4. Add integration coverage using two temporary git repositories with distinct remotes, verifying Pi and c2c CLI see the same broker within each repo and remain isolated across repos. Cover C2C_STATE_HOME, C2C_MCP_BROKER_ROOT, and an unrelated XDG_STATE_HOME.
+5. Update pi-c2c documentation/debug output to show the resolved per-repo broker and its source, then dogfood with a real Pi session in tmux.
+
+Blockers
+
+Cross-repository implementation work belongs in `~/src/pi-c2c`; coordinate the shared resolution contract with c2c rather than duplicating it without parity tests.
