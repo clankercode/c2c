@@ -119,7 +119,8 @@ c2c sweep              # garbage-collect dead registrations
 c2c dead-letter        # inspect / purge orphan dead-letter queue
 
 # Delivery & monitoring
-c2c gui                # full-screen operator GUI/TUI (peers, DMs, rooms)
+c2c watch              # full-screen operator TUI (peers, DMs, rooms) — operator/human tier, hidden from agent CLI
+c2c gui [--batch]      # launch c2c desktop GUI app; --batch = headless broker/peer/room smoke test
 c2c deliver watch --session-id ID  # poll one broker inbox continuously
 c2c host-id [--json]   # print per-host identifier for relay addresses
 
