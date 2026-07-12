@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-12T14:59:06Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T15:12:55Z"
 complexity: medium
 created_at: "2026-07-12T14:40:39Z"
 depends_on: []
+duration_minutes: 13.82303187105
 estimate_hours: 1
 id: B164
 priority: high
 started_at: "2026-07-12T14:59:06Z"
-status: in_progress
+status: done
 tags: []
 title: Investigate c2c statusline addition for codex -- is it even possible currently?
-updated_at: "2026-07-12T14:59:06Z"
+updated_at: "2026-07-12T15:12:55Z"
 ---
 
 Investigate c2c statusline addition for codex -- is it even possible currently?
