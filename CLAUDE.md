@@ -167,7 +167,12 @@ now the canonical framing.)
   eligible **local** mail when the thread is explicitly idle and DND is off
   (active/unknown status and any `@host`/`#` remote-origin sender stay
   queued fail-closed; mid-turn arrivals batch into ONE follow-up turn,
-  T007) — is **wired into managed supervision and shipped (B131)**:
+  T007) — is **wired into managed supervision and shipped (B131)**.
+  Cross-repo (sessions-broker) mail addressed to the session is ALSO
+  delivered by the loop (B141): an inject-only ingress pass against
+  `~/.c2c/sessions/broker` — model-visible on arrival, never starts a
+  turn, never drained, runs in the launcher process so the B137
+  nested-codex env-marker theft vector stays closed:
   `C2c_codex_deliver_loop` drives the T003 ingress + T007 auto-turn pipeline
   against the live session (register-on-attach → drive-while-Running →
   deregister-on-exit, no orphan), proven live end-to-end with real

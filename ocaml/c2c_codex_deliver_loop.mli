@@ -63,6 +63,25 @@ type deps = {
           see it, so they don't overclaim LIVE app-server delivery for a session
           whose deliver loop is degraded. Best-effort — the loop swallows any
           exception it raises and never lets it wedge supervision. *)
+  global_broker_root : string option;
+      (** B141 (B137 follow-up): root of the machine-wide cross-repo sessions
+          broker (canonically [~/.c2c/sessions/broker]). When [Some root] and
+          this session's global inbox file already exists there, each running
+          poll ALSO runs a plain {!C2c_codex_ingress.deliver_pass} against that
+          inbox (same session key, same discovered thread), so cross-repo mail
+          reaches the attached thread's model-visible history at arrival time.
+          Inject-only — the T007 auto-turn stays scoped to repo-local broker
+          mail, so cross-repo mail can never start a turn (fail-closed), and
+          the pass respects the same session-active/DND gates. Delivering here
+          (the launcher's supervision process, keyed to the thread it
+          discovered) rather than in the frontend hook is what keeps the B137
+          nested-codex theft vector closed: a nested codex inheriting the env
+          marker never sees this path. [None] disables global delivery
+          (sessions-broker root unresolvable). *)
+  on_global_pass : C2c_codex_ingress.health -> unit;
+      (** structured metrics/log sink for each global-inbox ingress pass —
+          contains NO message content and NO credential (ingress health only).
+          Best-effort: exceptions are swallowed. *)
   now : unit -> float;
   sleep : float -> unit;
   poll_interval_s : float;         (** main supervise+deliver cadence *)
@@ -74,6 +93,7 @@ type outcome = {
   final : Ep.supervise_result;   (** terminal supervision result on loop exit *)
   thread_id : string option;     (** the thread the loop drove, if discovered *)
   passes : int;                  (** number of deliver passes run *)
+  global_passes : int;           (** B141: global (cross-repo) ingress passes run *)
   degraded : bool;               (** true iff no thread was ever discovered *)
 }
 
@@ -81,6 +101,13 @@ type outcome = {
     Reuses {!deps.inject_client}/{!deps.turn_client}/gates verbatim — no gate is
     reimplemented. Exposed for tests. *)
 val build_autoturn_config : deps -> thread_id:string -> C2c_codex_autoturn.config
+
+(** B141: build the plain ingress config for the global cross-repo inbox pass
+    ([None] when {!deps.global_broker_root} is [None]). Same session key,
+    thread, endpoint, and client as the repo pass; only the broker root — and
+    therefore the ingress ledger — differs. Exposed for tests. *)
+val build_global_ingress_config :
+  deps -> thread_id:string -> C2c_codex_ingress.config option
 
 (** Run the lifecycle-bound loop. Registers, drives ingress+auto-turn while
     attached, deregisters on exit. Blocking until a terminal supervision result

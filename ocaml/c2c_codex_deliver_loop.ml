@@ -25,6 +25,8 @@ type deps = {
   deregister : unit -> unit;
   on_pass : Autoturn.pass_outcome -> unit;
   on_degraded : bool -> unit;
+  global_broker_root : string option;
+  on_global_pass : Ingress.health -> unit;
   now : unit -> float;
   sleep : float -> unit;
   poll_interval_s : float;
@@ -36,6 +38,7 @@ type outcome = {
   final : Ep.supervise_result;
   thread_id : string option;
   passes : int;
+  global_passes : int;
   degraded : bool;
 }
 
@@ -56,6 +59,34 @@ let build_autoturn_config (d : deps) ~(thread_id : string) : Autoturn.config =
     ~session_active:d.session_active
     ~is_dnd:d.is_dnd
 
+(* B141: plain T003 ingress config for the machine-wide cross-repo sessions
+   broker — same session key, same attached thread, same client/token; only
+   the broker root differs (so the ingress ledger, which lives under the
+   broker root, is naturally separate). Deliberately NOT wrapped in the T007
+   auto-turn: the sanctioned message-can-start-a-turn effect covers repo-local
+   broker mail only, so cross-repo mail is inject-only (model-visible on the
+   next turn) — fail-closed. *)
+let build_global_ingress_config (d : deps) ~(thread_id : string) :
+    Ingress.config option =
+  match d.global_broker_root with
+  | None -> None
+  | Some root ->
+      Some
+        (Ingress.default_config
+           ~broker_root:root
+           ~session_id:d.session_id
+           ~managed_identity:d.managed_identity
+           ~endpoint:d.endpoint
+           ~thread_id
+           ~token_provider:d.token_provider
+           ~client:d.inject_client)
+
+(* Same stat the codex hook / kimi notifier use — the global pass only runs
+   when this session's cross-repo inbox file already exists, so an idle
+   session never creates broker artifacts in the sessions root. *)
+let global_inbox_exists ~root ~session_id =
+  Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
+
 let is_terminal = function
   | Ep.Sv_running -> false
   | Ep.Sv_frontend_exited | Ep.Sv_server_died | Ep.Sv_offline -> true
@@ -73,6 +104,7 @@ let run (d : deps) : outcome =
       let start = d.now () in
       let thread = ref None in
       let passes = ref 0 in
+      let global_passes = ref 0 in
       let last_discover = ref neg_infinity in
       (* Attempt frontend-thread discovery, throttled to [discover_interval_s]
          while we still have none. One `thread/loaded/list` socket per interval
@@ -92,7 +124,31 @@ let run (d : deps) : outcome =
         end
       in
       let mk_outcome final =
-        { final; thread_id = !thread; passes = !passes; degraded = !thread = None }
+        { final; thread_id = !thread; passes = !passes;
+          global_passes = !global_passes; degraded = !thread = None }
+      in
+      (* B141: deliver the session's GLOBAL (cross-repo sessions-broker) inbox
+         too. This runs in the LAUNCHER's supervision process against the
+         thread it discovered itself, so — unlike the frontend hook, which
+         B137 made identity-only — a nested codex that inherited the
+         C2C_CODEX_APPSERVER_SESSION env marker can never see or steal this
+         mail. Inject-only (no auto-turn), and gated on the same
+         session-active/DND checks the T007 pass applies before injecting. *)
+      let run_global_pass ~thread_id =
+        match d.global_broker_root with
+        | Some root
+          when global_inbox_exists ~root ~session_id:d.session_id
+               && (try d.session_active () with _ -> false)
+               && not (try d.is_dnd () with _ -> true) -> (
+            match build_global_ingress_config d ~thread_id with
+            | Some gcfg -> (
+                match (try Some (Ingress.deliver_pass gcfg) with _ -> None) with
+                | Some gh ->
+                    incr global_passes;
+                    (try d.on_global_pass gh with _ -> ())
+                | None -> ())
+            | None -> ())
+        | _ -> ()
       in
       let rec loop () =
         let step = try d.supervise_step () with _ -> Ep.Sv_offline in
@@ -108,7 +164,8 @@ let run (d : deps) : outcome =
                   a bug can never wedge the supervisor. *)
                (match (try Some (Autoturn.deliver_pass cfg) with _ -> None) with
                 | Some po -> incr passes; (try d.on_pass po with _ -> ())
-                | None -> ())
+                | None -> ());
+               run_global_pass ~thread_id:tid
            | None -> ());
           if d.now () -. start >= d.max_wall_s then mk_outcome Ep.Sv_offline
           else (d.sleep d.poll_interval_s; loop ())
