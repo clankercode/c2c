@@ -210,13 +210,56 @@ let test_mapping_roundtrip () =
 
 let test_restart_request_roundtrip () =
   with_tmp_dir (fun dir ->
-      S.request_restart ~instance_dir:dir ~force:true;
+      let request_id = S.request_restart ~instance_dir:dir ~force:true in
       match C2c_io.read_json_opt (S.restart_request_path ~instance_dir:dir) with
       | Some (`Assoc fields) ->
+          Alcotest.(check (option string)) "request id persisted" (Some request_id)
+            (match List.assoc_opt "request_id" fields with
+             | Some (`String s) -> Some s | _ -> None);
           Alcotest.(check (option bool)) "force persisted" (Some true)
             (match List.assoc_opt "force" fields with
              | Some (`Bool b) -> Some b | _ -> None)
       | _ -> Alcotest.fail "restart request should be valid JSON")
+
+let test_restart_result_ack () =
+  with_tmp_dir (fun dir ->
+      let request_id = S.request_restart ~instance_dir:dir ~force:false in
+      let result_path = S.restart_result_path ~instance_dir:dir ~request_id in
+      let oc = open_out result_path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+          Printf.fprintf oc "{\"request_id\":%S,\"result\":\"skipped-active\"}\n"
+            request_id);
+      Alcotest.(check (option string)) "explicit skip observed"
+        (Some "skipped-active")
+        (S.await_restart_result ~instance_dir:dir ~request_id ~timeout_s:0.1);
+      Alcotest.(check bool) "result consumed" false (Sys.file_exists result_path))
+
+let test_thread_persistence_repairs_config_independently () =
+  let name = Printf.sprintf "b153-persist-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+  let dir = C2c_start.instance_dir name in
+  C2c_io.mkdir_p dir;
+  Fun.protect
+    ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      S.write_mapping ~instance_dir:dir
+        { S.session_id = "sid"; alias = name; thread_id = Some "thread-exact";
+          created_at = 1.; updated_at = 2. };
+      C2c_start.write_config
+        { C2c_start.name; client = "codex"; session_id = "sid";
+          resume_session_id = "sid"; codex_resume_target = None; alias = name;
+          extra_args = []; created_at = 1.; last_launch_at = None;
+          last_exit_code = None; last_exit_reason = None; broker_root = "";
+          auto_join_rooms = ""; binary_override = None; model_override = None;
+          agent_name = None };
+      S.persist_discovered_thread ~instance_dir:dir ~name
+        ~thread_id:"thread-exact";
+      match C2c_start.load_config_opt name with
+      | Some cfg ->
+          Alcotest.(check (option string)) "config repaired despite fresh mapping"
+            (Some "thread-exact") cfg.codex_resume_target;
+          Alcotest.(check string) "resume id repaired" "thread-exact"
+            cfg.resume_session_id
+      | None -> Alcotest.fail "config missing")
 
 (* ------------------------------------------------------------------ *)
 (* Deliver-loop degraded signal persistence (B138)                     *)
@@ -562,7 +605,9 @@ let () =
     ; ( "thread-conflict",
         [ test_case "reconcile" `Quick test_reconcile_thread ] )
     ; ( "restart-control",
-        [ test_case "request is atomic JSON" `Quick test_restart_request_roundtrip ] )
+        [ test_case "request is atomic JSON" `Quick test_restart_request_roundtrip
+        ; test_case "result acknowledgement observed" `Quick test_restart_result_ack
+        ; test_case "thread repairs config independently" `Quick test_thread_persistence_repairs_config_independently ] )
     ; ( "identity-resolve",
         [ test_case "resume unknown rejected" `Quick test_resolve_resume_unknown_rejected
         ; test_case "resume ok" `Quick test_resolve_resume_ok

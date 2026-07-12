@@ -126,9 +126,14 @@ type mapping = {
 val mapping_path : instance_dir:string -> string
 val load_mapping : instance_dir:string -> mapping option
 val write_mapping : instance_dir:string -> mapping -> unit
+val persist_discovered_thread :
+  instance_dir:string -> name:string -> thread_id:string -> unit
 
 val restart_request_path : instance_dir:string -> string
-val request_restart : instance_dir:string -> force:bool -> unit
+val restart_result_path : instance_dir:string -> request_id:string -> string
+val request_restart : instance_dir:string -> force:bool -> string
+val await_restart_result :
+  instance_dir:string -> request_id:string -> timeout_s:float -> string option
 
 (* --------------------------------- run ------------------------------------ *)
 

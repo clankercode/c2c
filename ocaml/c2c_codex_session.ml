@@ -228,26 +228,70 @@ type mapping = {
 
 let mapping_path ~instance_dir = instance_dir // "codex-session.json"
 let restart_request_path ~instance_dir = instance_dir // "restart.request.json"
+let restart_result_path ~instance_dir ~request_id =
+  instance_dir // ("restart.result." ^ request_id ^ ".json")
 
-let request_restart ~instance_dir ~(force : bool) : unit =
+type restart_request = { rr_id : string; rr_force : bool }
+
+let fresh_request_id () =
+  Printf.sprintf "%d-%08x" (Unix.getpid ()) (Random.bits ())
+
+let request_restart ~instance_dir ~(force : bool) : string =
+  let request_id = fresh_request_id () in
   let path = restart_request_path ~instance_dir in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
   let oc = open_out tmp in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
       Yojson.Safe.to_channel oc
-        (`Assoc [ ("force", `Bool force);
+        (`Assoc [ ("request_id", `String request_id);
+                  ("force", `Bool force);
                   ("requested_at", `Float (Unix.gettimeofday ())) ]);
       output_string oc "\n");
-  Unix.rename tmp path
+  Unix.rename tmp path;
+  request_id
 
-let consume_restart_request ~instance_dir : bool option =
+let consume_restart_request ~instance_dir : restart_request option =
   let path = restart_request_path ~instance_dir in
   match C2c_io.read_json_opt path with
   | None -> None
   | Some (`Assoc fields) ->
       (try Sys.remove path with _ -> ());
-      Some (match List.assoc_opt "force" fields with Some (`Bool b) -> b | _ -> false)
-  | Some _ -> (try Sys.remove path with _ -> ()); Some false
+      let id = match List.assoc_opt "request_id" fields with
+        | Some (`String s) when String.trim s <> "" -> s
+        | _ -> fresh_request_id ()
+      in
+      Some { rr_id = id;
+             rr_force = (match List.assoc_opt "force" fields with
+                         | Some (`Bool b) -> b | _ -> false) }
+  | Some _ -> (try Sys.remove path with _ -> ()); None
+
+let write_restart_result ~instance_dir ~request_id ~result : unit =
+  let path = restart_result_path ~instance_dir ~request_id in
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      Yojson.Safe.to_channel oc
+        (`Assoc [ ("request_id", `String request_id);
+                  ("result", `String result);
+                  ("decided_at", `Float (Unix.gettimeofday ())) ]);
+      output_string oc "\n");
+  Unix.rename tmp path
+
+let await_restart_result ~instance_dir ~request_id ~(timeout_s : float) : string option =
+  let path = restart_result_path ~instance_dir ~request_id in
+  let deadline = Unix.gettimeofday () +. max 0.0 timeout_s in
+  let rec loop () =
+    match C2c_io.read_json_opt path with
+    | Some (`Assoc fields) ->
+        let result = match List.assoc_opt "result" fields with
+          | Some (`String s) -> Some s | _ -> None
+        in
+        (try Sys.remove path with _ -> ());
+        result
+    | _ when Unix.gettimeofday () >= deadline -> None
+    | _ -> Unix.sleepf 0.05; loop ()
+  in
+  loop ()
 
 let write_mapping ~instance_dir (m : mapping) : unit =
   (try if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir
@@ -281,6 +325,21 @@ let load_mapping ~instance_dir : mapping option =
                   created_at = f "created_at"; updated_at = f "updated_at" }
        | _ -> None)
   | Some _ -> None
+
+let persist_discovered_thread ~instance_dir ~name ~thread_id : unit =
+  (match load_mapping ~instance_dir with
+   | Some m when m.thread_id <> Some thread_id ->
+       write_mapping ~instance_dir
+         { m with thread_id = Some thread_id;
+                  updated_at = Unix.gettimeofday () }
+   | _ -> ());
+  (match C2c_start.load_config_opt name with
+   | Some cfg when cfg.codex_resume_target <> Some thread_id
+                   || cfg.resume_session_id <> thread_id ->
+       C2c_start.write_config
+         { cfg with resume_session_id = thread_id;
+                    codex_resume_target = Some thread_id }
+   | _ -> ())
 
 (* --------------------------------- run ------------------------------------ *)
 
@@ -511,34 +570,37 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
         (fun degraded -> write_delivery_degraded ~instance_dir ~unit_id degraded);
       on_thread_discovered =
         (fun thread_id ->
-          match load_mapping ~instance_dir with
-          | Some m when m.thread_id <> Some thread_id ->
-              write_mapping ~instance_dir
-                { m with thread_id = Some thread_id;
-                         updated_at = Unix.gettimeofday () };
-              (match C2c_start.load_config_opt name with
-               | Some cfg ->
-                   C2c_start.write_config
-                     { cfg with resume_session_id = thread_id;
-                                codex_resume_target = Some thread_id }
-               | None -> ())
-          | _ -> ());
+          (* Independent from mapping freshness: an earlier launch can already
+             have persisted the thread in codex-session.json while config.json
+             still lacks the restart target. Repair each durable surface on
+             its own predicate. *)
+          persist_discovered_thread ~instance_dir ~name ~thread_id);
       restart_requested =
         (fun ~thread_id ->
           match consume_restart_request ~instance_dir with
           | None -> false
-          | Some true -> true
-          | Some false ->
+          | Some req when req.rr_force ->
+              write_restart_result ~instance_dir ~request_id:req.rr_id
+                ~result:"restarting";
+              true
+          | Some req ->
               (match token_provider () with
                | None ->
+                   write_restart_result ~instance_dir ~request_id:req.rr_id
+                     ~result:"skipped-unknown";
                    Printf.eprintf "%s restart skipped: app-server status unknown\n%!"
                      app_server_log_label;
                    false
                | Some token ->
                    match turn_client.C2c_codex_autoturn.thread_status
                            ~endpoint ~token ~thread_id with
-                   | `Idle -> true
+                   | `Idle ->
+                       write_restart_result ~instance_dir ~request_id:req.rr_id
+                         ~result:"restarting";
+                       true
                    | status ->
+                       write_restart_result ~instance_dir ~request_id:req.rr_id
+                         ~result:(match status with `Active -> "skipped-active" | _ -> "skipped-unknown");
                        Printf.eprintf "%s restart skipped: thread is %s (use --force to override)\n%!"
                          app_server_log_label
                          (C2c_codex_autoturn.thread_status_to_string status);
