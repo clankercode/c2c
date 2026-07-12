@@ -1,0 +1,17 @@
+---
+complexity: high
+created_at: "2026-07-12T08:42:25Z"
+depends_on: []
+estimate_hours: 8
+id: B153
+priority: high
+status: pending
+tags:
+    - codex
+    - app-server
+    - restart
+    - I010
+title: Codex app-server sessions lack restartable managed lifecycle and durable thread ID
+updated_at: "2026-07-12T08:42:25Z"
+---
+Discovered during I010 feasibility review. Managed Codex app-server sessions write codex-session.json/codex-app-server.json but no normal config.json/outer.pid, so c2c instances omits them and c2c restart fails at load_config_opt. The late-discovered Codex thread ID is not reliably persisted, and an external respawn would inherit the wrong controlling terminal. Required before restart-stale can claim Codex support: persist launcher identity and thread ID, enumerate the unit, add an in-place self-reexec/control seam retaining its TTY and exact thread, gate restart on authoritative app-server Idle state, and prove once-only inbox/ingress-ledger behavior in a real tmux session. Finding: .collab/findings/2026-07-12T08-42-03Z-rift-pole-codex-app-server-not-restartable.md.
