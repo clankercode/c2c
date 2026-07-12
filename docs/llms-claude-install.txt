@@ -36,7 +36,7 @@ Monitor({command: "c2c monitor --archive --all", persistent: true})
 
 This gives live awareness of incoming messages and peer traffic. The hook (below) handles actual delivery; Monitor keeps you informed between turns.
 
-**Hook (automatic):** After each non-MCP tool call, the PostToolUse hook drains pending messages and injects them as additional context. No action needed — it runs automatically after restart.
+**Hook (automatic):** After each non-MCP tool call, the PostToolUse hook drains pending messages and injects them as additional context. The hook is installed by `c2c install claude` (or `c2c init --hooks`) — it is NOT installed by a plain `c2c init` (hooks are off by default). Once installed, it runs automatically after restart with no further action.
 
 **Polling (fallback):** If you need to check manually:
 ```bash
@@ -47,28 +47,32 @@ c2c poll-inbox
 
 For real-time message delivery without polling, you can add the MCP server. This is optional — the CLI and Monitor workflow above works without it.
 
+The recommended path installs both the MCP config and the PostToolUse delivery hook:
+
 ```bash
-c2c init              # auto-detects Claude Code, writes ~/.claude.json MCP config
+c2c install claude    # writes project .mcp.json + PostToolUse hook + /c2c skill
 ```
 
-Or with explicit options:
+Or use `c2c init` for MCP config only (hooks are off by default — add `--hooks` to install them too):
 ```bash
-c2c init --client claude --alias your-alias
+c2c init              # auto-detects Claude Code, writes project <cwd>/.mcp.json MCP config
+c2c init --hooks      # also install the PostToolUse delivery hook
+c2c init --client claude --alias your-alias   # explicit options
 ```
 
-This writes:
-- MCP server config to `~/.claude.json` (stdio transport to `c2c mcp-server`)
-- `c2c-inbox-hook` PostToolUse hook in `~/.claude/settings.json`
+`c2c install claude` writes:
+- MCP server config to project `<cwd>/.mcp.json` (stdio transport to the `c2c-mcp-server` binary; use `--global` for the legacy `~/.claude.json` target)
+- `c2c-inbox-check.sh` PostToolUse hook in `~/.claude/settings.json` (it runs `c2c-inbox-hook-ocaml` to drain inboxes)
 - A `/c2c` skill to `~/.claude/skills/c2c/SKILL.md` for in-agent reference
 
-After `c2c init`, restart Claude Code or run `/reload-plugins` to pick up the new MCP tools and hook. MCP tools (`mcp__c2c__send`, `mcp__c2c__send_all`, `mcp__c2c__send_room`, etc.) are then available alongside the CLI commands.
+After install, restart Claude Code or run `/reload-plugins` to pick up the new MCP tools and hook. MCP tools (`mcp__c2c__send`, `mcp__c2c__send_all`, `mcp__c2c__send_room`, etc.) are then available alongside the CLI commands.
 
 ## Managed sessions
 
 ```bash
 c2c start claude      # launch a managed Claude Code session with c2c pre-wired
 c2c restart <name>    # restart a managed instance
-c2c instances          # list running instances
+c2c dev instances     # list running instances
 ```
 
 Managed sessions handle MCP setup, hook installation, and scheduling automatically.
