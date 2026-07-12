@@ -396,6 +396,35 @@ let spawn_background_fetch ~broker_root : unit =
          (try Unix.close devnull with _ -> ())
        with _ -> ())
 
+(* Return the newest release recorded in the local changelog cache that is
+   newer than [current].  This deliberately consults only the cache: callers
+   are ordinary, high-frequency CLI commands and must never wait on the
+   network.  When the cache is stale, warm it in the background so a later
+   command can surface the notice. *)
+let update_available ?current ~broker_root ~now () : string option =
+  let current = match current with Some v -> v | None -> Version.version in
+  if cache_is_stale ~broker_root ~now () then spawn_background_fetch ~broker_root;
+  merged_entries ~broker_root
+  |> List.filter (fun entry -> compare_version entry.version current > 0)
+  |> List.fold_left
+       (fun latest entry ->
+          match latest with
+          | None -> Some entry.version
+          | Some version when compare_version entry.version version > 0 ->
+              Some entry.version
+          | Some _ -> latest)
+       None
+
+let update_notice ?current ~broker_root ~now () : string option =
+  let current = match current with Some v -> v | None -> Version.version in
+  match update_available ~current ~broker_root ~now () with
+  | None -> None
+  | Some latest ->
+      Some
+        (Printf.sprintf
+           "notice: c2c update available (%s -> %s); run `c2c self-update`."
+           current latest)
+
 (* Foreground fetch for the explicit `c2c changelog --fetch` path: same
    fixture/disable gating as the background fetch, but the real network path
    runs curl synchronously (waitpid) so the subsequent read sees the fresh

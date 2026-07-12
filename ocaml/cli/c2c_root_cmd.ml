@@ -179,6 +179,34 @@ let default_term =
   let+ () = Cmdliner.Term.const () in
   print_enriched_landing ()
 
+(* A few top-level commands are used as lightweight orientation/status probes:
+   they are a natural place to surface a non-blocking update hint.  The hint is
+   deliberately emitted to stderr, preserving stdout for --json consumers and
+   shell pipelines.  Version availability comes from the changelog's local
+   cache; a stale cache is refreshed in the background by that module. *)
+let general_command_requested () =
+  let argv = Sys.argv in
+  let command = if Array.length argv > 1 then Some argv.(1) else None in
+  match command with
+  | None -> true
+  | Some
+      ( "whoami" | "list" | "find" | "sessions" | "status" | "health"
+      | "ping" | "connect" | "doctor" | "changelog" | "help" | "commands"
+      | "server-info" | "--help" | "-h" | "--version" ) ->
+      true
+  | Some _ -> false
+
+let maybe_emit_update_notice () =
+  if general_command_requested () then
+    try
+      match
+        C2c_changelog.update_notice ~broker_root:(resolve_broker_root ())
+          ~now:(Unix.gettimeofday ()) ()
+      with
+      | Some notice -> Printf.eprintf "%s\n%!" notice
+      | None -> ()
+    with _ -> ()
+
 (* Fast-path dispatch (#418): handle a small set of subcommands BEFORE
    the heavy Cmdliner setup (~1.5s) that builds the manpage for ~50 cmds.
    These commands have no broker/registry dependency, so we short-circuit
@@ -352,6 +380,9 @@ let try_fast_path () =
     | "help" ->
         (* Accept only positional args (no flags we don't handle).
            `c2c help` alone → top-level help. `c2c help rooms` → `c2c rooms --help`. *)
+        (* [fast_path_help] re-execs this binary with [--help], whose normal
+           command setup emits the notice. Do not emit before exec or a cache
+           hit would print the same notice twice. *)
         fast_path_help ()
     | "commands" ->
         C2c_commands_cmd.fast_path_commands ()
@@ -364,6 +395,7 @@ let try_fast_path () =
           | _ -> unknown := true
         done;
         if not !unknown then begin
+          maybe_emit_update_notice ();
           fast_path_server_info ~json:!json ();
           exit 0
         end
@@ -397,6 +429,7 @@ let try_fast_path () =
         done;
         if not !unknown then fast_path_get_tmux_location ~json:!json ()
     | "--version" when n = 2 ->
+        maybe_emit_update_notice ();
         Printf.printf "%s\n" (version_string ());
         exit 0
     | _ -> ()
