@@ -216,11 +216,17 @@ let fallback_commands = SS.of_list [
    `doctor`, `memory`) are top-level entries in (1)/(2), so `c2c <group> <sub>`
    doc forms validate on the group name (the head token) and pass. *)
 let known_commands () =
+  (* NOTE: we deliberately do NOT union the tier map here. Its entries are
+     composite DISPLAY labels for group subcommands (e.g. "roles-validate",
+     "config-show", "room-invite", "state-read") that are NOT real top-level
+     commands — Cmdliner would reject `c2c roles-validate`. Unioning them would
+     let a doc reference a non-existent hyphenated command slip through (B157
+     review). The registry (real Cmd.name values, all tiers) is authoritative;
+     group forms `c2c <group> <sub>` still validate on the group head token,
+     which IS a real top-level name in the registry. *)
   let from_registry = SS.of_list (C2c_commands.all_registered_command_names ()) in
-  let from_tier_map = SS.of_list (C2c_commands.tier_map_command_names ()) in
   let from_live = extract_top_level_commands () in
-  SS.union from_registry
-    (SS.union from_tier_map (SS.union from_live fallback_commands))
+  SS.union from_registry (SS.union from_live fallback_commands)
 
 (* ------------------------------------------------------------------------ *)
 (* Specific drift checks                                                    *)

@@ -3957,11 +3957,16 @@ let test_docs_drift_accepts_registered_commands () =
       check (list string)
         "no registered command is flagged as unregistered"
         [] (docs_drift_unregistered_claims out);
-      (* Positive control: a genuinely-bogus command MUST still be flagged, so
-         the assertion above can't pass vacuously. *)
+      (* Negative controls: a genuinely-bogus command AND composite tier-map
+         DISPLAY labels (e.g. `roles-validate`, `config-show` — hyphenated
+         forms of real `c2c roles validate` / `c2c config show` group commands,
+         which Cmdliner rejects) MUST still be flagged. This proves the check is
+         live (not vacuous) and that the tier map's non-top-level labels do NOT
+         leak into the accepted set. *)
       let bogus_doc = Filename.concat dir "b157-bogus.md" in
       let oc = open_out bogus_doc in
       Printf.fprintf oc "Try `c2c totallynotarealcommand` now.\n";
+      Printf.fprintf oc "Also `c2c roles-validate` and `c2c config-show`.\n";
       close_out oc;
       let _, bout =
         run_capture
@@ -3969,10 +3974,13 @@ let test_docs_drift_accepts_registered_commands () =
              (Printf.sprintf "c2c doctor docs-drift --doc %s --json"
                 (Filename.quote bogus_doc)))
       in
+      let flagged = docs_drift_unregistered_claims bout in
       check bool "bogus command is still flagged as unregistered" true
-        (List.exists
-           (fun c -> string_contains c "totallynotarealcommand")
-           (docs_drift_unregistered_claims bout)))
+        (List.exists (fun c -> string_contains c "totallynotarealcommand") flagged);
+      check bool "composite tier-map label roles-validate is flagged" true
+        (List.exists (fun c -> string_contains c "roles-validate") flagged);
+      check bool "composite tier-map label config-show is flagged" true
+        (List.exists (fun c -> string_contains c "config-show") flagged))
 
 let () =
   Alcotest.run "c2c_cli"
