@@ -61,6 +61,15 @@
  (modules test_c2c_codex_app_server)
  (libraries c2c_mcp alcotest yojson unix))
 
+; B144: in-suite gate + skip proof for the two live Codex E2E transports
+; (hooks+CLI and managed app-server). Hermetic by default: both cases skip
+; unless their gate env is set (C2C_CODEX_HOOKS_LIVE / C2C_CODEX_APPSERVER_LIVE),
+; in which case they shell out to the matching scripts/*.py harness in run mode.
+(test
+ (name test_c2c_codex_live_e2e)
+ (modules test_c2c_codex_live_e2e)
+ (libraries alcotest unix))
+
 (test
  (name test_c2c_codex_ingress)
  (modules test_c2c_codex_ingress)
