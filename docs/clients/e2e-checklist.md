@@ -7,9 +7,17 @@ layout: page
 # Client E2E Verification Checklist
 
 Source of truth: [`docs/clients/feature-matrix.md`](./feature-matrix.md).
-Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**.
+Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**
+(B146-TEMP), **Grok** (CLI-first).
 
-Last updated: 2026-07-12 (T005 Codex app-server delivery rows; B141 cross-repo inject-only delivery)
+Last updated: 2026-07-13 (docs-audit BATCH-B: Grok rows; B146-TEMP Kimi SKIP;
+B168 idle/stale note)
+
+> **B146-TEMP:** Kimi is temporarily disabled for this release
+> (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
+> until re-enabled. Default all Kimi lifecycle / install rows to **SKIP** with
+> reason B146; recipes stay for re-enable dogfood.
+> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
 
 ---
 
@@ -18,12 +26,14 @@ Last updated: 2026-07-12 (T005 Codex app-server delivery rows; B141 cross-repo i
 Each row is a discrete tmux-pane smoke test. For MCP-managed clients, run each
 client in its own tmux pane via `c2c start <client> -n <test-alias>`. For Pi
 Agent, install and run the `pi-c2c` extension with pi's own launcher instead of
-`c2c start`. Capture results with `./scripts/c2c_tmux.py peek <pane-name>` when
-the client is tmux-managed.
+`c2c start`. For **Grok**, use `c2c install grok` then launch the Grok TUI
+yourself — there is **no** `c2c start grok` (deferred); mark managed-lifecycle
+rows SKIP for Grok. For **Kimi**, default SKIP under B146-TEMP. Capture results
+with `./scripts/c2c_tmux.py peek <pane-name>` when the client is tmux-managed.
 
 Use ephemeral test aliases (e.g. `test-claude-$(date +%s)`). Clean up
 MCP-managed clients with `c2c stop <test-alias>` when done; stop Pi Agent
-through the pi session that loaded `pi-c2c`.
+through the pi session that loaded `pi-c2c`; stop Grok by exiting the TUI.
 
 Result format per row:
 
@@ -54,15 +64,19 @@ c2c list --all
   - MCP-managed clients: `c2c install <client>` (in a test repo)
   - MCP-managed clients: `c2c start <client> -n test-<client>-<rand>`
   - Pi Agent: `pi install npm:pi-c2c`, then launch pi with the extension loaded
+  - Grok: `c2c install grok`, then start the Grok TUI (new session so SessionStart fires); **not** `c2c start grok`
+  - Kimi: **SKIP (B146-TEMP)** — `c2c install kimi` / `c2c start kimi` refuse
 - **Action**:
-  - `c2c whoami`
+  - `c2c whoami` (Grok: CLI from a tool shell with `GROK_AGENT=1`, or after SessionStart skill refresh)
 - **Expected**:
   - Returns a valid c2c alias (not empty, not an error)
   - Pi Agent registers through `pi-c2c` / the `c2c` CLI, not through MCP
+  - Grok SessionStart registers with `registered_by=grok-hook` and a `grok-*` alias (B173)
 - **Failure modes**:
   - MCP-managed clients: MCP binary not on PATH -> "command not found"
   - Codex hooks missing/untrusted → no automatic hook delivery; use explicit polling until hook setup is fixed
   - Pi Agent: `pi-c2c` extension not installed or `C2C_BIN` points to a bad binary
+  - Grok: SessionStart hook not installed / skill missing after install
 - **Repro time**: ~15s
 
 ---
@@ -79,13 +93,15 @@ c2c list --all
   - `<c2c event="message" from="..." to="<client-alias>">ping</c2c>` appears in the client's transcript / output
   - For Claude/OpenCode: PostToolUse hook fires on next tool use and inbox is drained
   - For Codex in hook mode (vanilla, or managed on a Codex too old for the app-server transport): installed hooks (`c2c hook codex`) drain and inject via `hookSpecificOutput.additionalContext` on the next hook fire (turn boundary) — NOT on arrival. An idle session surfaces the message on its next turn (or via the tmux/herdr wake nudge when `delivery_mode=hooks+wake`).
-  - For managed Codex on a supported Codex (app-server transport, the default — B131): the message is injected into the thread's model-visible history on arrival — it does **not** render in the TUI transcript. Verify with a follow-up turn (ask the model to echo the marker), not by watching the pane. Any typed composer draft must survive byte-exact; eligible local mail on an idle thread also starts one gated auto-turn (T007).
+  - For managed Codex on a supported Codex (app-server transport, the default — B131): the message is injected into the thread's model-visible history on arrival — it does **not** render in the TUI transcript. Verify with a follow-up turn (ask the model to echo the marker), not by watching the pane. Any typed composer draft must survive byte-exact; eligible local mail on an idle thread also starts one gated auto-turn immediately (T007/B168). Long-stuck inject/auto-turn failures re-batch after ~2 minutes (B168).
   - For Pi Agent: `pi-c2c` drains the inbox and injects via `pi.sendMessage`
-  - For Kimi: message appears in notification store / TUI prefill
+  - For Kimi: **SKIP (B146-TEMP)**; when re-enabled, message appears in notification store / TUI prefill
+  - For Grok: with a persistent Monitor on `c2c monitor`, the line is injected into the conversation; without Monitor, message sits until `c2c poll-inbox`
 - **Failure modes**:
   - ECHILD race on Claude (known, fixed via bash wrapper)
   - Channel-push selective miss (#387, known fixed)
   - Codex hooks not installed or not trusted (`c2c doctor hooks` classifies the live delivery mode and prints the remediation)
+  - Grok: expecting Claude/Codex `additionalContext` inject (not supported)
 - **Repro time**: ~30s
 
 ---
@@ -122,11 +138,15 @@ check.
     model-visible on the next turn (B141 inject-only ingress pass against
     `~/.c2c/sessions/broker`) but never starts a turn — send from another repo's
     `c2c send --cross-repo <instance-alias>` and confirm the echo turn sees it
+  - Optional long-stuck SLA (B168): if inject/auto-turn fails, mail should
+    force-retry / re-batch within ~2 minutes (`stale_inbox_threshold_s` = 120)
+    without operator re-init
 - **Failure modes**:
   - `app_server_status=failed-startup` → codex too old / capability probe
     failed; `c2c doctor hooks` shows `app-server-unavailable` + remediation
   - Draft clobbered or transcript shows the raw injection → file a finding
     immediately (violates the T004 draft-safety proof)
+  - Banner alias and first-turn `whoami` disagree → B172 identity bind regression
 - **Repro time**: ~90s
 
 ---
@@ -269,7 +289,9 @@ check.
 ## 10. Managed-instance lifecycle: <Client>
 
 Pi Agent is not a `c2c start` target; mark this row SKIP for Pi Agent and test
-the pi launcher / extension lifecycle separately.
+the pi launcher / extension lifecycle separately. **Grok:** SKIP — no
+`c2c start grok` (deferred). **Kimi:** SKIP (B146-TEMP) — `c2c start kimi`
+refuses until re-enabled.
 
 - **Setup**:
   - MCP-managed clients: use the test pane running from step 1
@@ -326,12 +348,24 @@ This is client-specific — different clients use different permission mechanism
 
 ### Kimi
 
+> **B146-TEMP:** Default **SKIP** — `c2c install kimi` refuses until re-enabled.
+> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+
 - **Setup**: Client running with PreToolUse hook configured (`c2c install kimi`)
 - **Action**: Run any Shell command (e.g. `ls`)
 - **Expected**: For **safe commands** (cat, ls, git status, etc.) — exits 0 immediately, no DM sent. For **unsafe commands** (rm, git push, etc.) — DM sent to reviewer, blocked until verdict
 - **Failure modes**:
   - Hook sends DMs for ALL Shell calls (including safe reads) — known issue, hook over-forward bug; safe-pattern allowlist (#591, #587) should fix this
 - **Repro time**: ~60s
+
+### Grok
+
+- **Setup**: Grok TUI after `c2c install grok`; SessionStart fired
+- **Action**: N/A for MCP permission prompts (CLI-first; no MCP by default)
+- **Expected**: Mark SKIP for MCP approval; optional: confirm SessionStart wrote
+  `~/.grok/skills/c2c-session/SKILL.md` with live alias
+- **Failure modes**: Expecting Claude/Codex-style hook body delivery
+- **Repro time**: ~15s
 
 ---
 
@@ -389,7 +423,8 @@ After running all applicable rows, save:
 | Codex       | N | N | N | ... |
 | Pi Agent    | N | N | N | ... |
 | OpenCode    | N | N | N | ... |
-| Kimi        | N | N | N | ... |
+| Kimi        | N | N | N | B146-TEMP: default SKIP lifecycle/install |
+| Grok        | N | N | N | CLI-first; no `c2c start grok` |
 
 ## Full log
 

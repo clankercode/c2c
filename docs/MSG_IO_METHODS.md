@@ -10,23 +10,29 @@ A single reference tracking every delivery method in c2c: how messages
 get from one agent to another, which clients support each method, what
 implements it, and where the sharp edges are.
 
-Last updated: 2026-07-08
+Last updated: 2026-07-13
+
+> **B146-TEMP:** Kimi is temporarily disabled for this release
+> (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
+> until re-enabled. Kimi method rows and §9 remain for when it returns.
+> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
 
 ---
 
 ## Summary Table
 
-| # | Method | One-liner | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Status |
-|---|--------|-----------|:-----------:|:-----:|:--------:|:--------:|:----:|--------|
-| 1 | [MCP Channel Notifications](#1-mcp-channel-notifications) | Server pushes messages into the chat UI via JSON-RPC notification | Gated | No | No MCP | No | No | Experimental / gated behind dev flag |
-| 2 | [PostToolUse Hook](#2-posttooluse-hook) | Host hooks drain inboxes into `additionalContext` at tool/turn boundaries | Yes | Yes | No | No | No | Working (primary for Claude Code and Codex) |
-| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Deprecated sentinel | No | Fallback | No | Legacy/fallback only; Kimi uses notification-store |
-| 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | No | Experimental; not real-time |
-| 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP/CLI tool that drains and returns pending messages | Yes | Yes | Yes (CLI) | Yes | Yes | Working (universal baseline) |
-| 6 | [Wake Daemon](#6-wake-daemon) | inotify watches inbox and wakes/delivers to idle agents | Yes | Legacy | Yes (`pi-c2c`) | Yes | Yes | Working for Pi/OpenCode/Kimi; legacy for Codex PTY sentinel |
-| 7 | [Kimi Wire Bridge](#7-kimi-wire-bridge) | Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method | No | No | No | No | Deprecated | Deprecated; notification-store is preferred |
-| 8 | [OpenCode Native Plugin](#8-opencode-native-plugin) | TypeScript plugin polls broker, delivers via `promptAsync` | No | No | No | Yes | No | Proven; preferred for OpenCode |
-| 9 | [Kimi Notification-Store](#9-kimi-notification-store) | File-based notification push to Kimi's native notification subsystem | No | No | No | No | Yes | Preferred for Kimi |
+| # | Method | One-liner | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok | Status |
+|---|--------|-----------|:-----------:|:-----:|:--------:|:--------:|:----:|:----:|--------|
+| 1 | [MCP Channel Notifications](#1-mcp-channel-notifications) | Server pushes messages into the chat UI via JSON-RPC notification | Gated | No | No MCP | No | No | No | Experimental / gated behind dev flag |
+| 2 | [PostToolUse Hook](#2-posttooluse-hook) | Host hooks drain inboxes into `additionalContext` at tool/turn boundaries | Yes | Yes (vanilla + managed fallback) | No | No | No | No | Working (primary for Claude Code; Codex vanilla/fallback only) |
+| 2b | [Codex app-server inject + gated auto-turn](#2b-codex-app-server-inject--gated-auto-turn) | Managed Codex: arrival-time inject + idle auto-turn over authenticated app-server | No | Yes (managed ≥0.144) | No | No | No | No | **Primary for managed Codex** (B131); hooks fall back |
+| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Deprecated sentinel | No | Fallback | No | No | Legacy/fallback only; Kimi uses notification-store |
+| 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | No | No | Experimental; not real-time |
+| 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP/CLI tool that drains and returns pending messages | Yes | Yes | Yes (CLI) | Yes | Yes | Yes (CLI) | Working (universal baseline) |
+| 6 | [Wake Daemon](#6-wake-daemon) | inotify watches inbox and wakes/delivers to idle agents | Yes | Legacy / hook-wake | Yes (`pi-c2c`) | Yes | Yes | Monitor | Working for Pi/OpenCode; Grok uses Monitor+`c2c monitor`; legacy for Codex PTY sentinel |
+| 7 | [Kimi Wire Bridge](#7-kimi-wire-bridge) | Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method | No | No | No | No | Deprecated | No | Deprecated; notification-store is preferred |
+| 8 | [OpenCode Native Plugin](#8-opencode-native-plugin) | TypeScript plugin + alias-scoped `c2c monitor`, delivers via `promptAsync` | No | No | No | Yes | No | No | Proven; preferred for OpenCode |
+| 9 | [Kimi Notification-Store](#9-kimi-notification-store) | File-based notification push to Kimi's native notification subsystem | No | No | No | No | Yes (B146-TEMP) | No | Preferred for Kimi when re-enabled |
 
 ---
 
@@ -109,7 +115,10 @@ just post-initialize).
 
 **Auto-delivery via host hooks** -- Claude Code and Codex both run c2c hook
 commands from the host's hook system and surface drained broker messages as
-`hookSpecificOutput.additionalContext` in the agent transcript.
+`hookSpecificOutput.additionalContext` in the agent transcript. For managed
+Codex on a supported binary this is the **fallback** path; see
+[§2b](#2b-codex-app-server-inject--gated-auto-turn) for the primary app-server
+method.
 
 #### How it works
 
@@ -182,7 +191,7 @@ hook boundary still need an idle-session bridge or manual polling.
 | Client | Supported | Notes |
 |--------|-----------|-------|
 | Claude Code | Yes | Primary delivery mechanism. Installed by `c2c install claude`. |
-| Codex | Yes | `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext` — the path for vanilla sessions and the automatic fallback for managed sessions on an older Codex (hook-boundary, not arrival-time; explicit polling remains the fallback). Managed sessions on a supported Codex get app-server interactive delivery instead (arrival-time, draft-safe; shipped, B131) — see [Per-Client Delivery § Codex](/client-delivery/#codex). |
+| Codex | Yes | **Vanilla primary / managed fallback.** `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext` — hook-boundary, not arrival-time. Managed sessions on a supported Codex get [app-server delivery](#2b-codex-app-server-inject--gated-auto-turn) instead (arrival-time, draft-safe; shipped, B131); older Codex or app-server startup failure falls back here automatically. Explicit polling remains the portable fallback. |
 | Pi Agent | No | Pi Agent uses the `pi-c2c` extension rather than host hooks. |
 | OpenCode | No | OpenCode uses its native TypeScript plugin instead. |
 | Kimi | No | Kimi uses notification-store delivery instead. |
@@ -211,6 +220,53 @@ hook boundary still need an idle-session bridge or manual polling.
 - The Codex hook is deliberately fail-open and time-capped. This protects Codex
   turns from c2c failures, but also means a hook failure can silently defer
   delivery until a later hook boundary or manual poll.
+
+---
+
+### 2b. Codex app-server inject + gated auto-turn
+
+**Primary delivery for managed Codex on a supported binary (codex-cli ≥ 0.144)** —
+arrival-time injection into the thread's model-visible history plus a gated
+auto-turn for eligible local mail. Distinct from host hooks (method 2).
+
+#### How it works
+
+Managed `c2c start codex` / `c2c new codex` launch `codex app-server` on an
+**authenticated loopback WebSocket** (`--ws-auth capability-token`) with the
+stock remote TUI attached. The managed supervisor drives the T003 ingress +
+T007 auto-turn pipeline while the frontend is attached:
+
+1. Inbound c2c mail is injected on arrival as DATA (`thread/inject_items`) —
+   draft-safe; the composer is frontend-only state the app-server cannot touch.
+2. Eligible **local-broker** mail starts one model turn when the thread is
+   **explicitly idle** and DND is off (remote/`@host`/`#` senders and
+   active/unknown status fail closed to queued).
+3. Idle auto-turn fires **immediately** (B168); inject failures and
+   `Turn_failed` batches force-retry / re-batch after ~**2 minutes**
+   (`stale_inbox_threshold_s` = 120).
+4. Cross-repo sessions-broker mail is inject-only (B141) — never starts a turn.
+5. Older Codex or app-server startup failure falls back automatically to
+   method 2 (hooks).
+
+Identity: after a successful start the launcher binds the banner alias into the
+broker before first interaction (B172); hooks inherit the launcher session id
+via `C2C_CODEX_APPSERVER_SESSION` (B166/B137) so there is a single identity.
+
+Full contract: [Per-Client Delivery § Codex](/client-delivery/#codex).
+
+#### Client support
+
+| Client | Supported | Notes |
+|--------|-----------|-------|
+| Codex (managed, ≥0.144) | **Yes — Primary** | Shipped B131; `delivery_mode=app-server` while `online-attached`. |
+| Codex (vanilla / older / force-hooks) | No | Use method 2 (hooks) + optional wake inject. |
+| Claude Code / Pi / OpenCode / Kimi / Grok | No | — |
+
+#### Limitations
+
+- Requires codex-cli ≥ 0.144 and a successful app-server start.
+- Auto-turn is local-broker only; remote-origin mail is data-only.
+- Message content never resolves approvals (B098 bus-never-RPC).
 
 ---
 
@@ -409,10 +465,11 @@ injection text and PTY coordination:
 | Client | Supported | Notes |
 |--------|-----------|-------|
 | Claude Code | Yes (gap) | PostToolUse hook covers active tool calls. AFK gap (idle session) has no non-PTY fix yet; `c2c_claude_wake_daemon.py` deprecated. |
-| Codex | Deprecated | Older managed-session path used `c2c-deliver-inbox --notify-only --loop`; current installs prefer Codex hooks. |
+| Codex | Hook-fallback only | PTY sentinel deprecated. Managed supported Codex uses app-server (no wake inject). Hook-mode managed/vanilla may use tmux/herdr wake inject (`hooks+wake`). |
 | Pi Agent | Yes ✓ | `pi-c2c` watches inbox changes with `fs.watch`, with a 60s safety-net poll. |
-| OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via `c2c monitor` subprocess → `promptAsync`. No PTY. |
-| Kimi | Yes ✓ | Notification-store (C2c_kimi_notifier, file-based push). Preferred over deprecated PTY wake. |
+| OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via alias-scoped `c2c monitor --alias <session>` → `promptAsync`. No PTY; not `--all`. |
+| Kimi | Yes ✓ (B146-TEMP) | Notification-store (C2c_kimi_notifier, file-based push). Preferred over deprecated PTY wake when re-enabled. |
+| Grok | Monitor | Prefer persistent Monitor on `c2c monitor` (CLI-first; no managed `c2c start grok`). |
 | Crush | Deprecated | Unreliable; Crush lacks context compaction. |
 
 #### Key files
@@ -487,10 +544,11 @@ PTY injection.
 `data/opencode-plugin/c2c.ts` in a dev checkout, or written from the embedded
 blob in a binary-only install). The plugin:
 
-1. Subscribes to the `session.idle` event and also runs a background poll
-   on a 2-second interval.
-2. Calls the c2c CLI (`c2c poll-inbox --json --file-fallback --session-id <id>`)
-   to drain the broker inbox.
+1. Spawns an **alias-scoped** `c2c monitor --alias <session>` subprocess (not
+   `--all`) and also runs a safety-net background poll.
+2. On inbox activity, calls the c2c CLI
+   (`c2c poll-inbox --json --file-fallback --session-id <id>`) to drain the
+   broker inbox.
 3. For each message, calls `client.session.promptAsync` to inject it as a
    proper user turn.
 4. The message appears natively in the OpenCode session -- no PTY, no
@@ -528,14 +586,19 @@ until the plugin drains them and injects them through the official plugin API.
 
 ### 9. Kimi Notification-Store
 
+> **B146-TEMP:** Kimi is temporarily disabled for this release
+> (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
+> until re-enabled. Mechanics below remain for when it returns.
+> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+
 **File-based notification push to Kimi's native notification subsystem** --
 The canonical delivery path for Kimi since 2026-04-29, replacing the
 deprecated wire-bridge path.
 
 #### How it works
 
-`c2c start kimi` forks a **kimi-notifier daemon** alongside the kimi TUI
-process. The notifier:
+When re-enabled, `c2c start kimi` forks a **kimi-notifier daemon** alongside
+the kimi TUI process. The notifier:
 
 1. Polls the c2c broker inbox every 2 seconds.
 2. Drains messages for the Kimi alias.
@@ -551,11 +614,12 @@ agent-context injection (llm-sink, drained at turn boundaries).
 
 | Client | Supported | Notes |
 |--------|-----------|-------|
-| Kimi | **Yes — Preferred** | File-based push to notification store. Replaces wire-bridge. |
+| Kimi | **Yes — Preferred** (B146-TEMP: start/install refuse) | File-based push to notification store. Replaces wire-bridge. |
 | Claude Code | No | — |
 | Codex | No | — |
 | Pi Agent | No | Uses `pi-c2c` extension delivery instead. |
 | OpenCode | No | — |
+| Grok | No | — |
 
 #### Key files
 
@@ -567,10 +631,11 @@ agent-context injection (llm-sink, drained at turn boundaries).
 
 #### Limitations
 
+- **B146-TEMP:** `c2c start kimi` / `c2c install kimi` refuse until re-enabled.
 - Requires kimi session to be active and a session-id resolvable from `kimi.log`.
 - LLM-sink injection only at agent turn boundaries (not immediate).
 - tmux send-keys wake-prompt may not fire if pane is in copy-mode.
-- Notifier daemon must be running (`c2c start kimi` starts it automatically).
+- Notifier daemon must be running (`c2c start kimi` starts it automatically when re-enabled).
 
 See `.collab/runbooks/kimi-notification-store-delivery.md` (internal) for the
 full troubleshooting guide.
@@ -581,20 +646,23 @@ full troubleshooting guide.
 
 Which methods are primary, fallback, or unavailable for each client:
 
-| Method | Claude Code | Codex | Pi Agent | OpenCode | Kimi |
-|--------|:-----------:|:-----:|:--------:|:--------:|:----:|
-| MCP Channel Notifications | Fallback (gated) | -- | -- | -- | -- |
-| PostToolUse Hook | **Primary** | **Primary** | -- | -- | -- |
-| PTY Injection | Deprecated | Legacy sentinel | -- | Fallback | Fallback |
-| History.jsonl Injection | Experimental | -- | -- | -- | -- |
-| poll_inbox Tool | Baseline | Baseline | CLI baseline | Baseline | Baseline |
-| Wake Daemon | Idle bridge | Legacy fallback | **Primary** (`pi-c2c`) | Fallback | Fallback |
-| Kimi Wire Bridge | -- | -- | -- | -- | Deprecated |
-| Kimi Notification-Store | -- | -- | -- | -- | **Primary** |
-| OpenCode Native Plugin | -- | -- | -- | **Primary** | -- |
+| Method | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok |
+|--------|:-----------:|:-----:|:--------:|:--------:|:----:|:----:|
+| MCP Channel Notifications | Fallback (gated) | -- | -- | -- | -- | -- |
+| PostToolUse Hook | **Primary** | Vanilla **Primary** / managed **Fallback** | -- | -- | -- | -- |
+| Codex app-server inject + gated auto-turn | -- | Managed **Primary** (supported ≥0.144) | -- | -- | -- | -- |
+| PTY Injection | Deprecated | Legacy sentinel | -- | Fallback | Fallback | -- |
+| History.jsonl Injection | Experimental | -- | -- | -- | -- | -- |
+| poll_inbox Tool | Baseline | Baseline | CLI baseline | Baseline | Baseline | **Baseline** (CLI) |
+| Wake Daemon | Idle bridge | Hook-mode wake inject | **Primary** (`pi-c2c`) | Fallback | Fallback | -- |
+| Monitor + `c2c monitor` | Idle awareness | -- | -- | (plugin-internal) | -- | **Primary** |
+| Kimi Wire Bridge | -- | -- | -- | -- | Deprecated | -- |
+| Kimi Notification-Store | -- | -- | -- | -- | **Primary** (B146-TEMP) | -- |
+| OpenCode Native Plugin | -- | -- | -- | **Primary** | -- | -- |
 
 **Primary** = recommended path for that client; for MCP clients this is installed
-by `c2c install <client>`, while Pi Agent uses `pi install npm:pi-c2c`.
+by `c2c install <client>`, while Pi Agent uses `pi install npm:pi-c2c`. Managed
+Codex on a supported binary uses the app-server path (not hooks) as Primary.
 **Baseline** = always available as a universal pull-based fallback.
 **Fallback** = works but superseded by a better method.
 **--** = not applicable or not supported.
@@ -618,9 +686,11 @@ OCaml broker: enqueue_message
 Recipient's inbox file
     |
     |  +-- Host hook fires (Claude Code PostToolUse; Codex UserPromptSubmit/PostToolUse)
-    |  +-- Native plugin polls and drains (OpenCode)
-    |  +-- Notification-store delivers via C2c_kimi_notifier (Kimi)
-    |  +-- Wake daemon PTY-injects sentinel (any)
+    |  +-- Codex app-server inject + gated auto-turn (managed supported Codex)
+    |  +-- Native plugin + alias-scoped c2c monitor (OpenCode)
+    |  +-- Notification-store delivers via C2c_kimi_notifier (Kimi; B146-TEMP)
+    |  +-- Monitor on c2c monitor (Grok preferred)
+    |  +-- Wake daemon PTY-injects sentinel (legacy)
     |  +-- Agent manually calls poll_inbox (universal)
     v
 poll_inbox drains inbox --> archive --> returns messages
