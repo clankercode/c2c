@@ -538,6 +538,22 @@ let monitor_cmd =
       match inbox_sid with Some s -> Some (s ^ ".inbox.json") | None -> None
     in
     let do_inbox_watch = archive && inbox_filename <> None in
+    (* B142: does the main thread run a local inbox/archive inotify watch? It
+       ALWAYS does — archive mode watches the archive dir (plus this session's
+       live inbox when resolved, [do_inbox_watch]); --live watches the broker
+       root. There is no relay-only invocation, so this is deterministically
+       true. Crucially it is NOT gated on runtime "inotify established yet"
+       state: the first relay peek fires immediately at startup (last_tick in
+       the past, see the relay thread below) — before inotifywait is armed — and
+       the common terminal failures (not_found / unauthorized /
+       timestamp_out_of_window) all surface on that first peek. Gating on a
+       runtime flag would therefore re-introduce the B142 process teardown for
+       startup terminal failures. The local watch is guaranteed by
+       configuration, so the relay thread's exit-vs-log-only decision
+       ([C2c_monitor_logic.should_exit_on_relay_terminal]) reads this constant;
+       a future relay-only mode would set it false and inherit the correct
+       supervisor-exit behaviour for free. *)
+    let local_watch_active = true in
     (* Per-file read offsets for archive mode. Init to current size so we
        don't re-emit historical entries on startup. *)
     let archive_offsets : (string, int) Hashtbl.t = Hashtbl.create 16 in
@@ -736,7 +752,8 @@ let monitor_cmd =
                  (`{ ok, messages }` or `{ ok:false, error_code, error }`)
                  WITHOUT clearing the relay inbox. The response is classified by
                  the caller — errors are surfaced (not swallowed), and a terminal
-                 auth/identity failure exits non-zero (H3). *)
+                 auth/identity failure applies the local-watch terminal policy
+                 (H3/B142). *)
               match auth_header_opt with
               | Some auth ->
                   Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
@@ -749,18 +766,41 @@ let monitor_cmd =
                terminal (auth/identity — will not self-heal) relay failures.
                [err_streak] drives exponential backoff and reconnect reporting so
                a flapping relay does not hammer the endpoint and a recovery is
-               announced. A terminal failure exits non-zero with a clear stderr
-               message so a supervisor notices, instead of the monitor spinning
-               forever reporting a healthy-looking but dead relay stream. *)
+               announced. A terminal failure is reported clearly and then either
+               exits a pure-relay monitor non-zero for its supervisor, or disables
+               only relay watching while local receive continues. *)
             let err_streak = ref 0 in
+            (* B142: log the terminal message ONCE (a terminal error repeats
+               every peek cycle; without this guard the relay loop would spam
+               stderr each interval). *)
+            let terminal_logged = ref false in
             let handle_terminal detail =
-              Printf.eprintf
-                "%s relay watch: TERMINAL failure peeking %s/%s: %s\n\
-                 %s relay watch: this will not self-heal (auth / identity / \
-                 config). Re-register (c2c relay register) or fix the key/clock, \
-                 then restart the monitor.\n%!"
-                (now_hms ()) node_id session_id detail (now_hms ());
-              exit C2c_monitor_logic.exit_relay_terminal
+              if not !terminal_logged then begin
+                terminal_logged := true;
+                Printf.eprintf
+                  "%s relay watch: TERMINAL failure peeking %s/%s: %s\n\
+                   %s relay watch: this will not self-heal (auth / identity / \
+                   config). Re-register (c2c relay register) or fix the key/clock, \
+                   then restart the monitor.\n%!"
+                  (now_hms ()) node_id session_id detail (now_hms ())
+              end;
+              if C2c_monitor_logic.should_exit_on_relay_terminal ~local_watch_active
+              then
+                (* Pure-relay monitor (no local watch): tear down so a supervisor
+                   notices a dead relay stream. *)
+                exit C2c_monitor_logic.exit_relay_terminal
+              else begin
+                (* B142: a local inbox/archive watch is active — a relay-side
+                   problem must NOT tear down local receive. Disable ONLY the
+                   relay loop; the main-thread inotify watch keeps running. Set
+                   the stop flag so the loop returns on its next guard check. *)
+                if not (Atomic.get relay_stop) then
+                  Printf.eprintf
+                    "%s relay watch: disabled — local inbox watch continues \
+                     (relay failure does not stop local receive)\n%!"
+                    (now_hms ());
+                Atomic.set relay_stop true
+              end
             in
             let rec relay_loop last_tick =
               if Atomic.get relay_stop || Unix.getppid () = 1 then ()
@@ -1241,12 +1281,19 @@ let monitor =
                   (network blip, timeout, rate-limit) is retried with backoff and a \
                   $(b,reconnected) line is emitted on recovery. A TERMINAL error \
                   (auth / identity / signature / bad-request — will not self-heal) prints \
-                  a clear message and EXITS the monitor with a non-zero code so a \
-                  supervisor notices instead of watching a dead-but-silent relay stream."
+                  a clear message ONCE and DISABLES the relay watcher — the \
+                  main-thread local inbox watch KEEPS RUNNING (B142), so a \
+                  relay-side problem never tears down local receive. The monitor \
+                  exits with a non-zero code on a terminal relay failure ONLY when \
+                  relay-watch is the sole reason it started (no local watch active), \
+                  so a supervisor still notices a dead pure-relay monitor."
             ; `S "EXIT STATUS"
-            ; `P "0  clean exit (parent gone / stop). \
+            ; `P "0  clean exit (parent gone / stop; also after a terminal relay \
+                  failure when a local inbox watch is active — the local watch keeps \
+                  running and the process exits 0 only when it stops). \
                   1  usage or startup error (broker root unresolved, lockfile conflict). \
-                  3  terminal relay failure (auth / identity / signature / bad request)."
+                  3  terminal relay failure (auth / identity / signature / bad request) \
+                  when relay-watch is the sole source (no local watch active)."
             ; `S "OUTPUT FORMAT"
             ; `P "[HH:MM:SS] ICON  TYPE  from→to  \"subject…\""
             ; `P "ICON: 📬 = addressed to you, 💬 = peer traffic (--all), \

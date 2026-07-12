@@ -337,7 +337,8 @@ let decide_relay_watch
    forever reporting a healthy-looking but dead relay stream ("misleading
    success"). Classify every response so the caller can surface the error and
    distinguish a transient blip (retry, may recover) from a terminal failure
-   (auth/identity — will not self-heal, exit non-zero so a supervisor notices).
+   (auth/identity — will not self-heal; the monitor's local-watch policy
+   decides whether to exit non-zero or disable only relay watching).
 
    The relay's own JSON contract (relay_server_json.ml): success is
    `{ ok:true, ... }`; every error is `{ ok:false, error_code, error }`. The
@@ -348,14 +349,15 @@ let decide_relay_watch
 type relay_peek_outcome =
   | Peek_ok of Yojson.Safe.t list  (* ok:true / legacy: pending messages *)
   | Peek_transient of string       (* retry, may recover (network/5xx/rate-limit) *)
-  | Peek_terminal of string        (* auth/identity — exit non-zero *)
+  | Peek_terminal of string        (* auth/identity — terminal policy applies *)
 
 (* Error codes that mean the peek can NEVER succeed by retrying with the same
    identity/key: the operator must re-register, fix the clock, fix the key, or
-   fix the request. These make the monitor exit non-zero (honest terminal
-   failure) rather than spin forever swallowing the error. Anything not listed
-   defaults to transient — better to keep retrying an unrecognized/blip error
-   than to kill a monitor on a code we did not anticipate. *)
+   fix the request. The monitor applies its terminal policy to these errors:
+   pure-relay monitoring exits non-zero, while a local watch disables only its
+   relay loop. Anything not listed defaults to transient — better to keep
+   retrying an unrecognized/blip error than to kill a monitor on a code we did
+   not anticipate. *)
 let is_terminal_error_code = function
   | "unauthorized"
   | "signature_invalid"
@@ -398,3 +400,17 @@ let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
    usage/startup exit 1 so a supervisor can tell an auth/identity relay failure
    apart from a bad-invocation or broker-root error (A038/B182/B196). *)
 let exit_relay_terminal = 3
+
+(* B142: on a relay-peek TERMINAL failure, decide whether to tear the WHOLE
+   monitor process down. The relay-peek watcher runs in a background thread; a
+   terminal auth/identity/config failure there must NOT kill the main-thread
+   local inbox/archive inotify watch — a relay-side problem taking down local
+   receive (the primary CLI receive path) is the B142 defect.
+
+   Policy: exit non-zero ONLY when relay-watch is the SOLE reason the monitor is
+   running — i.e. no local watch is active — so a supervisor still notices a
+   dead pure-relay monitor. When a local watch is active, the caller logs the
+   terminal message once and stops ONLY the relay loop; the local watch keeps
+   running. Pure + unit-tested so the exit-vs-continue policy is decoupled from
+   the impure thread. *)
+let should_exit_on_relay_terminal ~local_watch_active = not local_watch_active
