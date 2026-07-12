@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-12T16:07:18Z"
+depends_on: []
+estimate_hours: 1
+id: B171
+priority: high
+status: pending
+tags: []
+title: c2c start claude -n generates an agent Claude cannot resolve
+updated_at: "2026-07-12T16:07:18Z"
+---
+Reproduction on Claude Code 2.1.207: scripts/c2c_tmux.py launch claude -n b162-haiku-retry --new-window --cwd /home/xertrov/src/c2c --extra --model haiku writes .claude/agents/b162-haiku-retry.md, then c2c start invokes Claude with --agent b162-haiku-retry. Claude exits 1: '--agent b162-haiku-retry not found' while listing built-in agents. Unnamed c2c start claude --model haiku reaches the TUI successfully. Investigate compiled agent discovery/config scope and add tmux/integration coverage. This blocked named live verification but is separate from B162.
